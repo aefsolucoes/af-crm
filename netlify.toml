@@ -8,3 +8,4 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  NEXT_PUBLIC_API_URL = "https://af-crm-production.up.railway.app"
