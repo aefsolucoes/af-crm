@@ -17,10 +17,12 @@ import webhookRoutes from './routes/webhooks';
 const app = express();
 const httpServer = http.createServer(app);
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',');
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean);
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin || allowedOrigins.some(o => origin.startsWith(o.trim()))) return cb(null, true);
+    if (!origin) return cb(null, true);
+    if (origin.endsWith('.netlify.app')) return cb(null, true);
+    if (allowedOrigins.length === 0 || allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
     cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
