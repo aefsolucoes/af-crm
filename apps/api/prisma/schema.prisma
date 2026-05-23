@@ -1,0 +1,174 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id        String     @id @default(cuid())
+  name      String
+  createdAt DateTime   @default(now())
+  users     User[]
+  pipelines Pipeline[]
+  leads     Lead[]
+  contacts  Contact[]
+  companies Company[]
+  salesBots SalesBot[]
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      Role     @default(AGENT)
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id])
+  leads     Lead[]
+  tasks     Task[]
+  createdAt DateTime @default(now())
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  AGENT
+}
+
+model Pipeline {
+  id        String   @id @default(cuid())
+  name      String
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id])
+  stages    Stage[]
+  leads     Lead[]
+}
+
+model Stage {
+  id         String   @id @default(cuid())
+  name       String
+  color      String   @default("#888780")
+  order      Int
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id])
+  leads      Lead[]
+}
+
+model Lead {
+  id           String     @id @default(cuid())
+  name         String
+  value        Float?
+  status       LeadStatus @default(OPEN)
+  pipelineId   String
+  pipeline     Pipeline   @relation(fields: [pipelineId], references: [id])
+  stageId      String
+  stage        Stage      @relation(fields: [stageId], references: [id])
+  userId       String
+  user         User       @relation(fields: [userId], references: [id])
+  contactId    String?
+  contact      Contact?   @relation(fields: [contactId], references: [id])
+  companyId    String?
+  company      Company?   @relation(fields: [companyId], references: [id])
+  accountId    String
+  account      Account    @relation(fields: [accountId], references: [id])
+  customFields Json?
+  tags         String[]
+  tasks        Task[]
+  notes        Note[]
+  messages     Message[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+enum LeadStatus {
+  OPEN
+  WON
+  LOST
+}
+
+model Contact {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?
+  phone     String?
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id])
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
+  leads     Lead[]
+  createdAt DateTime @default(now())
+}
+
+model Company {
+  id        String    @id @default(cuid())
+  name      String
+  email     String?
+  phone     String?
+  accountId String
+  account   Account   @relation(fields: [accountId], references: [id])
+  contacts  Contact[]
+  leads     Lead[]
+}
+
+model Task {
+  id        String   @id @default(cuid())
+  title     String
+  dueAt     DateTime
+  done      Boolean  @default(false)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  leadId    String?
+  lead      Lead?    @relation(fields: [leadId], references: [id])
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  content   String
+  type      NoteType @default(COMMENT)
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+enum NoteType {
+  COMMENT
+  CALL
+  EMAIL
+  STAGE_CHANGE
+}
+
+model Message {
+  id        String    @id @default(cuid())
+  content   String
+  direction Direction
+  channel   Channel
+  leadId    String
+  lead      Lead      @relation(fields: [leadId], references: [id])
+  read      Boolean   @default(false)
+  createdAt DateTime  @default(now())
+}
+
+enum Direction {
+  INBOUND
+  OUTBOUND
+}
+
+enum Channel {
+  WHATSAPP
+  INSTAGRAM
+  TELEGRAM
+  WEBCHAT
+  EMAIL
+}
+
+model SalesBot {
+  id        String  @id @default(cuid())
+  name      String
+  active    Boolean @default(false)
+  flow      Json
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id])
+}

@@ -1,0 +1,105 @@
+'use client';
+import { useQuery } from '@tanstack/react-query';
+import { Topbar } from '@/components/ui/topbar';
+import { Lead } from '@/types';
+import api from '@/lib/api';
+import { Avatar } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import { formatCurrency, formatDate, isOverdue } from '@/lib/utils';
+import { AlertCircle, Plus } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
+import Link from 'next/link';
+import { useState } from 'react';
+
+async function fetchLeads(): Promise<Lead[]> {
+  const { data } = await api.get('/api/leads');
+  return data;
+}
+
+export default function LeadsPage() {
+  const [search, setSearch] = useState('');
+  const { data: leads, isLoading } = useQuery({ queryKey: ['leads'], queryFn: fetchLeads });
+
+  const filtered = (leads || []).filter((l) =>
+    l.name.toLowerCase().includes(search.toLowerCase()) ||
+    l.company?.name.toLowerCase().includes(search.toLowerCase()) ||
+    l.contact?.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="flex flex-col h-full">
+      <Topbar title="Leads" />
+      <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-af-border">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar leads..."
+          className="px-3 py-1.5 text-sm border border-af-border rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-af-accent"
+        />
+        <Button size="sm">
+          <Plus size={14} />
+          Novo Lead
+        </Button>
+      </div>
+
+      <div className="flex-1 overflow-auto px-6 py-4 scrollbar-thin">
+        {isLoading ? (
+          <div className="space-y-3">
+            {[1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-16 w-full" />)}
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-af-border text-left">
+                <th className="pb-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Lead</th>
+                <th className="pb-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Empresa</th>
+                <th className="pb-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Estágio</th>
+                <th className="pb-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Valor</th>
+                <th className="pb-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Responsável</th>
+                <th className="pb-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Criado</th>
+                <th className="pb-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-af-border/50">
+              {filtered.map((lead) => (
+                <tr key={lead.id} className="hover:bg-af-light/50 transition-colors group">
+                  <td className="py-3">
+                    <Link href={`/leads/${lead.id}`} className="font-medium text-slate-900 hover:text-af-mid group-hover:underline">
+                      {lead.name}
+                    </Link>
+                    {lead.tags.slice(0, 2).map((tag) => (
+                      <Badge key={tag} className="ml-1 bg-af-light text-af-mid text-xs">{tag}</Badge>
+                    ))}
+                  </td>
+                  <td className="py-3 text-slate-600">{lead.company?.name || '—'}</td>
+                  <td className="py-3">
+                    <span className="px-2 py-0.5 rounded-full text-xs text-white font-medium" style={{ backgroundColor: lead.stage.color }}>
+                      {lead.stage.name}
+                    </span>
+                  </td>
+                  <td className="py-3 font-medium text-af-mid">{formatCurrency(lead.value)}</td>
+                  <td className="py-3">
+                    <div className="flex items-center gap-2">
+                      <Avatar name={lead.user.name} size="sm" />
+                      <span className="text-slate-600">{lead.user.name}</span>
+                    </div>
+                  </td>
+                  <td className="py-3 text-slate-500">{formatDate(lead.createdAt)}</td>
+                  <td className="py-3">
+                    <Badge className={`text-xs ${lead.status === 'WON' ? 'bg-green-100 text-green-700' : lead.status === 'LOST' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+                      {lead.status === 'WON' ? 'Ganho' : lead.status === 'LOST' ? 'Perdido' : 'Aberto'}
+                    </Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {!isLoading && filtered.length === 0 && (
+          <div className="text-center py-12 text-slate-400 text-sm">Nenhum lead encontrado</div>
+        )}
+      </div>
+    </div>
+  );
+}

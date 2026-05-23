@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "AF CRM — Frontend (Next.js)",
+      "runtimeExecutable": "/Users/fabiocardoso/Downloads/CRM AF/node_modules/.bin/next",
+      "runtimeArgs": ["dev", "/Users/fabiocardoso/Downloads/CRM AF/apps/web", "-p", "3000"],
+      "port": 3000
+    },
+    {
+      "name": "AF CRM — Backend (Express API)",
+      "runtimeExecutable": "/usr/local/bin/npm",
+      "runtimeArgs": ["run", "dev", "--workspace=apps/api"],
+      "port": 3001
+    }
+  ]
+}

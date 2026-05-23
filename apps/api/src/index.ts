@@ -1,0 +1,55 @@
+import 'dotenv/config';
+import express from 'express';
+import http from 'http';
+import cors from 'cors';
+import { setupWebSocket } from './websocket';
+import { startMessageWorker } from './workers/message.worker';
+
+import authRoutes from './routes/auth';
+import leadRoutes from './routes/leads';
+import contactRoutes from './routes/contacts';
+import messageRoutes from './routes/messages';
+import taskRoutes from './routes/tasks';
+import pipelineRoutes from './routes/pipelines';
+import reportRoutes from './routes/reports';
+import webhookRoutes from './routes/webhooks';
+
+const app = express();
+const httpServer = http.createServer(app);
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',');
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.some(o => origin.startsWith(o.trim()))) return cb(null, true);
+    cb(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+}));
+app.use(express.json());
+
+const io = setupWebSocket(httpServer);
+app.set('io', io);
+
+app.use('/api/auth', authRoutes);
+app.use('/api/leads', leadRoutes);
+app.use('/api/contacts', contactRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/pipelines', pipelineRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/webhooks', webhookRoutes);
+
+app.get('/health', (_, res) => res.json({ status: 'ok' }));
+
+const PORT = parseInt(process.env.PORT || '3001', 10);
+
+try {
+  startMessageWorker();
+  console.log('[Worker] Message worker iniciado');
+} catch (err) {
+  console.warn('[Worker] Redis não disponível, worker desabilitado:', err);
+}
+
+httpServer.listen(PORT, () => {
+  console.log(`🚀 API AF CRM rodando em http://localhost:${PORT}`);
+});
