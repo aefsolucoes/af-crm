@@ -121,10 +121,10 @@ export function FlowCanvas({ nodes, onChange }: FlowCanvasProps) {
                 <span className="text-white text-xs font-semibold">{node.label}</span>
               </div>
               <div className="px-3 py-2 text-xs text-slate-600">
-                {node.type === 'message' && node.config.message && (
+                {node.type === 'message' && !!node.config.message && (
                   <p className="truncate max-w-40">{String(node.config.message)}</p>
                 )}
-                {node.type === 'collect' && node.config.field && (
+                {node.type === 'collect' && !!node.config.field && (
                   <p>Campo: <strong>{String(node.config.field)}</strong></p>
                 )}
                 {!node.config.message && !node.config.field && (
