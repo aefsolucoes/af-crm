@@ -60,7 +60,7 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
   tags: string[];
   customFields: Record<string, unknown>;
 }>) {
-  return prisma.lead.update({ where: { id }, data });
+  return prisma.lead.update({ where: { id }, data: data as any });
 }
 
 export async function updateLeadStage(id: string, accountId: string, stageId: string) {
