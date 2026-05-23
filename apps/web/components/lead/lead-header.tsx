@@ -47,8 +47,7 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
                 <Badge key={tag} className="bg-af-light text-af-mid">{tag}</Badge>
               ))}
               <Badge
-                className="text-white"
-                style={{ backgroundColor: lead.status === 'WON' ? '#10b981' : lead.status === 'LOST' ? '#ef4444' : '#6b7280' }}
+                color={lead.status === 'WON' ? '#10b981' : lead.status === 'LOST' ? '#ef4444' : '#6b7280'}
               >
                 {lead.status === 'WON' ? 'Ganho' : lead.status === 'LOST' ? 'Perdido' : 'Aberto'}
               </Badge>
