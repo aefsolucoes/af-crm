@@ -4,6 +4,14 @@ import bcrypt from 'bcrypt';
 const prisma = new PrismaClient();
 
 async function main() {
+  console.log('🌱 Verificando seed...');
+
+  const existing = await prisma.account.findFirst({ where: { name: 'A&F Soluções Financeiras' } });
+  if (existing) {
+    console.log('✅ Dados já existem, seed ignorado.');
+    return;
+  }
+
   console.log('🌱 Iniciando seed...');
 
   // Account
