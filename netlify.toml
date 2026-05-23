@@ -9,3 +9,9 @@
 [build.environment]
   NODE_VERSION = "20"
   NEXT_PUBLIC_API_URL = "https://af-crm-production.up.railway.app"
+
+[[redirects]]
+  from = "/api/*"
+  to = "https://af-crm-production.up.railway.app/api/:splat"
+  status = 200
+  force = true
