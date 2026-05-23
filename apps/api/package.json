@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.seed.json",
     "start": "node dist/index.js",
     "db:migrate": "prisma migrate dev",
-    "db:seed": "ts-node prisma/seed.ts",
+    "db:seed": "node dist-seed/prisma/seed.js",
     "db:generate": "prisma generate"
   },
   "dependencies": {
@@ -34,6 +34,6 @@
     "typescript": "^5.4.2"
   },
   "prisma": {
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "node dist-seed/prisma/seed.js"
   }
 }

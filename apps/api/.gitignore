@@ -1,0 +1,4 @@
+dist/
+dist-seed/
+node_modules/
+.env
