@@ -35,12 +35,21 @@ export async function startQRConnection(accountId: string): Promise<void> {
   connections.set(accountId, { sock: null, qr: null, status: 'connecting' });
 
   try {
+    let baileys: any;
+    try {
+      baileys = await import('@whiskeysockets/baileys');
+    } catch {
+      // Baileys not available in this environment
+      connections.delete(accountId);
+      throw new Error('Baileys não disponível neste ambiente');
+    }
+
     const {
       default: makeWASocket,
       DisconnectReason,
       useMultiFileAuthState,
       fetchLatestBaileysVersion,
-    } = await import('@whiskeysockets/baileys') as any;
+    } = baileys;
 
     const { default: pino } = await import('pino') as any;
     const { Boom } = await import('@hapi/boom') as any;
