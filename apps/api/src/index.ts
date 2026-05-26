@@ -14,6 +14,8 @@ import pipelineRoutes from './routes/pipelines';
 import reportRoutes from './routes/reports';
 import webhookRoutes from './routes/webhooks';
 import settingsRoutes from './routes/settings';
+import whatsappQrRoutes from './routes/whatsapp-qr';
+import { setBaileysIO } from './services/baileys.service';
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -32,6 +34,7 @@ app.use(express.json());
 
 const io = setupWebSocket(httpServer);
 app.set('io', io);
+setBaileysIO(io);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/leads', leadRoutes);
@@ -42,6 +45,7 @@ app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/whatsapp-qr', whatsappQrRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 

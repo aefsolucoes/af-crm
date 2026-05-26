@@ -4,6 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { getMessages, createMessage, getConversations } from '../services/message.service';
 import { sendWhatsAppMessage } from '../services/whatsapp.service';
+import { sendBaileysMessage, getQRStatus } from '../services/baileys.service';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
@@ -50,12 +51,19 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
 
       const phone = lead?.contact?.whatsappPhone || lead?.contact?.phone;
       if (phone) {
-        const result = await sendWhatsAppMessage(phone, req.body.content, req.user!.accountId);
-        if (result.success) {
-          externalId = result.externalId;
+        // Try QR (Baileys) first, then fall back to Cloud API
+        const qrStatus = getQRStatus(req.user!.accountId);
+        if (qrStatus.status === 'connected') {
+          const sent = await sendBaileysMessage(phone, req.body.content, req.user!.accountId);
+          if (!sent) status = 'FAILED';
         } else {
-          console.warn('[WhatsApp] Mensagem não enviada via API:', result.error);
-          status = 'FAILED';
+          const result = await sendWhatsAppMessage(phone, req.body.content, req.user!.accountId);
+          if (result.success) {
+            externalId = result.externalId;
+          } else {
+            console.warn('[WhatsApp] Mensagem não enviada:', result.error);
+            status = 'FAILED';
+          }
         }
       }
     }
