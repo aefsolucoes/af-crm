@@ -8,15 +8,16 @@ datasource db {
 }
 
 model Account {
-  id        String     @id @default(cuid())
-  name      String
-  createdAt DateTime   @default(now())
-  users     User[]
-  pipelines Pipeline[]
-  leads     Lead[]
-  contacts  Contact[]
-  companies Company[]
-  salesBots SalesBot[]
+  id              String           @id @default(cuid())
+  name            String
+  createdAt       DateTime         @default(now())
+  users           User[]
+  pipelines       Pipeline[]
+  leads           Lead[]
+  contacts        Contact[]
+  companies       Company[]
+  salesBots       SalesBot[]
+  whatsappConfig  WhatsAppConfig?
 }
 
 model User {
@@ -90,16 +91,17 @@ enum LeadStatus {
 }
 
 model Contact {
-  id        String   @id @default(cuid())
-  name      String
-  email     String?
-  phone     String?
-  accountId String
-  account   Account  @relation(fields: [accountId], references: [id])
-  companyId String?
-  company   Company? @relation(fields: [companyId], references: [id])
-  leads     Lead[]
-  createdAt DateTime @default(now())
+  id            String   @id @default(cuid())
+  name          String
+  email         String?
+  phone         String?
+  whatsappPhone String?
+  accountId     String
+  account       Account  @relation(fields: [accountId], references: [id])
+  companyId     String?
+  company       Company? @relation(fields: [companyId], references: [id])
+  leads         Lead[]
+  createdAt     DateTime @default(now())
 }
 
 model Company {
@@ -141,14 +143,35 @@ enum NoteType {
 }
 
 model Message {
-  id        String    @id @default(cuid())
-  content   String
-  direction Direction
-  channel   Channel
-  leadId    String
-  lead      Lead      @relation(fields: [leadId], references: [id])
-  read      Boolean   @default(false)
-  createdAt DateTime  @default(now())
+  id         String     @id @default(cuid())
+  content    String
+  direction  Direction
+  channel    Channel
+  leadId     String
+  lead       Lead       @relation(fields: [leadId], references: [id])
+  read       Boolean    @default(false)
+  externalId String?
+  status     MsgStatus  @default(SENT)
+  createdAt  DateTime   @default(now())
+}
+
+enum MsgStatus {
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+model WhatsAppConfig {
+  id            String   @id @default(cuid())
+  accountId     String   @unique
+  account       Account  @relation(fields: [accountId], references: [id])
+  phoneNumberId String
+  accessToken   String
+  verifyToken   String   @default("af_crm_verify")
+  active        Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
 
 enum Direction {

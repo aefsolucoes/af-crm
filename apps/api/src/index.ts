@@ -13,6 +13,7 @@ import taskRoutes from './routes/tasks';
 import pipelineRoutes from './routes/pipelines';
 import reportRoutes from './routes/reports';
 import webhookRoutes from './routes/webhooks';
+import settingsRoutes from './routes/settings';
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -40,6 +41,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/settings', settingsRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 

@@ -1,12 +1,28 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { Message, Channel } from '@/types';
-import { cn, formatDateTime, CHANNEL_COLORS, CHANNEL_LABELS } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
-import { Send, Paperclip } from 'lucide-react';
+import { cn, formatDateTime } from '@/lib/utils';
+import { Send, Paperclip, Smile, Phone, MoreVertical, Check, CheckCheck } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
+import { Avatar } from '@/components/ui/avatar';
+
+const CHANNEL_ICONS: Record<Channel, string> = {
+  WHATSAPP: '📱',
+  INSTAGRAM: '📸',
+  TELEGRAM: '✈️',
+  WEBCHAT: '💬',
+  EMAIL: '📧',
+};
+
+const CHANNEL_LABELS: Record<Channel, string> = {
+  WHATSAPP: 'WhatsApp',
+  INSTAGRAM: 'Instagram',
+  TELEGRAM: 'Telegram',
+  WEBCHAT: 'Web Chat',
+  EMAIL: 'E-mail',
+};
 
 interface ChatWindowProps {
   leadId: string;
@@ -20,6 +36,7 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -28,15 +45,17 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
   useEffect(() => {
     const socket = getSocket();
     socket.emit('join_lead', leadId);
-    socket.on('new_message', (msg: Message) => { if (msg.leadId === leadId) onNewMessage(msg); });
+    socket.on('new_message', (msg: Message) => {
+      if (msg.leadId === leadId) onNewMessage(msg);
+    });
     return () => {
       socket.emit('leave_lead', leadId);
       socket.off('new_message');
     };
   }, [leadId, onNewMessage]);
 
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSend(e?: React.FormEvent) {
+    e?.preventDefault();
     if (!content.trim()) return;
     setSending(true);
     try {
@@ -55,69 +74,159 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
     }
   }
 
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  function StatusTick({ status }: { status?: string }) {
+    if (status === 'READ') return <CheckCheck size={14} className="text-blue-400" />;
+    if (status === 'DELIVERED') return <CheckCheck size={14} className="text-slate-300" />;
+    return <Check size={14} className="text-slate-300" />;
+  }
+
+  // Group messages by date
+  const grouped: { date: string; messages: Message[] }[] = [];
+  for (const msg of messages) {
+    const date = new Date(msg.createdAt).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+    const last = grouped[grouped.length - 1];
+    if (last && last.date === date) {
+      last.messages.push(msg);
+    } else {
+      grouped.push({ date, messages: [msg] });
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 bg-slate-50 h-full">
-      {/* Header */}
-      <div className="px-6 py-3 bg-white border-b border-af-border flex items-center justify-between">
-        <div>
-          <p className="text-sm font-semibold text-slate-900">{leadName}</p>
-          <p className="text-xs text-slate-500">{messages.length} mensagens</p>
+    <div className="flex flex-col flex-1 h-full" style={{ background: '#e5ddd5' }}>
+      {/* WhatsApp-style background pattern */}
+      <div
+        className="absolute inset-0 pointer-events-none opacity-5"
+        style={{
+          backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23000000' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
+        }}
+      />
+
+      {/* Header — WhatsApp green */}
+      <div className="relative z-10 flex items-center gap-3 px-4 py-3 text-white shadow-md" style={{ backgroundColor: '#075e54' }}>
+        <Avatar name={leadName} size="md" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold truncate">{leadName}</p>
+          <p className="text-xs opacity-80">
+            {CHANNEL_ICONS[channel]} {CHANNEL_LABELS[channel]}
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-white/80">
+          <Phone size={18} className="cursor-pointer hover:text-white" />
+          <MoreVertical size={18} className="cursor-pointer hover:text-white" />
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3 scrollbar-thin">
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={cn('flex', msg.direction === 'OUTBOUND' ? 'justify-end' : 'justify-start')}
+      {/* Channel selector */}
+      <div className="relative z-10 flex items-center gap-2 px-4 py-2 bg-white/80 backdrop-blur border-b border-black/5">
+        <span className="text-xs text-slate-500 font-medium">Canal:</span>
+        {(['WHATSAPP', 'INSTAGRAM', 'TELEGRAM', 'WEBCHAT', 'EMAIL'] as Channel[]).map((ch) => (
+          <button
+            key={ch}
+            onClick={() => setChannel(ch)}
+            className={cn(
+              'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-all',
+              channel === ch
+                ? 'bg-[#075e54] text-white shadow-sm'
+                : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+            )}
           >
-            <div
-              className={cn(
-                'max-w-xs lg:max-w-md px-4 py-2.5 rounded-2xl text-sm shadow-sm',
-                msg.direction === 'OUTBOUND'
-                  ? 'bg-af-mid text-white rounded-br-sm'
-                  : 'bg-white text-slate-800 border border-af-border rounded-bl-sm'
-              )}
-            >
-              <p className="leading-relaxed">{msg.content}</p>
-              <div className={cn('flex items-center gap-1.5 mt-1 text-xs', msg.direction === 'OUTBOUND' ? 'text-white/60 justify-end' : 'text-slate-400')}>
-                <span style={{ color: CHANNEL_COLORS[msg.channel] }}>●</span>
-                {CHANNEL_LABELS[msg.channel]}
-                <span>·</span>
-                {formatDateTime(msg.createdAt)}
-              </div>
+            {CHANNEL_ICONS[ch]} {CHANNEL_LABELS[ch]}
+          </button>
+        ))}
+      </div>
+
+      {/* Messages */}
+      <div className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
+        {grouped.map(({ date, messages: dayMsgs }) => (
+          <div key={date}>
+            {/* Date separator */}
+            <div className="flex justify-center my-3">
+              <span className="bg-white/90 text-slate-500 text-xs px-3 py-1 rounded-full shadow-sm">
+                {date}
+              </span>
             </div>
+
+            {dayMsgs.map((msg, i) => {
+              const isOut = msg.direction === 'OUTBOUND';
+              const time = new Date(msg.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+              const showTail = i === 0 || dayMsgs[i - 1]?.direction !== msg.direction;
+
+              return (
+                <div
+                  key={msg.id}
+                  className={cn('flex mb-0.5', isOut ? 'justify-end' : 'justify-start')}
+                >
+                  <div
+                    className={cn(
+                      'relative max-w-xs lg:max-w-md px-3 py-2 shadow-sm',
+                      isOut
+                        ? 'rounded-tl-2xl rounded-tr-2xl rounded-bl-2xl text-slate-800'
+                        : 'rounded-tl-2xl rounded-tr-2xl rounded-br-2xl text-slate-800',
+                      showTail && isOut ? 'rounded-br-sm' : '',
+                      showTail && !isOut ? 'rounded-bl-sm' : '',
+                    )}
+                    style={{ backgroundColor: isOut ? '#d9fdd3' : '#ffffff' }}
+                  >
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{msg.content}</p>
+                    <div className={cn('absolute bottom-2 right-3 flex items-center gap-1')}>
+                      <span className="text-xs text-slate-400">{time}</span>
+                      {isOut && <StatusTick status={(msg as any).status} />}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         ))}
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <form onSubmit={handleSend} className="px-6 py-4 bg-white border-t border-af-border">
-        <div className="flex items-center gap-3">
-          <select
-            value={channel}
-            onChange={(e) => setChannel(e.target.value as Channel)}
-            className="text-xs border border-af-border rounded-lg px-2 py-2 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent"
-          >
-            {(['WHATSAPP', 'INSTAGRAM', 'TELEGRAM', 'WEBCHAT', 'EMAIL'] as Channel[]).map((ch) => (
-              <option key={ch} value={ch}>{CHANNEL_LABELS[ch]}</option>
-            ))}
-          </select>
-          <input
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="Digite sua mensagem..."
-            className="flex-1 px-4 py-2 text-sm border border-af-border rounded-xl bg-slate-50 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-af-accent focus:bg-white"
-          />
-          <Button type="button" variant="ghost" size="sm" className="text-slate-400">
-            <Paperclip size={16} />
-          </Button>
-          <Button type="submit" size="sm" loading={sending} disabled={!content.trim()}>
-            <Send size={14} />
-          </Button>
-        </div>
+      {/* Input bar */}
+      <form
+        onSubmit={handleSend}
+        className="relative z-10 flex items-end gap-2 px-3 py-3 bg-[#f0f2f5]"
+      >
+        <button
+          type="button"
+          className="flex-shrink-0 p-2 text-slate-500 hover:text-slate-700"
+        >
+          <Smile size={22} />
+        </button>
+        <button
+          type="button"
+          className="flex-shrink-0 p-2 text-slate-500 hover:text-slate-700"
+        >
+          <Paperclip size={22} />
+        </button>
+        <textarea
+          ref={inputRef}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Digite uma mensagem"
+          rows={1}
+          className="flex-1 resize-none px-4 py-2.5 text-sm bg-white rounded-3xl border-none outline-none text-slate-900 placeholder-slate-400 scrollbar-thin max-h-32"
+          style={{ lineHeight: '1.4' }}
+        />
+        <button
+          type="submit"
+          disabled={!content.trim() || sending}
+          className={cn(
+            'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-white transition-all',
+            content.trim() ? 'opacity-100 scale-100' : 'opacity-50 scale-95',
+          )}
+          style={{ backgroundColor: '#075e54' }}
+        >
+          <Send size={18} />
+        </button>
       </form>
     </div>
   );

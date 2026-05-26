@@ -14,8 +14,10 @@ export async function createMessage(data: {
   direction: Direction;
   channel: Channel;
   leadId: string;
+  externalId?: string;
+  status?: string;
 }) {
-  return prisma.message.create({ data });
+  return prisma.message.create({ data: data as any });
 }
 
 export async function markMessagesRead(leadId: string) {

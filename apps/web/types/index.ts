@@ -94,6 +94,8 @@ export interface Note {
   createdAt: string;
 }
 
+export type MsgStatus = 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
+
 export interface Message {
   id: string;
   content: string;
@@ -101,6 +103,8 @@ export interface Message {
   channel: Channel;
   leadId: string;
   read: boolean;
+  externalId?: string;
+  status?: MsgStatus;
   createdAt: string;
 }
 

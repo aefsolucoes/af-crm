@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { getMessages, createMessage, getConversations } from '../services/message.service';
+import { sendWhatsAppMessage } from '../services/whatsapp.service';
+import { PrismaClient } from '@prisma/client';
 
+const prisma = new PrismaClient();
 const router = Router();
 router.use(authMiddleware);
 
@@ -35,12 +38,35 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 
 router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response) => {
   try {
-    const message = await createMessage(req.body);
-    // Emit via socket if available
+    let externalId: string | undefined;
+    let status: 'SENT' | 'FAILED' = 'SENT';
+
+    // If sending OUTBOUND via WhatsApp, call the API
+    if (req.body.direction === 'OUTBOUND' && req.body.channel === 'WHATSAPP') {
+      const lead = await prisma.lead.findUnique({
+        where: { id: req.body.leadId },
+        include: { contact: true },
+      });
+
+      const phone = lead?.contact?.whatsappPhone || lead?.contact?.phone;
+      if (phone) {
+        const result = await sendWhatsAppMessage(phone, req.body.content, req.user!.accountId);
+        if (result.success) {
+          externalId = result.externalId;
+        } else {
+          console.warn('[WhatsApp] Mensagem não enviada via API:', result.error);
+          status = 'FAILED';
+        }
+      }
+    }
+
+    const message = await createMessage({ ...req.body, externalId, status });
+
     const io = req.app.get('io');
     if (io) {
       io.to(`lead:${message.leadId}`).emit('new_message', message);
     }
+
     res.status(201).json(message);
   } catch {
     res.status(500).json({ error: 'Erro ao enviar mensagem' });

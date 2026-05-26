@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
-  LayoutDashboard, Kanban, MessageSquare, Users, Contact, CheckSquare, Bot, BarChart3, LogOut,
+  LayoutDashboard, Kanban, MessageSquare, Users, Contact, CheckSquare, Bot, BarChart3, LogOut, Settings,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useRouter } from 'next/navigation';
@@ -17,6 +17,7 @@ const NAV = [
   { href: '/tarefas', label: 'Tarefas', icon: CheckSquare },
   { href: '/salesbot', label: 'SalesBot', icon: Bot },
   { href: '/relatorios', label: 'Relatórios', icon: BarChart3 },
+  { href: '/configuracoes', label: 'Configurações', icon: Settings },
 ];
 
 export function Sidebar() {
