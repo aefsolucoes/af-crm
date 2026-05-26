@@ -47,7 +47,7 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/whatsapp-qr', whatsappQrRoutes);
 
-app.get('/health', (_, res) => res.json({ status: 'ok' }));
+app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
