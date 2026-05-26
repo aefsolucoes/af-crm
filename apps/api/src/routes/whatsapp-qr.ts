@@ -1,28 +1,19 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { startQRConnection, getQRStatus, disconnectQR } from '../services/baileys.service';
+import { getQRStatus } from '../services/baileys.service';
 
 const router = Router();
 router.use(authMiddleware);
 
-// GET /api/whatsapp-qr/status
 router.get('/status', (req: AuthRequest, res: Response) => {
-  const status = getQRStatus(req.user!.accountId);
-  res.json(status);
+  res.json(getQRStatus(req.user!.accountId));
 });
 
-// POST /api/whatsapp-qr/connect
-router.post('/connect', async (req: AuthRequest, res: Response) => {
-  const { status } = getQRStatus(req.user!.accountId);
-  if (status === 'connected') return res.json({ status: 'connected' });
-
-  startQRConnection(req.user!.accountId).catch(console.error);
-  res.json({ status: 'connecting' });
+router.post('/connect', (_req: AuthRequest, res: Response) => {
+  res.status(503).json({ error: 'QR Code via Z-API configurado — use a aba API Oficial ou Z-API' });
 });
 
-// POST /api/whatsapp-qr/disconnect
-router.post('/disconnect', async (req: AuthRequest, res: Response) => {
-  await disconnectQR(req.user!.accountId);
+router.post('/disconnect', (_req: AuthRequest, res: Response) => {
   res.json({ status: 'disconnected' });
 });
 
