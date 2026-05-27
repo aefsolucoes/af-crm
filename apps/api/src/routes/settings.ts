@@ -84,6 +84,7 @@ router.get('/meta-leads', async (req: AuthRequest, res: Response) => {
       defaultStageId: config.defaultStageId,
       defaultUserId: config.defaultUserId,
       active: config.active,
+      fieldMappings: config.fieldMappings || [],
       webhookUrl: `${BASE}/api/webhooks/meta-leads`,
       isNew: false,
     });
@@ -109,6 +110,8 @@ router.post('/meta-leads', async (req: AuthRequest, res: Response) => {
       ? pageAccessToken
       : (existing?.pageAccessToken ?? '');
 
+    const fieldMappings = Array.isArray(req.body.fieldMappings) ? req.body.fieldMappings : [];
+
     const config = await prisma.metaLeadsConfig.upsert({
       where: { accountId: req.user!.accountId },
       update: {
@@ -117,6 +120,7 @@ router.post('/meta-leads', async (req: AuthRequest, res: Response) => {
         defaultStageId: defaultStageId || null,
         defaultUserId: defaultUserId || null,
         active,
+        fieldMappings,
       },
       create: {
         accountId: req.user!.accountId,
@@ -125,6 +129,7 @@ router.post('/meta-leads', async (req: AuthRequest, res: Response) => {
         defaultStageId: defaultStageId || null,
         defaultUserId: defaultUserId || null,
         active,
+        fieldMappings,
       },
     });
 

@@ -60,19 +60,41 @@ router.post('/meta-leads', async (req: Request, res: Response) => {
         }
         const leadData = await resp.json() as { field_data?: { name: string; values: string[] }[]; created_time?: string };
 
-        // Converte field_data em objeto chave→valor
-        const fields: Record<string, string> = {};
+        // Converte field_data em objeto chave→valor (campo Meta → valor)
+        const metaFields: Record<string, string> = {};
         for (const f of leadData.field_data || []) {
-          fields[f.name] = f.values?.[0] ?? '';
+          metaFields[f.name] = f.values?.[0] ?? '';
         }
 
-        // Extrai campos comuns (Meta usa nomes em inglês e PT)
+        // Aplica mapeamentos configurados: campo Meta → campo CRM
+        type FieldMapping = { metaField: string; crmField: string };
+        const mappings = (config.fieldMappings as FieldMapping[]) || [];
+        const customFields: Record<string, string> = {};
+
+        // 1) Copia todos os campos Meta como estão (fallback)
+        Object.assign(customFields, metaFields);
+
+        // 2) Aplica mapeamentos manuais (sobrescreve se houver)
+        for (const m of mappings) {
+          if (m.metaField && m.crmField && metaFields[m.metaField] !== undefined) {
+            customFields[m.crmField] = metaFields[m.metaField];
+          }
+        }
+
+        // Nome: usa campo mapeado para participante_1, senão tenta nomes padrão
         const name =
-          fields['full_name'] || fields['nome'] || fields['name'] ||
-          [fields['first_name'], fields['last_name']].filter(Boolean).join(' ') ||
+          customFields['participante_1'] ||
+          metaFields['full_name'] || metaFields['nome'] || metaFields['name'] ||
+          [metaFields['first_name'], metaFields['last_name']].filter(Boolean).join(' ') ||
           'Lead Meta Ads';
-        const phone = fields['phone_number'] || fields['phone'] || fields['telefone'] || '';
-        const email = fields['email'] || fields['e-mail'] || '';
+
+        // Telefone e e-mail: usa mapeamento ou campos padrão
+        const phone =
+          customFields['telefone'] ||
+          metaFields['phone_number'] || metaFields['phone'] || metaFields['telefone'] || '';
+        const email =
+          customFields['email_1'] || customFields['email'] ||
+          metaFields['email'] || metaFields['e-mail'] || '';
 
         // Resolve estágio padrão
         let stageId = config.defaultStageId;
@@ -113,7 +135,7 @@ router.post('/meta-leads', async (req: Request, res: Response) => {
         });
 
         // Monta nota com todos os campos do formulário
-        const formFields = Object.entries(fields)
+        const formFields = Object.entries(metaFields)
           .map(([k, v]) => `• ${k}: ${v}`)
           .join('\n');
 
@@ -127,7 +149,7 @@ router.post('/meta-leads', async (req: Request, res: Response) => {
             userId,
             accountId: config.accountId,
             tags: ['Meta Ads'],
-            customFields: fields as any,
+            customFields: customFields as any,
             notes: {
               create: {
                 content: `Lead gerado automaticamente via formulário Meta Ads.\n\nCampos preenchidos:\n${formFields}`,

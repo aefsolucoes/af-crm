@@ -20,12 +20,18 @@ interface WAConfig {
 
 type QRStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
 
+interface FieldMapping {
+  metaField: string;
+  crmField: string;
+}
+
 interface MetaConfig {
   verifyToken: string;
   pageAccessToken: string;
   defaultStageId: string | null;
   defaultUserId: string | null;
   active: boolean;
+  fieldMappings: FieldMapping[];
   webhookUrl: string;
   isNew: boolean;
 }
@@ -40,6 +46,7 @@ export default function ConfiguracoesPage() {
     defaultStageId: null,
     defaultUserId: null,
     active: false,
+    fieldMappings: [],
     webhookUrl: '',
     isNew: true,
   });
@@ -95,6 +102,17 @@ export default function ConfiguracoesPage() {
       return Array.from(map.values());
     },
   });
+
+  const { data: crmFields = [] } = useQuery<{ id: string; key: string; name: string; tab: string }[]>({
+    queryKey: ['fields-settings'],
+    queryFn: async () => { const { data } = await api.get('/api/fields'); return data; },
+  });
+
+  // Sugestões de campos comuns do formulário Meta
+  const META_FIELD_SUGGESTIONS = [
+    'full_name', 'first_name', 'last_name', 'email', 'phone_number',
+    'date_of_birth', 'cpf', 'renda', 'rg', 'cidade', 'estado',
+  ];
 
   // Load QR status + Socket.io
   useEffect(() => {
@@ -210,6 +228,7 @@ export default function ConfiguracoesPage() {
         defaultStageId: metaConfig.defaultStageId || null,
         defaultUserId: metaConfig.defaultUserId || null,
         active: metaConfig.active,
+        fieldMappings: metaConfig.fieldMappings.filter(m => m.metaField && m.crmField),
       });
       toast('Configuração Meta Leads salva!');
       setMetaConfig(c => ({ ...c, isNew: false }));
@@ -608,6 +627,105 @@ export default function ConfiguracoesPage() {
                     <p className="text-xs text-slate-400 mt-1">
                       Encontre em: Meta for Developers → Sua App → Ferramentas → Graph API Explorer → Access Token da Página
                     </p>
+                  </div>
+
+                  {/* ── Mapeamento de campos ── */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <label className="block text-sm font-semibold text-slate-700">
+                          Mapeamento de campos do formulário
+                        </label>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Indique qual campo do formulário Meta preenche qual campo do CRM
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setMetaConfig(c => ({
+                          ...c,
+                          fieldMappings: [...c.fieldMappings, { metaField: '', crmField: '' }],
+                        }))}
+                        className="text-xs px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 rounded-lg font-medium transition-colors"
+                      >
+                        + Adicionar mapeamento
+                      </button>
+                    </div>
+
+                    {metaConfig.fieldMappings.length === 0 ? (
+                      <div className="text-center py-6 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 text-xs">
+                        Nenhum mapeamento configurado.<br />
+                        Clique em "Adicionar mapeamento" para começar.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {/* Cabeçalho */}
+                        <div className="grid grid-cols-[1fr_auto_1fr_auto] gap-2 px-1">
+                          <span className="text-xs font-semibold text-slate-500">Campo do formulário Meta</span>
+                          <span />
+                          <span className="text-xs font-semibold text-slate-500">Campo do CRM</span>
+                          <span />
+                        </div>
+                        {metaConfig.fieldMappings.map((mapping, idx) => (
+                          <div key={idx} className="grid grid-cols-[1fr_auto_1fr_auto] gap-2 items-center bg-slate-50 rounded-lg px-3 py-2">
+                            {/* Campo Meta (com sugestões via datalist) */}
+                            <div>
+                              <input
+                                list={`meta-suggestions-${idx}`}
+                                value={mapping.metaField}
+                                onChange={e => setMetaConfig(c => ({
+                                  ...c,
+                                  fieldMappings: c.fieldMappings.map((m, i) =>
+                                    i === idx ? { ...m, metaField: e.target.value } : m
+                                  ),
+                                }))}
+                                placeholder="Ex: full_name"
+                                className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+                              />
+                              <datalist id={`meta-suggestions-${idx}`}>
+                                {META_FIELD_SUGGESTIONS.map(s => <option key={s} value={s} />)}
+                              </datalist>
+                            </div>
+
+                            {/* Seta */}
+                            <span className="text-slate-400 text-sm">→</span>
+
+                            {/* Campo CRM */}
+                            <select
+                              value={mapping.crmField}
+                              onChange={e => setMetaConfig(c => ({
+                                ...c,
+                                fieldMappings: c.fieldMappings.map((m, i) =>
+                                  i === idx ? { ...m, crmField: e.target.value } : m
+                                ),
+                              }))}
+                              className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            >
+                              <option value="">Selecione o campo</option>
+                              {['Principal', 'Financiamento', 'Consórcio', ...new Set(crmFields.map(f => f.tab).filter(t => !['Principal','Financiamento','Consórcio'].includes(t)))].map(tab => (
+                                <optgroup key={tab} label={tab}>
+                                  {crmFields.filter(f => f.tab === tab).map(f => (
+                                    <option key={f.key} value={f.key}>{f.name}</option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            </select>
+
+                            {/* Remover */}
+                            <button
+                              type="button"
+                              onClick={() => setMetaConfig(c => ({
+                                ...c,
+                                fieldMappings: c.fieldMappings.filter((_, i) => i !== idx),
+                              }))}
+                              className="text-slate-400 hover:text-red-500 transition-colors p-1"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* Default Stage */}

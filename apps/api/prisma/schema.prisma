@@ -224,6 +224,7 @@ model MetaLeadsConfig {
   defaultStageId  String?
   defaultUserId   String?
   active          Boolean  @default(true)
+  fieldMappings   Json     @default("[]")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
