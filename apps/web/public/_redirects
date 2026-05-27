@@ -1,1 +1,1 @@
-/leads/* /leads/placeholder/index.html 200
+# SPA routing is handled by 404.html fallback on Cloudflare Pages
