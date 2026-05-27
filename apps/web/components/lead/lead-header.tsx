@@ -1,5 +1,5 @@
 'use client';
-import { LeadDetail, Stage } from '@/types';
+import { LeadDetail, Stage, User } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency } from '@/lib/utils';
@@ -8,6 +8,7 @@ import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
 
 interface LeadHeaderProps {
   lead: LeadDetail;
@@ -16,10 +17,16 @@ interface LeadHeaderProps {
 
 export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
   const [changing, setChanging] = useState(false);
+  const [changingUser, setChangingUser] = useState(false);
   const [tagInput, setTagInput] = useState('');
   const [editingTags, setEditingTags] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const router = useRouter();
+
+  const { data: users = [] } = useQuery<User[]>({
+    queryKey: ['users'],
+    queryFn: async () => { const { data } = await api.get('/api/users'); return data; },
+  });
 
   async function handleArchive(archive: boolean) {
     if (archive && !confirm('Arquivar este lead? Ele não aparecerá mais no funil, mas pode ser restaurado depois.')) return;
@@ -33,6 +40,20 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
       toast('Erro ao arquivar lead', 'error');
     } finally {
       setArchiving(false);
+    }
+  }
+
+  async function handleUserChange(userId: string) {
+    if (!userId || userId === lead.userId) return;
+    setChangingUser(true);
+    try {
+      await api.put(`/api/leads/${lead.id}`, { userId });
+      toast('Responsável atualizado!');
+      onStageChange();
+    } catch {
+      toast('Erro ao atualizar responsável', 'error');
+    } finally {
+      setChangingUser(false);
     }
   }
 
@@ -186,6 +207,23 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
                 <ArchiveRestore size={12} /> Restaurar lead
               </button>
             )}
+          </div>
+
+          <div className="text-right">
+            <p className="text-xs text-slate-500 mb-1">Responsável</p>
+            <div className="flex items-center gap-1.5">
+              <Avatar name={lead.user?.name || '?'} size="sm" />
+              <select
+                value={lead.user?.id || ''}
+                onChange={e => handleUserChange(e.target.value)}
+                disabled={changingUser || users.length === 0}
+                className="text-sm font-medium px-3 py-1.5 border border-af-border rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent cursor-pointer disabled:opacity-50"
+              >
+                {users.map(u => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="text-right">
