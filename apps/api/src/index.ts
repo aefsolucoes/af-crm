@@ -15,7 +15,7 @@ import reportRoutes from './routes/reports';
 import webhookRoutes from './routes/webhooks';
 import settingsRoutes from './routes/settings';
 import whatsappQrRoutes from './routes/whatsapp-qr';
-import { setBaileysIO } from './services/baileys.service';
+import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -60,4 +60,6 @@ try {
 
 httpServer.listen(PORT, () => {
   console.log(`🚀 API AF CRM rodando em http://localhost:${PORT}`);
+  // Restore WhatsApp QR sessions after restart
+  restoreActiveSessions().catch(console.error);
 });
