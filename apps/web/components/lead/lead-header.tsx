@@ -3,10 +3,11 @@ import { LeadDetail, Stage } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency } from '@/lib/utils';
-import { ChevronRight, Building2, DollarSign, Trophy, XCircle, RotateCcw, X, Plus } from 'lucide-react';
+import { ChevronRight, Building2, DollarSign, Trophy, XCircle, RotateCcw, X, Plus, Archive, ArchiveRestore } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 interface LeadHeaderProps {
   lead: LeadDetail;
@@ -17,6 +18,23 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
   const [changing, setChanging] = useState(false);
   const [tagInput, setTagInput] = useState('');
   const [editingTags, setEditingTags] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const router = useRouter();
+
+  async function handleArchive(archive: boolean) {
+    if (archive && !confirm('Arquivar este lead? Ele não aparecerá mais no funil, mas pode ser restaurado depois.')) return;
+    setArchiving(true);
+    try {
+      await api.patch(`/api/leads/${lead.id}/archive`, { archived: archive });
+      toast(archive ? 'Lead arquivado' : 'Lead restaurado!');
+      if (archive) router.back();
+      else onStageChange();
+    } catch {
+      toast('Erro ao arquivar lead', 'error');
+    } finally {
+      setArchiving(false);
+    }
+  }
 
   async function handleStageChange(stageId: string) {
     setChanging(true);
@@ -126,7 +144,7 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
 
           {/* Status actions */}
           <div className="flex flex-col gap-1.5">
-            {lead.status !== 'WON' && (
+            {lead.status !== 'WON' && !lead.archived && (
               <button
                 onClick={() => handleStatusChange('WON')}
                 className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors"
@@ -134,7 +152,7 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
                 <Trophy size={12} /> Marcar Ganho
               </button>
             )}
-            {lead.status !== 'LOST' && (
+            {lead.status !== 'LOST' && !lead.archived && (
               <button
                 onClick={() => handleStatusChange('LOST')}
                 className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 rounded-lg transition-colors"
@@ -148,6 +166,24 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
                 className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-slate-50 text-slate-600 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors"
               >
                 <RotateCcw size={12} /> Reabrir
+              </button>
+            )}
+            {/* Arquivar / Restaurar */}
+            {!lead.archived ? (
+              <button
+                onClick={() => handleArchive(true)}
+                disabled={archiving}
+                className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors disabled:opacity-50"
+              >
+                <Archive size={12} /> Arquivar lead
+              </button>
+            ) : (
+              <button
+                onClick={() => handleArchive(false)}
+                disabled={archiving}
+                className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors disabled:opacity-50"
+              >
+                <ArchiveRestore size={12} /> Restaurar lead
               </button>
             )}
           </div>

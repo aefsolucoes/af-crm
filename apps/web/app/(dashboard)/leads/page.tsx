@@ -6,15 +6,15 @@ import api from '@/lib/api';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency, formatDate, isOverdue } from '@/lib/utils';
-import { AlertCircle, Plus } from 'lucide-react';
+import { AlertCircle, Plus, Archive } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import Link from 'next/link';
 import { useState } from 'react';
 import { LeadModal } from '@/components/kanban/lead-modal';
 
-async function fetchLeads(): Promise<Lead[]> {
-  const { data } = await api.get('/api/leads');
+async function fetchLeads(archived = false): Promise<Lead[]> {
+  const { data } = await api.get(`/api/leads${archived ? '?archived=true' : ''}`);
   return data;
 }
 
@@ -31,44 +31,68 @@ async function fetchContacts(): Promise<Contact[]> {
 export default function LeadsPage() {
   const [search, setSearch] = useState('');
   const [openAdd, setOpenAdd] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const queryClient = useQueryClient();
 
-  const { data: leads, isLoading } = useQuery({ queryKey: ['leads'], queryFn: fetchLeads });
+  const { data: leads, isLoading } = useQuery({
+    queryKey: ['leads', showArchived],
+    queryFn: () => fetchLeads(showArchived),
+  });
   const { data: pipelines } = useQuery({ queryKey: ['pipelines'], queryFn: fetchPipelines });
   const { data: contacts = [] } = useQuery({ queryKey: ['contacts'], queryFn: fetchContacts });
 
   const pipeline = pipelines?.[0];
 
-  // Extract unique users from leads
   const users: User[] = Array.from(
     new Map((leads || []).map((l) => [l.user.id, l.user as unknown as User])).values()
   );
 
-  const filtered = (leads || []).filter((l) =>
-    l.name.toLowerCase().includes(search.toLowerCase()) ||
-    l.company?.name.toLowerCase().includes(search.toLowerCase()) ||
-    l.contact?.name.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = (leads || []).filter((l) => {
+    const q = search.toLowerCase();
+    const cf = (l.customFields || {}) as Record<string, string>;
+    return (
+      l.name.toLowerCase().includes(q) ||
+      (cf.participante_1 || '').toLowerCase().includes(q) ||
+      (l.company?.name || '').toLowerCase().includes(q) ||
+      (l.contact?.name || '').toLowerCase().includes(q)
+    );
+  });
 
   function handleCreated() {
-    queryClient.invalidateQueries({ queryKey: ['leads'] });
+    queryClient.invalidateQueries({ queryKey: ['leads', false] });
     setOpenAdd(false);
   }
 
   return (
     <div className="flex flex-col h-full">
       <Topbar title="Leads" />
-      <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-af-border">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar leads..."
-          className="px-3 py-1.5 text-sm border border-af-border rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-af-accent"
-        />
-        <Button size="sm" onClick={() => setOpenAdd(true)}>
-          <Plus size={14} />
-          Novo Lead
-        </Button>
+      <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-af-border gap-4">
+        <div className="flex items-center gap-3">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar leads..."
+            className="px-3 py-1.5 text-sm border border-af-border rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-af-accent"
+          />
+          {/* Toggle arquivados */}
+          <button
+            onClick={() => setShowArchived(v => !v)}
+            className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+              showArchived
+                ? 'bg-amber-100 text-amber-700 border-amber-300'
+                : 'bg-white text-slate-500 border-af-border hover:bg-af-light'
+            }`}
+          >
+            <Archive size={13} />
+            {showArchived ? 'Arquivados' : 'Ver arquivados'}
+          </button>
+        </div>
+        {!showArchived && (
+          <Button size="sm" onClick={() => setOpenAdd(true)}>
+            <Plus size={14} />
+            Novo Lead
+          </Button>
+        )}
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-4 scrollbar-thin">

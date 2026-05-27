@@ -2,10 +2,11 @@ import { PrismaClient, LeadStatus } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-export async function getLeads(accountId: string, pipelineId?: string, stageId?: string) {
+export async function getLeads(accountId: string, pipelineId?: string, stageId?: string, archived = false) {
   return prisma.lead.findMany({
     where: {
       accountId,
+      archived,
       ...(pipelineId && { pipelineId }),
       ...(stageId && { stageId }),
     },

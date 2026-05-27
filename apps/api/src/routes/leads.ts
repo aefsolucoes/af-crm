@@ -1,10 +1,12 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
+import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead } from '../services/lead.service';
 
 const router = Router();
+const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 const createLeadSchema = z.object({
@@ -25,7 +27,8 @@ const stageSchema = z.object({ stageId: z.string() });
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
-    const leads = await getLeads(req.user!.accountId, req.query.pipelineId as string, req.query.stageId as string);
+    const archived = req.query.archived === 'true';
+    const leads = await getLeads(req.user!.accountId, req.query.pipelineId as string, req.query.stageId as string, archived);
     res.json(leads);
   } catch (err: unknown) {
     res.status(500).json({ error: 'Erro ao buscar leads' });
@@ -66,6 +69,20 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
     res.json(lead);
   } catch {
     res.status(500).json({ error: 'Erro ao mover lead' });
+  }
+});
+
+// PATCH /api/leads/:id/archive  — arquivar ou desarquivar
+router.patch('/:id/archive', async (req: AuthRequest, res: Response) => {
+  try {
+    const { archived } = req.body as { archived: boolean };
+    const lead = await prisma.lead.update({
+      where: { id: req.params.id },
+      data: { archived: archived ?? true },
+    });
+    res.json(lead);
+  } catch {
+    res.status(500).json({ error: 'Erro ao arquivar lead' });
   }
 });
 
