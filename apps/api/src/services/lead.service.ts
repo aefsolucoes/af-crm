@@ -14,6 +14,7 @@ export async function getLeads(accountId: string, pipelineId?: string, stageId?:
       user: { select: { id: true, name: true, email: true } },
       contact: true,
       company: true,
+      messages: { orderBy: { createdAt: 'desc' }, take: 1 },
       _count: { select: { messages: { where: { read: false, direction: 'INBOUND' } } } },
     },
     orderBy: { createdAt: 'desc' },

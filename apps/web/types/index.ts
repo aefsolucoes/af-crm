@@ -78,6 +78,7 @@ export interface Lead {
   customFields?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  messages?: Message[];
   _count?: { messages: number };
 }
 
