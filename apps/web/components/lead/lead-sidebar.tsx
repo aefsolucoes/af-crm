@@ -103,6 +103,8 @@ function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: F
 export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
   const [activeTab, setActiveTab] = useState('Principal');
   const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState(false);
+  const [valueInput, setValueInput] = useState(String(lead.value ?? 0));
   const [customValues, setCustomValues] = useState<Record<string, FieldValue>>(
     (lead.customFields as Record<string, FieldValue>) || {}
   );
@@ -227,11 +229,44 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
                 <span className="text-xs text-slate-500 flex-shrink-0 w-36">Usuário responsável</span>
                 <span className="text-xs font-medium text-slate-800 truncate">{lead.user.name}</span>
               </div>
-              <div className="flex items-center justify-between py-2.5 border-b border-slate-100">
+              <div className="flex items-center justify-between py-2.5 border-b border-slate-100 gap-2">
                 <span className="text-xs text-slate-500 flex-shrink-0 w-36">Valor da venda</span>
-                <span className="text-xs font-medium text-slate-800">
-                  {lead.value ? formatCurrency(lead.value) : 'R$ 0,00'}
-                </span>
+                {editingValue ? (
+                  <div className="flex items-center gap-1 flex-1">
+                    <input
+                      type="number"
+                      className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
+                      value={valueInput}
+                      onChange={e => setValueInput(e.target.value)}
+                      onKeyDown={async e => {
+                        if (e.key === 'Enter') {
+                          await api.put(`/api/leads/${lead.id}`, { value: parseFloat(valueInput) || 0 });
+                          setEditingValue(false);
+                          onRefresh();
+                        }
+                        if (e.key === 'Escape') setEditingValue(false);
+                      }}
+                      autoFocus
+                    />
+                    <button onClick={async () => {
+                      await api.put(`/api/leads/${lead.id}`, { value: parseFloat(valueInput) || 0 });
+                      setEditingValue(false);
+                      onRefresh();
+                    }} className="text-green-600 hover:text-green-700 flex-shrink-0">
+                      <Check size={12} />
+                    </button>
+                    <button onClick={() => setEditingValue(false)} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
+                      <X size={12} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setValueInput(String(lead.value ?? 0)); setEditingValue(true); }}
+                    className="text-xs font-medium text-slate-800 hover:text-af-mid transition-colors"
+                  >
+                    {lead.value ? formatCurrency(lead.value) : <span className="text-slate-300">...</span>}
+                  </button>
+                )}
               </div>
             </>
           )}
