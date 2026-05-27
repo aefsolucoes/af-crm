@@ -11,7 +11,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const fields = await prisma.fieldDefinition.findMany({
       where: { accountId: req.user!.accountId },
-      orderBy: [{ tab: 'asc' }, { order: 'asc' }],
+      orderBy: [{ createdAt: 'asc' }, { order: 'asc' }],
     });
     res.json(fields);
   } catch {

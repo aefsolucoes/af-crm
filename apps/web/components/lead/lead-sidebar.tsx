@@ -122,7 +122,10 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
     },
   });
 
-  const allTabs = ['Principal', ...Array.from(new Set(fieldDefs.filter(f => f.tab !== 'Principal').map(f => f.tab)))];
+  // preserva a ordem de criação vinda da API
+  const allTabs = ['Principal', ...fieldDefs
+    .filter(f => f.tab !== 'Principal')
+    .reduce<string[]>((acc, f) => { if (!acc.includes(f.tab)) acc.push(f.tab); return acc; }, [])];
   const fieldsForTab = fieldDefs.filter(f => f.tab === activeTab).sort((a, b) => a.order - b.order);
 
   const saveFieldValue = async (key: string, value: string) => {
