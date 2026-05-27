@@ -1,7 +1,10 @@
 'use client';
-import { Task } from '@/types';
-import { formatDate, isOverdue } from '@/lib/utils';
-import { CheckSquare, Square, Clock, AlertCircle, Plus } from 'lucide-react';
+import { Note, Task, NoteType } from '@/types';
+import { formatDate, formatDateTime, isOverdue } from '@/lib/utils';
+import {
+  CheckSquare, Square, Clock, AlertCircle, Plus,
+  FileText, Phone, Mail, ArrowRightLeft, StickyNote, ListChecks,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
@@ -11,15 +14,41 @@ import { useAuthStore } from '@/store/auth.store';
 
 interface LeadTasksProps {
   tasks: Task[];
+  notes: Note[];
   leadId: string;
   onRefresh: () => void;
 }
 
-export function LeadTasks({ tasks, leadId, onRefresh }: LeadTasksProps) {
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ title: '', dueAt: '' });
-  const [saving, setSaving] = useState(false);
+const NOTE_ICONS: Record<NoteType, React.ReactNode> = {
+  COMMENT: <FileText size={13} />,
+  CALL: <Phone size={13} />,
+  EMAIL: <Mail size={13} />,
+  STAGE_CHANGE: <ArrowRightLeft size={13} />,
+};
+
+const NOTE_LABELS: Record<NoteType, string> = {
+  COMMENT: 'Nota',
+  CALL: 'Ligação',
+  EMAIL: 'E-mail',
+  STAGE_CHANGE: 'Mudança de estágio',
+};
+
+type PanelTab = 'tasks' | 'notes';
+
+export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
+  const [activeTab, setActiveTab] = useState<PanelTab>('tasks');
   const { user } = useAuthStore();
+
+  // ── Tarefas ──
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  const [taskForm, setTaskForm] = useState({ title: '', dueAt: '' });
+  const [savingTask, setSavingTask] = useState(false);
+
+  // ── Notas ──
+  const [showNoteForm, setShowNoteForm] = useState(false);
+  const [noteContent, setNoteContent] = useState('');
+  const [noteType, setNoteType] = useState<NoteType>('COMMENT');
+  const [savingNote, setSavingNote] = useState(false);
 
   async function handleToggle(task: Task) {
     try {
@@ -31,99 +60,252 @@ export function LeadTasks({ tasks, leadId, onRefresh }: LeadTasksProps) {
     }
   }
 
-  async function handleCreate(e: React.FormEvent) {
+  async function handleCreateTask(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.title || !form.dueAt) return;
-    setSaving(true);
+    if (!taskForm.title || !taskForm.dueAt) return;
+    setSavingTask(true);
     try {
-      await api.post('/api/tasks', { title: form.title, dueAt: new Date(form.dueAt).toISOString(), userId: user?.id || tasks[0]?.userId || '', leadId });
+      await api.post('/api/tasks', {
+        title: taskForm.title,
+        dueAt: new Date(taskForm.dueAt).toISOString(),
+        userId: user?.id || tasks[0]?.userId || '',
+        leadId,
+      });
       toast('Tarefa criada!');
-      setForm({ title: '', dueAt: '' });
-      setShowForm(false);
+      setTaskForm({ title: '', dueAt: '' });
+      setShowTaskForm(false);
       onRefresh();
     } catch {
       toast('Erro ao criar tarefa', 'error');
     } finally {
-      setSaving(false);
+      setSavingTask(false);
     }
   }
 
-  const pending = tasks.filter((t) => !t.done);
-  const done = tasks.filter((t) => t.done);
+  async function handleAddNote() {
+    if (!noteContent.trim()) return;
+    setSavingNote(true);
+    try {
+      await api.post('/api/notes', { leadId, content: noteContent.trim(), type: noteType });
+      toast('Nota adicionada!');
+      setNoteContent('');
+      setShowNoteForm(false);
+      onRefresh();
+    } catch {
+      toast('Erro ao adicionar nota', 'error');
+    } finally {
+      setSavingNote(false);
+    }
+  }
+
+  const pending = tasks.filter(t => !t.done);
+  const done = tasks.filter(t => t.done);
+  const sortedNotes = [...notes].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-af-border">
-        <h3 className="text-sm font-semibold text-slate-700">Tarefas</h3>
-        <Button size="sm" variant="secondary" onClick={() => setShowForm(!showForm)}>
-          <Plus size={12} />
-        </Button>
+
+      {/* ── Tabs ── */}
+      <div className="flex border-b border-af-border bg-white">
+        <button
+          onClick={() => setActiveTab('tasks')}
+          className={cn(
+            'flex-1 flex items-center justify-center gap-1.5 py-3 text-xs font-semibold transition-colors border-b-2',
+            activeTab === 'tasks'
+              ? 'border-af-mid text-af-mid'
+              : 'border-transparent text-slate-400 hover:text-slate-600'
+          )}
+        >
+          <ListChecks size={14} />
+          Tarefas
+          {pending.length > 0 && (
+            <span className="bg-af-mid text-white text-[10px] px-1.5 py-0.5 rounded-full leading-none">
+              {pending.length}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setActiveTab('notes')}
+          className={cn(
+            'flex-1 flex items-center justify-center gap-1.5 py-3 text-xs font-semibold transition-colors border-b-2',
+            activeTab === 'notes'
+              ? 'border-af-mid text-af-mid'
+              : 'border-transparent text-slate-400 hover:text-slate-600'
+          )}
+        >
+          <StickyNote size={14} />
+          Notas
+          {notes.length > 0 && (
+            <span className="bg-slate-200 text-slate-600 text-[10px] px-1.5 py-0.5 rounded-full leading-none">
+              {notes.length}
+            </span>
+          )}
+        </button>
       </div>
 
-      {showForm && (
-        <form onSubmit={handleCreate} className="px-4 py-3 bg-af-light border-b border-af-border space-y-2">
-          <input
-            value={form.title}
-            onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
-            placeholder="Título da tarefa"
-            className="w-full text-xs px-2 py-1.5 border border-af-border rounded bg-white focus:outline-none focus:ring-1 focus:ring-af-accent"
-          />
-          <input
-            type="datetime-local"
-            value={form.dueAt}
-            onChange={(e) => setForm((p) => ({ ...p, dueAt: e.target.value }))}
-            className="w-full text-xs px-2 py-1.5 border border-af-border rounded bg-white focus:outline-none focus:ring-1 focus:ring-af-accent"
-          />
-          <Button type="submit" size="sm" loading={saving} className="w-full">Criar</Button>
-        </form>
+      {/* ── TAREFAS ── */}
+      {activeTab === 'tasks' && (
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-af-border bg-white">
+            <span className="text-xs text-slate-500">{pending.length} pendente{pending.length !== 1 ? 's' : ''}</span>
+            <Button size="sm" variant="secondary" onClick={() => setShowTaskForm(!showTaskForm)}>
+              <Plus size={12} />
+              Nova tarefa
+            </Button>
+          </div>
+
+          {showTaskForm && (
+            <form onSubmit={handleCreateTask} className="px-4 py-3 bg-af-light border-b border-af-border space-y-2">
+              <input
+                value={taskForm.title}
+                onChange={e => setTaskForm(p => ({ ...p, title: e.target.value }))}
+                placeholder="Título da tarefa"
+                className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-af-accent"
+              />
+              <input
+                type="datetime-local"
+                value={taskForm.dueAt}
+                onChange={e => setTaskForm(p => ({ ...p, dueAt: e.target.value }))}
+                className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-af-accent"
+              />
+              <div className="flex gap-2">
+                <Button type="button" size="sm" variant="secondary" onClick={() => setShowTaskForm(false)}>Cancelar</Button>
+                <Button type="submit" size="sm" loading={savingTask} className="flex-1">Criar</Button>
+              </div>
+            </form>
+          )}
+
+          <div className="flex-1 overflow-y-auto scrollbar-thin">
+            {pending.map(task => {
+              const overdue = isOverdue(task.dueAt);
+              return (
+                <div
+                  key={task.id}
+                  className={cn(
+                    'flex items-start gap-2.5 px-4 py-3 border-b border-af-border/50 hover:bg-af-light/50',
+                    overdue && 'bg-red-50/40'
+                  )}
+                >
+                  <button onClick={() => handleToggle(task)} className="mt-0.5 flex-shrink-0 text-slate-300 hover:text-af-mid transition-colors">
+                    <Square size={15} />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-slate-800 font-medium leading-snug">{task.title}</p>
+                    <div className={cn('flex items-center gap-1 text-xs mt-1', overdue ? 'text-red-500' : 'text-slate-400')}>
+                      {overdue ? <AlertCircle size={10} /> : <Clock size={10} />}
+                      {formatDate(task.dueAt)}
+                      {overdue && <span className="font-semibold">· Vencida</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {done.length > 0 && (
+              <>
+                <div className="px-4 py-2 bg-slate-50">
+                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Concluídas ({done.length})</p>
+                </div>
+                {done.map(task => (
+                  <div key={task.id} className="flex items-start gap-2.5 px-4 py-3 border-b border-af-border/50 opacity-50">
+                    <button onClick={() => handleToggle(task)} className="mt-0.5 flex-shrink-0 text-green-500">
+                      <CheckSquare size={15} />
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-slate-500 line-through leading-snug">{task.title}</p>
+                      <div className="flex items-center gap-1 text-xs text-slate-400 mt-1">
+                        <Clock size={10} />
+                        {formatDate(task.dueAt)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {tasks.length === 0 && !showTaskForm && (
+              <div className="flex flex-col items-center justify-center h-32 text-slate-400 text-xs gap-2">
+                <ListChecks size={20} className="opacity-40" />
+                <span>Nenhuma tarefa</span>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
-      <div className="flex-1 overflow-y-auto scrollbar-thin">
-        {pending.map((task) => {
-          const overdue = isOverdue(task.dueAt);
-          return (
-            <div key={task.id} className={cn('flex items-start gap-2 px-4 py-3 border-b border-af-border/50 hover:bg-af-light/50 group', overdue && !task.done ? 'bg-red-50/50' : '')}>
-              <button onClick={() => handleToggle(task)} className="mt-0.5 flex-shrink-0 text-slate-400 hover:text-af-mid">
-                <Square size={15} />
-              </button>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-slate-800 font-medium">{task.title}</p>
-                <div className={cn('flex items-center gap-1 text-xs mt-0.5', overdue ? 'text-red-500' : 'text-slate-400')}>
-                  {overdue ? <AlertCircle size={11} /> : <Clock size={11} />}
-                  {formatDate(task.dueAt)}
-                  {overdue && <span className="font-medium">· Vencida</span>}
+      {/* ── NOTAS ── */}
+      {activeTab === 'notes' && (
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-af-border bg-white">
+            <span className="text-xs text-slate-500">{notes.length} nota{notes.length !== 1 ? 's' : ''}</span>
+            <Button size="sm" variant="secondary" onClick={() => setShowNoteForm(!showNoteForm)}>
+              <Plus size={12} />
+              Nova nota
+            </Button>
+          </div>
+
+          {showNoteForm && (
+            <div className="px-4 py-3 bg-af-light border-b border-af-border space-y-2">
+              <div className="flex gap-1.5 flex-wrap">
+                {(['COMMENT', 'CALL', 'EMAIL'] as NoteType[]).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setNoteType(t)}
+                    className={cn(
+                      'flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg transition-colors',
+                      noteType === t ? 'bg-af-mid text-white' : 'bg-white text-slate-600 border border-af-border hover:bg-slate-50'
+                    )}
+                  >
+                    {NOTE_ICONS[t]}
+                    {NOTE_LABELS[t]}
+                  </button>
+                ))}
+              </div>
+              <textarea
+                value={noteContent}
+                onChange={e => setNoteContent(e.target.value)}
+                placeholder="Escreva sua nota aqui..."
+                className="w-full px-3 py-2 text-xs border border-af-border rounded-lg bg-white resize-none focus:outline-none focus:ring-2 focus:ring-af-accent"
+                rows={4}
+              />
+              <div className="flex gap-2">
+                <Button size="sm" variant="secondary" onClick={() => setShowNoteForm(false)}>Cancelar</Button>
+                <Button size="sm" loading={savingNote} onClick={handleAddNote} className="flex-1">Salvar</Button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-3 space-y-3">
+            {sortedNotes.map(note => (
+              <div key={note.id} className="bg-white border border-af-border rounded-xl p-3 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <span className={cn(
+                    'flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md',
+                    note.type === 'COMMENT' && 'bg-slate-100 text-slate-600',
+                    note.type === 'CALL' && 'bg-green-50 text-green-700',
+                    note.type === 'EMAIL' && 'bg-blue-50 text-blue-700',
+                    note.type === 'STAGE_CHANGE' && 'bg-purple-50 text-purple-700',
+                  )}>
+                    {NOTE_ICONS[note.type]}
+                    {NOTE_LABELS[note.type]}
+                  </span>
+                  <span className="text-[10px] text-slate-400">{formatDateTime(note.createdAt)}</span>
                 </div>
+                <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">{note.content}</p>
               </div>
-            </div>
-          );
-        })}
+            ))}
 
-        {done.length > 0 && (
-          <div className="px-4 py-2">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Concluídas</p>
-          </div>
-        )}
-        {done.map((task) => (
-          <div key={task.id} className="flex items-start gap-2 px-4 py-3 border-b border-af-border/50 opacity-60">
-            <button onClick={() => handleToggle(task)} className="mt-0.5 flex-shrink-0 text-green-500">
-              <CheckSquare size={15} />
-            </button>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-slate-500 line-through">{task.title}</p>
-              <div className="flex items-center gap-1 text-xs text-slate-400 mt-0.5">
-                <Clock size={11} />
-                {formatDate(task.dueAt)}
+            {notes.length === 0 && !showNoteForm && (
+              <div className="flex flex-col items-center justify-center h-32 text-slate-400 text-xs gap-2">
+                <StickyNote size={20} className="opacity-40" />
+                <span>Nenhuma nota</span>
               </div>
-            </div>
+            )}
           </div>
-        ))}
-
-        {tasks.length === 0 && (
-          <div className="flex items-center justify-center h-24 text-slate-400 text-xs">
-            Nenhuma tarefa
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
