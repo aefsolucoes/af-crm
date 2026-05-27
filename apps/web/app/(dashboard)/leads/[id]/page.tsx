@@ -3,6 +3,10 @@ import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { LeadHeader } from '@/components/lead/lead-header';
+
+export async function generateStaticParams() {
+  return [];
+}
 import { LeadTimeline } from '@/components/lead/lead-timeline';
 import { LeadTasks } from '@/components/lead/lead-tasks';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
