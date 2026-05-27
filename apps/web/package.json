@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build && cp out/index.html out/404.html",
+    "build": "next build && cp out/leads/placeholder/index.html out/404.html",
     "start": "next start",
     "lint": "next lint"
   },
