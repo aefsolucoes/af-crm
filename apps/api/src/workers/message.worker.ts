@@ -29,7 +29,7 @@ export function startMessageWorker() {
 
   conn.connect().then(() => {
     redisAvailable = true;
-    messageQueue = new Queue('messages', { connection: conn });
+    messageQueue = new Queue('messages', { connection: conn as any });
 
     const worker = new Worker(
       'messages',
@@ -37,7 +37,7 @@ export function startMessageWorker() {
         const { channel, content, leadId } = job.data;
         console.log(`[Worker] Enviando mensagem via ${channel} para lead ${leadId}: ${content}`);
       },
-      { connection: conn }
+      { connection: conn as any }
     );
 
     worker.on('completed', (job) => {
