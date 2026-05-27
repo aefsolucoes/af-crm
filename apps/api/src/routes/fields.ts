@@ -1,9 +1,10 @@
 import { Router, Response } from 'express';
-import { AuthRequest, authenticate } from '../middleware/auth';
-import prisma from '../lib/prisma';
+import { PrismaClient } from '@prisma/client';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 const router = Router();
-router.use(authenticate);
+const prisma = new PrismaClient();
+router.use(authMiddleware);
 
 // GET /api/fields
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -31,7 +32,6 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       .replace(/\s+/g, '_')
       .replace(/[^a-z0-9_]/g, '');
 
-    // ensure key uniqueness per account
     const existing = await prisma.fieldDefinition.findFirst({
       where: { accountId: req.user!.accountId, key },
     });
