@@ -41,11 +41,20 @@ async function restoreSessionFiles(accountId: string): Promise<string> {
   const row = await prisma.baileysSession.findUnique({ where: { accountId } });
   if (row?.data && typeof row.data === 'object') {
     const files = row.data as Record<string, string>;
+    // Clear dir first to avoid mixing old and new files
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
     for (const [name, content] of Object.entries(files)) {
       if (typeof content === 'string') {
         fs.writeFileSync(path.join(dir, name), content, 'utf-8');
       }
     }
+    console.log(`[Baileys] Sessão restaurada do DB (${Object.keys(files).length} arquivos)`);
+  } else {
+    // No DB session — wipe any leftover temp files to force fresh QR
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    console.log('[Baileys] Nenhuma sessão no DB — diretório limpo para QR novo');
   }
   return dir;
 }
@@ -271,9 +280,13 @@ export async function disconnectQR(accountId: string) {
   const conn = connections.get(accountId);
   if (conn?.sock) {
     try { await conn.sock.logout(); } catch { /* ignore */ }
-    connections.delete(accountId);
   }
+  connections.delete(accountId);
   await prisma.baileysSession.deleteMany({ where: { accountId } });
+  // Also wipe temp filesystem so stale credentials don't prevent QR generation
+  const authDir = getAuthDir(accountId);
+  fs.rmSync(authDir, { recursive: true, force: true });
+  console.log('[Baileys] Sessão limpa (DB + filesystem)');
 }
 
 export async function restoreActiveSessions() {
