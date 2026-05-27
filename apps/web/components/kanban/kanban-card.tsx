@@ -41,7 +41,10 @@ export function KanbanCard({ lead }: KanbanCardProps) {
 
   const lastMsg = lead.messages?.[0];
   const unreadCount = lead._count?.messages ?? 0;
-  const contactName = lead.contact?.name || lead.name;
+  const cf = (lead.customFields || {}) as Record<string, string>;
+  // Prioridade: Participante 1 → nome do contato → nome do lead
+  const displayName = cf.participante_1 || lead.contact?.name || lead.name;
+  const contactName = displayName;
   const channelColor = lastMsg ? CHANNEL_COLORS[lastMsg.channel] : undefined;
 
   return (
@@ -73,7 +76,7 @@ export function KanbanCard({ lead }: KanbanCardProps) {
                   className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2 hover:text-af-mid transition-colors"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  {lead.name}
+                  {displayName}
                 </Link>
                 {unreadCount > 0 && (
                   <span className="flex-shrink-0 text-xs bg-af-mid text-white px-1.5 py-0.5 rounded-full min-w-[20px] text-center leading-tight font-medium">
