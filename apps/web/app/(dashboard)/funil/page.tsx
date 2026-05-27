@@ -9,7 +9,7 @@ import { usePipelineStore } from '@/store/pipeline.store';
 import { LeadModal } from '@/components/kanban/lead-modal';
 import { Pipeline, Lead, Contact, User } from '@/types';
 import api from '@/lib/api';
-import { Plus, RefreshCw } from 'lucide-react';
+import { Plus, RefreshCw, Search, X } from 'lucide-react';
 
 async function fetchPipelines(): Promise<Pipeline[]> {
   const { data } = await api.get('/api/pipelines');
@@ -34,6 +34,7 @@ async function fetchUsers(): Promise<User[]> {
 export default function FunilPage() {
   const { leads, setLeads } = usePipelineStore();
   const [openAddLead, setOpenAddLead] = useState(false);
+  const [search, setSearch] = useState('');
 
   const { data: pipelines, isLoading: loadingPipelines } = useQuery({ queryKey: ['pipelines'], queryFn: fetchPipelines });
   const pipeline = pipelines?.[0];
@@ -50,7 +51,19 @@ export default function FunilPage() {
     if (rawLeads) setLeads(rawLeads);
   }, [rawLeads, setLeads]);
 
-  const displayLeads = leads.length > 0 ? leads : rawLeads || [];
+  const allLeads = leads.length > 0 ? leads : rawLeads || [];
+
+  const displayLeads = search.trim()
+    ? allLeads.filter(l => {
+        const q = search.toLowerCase();
+        return (
+          l.name.toLowerCase().includes(q) ||
+          (l.contact?.name ?? '').toLowerCase().includes(q) ||
+          (l.contact?.phone ?? '').toLowerCase().includes(q) ||
+          l.tags.some(t => t.toLowerCase().includes(q))
+        );
+      })
+    : allLeads;
 
   // Extract unique users from leads
   const users: User[] = Array.from(
@@ -63,15 +76,39 @@ export default function FunilPage() {
     <div className="flex flex-col h-full">
       <Topbar title="Funil de Vendas" subtitle={pipeline?.name} />
 
-      <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-af-border">
-        <div className="flex items-center gap-4">
+      <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-af-border gap-4">
+        <div className="flex items-center gap-3 flex-1">
           {pipeline && (
-            <select className="text-sm border border-af-border rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent">
+            <select className="text-sm border border-af-border rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent flex-shrink-0">
               {pipelines?.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}
+          {/* Busca */}
+          <div className="relative flex-1 max-w-sm">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Buscar por nome, contato, telefone ou tag..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full pl-8 pr-8 py-1.5 text-sm border border-af-border rounded-lg bg-af-light text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent placeholder:text-slate-400"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+          {search && (
+            <span className="text-xs text-slate-500 flex-shrink-0">
+              {displayLeads.length} resultado{displayLeads.length !== 1 ? 's' : ''}
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <Button variant="ghost" size="sm" onClick={() => refetch()}>
             <RefreshCw size={14} />
             Atualizar
