@@ -25,6 +25,8 @@ app.use(cors({
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
     if (origin.endsWith('.netlify.app')) return cb(null, true);
+    if (origin.endsWith('.pages.dev')) return cb(null, true);
+    if (origin.endsWith('.aefsolucoesfinanceiras.com.br')) return cb(null, true);
     if (allowedOrigins.length === 0 || allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
     cb(new Error('Not allowed by CORS'));
   },
