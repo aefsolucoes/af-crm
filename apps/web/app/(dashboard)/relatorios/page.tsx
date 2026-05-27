@@ -3,9 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { ReportSummary, ReportConversion } from '@/types';
 import api from '@/lib/api';
-import { formatCurrency } from '@/lib/utils';
-import { TrendingUp, Users, Target, Clock } from 'lucide-react';
+import { formatCurrency, formatDate } from '@/lib/utils';
+import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useState } from 'react';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement,
   ArcElement, Title, Tooltip, Legend,
@@ -19,6 +20,15 @@ const CHART_OPTIONS = {
   maintainAspectRatio: false,
   plugins: { legend: { display: false } },
 };
+
+// Datas padrão: primeiro e último dia do mês atual
+function defaultFrom() {
+  const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+}
+function defaultTo() {
+  const d = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 async function fetchSummary(): Promise<ReportSummary> {
   const { data } = await api.get('/api/reports/summary');
@@ -50,6 +60,17 @@ function KpiCard({ title, value, subtitle, icon: Icon, color }: { title: string;
 export default function RelatoriosPage() {
   const { data: summary, isLoading: loadingSummary } = useQuery({ queryKey: ['reports-summary'], queryFn: fetchSummary });
   const { data: conversion, isLoading: loadingConversion } = useQuery({ queryKey: ['reports-conversion'], queryFn: fetchConversion });
+
+  // Relatório Fechados
+  const [from, setFrom] = useState(defaultFrom());
+  const [to, setTo] = useState(defaultTo());
+  const { data: fechados, isLoading: loadingFechados, refetch: refetchFechados } = useQuery({
+    queryKey: ['reports-fechados', from, to],
+    queryFn: async () => {
+      const { data } = await api.get(`/api/reports/fechados?from=${from}&to=${to}`);
+      return data as { leads: any[]; total: number; totalValue: number };
+    },
+  });
 
   const isLoading = loadingSummary || loadingConversion;
 
@@ -177,6 +198,92 @@ export default function RelatoriosPage() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* ── Relatório: Fechados em Vendas ── */}
+        <div className="bg-white rounded-xl border border-af-border shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-af-border">
+            <div className="flex items-center gap-2">
+              <Trophy size={16} className="text-emerald-500" />
+              <h3 className="text-sm font-semibold text-slate-700">Fechados em Vendas — por período</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              <Calendar size={13} className="text-slate-400" />
+              <input
+                type="date" value={from} onChange={e => setFrom(e.target.value)}
+                className="text-xs px-2 py-1 border border-af-border rounded-lg focus:outline-none focus:ring-1 focus:ring-af-accent"
+              />
+              <span className="text-xs text-slate-400">até</span>
+              <input
+                type="date" value={to} onChange={e => setTo(e.target.value)}
+                className="text-xs px-2 py-1 border border-af-border rounded-lg focus:outline-none focus:ring-1 focus:ring-af-accent"
+              />
+              <button
+                onClick={() => refetchFechados()}
+                className="text-xs px-3 py-1 bg-af-mid text-white rounded-lg hover:bg-af-dark"
+              >
+                Filtrar
+              </button>
+            </div>
+          </div>
+
+          {/* KPIs do período */}
+          {!loadingFechados && fechados && (
+            <div className="grid grid-cols-2 gap-px bg-af-border border-b border-af-border">
+              <div className="bg-white px-5 py-3 text-center">
+                <p className="text-2xl font-bold text-slate-900">{fechados.total}</p>
+                <p className="text-xs text-slate-500 mt-0.5">clientes fechados</p>
+              </div>
+              <div className="bg-white px-5 py-3 text-center">
+                <p className="text-2xl font-bold text-emerald-600">{formatCurrency(fechados.totalValue)}</p>
+                <p className="text-xs text-slate-500 mt-0.5">em crédito total</p>
+              </div>
+            </div>
+          )}
+
+          {/* Tabela */}
+          {loadingFechados ? (
+            <div className="p-5 space-y-3">
+              {[1,2,3].map(i => <Skeleton key={i} className="h-10" />)}
+            </div>
+          ) : fechados?.leads.length === 0 ? (
+            <div className="flex items-center justify-center py-10 text-slate-400 text-sm">
+              Nenhum lead fechado neste período
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-af-border text-xs text-slate-500 font-semibold uppercase tracking-wide">
+                    <th className="text-left px-5 py-3">Cliente</th>
+                    <th className="text-left px-4 py-3">Contato</th>
+                    <th className="text-left px-4 py-3">Consultor</th>
+                    <th className="text-right px-4 py-3">Valor</th>
+                    <th className="text-right px-5 py-3">Data</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-af-border">
+                  {fechados?.leads.map((lead: any) => (
+                    <tr key={lead.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="px-5 py-3 font-medium text-slate-800">
+                        {(lead.customFields as any)?.participante_1 || lead.name}
+                      </td>
+                      <td className="px-4 py-3 text-slate-500">
+                        {lead.contact?.phone || lead.contact?.email || '—'}
+                      </td>
+                      <td className="px-4 py-3 text-slate-500">{lead.user?.name || '—'}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-emerald-600">
+                        {lead.value ? formatCurrency(lead.value) : '—'}
+                      </td>
+                      <td className="px-5 py-3 text-right text-slate-400 text-xs">
+                        {formatDate(lead.updatedAt)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         {/* Lead sources */}

@@ -67,6 +67,52 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
   try {
     const lead = await updateLeadStage(req.params.id, req.user!.accountId, req.body.stageId);
     res.json(lead);
+
+    // ── Auto-migração: se movido para "Fechado" no pipeline "Vendas" ──────────
+    try {
+      const stage = await prisma.stage.findUnique({
+        where: { id: req.body.stageId },
+        include: { pipeline: true },
+      });
+      if (stage?.name === 'Fechado' && stage.pipeline.name === 'Vendas') {
+        const fechamento = await prisma.pipeline.findFirst({
+          where: { accountId: req.user!.accountId, name: 'Fechamento' },
+          include: { stages: { orderBy: { order: 'asc' } } },
+        });
+        const targetStage = fechamento?.stages.find(s => s.name === 'Documentação Recebida') || fechamento?.stages[0];
+        if (fechamento && targetStage) {
+          const fullLead = await prisma.lead.findUnique({ where: { id: req.params.id } });
+          if (fullLead) {
+            const newLead = await prisma.lead.create({
+              data: {
+                name: fullLead.name,
+                value: fullLead.value ?? undefined,
+                contactId: fullLead.contactId ?? undefined,
+                companyId: fullLead.companyId ?? undefined,
+                userId: fullLead.userId,
+                pipelineId: fechamento.id,
+                stageId: targetStage.id,
+                accountId: fullLead.accountId,
+                tags: fullLead.tags,
+                customFields: fullLead.customFields ?? undefined,
+                notes: {
+                  create: {
+                    content: `Card criado automaticamente ao fechar em Vendas.`,
+                    type: 'COMMENT',
+                  },
+                },
+              },
+            });
+            // Notifica via Socket.io
+            const io = (req as any).app.get('io');
+            if (io) io.to(`account_${req.user!.accountId}`).emit('new_lead', { lead: newLead });
+            console.log(`[Auto-migração] Lead "${fullLead.name}" → Fechamento (${targetStage.name})`);
+          }
+        }
+      }
+    } catch (migErr) {
+      console.error('[Auto-migração] Erro:', migErr);
+    }
   } catch {
     res.status(500).json({ error: 'Erro ao mover lead' });
   }

@@ -88,4 +88,48 @@ router.get('/conversion', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /api/reports/fechados?from=YYYY-MM-DD&to=YYYY-MM-DD
+router.get('/fechados', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const now = new Date();
+
+    const fromDate = req.query.from
+      ? new Date(req.query.from as string)
+      : new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const toDate = req.query.to
+      ? new Date(req.query.to as string)
+      : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+    // Encontra pipeline Vendas e estágio Fechado
+    const vendas = await prisma.pipeline.findFirst({
+      where: { accountId, name: 'Vendas' },
+      include: { stages: true },
+    });
+    const fechadoStage = vendas?.stages.find(s => s.name === 'Fechado');
+    if (!fechadoStage) return res.json({ leads: [], total: 0, totalValue: 0 });
+
+    const leads = await prisma.lead.findMany({
+      where: {
+        accountId,
+        stageId: fechadoStage.id,
+        updatedAt: { gte: fromDate, lte: toDate },
+      },
+      include: {
+        contact: true,
+        user: { select: { id: true, name: true } },
+        stage: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const totalValue = leads.reduce((sum, l) => sum + (l.value || 0), 0);
+
+    res.json({ leads, total: leads.length, totalValue });
+  } catch {
+    res.status(500).json({ error: 'Erro ao gerar relatório de fechados' });
+  }
+});
+
 export default router;
