@@ -13,6 +13,9 @@ router.post('/connect', async (req: AuthRequest, res: Response) => {
   const { status } = getQRStatus(req.user!.accountId);
   if (status === 'connected') return res.json({ status: 'connected' });
 
+  // Always clear old session before connecting to force fresh QR generation
+  await disconnectQR(req.user!.accountId).catch(() => {});
+
   startQRConnection(req.user!.accountId).catch(console.error);
   res.json({ status: 'connecting' });
 });

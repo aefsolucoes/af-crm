@@ -143,15 +143,21 @@ export async function startQRConnection(accountId: string): Promise<void> {
         c.qr = null;
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
+        // Auth failure codes: 401 (Unauthorized), 403 (Forbidden), 515 (restart required)
+        const authFailed = loggedOut || statusCode === 401 || statusCode === 403 || statusCode === 515;
         globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'disconnected' });
+        console.log(`[Baileys] Conexão fechada. statusCode=${statusCode} loggedOut=${loggedOut}`);
 
-        if (!loggedOut) {
-          console.log('[Baileys] Reconectando em 5s...');
-          setTimeout(() => startQRConnection(accountId), 5000);
-        } else {
+        if (authFailed) {
+          // Clear invalid session so next connect generates fresh QR
           connections.delete(accountId);
           await prisma.baileysSession.deleteMany({ where: { accountId } });
           fs.rmSync(authDir, { recursive: true, force: true });
+          console.log('[Baileys] Sessão inválida removida.');
+        } else {
+          // Transient error — reconnect after delay
+          console.log('[Baileys] Reconectando em 5s...');
+          setTimeout(() => startQRConnection(accountId), 5000);
         }
       }
 
