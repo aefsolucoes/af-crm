@@ -122,21 +122,47 @@ router.post('/setup', async (req: AuthRequest, res: Response) => {
       log.push(`Apagado: "${p.name}"`);
     }
 
-    // Cria "Fechamento" se não existir
-    const exists = await prisma.pipeline.findFirst({
-      where: { accountId: req.user!.accountId, name: NEW_PIPELINE.name },
-    });
-    if (exists) {
-      log.push(`Já existe: "${NEW_PIPELINE.name}"`);
-    } else {
-      await prisma.pipeline.create({
-        data: {
-          name: NEW_PIPELINE.name,
-          accountId: req.user!.accountId,
-          stages: { create: NEW_PIPELINE.stages },
-        },
+    // Cria pipelines padrão se não existirem
+    const EXTRA_PIPELINES = [
+      {
+        name: 'Fechamento',
+        stages: [
+          { order: 1, name: 'Documentação Recebida', color: '#3b82f6' },
+          { order: 2, name: 'Crédito em Análise',    color: '#f59e0b' },
+          { order: 3, name: 'Crédito Aprovado',       color: '#10b981' },
+          { order: 4, name: 'Vistoria do Imóvel',     color: '#8b5cf6' },
+          { order: 5, name: 'Análise Jurídica',        color: '#f97316' },
+          { order: 6, name: 'Registro em Cartório',    color: '#ef4444' },
+          { order: 7, name: 'Pagamento ao Vendedor',   color: '#059669' },
+        ],
+      },
+      {
+        name: 'Follow Up',
+        stages: [
+          { order: 1, name: 'Remarketing',        color: '#6366f1' },
+          { order: 2, name: 'Promoção Enviada',   color: '#f59e0b' },
+          { order: 3, name: 'Retomou Interesse',  color: '#10b981' },
+          { order: 4, name: 'Descartado',         color: '#94a3b8' },
+        ],
+      },
+    ];
+
+    for (const pl of EXTRA_PIPELINES) {
+      const exists = await prisma.pipeline.findFirst({
+        where: { accountId: req.user!.accountId, name: pl.name },
       });
-      log.push(`Criado: "${NEW_PIPELINE.name}" com ${NEW_PIPELINE.stages.length} estágios`);
+      if (exists) {
+        log.push(`Já existe: "${pl.name}"`);
+      } else {
+        await prisma.pipeline.create({
+          data: {
+            name: pl.name,
+            accountId: req.user!.accountId,
+            stages: { create: pl.stages },
+          },
+        });
+        log.push(`Criado: "${pl.name}" com ${pl.stages.length} estágios`);
+      }
     }
 
     res.json({ success: true, log });

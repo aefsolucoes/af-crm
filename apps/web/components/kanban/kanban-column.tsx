@@ -20,6 +20,11 @@ const STAGE_DESCRIPTIONS: Record<string, string> = {
   'Proposta Enviada':        'Proposta enviada — aguardando aprovação',
   'Aguardando Documentação': 'Aprovado — aguardando envio dos documentos',
   'Fechado':                 'Documentação encaminhada — concluído',
+  // Pipeline Follow Up
+  'Remarketing':       'Entrou após parar no funil de Vendas',
+  'Promoção Enviada':  'Oferta / condição especial enviada',
+  'Retomou Interesse': 'Reagiu — voltando para o funil de Vendas',
+  'Descartado':        'Sem reação após tentativas',
   // Pipeline Fechamento
   'Documentação Recebida':   'Docs recebidos — processo de fechamento iniciado',
   'Crédito em Análise':      'Banco analisando a documentação',
