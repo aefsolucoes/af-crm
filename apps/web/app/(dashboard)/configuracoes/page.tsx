@@ -4,9 +4,11 @@ import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { Pipeline, Stage, User } from '@/types';
 
-type Tab = 'api' | 'qr';
+type Tab = 'api' | 'qr' | 'meta';
 
 interface WAConfig {
   phoneNumberId: string;
@@ -18,8 +20,31 @@ interface WAConfig {
 
 type QRStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
 
+interface MetaConfig {
+  verifyToken: string;
+  pageAccessToken: string;
+  defaultStageId: string | null;
+  defaultUserId: string | null;
+  active: boolean;
+  webhookUrl: string;
+  isNew: boolean;
+}
+
 export default function ConfiguracoesPage() {
   const [tab, setTab] = useState<Tab>('qr');
+
+  // Meta Lead Ads state
+  const [metaConfig, setMetaConfig] = useState<MetaConfig>({
+    verifyToken: 'af_meta_verify',
+    pageAccessToken: '',
+    defaultStageId: null,
+    defaultUserId: null,
+    active: false,
+    webhookUrl: '',
+    isNew: true,
+  });
+  const [loadingMeta, setLoadingMeta] = useState(true);
+  const [savingMeta, setSavingMeta] = useState(false);
 
   // API config state
   const [config, setConfig] = useState<WAConfig>({
@@ -45,6 +70,31 @@ export default function ConfiguracoesPage() {
       if (data) { setConfig(data); setIsNew(false); }
     }).catch(() => {}).finally(() => setLoadingConfig(false));
   }, []);
+
+  // Load Meta Leads config
+  useEffect(() => {
+    api.get('/api/settings/meta-leads').then(({ data }) => {
+      if (data) setMetaConfig(data);
+    }).catch(() => {}).finally(() => setLoadingMeta(false));
+  }, []);
+
+  // Pipeline stages and users for Meta Leads selectors
+  const { data: pipelines } = useQuery<Pipeline[]>({
+    queryKey: ['pipelines-settings'],
+    queryFn: async () => { const { data } = await api.get('/api/pipelines'); return data; },
+  });
+  const allStages: (Stage & { pipelineName: string })[] = (pipelines || []).flatMap(p =>
+    p.stages.map(s => ({ ...s, pipelineName: p.name }))
+  );
+  const { data: allUsers } = useQuery<User[]>({
+    queryKey: ['users-settings'],
+    queryFn: async () => {
+      const { data } = await api.get('/api/leads');
+      const map = new Map<string, User>();
+      for (const l of data) map.set(l.user.id, l.user);
+      return Array.from(map.values());
+    },
+  });
 
   // Load QR status + Socket.io
   useEffect(() => {
@@ -150,6 +200,26 @@ export default function ConfiguracoesPage() {
     }
   }
 
+  async function handleSaveMeta(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingMeta(true);
+    try {
+      await api.post('/api/settings/meta-leads', {
+        verifyToken: metaConfig.verifyToken,
+        pageAccessToken: metaConfig.pageAccessToken,
+        defaultStageId: metaConfig.defaultStageId || null,
+        defaultUserId: metaConfig.defaultUserId || null,
+        active: metaConfig.active,
+      });
+      toast('Configuração Meta Leads salva!');
+      setMetaConfig(c => ({ ...c, isNew: false }));
+    } catch {
+      toast('Erro ao salvar configuração Meta Leads', 'error');
+    } finally {
+      setSavingMeta(false);
+    }
+  }
+
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text);
     toast('Copiado!');
@@ -184,7 +254,7 @@ export default function ConfiguracoesPage() {
               }`}
             >
               <QrCode size={16} />
-              QR Code (Business)
+              QR Code
             </button>
             <button
               onClick={() => setTab('api')}
@@ -193,7 +263,16 @@ export default function ConfiguracoesPage() {
               }`}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-              API Oficial (Meta)
+              API Oficial
+            </button>
+            <button
+              onClick={() => setTab('meta')}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                tab === 'meta' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <Megaphone size={16} />
+              Meta Lead Ads
             </button>
           </div>
 
@@ -416,6 +495,193 @@ export default function ConfiguracoesPage() {
               )}
             </div>
           )}
+          {/* ── Meta Lead Ads Tab ── */}
+          {tab === 'meta' && (
+            <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border bg-gradient-to-r from-blue-600 to-indigo-600">
+                <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                  <Megaphone size={22} className="text-white" />
+                </div>
+                <div>
+                  <h2 className="text-white font-bold text-base">Meta Lead Ads</h2>
+                  <p className="text-white/70 text-xs">Captura automática de leads de formulários do Facebook e Instagram</p>
+                </div>
+                <div className="ml-auto">
+                  {metaConfig.active ? (
+                    <span className="flex items-center gap-1 bg-green-400/20 text-green-200 text-xs px-3 py-1 rounded-full">
+                      <CheckCircle2 size={12} /> Ativo
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 bg-white/10 text-white/60 text-xs px-3 py-1 rounded-full">
+                      <XCircle size={12} /> Inativo
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {loadingMeta ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="animate-spin w-8 h-8 border-4 border-af-accent border-t-transparent rounded-full" />
+                </div>
+              ) : (
+                <form onSubmit={handleSaveMeta} className="px-6 py-5 space-y-5">
+
+                  {/* How it works */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                    <div className="flex items-start gap-2">
+                      <Info size={15} className="text-blue-600 mt-0.5 flex-shrink-0" />
+                      <div className="text-xs text-blue-700 space-y-1.5">
+                        <p className="font-semibold text-sm">Como funciona:</p>
+                        <ol className="list-decimal list-inside space-y-1">
+                          <li>Copie a <strong>URL do Webhook</strong> abaixo</li>
+                          <li>No painel da Meta: <strong>Desenvolvedor → Webhooks → leadgen</strong></li>
+                          <li>Cole a URL e o <strong>Token de Verificação</strong></li>
+                          <li>Configure o <strong>Token de Acesso da Página</strong> para buscar os dados</li>
+                          <li>Quando alguém preencher o formulário, o lead é criado automaticamente no CRM ✅</li>
+                        </ol>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Webhook URL */}
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1">
+                      URL do Webhook <span className="text-xs text-slate-400 font-normal">(cole no painel da Meta)</span>
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={metaConfig.webhookUrl}
+                        readOnly
+                        className="flex-1 px-4 py-2.5 text-xs border border-af-border rounded-xl bg-slate-100 text-slate-600 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => copyToClipboard(metaConfig.webhookUrl)}
+                        className="px-3 py-2 border border-af-border rounded-xl hover:bg-af-light text-slate-500"
+                      >
+                        <Copy size={14} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Verify Token */}
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1">
+                      Token de Verificação <span className="text-red-500">*</span>
+                      <span className="text-xs text-slate-400 font-normal ml-1">(use o mesmo no painel da Meta)</span>
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={metaConfig.verifyToken}
+                        onChange={e => setMetaConfig(c => ({ ...c, verifyToken: e.target.value }))}
+                        required
+                        minLength={6}
+                        placeholder="Ex: af_meta_verify_2024"
+                        className="flex-1 px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => copyToClipboard(metaConfig.verifyToken)}
+                        className="px-3 py-2 border border-af-border rounded-xl hover:bg-af-light text-slate-500"
+                      >
+                        <Copy size={14} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Page Access Token */}
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1">
+                      Token de Acesso da Página <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="password"
+                      value={metaConfig.pageAccessToken}
+                      onChange={e => setMetaConfig(c => ({ ...c, pageAccessToken: e.target.value }))}
+                      required={metaConfig.isNew}
+                      placeholder={metaConfig.isNew ? 'Cole o Page Access Token aqui' : 'Token salvo (deixe em branco para manter)'}
+                      className="w-full px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    />
+                    <p className="text-xs text-slate-400 mt-1">
+                      Encontre em: Meta for Developers → Sua App → Ferramentas → Graph API Explorer → Access Token da Página
+                    </p>
+                  </div>
+
+                  {/* Default Stage */}
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1">
+                      Estágio padrão para novos leads
+                    </label>
+                    <select
+                      value={metaConfig.defaultStageId || ''}
+                      onChange={e => setMetaConfig(c => ({ ...c, defaultStageId: e.target.value || null }))}
+                      className="w-full px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    >
+                      <option value="">Primeiro estágio do pipeline (padrão)</option>
+                      {allStages.map(s => (
+                        <option key={s.id} value={s.id}>{s.pipelineName} → {s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Default User */}
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1">
+                      Responsável padrão pelos leads
+                    </label>
+                    <select
+                      value={metaConfig.defaultUserId || ''}
+                      onChange={e => setMetaConfig(c => ({ ...c, defaultUserId: e.target.value || null }))}
+                      className="w-full px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    >
+                      <option value="">Primeiro usuário da conta (padrão)</option>
+                      {(allUsers || []).map(u => (
+                        <option key={u.id} value={u.id}>{u.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Active toggle */}
+                  <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-af-border">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700">Ativar captura de leads</p>
+                      <p className="text-xs text-slate-400 mt-0.5">Leads dos formulários serão criados automaticamente no CRM</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMetaConfig(c => ({ ...c, active: !c.active }))}
+                      className={`relative w-12 h-6 rounded-full transition-colors ${metaConfig.active ? 'bg-blue-600' : 'bg-slate-300'}`}
+                    >
+                      <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${metaConfig.active ? 'translate-x-7' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
+                  {/* Save + Docs link */}
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      type="submit"
+                      disabled={savingMeta}
+                      className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-50 bg-blue-600 hover:bg-blue-700 transition-colors"
+                    >
+                      {savingMeta ? 'Salvando...' : 'Salvar configuração'}
+                    </button>
+                    <a
+                      href="https://developers.facebook.com/docs/marketing-api/guides/lead-ads/retrieving"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1 px-4 py-3 rounded-xl border border-af-border text-slate-600 text-sm hover:bg-af-light"
+                    >
+                      <ExternalLink size={14} /> Docs Meta
+                    </a>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
+
         </div>
       </div>
     </div>

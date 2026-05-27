@@ -18,6 +18,7 @@ model Account {
   companies        Company[]
   salesBots        SalesBot[]
   whatsappConfig   WhatsAppConfig?
+  metaLeadsConfig  MetaLeadsConfig?
   fieldDefinitions FieldDefinition[]
 }
 
@@ -211,6 +212,19 @@ enum Channel {
   TELEGRAM
   WEBCHAT
   EMAIL
+}
+
+model MetaLeadsConfig {
+  id              String   @id @default(cuid())
+  accountId       String   @unique
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  verifyToken     String   @default("af_meta_verify")
+  pageAccessToken String   @default("")
+  defaultStageId  String?
+  defaultUserId   String?
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model BaileysSession {
