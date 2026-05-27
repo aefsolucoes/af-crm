@@ -76,4 +76,21 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// PATCH /api/leads/:id/custom-fields
+router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
+  try {
+    const { customFields } = req.body;
+    const { PrismaClient } = require('@prisma/client');
+    const prisma = new PrismaClient();
+    const lead = await prisma.lead.update({
+      where: { id: req.params.id },
+      data: { customFields },
+    });
+    await prisma.$disconnect();
+    res.json(lead);
+  } catch {
+    res.status(500).json({ error: 'Erro ao salvar campos' });
+  }
+});
+
 export default router;

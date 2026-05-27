@@ -51,7 +51,7 @@ export default function LeadDetailClient() {
         <>
           <LeadHeader lead={lead} onStageChange={refetch} />
           <div className="flex flex-1 overflow-hidden">
-            <LeadSidebar lead={lead} />
+            <LeadSidebar lead={lead} onRefresh={refetch} />
             <div className="flex-1 overflow-hidden">
               <LeadTimeline leadId={lead.id} notes={lead.notes} messages={lead.messages} onRefresh={refetch} />
             </div>

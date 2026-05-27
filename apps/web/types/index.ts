@@ -1,4 +1,17 @@
 export type Role = 'ADMIN' | 'MANAGER' | 'AGENT';
+export type FieldType = 'TEXT' | 'NUMBER' | 'DATE' | 'SELECT' | 'EMAIL' | 'PHONE' | 'LINK';
+
+export interface FieldDefinition {
+  id: string;
+  accountId: string;
+  tab: string;
+  name: string;
+  key: string;
+  type: FieldType;
+  options: string[];
+  order: number;
+  createdAt: string;
+}
 export type LeadStatus = 'OPEN' | 'WON' | 'LOST';
 export type NoteType = 'COMMENT' | 'CALL' | 'EMAIL' | 'STAGE_CHANGE';
 export type Direction = 'INBOUND' | 'OUTBOUND';

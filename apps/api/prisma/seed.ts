@@ -154,6 +154,40 @@ async function main() {
     ],
   });
 
+  // Field definitions
+  const fieldDefs = [
+    { tab: 'Principal', name: 'Participante 1', key: 'participante_1', type: 'TEXT' as const, options: [], order: 0 },
+    { tab: 'Principal', name: 'CPF', key: 'cpf_1', type: 'TEXT' as const, options: [], order: 1 },
+    { tab: 'Principal', name: 'Data de nascimento', key: 'nascimento_1', type: 'DATE' as const, options: [], order: 2 },
+    { tab: 'Principal', name: 'Renda', key: 'renda_1', type: 'NUMBER' as const, options: [], order: 3 },
+    { tab: 'Principal', name: 'E-mail', key: 'email_1', type: 'EMAIL' as const, options: [], order: 4 },
+    { tab: 'Principal', name: 'Tipo de vínculo', key: 'vinculo_1', type: 'TEXT' as const, options: [], order: 5 },
+    { tab: 'Principal', name: 'Servidor Público', key: 'servidor_1', type: 'SELECT' as const, options: ['Sim', 'Não'], order: 6 },
+    { tab: 'Principal', name: 'Participante 2', key: 'participante_2', type: 'TEXT' as const, options: [], order: 7 },
+    { tab: 'Principal', name: 'CPF 2', key: 'cpf_2', type: 'TEXT' as const, options: [], order: 8 },
+    { tab: 'Principal', name: 'Data de nascimento 2', key: 'nascimento_2', type: 'DATE' as const, options: [], order: 9 },
+    { tab: 'Principal', name: 'Renda 2', key: 'renda_2', type: 'NUMBER' as const, options: [], order: 10 },
+    { tab: 'Principal', name: 'E-mail 2', key: 'email_2', type: 'EMAIL' as const, options: [], order: 11 },
+    { tab: 'Principal', name: 'Tipo de vínculo 2', key: 'vinculo_2', type: 'TEXT' as const, options: [], order: 12 },
+    { tab: 'Principal', name: 'Servidor Público 2', key: 'servidor_2', type: 'SELECT' as const, options: ['Sim', 'Não'], order: 13 },
+    { tab: 'Principal', name: 'Pasta Drive', key: 'pasta_drive', type: 'LINK' as const, options: [], order: 14 },
+    { tab: 'Financiamento', name: 'Banco', key: 'banco', type: 'TEXT' as const, options: [], order: 0 },
+    { tab: 'Financiamento', name: 'Valor do imóvel', key: 'valor_imovel', type: 'NUMBER' as const, options: [], order: 1 },
+    { tab: 'Financiamento', name: 'Entrada', key: 'entrada', type: 'NUMBER' as const, options: [], order: 2 },
+    { tab: 'Financiamento', name: 'Prazo (meses)', key: 'prazo_meses', type: 'NUMBER' as const, options: [], order: 3 },
+    { tab: 'Financiamento', name: 'Taxa de juros', key: 'taxa_juros', type: 'TEXT' as const, options: [], order: 4 },
+    { tab: 'Financiamento', name: 'Sistema', key: 'sistema', type: 'SELECT' as const, options: ['SAC', 'PRICE', 'SAM'], order: 5 },
+    { tab: 'Consórcio', name: 'Administradora', key: 'administradora', type: 'TEXT' as const, options: [], order: 0 },
+    { tab: 'Consórcio', name: 'Crédito', key: 'credito_consorcio', type: 'NUMBER' as const, options: [], order: 1 },
+    { tab: 'Consórcio', name: 'Parcela', key: 'parcela_consorcio', type: 'NUMBER' as const, options: [], order: 2 },
+    { tab: 'Consórcio', name: 'Prazo (meses)', key: 'prazo_consorcio', type: 'NUMBER' as const, options: [], order: 3 },
+    { tab: 'Consórcio', name: 'Grupo', key: 'grupo_consorcio', type: 'TEXT' as const, options: [], order: 4 },
+  ];
+  await prisma.fieldDefinition.deleteMany({ where: { accountId: account.id } });
+  for (const fd of fieldDefs) {
+    await prisma.fieldDefinition.create({ data: { ...fd, accountId: account.id } });
+  }
+
   console.log('✅ Seed concluído!');
   console.log('');
   console.log('Usuários criados:');

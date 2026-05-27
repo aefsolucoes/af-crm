@@ -8,16 +8,42 @@ datasource db {
 }
 
 model Account {
-  id              String           @id @default(cuid())
-  name            String
-  createdAt       DateTime         @default(now())
-  users           User[]
-  pipelines       Pipeline[]
-  leads           Lead[]
-  contacts        Contact[]
-  companies       Company[]
-  salesBots       SalesBot[]
-  whatsappConfig  WhatsAppConfig?
+  id               String            @id @default(cuid())
+  name             String
+  createdAt        DateTime          @default(now())
+  users            User[]
+  pipelines        Pipeline[]
+  leads            Lead[]
+  contacts         Contact[]
+  companies        Company[]
+  salesBots        SalesBot[]
+  whatsappConfig   WhatsAppConfig?
+  fieldDefinitions FieldDefinition[]
+}
+
+model FieldDefinition {
+  id        String    @id @default(cuid())
+  accountId String
+  tab       String    @default("Principal")
+  name      String
+  key       String
+  type      FieldType @default(TEXT)
+  options   String[]
+  order     Int       @default(0)
+  account   Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+
+  @@index([accountId])
+}
+
+enum FieldType {
+  TEXT
+  NUMBER
+  DATE
+  SELECT
+  EMAIL
+  PHONE
+  LINK
 }
 
 model User {

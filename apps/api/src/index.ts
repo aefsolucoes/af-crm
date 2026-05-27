@@ -15,6 +15,7 @@ import reportRoutes from './routes/reports';
 import webhookRoutes from './routes/webhooks';
 import settingsRoutes from './routes/settings';
 import whatsappQrRoutes from './routes/whatsapp-qr';
+import fieldRoutes from './routes/fields';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 
 const app = express();
@@ -48,6 +49,7 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/whatsapp-qr', whatsappQrRoutes);
+app.use('/api/fields', fieldRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
 

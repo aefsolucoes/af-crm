@@ -1,117 +1,353 @@
 'use client';
-import { LeadDetail } from '@/types';
-import { Avatar } from '@/components/ui/avatar';
-import { Phone, Mail, Building2, User, Tag, Hash } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
-import { formatDate } from '@/lib/utils';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { LeadDetail, FieldDefinition } from '@/types';
+import api from '@/lib/api';
+import { Plus, Trash2, Tag, Check, X, ExternalLink } from 'lucide-react';
+import { formatCurrency } from '@/lib/utils';
 
 interface LeadSidebarProps {
   lead: LeadDetail;
+  onRefresh: () => void;
 }
 
-export function LeadSidebar({ lead }: LeadSidebarProps) {
+type FieldValue = string | number | null | undefined;
+
+function FieldEditor({
+  fieldDef,
+  value,
+  onSave,
+  onCancel,
+}: {
+  fieldDef: FieldDefinition;
+  value: FieldValue;
+  onSave: (v: string) => void;
+  onCancel: () => void;
+}) {
+  const [val, setVal] = useState(String(value ?? ''));
+
+  if (fieldDef.type === 'SELECT') {
+    return (
+      <select
+        className="text-xs border border-af-border rounded px-2 py-1 w-full bg-white focus:outline-none focus:border-af-mid"
+        value={val}
+        onChange={e => { setVal(e.target.value); onSave(e.target.value); }}
+        autoFocus
+      >
+        <option value="">Selecione</option>
+        {fieldDef.options.map(opt => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
+    );
+  }
+
+  const inputType =
+    fieldDef.type === 'DATE' ? 'date' :
+    fieldDef.type === 'NUMBER' ? 'number' :
+    fieldDef.type === 'EMAIL' ? 'email' :
+    fieldDef.type === 'PHONE' ? 'tel' :
+    'text';
+
   return (
-    <aside className="w-72 flex-shrink-0 border-l border-af-border bg-white overflow-y-auto scrollbar-thin">
-      {/* Contact */}
-      {lead.contact && (
-        <section className="px-4 py-4 border-b border-af-border">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Contato</p>
-          <div className="flex items-center gap-3 mb-3">
-            <Avatar name={lead.contact.name} size="md" />
-            <p className="text-sm font-medium text-slate-900">{lead.contact.name}</p>
+    <div className="flex items-center gap-1 flex-1">
+      <input
+        type={inputType}
+        className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') onSave(val);
+          if (e.key === 'Escape') onCancel();
+        }}
+        autoFocus
+      />
+      <button onClick={() => onSave(val)} className="text-green-600 hover:text-green-700 flex-shrink-0">
+        <Check size={12} />
+      </button>
+      <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: FieldValue }) {
+  if (value == null || value === '') {
+    return <span className="text-slate-300 text-xs">...</span>;
+  }
+  if (fieldDef.type === 'LINK') {
+    return (
+      <a
+        href={String(value)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-xs text-af-mid hover:underline flex items-center gap-1"
+        onClick={e => e.stopPropagation()}
+      >
+        Abrir <ExternalLink size={10} />
+      </a>
+    );
+  }
+  if (fieldDef.type === 'NUMBER') {
+    return <span className="text-xs font-medium text-slate-800">{Number(value).toLocaleString('pt-BR')}</span>;
+  }
+  if (fieldDef.type === 'DATE') {
+    try {
+      return <span className="text-xs font-medium text-slate-800">{new Date(String(value)).toLocaleDateString('pt-BR')}</span>;
+    } catch { return <span className="text-xs font-medium text-slate-800">{String(value)}</span>; }
+  }
+  return <span className="text-xs font-medium text-slate-800 truncate max-w-[130px]">{String(value)}</span>;
+}
+
+export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
+  const [activeTab, setActiveTab] = useState('Principal');
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [customValues, setCustomValues] = useState<Record<string, FieldValue>>(
+    (lead.customFields as Record<string, FieldValue>) || {}
+  );
+  const [showAddField, setShowAddField] = useState(false);
+  const [showAddTab, setShowAddTab] = useState(false);
+  const [newTabName, setNewTabName] = useState('');
+  const [newField, setNewField] = useState({ name: '', type: 'TEXT', options: '' });
+  const [saving, setSaving] = useState(false);
+
+  const queryClient = useQueryClient();
+
+  const { data: fieldDefs = [] } = useQuery<FieldDefinition[]>({
+    queryKey: ['fieldDefinitions'],
+    queryFn: async () => {
+      const { data } = await api.get('/api/fields');
+      return data;
+    },
+  });
+
+  const allTabs = ['Principal', ...Array.from(new Set(fieldDefs.filter(f => f.tab !== 'Principal').map(f => f.tab)))];
+  const fieldsForTab = fieldDefs.filter(f => f.tab === activeTab).sort((a, b) => a.order - b.order);
+
+  const saveFieldValue = async (key: string, value: string) => {
+    setSaving(true);
+    const newValues = { ...customValues, [key]: value };
+    setCustomValues(newValues);
+    setEditingKey(null);
+    try {
+      await api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newValues });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addFieldMutation = useMutation({
+    mutationFn: async () => {
+      if (!newField.name.trim()) return;
+      await api.post('/api/fields', {
+        name: newField.name.trim(),
+        type: newField.type,
+        tab: activeTab,
+        options: newField.type === 'SELECT' ? newField.options.split(',').map(o => o.trim()).filter(Boolean) : [],
+        order: fieldsForTab.length,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['fieldDefinitions'] });
+      setShowAddField(false);
+      setNewField({ name: '', type: 'TEXT', options: '' });
+    },
+  });
+
+  const deleteFieldMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await api.delete(`/api/fields/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['fieldDefinitions'] });
+    },
+  });
+
+  const addTab = () => {
+    if (!newTabName.trim()) return;
+    // tabs are created implicitly when a field is added to them
+    setActiveTab(newTabName.trim());
+    setShowAddTab(false);
+    setNewTabName('');
+    setShowAddField(true);
+  };
+
+  return (
+    <aside className="w-80 flex-shrink-0 border-r border-af-border bg-white overflow-y-auto flex flex-col">
+      {/* Tab bar */}
+      <div className="flex border-b border-af-border overflow-x-auto scrollbar-none flex-shrink-0">
+        {allTabs.map(tab => (
+          <button
+            key={tab}
+            onClick={() => { setActiveTab(tab); setShowAddField(false); }}
+            className={`px-3 py-2.5 text-xs font-medium whitespace-nowrap flex-shrink-0 border-b-2 transition-colors ${
+              activeTab === tab
+                ? 'border-af-mid text-af-mid'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            {tab}
+          </button>
+        ))}
+        {showAddTab ? (
+          <div className="flex items-center gap-1 px-2 py-1">
+            <input
+              autoFocus
+              placeholder="Nome da aba"
+              className="text-xs border border-af-border rounded px-2 py-0.5 w-24 focus:outline-none"
+              value={newTabName}
+              onChange={e => setNewTabName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') addTab(); if (e.key === 'Escape') setShowAddTab(false); }}
+            />
+            <button onClick={addTab} className="text-green-600"><Check size={12} /></button>
+            <button onClick={() => setShowAddTab(false)} className="text-slate-400"><X size={12} /></button>
           </div>
-          {lead.contact.phone && (
-            <div className="flex items-center gap-2 text-xs text-slate-600 mb-1.5">
-              <Phone size={12} className="text-slate-400" />
-              {lead.contact.phone}
-            </div>
+        ) : (
+          <button
+            onClick={() => setShowAddTab(true)}
+            className="px-2 py-2.5 text-slate-400 hover:text-af-mid flex-shrink-0 transition-colors"
+            title="Nova aba"
+          >
+            <Plus size={13} />
+          </button>
+        )}
+      </div>
+
+      {/* Fields list */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-4 py-2 space-y-0">
+          {/* Built-in fields only on Principal tab */}
+          {activeTab === 'Principal' && (
+            <>
+              <div className="flex items-center justify-between py-2.5 border-b border-slate-100">
+                <span className="text-xs text-slate-500 flex-shrink-0 w-36">Usuário responsável</span>
+                <span className="text-xs font-medium text-slate-800 truncate">{lead.user.name}</span>
+              </div>
+              <div className="flex items-center justify-between py-2.5 border-b border-slate-100">
+                <span className="text-xs text-slate-500 flex-shrink-0 w-36">Valor de financiamento</span>
+                <span className="text-xs font-medium text-slate-800">
+                  {lead.value ? formatCurrency(lead.value) : 'R$ 0,00'}
+                </span>
+              </div>
+            </>
           )}
-          {lead.contact.email && (
-            <div className="flex items-center gap-2 text-xs text-slate-600">
-              <Mail size={12} className="text-slate-400" />
-              <span className="truncate">{lead.contact.email}</span>
-            </div>
-          )}
-        </section>
-      )}
 
-      {/* Company */}
-      {lead.company && (
-        <section className="px-4 py-4 border-b border-af-border">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Empresa</p>
-          <div className="flex items-center gap-2 text-sm font-medium text-slate-800 mb-2">
-            <Building2 size={14} className="text-af-mid" />
-            {lead.company.name}
-          </div>
-          {lead.company.email && (
-            <div className="flex items-center gap-2 text-xs text-slate-600 mb-1">
-              <Mail size={11} className="text-slate-400" />
-              <span className="truncate">{lead.company.email}</span>
-            </div>
-          )}
-          {lead.company.phone && (
-            <div className="flex items-center gap-2 text-xs text-slate-600">
-              <Phone size={11} className="text-slate-400" />
-              {lead.company.phone}
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* Responsible */}
-      <section className="px-4 py-4 border-b border-af-border">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Responsável</p>
-        <div className="flex items-center gap-2">
-          <Avatar name={lead.user.name} size="sm" />
-          <div>
-            <p className="text-xs font-medium text-slate-800">{lead.user.name}</p>
-            <p className="text-xs text-slate-400">{lead.user.email}</p>
-          </div>
-        </div>
-      </section>
-
-      {/* Info */}
-      <section className="px-4 py-4 border-b border-af-border space-y-2">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Informações</p>
-        <div className="flex items-center gap-2 text-xs text-slate-600">
-          <Hash size={11} className="text-slate-400" />
-          <span className="text-slate-400">Criado em</span>
-          <span className="ml-auto font-medium">{formatDate(lead.createdAt)}</span>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-slate-600">
-          <Hash size={11} className="text-slate-400" />
-          <span className="text-slate-400">Atualizado</span>
-          <span className="ml-auto font-medium">{formatDate(lead.updatedAt)}</span>
-        </div>
-      </section>
-
-      {/* Tags */}
-      {lead.tags.length > 0 && (
-        <section className="px-4 py-4 border-b border-af-border">
-          <div className="flex items-center gap-1 mb-3">
-            <Tag size={12} className="text-slate-400" />
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Tags</p>
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {lead.tags.map((tag) => (
-              <Badge key={tag} className="bg-af-light text-af-mid text-xs">{tag}</Badge>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Custom fields */}
-      {lead.customFields && Object.keys(lead.customFields).length > 0 && (
-        <section className="px-4 py-4">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Campos personalizados</p>
-          {Object.entries(lead.customFields as Record<string, unknown>).map(([key, value]) => (
-            <div key={key} className="flex items-center justify-between text-xs py-1.5 border-b border-af-border/40 last:border-0">
-              <span className="text-slate-500">{key}</span>
-              <span className="font-medium text-slate-800">{String(value)}</span>
+          {/* Custom fields for this tab */}
+          {fieldsForTab.map(field => (
+            <div
+              key={field.id}
+              className="group flex items-center justify-between py-2.5 border-b border-slate-100 gap-2"
+            >
+              <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">{field.name}</span>
+              <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
+                {editingKey === field.key ? (
+                  <FieldEditor
+                    fieldDef={field}
+                    value={customValues[field.key]}
+                    onSave={(v) => saveFieldValue(field.key, v)}
+                    onCancel={() => setEditingKey(null)}
+                  />
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setEditingKey(field.key)}
+                      className="flex-1 text-right hover:text-af-mid transition-colors min-w-0"
+                    >
+                      <DisplayValue fieldDef={field} value={customValues[field.key]} />
+                    </button>
+                    <button
+                      onClick={() => deleteFieldMutation.mutate(field.id)}
+                      className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 flex-shrink-0 transition-opacity ml-1"
+                      title="Excluir campo"
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           ))}
-        </section>
-      )}
+
+          {fieldsForTab.length === 0 && !showAddField && (
+            <p className="text-xs text-slate-400 py-4 text-center">Nenhum campo nesta aba</p>
+          )}
+
+          {/* Add field form */}
+          {showAddField ? (
+            <div className="py-3 space-y-2">
+              <input
+                autoFocus
+                placeholder="Nome do campo"
+                className="w-full text-xs border border-af-border rounded px-2 py-1.5 focus:outline-none focus:border-af-mid"
+                value={newField.name}
+                onChange={e => setNewField(p => ({ ...p, name: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Escape') setShowAddField(false); }}
+              />
+              <select
+                className="w-full text-xs border border-af-border rounded px-2 py-1.5 bg-white focus:outline-none"
+                value={newField.type}
+                onChange={e => setNewField(p => ({ ...p, type: e.target.value }))}
+              >
+                <option value="TEXT">Texto</option>
+                <option value="NUMBER">Número</option>
+                <option value="DATE">Data</option>
+                <option value="SELECT">Seleção (dropdown)</option>
+                <option value="EMAIL">E-mail</option>
+                <option value="PHONE">Telefone</option>
+                <option value="LINK">Link</option>
+              </select>
+              {newField.type === 'SELECT' && (
+                <input
+                  placeholder="Opções separadas por vírgula"
+                  className="w-full text-xs border border-af-border rounded px-2 py-1.5 focus:outline-none focus:border-af-mid"
+                  value={newField.options}
+                  onChange={e => setNewField(p => ({ ...p, options: e.target.value }))}
+                />
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => addFieldMutation.mutate()}
+                  disabled={!newField.name.trim() || addFieldMutation.isPending}
+                  className="flex-1 text-xs bg-af-mid text-white rounded py-1.5 hover:bg-af-dark disabled:opacity-50 transition-colors"
+                >
+                  {addFieldMutation.isPending ? 'Salvando...' : 'Adicionar'}
+                </button>
+                <button
+                  onClick={() => { setShowAddField(false); setNewField({ name: '', type: 'TEXT', options: '' }); }}
+                  className="text-xs text-slate-500 hover:text-slate-700 px-3 border border-af-border rounded"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowAddField(true)}
+              className="flex items-center gap-1 text-xs text-af-mid hover:text-af-dark py-3 transition-colors"
+            >
+              <Plus size={12} />
+              Adicionar campo
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Tags */}
+      <div className="px-4 py-3 border-t border-af-border flex-shrink-0">
+        <div className="flex items-center gap-1.5 mb-2">
+          <Tag size={11} className="text-slate-400" />
+          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Tags</span>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {lead.tags.map(tag => (
+            <span key={tag} className="text-xs bg-af-light text-af-mid px-2 py-0.5 rounded-full">{tag}</span>
+          ))}
+          {lead.tags.length === 0 && (
+            <span className="text-xs text-slate-300">Nenhuma tag</span>
+          )}
+        </div>
+      </div>
     </aside>
   );
 }
