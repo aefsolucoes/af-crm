@@ -1,5 +1,5 @@
 'use client';
-import { useParams, useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { LeadHeader } from '@/components/lead/lead-header';
@@ -18,7 +18,8 @@ async function fetchLead(id: string): Promise<LeadDetail> {
 }
 
 export default function LeadDetailClient() {
-  const { id } = useParams<{ id: string }>();
+  const pathname = usePathname();
+  const id = pathname.split('/').pop() || '';
   const router = useRouter();
 
   const { data: lead, isLoading, refetch } = useQuery({
