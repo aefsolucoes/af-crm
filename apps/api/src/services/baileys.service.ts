@@ -79,21 +79,32 @@ export async function startQRConnection(accountId: string): Promise<void> {
   globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'connecting' });
 
   try {
+    console.log('[Baileys] Importando módulo...');
     const baileys = await import('@whiskeysockets/baileys') as any;
-    const makeWASocket = baileys.default || baileys.makeWASocket;
+    const makeWASocket = baileys.default?.default || baileys.default || baileys.makeWASocket;
     const { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = baileys;
+
+    console.log('[Baileys] makeWASocket encontrado:', typeof makeWASocket);
+    console.log('[Baileys] useMultiFileAuthState encontrado:', typeof useMultiFileAuthState);
+
+    if (typeof makeWASocket !== 'function') {
+      throw new Error(`makeWASocket não é uma função. Keys: ${Object.keys(baileys).join(', ')}`);
+    }
 
     // Restore session from DB to temp filesystem
     const authDir = await restoreSessionFiles(accountId);
+    console.log('[Baileys] authDir:', authDir);
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    console.log('[Baileys] Auth state carregado');
 
     // Get WhatsApp version with fallback
     let version = [2, 3000, 1015901307];
     try {
       const result = await fetchLatestBaileysVersion();
       version = result.version;
+      console.log('[Baileys] Versão WA:', version);
     } catch {
-      console.warn('[Baileys] Using fallback WA version');
+      console.warn('[Baileys] Using fallback WA version:', version);
     }
 
     const silentLogger = {
@@ -103,6 +114,7 @@ export async function startQRConnection(accountId: string): Promise<void> {
       child: () => silentLogger,
     };
 
+    console.log('[Baileys] Criando socket...');
     const sock = makeWASocket({
       version,
       auth: state,
@@ -112,6 +124,7 @@ export async function startQRConnection(accountId: string): Promise<void> {
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
     });
+    console.log('[Baileys] Socket criado, aguardando eventos...');
 
     const conn = connections.get(accountId)!;
     conn.sock = sock;
@@ -123,6 +136,7 @@ export async function startQRConnection(accountId: string): Promise<void> {
 
     sock.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
+      console.log('[Baileys] connection.update:', JSON.stringify({ connection, qr: !!qr, statusCode: (lastDisconnect?.error as any)?.output?.statusCode }));
       const c = connections.get(accountId);
       if (!c) return;
 
