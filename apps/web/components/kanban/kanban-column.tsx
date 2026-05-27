@@ -13,12 +13,21 @@ interface KanbanColumnProps {
 }
 
 const STAGE_DESCRIPTIONS: Record<string, string> = {
+  // Pipeline Principal — Financiamento Habitacional
   'Prospecção':              'Respondendo questionário / tirando dúvidas',
   'Follow Up':               'Não respondeu o questionário — acionar',
   'Aguardando Simulação':    'Questionário ok — realizar simulação',
   'Proposta Enviada':        'Proposta enviada — aguardando aprovação',
   'Aguardando Documentação': 'Aprovado — aguardando envio dos documentos',
   'Fechado':                 'Documentação encaminhada — concluído',
+  // Pipeline Fechamento
+  'Documentação Recebida':   'Docs recebidos — processo de fechamento iniciado',
+  'Crédito em Análise':      'Banco analisando a documentação',
+  'Crédito Aprovado':        'Crédito aprovado — avançar para vistoria',
+  'Vistoria do Imóvel':      'Vistoria técnica agendada / em andamento',
+  'Análise Jurídica':        'Documentação no jurídico do banco',
+  'Registro em Cartório':    'Escritura e registro de imóveis em andamento',
+  'Pagamento ao Vendedor':   'Transferência liberada — negócio concluído',
 };
 
 export function KanbanColumn({ stage, leads, onAddLead }: KanbanColumnProps) {
