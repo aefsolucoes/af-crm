@@ -228,7 +228,7 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
                 <span className="text-xs font-medium text-slate-800 truncate">{lead.user.name}</span>
               </div>
               <div className="flex items-center justify-between py-2.5 border-b border-slate-100">
-                <span className="text-xs text-slate-500 flex-shrink-0 w-36">Valor de financiamento</span>
+                <span className="text-xs text-slate-500 flex-shrink-0 w-36">Valor da venda</span>
                 <span className="text-xs font-medium text-slate-800">
                   {lead.value ? formatCurrency(lead.value) : 'R$ 0,00'}
                 </span>
