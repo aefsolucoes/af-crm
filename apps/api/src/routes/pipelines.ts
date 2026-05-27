@@ -42,6 +42,36 @@ router.post('/', validate(pipelineSchema), async (req: AuthRequest, res: Respons
   }
 });
 
+// PATCH /api/pipelines/:id — renomear pipeline
+router.patch('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Nome obrigatório' });
+    const pipeline = await prisma.pipeline.updateMany({
+      where: { id: req.params.id, accountId: req.user!.accountId },
+      data: { name },
+    });
+    res.json({ success: true, updated: pipeline.count });
+  } catch {
+    res.status(500).json({ error: 'Erro ao renomear pipeline' });
+  }
+});
+
+// PATCH /api/pipelines/rename-by-name — renomear pelo nome atual
+router.post('/rename', async (req: AuthRequest, res: Response) => {
+  try {
+    const { from, to } = req.body;
+    if (!from || !to) return res.status(400).json({ error: 'from e to obrigatórios' });
+    const result = await prisma.pipeline.updateMany({
+      where: { accountId: req.user!.accountId, name: from },
+      data: { name: to },
+    });
+    res.json({ success: true, updated: result.count });
+  } catch {
+    res.status(500).json({ error: 'Erro ao renomear pipeline' });
+  }
+});
+
 // DELETE /api/pipelines/:id
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
