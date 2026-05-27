@@ -35,14 +35,17 @@ export default function FunilPage() {
   const { leads, setLeads } = usePipelineStore();
   const [openAddLead, setOpenAddLead] = useState(false);
   const [search, setSearch] = useState('');
+  const [selectedPipelineId, setSelectedPipelineId] = useState<string>('');
 
   const { data: pipelines, isLoading: loadingPipelines } = useQuery({ queryKey: ['pipelines'], queryFn: fetchPipelines });
-  const pipeline = pipelines?.[0];
+  const pipeline = pipelines?.find(p => p.id === selectedPipelineId) || pipelines?.[0];
+
+  useEffect(() => { if (pipelines?.[0] && !selectedPipelineId) setSelectedPipelineId(pipelines[0].id); }, [pipelines]);
 
   const { data: rawLeads, isLoading: loadingLeads, refetch } = useQuery({
-    queryKey: ['leads', pipeline?.id],
-    queryFn: () => fetchLeads(pipeline!.id),
-    enabled: !!pipeline,
+    queryKey: ['leads', selectedPipelineId],
+    queryFn: () => fetchLeads(selectedPipelineId),
+    enabled: !!selectedPipelineId,
   });
 
   const { data: contacts = [] } = useQuery({ queryKey: ['contacts'], queryFn: fetchContacts });
@@ -79,7 +82,11 @@ export default function FunilPage() {
       <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-af-border gap-4">
         <div className="flex items-center gap-3 flex-1">
           {pipeline && (
-            <select className="text-sm border border-af-border rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent flex-shrink-0">
+            <select
+              value={selectedPipelineId}
+              onChange={e => setSelectedPipelineId(e.target.value)}
+              className="text-sm border border-af-border rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent flex-shrink-0"
+            >
               {pipelines?.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}

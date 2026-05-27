@@ -1,7 +1,7 @@
 'use client';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
-import { Lead } from '@/types';
+import { Lead, Pipeline, Contact, User } from '@/types';
 import api from '@/lib/api';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -11,21 +11,49 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import Link from 'next/link';
 import { useState } from 'react';
+import { LeadModal } from '@/components/kanban/lead-modal';
 
 async function fetchLeads(): Promise<Lead[]> {
   const { data } = await api.get('/api/leads');
   return data;
 }
 
+async function fetchPipelines(): Promise<Pipeline[]> {
+  const { data } = await api.get('/api/pipelines');
+  return data;
+}
+
+async function fetchContacts(): Promise<Contact[]> {
+  const { data } = await api.get('/api/contacts');
+  return data;
+}
+
 export default function LeadsPage() {
   const [search, setSearch] = useState('');
+  const [openAdd, setOpenAdd] = useState(false);
+  const queryClient = useQueryClient();
+
   const { data: leads, isLoading } = useQuery({ queryKey: ['leads'], queryFn: fetchLeads });
+  const { data: pipelines } = useQuery({ queryKey: ['pipelines'], queryFn: fetchPipelines });
+  const { data: contacts = [] } = useQuery({ queryKey: ['contacts'], queryFn: fetchContacts });
+
+  const pipeline = pipelines?.[0];
+
+  // Extract unique users from leads
+  const users: User[] = Array.from(
+    new Map((leads || []).map((l) => [l.user.id, l.user as unknown as User])).values()
+  );
 
   const filtered = (leads || []).filter((l) =>
     l.name.toLowerCase().includes(search.toLowerCase()) ||
     l.company?.name.toLowerCase().includes(search.toLowerCase()) ||
     l.contact?.name.toLowerCase().includes(search.toLowerCase())
   );
+
+  function handleCreated() {
+    queryClient.invalidateQueries({ queryKey: ['leads'] });
+    setOpenAdd(false);
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -37,7 +65,7 @@ export default function LeadsPage() {
           placeholder="Buscar leads..."
           className="px-3 py-1.5 text-sm border border-af-border rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-af-accent"
         />
-        <Button size="sm">
+        <Button size="sm" onClick={() => setOpenAdd(true)}>
           <Plus size={14} />
           Novo Lead
         </Button>
@@ -100,6 +128,18 @@ export default function LeadsPage() {
           <div className="text-center py-12 text-slate-400 text-sm">Nenhum lead encontrado</div>
         )}
       </div>
+
+      {pipeline && (
+        <LeadModal
+          open={openAdd}
+          onClose={() => setOpenAdd(false)}
+          onCreated={handleCreated}
+          stages={pipeline.stages}
+          pipelineId={pipeline.id}
+          contacts={contacts}
+          users={users}
+        />
+      )}
     </div>
   );
 }

@@ -18,7 +18,9 @@ const createLeadSchema = z.object({
   tags: z.array(z.string()).optional(),
 });
 
-const updateLeadSchema = createLeadSchema.partial();
+const updateLeadSchema = createLeadSchema.partial().extend({
+  status: z.enum(['OPEN', 'WON', 'LOST']).optional(),
+});
 const stageSchema = z.object({ stageId: z.string() });
 
 router.get('/', async (req: AuthRequest, res: Response) => {

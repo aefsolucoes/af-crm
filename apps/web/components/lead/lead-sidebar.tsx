@@ -124,8 +124,16 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
   const [newTabName, setNewTabName] = useState('');
   const [newField, setNewField] = useState({ name: '', type: 'TEXT', options: '' });
   const [saving, setSaving] = useState(false);
+  const [tags, setTags] = useState<string[]>(lead.tags);
+  const [tagInput, setTagInput] = useState('');
 
   const queryClient = useQueryClient();
+
+  const saveTags = async (newTags: string[]) => {
+    setTags(newTags);
+    await api.put(`/api/leads/${lead.id}`, { tags: newTags });
+    onRefresh();
+  };
 
   const { data: fieldDefs = [] } = useQuery<FieldDefinition[]>({
     queryKey: ['fieldDefinitions'],
@@ -409,12 +417,45 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
           <Tag size={11} className="text-slate-400" />
           <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Tags</span>
         </div>
-        <div className="flex flex-wrap gap-1">
-          {lead.tags.map(tag => (
-            <span key={tag} className="text-xs bg-af-light text-af-mid px-2 py-0.5 rounded-full">{tag}</span>
+        <div className="flex flex-wrap gap-1 mb-2">
+          {tags.map(tag => (
+            <span
+              key={tag}
+              className="group flex items-center gap-1 text-xs bg-af-light text-af-mid px-2 py-0.5 rounded-full cursor-pointer hover:bg-red-50 hover:text-red-500 transition-colors"
+              onClick={() => saveTags(tags.filter(t => t !== tag))}
+              title="Clique para remover"
+            >
+              {tag}
+              <X size={9} className="opacity-0 group-hover:opacity-100" />
+            </span>
           ))}
-          {lead.tags.length === 0 && (
-            <span className="text-xs text-slate-300">Nenhuma tag</span>
+          {tags.length === 0 && <span className="text-xs text-slate-300">Nenhuma tag</span>}
+        </div>
+        {/* Add tag input */}
+        <div className="flex items-center gap-1">
+          <input
+            value={tagInput}
+            onChange={e => setTagInput(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                const t = tagInput.trim();
+                if (t && !tags.includes(t)) { saveTags([...tags, t]); setTagInput(''); }
+              }
+              if (e.key === 'Escape') setTagInput('');
+            }}
+            placeholder="+ Adicionar tag"
+            className="flex-1 text-xs border border-dashed border-af-border rounded px-2 py-1 focus:outline-none focus:border-af-mid bg-transparent placeholder:text-slate-400"
+          />
+          {tagInput.trim() && (
+            <button
+              onClick={() => {
+                const t = tagInput.trim();
+                if (t && !tags.includes(t)) { saveTags([...tags, t]); setTagInput(''); }
+              }}
+              className="text-af-mid hover:text-af-dark"
+            >
+              <Plus size={14} />
+            </button>
           )}
         </div>
       </div>

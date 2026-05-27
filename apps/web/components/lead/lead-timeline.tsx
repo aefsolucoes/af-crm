@@ -51,8 +51,7 @@ export function LeadTimeline({ leadId, notes, messages, onRefresh }: LeadTimelin
     if (!noteContent.trim()) return;
     setSaving(true);
     try {
-      // Notes are created via lead detail — use a note endpoint if available, otherwise just refresh
-      // For now we create via a direct Prisma endpoint
+      await api.post('/api/notes', { leadId, content: noteContent.trim(), type: noteType });
       toast('Nota adicionada!');
       setNoteContent('');
       setShowNoteForm(false);

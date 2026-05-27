@@ -7,6 +7,7 @@ import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { useAuthStore } from '@/store/auth.store';
 
 interface LeadTasksProps {
   tasks: Task[];
@@ -18,6 +19,7 @@ export function LeadTasks({ tasks, leadId, onRefresh }: LeadTasksProps) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ title: '', dueAt: '' });
   const [saving, setSaving] = useState(false);
+  const { user } = useAuthStore();
 
   async function handleToggle(task: Task) {
     try {
@@ -34,7 +36,7 @@ export function LeadTasks({ tasks, leadId, onRefresh }: LeadTasksProps) {
     if (!form.title || !form.dueAt) return;
     setSaving(true);
     try {
-      await api.post('/api/tasks', { title: form.title, dueAt: new Date(form.dueAt).toISOString(), userId: tasks[0]?.userId || '', leadId });
+      await api.post('/api/tasks', { title: form.title, dueAt: new Date(form.dueAt).toISOString(), userId: user?.id || tasks[0]?.userId || '', leadId });
       toast('Tarefa criada!');
       setForm({ title: '', dueAt: '' });
       setShowForm(false);
