@@ -13,6 +13,15 @@ interface LeadSidebarProps {
 
 type FieldValue = string | number | null | undefined;
 
+/** Converte string em número suportando formato BR (1.000.000,50) e EN (1000000.50) */
+function parseBRNumber(raw: string): number {
+  const clean = raw.trim()
+    .replace(/\./g, '')   // remove pontos de milhar
+    .replace(',', '.');   // vírgula decimal → ponto
+  const n = parseFloat(clean);
+  return isNaN(n) ? 0 : n;
+}
+
 function FieldEditor({
   fieldDef,
   value,
@@ -44,15 +53,16 @@ function FieldEditor({
 
   const inputType =
     fieldDef.type === 'DATE' ? 'date' :
-    fieldDef.type === 'NUMBER' ? 'number' :
     fieldDef.type === 'EMAIL' ? 'email' :
     fieldDef.type === 'PHONE' ? 'tel' :
-    'text';
+    'text'; // NUMBER usa text para aceitar formato BR (1.000.000)
 
   return (
     <div className="flex items-center gap-1 flex-1">
       <input
         type={inputType}
+        inputMode={fieldDef.type === 'NUMBER' ? 'numeric' : undefined}
+        placeholder={fieldDef.type === 'NUMBER' ? 'Ex: 250000' : undefined}
         className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
         value={val}
         onChange={e => setVal(e.target.value)}
@@ -90,7 +100,8 @@ function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: F
     );
   }
   if (fieldDef.type === 'NUMBER') {
-    return <span className="text-xs font-medium text-slate-800">{Number(value).toLocaleString('pt-BR')}</span>;
+    const n = parseBRNumber(String(value));
+    return <span className="text-xs font-medium text-slate-800">{n.toLocaleString('pt-BR')}</span>;
   }
   if (fieldDef.type === 'DATE') {
     try {
@@ -137,6 +148,13 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
     setEditingKey(null);
     try {
       await api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newValues });
+      // Sincroniza: valor do crédito → valor da venda
+      if (key === 'valor_credito') {
+        const numeric = parseBRNumber(value);
+        await api.put(`/api/leads/${lead.id}`, { value: numeric });
+        setValueInput(String(numeric));
+        onRefresh();
+      }
     } finally {
       setSaving(false);
     }
@@ -234,13 +252,21 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
                 {editingValue ? (
                   <div className="flex items-center gap-1 flex-1">
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="Ex: 250000"
                       className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
                       value={valueInput}
                       onChange={e => setValueInput(e.target.value)}
                       onKeyDown={async e => {
                         if (e.key === 'Enter') {
-                          await api.put(`/api/leads/${lead.id}`, { value: parseFloat(valueInput) || 0 });
+                          const numeric = parseBRNumber(valueInput);
+                          const newCF = { ...customValues, valor_credito: String(numeric) };
+                          setCustomValues(newCF);
+                          await Promise.all([
+                            api.put(`/api/leads/${lead.id}`, { value: numeric }),
+                            api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newCF }),
+                          ]);
                           setEditingValue(false);
                           onRefresh();
                         }
@@ -249,7 +275,13 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
                       autoFocus
                     />
                     <button onClick={async () => {
-                      await api.put(`/api/leads/${lead.id}`, { value: parseFloat(valueInput) || 0 });
+                      const numeric = parseBRNumber(valueInput);
+                      const newCF = { ...customValues, valor_credito: String(numeric) };
+                      setCustomValues(newCF);
+                      await Promise.all([
+                        api.put(`/api/leads/${lead.id}`, { value: numeric }),
+                        api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newCF }),
+                      ]);
                       setEditingValue(false);
                       onRefresh();
                     }} className="text-green-600 hover:text-green-700 flex-shrink-0">
@@ -261,7 +293,7 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
                   </div>
                 ) : (
                   <button
-                    onClick={() => { setValueInput(String(lead.value ?? 0)); setEditingValue(true); }}
+                    onClick={() => { setValueInput(String(lead.value ?? '')); setEditingValue(true); }}
                     className="text-xs font-medium text-slate-800 hover:text-af-mid transition-colors"
                   >
                     {lead.value ? formatCurrency(lead.value) : <span className="text-slate-300">...</span>}
