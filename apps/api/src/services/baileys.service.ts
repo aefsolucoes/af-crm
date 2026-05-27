@@ -88,13 +88,9 @@ export async function startQRConnection(accountId: string): Promise<void> {
   globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'connecting' });
 
   try {
-    console.log('[Baileys] Importando módulo...');
     const baileys = await import('@whiskeysockets/baileys') as any;
     const makeWASocket = baileys.default?.default || baileys.default || baileys.makeWASocket;
-    const { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = baileys;
-
-    console.log('[Baileys] makeWASocket encontrado:', typeof makeWASocket);
-    console.log('[Baileys] useMultiFileAuthState encontrado:', typeof useMultiFileAuthState);
+    const { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers } = baileys;
 
     if (typeof makeWASocket !== 'function') {
       throw new Error(`makeWASocket não é uma função. Keys: ${Object.keys(baileys).join(', ')}`);
@@ -102,19 +98,11 @@ export async function startQRConnection(accountId: string): Promise<void> {
 
     // Restore session from DB to temp filesystem
     const authDir = await restoreSessionFiles(accountId);
-    console.log('[Baileys] authDir:', authDir);
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
-    console.log('[Baileys] Auth state carregado');
 
-    // Get WhatsApp version with fallback
-    let version = [2, 3000, 1015901307];
-    try {
-      const result = await fetchLatestBaileysVersion();
-      version = result.version;
-      console.log('[Baileys] Versão WA:', version);
-    } catch {
-      console.warn('[Baileys] Using fallback WA version:', version);
-    }
+    // Always use a fixed stable WA version to avoid server rejection
+    const version = [2, 3000, 1015901307];
+    console.log('[Baileys] Usando versão WA:', version);
 
     const silentLogger = {
       level: 'silent',
@@ -129,9 +117,14 @@ export async function startQRConnection(accountId: string): Promise<void> {
       auth: state,
       printQRInTerminal: false,
       logger: silentLogger,
-      browser: ['AF CRM', 'Chrome', '120.0.0'],
+      browser: Browsers?.macOS('Safari') ?? ['AF CRM', 'Safari', '17.0'],
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
+      connectTimeoutMs: 60_000,
+      defaultQueryTimeoutMs: 60_000,
+      keepAliveIntervalMs: 10_000,
+      retryRequestDelayMs: 2000,
+      qrTimeout: 60_000,
     });
     console.log('[Baileys] Socket criado, aguardando eventos...');
 
