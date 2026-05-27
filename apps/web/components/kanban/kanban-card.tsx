@@ -1,11 +1,12 @@
 'use client';
+import { useRef } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Lead } from '@/types';
 import { formatCurrency, formatDate, CHANNEL_COLORS } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
 import { ArrowDownLeft, ArrowUpRight, Calendar } from 'lucide-react';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
 interface KanbanCardProps {
   lead: Lead;
@@ -24,6 +25,9 @@ function msgTime(dateStr: string) {
 }
 
 export function KanbanCard({ lead }: KanbanCardProps) {
+  const router = useRouter();
+  const pointerStart = useRef({ x: 0, y: 0 });
+
   const {
     attributes,
     listeners,
@@ -42,16 +46,29 @@ export function KanbanCard({ lead }: KanbanCardProps) {
   const lastMsg = lead.messages?.[0];
   const unreadCount = lead._count?.messages ?? 0;
   const cf = (lead.customFields || {}) as Record<string, string>;
-  // Prioridade: Participante 1 → nome do contato → nome do lead
   const displayName = cf.participante_1 || lead.contact?.name || lead.name;
-  const contactName = displayName;
   const channelColor = lastMsg ? CHANNEL_COLORS[lastMsg.channel] : undefined;
+
+  function handlePointerDown(e: React.PointerEvent) {
+    pointerStart.current = { x: e.clientX, y: e.clientY };
+  }
+
+  function handleClick(e: React.MouseEvent) {
+    const dx = Math.abs(e.clientX - pointerStart.current.x);
+    const dy = Math.abs(e.clientY - pointerStart.current.y);
+    // Só navega se não foi um arrasto (< 8px de movimento)
+    if (dx < 8 && dy < 8) {
+      router.push(`/leads/${lead.id}`);
+    }
+  }
 
   return (
     <div ref={setNodeRef} style={style} {...attributes}>
       <div
-        className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-grab active:cursor-grabbing"
+        className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer active:cursor-grabbing select-none"
         {...listeners}
+        onPointerDown={handlePointerDown}
+        onClick={handleClick}
       >
         <div className="p-3">
 
@@ -59,7 +76,7 @@ export function KanbanCard({ lead }: KanbanCardProps) {
           <div className="flex items-start gap-2.5 mb-2.5">
             {/* Avatar com indicador de canal */}
             <div className="relative flex-shrink-0">
-              <Avatar name={contactName} size="lg" />
+              <Avatar name={displayName} size="lg" />
               {channelColor && (
                 <span
                   className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white"
@@ -71,13 +88,9 @@ export function KanbanCard({ lead }: KanbanCardProps) {
             {/* Nome e badge */}
             <div className="flex-1 min-w-0 pt-0.5">
               <div className="flex items-start justify-between gap-1.5">
-                <Link
-                  href={`/leads/${lead.id}`}
-                  className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2 hover:text-af-mid transition-colors"
-                  onClick={(e) => e.stopPropagation()}
-                >
+                <span className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2">
                   {displayName}
-                </Link>
+                </span>
                 {unreadCount > 0 && (
                   <span className="flex-shrink-0 text-xs bg-af-mid text-white px-1.5 py-0.5 rounded-full min-w-[20px] text-center leading-tight font-medium">
                     {unreadCount}
@@ -113,20 +126,13 @@ export function KanbanCard({ lead }: KanbanCardProps) {
 
           {/* ── Rodapé: valor · data · usuário ── */}
           <div className="flex items-center justify-between pt-2 border-t border-af-border/60 gap-1">
-            {/* Valor de venda */}
-            <span
-              className={`text-xs font-bold ${lead.value ? 'text-af-mid' : 'text-slate-300'}`}
-            >
+            <span className={`text-xs font-bold ${lead.value ? 'text-af-mid' : 'text-slate-300'}`}>
               {lead.value ? formatCurrency(lead.value) : '—'}
             </span>
-
-            {/* Data de criação */}
             <div className="flex items-center gap-1 text-xs text-slate-400">
               <Calendar size={10} />
               <span>{formatDate(lead.createdAt)}</span>
             </div>
-
-            {/* Usuário responsável */}
             <Avatar name={lead.user.name} size="sm" />
           </div>
 
