@@ -72,18 +72,19 @@ async function main() {
       accountId: account.id,
       stages: {
         create: [
-          { name: 'Prospecção', color: '#3b82f6', order: 1 },
-          { name: 'Qualificação', color: '#f59e0b', order: 2 },
-          { name: 'Proposta', color: '#8b5cf6', order: 3 },
-          { name: 'Negociação', color: '#f97316', order: 4 },
-          { name: 'Fechado', color: '#10b981', order: 5 },
+          { name: 'Prospecção',              color: '#3b82f6', order: 1 },
+          { name: 'Follow Up',               color: '#f59e0b', order: 2 },
+          { name: 'Aguardando Simulação',    color: '#8b5cf6', order: 3 },
+          { name: 'Proposta Enviada',        color: '#f97316', order: 4 },
+          { name: 'Aguardando Documentação', color: '#ef4444', order: 5 },
+          { name: 'Fechado',                 color: '#10b981', order: 6 },
         ],
       },
     },
     include: { stages: { orderBy: { order: 'asc' } } },
   });
 
-  const [s1, s2, s3, s4, s5] = pipeline.stages;
+  const [s1, s2, s3, s4, s5, s6] = pipeline.stages;
   const users = [admin, gerente, agente];
 
   // Leads

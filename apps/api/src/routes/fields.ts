@@ -54,6 +54,80 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /api/fields/migrate-pipeline — migra estágios do pipeline principal
+router.post('/migrate-pipeline', async (req: AuthRequest, res: Response) => {
+  const NEW_STAGES = [
+    { order: 1, name: 'Prospecção',              color: '#3b82f6' },
+    { order: 2, name: 'Follow Up',               color: '#f59e0b' },
+    { order: 3, name: 'Aguardando Simulação',    color: '#8b5cf6' },
+    { order: 4, name: 'Proposta Enviada',        color: '#f97316' },
+    { order: 5, name: 'Aguardando Documentação', color: '#ef4444' },
+    { order: 6, name: 'Fechado',                 color: '#10b981' },
+  ];
+  const RENAMES: Record<string, string> = {
+    'Prospecção':  'Prospecção',
+    'Qualificação':'Aguardando Simulação',
+    'Proposta':    'Proposta Enviada',
+    'Negociação':  'Aguardando Documentação',
+    'Fechado':     'Fechado',
+  };
+
+  try {
+    const pipeline = await prisma.pipeline.findFirst({
+      where: { accountId: req.user!.accountId },
+      include: { stages: { orderBy: { order: 'asc' } } },
+    });
+    if (!pipeline) return res.status(404).json({ error: 'Pipeline não encontrado' });
+
+    const log: string[] = [];
+
+    // Renomeia estágios existentes
+    for (const stage of pipeline.stages) {
+      const newName = RENAMES[stage.name];
+      const newStage = NEW_STAGES.find(s => s.name === newName);
+      if (newName && newStage) {
+        await prisma.stage.update({
+          where: { id: stage.id },
+          data: { name: newName, order: newStage.order, color: newStage.color },
+        });
+        log.push(`Renomeado: "${stage.name}" → "${newName}"`);
+      }
+    }
+
+    // Insere novos estágios
+    const existingNames = pipeline.stages.map(s => RENAMES[s.name] || s.name);
+    for (const ns of NEW_STAGES) {
+      if (!existingNames.includes(ns.name)) {
+        await prisma.stage.create({
+          data: { name: ns.name, color: ns.color, order: ns.order, pipelineId: pipeline.id },
+        });
+        log.push(`Criado: "${ns.name}"`);
+      }
+    }
+
+    // Remove estágios obsoletos sem leads
+    const refreshed = await prisma.pipeline.findFirst({
+      where: { id: pipeline.id },
+      include: { stages: { include: { _count: { select: { leads: true } } } } },
+    });
+    const validNames = NEW_STAGES.map(s => s.name);
+    for (const stage of refreshed!.stages) {
+      if (!validNames.includes(stage.name)) {
+        if (stage._count.leads === 0) {
+          await prisma.stage.delete({ where: { id: stage.id } });
+          log.push(`Removido: "${stage.name}"`);
+        } else {
+          log.push(`Mantido (tem leads): "${stage.name}"`);
+        }
+      }
+    }
+
+    res.json({ success: true, log });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro na migração', detail: String(err) });
+  }
+});
+
 // PATCH /api/fields/by-key/:key — atualiza opções pelo key do campo
 router.patch('/by-key/:key', async (req: AuthRequest, res: Response) => {
   try {
