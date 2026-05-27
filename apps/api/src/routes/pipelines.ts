@@ -118,6 +118,8 @@ router.post('/setup', async (req: AuthRequest, res: Response) => {
     for (const p of pipelines) {
       if (p.name === KEEP) { log.push(`Mantido: "${p.name}"`); continue; }
       if (p._count.leads > 0) { log.push(`Mantido (tem ${p._count.leads} lead(s)): "${p.name}"`); continue; }
+      // Apaga estágios antes do pipeline (FK constraint)
+      await prisma.stage.deleteMany({ where: { pipelineId: p.id } });
       await prisma.pipeline.delete({ where: { id: p.id } });
       log.push(`Apagado: "${p.name}"`);
     }
