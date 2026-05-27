@@ -81,33 +81,23 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
         });
         const targetStage = fechamento?.stages.find(s => s.name === 'Documentação Recebida') || fechamento?.stages[0];
         if (fechamento && targetStage) {
-          const fullLead = await prisma.lead.findUnique({ where: { id: req.params.id } });
-          if (fullLead) {
-            const newLead = await prisma.lead.create({
-              data: {
-                name: fullLead.name,
-                value: fullLead.value ?? undefined,
-                contactId: fullLead.contactId ?? undefined,
-                companyId: fullLead.companyId ?? undefined,
-                userId: fullLead.userId,
-                pipelineId: fechamento.id,
-                stageId: targetStage.id,
-                accountId: fullLead.accountId,
-                tags: fullLead.tags,
-                customFields: fullLead.customFields ?? undefined,
-                notes: {
-                  create: {
-                    content: `Card criado automaticamente ao fechar em Vendas.`,
-                    type: 'COMMENT',
-                  },
+          // Move o próprio lead (com todo o histórico de mensagens, notas e tarefas)
+          const movedLead = await prisma.lead.update({
+            where: { id: req.params.id },
+            data: {
+              pipelineId: fechamento.id,
+              stageId: targetStage.id,
+              notes: {
+                create: {
+                  content: `Lead movido automaticamente para Fechamento ao ser fechado em Vendas.`,
+                  type: 'STAGE_CHANGE',
                 },
               },
-            });
-            // Notifica via Socket.io
-            const io = (req as any).app.get('io');
-            if (io) io.to(`account_${req.user!.accountId}`).emit('new_lead', { lead: newLead });
-            console.log(`[Auto-migração] Lead "${fullLead.name}" → Fechamento (${targetStage.name})`);
-          }
+            },
+          });
+          const io = (req as any).app.get('io');
+          if (io) io.to(`account_${req.user!.accountId}`).emit('lead_moved', { lead: movedLead });
+          console.log(`[Auto-migração] Lead "${movedLead.name}" movido → Fechamento (${targetStage.name})`);
         }
       }
     } catch (migErr) {
