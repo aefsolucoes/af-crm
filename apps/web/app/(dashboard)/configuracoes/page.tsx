@@ -4,7 +4,7 @@ import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone, ChevronDown, ArrowRight, Trash2 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Pipeline, Stage, User } from '@/types';
 
@@ -36,6 +36,20 @@ interface MetaConfig {
   isNew: boolean;
 }
 
+interface MetaForm {
+  id: string;
+  name: string;
+  status: string;
+  pageId: string;
+  pageName: string;
+}
+
+interface MetaFormField {
+  key: string;
+  label: string;
+  type: string;
+}
+
 export default function ConfiguracoesPage() {
   const [tab, setTab] = useState<Tab>('qr');
 
@@ -52,6 +66,13 @@ export default function ConfiguracoesPage() {
   });
   const [loadingMeta, setLoadingMeta] = useState(true);
   const [savingMeta, setSavingMeta] = useState(false);
+
+  // Meta forms state (estilo Pluga)
+  const [metaForms, setMetaForms] = useState<MetaForm[]>([]);
+  const [loadingForms, setLoadingForms] = useState(false);
+  const [selectedFormId, setSelectedFormId] = useState('');
+  const [metaFormFields, setMetaFormFields] = useState<MetaFormField[]>([]);
+  const [loadingFields, setLoadingFields] = useState(false);
 
   // API config state
   const [config, setConfig] = useState<WAConfig>({
@@ -108,12 +129,6 @@ export default function ConfiguracoesPage() {
     queryFn: async () => { const { data } = await api.get('/api/fields'); return data; },
   });
 
-  // Sugestões de campos comuns do formulário Meta
-  const META_FIELD_SUGGESTIONS = [
-    'full_name', 'first_name', 'last_name', 'email', 'phone_number',
-    'date_of_birth', 'cpf', 'renda', 'rg', 'cidade', 'estado',
-  ];
-
   // Load QR status + Socket.io
   useEffect(() => {
     api.get('/api/whatsapp-qr/status').then(({ data }) => {
@@ -151,6 +166,68 @@ export default function ConfiguracoesPage() {
       }
     };
   }, []);
+
+  // Busca formulários reais da página Meta (estilo Pluga)
+  async function fetchMetaForms() {
+    if (!metaConfig.pageAccessToken && metaConfig.isNew) {
+      toast('Salve o Page Access Token primeiro', 'error');
+      return;
+    }
+    setLoadingForms(true);
+    setMetaForms([]);
+    setSelectedFormId('');
+    setMetaFormFields([]);
+    try {
+      const { data } = await api.get('/api/settings/meta-leads/forms');
+      if (!data.forms?.length) {
+        toast('Nenhum formulário encontrado. Verifique o Page Access Token e as permissões.', 'error');
+      } else {
+        setMetaForms(data.forms);
+        toast(`${data.forms.length} formulário(s) encontrado(s)!`);
+      }
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || 'Erro ao buscar formulários';
+      toast(msg, 'error');
+    } finally {
+      setLoadingForms(false);
+    }
+  }
+
+  async function handleFormSelect(formId: string) {
+    setSelectedFormId(formId);
+    setMetaFormFields([]);
+    if (!formId) return;
+    setLoadingFields(true);
+    try {
+      const { data } = await api.get(`/api/settings/meta-leads/forms/${formId}/fields`);
+      setMetaFormFields(data.fields || []);
+    } catch {
+      toast('Erro ao buscar campos do formulário', 'error');
+    } finally {
+      setLoadingFields(false);
+    }
+  }
+
+  function addMapping() {
+    setMetaConfig(c => ({
+      ...c,
+      fieldMappings: [...c.fieldMappings, { metaField: '', crmField: '' }],
+    }));
+  }
+
+  function updateMapping(idx: number, key: 'metaField' | 'crmField', value: string) {
+    setMetaConfig(c => ({
+      ...c,
+      fieldMappings: c.fieldMappings.map((m, i) => i === idx ? { ...m, [key]: value } : m),
+    }));
+  }
+
+  function removeMapping(idx: number) {
+    setMetaConfig(c => ({
+      ...c,
+      fieldMappings: c.fieldMappings.filter((_, i) => i !== idx),
+    }));
+  }
 
   async function handleConnect() {
     setConnecting(true);
@@ -629,103 +706,171 @@ export default function ConfiguracoesPage() {
                     </p>
                   </div>
 
-                  {/* ── Mapeamento de campos ── */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
+                  {/* ── Mapeamento de campos estilo Pluga ── */}
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    {/* Header da seção */}
+                    <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-200">
                       <div>
-                        <label className="block text-sm font-semibold text-slate-700">
-                          Mapeamento de campos do formulário
-                        </label>
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          Indique qual campo do formulário Meta preenche qual campo do CRM
-                        </p>
+                        <p className="text-sm font-semibold text-slate-700">Mapeamento de campos</p>
+                        <p className="text-xs text-slate-400 mt-0.5">Conecte os campos do formulário Meta com os campos do CRM</p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setMetaConfig(c => ({
-                          ...c,
-                          fieldMappings: [...c.fieldMappings, { metaField: '', crmField: '' }],
-                        }))}
-                        className="text-xs px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 rounded-lg font-medium transition-colors"
-                      >
-                        + Adicionar mapeamento
-                      </button>
                     </div>
 
-                    {metaConfig.fieldMappings.length === 0 ? (
-                      <div className="text-center py-6 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 text-xs">
-                        Nenhum mapeamento configurado.<br />
-                        Clique em "Adicionar mapeamento" para começar.
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {/* Cabeçalho */}
-                        <div className="grid grid-cols-[1fr_auto_1fr_auto] gap-2 px-1">
-                          <span className="text-xs font-semibold text-slate-500">Campo do formulário Meta</span>
-                          <span />
-                          <span className="text-xs font-semibold text-slate-500">Campo do CRM</span>
-                          <span />
-                        </div>
-                        {metaConfig.fieldMappings.map((mapping, idx) => (
-                          <div key={idx} className="grid grid-cols-[1fr_auto_1fr_auto] gap-2 items-center bg-slate-50 rounded-lg px-3 py-2">
-                            {/* Campo Meta (com sugestões via datalist) */}
-                            <div>
-                              <input
-                                list={`meta-suggestions-${idx}`}
-                                value={mapping.metaField}
-                                onChange={e => setMetaConfig(c => ({
-                                  ...c,
-                                  fieldMappings: c.fieldMappings.map((m, i) =>
-                                    i === idx ? { ...m, metaField: e.target.value } : m
-                                  ),
-                                }))}
-                                placeholder="Ex: full_name"
-                                className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
-                              />
-                              <datalist id={`meta-suggestions-${idx}`}>
-                                {META_FIELD_SUGGESTIONS.map(s => <option key={s} value={s} />)}
-                              </datalist>
-                            </div>
-
-                            {/* Seta */}
-                            <span className="text-slate-400 text-sm">→</span>
-
-                            {/* Campo CRM */}
+                    <div className="p-4 space-y-4">
+                      {/* Passo 1: Selecionar formulário */}
+                      <div>
+                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+                          1. Selecione o formulário Meta
+                        </p>
+                        <div className="flex gap-2">
+                          <div className="flex-1 relative">
                             <select
-                              value={mapping.crmField}
-                              onChange={e => setMetaConfig(c => ({
-                                ...c,
-                                fieldMappings: c.fieldMappings.map((m, i) =>
-                                  i === idx ? { ...m, crmField: e.target.value } : m
-                                ),
-                              }))}
-                              className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+                              value={selectedFormId}
+                              onChange={e => handleFormSelect(e.target.value)}
+                              disabled={metaForms.length === 0}
+                              className="w-full text-sm px-3 py-2.5 border border-af-border rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 appearance-none disabled:bg-slate-50 disabled:text-slate-400"
                             >
-                              <option value="">Selecione o campo</option>
-                              {['Principal', 'Financiamento', 'Consórcio', ...new Set(crmFields.map(f => f.tab).filter(t => !['Principal','Financiamento','Consórcio'].includes(t)))].map(tab => (
-                                <optgroup key={tab} label={tab}>
-                                  {crmFields.filter(f => f.tab === tab).map(f => (
-                                    <option key={f.key} value={f.key}>{f.name}</option>
-                                  ))}
-                                </optgroup>
+                              <option value="">
+                                {metaForms.length === 0
+                                  ? 'Clique em "Buscar formulários" primeiro'
+                                  : `Selecione o formulário (${metaForms.length} disponíveis)`}
+                              </option>
+                              {metaForms.map(f => (
+                                <option key={f.id} value={f.id}>
+                                  {f.pageName} → {f.name} {f.status !== 'ACTIVE' ? `(${f.status})` : ''}
+                                </option>
                               ))}
                             </select>
-
-                            {/* Remover */}
-                            <button
-                              type="button"
-                              onClick={() => setMetaConfig(c => ({
-                                ...c,
-                                fieldMappings: c.fieldMappings.filter((_, i) => i !== idx),
-                              }))}
-                              className="text-slate-400 hover:text-red-500 transition-colors p-1"
-                            >
-                              ✕
-                            </button>
+                            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                           </div>
-                        ))}
+                          <button
+                            type="button"
+                            onClick={fetchMetaForms}
+                            disabled={loadingForms}
+                            className="flex items-center gap-1.5 px-3 py-2.5 text-sm border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl font-medium transition-colors disabled:opacity-50 whitespace-nowrap"
+                          >
+                            <RefreshCw size={13} className={loadingForms ? 'animate-spin' : ''} />
+                            {loadingForms ? 'Buscando...' : 'Buscar formulários'}
+                          </button>
+                        </div>
+
+                        {/* Campos carregados */}
+                        {loadingFields && (
+                          <p className="text-xs text-blue-500 mt-2 flex items-center gap-1">
+                            <RefreshCw size={11} className="animate-spin" /> Carregando campos do formulário...
+                          </p>
+                        )}
+                        {metaFormFields.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {metaFormFields.map(f => (
+                              <span key={f.key} className="text-xs bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-md font-mono">
+                                {f.key}
+                                {f.label && f.label !== f.type && (
+                                  <span className="text-blue-400 ml-1 font-sans">({f.label})</span>
+                                )}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    )}
+
+                      {/* Passo 2: Mapeamentos */}
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                            2. Mapeie os campos
+                          </p>
+                          <button
+                            type="button"
+                            onClick={addMapping}
+                            className="text-xs px-2.5 py-1 bg-blue-600 text-white hover:bg-blue-700 rounded-lg font-medium transition-colors"
+                          >
+                            + Adicionar linha
+                          </button>
+                        </div>
+
+                        {metaConfig.fieldMappings.length === 0 ? (
+                          <div className="text-center py-8 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 text-xs space-y-1">
+                            <p className="text-2xl">🔗</p>
+                            <p className="font-medium">Nenhum mapeamento configurado</p>
+                            <p>Selecione um formulário acima e clique em "+ Adicionar linha"</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {/* Cabeçalho */}
+                            <div className="grid grid-cols-[1fr_24px_1fr_28px] gap-2 px-2">
+                              <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
+                                <span className="w-2 h-2 bg-blue-500 rounded-full inline-block" />
+                                Formulário Meta
+                              </span>
+                              <span />
+                              <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
+                                <span className="w-2 h-2 bg-indigo-500 rounded-full inline-block" />
+                                Campo do CRM
+                              </span>
+                              <span />
+                            </div>
+
+                            {metaConfig.fieldMappings.map((mapping, idx) => (
+                              <div key={idx} className="grid grid-cols-[1fr_24px_1fr_28px] gap-2 items-center bg-white border border-slate-200 rounded-xl px-3 py-2.5 hover:border-blue-200 transition-colors">
+                                {/* Campo Meta */}
+                                {metaFormFields.length > 0 ? (
+                                  <select
+                                    value={mapping.metaField}
+                                    onChange={e => updateMapping(idx, 'metaField', e.target.value)}
+                                    className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-lg bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-400 font-mono"
+                                  >
+                                    <option value="">Selecione o campo Meta</option>
+                                    {metaFormFields.map(f => (
+                                      <option key={f.key} value={f.key}>
+                                        {f.key}{f.label && f.label !== f.type ? ` — ${f.label}` : ''}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    value={mapping.metaField}
+                                    onChange={e => updateMapping(idx, 'metaField', e.target.value)}
+                                    placeholder="Ex: full_name"
+                                    className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-lg bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-400 font-mono"
+                                  />
+                                )}
+
+                                {/* Seta */}
+                                <ArrowRight size={14} className="text-slate-400 mx-auto" />
+
+                                {/* Campo CRM */}
+                                <select
+                                  value={mapping.crmField}
+                                  onChange={e => updateMapping(idx, 'crmField', e.target.value)}
+                                  className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-lg bg-slate-50 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                >
+                                  <option value="">Selecione o campo CRM</option>
+                                  {(['Principal', 'Financiamento', 'Consórcio',
+                                    ...Array.from(new Set(crmFields.map(f => f.tab).filter(t => !['Principal','Financiamento','Consórcio'].includes(t))))
+                                  ]).map(tabName => (
+                                    <optgroup key={tabName} label={tabName}>
+                                      {crmFields.filter(f => f.tab === tabName).map(f => (
+                                        <option key={f.key} value={f.key}>{f.name}</option>
+                                      ))}
+                                    </optgroup>
+                                  ))}
+                                </select>
+
+                                {/* Remover */}
+                                <button
+                                  type="button"
+                                  onClick={() => removeMapping(idx)}
+                                  className="text-slate-300 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-red-50"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
                   {/* Default Stage */}

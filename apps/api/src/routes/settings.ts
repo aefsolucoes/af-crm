@@ -139,4 +139,97 @@ router.post('/meta-leads', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── Meta Lead Ads — buscar formulários e campos via Graph API ───────────────
+
+// GET /api/settings/meta-leads/forms
+router.get('/meta-leads/forms', async (req: AuthRequest, res: Response) => {
+  try {
+    const config = await prisma.metaLeadsConfig.findUnique({
+      where: { accountId: req.user!.accountId },
+    });
+
+    if (!config?.pageAccessToken) {
+      return res.status(400).json({ error: 'Configure o Page Access Token primeiro' });
+    }
+
+    const token = config.pageAccessToken;
+
+    // Busca páginas que o token tem acesso
+    const pagesResp = await fetch(
+      `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token&access_token=${token}`
+    );
+    const pagesData = await pagesResp.json() as {
+      data?: { id: string; name: string; access_token: string }[];
+      error?: { message: string };
+    };
+
+    if (pagesData.error) {
+      return res.status(400).json({ error: `Erro Meta API: ${pagesData.error.message}` });
+    }
+
+    const pages = pagesData.data || [];
+    const allForms: { id: string; name: string; status: string; pageId: string; pageName: string }[] = [];
+
+    for (const page of pages) {
+      const pageToken = page.access_token || token;
+      const formsResp = await fetch(
+        `https://graph.facebook.com/v19.0/${page.id}/leadgen_forms?fields=id,name,status&access_token=${pageToken}`
+      );
+      const formsData = await formsResp.json() as {
+        data?: { id: string; name: string; status: string }[];
+      };
+
+      for (const form of formsData.data || []) {
+        allForms.push({
+          id: form.id,
+          name: form.name,
+          status: form.status,
+          pageId: page.id,
+          pageName: page.name,
+        });
+      }
+    }
+
+    res.json({ forms: allForms, pages: pages.map(p => ({ id: p.id, name: p.name })) });
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar formulários Meta' });
+  }
+});
+
+// GET /api/settings/meta-leads/forms/:formId/fields
+router.get('/meta-leads/forms/:formId/fields', async (req: AuthRequest, res: Response) => {
+  try {
+    const config = await prisma.metaLeadsConfig.findUnique({
+      where: { accountId: req.user!.accountId },
+    });
+
+    if (!config?.pageAccessToken) {
+      return res.status(400).json({ error: 'Configure o Page Access Token primeiro' });
+    }
+
+    const resp = await fetch(
+      `https://graph.facebook.com/v19.0/${req.params.formId}?fields=name,questions&access_token=${config.pageAccessToken}`
+    );
+    const data = await resp.json() as {
+      name?: string;
+      questions?: { type: string; key: string; label?: string }[];
+      error?: { message: string };
+    };
+
+    if (data.error) {
+      return res.status(400).json({ error: `Erro Meta API: ${data.error.message}` });
+    }
+
+    const fields = (data.questions || []).map(q => ({
+      key: q.key,
+      label: q.label || q.type,
+      type: q.type,
+    }));
+
+    res.json({ formName: data.name, fields });
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar campos do formulário' });
+  }
+});
+
 export default router;
