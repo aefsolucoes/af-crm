@@ -179,7 +179,7 @@ async function main() {
     { tab: 'Financiamento', name: 'Valor de entrada', key: 'valor_entrada', type: 'NUMBER' as const, options: [], order: 7 },
     { tab: 'Financiamento', name: 'Primeira parcela', key: 'primeira_parcela', type: 'NUMBER' as const, options: [], order: 8 },
     { tab: 'Financiamento', name: 'Última parcela', key: 'ultima_parcela', type: 'NUMBER' as const, options: [], order: 9 },
-    { tab: 'Financiamento', name: 'Instituição', key: 'instituicao', type: 'SELECT' as const, options: ['Caixa', 'Bradesco', 'Itaú', 'Santander', 'BB', 'Inter', 'Outro'], order: 10 },
+    { tab: 'Financiamento', name: 'Instituição', key: 'instituicao', type: 'SELECT' as const, options: ['Caixa', 'Bradesco', 'Itaú', 'Santander', 'BB', 'BRB', 'Inter', 'Outro'], order: 10 },
     { tab: 'Financiamento', name: 'Taxa efetiva', key: 'taxa_efetiva', type: 'TEXT' as const, options: [], order: 11 },
     { tab: 'Financiamento', name: 'Prazo', key: 'prazo_financ', type: 'TEXT' as const, options: [], order: 12 },
     { tab: 'Financiamento', name: 'FGTS?', key: 'fgts', type: 'TEXT' as const, options: [], order: 13 },

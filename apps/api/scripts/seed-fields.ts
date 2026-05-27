@@ -31,7 +31,7 @@ const fieldDefs: { tab: string; name: string; key: string; type: FieldType; opti
   { tab: 'Financiamento', name: 'Valor de entrada', key: 'valor_entrada', type: 'NUMBER', options: [], order: 5 },
   { tab: 'Financiamento', name: 'Primeira parcela', key: 'primeira_parcela', type: 'NUMBER', options: [], order: 6 },
   { tab: 'Financiamento', name: 'Última parcela', key: 'ultima_parcela', type: 'NUMBER', options: [], order: 7 },
-  { tab: 'Financiamento', name: 'Instituição', key: 'instituicao', type: 'SELECT', options: ['Caixa', 'Bradesco', 'Itaú', 'Santander', 'BB', 'Inter', 'Outro'], order: 8 },
+  { tab: 'Financiamento', name: 'Instituição', key: 'instituicao', type: 'SELECT', options: ['Caixa', 'Bradesco', 'Itaú', 'Santander', 'BB', 'BRB', 'Inter', 'Outro'], order: 8 },
   { tab: 'Financiamento', name: 'Taxa efetiva', key: 'taxa_efetiva', type: 'TEXT', options: [], order: 9 },
   { tab: 'Financiamento', name: 'Prazo', key: 'prazo_financ', type: 'TEXT', options: [], order: 10 },
   { tab: 'Financiamento', name: 'FGTS?', key: 'fgts', type: 'TEXT', options: [], order: 11 },

@@ -54,6 +54,21 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// PATCH /api/fields/by-key/:key — atualiza opções pelo key do campo
+router.patch('/by-key/:key', async (req: AuthRequest, res: Response) => {
+  try {
+    const { options } = req.body;
+    if (!Array.isArray(options)) return res.status(400).json({ error: 'options deve ser array' });
+    const result = await prisma.fieldDefinition.updateMany({
+      where: { accountId: req.user!.accountId, key: req.params.key },
+      data: { options },
+    });
+    res.json({ updated: result.count });
+  } catch {
+    res.status(500).json({ error: 'Erro ao atualizar campo' });
+  }
+});
+
 // PUT /api/fields/:id
 router.put('/:id', async (req: AuthRequest, res: Response) => {
   try {
