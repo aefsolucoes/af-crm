@@ -1,9 +1,9 @@
 'use client';
-import { LeadDetail, Stage, User } from '@/types';
+import { LeadDetail, Pipeline, Stage, User } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency } from '@/lib/utils';
-import { ChevronRight, Building2, DollarSign, Trophy, XCircle, RotateCcw, X, Plus, Archive, ArchiveRestore } from 'lucide-react';
+import { ChevronRight, Building2, DollarSign, Trophy, XCircle, RotateCcw, X, Plus, Archive, ArchiveRestore, Shuffle } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useState } from 'react';
@@ -18,15 +18,26 @@ interface LeadHeaderProps {
 export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
   const [changing, setChanging] = useState(false);
   const [changingUser, setChangingUser] = useState(false);
+  const [changingPipeline, setChangingPipeline] = useState(false);
   const [tagInput, setTagInput] = useState('');
   const [editingTags, setEditingTags] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [showPipelineModal, setShowPipelineModal] = useState(false);
+  const [selectedPipelineId, setSelectedPipelineId] = useState('');
+  const [selectedStageId, setSelectedStageId] = useState('');
   const router = useRouter();
 
   const { data: users = [] } = useQuery<User[]>({
     queryKey: ['users'],
     queryFn: async () => { const { data } = await api.get('/api/users'); return data; },
   });
+
+  const { data: pipelines = [] } = useQuery<Pipeline[]>({
+    queryKey: ['pipelines'],
+    queryFn: async () => { const { data } = await api.get('/api/pipelines'); return data; },
+  });
+
+  const selectedPipeline = pipelines.find(p => p.id === selectedPipelineId);
 
   async function handleArchive(archive: boolean) {
     if (archive && !confirm('Arquivar este lead? Ele não aparecerá mais no funil, mas pode ser restaurado depois.')) return;
@@ -40,6 +51,25 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
       toast('Erro ao arquivar lead', 'error');
     } finally {
       setArchiving(false);
+    }
+  }
+
+  async function handlePipelineMove() {
+    if (!selectedPipelineId) return;
+    setChangingPipeline(true);
+    try {
+      await api.patch(`/api/leads/${lead.id}/pipeline`, {
+        pipelineId: selectedPipelineId,
+        stageId: selectedStageId || undefined,
+      });
+      const p = pipelines.find(p => p.id === selectedPipelineId);
+      toast(`Lead movido para "${p?.name}"!`);
+      setShowPipelineModal(false);
+      onStageChange();
+    } catch {
+      toast('Erro ao mover lead', 'error');
+    } finally {
+      setChangingPipeline(false);
     }
   }
 
@@ -227,6 +257,22 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
           </div>
 
           <div className="text-right">
+            <p className="text-xs text-slate-500 mb-1">Funil atual</p>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-semibold text-slate-700 bg-slate-100 px-3 py-1.5 rounded-lg">
+                {lead.pipeline.name}
+              </span>
+              <button
+                onClick={() => { setSelectedPipelineId(''); setSelectedStageId(''); setShowPipelineModal(true); }}
+                className="p-1.5 border border-af-border rounded-lg text-slate-400 hover:text-af-mid hover:bg-af-light transition-colors"
+                title="Mover para outro funil"
+              >
+                <Shuffle size={14} />
+              </button>
+            </div>
+          </div>
+
+          <div className="text-right">
             <p className="text-xs text-slate-500 mb-1">Estágio atual</p>
             <select
               value={lead.stageId}
@@ -241,6 +287,65 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
           </div>
         </div>
       </div>
+
+      {/* Modal — mover para outro funil */}
+      {showPipelineModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowPipelineModal(false)}>
+          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <Shuffle size={16} className="text-af-mid" /> Mover para outro funil
+            </h3>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Funil de destino</label>
+                <select
+                  value={selectedPipelineId}
+                  onChange={e => { setSelectedPipelineId(e.target.value); setSelectedStageId(''); }}
+                  className="w-full px-3 py-2 text-sm border border-af-border rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-af-accent"
+                >
+                  <option value="">Selecione o funil</option>
+                  {pipelines.filter(p => p.id !== lead.pipelineId).map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedPipeline && (
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Estágio de entrada</label>
+                  <select
+                    value={selectedStageId}
+                    onChange={e => setSelectedStageId(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-af-border rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-af-accent"
+                  >
+                    <option value="">Primeiro estágio (padrão)</option>
+                    {selectedPipeline.stages.map((s: Stage) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 mt-5">
+              <button
+                onClick={() => setShowPipelineModal(false)}
+                className="flex-1 py-2 text-sm border border-af-border rounded-xl text-slate-600 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handlePipelineMove}
+                disabled={!selectedPipelineId || changingPipeline}
+                className="flex-1 py-2 text-sm bg-af-mid text-white rounded-xl font-semibold hover:bg-af-dark disabled:opacity-50 transition-colors"
+              >
+                {changingPipeline ? 'Movendo...' : 'Mover lead'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Pipeline breadcrumb */}
       <div className="flex items-center gap-1 mt-4 overflow-x-auto scrollbar-thin pb-1">

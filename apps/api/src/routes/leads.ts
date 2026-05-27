@@ -72,6 +72,35 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
   }
 });
 
+// PATCH /api/leads/:id/pipeline — mover lead para outro pipeline (vai para o 1º estágio)
+router.patch('/:id/pipeline', async (req: AuthRequest, res: Response) => {
+  try {
+    const { pipelineId, stageId } = req.body as { pipelineId: string; stageId?: string };
+    if (!pipelineId) return res.status(400).json({ error: 'pipelineId obrigatório' });
+
+    // Se não passou stageId, pega o primeiro do pipeline
+    let targetStageId = stageId;
+    if (!targetStageId) {
+      const pipeline = await prisma.pipeline.findUnique({
+        where: { id: pipelineId },
+        include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+      });
+      if (!pipeline || !pipeline.stages[0]) {
+        return res.status(404).json({ error: 'Pipeline ou estágio não encontrado' });
+      }
+      targetStageId = pipeline.stages[0].id;
+    }
+
+    const lead = await prisma.lead.update({
+      where: { id: req.params.id },
+      data: { pipelineId, stageId: targetStageId },
+    });
+    res.json(lead);
+  } catch {
+    res.status(500).json({ error: 'Erro ao mover lead para outro pipeline' });
+  }
+});
+
 // PATCH /api/leads/:id/archive  — arquivar ou desarquivar
 router.patch('/:id/archive', async (req: AuthRequest, res: Response) => {
   try {
