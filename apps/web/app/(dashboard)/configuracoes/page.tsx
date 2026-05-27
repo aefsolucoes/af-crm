@@ -56,6 +56,9 @@ export default function ConfiguracoesPage() {
     const socket = getSocket();
     socketRef.current = socket;
 
+    // Ensure socket is connected
+    if (!socket.connected) socket.connect();
+
     const accountId = typeof window !== 'undefined'
       ? JSON.parse(localStorage.getItem('af_user') || '{}')?.accountId
       : null;
@@ -87,6 +90,30 @@ export default function ConfiguracoesPage() {
     setQrStatus('connecting');
     try {
       await api.post('/api/whatsapp-qr/connect');
+
+      // Polling fallback: check status every 2s for 30s in case socket misses event
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        try {
+          const { data } = await api.get('/api/whatsapp-qr/status');
+          if (data.qr) {
+            setQrImage(data.qr);
+            setQrStatus('qr_ready');
+            setConnecting(false);
+            clearInterval(poll);
+          } else if (data.status === 'connected') {
+            setQrStatus('connected');
+            setConnecting(false);
+            clearInterval(poll);
+          } else if (data.status === 'disconnected' && attempts > 3) {
+            setQrStatus('disconnected');
+            setConnecting(false);
+            clearInterval(poll);
+          }
+        } catch { /* ignore */ }
+        if (attempts >= 15) { setConnecting(false); clearInterval(poll); }
+      }, 2000);
     } catch {
       toast('Erro ao iniciar conexão', 'error');
       setConnecting(false);
