@@ -220,33 +220,16 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       });
 
       if (!contact) {
-        // Tenta buscar foto de perfil do WhatsApp via Meta API
-        let avatarUrl: string | undefined;
-        try {
-          const config = await getWhatsAppConfig(accountId);
-          if (config?.accessToken && config?.phoneNumberId) {
-            const photoRes = await fetch(
-              `https://graph.facebook.com/v19.0/${config.phoneNumberId}/contacts?wa_id=${from}&fields=profile_picture_url`,
-              { headers: { Authorization: `Bearer ${config.accessToken}` } }
-            );
-            if (photoRes.ok) {
-              const photoData = await photoRes.json() as { data?: { profile_picture_url?: string }[] };
-              avatarUrl = photoData.data?.[0]?.profile_picture_url;
-            }
-          }
-        } catch { /* Foto é opcional — ignora erro */ }
-
         contact = await prisma.contact.create({
           data: {
             name: profileName,
             whatsappPhone: from,
             phone: formattedPhone,
-            avatar: avatarUrl || null,
             accountId,
           },
           include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
         });
-        console.log(`[WhatsApp] Contato criado: ${contact.id} — ${profileName} avatar=${!!avatarUrl}`);
+        console.log(`[WhatsApp] Contato criado: ${contact.id} — ${profileName}`);
       } else if (!contact.whatsappPhone) {
         await prisma.contact.update({
           where: { id: contact.id },
