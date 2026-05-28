@@ -1,11 +1,11 @@
 'use client';
 import { useState, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { ConversationList } from '@/components/inbox/conversation-list';
 import { ChatWindow } from '@/components/inbox/chat-window';
-import { LeadPanel } from '@/components/inbox/lead-panel';
-import { Conversation, Message, Lead } from '@/types';
+import { InboxLeadPanel } from '@/components/inbox/inbox-lead-panel';
+import { Conversation, Message, LeadDetail } from '@/types';
 import api from '@/lib/api';
 
 async function fetchConversations(): Promise<Conversation[]> {
@@ -18,7 +18,7 @@ async function fetchMessages(leadId: string): Promise<Message[]> {
   return data;
 }
 
-async function fetchLead(id: string): Promise<Lead> {
+async function fetchLead(id: string): Promise<LeadDetail> {
   const { data } = await api.get(`/api/leads/${id}`);
   return data;
 }
@@ -26,6 +26,7 @@ async function fetchLead(id: string): Promise<Lead> {
 export default function InboxPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
+  const queryClient = useQueryClient();
 
   const { data: conversations, isLoading: loadingConvs } = useQuery({
     queryKey: ['conversations'],
@@ -33,25 +34,33 @@ export default function InboxPage() {
     refetchInterval: 30000,
   });
 
-  const { data: messages, isLoading: loadingMsgs } = useQuery({
+  const { data: messages } = useQuery({
     queryKey: ['messages', selectedId],
     queryFn: () => fetchMessages(selectedId!),
     enabled: !!selectedId,
   });
 
-  const { data: lead } = useQuery({
+  const { data: lead, refetch: refetchLead } = useQuery({
     queryKey: ['lead', selectedId],
     queryFn: () => fetchLead(selectedId!),
     enabled: !!selectedId,
+    staleTime: 0,
   });
 
   const handleNewMessage = useCallback((msg: Message) => {
     setLocalMessages((prev) => [...prev, msg]);
   }, []);
 
+  const handleRefresh = useCallback(() => {
+    refetchLead();
+    queryClient.invalidateQueries({ queryKey: ['conversations'] });
+  }, [refetchLead, queryClient]);
+
   const allMessages = [...(messages || []), ...localMessages.filter((m) => !messages?.find((x) => x.id === m.id))];
 
   const selectedConv = conversations?.find((c) => c.id === selectedId);
+  const cf = ((lead as any)?.customFields || {}) as Record<string, string>;
+  const displayName = cf.participante_1 || lead?.contact?.name || lead?.name || '';
 
   return (
     <div className="flex flex-col h-full">
@@ -66,12 +75,12 @@ export default function InboxPage() {
 
         {selectedId && lead ? (
           <>
-            <LeadPanel lead={lead} />
+            <InboxLeadPanel lead={lead} onRefresh={handleRefresh} />
             <ChatWindow
               leadId={selectedId}
-              leadName={selectedConv?.contact?.name || selectedConv?.name || lead.name}
+              leadName={selectedConv?.contact?.name || selectedConv?.name || displayName}
               messages={allMessages}
-              notes={(lead as any).notes}
+              notes={lead.notes}
               onNewMessage={handleNewMessage}
             />
           </>
