@@ -40,7 +40,7 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5',
+        model: 'claude-3-haiku-20240307',
         max_tokens: 1024,
         system: SYSTEM_PROMPTS[mode],
         messages: [
@@ -51,8 +51,8 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
 
     if (!response.ok) {
       const err = await response.text();
-      console.error('[AI] Anthropic error:', err);
-      res.status(502).json({ error: 'Erro ao chamar a API de IA' });
+      console.error('[AI] Anthropic error:', response.status, err);
+      res.status(502).json({ error: `Erro Anthropic ${response.status}: ${err}` });
       return;
     }
 
