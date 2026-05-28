@@ -69,16 +69,17 @@ export async function sendWhatsAppMessage(
   }
 }
 
-// Finds or creates a dedicated "WhatsApp" pipeline for incoming leads
+// Finds or creates the "Caixa de Entrada" pipeline for incoming WhatsApp leads
 async function getOrCreateWhatsAppPipeline(accountId: string) {
-  // Try to find existing pipeline named "WhatsApp" or "Mensagens"
+  // Try to find existing pipeline named "Caixa de Entrada" (or legacy names)
   let pipeline = await prisma.pipeline.findFirst({
     where: {
       accountId,
       OR: [
-        { name: { contains: 'WhatsApp', mode: 'insensitive' } },
-        { name: { contains: 'Mensagens', mode: 'insensitive' } },
-        { name: { contains: 'Inbox', mode: 'insensitive' } },
+        { name: { contains: 'Caixa de Entrada', mode: 'insensitive' } },
+        { name: { contains: 'WhatsApp',          mode: 'insensitive' } },
+        { name: { contains: 'Mensagens',          mode: 'insensitive' } },
+        { name: { contains: 'Inbox',              mode: 'insensitive' } },
       ],
     },
     include: { stages: { orderBy: { order: 'asc' } } },
@@ -88,21 +89,22 @@ async function getOrCreateWhatsAppPipeline(accountId: string) {
   if (!pipeline) {
     pipeline = await prisma.pipeline.create({
       data: {
-        name: 'WhatsApp',
+        name: 'Caixa de Entrada',
         accountId,
         stages: {
           create: [
-            { name: 'Nova Mensagem',   order: 0, color: '#25D366' },
-            { name: 'Em Atendimento',  order: 1, color: '#128C7E' },
-            { name: 'Aguardando',      order: 2, color: '#F59E0B' },
-            { name: 'Qualificado',     order: 3, color: '#3B82F6' },
-            { name: 'Fechado',         order: 4, color: '#10B981' },
+            {
+              name: 'Leads de Entrada',
+              order: 0,
+              color: '#25D366',
+              // description field if schema supports it, otherwise ignored
+            },
           ],
         },
       },
       include: { stages: { orderBy: { order: 'asc' } } },
     });
-    console.log(`[WhatsApp] Pipeline "WhatsApp" criado para accountId=${accountId}`);
+    console.log(`[WhatsApp] Pipeline "Caixa de Entrada" criado para accountId=${accountId}`);
   }
 
   return pipeline;
