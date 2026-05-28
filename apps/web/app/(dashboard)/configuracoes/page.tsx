@@ -288,6 +288,9 @@ export default function ConfiguracoesPage() {
       });
       toast('Configurações salvas!');
       setIsNew(false);
+      // Recarrega para mostrar a URL do Webhook
+      const { data } = await api.get('/api/settings/whatsapp');
+      if (data) setConfig(data);
     } catch {
       toast('Erro ao salvar configurações', 'error');
     } finally {
