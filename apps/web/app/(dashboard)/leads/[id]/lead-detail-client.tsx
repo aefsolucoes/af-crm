@@ -1,5 +1,5 @@
 'use client';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
@@ -22,8 +22,25 @@ interface Props {
   id: string;
 }
 
-export default function LeadDetailClient({ id }: Props) {
+export default function LeadDetailClient({ id: propId }: Props) {
   const router = useRouter();
+
+  // Com Cloudflare Pages (output: 'export'), o Next.js pré-gera a página com
+  // id='placeholder'. No cliente, lemos o id real direto da URL do browser.
+  const [id, setId] = useState<string>(
+    propId && propId !== 'placeholder' ? propId : ''
+  );
+
+  useEffect(() => {
+    if (!id || id === 'placeholder') {
+      const urlId = window.location.pathname.split('/').pop();
+      if (urlId && urlId !== 'placeholder') {
+        setId(urlId);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
 
   const { data: lead, isLoading, isError, refetch } = useQuery({
@@ -50,6 +67,8 @@ export default function LeadDetailClient({ id }: Props) {
   const p2 = cf.participante_2;
   const displayName = p2 ? `${p1} / ${p2}` : p1;
 
+  const isWaiting = !id || id === 'placeholder';
+
   return (
     <div className="flex flex-col h-full">
       <Topbar title="Detalhe do Lead" />
@@ -60,7 +79,7 @@ export default function LeadDetailClient({ id }: Props) {
         </Button>
       </div>
 
-      {isLoading ? (
+      {isWaiting || isLoading ? (
         <div className="flex-1 p-6 space-y-4">
           <Skeleton className="h-24 w-full" />
           <div className="grid grid-cols-3 gap-4 h-96">
@@ -81,10 +100,8 @@ export default function LeadDetailClient({ id }: Props) {
         <>
           <LeadHeader lead={lead} onStageChange={refetch} />
           <div className="flex flex-1 overflow-hidden">
-            {/* Sidebar esquerda: campos personalizados */}
             <LeadSidebar lead={lead} onRefresh={refetch} />
 
-            {/* Centro: conversa WhatsApp */}
             <div className="flex-1 overflow-hidden relative">
               <ChatWindow
                 leadId={lead.id}
@@ -94,7 +111,6 @@ export default function LeadDetailClient({ id }: Props) {
               />
             </div>
 
-            {/* Painel direito: tarefas, notas, histórico */}
             <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">
               <LeadTasks
                 tasks={lead.tasks}
