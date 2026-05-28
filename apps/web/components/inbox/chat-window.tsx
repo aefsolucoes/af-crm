@@ -134,9 +134,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
     | { kind: 'message'; data: Message }
     | { kind: 'note';    data: Note    };
 
+  // Apenas eventos de fluxo no chat (etapa e edição de dados)
+  const flowNotes = notes.filter(n => n.type === 'STAGE_CHANGE' || n.type === 'DATA_EDIT');
+
   const allItems: TimelineItem[] = [
     ...messages.map(m => ({ kind: 'message' as const, data: m })),
-    ...notes.map(n => ({ kind: 'note' as const, data: n })),
+    ...flowNotes.map(n => ({ kind: 'note' as const, data: n })),
   ].sort((a, b) => new Date(a.data.createdAt).getTime() - new Date(b.data.createdAt).getTime());
 
   const grouped: { date: string; items: TimelineItem[] }[] = [];
