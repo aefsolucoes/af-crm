@@ -34,7 +34,13 @@ export async function sendWhatsAppMessage(
     return { success: false, error: 'WhatsApp inativo. Acesse Configurações → API Oficial e ative a integração.' };
   }
 
-  const phone = to.replace(/\D/g, '');
+  let phone = to.replace(/\D/g, '');
+  // Ensure Brazilian country code (55) is present
+  // If number has 10-11 digits (local format), prepend 55
+  if (phone.length === 10 || phone.length === 11) {
+    phone = `55${phone}`;
+  }
+  console.log(`[WA Send] Sending to phone="${phone}" (original="${to}")`);
   const url = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
 
   try {
