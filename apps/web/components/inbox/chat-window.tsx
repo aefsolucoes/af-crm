@@ -46,6 +46,8 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
   const [sending, setSending] = useState(false);
   const [aiLoading, setAiLoading] = useState<AIMode | null>(null);
   const [showAI, setShowAI] = useState(false);
+  // Mapa de status atualizado via socket: messageId → status
+  const [statusMap, setStatusMap] = useState<Record<string, string>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -56,12 +58,20 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
   useEffect(() => {
     const socket = getSocket();
     socket.emit('join_lead', leadId);
+
     socket.on('new_message', (msg: Message) => {
       if (msg.leadId === leadId) onNewMessage(msg);
     });
+
+    // Atualiza tick em tempo real quando a Meta confirma entrega/leitura
+    socket.on('message_status', ({ id, status }: { id: string; status: string }) => {
+      setStatusMap(prev => ({ ...prev, [id]: status }));
+    });
+
     return () => {
       socket.emit('leave_lead', leadId);
       socket.off('new_message');
+      socket.off('message_status');
     };
   }, [leadId, onNewMessage]);
 
@@ -190,6 +200,9 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
               const time = new Date(msg.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
               const showTail = i === 0 || dayMsgs[i - 1]?.direction !== msg.direction;
 
+              // Status mais atualizado: socket override > valor do banco
+              const liveStatus = statusMap[msg.id] || (msg as any).status;
+
               return (
                 <div
                   key={msg.id}
@@ -209,7 +222,7 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
                     <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{msg.content}</p>
                     <div className={cn('absolute bottom-2 right-3 flex items-center gap-1')}>
                       <span className="text-xs text-slate-400">{time}</span>
-                      {isOut && <StatusTick status={(msg as any).status} />}
+                      {isOut && <StatusTick status={liveStatus} />}
                     </div>
                   </div>
                 </div>

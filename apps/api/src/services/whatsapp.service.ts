@@ -141,6 +141,53 @@ function formatPhoneDisplay(raw: string): string {
   return `+${raw}`;
 }
 
+// Processa callbacks de status (sent → delivered → read)
+export async function processWhatsAppStatus(body: any, io: any) {
+  try {
+    for (const entry of body?.entry || []) {
+      for (const change of entry?.changes || []) {
+        const statuses = change?.value?.statuses;
+        if (!statuses?.length) continue;
+
+        for (const s of statuses) {
+          const externalId = s.id as string;             // wamid.XXX
+          const rawStatus  = (s.status as string || '').toUpperCase(); // sent/delivered/read
+
+          // Mapeia para enum do banco
+          const statusMap: Record<string, string> = {
+            SENT:      'SENT',
+            DELIVERED: 'DELIVERED',
+            READ:      'READ',
+            FAILED:    'FAILED',
+          };
+          const newStatus = statusMap[rawStatus];
+          if (!newStatus || !externalId) continue;
+
+          // Atualiza mensagem pelo externalId
+          const updated = await prisma.message.updateMany({
+            where: { externalId },
+            data:  { status: newStatus as any },
+          });
+
+          if (updated.count > 0) {
+            console.log(`[WA Status] ${externalId} → ${newStatus}`);
+            // Busca a mensagem para emitir via socket
+            const msg = await prisma.message.findFirst({ where: { externalId } });
+            if (msg && io) {
+              io.to(`lead:${msg.leadId}`).emit('message_status', {
+                id: msg.id,
+                status: newStatus,
+              });
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[WA Status] Erro:', err);
+  }
+}
+
 export async function processIncomingWhatsApp(body: any, accountId: string, io: any) {
   try {
     const entry = body?.entry?.[0];

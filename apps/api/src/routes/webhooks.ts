@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { processIncomingWhatsApp } from '../services/whatsapp.service';
+import { processIncomingWhatsApp, processWhatsAppStatus } from '../services/whatsapp.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -230,6 +230,11 @@ router.post('/whatsapp', async (req: Request, res: Response) => {
     }
 
     const io = (req as any).app.get('io');
+
+    // Processa status updates (delivered/read) — não precisa de config de conta
+    await processWhatsAppStatus(body, io);
+
+    // Processa mensagens recebidas
     await processIncomingWhatsApp(body, config.accountId, io);
   } catch (err) {
     console.error('[WhatsApp] Webhook POST error:', err);
