@@ -74,13 +74,38 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
     setForm(prev => {
       // Aplica máscara nos campos de telefone
       const next = { ...prev, [field]: (field === 'telefone_1' || field === 'telefone_2') ? maskPhone(value) : value };
-      // Auto-fill valor_entrada = valor_credito - valor_imovel
-      if (field === 'valor_credito' || field === 'valor_imovel') {
-        const credito = parseBRNumber(field === 'valor_credito' ? value : prev.valor_credito);
+
+      // ── Cálculo triangular: imóvel = crédito + entrada ──
+      // Quaisquer dois campos preenchidos calculam o terceiro automaticamente
+      if (field === 'valor_imovel' || field === 'valor_credito' || field === 'valor_entrada') {
         const imovel  = parseBRNumber(field === 'valor_imovel'  ? value : prev.valor_imovel);
-        // Entrada = Imóvel - Crédito (ex: R$300k imóvel - R$250k crédito = R$50k entrada)
-        next.valor_entrada = imovel > 0 || credito > 0 ? String(Math.max(0, imovel - credito)) : '';
+        const credito = parseBRNumber(field === 'valor_credito' ? value : prev.valor_credito);
+        const entrada = parseBRNumber(field === 'valor_entrada' ? value : prev.valor_entrada);
+
+        if (field === 'valor_imovel') {
+          // Imóvel mudou: se crédito preenchido → calcula entrada; senão se entrada preenchida → calcula crédito
+          if (value && prev.valor_credito) {
+            next.valor_entrada = String(Math.max(0, imovel - credito));
+          } else if (value && prev.valor_entrada) {
+            next.valor_credito = String(Math.max(0, imovel - entrada));
+          }
+        } else if (field === 'valor_credito') {
+          // Crédito mudou: se imóvel preenchido → calcula entrada; senão se entrada preenchida → calcula imóvel
+          if (value && prev.valor_imovel) {
+            next.valor_entrada = String(Math.max(0, imovel - credito));
+          } else if (value && prev.valor_entrada) {
+            next.valor_imovel = String(entrada + credito);
+          }
+        } else if (field === 'valor_entrada') {
+          // Entrada mudou: se crédito preenchido → calcula imóvel; senão se imóvel preenchido → calcula crédito
+          if (value && prev.valor_credito) {
+            next.valor_imovel = String(entrada + credito);
+          } else if (value && prev.valor_imovel) {
+            next.valor_credito = String(Math.max(0, imovel - entrada));
+          }
+        }
       }
+
       return next;
     });
   }
@@ -283,9 +308,12 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
 
         {/* ── Valores em destaque ── */}
         <section className="rounded-xl border-2 border-af-mid/30 p-4 space-y-3 bg-af-light/20">
-          <p className="text-xs font-semibold text-af-mid uppercase tracking-wider">Valores</p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-af-mid uppercase tracking-wider">Valores</p>
+            <span className="text-xs text-slate-400 italic">Preencha 2 campos → o 3º é calculado</span>
+          </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <Input
               label="Valor do imóvel (R$)"
               type="text"
@@ -302,22 +330,13 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
               onChange={e => handleChange('valor_credito', e.target.value)}
               placeholder="Ex: 250000"
             />
-          </div>
-
-          <div>
-            <label className={labelCls}>
-              Valor de entrada (R$)
-              <span className="ml-1 text-xs font-normal text-slate-400">(calculado automaticamente)</span>
-            </label>
-            <input
-              readOnly
-              value={
-                form.valor_entrada
-                  ? Number(form.valor_entrada).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-                  : ''
-              }
-              placeholder="Preenchido automaticamente"
-              className="w-full px-3 py-2 text-sm border border-af-border rounded-lg bg-slate-50 text-slate-500 cursor-default outline-none"
+            <Input
+              label="Valor de entrada (R$)"
+              type="text"
+              inputMode="numeric"
+              value={form.valor_entrada}
+              onChange={e => handleChange('valor_entrada', e.target.value)}
+              placeholder="Ex: 50000"
             />
           </div>
         </section>

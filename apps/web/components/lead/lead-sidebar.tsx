@@ -169,14 +169,33 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
     setSaving(true);
     const baseValues = { ...customValues, [key]: value };
 
-    // Auto-fill valor_entrada = valor_credito - valor_imovel
+    // ── Cálculo triangular: imóvel = crédito + entrada ──
+    // Quaisquer dois campos preenchidos calculam o terceiro automaticamente
     let newValues = baseValues;
-    if (key === 'valor_credito' || key === 'valor_imovel') {
-      const credito = parseBRNumber(String(key === 'valor_credito' ? value : (customValues.valor_credito ?? '0')));
+    if (key === 'valor_imovel' || key === 'valor_credito' || key === 'valor_entrada') {
       const imovel  = parseBRNumber(String(key === 'valor_imovel'  ? value : (customValues.valor_imovel  ?? '0')));
-      // Entrada = Imóvel - Crédito
-      const entrada = Math.max(0, imovel - credito);
-      newValues = { ...baseValues, valor_entrada: String(entrada) };
+      const credito = parseBRNumber(String(key === 'valor_credito' ? value : (customValues.valor_credito ?? '0')));
+      const entrada = parseBRNumber(String(key === 'valor_entrada' ? value : (customValues.valor_entrada ?? '0')));
+
+      if (key === 'valor_imovel') {
+        if (credito > 0) {
+          newValues = { ...baseValues, valor_entrada: String(Math.max(0, imovel - credito)) };
+        } else if (entrada > 0) {
+          newValues = { ...baseValues, valor_credito: String(Math.max(0, imovel - entrada)) };
+        }
+      } else if (key === 'valor_credito') {
+        if (imovel > 0) {
+          newValues = { ...baseValues, valor_entrada: String(Math.max(0, imovel - credito)) };
+        } else if (entrada > 0) {
+          newValues = { ...baseValues, valor_imovel: String(entrada + credito) };
+        }
+      } else if (key === 'valor_entrada') {
+        if (credito > 0) {
+          newValues = { ...baseValues, valor_imovel: String(entrada + credito) };
+        } else if (imovel > 0) {
+          newValues = { ...baseValues, valor_credito: String(Math.max(0, imovel - entrada)) };
+        }
+      }
     }
 
     setCustomValues(newValues);
