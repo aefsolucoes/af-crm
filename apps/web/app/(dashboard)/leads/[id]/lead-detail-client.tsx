@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { LeadHeader } from '@/components/lead/lead-header';
@@ -10,7 +10,7 @@ import { LeadSidebar } from '@/components/lead/lead-sidebar';
 import { LeadDetail, Message } from '@/types';
 import api from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 async function fetchLead(id: string): Promise<LeadDetail> {
@@ -20,17 +20,21 @@ async function fetchLead(id: string): Promise<LeadDetail> {
 
 export default function LeadDetailClient() {
   const params = useParams();
-  const id = (params?.id as string) || '';
+  const pathname = usePathname();
   const router = useRouter();
+
+  // Extrai id de params ou do pathname como fallback
+  const id = (params?.id as string) || pathname?.split('/').pop() || '';
 
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
 
-  const { data: lead, isLoading, refetch } = useQuery({
+  const { data: lead, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['lead', id],
     queryFn: () => fetchLead(id),
     refetchOnMount: 'always',
     staleTime: 0,
     enabled: !!id,
+    retry: 2,
   });
 
   const handleNewMessage = useCallback((msg: Message) => {
@@ -67,6 +71,14 @@ export default function LeadDetailClient() {
             <Skeleton className="col-span-1" />
           </div>
         </div>
+      ) : isError ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-400 text-sm">
+          <p>Erro ao carregar lead. Verifique sua conexão.</p>
+          <Button variant="secondary" size="sm" onClick={() => refetch()}>
+            <RefreshCw size={13} />
+            Tentar novamente
+          </Button>
+        </div>
       ) : lead ? (
         <>
           <LeadHeader lead={lead} onStageChange={refetch} />
@@ -96,8 +108,12 @@ export default function LeadDetailClient() {
           </div>
         </>
       ) : (
-        <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
-          Lead não encontrado
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-400 text-sm">
+          <p>Lead não encontrado.</p>
+          <Button variant="secondary" size="sm" onClick={() => refetch()}>
+            <RefreshCw size={13} />
+            Tentar novamente
+          </Button>
         </div>
       )}
     </div>
