@@ -70,6 +70,36 @@ router.post('/whatsapp', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /api/settings/whatsapp/test — testa se o token + phoneNumberId estão corretos
+router.get('/whatsapp/test', async (req: AuthRequest, res: Response) => {
+  try {
+    const config = await getWhatsAppConfig(req.user!.accountId);
+    if (!config) return res.status(400).json({ ok: false, error: 'WhatsApp não configurado' });
+    if (!config.active) return res.status(400).json({ ok: false, error: 'WhatsApp inativo nas configurações' });
+
+    // Chama a API da Meta para verificar o phoneNumberId (endpoint de perfil do número)
+    const testRes = await fetch(
+      `https://graph.facebook.com/v19.0/${config.phoneNumberId}?fields=display_phone_number,verified_name`,
+      { headers: { Authorization: `Bearer ${config.accessToken}` } }
+    );
+    const testJson = await testRes.json() as any;
+
+    if (!testRes.ok || testJson.error) {
+      const code = testJson.error?.code ?? testRes.status;
+      const msg  = testJson.error?.message ?? 'Erro desconhecido';
+      return res.json({ ok: false, error: `${msg} (código: ${code})`, code });
+    }
+
+    return res.json({
+      ok: true,
+      phoneNumber: testJson.display_phone_number,
+      name: testJson.verified_name,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: 'Falha na conexão com a API da Meta' });
+  }
+});
+
 // ─── Meta Lead Ads Settings ──────────────────────────────────────────────────
 
 const metaLeadsSchema = z.object({

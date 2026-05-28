@@ -77,10 +77,15 @@ export async function sendWhatsAppMessage(
     };
 
     if (!res.ok || json.error) {
-      const errMsg = json.error?.message || 'Erro desconhecido';
-      console.error(`[WhatsApp] Send error para "${phone}":`, json.error);
-      // Inclui o número tentado na mensagem de erro para diagnóstico
-      return { success: false, error: `${errMsg} (número: ${phone})` };
+      const errMsg  = json.error?.message || 'Erro desconhecido';
+      const errCode = json.error?.code ?? res.status;
+      console.error(`[WhatsApp] Send error code=${errCode} para "${phone}":`, json.error);
+
+      // Código 190 = token inválido/expirado
+      if (errCode === 190) {
+        return { success: false, error: `Token de acesso inválido ou expirado. Acesse Configurações → API Oficial e gere um novo token. (código: 190)` };
+      }
+      return { success: false, error: `${errMsg} (código: ${errCode}, número: ${phone})` };
     }
 
     return { success: true, externalId: json.messages?.[0]?.id };

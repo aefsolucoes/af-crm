@@ -78,7 +78,10 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
 
     const io = req.app.get('io');
     if (io) {
+      // Atualiza o chat em tempo real para quem está com o lead aberto
       io.to(`lead:${message.leadId}`).emit('new_message', message);
+      // Atualiza o kanban/funil para todos na conta (mostra histórico no card)
+      io.to(`account_${req.user!.accountId}`).emit('new_notification', { leadId: message.leadId, message });
     }
 
     res.status(201).json(message);

@@ -643,6 +643,22 @@ export default function ConfiguracoesPage() {
                       style={{ backgroundColor: '#075e54' }}>
                       {saving ? 'Salvando...' : 'Salvar configurações'}
                     </button>
+                    <button type="button"
+                      onClick={async () => {
+                        try {
+                          const { data } = await api.get('/api/settings/whatsapp/test');
+                          if (data.ok) {
+                            toast(`✅ Conexão OK — ${data.name} (${data.phoneNumber})`, 'success');
+                          } else {
+                            toast(`❌ ${data.error}`, 'error');
+                          }
+                        } catch {
+                          toast('Erro ao testar conexão', 'error');
+                        }
+                      }}
+                      className="px-4 py-3 rounded-xl border border-af-border text-slate-600 text-sm hover:bg-af-light whitespace-nowrap">
+                      Testar conexão
+                    </button>
                     <a href="https://developers.facebook.com/apps" target="_blank" rel="noreferrer"
                       className="flex items-center gap-1 px-4 py-3 rounded-xl border border-af-border text-slate-600 text-sm hover:bg-af-light">
                       <ExternalLink size={14} /> Meta
