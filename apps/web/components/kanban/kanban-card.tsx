@@ -4,9 +4,11 @@ import { CSS } from '@dnd-kit/utilities';
 import { Lead } from '@/types';
 import { formatCurrency, formatDate, CHANNEL_COLORS } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
-import { ArrowDownLeft, ArrowUpRight, Calendar, MessageCircle } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Calendar, MessageCircle, GitMerge } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { MergeModal } from './merge-modal';
 
 interface KanbanCardProps {
   lead: Lead;
@@ -27,6 +29,7 @@ function msgTime(dateStr: string) {
 export function KanbanCard({ lead }: KanbanCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const [showMerge, setShowMerge] = useState(false);
 
   // dnd-kit com distance:12 — cliques normais (<12px) passam para onClick
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: lead.id });
@@ -61,6 +64,14 @@ export function KanbanCard({ lead }: KanbanCardProps) {
   }
 
   return (
+    <>
+    <MergeModal
+      open={showMerge}
+      onClose={() => setShowMerge(false)}
+      onMerged={() => { queryClient.invalidateQueries({ queryKey: ['leads'] }); }}
+      leadId={lead.id}
+      leadName={displayName}
+    />
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
       <div
         className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer select-none"
@@ -128,10 +139,20 @@ export function KanbanCard({ lead }: KanbanCardProps) {
               <Calendar size={10} />
               <span>{formatDate(lead.createdAt)}</span>
             </div>
-            <Avatar name={lead.user.name} size="sm" />
+            <div className="flex items-center gap-1">
+              <button
+                onClick={e => { e.stopPropagation(); setShowMerge(true); }}
+                title="Verificar duplicatas"
+                className="p-1 rounded-lg text-slate-300 hover:text-amber-500 hover:bg-amber-50 transition-colors"
+              >
+                <GitMerge size={12} />
+              </button>
+              <Avatar name={lead.user.name} size="sm" />
+            </div>
           </div>
         </div>
       </div>
     </div>
+    </>
   );
 }

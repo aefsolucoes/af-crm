@@ -234,6 +234,143 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── GET /api/leads/:id/duplicates ────────────────────────────────────────────
+// Busca possíveis leads duplicados com base em nome e telefone
+router.get('/:id/duplicates', async (req: AuthRequest, res: Response) => {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: req.params.id },
+      include: { contact: true },
+    });
+    if (!lead) return res.status(404).json({ error: 'Lead não encontrado' });
+
+    const cf = (lead.customFields || {}) as Record<string, string>;
+    const phone1 = cf.telefone_1?.replace(/\D/g, '') || lead.contact?.phone?.replace(/\D/g, '') || '';
+    const name1  = (cf.participante_1 || lead.name || '').toLowerCase().trim();
+
+    // Busca todos os outros leads da conta
+    const allLeads = await prisma.lead.findMany({
+      where: { accountId: req.user!.accountId, id: { not: lead.id }, archived: false },
+      include: { contact: true, stage: { include: { pipeline: true } }, user: { select: { name: true } } },
+    });
+
+    const candidates: { lead: typeof allLeads[0]; score: number; reasons: string[] }[] = [];
+
+    for (const other of allLeads) {
+      const ocf = (other.customFields || {}) as Record<string, string>;
+      const otherPhone = ocf.telefone_1?.replace(/\D/g, '') || other.contact?.phone?.replace(/\D/g, '') || '';
+      const otherName  = (ocf.participante_1 || other.name || '').toLowerCase().trim();
+
+      const reasons: string[] = [];
+      let score = 0;
+
+      // Mesmo telefone (últimos 8 dígitos)
+      if (phone1 && otherPhone && phone1.slice(-8) === otherPhone.slice(-8)) {
+        score += 80;
+        reasons.push('Mesmo telefone');
+      }
+
+      // Nome igual ou muito similar
+      if (name1 && otherName) {
+        if (name1 === otherName) {
+          score += 60;
+          reasons.push('Nome idêntico');
+        } else {
+          // Verifica se primeiro nome coincide
+          const firstName1 = name1.split(' ')[0];
+          const firstNameO = otherName.split(' ')[0];
+          if (firstName1.length > 3 && firstName1 === firstNameO) {
+            score += 30;
+            reasons.push('Mesmo primeiro nome');
+          }
+        }
+      }
+
+      if (score >= 30) {
+        candidates.push({ lead: other, score, reasons });
+      }
+    }
+
+    // Ordena por score decrescente, limita a 5
+    const duplicates = candidates
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map(c => ({
+        id: c.lead.id,
+        name: c.lead.name,
+        stage: c.lead.stage?.name,
+        pipeline: c.lead.stage?.pipeline?.name,
+        user: c.lead.user?.name,
+        createdAt: c.lead.createdAt,
+        customFields: c.lead.customFields,
+        score: c.score,
+        reasons: c.reasons,
+      }));
+
+    res.json({ duplicates });
+  } catch (err) {
+    console.error('[Duplicates]', err);
+    res.status(500).json({ error: 'Erro ao buscar duplicatas' });
+  }
+});
+
+// ─── POST /api/leads/:id/merge ─────────────────────────────────────────────────
+// Une o lead duplicado (sourceId) neste lead (keepId = :id)
+// Migra: mensagens, tarefas, notas. Exclui o sourceId.
+router.post('/:id/merge', async (req: AuthRequest, res: Response) => {
+  try {
+    const keepId   = req.params.id;
+    const { sourceId } = req.body as { sourceId: string };
+    if (!sourceId) return res.status(400).json({ error: 'sourceId obrigatório' });
+
+    const [keep, source] = await Promise.all([
+      prisma.lead.findUnique({ where: { id: keepId, accountId: req.user!.accountId } }),
+      prisma.lead.findUnique({ where: { id: sourceId, accountId: req.user!.accountId } }),
+    ]);
+    if (!keep || !source) return res.status(404).json({ error: 'Lead não encontrado' });
+
+    // Merge customFields (keep tem prioridade)
+    const mergedCF = {
+      ...((source.customFields as any) || {}),
+      ...((keep.customFields as any) || {}),
+    };
+
+    // Merge value (maior vence)
+    const mergedValue = Math.max(keep.value || 0, source.value || 0) || undefined;
+
+    await prisma.$transaction([
+      // Move mensagens
+      prisma.message.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      // Move tarefas
+      prisma.task.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      // Move notas
+      prisma.note.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      // Atualiza lead principal com campos mesclados
+      prisma.lead.update({
+        where: { id: keepId },
+        data: { customFields: mergedCF as any, value: mergedValue },
+      }),
+      // Adiciona nota de auditoria
+      prisma.note.create({
+        data: {
+          leadId: keepId,
+          content: `Lead unificado com "${source.name}" (ID: ${sourceId}). Mensagens, tarefas e notas foram migradas.`,
+          type: 'DATA_EDIT',
+          userId: req.user!.id,
+        },
+      }),
+      // Deleta lead duplicado
+      prisma.lead.delete({ where: { id: sourceId } }),
+    ]);
+
+    const updated = await prisma.lead.findUnique({ where: { id: keepId } });
+    res.json({ success: true, lead: updated });
+  } catch (err) {
+    console.error('[Merge]', err);
+    res.status(500).json({ error: 'Erro ao unificar leads' });
+  }
+});
+
 // PATCH /api/leads/:id/custom-fields
 router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
   try {
