@@ -369,6 +369,76 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
             </>
           )}
 
+          {/* ── Campos built-in de Participantes (aba Principal) ── */}
+          {activeTab === 'Principal' && (() => {
+            const VINCULO_OPTS = ['CLT', 'Autônomo', 'Empresário', 'Aposentado', 'Servidor Público', 'Profissional Liberal', 'Outro'];
+
+            const builtinFields: { key: string; label: string; type?: 'select'; options?: string[] }[] = [
+              { key: 'participante_1', label: 'Participante 1' },
+              { key: 'telefone_1',    label: 'Telefone' },
+              { key: 'cpf_1',         label: 'CPF' },
+              { key: 'nascimento_1',  label: 'Nascimento', type: undefined },
+              { key: 'renda_1',       label: 'Renda' },
+              { key: 'email_1',       label: 'E-mail' },
+              { key: 'vinculo_1',     label: 'Tipo de vínculo', type: 'select', options: VINCULO_OPTS },
+              { key: 'participante_2', label: 'Participante 2' },
+              { key: 'telefone_2',    label: 'Telefone 2' },
+              { key: 'cpf_2',         label: 'CPF 2' },
+              { key: 'nascimento_2',  label: 'Nascimento 2' },
+              { key: 'renda_2',       label: 'Renda 2' },
+              { key: 'email_2',       label: 'E-mail 2' },
+              { key: 'vinculo_2',     label: 'Tipo de vínculo 2', type: 'select', options: VINCULO_OPTS },
+            ];
+
+            return builtinFields.map(({ key, label, type, options }) => (
+              <div key={key} className="group flex items-center justify-between py-2.5 border-b border-slate-100 gap-2">
+                <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">{label}</span>
+                <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
+                  {editingKey === key ? (
+                    type === 'select' ? (
+                      <select
+                        autoFocus
+                        className="text-xs border border-af-border rounded px-2 py-1 w-full bg-white focus:outline-none focus:border-af-mid"
+                        value={String(customValues[key] ?? '')}
+                        onChange={e => saveFieldValue(key, e.target.value)}
+                      >
+                        <option value="">Selecione</option>
+                        {options?.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    ) : (
+                      <div className="flex items-center gap-1 flex-1">
+                        <input
+                          autoFocus
+                          type={key.includes('nascimento') ? 'date' : key.includes('email') ? 'email' : 'text'}
+                          inputMode={key.includes('renda') ? 'numeric' : undefined}
+                          className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
+                          value={String(customValues[key] ?? '')}
+                          onChange={e => {
+                            const v = (key === 'telefone_1' || key === 'telefone_2')
+                              ? maskPhone(e.target.value) : e.target.value;
+                            setCustomValues(prev => ({ ...prev, [key]: v }));
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') saveFieldValue(key, String(customValues[key] ?? ''));
+                            if (e.key === 'Escape') setEditingKey(null);
+                          }}
+                        />
+                        <button onClick={() => saveFieldValue(key, String(customValues[key] ?? ''))} className="text-green-600 hover:text-green-700 flex-shrink-0"><Check size={12} /></button>
+                        <button onClick={() => setEditingKey(null)} className="text-slate-400 hover:text-slate-600 flex-shrink-0"><X size={12} /></button>
+                      </div>
+                    )
+                  ) : (
+                    <button onClick={() => setEditingKey(key)} className="flex-1 text-right hover:text-af-mid transition-colors min-w-0">
+                      {customValues[key]
+                        ? <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">{String(customValues[key])}</span>
+                        : <span className="text-slate-300 text-xs">...</span>}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ));
+          })()}
+
           {/* Custom fields for this tab */}
           {fieldsForTab.map(field => (
             <div
