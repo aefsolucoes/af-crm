@@ -78,8 +78,9 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
       });
       onNewMessage(data);
       setContent('');
-    } catch {
-      toast('Erro ao enviar mensagem', 'error');
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || err?.message || 'Erro ao enviar mensagem';
+      toast(msg, 'error');
     } finally {
       setSending(false);
     }
