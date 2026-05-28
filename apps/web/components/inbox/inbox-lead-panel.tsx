@@ -70,7 +70,7 @@ export function InboxLeadPanel({ lead, onRefresh }: InboxLeadPanelProps) {
         onCancel={() => { setGateOpen(false); setPendingStageId(null); }}
       />
 
-      <div className="w-80 flex-shrink-0 border-r border-af-border bg-white flex flex-col overflow-hidden">
+      <div className="w-80 flex-shrink-0 border-l border-af-border bg-white flex flex-col overflow-hidden">
 
         {/* ── Header do lead ── */}
         <div className="px-4 pt-4 pb-3 border-b border-af-border bg-af-light/30 flex-shrink-0">
