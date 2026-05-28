@@ -37,6 +37,42 @@ export const CHANNEL_LABELS: Record<string, string> = {
   EMAIL: 'E-mail',
 };
 
+/** Máscara CPF: 000.000.000-00 */
+export function maskCPF(value: string): string {
+  const d = value.replace(/\D/g, '').slice(0, 11);
+  return d
+    .replace(/(\d{3})(\d)/, '$1.$2')
+    .replace(/(\d{3})(\d)/, '$1.$2')
+    .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+}
+
+/**
+ * Máscara de dinheiro (formato brasileiro).
+ * Aceita strings brutas (de cálculos, ex: "50000") ou digitadas (ex: "50.000,00").
+ * Retorna string formatada: "50.000" ou "50.000,50"
+ */
+export function maskMoney(value: string): string {
+  if (!value) return '';
+  const trimmed = value.trim();
+  // Número inteiro puro (vem de cálculos automáticos)
+  if (/^\d+$/.test(trimmed)) {
+    const n = parseInt(trimmed, 10);
+    return n === 0 ? '' : n.toLocaleString('pt-BR');
+  }
+  // Decimal no formato EN (vem de cálculos: 50000.5)
+  if (/^\d+\.\d+$/.test(trimmed)) {
+    const n = parseFloat(trimmed);
+    return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  // Usuário digitando em formato BR (pode ter pontos de milhar e vírgula decimal)
+  const parts = trimmed.replace(/[^\d,]/g, '').split(',');
+  const intPart = parts[0] ? parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, '.') : '';
+  if (parts.length > 1) {
+    return `${intPart},${parts[1].slice(0, 2)}`;
+  }
+  return intPart;
+}
+
 export const CHANNEL_COLORS: Record<string, string> = {
   WHATSAPP: '#25D366',
   INSTAGRAM: '#E1306C',

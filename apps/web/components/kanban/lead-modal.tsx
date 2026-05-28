@@ -7,6 +7,7 @@ import { Stage, Contact, User } from '@/types';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
+import { maskCPF, maskMoney } from '@/lib/utils';
 
 interface LeadModalProps {
   open: boolean;
@@ -72,8 +73,14 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
 
   function handleChange(field: string, value: string) {
     setForm(prev => {
-      // Aplica máscara nos campos de telefone
-      const next = { ...prev, [field]: (field === 'telefone_1' || field === 'telefone_2') ? maskPhone(value) : value };
+      // Aplica máscaras por tipo de campo
+      const masked =
+        (field === 'telefone_1' || field === 'telefone_2') ? maskPhone(value) :
+        (field === 'cpf_1' || field === 'cpf_2') ? maskCPF(value) :
+        (field === 'renda_1' || field === 'renda_2' ||
+         field === 'valor_imovel' || field === 'valor_credito' || field === 'valor_entrada') ? maskMoney(value) :
+        value;
+      const next = { ...prev, [field]: masked };
 
       // ── Cálculo triangular: imóvel = crédito + entrada ──
       // Quaisquer dois campos preenchidos calculam o terceiro automaticamente
@@ -83,25 +90,22 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
         const entrada = parseBRNumber(field === 'valor_entrada' ? value : prev.valor_entrada);
 
         if (field === 'valor_imovel') {
-          // Imóvel mudou: se crédito preenchido → calcula entrada; senão se entrada preenchida → calcula crédito
           if (value && prev.valor_credito) {
-            next.valor_entrada = String(Math.max(0, imovel - credito));
+            next.valor_entrada = maskMoney(String(Math.max(0, imovel - credito)));
           } else if (value && prev.valor_entrada) {
-            next.valor_credito = String(Math.max(0, imovel - entrada));
+            next.valor_credito = maskMoney(String(Math.max(0, imovel - entrada)));
           }
         } else if (field === 'valor_credito') {
-          // Crédito mudou: se imóvel preenchido → calcula entrada; senão se entrada preenchida → calcula imóvel
           if (value && prev.valor_imovel) {
-            next.valor_entrada = String(Math.max(0, imovel - credito));
+            next.valor_entrada = maskMoney(String(Math.max(0, imovel - credito)));
           } else if (value && prev.valor_entrada) {
-            next.valor_imovel = String(entrada + credito);
+            next.valor_imovel = maskMoney(String(entrada + credito));
           }
         } else if (field === 'valor_entrada') {
-          // Entrada mudou: se crédito preenchido → calcula imóvel; senão se imóvel preenchido → calcula crédito
           if (value && prev.valor_credito) {
-            next.valor_imovel = String(entrada + credito);
+            next.valor_imovel = maskMoney(String(entrada + credito));
           } else if (value && prev.valor_imovel) {
-            next.valor_credito = String(Math.max(0, imovel - entrada));
+            next.valor_credito = maskMoney(String(Math.max(0, imovel - entrada)));
           }
         }
       }
@@ -214,7 +218,7 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
               inputMode="numeric"
               value={form.renda_1}
               onChange={e => handleChange('renda_1', e.target.value)}
-              placeholder="Ex: 5000"
+              placeholder="Ex: 5.000"
             />
           </div>
 
@@ -280,7 +284,7 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
               inputMode="numeric"
               value={form.renda_2}
               onChange={e => handleChange('renda_2', e.target.value)}
-              placeholder="Ex: 5000"
+              placeholder="Ex: 5.000"
             />
           </div>
 
@@ -320,7 +324,7 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
               inputMode="numeric"
               value={form.valor_imovel}
               onChange={e => handleChange('valor_imovel', e.target.value)}
-              placeholder="Ex: 300000"
+              placeholder="Ex: 300.000"
             />
             <Input
               label="Valor do crédito (R$)"
@@ -328,7 +332,7 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
               inputMode="numeric"
               value={form.valor_credito}
               onChange={e => handleChange('valor_credito', e.target.value)}
-              placeholder="Ex: 250000"
+              placeholder="Ex: 250.000"
             />
             <Input
               label="Valor de entrada (R$)"
@@ -336,7 +340,7 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
               inputMode="numeric"
               value={form.valor_entrada}
               onChange={e => handleChange('valor_entrada', e.target.value)}
-              placeholder="Ex: 50000"
+              placeholder="Ex: 50.000"
             />
           </div>
         </section>

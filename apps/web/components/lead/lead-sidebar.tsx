@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
 import { Plus, Trash2, Tag, Check, X, ExternalLink } from 'lucide-react';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, maskCPF, maskMoney } from '@/lib/utils';
 
 interface LeadSidebarProps {
   lead: LeadDetail;
@@ -69,10 +69,15 @@ function FieldEditor({
       <input
         type={inputType}
         inputMode={fieldDef.type === 'NUMBER' ? 'numeric' : undefined}
-        placeholder={fieldDef.type === 'NUMBER' ? 'Ex: 250000' : undefined}
+        placeholder={fieldDef.type === 'NUMBER' ? 'Ex: 250.000' : undefined}
         className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
         value={val}
-        onChange={e => setVal(fieldDef.type === 'PHONE' ? maskPhone(e.target.value) : e.target.value)}
+        onChange={e => {
+          const v = fieldDef.type === 'PHONE' ? maskPhone(e.target.value)
+                  : fieldDef.type === 'NUMBER' ? maskMoney(e.target.value)
+                  : e.target.value;
+          setVal(v);
+        }}
         onKeyDown={e => {
           if (e.key === 'Enter') onSave(val);
           if (e.key === 'Escape') onCancel();
@@ -107,8 +112,8 @@ function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: F
     );
   }
   if (fieldDef.type === 'NUMBER') {
-    const n = parseBRNumber(String(value));
-    return <span className="text-xs font-medium text-slate-800">{n.toLocaleString('pt-BR')}</span>;
+    const formatted = maskMoney(String(value));
+    return <span className="text-xs font-medium text-slate-800">{formatted || String(value)}</span>;
   }
   if (fieldDef.type === 'DATE') {
     try {
@@ -416,7 +421,12 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                           value={String(customValues[key] ?? '')}
                           onChange={e => {
                             const v = (key === 'telefone_1' || key === 'telefone_2')
-                              ? maskPhone(e.target.value) : e.target.value;
+                              ? maskPhone(e.target.value)
+                              : (key === 'cpf_1' || key === 'cpf_2')
+                              ? maskCPF(e.target.value)
+                              : (key === 'renda_1' || key === 'renda_2')
+                              ? maskMoney(e.target.value)
+                              : e.target.value;
                             setCustomValues(prev => ({ ...prev, [key]: v }));
                           }}
                           onKeyDown={e => {
@@ -431,7 +441,11 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                   ) : (
                     <button onClick={() => setEditingKey(key)} className="flex-1 text-right hover:text-af-mid transition-colors min-w-0">
                       {customValues[key]
-                        ? <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">{String(customValues[key])}</span>
+                        ? <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">
+                            {(key === 'renda_1' || key === 'renda_2')
+                              ? maskMoney(String(customValues[key]))
+                              : String(customValues[key])}
+                          </span>
                         : <span className="text-slate-300 text-xs">...</span>}
                     </button>
                   )}
