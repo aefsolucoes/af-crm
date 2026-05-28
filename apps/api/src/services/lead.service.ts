@@ -48,6 +48,7 @@ export async function createLead(data: {
   companyId?: string;
   tags?: string[];
   accountId: string;
+  customFields?: Record<string, unknown>;
 }) {
   return prisma.lead.create({ data, include: { stage: true, user: { select: { id: true, name: true } } } });
 }

@@ -16,9 +16,10 @@ interface KanbanBoardProps {
   contacts: Contact[];
   users: User[];
   onRefresh: () => void;
+  isSearching?: boolean;
 }
 
-export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh }: KanbanBoardProps) {
+export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSearching }: KanbanBoardProps) {
   const { moveLeadOptimistic, setLeads } = usePipelineStore();
   const [addLeadStageId, setAddLeadStageId] = useState<string | null>(null);
 

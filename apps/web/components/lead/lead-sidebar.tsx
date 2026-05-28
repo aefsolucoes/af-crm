@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
@@ -129,6 +129,16 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
 
   const queryClient = useQueryClient();
 
+  // ── Sincroniza estado local quando os dados do servidor chegam (refetch) ──
+  const prevCustomFieldsRef = useRef(JSON.stringify(lead.customFields));
+  useEffect(() => {
+    const newStr = JSON.stringify(lead.customFields);
+    if (prevCustomFieldsRef.current !== newStr && !editingKey) {
+      prevCustomFieldsRef.current = newStr;
+      setCustomValues((lead.customFields as Record<string, FieldValue>) || {});
+    }
+  });
+
   const saveTags = async (newTags: string[]) => {
     setTags(newTags);
     await api.put(`/api/leads/${lead.id}`, { tags: newTags });
@@ -151,7 +161,17 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
 
   const saveFieldValue = async (key: string, value: string) => {
     setSaving(true);
-    const newValues = { ...customValues, [key]: value };
+    const baseValues = { ...customValues, [key]: value };
+
+    // Auto-fill valor_entrada = valor_credito - valor_imovel
+    let newValues = baseValues;
+    if (key === 'valor_credito' || key === 'valor_imovel') {
+      const credito = parseBRNumber(String(key === 'valor_credito' ? value : (customValues.valor_credito ?? '0')));
+      const imovel  = parseBRNumber(String(key === 'valor_imovel'  ? value : (customValues.valor_imovel  ?? '0')));
+      const entrada = Math.max(0, credito - imovel);
+      newValues = { ...baseValues, valor_entrada: String(entrada) };
+    }
+
     setCustomValues(newValues);
     setEditingKey(null);
     try {
@@ -161,8 +181,8 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
         const numeric = parseBRNumber(value);
         await api.put(`/api/leads/${lead.id}`, { value: numeric });
         setValueInput(String(numeric));
-        onRefresh();
       }
+      onRefresh(); // sempre atualiza o lead após qualquer edição
     } finally {
       setSaving(false);
     }

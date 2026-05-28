@@ -18,6 +18,7 @@ const createLeadSchema = z.object({
   contactId: z.string().optional(),
   companyId: z.string().optional(),
   tags: z.array(z.string()).optional(),
+  customFields: z.record(z.any()).optional(),
 });
 
 const updateLeadSchema = createLeadSchema.partial().extend({

@@ -25,6 +25,8 @@ export default function LeadDetailClient() {
   const { data: lead, isLoading, refetch } = useQuery({
     queryKey: ['lead', id],
     queryFn: () => fetchLead(id),
+    refetchOnMount: 'always',
+    staleTime: 0,
   });
 
   return (

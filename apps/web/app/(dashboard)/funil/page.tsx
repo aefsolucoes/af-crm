@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,9 @@ import { Pipeline, Lead, Contact, User } from '@/types';
 import api from '@/lib/api';
 import { Plus, RefreshCw, Search, X } from 'lucide-react';
 
+// Ordem fixa dos pipelines
+const PIPELINE_ORDER = ['Vendas', 'Fechamento', 'Follow Up'];
+
 async function fetchPipelines(): Promise<Pipeline[]> {
   const { data } = await api.get('/api/pipelines');
   return data;
@@ -21,81 +24,141 @@ async function fetchLeads(pipelineId: string): Promise<Lead[]> {
   return data;
 }
 
+async function fetchAllLeads(): Promise<Lead[]> {
+  const { data } = await api.get('/api/leads');
+  return data;
+}
+
 async function fetchContacts(): Promise<Contact[]> {
   const { data } = await api.get('/api/contacts');
   return data;
 }
 
-async function fetchUsers(): Promise<User[]> {
-  // Users come from the leads data for simplicity
-  return [];
-}
-
 export default function FunilPage() {
-  const { leads, setLeads } = usePipelineStore();
+  const { leads: storeLeads, setLeads, moveLeadOptimistic } = usePipelineStore();
   const [openAddLead, setOpenAddLead] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedPipelineId, setSelectedPipelineId] = useState<string>('');
 
-  const { data: pipelines, isLoading: loadingPipelines } = useQuery({ queryKey: ['pipelines'], queryFn: fetchPipelines });
-  const pipeline = pipelines?.find(p => p.id === selectedPipelineId) || pipelines?.[0];
+  const { data: pipelines, isLoading: loadingPipelines } = useQuery({
+    queryKey: ['pipelines'],
+    queryFn: fetchPipelines,
+  });
 
-  useEffect(() => { if (pipelines?.[0] && !selectedPipelineId) setSelectedPipelineId(pipelines[0].id); }, [pipelines]);
+  // Pipelines ordenados: Vendas → Fechamento → Follow Up
+  const sortedPipelines = useMemo(() => {
+    if (!pipelines) return [];
+    return [...pipelines].sort((a, b) => {
+      const ai = PIPELINE_ORDER.indexOf(a.name);
+      const bi = PIPELINE_ORDER.indexOf(b.name);
+      if (ai === -1 && bi === -1) return 0;
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    });
+  }, [pipelines]);
 
+  const pipeline = sortedPipelines.find(p => p.id === selectedPipelineId) || sortedPipelines[0];
+
+  useEffect(() => {
+    if (sortedPipelines[0] && !selectedPipelineId) {
+      setSelectedPipelineId(sortedPipelines[0].id);
+    }
+  }, [sortedPipelines]);
+
+  // Leads do pipeline atual
   const { data: rawLeads, isLoading: loadingLeads, refetch } = useQuery({
     queryKey: ['leads', selectedPipelineId],
     queryFn: () => fetchLeads(selectedPipelineId),
-    enabled: !!selectedPipelineId,
+    enabled: !!selectedPipelineId && !search.trim(),
+  });
+
+  // Todos os leads (para busca cross-pipeline)
+  const { data: allRawLeads, refetch: refetchAll } = useQuery({
+    queryKey: ['leads-all'],
+    queryFn: fetchAllLeads,
+    enabled: !!search.trim(),
   });
 
   const { data: contacts = [] } = useQuery({ queryKey: ['contacts'], queryFn: fetchContacts });
 
+  // Sincroniza store com rawLeads para drag otimista
   useEffect(() => {
     if (rawLeads) setLeads(rawLeads);
   }, [rawLeads, setLeads]);
 
-  const allLeads = leads.length > 0 ? leads : rawLeads || [];
+  // Leads para exibição: se pesquisando usa todos os funis, senão usa pipeline atual
+  // Aplica updates otimísticos do store por cima dos dados do servidor
+  const displayLeads = useMemo(() => {
+    const baseLeads = search.trim() ? (allRawLeads || []) : (rawLeads || []);
 
-  const displayLeads = search.trim()
-    ? allLeads.filter(l => {
-        const q = search.toLowerCase();
+    if (!search.trim() && storeLeads.length > 0) {
+      // Aplica updates otimísticos (drag-and-drop) sem perder novos leads do servidor
+      return baseLeads.map(lead => {
+        const storeLead = storeLeads.find(l => l.id === lead.id);
+        if (storeLead && storeLead.stageId !== lead.stageId) {
+          return { ...lead, stageId: storeLead.stageId };
+        }
+        return lead;
+      });
+    }
+
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      return baseLeads.filter(l => {
+        const cf = (l.customFields || {}) as Record<string, string>;
         return (
           l.name.toLowerCase().includes(q) ||
+          (cf.participante_1 || '').toLowerCase().includes(q) ||
+          (cf.participante_2 || '').toLowerCase().includes(q) ||
+          (cf.telefone_1 || '').includes(q) ||
+          (cf.telefone_2 || '').includes(q) ||
           (l.contact?.name ?? '').toLowerCase().includes(q) ||
-          (l.contact?.phone ?? '').toLowerCase().includes(q) ||
+          (l.contact?.phone ?? '').includes(q) ||
           l.tags.some(t => t.toLowerCase().includes(q))
         );
-      })
-    : allLeads;
+      });
+    }
 
-  // Extract unique users from leads
-  const users: User[] = Array.from(
-    new Map(displayLeads.map((l) => [l.user.id, l.user as unknown as User])).values()
+    return baseLeads;
+  }, [rawLeads, allRawLeads, storeLeads, search]);
+
+  // Usuários únicos extraídos dos leads
+  const users: User[] = useMemo(() =>
+    Array.from(new Map(displayLeads.map(l => [l.user.id, l.user as unknown as User])).values()),
+    [displayLeads]
   );
 
-  const isLoading = loadingPipelines || loadingLeads;
+  const isLoading = loadingPipelines || (loadingLeads && !search.trim());
+
+  function handleRefetch() {
+    refetch();
+    if (search.trim()) refetchAll();
+  }
 
   return (
     <div className="flex flex-col h-full">
-      <Topbar title="Funil de Vendas" subtitle={pipeline?.name} />
+      <Topbar title="Funil de Vendas" subtitle={search.trim() ? 'Todos os funis' : pipeline?.name} />
 
       <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-af-border gap-4">
         <div className="flex items-center gap-3 flex-1">
-          {pipeline && (
+          {/* Seletor de pipeline (oculto durante busca) */}
+          {!search.trim() && pipeline && (
             <select
               value={selectedPipelineId}
               onChange={e => setSelectedPipelineId(e.target.value)}
               className="text-sm border border-af-border rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent flex-shrink-0"
             >
-              {pipelines?.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {sortedPipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}
-          {/* Busca */}
+
+          {/* Busca global */}
           <div className="relative flex-1 max-w-sm">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               type="text"
-              placeholder="Buscar por nome, contato, telefone ou tag..."
+              placeholder="Buscar em todos os funis..."
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full pl-8 pr-8 py-1.5 text-sm border border-af-border rounded-lg bg-af-light text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent placeholder:text-slate-400"
@@ -111,12 +174,13 @@ export default function FunilPage() {
           </div>
           {search && (
             <span className="text-xs text-slate-500 flex-shrink-0">
-              {displayLeads.length} resultado{displayLeads.length !== 1 ? 's' : ''}
+              {displayLeads.length} resultado{displayLeads.length !== 1 ? 's' : ''} em todos os funis
             </span>
           )}
         </div>
+
         <div className="flex items-center gap-2 flex-shrink-0">
-          <Button variant="ghost" size="sm" onClick={() => refetch()}>
+          <Button variant="ghost" size="sm" onClick={handleRefetch}>
             <RefreshCw size={14} />
             Atualizar
           </Button>
@@ -130,7 +194,7 @@ export default function FunilPage() {
       <div className="flex-1 overflow-hidden py-4">
         {isLoading ? (
           <div className="flex gap-4 px-4">
-            {[1, 2, 3, 4, 5].map((i) => (
+            {[1, 2, 3, 4, 5].map(i => (
               <div key={i} className="w-72 flex-shrink-0 space-y-3">
                 <div className="h-6 bg-slate-200 rounded animate-pulse" />
                 <CardSkeleton />
@@ -140,11 +204,12 @@ export default function FunilPage() {
           </div>
         ) : pipeline ? (
           <KanbanBoard
-            pipeline={pipeline}
+            pipeline={search.trim() ? { ...pipeline, stages: sortedPipelines.flatMap(p => p.stages) } : pipeline}
             leads={displayLeads}
             contacts={contacts}
             users={users}
-            onRefresh={refetch}
+            onRefresh={handleRefetch}
+            isSearching={!!search.trim()}
           />
         ) : (
           <div className="flex items-center justify-center h-full text-slate-400 text-sm">
@@ -157,7 +222,7 @@ export default function FunilPage() {
         <LeadModal
           open={openAddLead}
           onClose={() => setOpenAddLead(false)}
-          onCreated={refetch}
+          onCreated={handleRefetch}
           stages={pipeline.stages}
           pipelineId={pipeline.id}
           contacts={contacts}

@@ -5,7 +5,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { Lead } from '@/types';
 import { formatCurrency, formatDate, CHANNEL_COLORS } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
-import { ArrowDownLeft, ArrowUpRight, Calendar } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Calendar, MessageCircle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 interface KanbanCardProps {
@@ -27,6 +27,7 @@ function msgTime(dateStr: string) {
 export function KanbanCard({ lead }: KanbanCardProps) {
   const router = useRouter();
   const pointerStart = useRef({ x: 0, y: 0 });
+  const wasDragging = useRef(false);
 
   const {
     attributes,
@@ -49,32 +50,45 @@ export function KanbanCard({ lead }: KanbanCardProps) {
   const displayName = cf.participante_1 || lead.contact?.name || lead.name;
   const channelColor = lastMsg ? CHANNEL_COLORS[lastMsg.channel] : undefined;
 
-  function handlePointerDown(e: React.PointerEvent) {
-    pointerStart.current = { x: e.clientX, y: e.clientY };
-  }
+  // Número de telefone: prioriza campo telefone_1 do customFields, depois contact.phone
+  const phoneRaw = cf.telefone_1 || lead.contact?.phone || '';
+  const phoneClean = phoneRaw.replace(/\D/g, '').replace(/^0/, '');
+  const phoneWA = phoneClean.startsWith('55') ? phoneClean : `55${phoneClean}`;
 
-  function handleClick(e: React.MouseEvent) {
-    const dx = Math.abs(e.clientX - pointerStart.current.x);
-    const dy = Math.abs(e.clientY - pointerStart.current.y);
-    // Só navega se não foi um arrasto (< 8px de movimento)
-    if (dx < 8 && dy < 8) {
-      router.push(`/leads/${lead.id}`);
+  function handlePhoneClick(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (phoneClean) {
+      window.open(`https://wa.me/${phoneWA}`, '_blank');
     }
   }
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes}>
-      <div
-        className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer active:cursor-grabbing select-none"
-        {...listeners}
-        onPointerDown={handlePointerDown}
-        onClick={handleClick}
-      >
+    // Outer div: ref do dnd-kit + listeners para drag
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      onPointerDown={(e) => {
+        pointerStart.current = { x: e.clientX, y: e.clientY };
+        wasDragging.current = false;
+      }}
+      onPointerMove={(e) => {
+        const dx = Math.abs(e.clientX - pointerStart.current.x);
+        const dy = Math.abs(e.clientY - pointerStart.current.y);
+        if (dx > 6 || dy > 6) wasDragging.current = true;
+      }}
+      onClick={() => {
+        if (!wasDragging.current) {
+          router.push(`/leads/${lead.id}`);
+        }
+      }}
+    >
+      <div className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer active:cursor-grabbing select-none">
         <div className="p-3">
 
           {/* ── Cabeçalho: avatar + nome + badge de não lidos ── */}
           <div className="flex items-start gap-2.5 mb-2.5">
-            {/* Avatar com indicador de canal */}
             <div className="relative flex-shrink-0">
               <Avatar name={displayName} size="lg" />
               {channelColor && (
@@ -85,7 +99,6 @@ export function KanbanCard({ lead }: KanbanCardProps) {
               )}
             </div>
 
-            {/* Nome e badge */}
             <div className="flex-1 min-w-0 pt-0.5">
               <div className="flex items-start justify-between gap-1.5">
                 <span className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2">
@@ -97,8 +110,16 @@ export function KanbanCard({ lead }: KanbanCardProps) {
                   </span>
                 )}
               </div>
-              {lead.contact?.phone && (
-                <span className="text-xs text-slate-400 mt-0.5 block">{lead.contact.phone}</span>
+              {/* Telefone clicável → WhatsApp */}
+              {phoneRaw && (
+                <button
+                  onClick={handlePhoneClick}
+                  className="flex items-center gap-1 text-xs text-green-600 hover:text-green-700 hover:underline mt-0.5 transition-colors"
+                  title="Abrir no WhatsApp"
+                >
+                  <MessageCircle size={10} />
+                  {phoneRaw}
+                </button>
               )}
             </div>
           </div>
