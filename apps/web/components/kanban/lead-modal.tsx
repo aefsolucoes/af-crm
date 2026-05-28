@@ -21,6 +21,12 @@ interface LeadModalProps {
 
 const VINCULO_OPTIONS = ['CLT', 'Autônomo', 'Empresário', 'Aposentado', 'Servidor Público', 'Profissional Liberal', 'Outro'];
 
+function maskPhone(value: string): string {
+  const d = value.replace(/\D/g, '').slice(0, 11);
+  if (d.length <= 10) return d.replace(/(\d{2})(\d{4})(\d{0,4})/, '($1) $2-$3').replace(/-$/, '');
+  return d.replace(/(\d{2})(\d{5})(\d{0,4})/, '($1) $2-$3').replace(/-$/, '');
+}
+
 function parseBRNumber(raw: string): number {
   const clean = raw.trim().replace(/\./g, '').replace(',', '.');
   const n = parseFloat(clean);
@@ -66,7 +72,8 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
 
   function handleChange(field: string, value: string) {
     setForm(prev => {
-      const next = { ...prev, [field]: value };
+      // Aplica máscara nos campos de telefone
+      const next = { ...prev, [field]: (field === 'telefone_1' || field === 'telefone_2') ? maskPhone(value) : value };
       // Auto-fill valor_entrada = valor_credito - valor_imovel
       if (field === 'valor_credito' || field === 'valor_imovel') {
         const credito = parseBRNumber(field === 'valor_credito' ? value : prev.valor_credito);

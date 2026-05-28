@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { LeadHeader } from '@/components/lead/lead-header';
@@ -24,6 +24,7 @@ interface Props {
 
 export default function LeadDetailClient({ id: propId }: Props) {
   const router = useRouter();
+  const pathname = usePathname();
 
   // Com Cloudflare Pages (output: 'export'), o Next.js pré-gera a página com
   // id='placeholder'. No cliente, lemos o id real direto da URL do browser.
@@ -31,15 +32,13 @@ export default function LeadDetailClient({ id: propId }: Props) {
     propId && propId !== 'placeholder' ? propId : ''
   );
 
+  // Re-executa quando o pathname muda (inclui navegação para o mesmo card)
   useEffect(() => {
-    if (!id || id === 'placeholder') {
-      const urlId = window.location.pathname.split('/').pop();
-      if (urlId && urlId !== 'placeholder') {
-        setId(urlId);
-      }
+    const urlId = window.location.pathname.split('/').pop();
+    if (urlId && urlId !== 'placeholder') {
+      setId(urlId);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [pathname]);
 
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
 

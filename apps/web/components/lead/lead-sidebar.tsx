@@ -13,6 +13,12 @@ interface LeadSidebarProps {
 
 type FieldValue = string | number | null | undefined;
 
+function maskPhone(value: string): string {
+  const d = value.replace(/\D/g, '').slice(0, 11);
+  if (d.length <= 10) return d.replace(/(\d{2})(\d{4})(\d{0,4})/, '($1) $2-$3').replace(/-$/, '');
+  return d.replace(/(\d{2})(\d{5})(\d{0,4})/, '($1) $2-$3').replace(/-$/, '');
+}
+
 /** Converte string em número suportando formato BR (1.000.000,50) e EN (1000000.50) */
 function parseBRNumber(raw: string): number {
   const clean = raw.trim()
@@ -65,7 +71,7 @@ function FieldEditor({
         placeholder={fieldDef.type === 'NUMBER' ? 'Ex: 250000' : undefined}
         className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
         value={val}
-        onChange={e => setVal(e.target.value)}
+        onChange={e => setVal(fieldDef.type === 'PHONE' ? maskPhone(e.target.value) : e.target.value)}
         onKeyDown={e => {
           if (e.key === 'Enter') onSave(val);
           if (e.key === 'Escape') onCancel();

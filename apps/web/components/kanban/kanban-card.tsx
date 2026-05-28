@@ -50,16 +50,14 @@ export function KanbanCard({ lead }: KanbanCardProps) {
 
   function openWhatsApp(e: React.MouseEvent, phone: string) {
     e.stopPropagation();
-    const clean = phone.replace(/\D/g, '').replace(/^0/, '');
-    const wa = clean.startsWith('55') ? clean : `55${clean}`;
-    // Abre o lead (que tem a conversa integrada do CRM)
     queryClient.invalidateQueries({ queryKey: ['lead', lead.id] });
-    router.push(`/leads/${lead.id}`);
+    router.push(`/leads/${lead.id}?t=${Date.now()}`);
   }
 
   function handleCardClick() {
     queryClient.invalidateQueries({ queryKey: ['lead', lead.id] });
-    router.push(`/leads/${lead.id}`);
+    // Força re-navegação mesmo que a URL seja a mesma (bug: voltar e clicar no mesmo card)
+    router.push(`/leads/${lead.id}?t=${Date.now()}`);
   }
 
   return (
