@@ -173,21 +173,40 @@ router.post('/meta-leads', async (req: Request, res: Response) => {
 
 // WhatsApp Cloud API webhook — verification
 router.get('/whatsapp', async (req: Request, res: Response) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+  const mode      = req.query['hub.mode']         as string | undefined;
+  const token     = req.query['hub.verify_token'] as string | undefined;
+  const challenge = req.query['hub.challenge']    as string | undefined;
 
-  // Find account config that matches this verify token
-  const config = await prisma.whatsAppConfig.findFirst({
-    where: { verifyToken: token as string },
-  });
+  console.log(`[WhatsApp] Webhook verify — mode=${mode} token=${token} challenge=${challenge}`);
 
-  if (mode === 'subscribe' && config) {
-    console.log('[WhatsApp] Webhook verificado!');
-    res.status(200).send(challenge);
-  } else {
-    res.status(403).end();
+  if (mode !== 'subscribe' || !token || !challenge) {
+    console.warn('[WhatsApp] Verificação inválida: parâmetros ausentes');
+    return res.status(403).end();
   }
+
+  // 1) Fallback: check against env var (works even before DB is set up)
+  const envToken = process.env.WHATSAPP_VERIFY_TOKEN;
+  if (envToken && token === envToken) {
+    console.log('[WhatsApp] Webhook verificado via env var!');
+    return res.status(200).send(challenge);
+  }
+
+  // 2) DB lookup — find any account config that has this verify token
+  try {
+    const config = await prisma.whatsAppConfig.findFirst({
+      where: { verifyToken: token },
+    });
+
+    if (config) {
+      console.log(`[WhatsApp] Webhook verificado via DB! accountId=${config.accountId}`);
+      return res.status(200).send(challenge);
+    }
+  } catch (err) {
+    console.error('[WhatsApp] Erro ao buscar config no DB:', err);
+  }
+
+  console.warn(`[WhatsApp] Token não encontrado: "${token}"`);
+  return res.status(403).end();
 });
 
 // WhatsApp Cloud API webhook — receive messages

@@ -36,11 +36,36 @@ router.get('/whatsapp', async (req: AuthRequest, res: Response) => {
 });
 
 // POST /api/settings/whatsapp
-router.post('/whatsapp', validate(whatsappSchema), async (req: AuthRequest, res: Response) => {
+router.post('/whatsapp', async (req: AuthRequest, res: Response) => {
   try {
-    const config = await saveWhatsAppConfig(req.user!.accountId, req.body);
-    res.json({ success: true, active: config.active });
-  } catch {
+    const { phoneNumberId, accessToken, verifyToken, active } = req.body;
+
+    if (!phoneNumberId || !verifyToken || verifyToken.length < 6) {
+      return res.status(400).json({ error: 'phoneNumberId e verifyToken são obrigatórios (min 6 chars)' });
+    }
+
+    const existing = await getWhatsAppConfig(req.user!.accountId);
+
+    // If accessToken contains mask chars (••), keep the existing token
+    const finalToken = (accessToken && !accessToken.includes('•'))
+      ? accessToken
+      : (existing?.accessToken ?? accessToken ?? '');
+
+    if (!finalToken) {
+      return res.status(400).json({ error: 'accessToken é obrigatório na primeira configuração' });
+    }
+
+    const config = await saveWhatsAppConfig(req.user!.accountId, {
+      phoneNumberId,
+      accessToken: finalToken,
+      verifyToken,
+      active: active === true || active === 'true',
+    });
+
+    const webhookUrl = `${process.env.PUBLIC_API_URL || 'https://af-crm-production.up.railway.app'}/api/webhooks/whatsapp`;
+    res.json({ success: true, active: config.active, webhookUrl });
+  } catch (err) {
+    console.error('[Settings] Erro ao salvar WhatsApp config:', err);
     res.status(500).json({ error: 'Erro ao salvar configurações' });
   }
 });
