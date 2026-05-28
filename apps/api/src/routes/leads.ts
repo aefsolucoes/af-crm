@@ -25,6 +25,13 @@ const updateLeadSchema = createLeadSchema.partial().extend({
 });
 const stageSchema = z.object({ stageId: z.string() });
 
+/** Cria nota de auditoria de forma silenciosa (não lança erro) */
+async function auditNote(leadId: string, userId: string | undefined, content: string, type: 'STAGE_CHANGE' | 'DATA_EDIT' = 'DATA_EDIT') {
+  try {
+    await prisma.note.create({ data: { leadId, content, type, userId } });
+  } catch { /* silencioso */ }
+}
+
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const archived = req.query.archived === 'true';
@@ -56,8 +63,35 @@ router.post('/', validate(createLeadSchema), async (req: AuthRequest, res: Respo
 
 router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Response) => {
   try {
+    // Captura estado anterior para auditoria
+    const before = await prisma.lead.findUnique({
+      where: { id: req.params.id },
+      include: {
+        user: { select: { name: true } },
+        stage: true,
+      },
+    });
+
     const lead = await updateLead(req.params.id, req.user!.accountId, req.body);
     res.json(lead);
+
+    // Auditoria assíncrona
+    try {
+      const userName = req.user!.id
+        ? (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário'
+        : 'Usuário';
+
+      if (req.body.status && before?.status !== req.body.status) {
+        const statusLabels: Record<string, string> = { WON: 'Ganho', LOST: 'Perdido', OPEN: 'Aberto' };
+        await auditNote(req.params.id, req.user!.id,
+          `Status alterado para "${statusLabels[req.body.status] || req.body.status}" por ${userName}`);
+      }
+      if (req.body.userId && before?.userId !== req.body.userId) {
+        const newUser = await prisma.user.findUnique({ where: { id: req.body.userId }, select: { name: true } });
+        await auditNote(req.params.id, req.user!.id,
+          `Responsável alterado de "${before?.user?.name || '—'}" para "${newUser?.name || '—'}" por ${userName}`);
+      }
+    } catch { /* silencioso */ }
   } catch {
     res.status(500).json({ error: 'Erro ao atualizar lead' });
   }
@@ -65,23 +99,36 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
 
 router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: Response) => {
   try {
+    // Captura estágio anterior para auditoria
+    const before = await prisma.lead.findUnique({
+      where: { id: req.params.id },
+      include: { stage: true },
+    });
+
     const lead = await updateLeadStage(req.params.id, req.user!.accountId, req.body.stageId);
     res.json(lead);
 
-    // ── Auto-migração: se movido para "Fechado" no pipeline "Vendas" ──────────
+    // ── Auditoria de mudança de estágio ──────────────────────────────────────
     try {
-      const stage = await prisma.stage.findUnique({
-        where: { id: req.body.stageId },
-        include: { pipeline: true },
-      });
-      if (stage?.name === 'Fechado' && stage.pipeline.name === 'Vendas') {
+      const newStage = await prisma.stage.findUnique({ where: { id: req.body.stageId }, include: { pipeline: true } });
+      const userName = req.user!.id
+        ? (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário'
+        : 'Usuário';
+
+      if (before?.stage?.name !== newStage?.name) {
+        await auditNote(req.params.id, req.user!.id,
+          `Estágio: "${before?.stage?.name || '—'}" → "${newStage?.name || '—'}" — por ${userName}`,
+          'STAGE_CHANGE');
+      }
+
+      // ── Auto-migração: se movido para "Fechado" no pipeline "Vendas" ────────
+      if (newStage?.name === 'Fechado' && newStage.pipeline.name === 'Vendas') {
         const fechamento = await prisma.pipeline.findFirst({
           where: { accountId: req.user!.accountId, name: 'Fechamento' },
           include: { stages: { orderBy: { order: 'asc' } } },
         });
         const targetStage = fechamento?.stages.find(s => s.name === 'Documentação Recebida') || fechamento?.stages[0];
         if (fechamento && targetStage) {
-          // Move o próprio lead (com todo o histórico de mensagens, notas e tarefas)
           const movedLead = await prisma.lead.update({
             where: { id: req.params.id },
             data: {
@@ -89,8 +136,9 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
               stageId: targetStage.id,
               notes: {
                 create: {
-                  content: `Lead movido automaticamente para Fechamento ao ser fechado em Vendas.`,
+                  content: `Lead migrado automaticamente para o funil "Fechamento" (${targetStage.name}) ao ser fechado em Vendas.`,
                   type: 'STAGE_CHANGE',
+                  userId: req.user!.id,
                 },
               },
             },
@@ -101,20 +149,24 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
         }
       }
     } catch (migErr) {
-      console.error('[Auto-migração] Erro:', migErr);
+      console.error('[Auditoria/Auto-migração] Erro:', migErr);
     }
   } catch {
     res.status(500).json({ error: 'Erro ao mover lead' });
   }
 });
 
-// PATCH /api/leads/:id/pipeline — mover lead para outro pipeline (vai para o 1º estágio)
+// PATCH /api/leads/:id/pipeline — mover lead para outro pipeline
 router.patch('/:id/pipeline', async (req: AuthRequest, res: Response) => {
   try {
     const { pipelineId, stageId } = req.body as { pipelineId: string; stageId?: string };
     if (!pipelineId) return res.status(400).json({ error: 'pipelineId obrigatório' });
 
-    // Se não passou stageId, pega o primeiro do pipeline
+    const before = await prisma.lead.findUnique({
+      where: { id: req.params.id },
+      include: { pipeline: true, stage: true },
+    });
+
     let targetStageId = stageId;
     if (!targetStageId) {
       const pipeline = await prisma.pipeline.findUnique({
@@ -132,12 +184,24 @@ router.patch('/:id/pipeline', async (req: AuthRequest, res: Response) => {
       data: { pipelineId, stageId: targetStageId },
     });
     res.json(lead);
+
+    // Auditoria
+    try {
+      const newPipeline = await prisma.pipeline.findUnique({ where: { id: pipelineId } });
+      const newStage = await prisma.stage.findUnique({ where: { id: targetStageId! } });
+      const userName = req.user!.id
+        ? (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário'
+        : 'Usuário';
+      await auditNote(req.params.id, req.user!.id,
+        `Movido do funil "${before?.pipeline?.name || '—'}" para "${newPipeline?.name || '—'}" (${newStage?.name || '—'}) por ${userName}`,
+        'STAGE_CHANGE');
+    } catch { /* silencioso */ }
   } catch {
     res.status(500).json({ error: 'Erro ao mover lead para outro pipeline' });
   }
 });
 
-// PATCH /api/leads/:id/archive  — arquivar ou desarquivar
+// PATCH /api/leads/:id/archive — arquivar ou desarquivar
 router.patch('/:id/archive', async (req: AuthRequest, res: Response) => {
   try {
     const { archived } = req.body as { archived: boolean };
@@ -146,6 +210,15 @@ router.patch('/:id/archive', async (req: AuthRequest, res: Response) => {
       data: { archived: archived ?? true },
     });
     res.json(lead);
+
+    // Auditoria
+    try {
+      const userName = req.user!.id
+        ? (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário'
+        : 'Usuário';
+      await auditNote(req.params.id, req.user!.id,
+        archived ? `Lead arquivado por ${userName}` : `Lead restaurado por ${userName}`);
+    } catch { /* silencioso */ }
   } catch {
     res.status(500).json({ error: 'Erro ao arquivar lead' });
   }

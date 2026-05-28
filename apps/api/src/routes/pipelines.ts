@@ -83,6 +83,7 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     if (pipeline._count.leads > 0)
       return res.status(400).json({ error: `Pipeline tem ${pipeline._count.leads} lead(s) — mova-os antes de excluir` });
 
+    await prisma.stage.deleteMany({ where: { pipelineId: req.params.id } });
     await prisma.pipeline.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch {

@@ -53,7 +53,7 @@ export default function LeadDetailClient() {
           <div className="flex flex-1 overflow-hidden">
             <LeadSidebar lead={lead} onRefresh={refetch} />
             <div className="flex-1 overflow-hidden">
-              <LeadTimeline messages={lead.messages} />
+              <LeadTimeline messages={lead.messages} notes={lead.notes} />
             </div>
             <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">
               <LeadTasks

@@ -13,7 +13,7 @@ export interface FieldDefinition {
   createdAt: string;
 }
 export type LeadStatus = 'OPEN' | 'WON' | 'LOST';
-export type NoteType = 'COMMENT' | 'CALL' | 'EMAIL' | 'STAGE_CHANGE';
+export type NoteType = 'COMMENT' | 'CALL' | 'EMAIL' | 'STAGE_CHANGE' | 'DATA_EDIT';
 export type Direction = 'INBOUND' | 'OUTBOUND';
 export type Channel = 'WHATSAPP' | 'INSTAGRAM' | 'TELEGRAM' | 'WEBCHAT' | 'EMAIL';
 
@@ -106,6 +106,9 @@ export interface Note {
   content: string;
   type: NoteType;
   leadId: string;
+  userId?: string;
+  user?: Pick<User, 'id' | 'name'>;
+  updatedAt: string;
   createdAt: string;
 }
 

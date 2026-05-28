@@ -57,6 +57,7 @@ model User {
   account   Account  @relation(fields: [accountId], references: [id])
   leads     Lead[]
   tasks     Task[]
+  notes     Note[]
   createdAt DateTime @default(now())
 }
 
@@ -160,6 +161,9 @@ model Note {
   type      NoteType @default(COMMENT)
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id])
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  updatedAt DateTime @updatedAt
   createdAt DateTime @default(now())
 }
 
@@ -168,6 +172,7 @@ enum NoteType {
   CALL
   EMAIL
   STAGE_CHANGE
+  DATA_EDIT
 }
 
 model Message {

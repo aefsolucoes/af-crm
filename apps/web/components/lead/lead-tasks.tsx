@@ -4,6 +4,7 @@ import { formatDate, formatDateTime, isOverdue } from '@/lib/utils';
 import {
   CheckSquare, Square, Clock, AlertCircle, Plus,
   FileText, Phone, Mail, ArrowRightLeft, StickyNote, ListChecks,
+  Pencil, Check, X, Trash2, User,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import api from '@/lib/api';
@@ -24,6 +25,7 @@ const NOTE_ICONS: Record<NoteType, React.ReactNode> = {
   CALL: <Phone size={13} />,
   EMAIL: <Mail size={13} />,
   STAGE_CHANGE: <ArrowRightLeft size={13} />,
+  DATA_EDIT: <Pencil size={13} />,
 };
 
 const NOTE_LABELS: Record<NoteType, string> = {
@@ -31,7 +33,11 @@ const NOTE_LABELS: Record<NoteType, string> = {
   CALL: 'Ligação',
   EMAIL: 'E-mail',
   STAGE_CHANGE: 'Mudança de estágio',
+  DATA_EDIT: 'Edição',
 };
+
+// STAGE_CHANGE e DATA_EDIT são automáticos — não editáveis pelo usuário
+const SYSTEM_TYPES: NoteType[] = ['STAGE_CHANGE', 'DATA_EDIT'];
 
 type PanelTab = 'tasks' | 'notes';
 
@@ -49,6 +55,10 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
   const [noteContent, setNoteContent] = useState('');
   const [noteType, setNoteType] = useState<NoteType>('COMMENT');
   const [savingNote, setSavingNote] = useState(false);
+
+  // ── Edição de nota ──
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingContent, setEditingContent] = useState('');
 
   async function handleToggle(task: Task) {
     try {
@@ -98,11 +108,40 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
     }
   }
 
+  function startEditNote(note: Note) {
+    setEditingNoteId(note.id);
+    setEditingContent(note.content);
+  }
+
+  async function handleSaveEditNote(noteId: string) {
+    if (!editingContent.trim()) return;
+    try {
+      await api.patch(`/api/notes/${noteId}`, { content: editingContent.trim() });
+      toast('Nota atualizada!');
+      setEditingNoteId(null);
+      onRefresh();
+    } catch {
+      toast('Erro ao editar nota', 'error');
+    }
+  }
+
+  async function handleDeleteNote(noteId: string) {
+    if (!confirm('Excluir esta nota?')) return;
+    try {
+      await api.delete(`/api/notes/${noteId}`);
+      toast('Nota excluída');
+      onRefresh();
+    } catch {
+      toast('Erro ao excluir nota', 'error');
+    }
+  }
+
   const pending = tasks.filter(t => !t.done);
   const done = tasks.filter(t => t.done);
-  const sortedNotes = [...notes].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
+  // Notas manuais (excluindo eventos de sistema)
+  const manualNotes = [...notes]
+    .filter(n => !SYSTEM_TYPES.includes(n.type))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   return (
     <div className="flex flex-col h-full">
@@ -137,9 +176,9 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
         >
           <StickyNote size={14} />
           Notas
-          {notes.length > 0 && (
+          {manualNotes.length > 0 && (
             <span className="bg-slate-200 text-slate-600 text-[10px] px-1.5 py-0.5 rounded-full leading-none">
-              {notes.length}
+              {manualNotes.length}
             </span>
           )}
         </button>
@@ -239,7 +278,7 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
       {activeTab === 'notes' && (
         <div className="flex flex-col flex-1 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-af-border bg-white">
-            <span className="text-xs text-slate-500">{notes.length} nota{notes.length !== 1 ? 's' : ''}</span>
+            <span className="text-xs text-slate-500">{manualNotes.length} nota{manualNotes.length !== 1 ? 's' : ''}</span>
             <Button size="sm" variant="secondary" onClick={() => setShowNoteForm(!showNoteForm)}>
               <Plus size={12} />
               Nova nota
@@ -278,26 +317,87 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
           )}
 
           <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-3 space-y-3">
-            {sortedNotes.map(note => (
-              <div key={note.id} className="bg-white border border-af-border rounded-xl p-3 shadow-sm">
+            {manualNotes.map(note => (
+              <div key={note.id} className="group bg-white border border-af-border rounded-xl p-3 shadow-sm">
                 <div className="flex items-center justify-between mb-2">
                   <span className={cn(
                     'flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md',
                     note.type === 'COMMENT' && 'bg-slate-100 text-slate-600',
                     note.type === 'CALL' && 'bg-green-50 text-green-700',
                     note.type === 'EMAIL' && 'bg-blue-50 text-blue-700',
-                    note.type === 'STAGE_CHANGE' && 'bg-purple-50 text-purple-700',
                   )}>
                     {NOTE_ICONS[note.type]}
                     {NOTE_LABELS[note.type]}
                   </span>
-                  <span className="text-[10px] text-slate-400">{formatDateTime(note.createdAt)}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-400">{formatDateTime(note.createdAt)}</span>
+                    {/* Botões editar/excluir — só aparecem no hover */}
+                    <div className="hidden group-hover:flex items-center gap-1">
+                      <button
+                        onClick={() => startEditNote(note)}
+                        className="p-0.5 text-slate-400 hover:text-af-mid transition-colors"
+                        title="Editar nota"
+                      >
+                        <Pencil size={11} />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteNote(note.id)}
+                        className="p-0.5 text-slate-400 hover:text-red-500 transition-colors"
+                        title="Excluir nota"
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">{note.content}</p>
+
+                {/* Autor */}
+                {note.user && (
+                  <div className="flex items-center gap-1 mb-1.5">
+                    <User size={10} className="text-slate-400" />
+                    <span className="text-[10px] text-slate-400">{note.user.name}</span>
+                    {note.updatedAt && note.updatedAt !== note.createdAt && (
+                      <span className="text-[10px] text-slate-300 ml-1">· editado {formatDateTime(note.updatedAt)}</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Conteúdo ou editor inline */}
+                {editingNoteId === note.id ? (
+                  <div className="space-y-2 mt-1">
+                    <textarea
+                      autoFocus
+                      value={editingContent}
+                      onChange={e => setEditingContent(e.target.value)}
+                      className="w-full px-2 py-1.5 text-xs border border-af-mid rounded-lg bg-white resize-none focus:outline-none"
+                      rows={4}
+                      onKeyDown={e => {
+                        if (e.key === 'Escape') setEditingNoteId(null);
+                        if (e.key === 'Enter' && e.ctrlKey) handleSaveEditNote(note.id);
+                      }}
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setEditingNoteId(null)}
+                        className="text-[11px] text-slate-500 hover:text-slate-700 flex items-center gap-1 border border-af-border rounded px-2 py-1"
+                      >
+                        <X size={10} /> Cancelar
+                      </button>
+                      <button
+                        onClick={() => handleSaveEditNote(note.id)}
+                        className="text-[11px] text-white bg-af-mid hover:bg-af-dark flex items-center gap-1 rounded px-2 py-1 flex-1 justify-center"
+                      >
+                        <Check size={10} /> Salvar
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">{note.content}</p>
+                )}
               </div>
             ))}
 
-            {notes.length === 0 && !showNoteForm && (
+            {manualNotes.length === 0 && !showNoteForm && (
               <div className="flex flex-col items-center justify-center h-32 text-slate-400 text-xs gap-2">
                 <StickyNote size={20} className="opacity-40" />
                 <span>Nenhuma nota</span>

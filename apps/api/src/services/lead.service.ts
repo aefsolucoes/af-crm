@@ -32,7 +32,7 @@ export async function getLeadById(id: string, accountId: string) {
       contact: true,
       company: true,
       tasks: { include: { user: { select: { id: true, name: true } } }, orderBy: { dueAt: 'asc' } },
-      notes: { orderBy: { createdAt: 'desc' } },
+      notes: { orderBy: { createdAt: 'desc' }, include: { user: { select: { id: true, name: true } } } },
       messages: { orderBy: { createdAt: 'asc' } },
     },
   });
