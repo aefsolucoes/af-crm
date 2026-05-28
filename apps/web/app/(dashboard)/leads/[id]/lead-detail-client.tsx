@@ -106,6 +106,7 @@ export default function LeadDetailClient({ id: propId }: Props) {
                 leadId={lead.id}
                 leadName={displayName}
                 messages={allMessages}
+                notes={lead.notes}
                 onNewMessage={handleNewMessage}
               />
             </div>

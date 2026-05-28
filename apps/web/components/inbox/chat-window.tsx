@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { Message, Channel } from '@/types';
+import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
 import { Send, Paperclip, Smile, Phone, MoreVertical, Check, CheckCheck, Sparkles, Loader2 } from 'lucide-react';
 import api from '@/lib/api';
@@ -28,6 +28,7 @@ interface ChatWindowProps {
   leadId: string;
   leadName: string;
   messages: Message[];
+  notes?: Note[];
   onNewMessage: (msg: Message) => void;
 }
 
@@ -40,7 +41,7 @@ const AI_BUTTONS: { mode: AIMode; label: string; emoji: string }[] = [
   { mode: 'fun',          label: 'Divertido',           emoji: '🎉' },
 ];
 
-export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWindowProps) {
+export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessage }: ChatWindowProps) {
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
   const [sending, setSending] = useState(false);
@@ -128,17 +129,35 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
     return <Check size={14} className="text-slate-300" />;
   }
 
-  // Group messages by date
-  const grouped: { date: string; messages: Message[] }[] = [];
-  for (const msg of messages) {
-    const date = new Date(msg.createdAt).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+  // ── Timeline unificado: mensagens + notas de fluxo ordenadas por data ──
+  type TimelineItem =
+    | { kind: 'message'; data: Message }
+    | { kind: 'note';    data: Note    };
+
+  const allItems: TimelineItem[] = [
+    ...messages.map(m => ({ kind: 'message' as const, data: m })),
+    ...notes.map(n => ({ kind: 'note' as const, data: n })),
+  ].sort((a, b) => new Date(a.data.createdAt).getTime() - new Date(b.data.createdAt).getTime());
+
+  const grouped: { date: string; items: TimelineItem[] }[] = [];
+  for (const item of allItems) {
+    const date = new Date(item.data.createdAt).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
     const last = grouped[grouped.length - 1];
     if (last && last.date === date) {
-      last.messages.push(msg);
+      last.items.push(item);
     } else {
-      grouped.push({ date, messages: [msg] });
+      grouped.push({ date, items: [item] });
     }
   }
+
+  // Ícone e cor por tipo de nota
+  const NOTE_STYLE: Record<string, { icon: string; label: string; bg: string; text: string }> = {
+    STAGE_CHANGE: { icon: '↕️', label: 'Etapa alterada',   bg: 'bg-blue-50',   text: 'text-blue-700'   },
+    DATA_EDIT:    { icon: '✏️', label: 'Dados editados',   bg: 'bg-slate-100', text: 'text-slate-500'  },
+    COMMENT:      { icon: '💬', label: 'Comentário',       bg: 'bg-amber-50',  text: 'text-amber-800'  },
+    CALL:         { icon: '📞', label: 'Ligação',          bg: 'bg-green-50',  text: 'text-green-700'  },
+    EMAIL:        { icon: '📧', label: 'E-mail',           bg: 'bg-purple-50', text: 'text-purple-700' },
+  };
 
   return (
     <div className="flex flex-col flex-1 h-full" style={{ background: '#e5ddd5' }}>
@@ -184,43 +203,77 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
         ))}
       </div>
 
-      {/* Messages */}
+      {/* Timeline unificado: mensagens + eventos de fluxo */}
       <div className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
-        {grouped.map(({ date, messages: dayMsgs }) => (
+        {grouped.map(({ date, items }) => (
           <div key={date}>
-            {/* Date separator */}
+            {/* Separador de data */}
             <div className="flex justify-center my-3">
               <span className="bg-white/90 text-slate-500 text-xs px-3 py-1 rounded-full shadow-sm">
                 {date}
               </span>
             </div>
 
-            {dayMsgs.map((msg, i) => {
-              const isOut = msg.direction === 'OUTBOUND';
-              const time = new Date(msg.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-              const showTail = i === 0 || dayMsgs[i - 1]?.direction !== msg.direction;
+            {items.map((item, i) => {
+              const time = new Date(item.data.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-              // Status mais atualizado: socket override > valor do banco
+              // ── Nota de fluxo ──────────────────────────────────────────
+              if (item.kind === 'note') {
+                const note = item.data;
+                const style = NOTE_STYLE[note.type] || NOTE_STYLE.COMMENT;
+
+                // STAGE_CHANGE e DATA_EDIT: label centralizada discreta
+                if (note.type === 'STAGE_CHANGE' || note.type === 'DATA_EDIT') {
+                  return (
+                    <div key={note.id} className="flex justify-center my-2">
+                      <div className={cn('flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium shadow-sm', style.bg, style.text)}>
+                        <span>{style.icon}</span>
+                        <span>{note.content}</span>
+                        <span className="opacity-60 ml-1">{time}</span>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // COMMENT, CALL, EMAIL: bolha à esquerda com autor
+                return (
+                  <div key={note.id} className="flex justify-start mb-1">
+                    <div className={cn('max-w-xs lg:max-w-md px-3 py-2 rounded-2xl rounded-bl-sm shadow-sm', style.bg)}>
+                      {note.user && (
+                        <p className={cn('text-xs font-semibold mb-0.5', style.text)}>
+                          {style.icon} {note.user.name}
+                        </p>
+                      )}
+                      <p className={cn('text-sm leading-relaxed whitespace-pre-wrap', style.text)}>{note.content}</p>
+                      <span className="text-xs opacity-50 mt-0.5 block text-right">{time}</span>
+                    </div>
+                  </div>
+                );
+              }
+
+              // ── Mensagem WhatsApp ──────────────────────────────────────
+              const msg = item.data;
+              const isOut = msg.direction === 'OUTBOUND';
+              const prevItem = items[i - 1];
+              const prevIsMsg = prevItem?.kind === 'message';
+              const showTail = !prevIsMsg || (prevItem.data as Message).direction !== msg.direction;
               const liveStatus = statusMap[msg.id] || (msg as any).status;
 
               return (
-                <div
-                  key={msg.id}
-                  className={cn('flex mb-0.5', isOut ? 'justify-end' : 'justify-start')}
-                >
+                <div key={msg.id} className={cn('flex mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
                   <div
                     className={cn(
                       'relative max-w-xs lg:max-w-md px-3 py-2 shadow-sm',
                       isOut
                         ? 'rounded-tl-2xl rounded-tr-2xl rounded-bl-2xl text-slate-800'
                         : 'rounded-tl-2xl rounded-tr-2xl rounded-br-2xl text-slate-800',
-                      showTail && isOut ? 'rounded-br-sm' : '',
+                      showTail && isOut  ? 'rounded-br-sm' : '',
                       showTail && !isOut ? 'rounded-bl-sm' : '',
                     )}
                     style={{ backgroundColor: isOut ? '#d9fdd3' : '#ffffff' }}
                   >
                     <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{msg.content}</p>
-                    <div className={cn('absolute bottom-2 right-3 flex items-center gap-1')}>
+                    <div className="absolute bottom-2 right-3 flex items-center gap-1">
                       <span className="text-xs text-slate-400">{time}</span>
                       {isOut && <StatusTick status={liveStatus} />}
                     </div>
