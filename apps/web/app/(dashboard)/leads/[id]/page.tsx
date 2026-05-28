@@ -4,6 +4,6 @@ export async function generateStaticParams() {
   return [{ id: 'placeholder' }];
 }
 
-export default function LeadDetailPage() {
-  return <LeadDetailClient />;
+export default function LeadDetailPage({ params }: { params: { id: string } }) {
+  return <LeadDetailClient id={params.id} />;
 }

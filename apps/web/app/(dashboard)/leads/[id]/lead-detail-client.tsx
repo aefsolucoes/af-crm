@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback } from 'react';
-import { useParams, useRouter, usePathname } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { LeadHeader } from '@/components/lead/lead-header';
@@ -18,23 +18,21 @@ async function fetchLead(id: string): Promise<LeadDetail> {
   return data;
 }
 
-export default function LeadDetailClient() {
-  const params = useParams();
-  const pathname = usePathname();
+interface Props {
+  id: string;
+}
+
+export default function LeadDetailClient({ id }: Props) {
   const router = useRouter();
-
-  // Extrai id de params ou do pathname como fallback
-  const id = (params?.id as string) || pathname?.split('/').pop() || '';
-
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
 
-  const { data: lead, isLoading, isError, error, refetch } = useQuery({
+  const { data: lead, isLoading, isError, refetch } = useQuery({
     queryKey: ['lead', id],
     queryFn: () => fetchLead(id),
     refetchOnMount: 'always',
     staleTime: 0,
-    enabled: !!id,
-    retry: 2,
+    enabled: !!id && id !== 'placeholder',
+    retry: 1,
   });
 
   const handleNewMessage = useCallback((msg: Message) => {
