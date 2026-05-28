@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { Button } from '@/components/ui/button';
 import { KanbanBoard } from '@/components/kanban/kanban-board';
@@ -10,6 +10,7 @@ import { LeadModal } from '@/components/kanban/lead-modal';
 import { Pipeline, Lead, Contact, User } from '@/types';
 import api from '@/lib/api';
 import { Plus, RefreshCw, Search, X } from 'lucide-react';
+import { getSocket } from '@/lib/socket';
 
 // Ordem fixa dos pipelines
 const PIPELINE_ORDER = ['Vendas', 'Fechamento', 'Follow Up'];
@@ -39,6 +40,21 @@ export default function FunilPage() {
   const [openAddLead, setOpenAddLead] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedPipelineId, setSelectedPipelineId] = useState<string>('');
+  const queryClient = useQueryClient();
+
+  // Atualiza o kanban em tempo real quando chega nova mensagem WhatsApp
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket.connected) socket.connect();
+
+    function onNewNotification() {
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['leads-all'] });
+    }
+
+    socket.on('new_notification', onNewNotification);
+    return () => { socket.off('new_notification', onNewNotification); };
+  }, [queryClient]);
 
   const { data: pipelines, isLoading: loadingPipelines } = useQuery({
     queryKey: ['pipelines'],

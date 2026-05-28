@@ -78,7 +78,8 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
       if (field === 'valor_credito' || field === 'valor_imovel') {
         const credito = parseBRNumber(field === 'valor_credito' ? value : prev.valor_credito);
         const imovel  = parseBRNumber(field === 'valor_imovel'  ? value : prev.valor_imovel);
-        next.valor_entrada = credito > 0 || imovel > 0 ? String(Math.max(0, credito - imovel)) : '';
+        // Entrada = Imóvel - Crédito (ex: R$300k imóvel - R$250k crédito = R$50k entrada)
+        next.valor_entrada = imovel > 0 || credito > 0 ? String(Math.max(0, imovel - credito)) : '';
       }
       return next;
     });

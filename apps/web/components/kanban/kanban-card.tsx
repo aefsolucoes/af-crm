@@ -81,7 +81,7 @@ export function KanbanCard({ lead }: KanbanCardProps) {
           {/* Cabeçalho */}
           <div className="flex items-start gap-2.5 mb-2.5">
             <div className="relative flex-shrink-0">
-              <Avatar name={p1} size="lg" />
+              <Avatar name={p1} src={(lead.contact as any)?.avatar} size="lg" />
               {channelColor && (
                 <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white"
                   style={{ backgroundColor: channelColor }} />

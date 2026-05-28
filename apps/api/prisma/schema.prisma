@@ -125,6 +125,7 @@ model Contact {
   email         String?
   phone         String?
   whatsappPhone String?
+  avatar        String?  // URL da foto de perfil (WhatsApp ou outro)
   accountId     String
   account       Account  @relation(fields: [accountId], references: [id])
   companyId     String?

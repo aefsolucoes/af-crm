@@ -174,7 +174,8 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
     if (key === 'valor_credito' || key === 'valor_imovel') {
       const credito = parseBRNumber(String(key === 'valor_credito' ? value : (customValues.valor_credito ?? '0')));
       const imovel  = parseBRNumber(String(key === 'valor_imovel'  ? value : (customValues.valor_imovel  ?? '0')));
-      const entrada = Math.max(0, credito - imovel);
+      // Entrada = Imóvel - Crédito
+      const entrada = Math.max(0, imovel - credito);
       newValues = { ...baseValues, valor_entrada: String(entrada) };
     }
 
