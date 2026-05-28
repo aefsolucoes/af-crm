@@ -66,13 +66,14 @@ export default function InboxPage() {
 
         {selectedId && lead ? (
           <>
+            <LeadPanel lead={lead} />
             <ChatWindow
               leadId={selectedId}
               leadName={selectedConv?.contact?.name || selectedConv?.name || lead.name}
               messages={allMessages}
+              notes={(lead as any).notes}
               onNewMessage={handleNewMessage}
             />
-            <LeadPanel lead={lead} />
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center bg-slate-50">
