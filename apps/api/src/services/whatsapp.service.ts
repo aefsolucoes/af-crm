@@ -36,11 +36,10 @@ export async function sendWhatsAppMessage(
 
   let phone = to.replace(/\D/g, '');
   // Ensure Brazilian country code (55) is present
-  // If number has 10-11 digits (local format), prepend 55
   if (phone.length === 10 || phone.length === 11) {
     phone = `55${phone}`;
   }
-  console.log(`[WA Send] Sending to phone="${phone}" (original="${to}")`);
+  console.log(`[WA Send] to="${to}" → phone="${phone}" (${phone.length} digits) phoneNumberId="${config.phoneNumberId}"`);
   const url = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
 
   try {
@@ -64,8 +63,10 @@ export async function sendWhatsAppMessage(
     };
 
     if (!res.ok || json.error) {
-      console.error('[WhatsApp] Send error:', json.error);
-      return { success: false, error: json.error?.message || 'Erro desconhecido' };
+      const errMsg = json.error?.message || 'Erro desconhecido';
+      console.error(`[WhatsApp] Send error para "${phone}":`, json.error);
+      // Inclui o número tentado na mensagem de erro para diagnóstico
+      return { success: false, error: `${errMsg} (número: ${phone})` };
     }
 
     return { success: true, externalId: json.messages?.[0]?.id };
