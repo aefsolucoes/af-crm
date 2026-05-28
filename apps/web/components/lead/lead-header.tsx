@@ -9,6 +9,8 @@ import { toast } from '@/components/ui/toast';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
+import { StageGateModal } from '@/components/kanban/stage-gate-modal';
+import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 
 interface LeadHeaderProps {
   lead: LeadDetail;
@@ -18,6 +20,10 @@ interface LeadHeaderProps {
 export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
   const [changing, setChanging] = useState(false);
   const [changingUser, setChangingUser] = useState(false);
+  const [gateOpen, setGateOpen] = useState(false);
+  const [gateMissing, setGateMissing] = useState<ValidationField[]>([]);
+  const [gateStageName, setGateStageName] = useState('');
+  const [pendingStageId, setPendingStageId] = useState<string | null>(null);
   const [changingPipeline, setChangingPipeline] = useState(false);
   const [tagInput, setTagInput] = useState('');
   const [editingTags, setEditingTags] = useState(false);
@@ -87,7 +93,7 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
     }
   }
 
-  async function handleStageChange(stageId: string) {
+  async function executeStageChange(stageId: string) {
     setChanging(true);
     try {
       await api.patch(`/api/leads/${lead.id}/stage`, { stageId });
@@ -98,6 +104,22 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
     } finally {
       setChanging(false);
     }
+  }
+
+  async function handleStageChange(stageId: string) {
+    const targetStage = lead.pipeline.stages.find((s: Stage) => s.id === stageId);
+    if (!targetStage) return;
+
+    const missing = getMissingFields(lead, targetStage.name);
+    if (missing.length > 0) {
+      setPendingStageId(stageId);
+      setGateMissing(missing);
+      setGateStageName(targetStage.name);
+      setGateOpen(true);
+      return;
+    }
+
+    await executeStageChange(stageId);
   }
 
   async function handleStatusChange(status: 'OPEN' | 'WON' | 'LOST') {
@@ -135,6 +157,14 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
   }
 
   return (
+    <>
+    <StageGateModal
+      open={gateOpen}
+      stageName={gateStageName}
+      missing={gateMissing}
+      onConfirm={async () => { setGateOpen(false); if (pendingStageId) await executeStageChange(pendingStageId); setPendingStageId(null); }}
+      onCancel={() => { setGateOpen(false); setPendingStageId(null); }}
+    />
     <div className="px-6 py-5 bg-white border-b border-af-border">
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-4">
@@ -365,5 +395,6 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
         ))}
       </div>
     </div>
+    </>
   );
 }
