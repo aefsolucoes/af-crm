@@ -9,6 +9,7 @@ import { formatCurrency } from '@/lib/utils';
 interface LeadSidebarProps {
   lead: LeadDetail;
   onRefresh: () => void;
+  className?: string;
 }
 
 type FieldValue = string | number | null | undefined;
@@ -117,7 +118,7 @@ function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: F
   return <span className="text-xs font-medium text-slate-800 truncate max-w-[130px]">{String(value)}</span>;
 }
 
-export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
+export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
   const [activeTab, setActiveTab] = useState('Principal');
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState(false);
@@ -263,7 +264,7 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
   };
 
   return (
-    <aside className="w-80 flex-shrink-0 border-r border-af-border bg-white overflow-y-auto flex flex-col">
+    <aside className={`w-80 flex-shrink-0 border-r border-af-border bg-white overflow-y-auto flex flex-col ${className ?? ''}`}>
       {/* Tab bar */}
       <div className="flex border-b border-af-border overflow-x-auto scrollbar-none flex-shrink-0">
         {allTabs.map(tab => (

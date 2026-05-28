@@ -70,7 +70,7 @@ export function InboxLeadPanel({ lead, onRefresh }: InboxLeadPanelProps) {
         onCancel={() => { setGateOpen(false); setPendingStageId(null); }}
       />
 
-      <div className="w-80 flex-shrink-0 border-l border-af-border bg-white flex flex-col overflow-hidden">
+      <div className="w-96 flex-shrink-0 border-l border-af-border bg-white flex flex-col overflow-hidden">
 
         {/* ── Header do lead ── */}
         <div className="px-4 pt-4 pb-3 border-b border-af-border bg-af-light/30 flex-shrink-0">
@@ -143,8 +143,12 @@ export function InboxLeadPanel({ lead, onRefresh }: InboxLeadPanelProps) {
         </div>
 
         {/* ── LeadSidebar completo (abas + campos editáveis) ── */}
-        <div className="flex-1 overflow-hidden flex flex-col">
-          <LeadSidebar lead={lead} onRefresh={onRefresh} />
+        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+          <LeadSidebar
+            lead={lead}
+            onRefresh={onRefresh}
+            className="w-full flex-1 border-r-0 border-l-0"
+          />
         </div>
       </div>
     </>
