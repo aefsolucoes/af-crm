@@ -248,7 +248,10 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
 
       // ── Emit via Socket.io ──────────────────────────────────────────────
       if (io) {
+        // Para quem está com o lead aberto
         io.to(`lead:${leadId}`).emit('new_message', message);
+        // Para o dashboard inteiro da conta (notificação global + som)
+        io.to(`account_${accountId}`).emit('new_message', message);
         io.to(`account_${accountId}`).emit('new_conversation', { leadId });
       }
     }
