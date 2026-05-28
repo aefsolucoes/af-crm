@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Message, Channel } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Phone, MoreVertical, Check, CheckCheck } from 'lucide-react';
+import { Send, Paperclip, Smile, Phone, MoreVertical, Check, CheckCheck, Sparkles, Loader2 } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -31,10 +31,21 @@ interface ChatWindowProps {
   onNewMessage: (msg: Message) => void;
 }
 
+type AIMode = 'grammar' | 'professional' | 'friendly' | 'fun';
+
+const AI_BUTTONS: { mode: AIMode; label: string; emoji: string }[] = [
+  { mode: 'grammar',      label: 'Corrigir gramática', emoji: '✏️' },
+  { mode: 'professional', label: 'Profissional',        emoji: '💼' },
+  { mode: 'friendly',     label: 'Amigável',            emoji: '😊' },
+  { mode: 'fun',          label: 'Divertido',           emoji: '🎉' },
+];
+
 export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWindowProps) {
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
   const [sending, setSending] = useState(false);
+  const [aiLoading, setAiLoading] = useState<AIMode | null>(null);
+  const [showAI, setShowAI] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -78,6 +89,24 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  }
+
+  async function handleAI(mode: AIMode) {
+    const text = content.trim();
+    if (!text) {
+      toast('Digite uma mensagem primeiro para usar a IA', 'error');
+      return;
+    }
+    setAiLoading(mode);
+    try {
+      const { data } = await api.post('/api/ai/rewrite', { text, mode });
+      setContent(data.result);
+      inputRef.current?.focus();
+    } catch {
+      toast('Erro ao processar com IA', 'error');
+    } finally {
+      setAiLoading(null);
     }
   }
 
@@ -189,6 +218,34 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
         <div ref={bottomRef} />
       </div>
 
+      {/* AI assistant toolbar */}
+      {showAI && (
+        <div className="relative z-10 flex items-center gap-2 px-3 py-2 bg-white/95 border-t border-black/5 flex-wrap">
+          <Sparkles size={13} className="text-af-mid flex-shrink-0" />
+          <span className="text-xs text-slate-500 font-medium mr-1">IA:</span>
+          {AI_BUTTONS.map(({ mode, label, emoji }) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => handleAI(mode)}
+              disabled={!!aiLoading}
+              className={cn(
+                'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-all border',
+                aiLoading === mode
+                  ? 'bg-af-mid text-white border-af-mid'
+                  : 'bg-white text-slate-600 border-af-border hover:bg-af-light hover:border-af-mid hover:text-af-mid',
+                !!aiLoading && aiLoading !== mode && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              {aiLoading === mode
+                ? <Loader2 size={10} className="animate-spin" />
+                : <span className="text-sm leading-none">{emoji}</span>}
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Input bar */}
       <form
         onSubmit={handleSend}
@@ -216,6 +273,18 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
           className="flex-1 resize-none px-4 py-2.5 text-sm bg-white rounded-3xl border-none outline-none text-slate-900 placeholder-slate-400 scrollbar-thin max-h-32"
           style={{ lineHeight: '1.4' }}
         />
+        {/* AI toggle button */}
+        <button
+          type="button"
+          onClick={() => setShowAI(v => !v)}
+          title="Assistente IA"
+          className={cn(
+            'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
+            showAI ? 'bg-af-mid text-white' : 'bg-white/80 text-slate-500 hover:bg-white hover:text-af-mid'
+          )}
+        >
+          <Sparkles size={18} />
+        </button>
         <button
           type="submit"
           disabled={!content.trim() || sending}

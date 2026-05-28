@@ -23,7 +23,7 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
   const { moveLeadOptimistic, setLeads } = usePipelineStore();
   const [addLeadStageId, setAddLeadStageId] = useState<string | null>(null);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 12 } }));
 
   function getLeadsForStage(stageId: string) {
     return leads.filter((l) => l.stageId === stageId);

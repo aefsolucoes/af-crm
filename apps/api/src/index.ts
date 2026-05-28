@@ -18,6 +18,7 @@ import whatsappQrRoutes from './routes/whatsapp-qr';
 import fieldRoutes from './routes/fields';
 import noteRoutes from './routes/notes';
 import userRoutes from './routes/users';
+import aiRoutes from './routes/ai';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 
 const app = express();
@@ -54,6 +55,7 @@ app.use('/api/whatsapp-qr', whatsappQrRoutes);
 app.use('/api/fields', fieldRoutes);
 app.use('/api/notes', noteRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/ai', aiRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
 

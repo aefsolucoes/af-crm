@@ -1,5 +1,4 @@
 'use client';
-import { useRef } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Lead } from '@/types';
@@ -7,6 +6,7 @@ import { formatCurrency, formatDate, CHANNEL_COLORS } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
 import { ArrowDownLeft, ArrowUpRight, Calendar, MessageCircle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 
 interface KanbanCardProps {
   lead: Lead;
@@ -26,118 +26,94 @@ function msgTime(dateStr: string) {
 
 export function KanbanCard({ lead }: KanbanCardProps) {
   const router = useRouter();
-  const pointerStart = useRef({ x: 0, y: 0 });
-  const wasDragging = useRef(false);
+  const queryClient = useQueryClient();
 
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: lead.id });
+  // dnd-kit com distance:12 — cliques normais (<12px) passam para onClick
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: lead.id });
 
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 };
 
   const lastMsg = lead.messages?.[0];
   const unreadCount = lead._count?.messages ?? 0;
   const cf = (lead.customFields || {}) as Record<string, string>;
-  const displayName = cf.participante_1 || lead.contact?.name || lead.name;
+
+  // Nome de exibição: participante_1 / participante_2 (se houver ambos)
+  const p1 = cf.participante_1 || lead.contact?.name || lead.name;
+  const p2 = cf.participante_2;
+  const displayName = p2 ? `${p1} / ${p2}` : p1;
+
   const channelColor = lastMsg ? CHANNEL_COLORS[lastMsg.channel] : undefined;
 
-  // Número de telefone: prioriza campo telefone_1 do customFields, depois contact.phone
-  const phoneRaw = cf.telefone_1 || lead.contact?.phone || '';
-  const phoneClean = phoneRaw.replace(/\D/g, '').replace(/^0/, '');
-  const phoneWA = phoneClean.startsWith('55') ? phoneClean : `55${phoneClean}`;
+  // Telefones — mostra telefone_1 e/ou telefone_2
+  const tel1 = cf.telefone_1 || lead.contact?.phone || '';
+  const tel2 = cf.telefone_2 || '';
 
-  function handlePhoneClick(e: React.MouseEvent) {
+  function openWhatsApp(e: React.MouseEvent, phone: string) {
     e.stopPropagation();
-    if (phoneClean) {
-      window.open(`https://wa.me/${phoneWA}`, '_blank');
-    }
+    const clean = phone.replace(/\D/g, '').replace(/^0/, '');
+    const wa = clean.startsWith('55') ? clean : `55${clean}`;
+    // Abre o lead (que tem a conversa integrada do CRM)
+    queryClient.invalidateQueries({ queryKey: ['lead', lead.id] });
+    router.push(`/leads/${lead.id}`);
+  }
+
+  function handleCardClick() {
+    queryClient.invalidateQueries({ queryKey: ['lead', lead.id] });
+    router.push(`/leads/${lead.id}`);
   }
 
   return (
-    // Outer div: ref do dnd-kit + listeners para drag
-    <div
-      ref={setNodeRef}
-      style={style}
-      {...attributes}
-      {...listeners}
-      onPointerDown={(e) => {
-        pointerStart.current = { x: e.clientX, y: e.clientY };
-        wasDragging.current = false;
-      }}
-      onPointerMove={(e) => {
-        const dx = Math.abs(e.clientX - pointerStart.current.x);
-        const dy = Math.abs(e.clientY - pointerStart.current.y);
-        if (dx > 6 || dy > 6) wasDragging.current = true;
-      }}
-      onClick={() => {
-        if (!wasDragging.current) {
-          router.push(`/leads/${lead.id}`);
-        }
-      }}
-    >
-      <div className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer active:cursor-grabbing select-none">
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <div
+        className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer select-none"
+        onClick={handleCardClick}
+      >
         <div className="p-3">
-
-          {/* ── Cabeçalho: avatar + nome + badge de não lidos ── */}
+          {/* Cabeçalho */}
           <div className="flex items-start gap-2.5 mb-2.5">
             <div className="relative flex-shrink-0">
-              <Avatar name={displayName} size="lg" />
+              <Avatar name={p1} size="lg" />
               {channelColor && (
-                <span
-                  className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white"
-                  style={{ backgroundColor: channelColor }}
-                />
+                <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white"
+                  style={{ backgroundColor: channelColor }} />
               )}
             </div>
 
             <div className="flex-1 min-w-0 pt-0.5">
               <div className="flex items-start justify-between gap-1.5">
-                <span className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2">
-                  {displayName}
-                </span>
+                <span className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2">{displayName}</span>
                 {unreadCount > 0 && (
                   <span className="flex-shrink-0 text-xs bg-af-mid text-white px-1.5 py-0.5 rounded-full min-w-[20px] text-center leading-tight font-medium">
                     {unreadCount}
                   </span>
                 )}
               </div>
-              {/* Telefone clicável → WhatsApp */}
-              {phoneRaw && (
-                <button
-                  onClick={handlePhoneClick}
-                  className="flex items-center gap-1 text-xs text-green-600 hover:text-green-700 hover:underline mt-0.5 transition-colors"
-                  title="Abrir no WhatsApp"
-                >
-                  <MessageCircle size={10} />
-                  {phoneRaw}
-                </button>
-              )}
+              {/* Telefones clicáveis */}
+              <div className="flex flex-col gap-0.5 mt-0.5">
+                {tel1 && (
+                  <button onClick={e => openWhatsApp(e, tel1)}
+                    className="flex items-center gap-1 text-xs text-green-600 hover:text-green-700 hover:underline transition-colors w-fit">
+                    <MessageCircle size={10} /> {tel1}
+                  </button>
+                )}
+                {tel2 && (
+                  <button onClick={e => openWhatsApp(e, tel2)}
+                    className="flex items-center gap-1 text-xs text-green-600 hover:text-green-700 hover:underline transition-colors w-fit">
+                    <MessageCircle size={10} /> {tel2}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* ── Última mensagem ── */}
+          {/* Última mensagem */}
           {lastMsg ? (
             <div className="flex items-center gap-1.5 mb-2.5 bg-slate-50 rounded-lg px-2.5 py-1.5">
-              {lastMsg.direction === 'INBOUND' ? (
-                <ArrowDownLeft size={11} className="text-emerald-500 flex-shrink-0" />
-              ) : (
-                <ArrowUpRight size={11} className="text-af-mid flex-shrink-0" />
-              )}
-              <span className="text-xs text-slate-600 flex-1 truncate leading-tight">
-                {lastMsg.content}
-              </span>
-              <span className="text-xs text-slate-400 flex-shrink-0 ml-1">
-                {msgTime(lastMsg.createdAt)}
-              </span>
+              {lastMsg.direction === 'INBOUND'
+                ? <ArrowDownLeft size={11} className="text-emerald-500 flex-shrink-0" />
+                : <ArrowUpRight size={11} className="text-af-mid flex-shrink-0" />}
+              <span className="text-xs text-slate-600 flex-1 truncate leading-tight">{lastMsg.content}</span>
+              <span className="text-xs text-slate-400 flex-shrink-0 ml-1">{msgTime(lastMsg.createdAt)}</span>
             </div>
           ) : (
             <div className="mb-2.5 bg-slate-50 rounded-lg px-2.5 py-1.5">
@@ -145,7 +121,7 @@ export function KanbanCard({ lead }: KanbanCardProps) {
             </div>
           )}
 
-          {/* ── Rodapé: valor · data · usuário ── */}
+          {/* Rodapé */}
           <div className="flex items-center justify-between pt-2 border-t border-af-border/60 gap-1">
             <span className={`text-xs font-bold ${lead.value ? 'text-af-mid' : 'text-slate-300'}`}>
               {lead.value ? formatCurrency(lead.value) : '—'}
@@ -156,7 +132,6 @@ export function KanbanCard({ lead }: KanbanCardProps) {
             </div>
             <Avatar name={lead.user.name} size="sm" />
           </div>
-
         </div>
       </div>
     </div>

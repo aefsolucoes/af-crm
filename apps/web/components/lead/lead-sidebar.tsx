@@ -176,12 +176,24 @@ export function LeadSidebar({ lead, onRefresh }: LeadSidebarProps) {
     setEditingKey(null);
     try {
       await api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newValues });
+
       // Sincroniza: valor do crédito → valor da venda
       if (key === 'valor_credito') {
         const numeric = parseBRNumber(value);
         await api.put(`/api/leads/${lead.id}`, { value: numeric });
         setValueInput(String(numeric));
       }
+
+      // Sincroniza nome do lead quando participante_1 ou participante_2 muda
+      if (key === 'participante_1' || key === 'participante_2') {
+        const p1 = String(key === 'participante_1' ? value : (customValues.participante_1 ?? '')).trim();
+        const p2 = String(key === 'participante_2' ? value : (customValues.participante_2 ?? '')).trim();
+        const newName = p2 ? `${p1} / ${p2}` : p1;
+        if (newName) {
+          await api.put(`/api/leads/${lead.id}`, { name: newName });
+        }
+      }
+
       onRefresh(); // sempre atualiza o lead após qualquer edição
     } finally {
       setSaving(false);

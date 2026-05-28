@@ -1,12 +1,13 @@
 'use client';
-import { useRouter, usePathname } from 'next/navigation';
+import { useState, useCallback } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { LeadHeader } from '@/components/lead/lead-header';
-import { LeadTimeline } from '@/components/lead/lead-timeline';
+import { ChatWindow } from '@/components/inbox/chat-window';
 import { LeadTasks } from '@/components/lead/lead-tasks';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
-import { LeadDetail } from '@/types';
+import { LeadDetail, Message } from '@/types';
 import api from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft } from 'lucide-react';
@@ -18,16 +19,34 @@ async function fetchLead(id: string): Promise<LeadDetail> {
 }
 
 export default function LeadDetailClient() {
-  const pathname = usePathname();
-  const id = pathname.split('/').pop() || '';
+  const params = useParams();
+  const id = (params?.id as string) || '';
   const router = useRouter();
+
+  const [localMessages, setLocalMessages] = useState<Message[]>([]);
 
   const { data: lead, isLoading, refetch } = useQuery({
     queryKey: ['lead', id],
     queryFn: () => fetchLead(id),
     refetchOnMount: 'always',
     staleTime: 0,
+    enabled: !!id,
   });
+
+  const handleNewMessage = useCallback((msg: Message) => {
+    setLocalMessages(prev => [...prev, msg]);
+  }, []);
+
+  // Merge server messages + local (optimistic)
+  const allMessages = lead
+    ? [...lead.messages, ...localMessages.filter(m => !lead.messages.find(x => x.id === m.id))]
+    : [];
+
+  // Nome do lead: participante_1 / participante_2
+  const cf = (lead?.customFields || {}) as Record<string, string>;
+  const p1 = cf.participante_1 || lead?.contact?.name || lead?.name || '';
+  const p2 = cf.participante_2;
+  const displayName = p2 ? `${p1} / ${p2}` : p1;
 
   return (
     <div className="flex flex-col h-full">
@@ -42,7 +61,6 @@ export default function LeadDetailClient() {
       {isLoading ? (
         <div className="flex-1 p-6 space-y-4">
           <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-10 w-full" />
           <div className="grid grid-cols-3 gap-4 h-96">
             <Skeleton className="col-span-1" />
             <Skeleton className="col-span-1" />
@@ -53,10 +71,20 @@ export default function LeadDetailClient() {
         <>
           <LeadHeader lead={lead} onStageChange={refetch} />
           <div className="flex flex-1 overflow-hidden">
+            {/* Sidebar esquerda: campos personalizados */}
             <LeadSidebar lead={lead} onRefresh={refetch} />
-            <div className="flex-1 overflow-hidden">
-              <LeadTimeline messages={lead.messages} notes={lead.notes} />
+
+            {/* Centro: conversa WhatsApp */}
+            <div className="flex-1 overflow-hidden relative">
+              <ChatWindow
+                leadId={lead.id}
+                leadName={displayName}
+                messages={allMessages}
+                onNewMessage={handleNewMessage}
+              />
             </div>
+
+            {/* Painel direito: tarefas, notas, histórico */}
             <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">
               <LeadTasks
                 tasks={lead.tasks}
