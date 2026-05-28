@@ -4,11 +4,11 @@ import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone, ChevronDown, ArrowRight, Trash2 } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Pipeline, Stage, User } from '@/types';
 
-type Tab = 'api' | 'qr' | 'meta';
+type Tab = 'api' | 'qr' | 'meta' | 'sons';
 
 interface WAConfig {
   phoneNumberId: string;
@@ -50,8 +50,74 @@ interface MetaFormField {
   type: string;
 }
 
+// ─── Definições de sons ───────────────────────────────────────────────────────
+type SoundKey = 'whatsapp' | 'ding' | 'pop' | 'chime' | 'bell' | 'soft' | 'alert' | 'none';
+
+const SOUNDS: { key: SoundKey; label: string; emoji: string; desc: string }[] = [
+  { key: 'whatsapp', label: 'WhatsApp',   emoji: '💬', desc: 'Três dings descendentes' },
+  { key: 'ding',     label: 'Ding',       emoji: '🔔', desc: 'Um toque limpo e suave' },
+  { key: 'pop',      label: 'Pop',        emoji: '🫧', desc: 'Som curto estilo bolha' },
+  { key: 'chime',    label: 'Chime',      emoji: '🎵', desc: 'Dois tons harmônicos' },
+  { key: 'bell',     label: 'Sino',       emoji: '🔕', desc: 'Sino metálico curto' },
+  { key: 'soft',     label: 'Suave',      emoji: '🌙', desc: 'Tom suave e discreto' },
+  { key: 'alert',    label: 'Alerta',     emoji: '⚡', desc: 'Toque de atenção' },
+  { key: 'none',     label: 'Sem som',    emoji: '🔇', desc: 'Desativar notificação sonora' },
+];
+
+function playSound(key: SoundKey) {
+  if (key === 'none') return;
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+
+    const tone = (freq: number, start: number, dur: number, vol: number, type: OscillatorType = 'sine') => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+      gain.gain.setValueAtTime(vol, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + dur);
+    };
+
+    if (key === 'whatsapp') {
+      tone(1200, 0.00, 0.15, 0.4);
+      tone(1000, 0.18, 0.15, 0.3);
+      tone(800,  0.36, 0.20, 0.2);
+    } else if (key === 'ding') {
+      tone(880, 0, 0.5, 0.4);
+    } else if (key === 'pop') {
+      tone(600, 0.00, 0.04, 0.5, 'square');
+      tone(400, 0.04, 0.08, 0.3, 'sine');
+    } else if (key === 'chime') {
+      tone(523, 0.00, 0.3, 0.35);   // Dó
+      tone(659, 0.15, 0.3, 0.30);   // Mi
+      tone(784, 0.30, 0.4, 0.25);   // Sol
+    } else if (key === 'bell') {
+      tone(987,  0.00, 0.05, 0.5, 'square');
+      tone(1174, 0.00, 0.40, 0.3, 'sine');
+      tone(987,  0.05, 0.35, 0.2, 'sine');
+    } else if (key === 'soft') {
+      tone(440, 0.0, 0.6, 0.2);
+      tone(550, 0.1, 0.5, 0.15);
+    } else if (key === 'alert') {
+      tone(1000, 0.00, 0.10, 0.5, 'square');
+      tone(1200, 0.12, 0.10, 0.5, 'square');
+      tone(1000, 0.24, 0.10, 0.4, 'square');
+    }
+
+    setTimeout(() => ctx.close().catch(() => {}), 1200);
+  } catch { /* silencioso */ }
+}
+
 export default function ConfiguracoesPage() {
   const [tab, setTab] = useState<Tab>('qr');
+  const [selectedSound, setSelectedSound] = useState<SoundKey>(
+    () => (typeof window !== 'undefined' ? (localStorage.getItem('af_notification_sound') as SoundKey) || 'whatsapp' : 'whatsapp')
+  );
 
   // Meta Lead Ads state
   const [metaConfig, setMetaConfig] = useState<MetaConfig>({
@@ -346,32 +412,18 @@ export default function ConfiguracoesPage() {
 
           {/* Tab switcher */}
           <div className="flex bg-slate-100 rounded-xl p-1 gap-1">
-            <button
-              onClick={() => setTab('qr')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                tab === 'qr' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <QrCode size={16} />
-              QR Code
+            <button onClick={() => setTab('qr')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'qr' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
+              <QrCode size={16} /> QR Code
             </button>
-            <button
-              onClick={() => setTab('api')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                tab === 'api' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
+            <button onClick={() => setTab('api')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'api' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
               API Oficial
             </button>
-            <button
-              onClick={() => setTab('meta')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                tab === 'meta' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <Megaphone size={16} />
-              Meta Lead Ads
+            <button onClick={() => setTab('meta')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'meta' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
+              <Megaphone size={16} /> Meta Lead Ads
+            </button>
+            <button onClick={() => setTab('sons')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'sons' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
+              <Volume2 size={16} /> Sons
             </button>
           </div>
 
@@ -951,6 +1003,80 @@ export default function ConfiguracoesPage() {
                   </div>
                 </form>
               )}
+            </div>
+          )}
+
+          {/* ── Sons Tab ── */}
+          {tab === 'sons' && (
+            <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
+              <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border bg-gradient-to-r from-violet-600 to-indigo-600">
+                <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                  <Volume2 size={22} className="text-white" />
+                </div>
+                <div>
+                  <h2 className="text-white font-bold text-base">Notificações Sonoras</h2>
+                  <p className="text-white/70 text-xs">Escolha o som para novas mensagens do WhatsApp</p>
+                </div>
+              </div>
+
+              <div className="px-6 py-5 space-y-3">
+                <p className="text-xs text-slate-500">
+                  Clique em <strong>▶ Ouvir</strong> para testar cada som, depois clique em <strong>Usar este som</strong> para salvar.
+                </p>
+
+                <div className="grid grid-cols-1 gap-2">
+                  {SOUNDS.map(s => (
+                    <div
+                      key={s.key}
+                      className={`flex items-center gap-3 p-3.5 rounded-xl border transition-all ${
+                        selectedSound === s.key
+                          ? 'border-violet-400 bg-violet-50'
+                          : 'border-af-border hover:border-violet-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="text-2xl w-8 text-center flex-shrink-0">{s.emoji}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-slate-800">{s.label}</p>
+                        <p className="text-xs text-slate-400">{s.desc}</p>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {s.key !== 'none' && (
+                          <button
+                            onClick={() => playSound(s.key)}
+                            className="flex items-center gap-1 px-3 py-1.5 text-xs border border-af-border rounded-lg hover:bg-slate-100 text-slate-600 transition-colors"
+                          >
+                            ▶ Ouvir
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            setSelectedSound(s.key);
+                            localStorage.setItem('af_notification_sound', s.key);
+                            toast(`Som "${s.label}" salvo!`);
+                          }}
+                          className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                            selectedSound === s.key
+                              ? 'bg-violet-600 text-white'
+                              : 'border border-violet-200 text-violet-600 hover:bg-violet-50'
+                          }`}
+                        >
+                          {selectedSound === s.key ? (
+                            <><CheckCircle2 size={11} /> Selecionado</>
+                          ) : (
+                            'Usar este'
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-2">
+                  <p className="text-xs text-amber-700">
+                    <strong>💡 Dica:</strong> Se o som não tocar, clique em qualquer lugar da página primeiro. Navegadores bloqueiam áudio até haver interação do usuário.
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 

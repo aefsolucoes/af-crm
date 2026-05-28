@@ -6,34 +6,36 @@ import { ToastContainer } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
 import { getSocket } from '@/lib/socket';
 
+type SoundKey = 'whatsapp' | 'ding' | 'pop' | 'chime' | 'bell' | 'soft' | 'alert' | 'none';
+
 // Gera som de notificação via Web Audio API (sem arquivo externo)
-function playNotificationSound() {
+function playNotificationSound(key: SoundKey = 'whatsapp') {
   try {
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return;
     const ctx = new AudioCtx();
 
-    const play = (freq: number, startAt: number, duration: number, volume: number) => {
+    const tone = (freq: number, start: number, dur: number, vol: number, type: OscillatorType = 'sine') => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq, ctx.currentTime + startAt);
-      osc.frequency.exponentialRampToValueAtTime(freq * 0.75, ctx.currentTime + startAt + duration);
-      gain.gain.setValueAtTime(volume, ctx.currentTime + startAt);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + startAt + duration);
-      osc.start(ctx.currentTime + startAt);
-      osc.stop(ctx.currentTime + startAt + duration);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+      gain.gain.setValueAtTime(vol, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + dur);
     };
 
-    // Três dings — estilo notificação WhatsApp
-    play(1200, 0.00, 0.15, 0.4);
-    play(1000, 0.18, 0.15, 0.3);
-    play(800,  0.36, 0.20, 0.2);
+    if (key === 'whatsapp') { tone(1200,0,0.15,0.4); tone(1000,0.18,0.15,0.3); tone(800,0.36,0.20,0.2); }
+    else if (key === 'ding')  { tone(880, 0, 0.5, 0.4); }
+    else if (key === 'pop')   { tone(600,0,0.04,0.5,'square'); tone(400,0.04,0.08,0.3); }
+    else if (key === 'chime') { tone(523,0,0.3,0.35); tone(659,0.15,0.3,0.30); tone(784,0.30,0.4,0.25); }
+    else if (key === 'bell')  { tone(987,0,0.05,0.5,'square'); tone(1174,0,0.40,0.3); tone(987,0.05,0.35,0.2); }
+    else if (key === 'soft')  { tone(440,0,0.6,0.2); tone(550,0.1,0.5,0.15); }
+    else if (key === 'alert') { tone(1000,0,0.10,0.5,'square'); tone(1200,0.12,0.10,0.5,'square'); tone(1000,0.24,0.10,0.4,'square'); }
 
-    // Fecha o contexto após o som terminar
-    setTimeout(() => ctx.close().catch(() => {}), 800);
+    setTimeout(() => ctx.close().catch(() => {}), 1200);
   } catch {
     // fallback silencioso
   }
@@ -80,7 +82,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       const now = Date.now();
       if (now - lastSoundRef.current > 2000) {
         lastSoundRef.current = now;
-        playNotificationSound();
+        const saved = localStorage.getItem('af_notification_sound') || 'whatsapp';
+        if (saved !== 'none') playNotificationSound(saved as any);
       }
     }
 
