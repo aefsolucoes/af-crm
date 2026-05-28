@@ -87,23 +87,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       }
     }
 
-    // new_message vem da sala da conta (global) ou da sala do lead
-    function onNewMessage(msg: { channel?: string; direction?: string }) {
-      if (msg?.direction === 'INBOUND') triggerSound();
-    }
-
-    // new_conversation: novo lead chegou via WhatsApp
-    function onNewConversation() {
+    // new_notification — evento exclusivo para som/badge (não duplica mensagem no chat)
+    function onNewNotification() {
       triggerSound();
     }
 
-    socket.on('new_message', onNewMessage);
-    socket.on('new_conversation', onNewConversation);
+    socket.on('new_notification', onNewNotification);
 
     return () => {
       socket.off('connect', joinAccount);
-      socket.off('new_message', onNewMessage);
-      socket.off('new_conversation', onNewConversation);
+      socket.off('new_notification', onNewNotification);
     };
   }, []);
 
