@@ -35,10 +35,24 @@ export async function sendWhatsAppMessage(
   }
 
   let phone = to.replace(/\D/g, '');
-  // Ensure Brazilian country code (55) is present
+
+  // Garante código do país 55 (Brasil)
   if (phone.length === 10 || phone.length === 11) {
     phone = `55${phone}`;
   }
+
+  // Corrige celular brasileiro de 8 dígitos → adiciona o 9 obrigatório
+  // Ex: 556184549012 (12 dígitos) → 5561984549012 (13 dígitos)
+  // Só aplica se: começa com 55 + 2 dígitos de DDD + 8 dígitos locais (= 12 total)
+  // e o primeiro dígito local for 6, 7, 8 ou 9 (faixa de celular)
+  if (phone.length === 12 && phone.startsWith('55')) {
+    const local = phone.slice(4); // 8 dígitos locais (ex: 84549012)
+    const first = parseInt(local[0], 10);
+    if (first >= 6 && first <= 9) {
+      phone = phone.slice(0, 4) + '9' + local; // 5561 + 9 + 84549012
+    }
+  }
+
   console.log(`[WA Send] to="${to}" → phone="${phone}" (${phone.length} digits) phoneNumberId="${config.phoneNumberId}"`);
   const url = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
 
