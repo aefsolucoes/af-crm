@@ -103,8 +103,9 @@ export function ChatWindow({ leadId, leadName, messages, onNewMessage }: ChatWin
       const { data } = await api.post('/api/ai/rewrite', { text, mode });
       setContent(data.result);
       inputRef.current?.focus();
-    } catch {
-      toast('Erro ao processar com IA', 'error');
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || err?.message || 'Erro desconhecido';
+      toast(`IA: ${msg}`, 'error');
     } finally {
       setAiLoading(null);
     }
