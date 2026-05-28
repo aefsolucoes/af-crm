@@ -50,7 +50,11 @@ export async function createLead(data: {
   accountId: string;
   customFields?: Record<string, unknown>;
 }) {
-  return prisma.lead.create({ data, include: { stage: true, user: { select: { id: true, name: true } } } });
+  const { customFields, ...rest } = data;
+  return prisma.lead.create({
+    data: { ...rest, ...(customFields ? { customFields: customFields as any } : {}) },
+    include: { stage: true, user: { select: { id: true, name: true } } },
+  });
 }
 
 export async function updateLead(id: string, accountId: string, data: Partial<{
