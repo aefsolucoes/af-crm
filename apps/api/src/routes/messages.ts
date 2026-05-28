@@ -50,20 +50,26 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
       });
 
       const phone = lead?.contact?.whatsappPhone || lead?.contact?.phone;
-      if (phone) {
-        // Try QR (Baileys) first, then fall back to Cloud API
-        const qrStatus = getQRStatus(req.user!.accountId);
-        if (qrStatus.status === 'connected') {
-          const sent = await sendBaileysMessage(phone, req.body.content, req.user!.accountId);
-          if (!sent) status = 'FAILED';
+      console.log(`[Send] leadId=${req.body.leadId} phone=${phone} contact=${JSON.stringify(lead?.contact)}`);
+
+      if (!phone) {
+        return res.status(400).json({ error: 'Contato sem número de telefone cadastrado' });
+      }
+
+      // Try QR (Baileys) first, then fall back to Cloud API
+      const qrStatus = getQRStatus(req.user!.accountId);
+      if (qrStatus.status === 'connected') {
+        const sent = await sendBaileysMessage(phone, req.body.content, req.user!.accountId);
+        if (!sent) status = 'FAILED';
+      } else {
+        const result = await sendWhatsAppMessage(phone, req.body.content, req.user!.accountId);
+        console.log(`[Send] WhatsApp result:`, result);
+        if (result.success) {
+          externalId = result.externalId;
         } else {
-          const result = await sendWhatsAppMessage(phone, req.body.content, req.user!.accountId);
-          if (result.success) {
-            externalId = result.externalId;
-          } else {
-            console.warn('[WhatsApp] Mensagem não enviada:', result.error);
-            status = 'FAILED';
-          }
+          console.warn('[WhatsApp] Mensagem não enviada:', result.error);
+          // Return error to frontend so user sees what went wrong
+          return res.status(400).json({ error: result.error || 'Falha ao enviar mensagem WhatsApp' });
         }
       }
     }

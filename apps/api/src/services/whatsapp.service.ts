@@ -25,8 +25,13 @@ export async function sendWhatsAppMessage(
   accountId: string
 ): Promise<{ success: boolean; externalId?: string; error?: string }> {
   const config = await getWhatsAppConfig(accountId);
-  if (!config || !config.active) {
-    return { success: false, error: 'WhatsApp não configurado ou inativo' };
+  console.log(`[WA Send] accountId=${accountId} config exists=${!!config} active=${config?.active} phoneNumberId=${config?.phoneNumberId}`);
+
+  if (!config) {
+    return { success: false, error: 'WhatsApp não configurado. Acesse Configurações → API Oficial e salve suas credenciais.' };
+  }
+  if (!config.active) {
+    return { success: false, error: 'WhatsApp inativo. Acesse Configurações → API Oficial e ative a integração.' };
   }
 
   const phone = to.replace(/\D/g, '');
