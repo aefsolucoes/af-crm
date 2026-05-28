@@ -1,1 +1,6 @@
-# SPA routing is handled by 404.html fallback on Cloudflare Pages
+# Cloudflare Pages — SPA fallback para rotas dinâmicas do Next.js
+# Serve o HTML pré-gerado (placeholder) para qualquer sub-rota não encontrada.
+# O client-side JS lê o id real via window.location.pathname.
+
+/leads/*        /leads/placeholder/index.html   200
+/contatos/*     /contatos/placeholder/index.html 200
