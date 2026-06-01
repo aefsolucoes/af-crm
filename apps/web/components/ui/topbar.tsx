@@ -1,10 +1,11 @@
 'use client';
+import React from 'react';
 import { Bell } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 
 interface TopbarProps {
-  title: string;
-  subtitle?: string;
+  title: string | React.ReactNode;
+  subtitle?: string | React.ReactNode;
 }
 
 export function Topbar({ title, subtitle }: TopbarProps) {
