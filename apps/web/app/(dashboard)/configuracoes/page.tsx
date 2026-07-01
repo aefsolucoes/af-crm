@@ -8,7 +8,7 @@ import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff,
 import { useQuery } from '@tanstack/react-query';
 import { Pipeline, Stage, User } from '@/types';
 
-type Tab = 'api' | 'qr' | 'meta' | 'sons';
+type Tab = 'api' | 'qr' | 'meta' | 'sons' | 'ia';
 
 interface WAConfig {
   phoneNumberId: string;
@@ -424,6 +424,10 @@ export default function ConfiguracoesPage() {
             </button>
             <button onClick={() => setTab('sons')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'sons' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
               <Volume2 size={16} /> Sons
+            </button>
+            <button onClick={() => setTab('ia')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'ia' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 8v4l3 3"/><circle cx="19" cy="5" r="3"/></svg>
+              IA Chatbot
             </button>
           </div>
 
@@ -1096,7 +1100,155 @@ export default function ConfiguracoesPage() {
             </div>
           )}
 
+          {/* IA Chatbot Tab */}
+          {tab === 'ia' && <IAChatbotTab />}
+
         </div>
+      </div>
+    </div>
+  );
+}
+
+function IAChatbotTab() {
+  const [enabled, setEnabled] = useState(false);
+  const [model, setModel] = useState('claude-sonnet-4-6');
+  const [prompt, setPrompt] = useState(`Você é um assistente de vendas da A&F Soluções Financeiras.
+
+Seu papel é:
+- Receber e qualificar leads de forma amigável e profissional
+- Responder dúvidas sobre nossos produtos e serviços financeiros
+- Coletar informações relevantes: nome, necessidade, valor disponível para investimento
+- Agendar reuniões com consultores quando o lead demonstrar interesse
+- Transferir para um humano quando necessário
+
+Diretrizes:
+- Seja sempre cordial e use o nome do lead quando souber
+- Não forneça informações financeiras específicas sem consultar um especialista
+- Se o lead perguntar sobre taxa, dívida ou situação financeira complexa, transferir para humano
+- Responda em português do Brasil`);
+  const [handoffKeywords, setHandoffKeywords] = useState('falar com humano, atendente, pessoa, urgente, problema');
+  const [autoReply, setAutoReply] = useState(true);
+  const [replyDelay, setReplyDelay] = useState('3');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    await new Promise(r => setTimeout(r, 600));
+    setSaving(false);
+    localStorage.setItem('af_ia_config', JSON.stringify({ enabled, model, prompt, handoffKeywords, autoReply, replyDelay }));
+    // toast imported from parent scope
+    alert('Configurações de IA salvas!');
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-xl p-4 flex items-start gap-3">
+        <div className="p-2 bg-purple-100 rounded-lg flex-shrink-0">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2"><path d="M12 2a10 10 0 1 0 10 10"/><path d="M12 8v4l3 3"/><circle cx="19" cy="5" r="3"/></svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-purple-900">Resposta automática com IA</p>
+          <p className="text-xs text-purple-700 mt-0.5">Configure a IA para responder automaticamente as mensagens dos clientes com base em um prompt de instruções personalizado.</p>
+        </div>
+      </div>
+
+      {/* Enable toggle */}
+      <div className="flex items-center justify-between p-4 bg-white rounded-xl border border-af-border">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">Ativar IA no chatbot</p>
+          <p className="text-xs text-slate-500 mt-0.5">Quando ativada, a IA responderá automaticamente às mensagens recebidas</p>
+        </div>
+        <button
+          onClick={() => setEnabled(!enabled)}
+          className={`relative w-12 h-6 rounded-full transition-colors ${enabled ? 'bg-purple-500' : 'bg-slate-200'}`}
+        >
+          <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${enabled ? 'translate-x-7' : 'translate-x-1'}`} />
+        </button>
+      </div>
+
+      {/* Model */}
+      <div className="flex flex-col gap-1">
+        <label className="text-sm font-medium text-slate-700">Modelo de IA</label>
+        <select
+          value={model}
+          onChange={e => setModel(e.target.value)}
+          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+        >
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Recomendado — rápido e eficiente)</option>
+          <option value="claude-opus-4-7">Claude Opus 4.7 (Mais inteligente — maior custo)</option>
+          <option value="claude-haiku-4-5">Claude Haiku 4.5 (Mais rápido — menor custo)</option>
+        </select>
+      </div>
+
+      {/* Prompt */}
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium text-slate-700">Prompt de instruções</label>
+          <span className="text-xs text-slate-400">{prompt.length} caracteres</span>
+        </div>
+        <textarea
+          value={prompt}
+          onChange={e => setPrompt(e.target.value)}
+          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-af-accent font-mono leading-relaxed"
+          rows={12}
+          placeholder="Descreva como a IA deve se comportar, o tom de voz, o que pode e não pode responder..."
+        />
+        <p className="text-xs text-slate-400">Este prompt define a personalidade e comportamento da IA ao responder seus clientes.</p>
+      </div>
+
+      {/* Reply behavior */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="flex flex-col gap-1">
+          <label className="text-sm font-medium text-slate-700">Atraso na resposta</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              value={replyDelay}
+              onChange={e => setReplyDelay(e.target.value)}
+              min={0}
+              max={60}
+              className="flex-1 px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+            />
+            <span className="text-sm text-slate-500">segundos</span>
+          </div>
+          <p className="text-xs text-slate-400">Simula tempo de digitação natural</p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-sm font-medium text-slate-700">Resposta automática</label>
+          <div className="flex items-center gap-3 mt-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" checked={autoReply} onChange={() => setAutoReply(true)} className="accent-purple-500" />
+              <span className="text-sm text-slate-700">Sempre responder</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" checked={!autoReply} onChange={() => setAutoReply(false)} className="accent-purple-500" />
+              <span className="text-sm text-slate-700">Só fora do horário</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      {/* Handoff keywords */}
+      <div className="flex flex-col gap-1">
+        <label className="text-sm font-medium text-slate-700">Palavras-chave para transferir ao humano</label>
+        <input
+          value={handoffKeywords}
+          onChange={e => setHandoffKeywords(e.target.value)}
+          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+          placeholder="falar com humano, atendente, urgente"
+        />
+        <p className="text-xs text-slate-400">Separe por vírgulas. Quando o cliente usar essas palavras, a conversa será transferida para um agente humano.</p>
+      </div>
+
+      {/* Save */}
+      <div className="flex justify-end">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-2 px-5 py-2.5 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 disabled:opacity-60 transition-colors"
+        >
+          {saving ? 'Salvando...' : 'Salvar configurações de IA'}
+        </button>
       </div>
     </div>
   );

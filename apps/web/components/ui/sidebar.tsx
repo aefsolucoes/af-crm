@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, MessageSquare, Users, Contact, CheckSquare, Bot, BarChart3, LogOut, Settings,
+  FileText, Zap, UserCog,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useRouter } from 'next/navigation';
@@ -16,6 +17,9 @@ const NAV = [
   { href: '/contatos', label: 'Contatos', icon: Contact },
   { href: '/tarefas', label: 'Tarefas', icon: CheckSquare },
   { href: '/salesbot', label: 'SalesBot', icon: Bot },
+  { href: '/templates', label: 'Templates', icon: FileText },
+  { href: '/automacao', label: 'Automações', icon: Zap },
+  { href: '/usuarios', label: 'Usuários', icon: UserCog },
   { href: '/relatorios', label: 'Relatórios', icon: BarChart3 },
   { href: '/configuracoes', label: 'Configurações', icon: Settings },
 ];
