@@ -4,13 +4,13 @@
   "configurations": [
     {
       "name": "AF CRM — Frontend (Next.js)",
-      "runtimeExecutable": "/Users/fabiocardoso/Downloads/CRM AF/node_modules/.bin/next",
-      "runtimeArgs": ["dev", "/Users/fabiocardoso/Downloads/CRM AF/apps/web"],
+      "runtimeExecutable": "/Users/fabiocardoso/Documents/CLAUDE PROJETOS/CRM AF/node_modules/.bin/next",
+      "runtimeArgs": ["dev", "/Users/fabiocardoso/Documents/CLAUDE PROJETOS/CRM AF/apps/web"],
       "port": 3000
     },
     {
       "name": "AF CRM — Backend (Express API)",
-      "runtimeExecutable": "/usr/local/bin/npm",
+      "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--workspace=apps/api"],
       "port": 3001
     }

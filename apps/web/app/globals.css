@@ -9,6 +9,23 @@
   --af-accent: #3b82c4;
   --af-light: #e8f0f9;
   --af-border: #c5d6eb;
+
+  --app-bg-page: #f4f6f9;
+  --app-bg-main: #f9fafb;
+  --app-text: #1e293b;
+  --app-bg-image: none;
+}
+
+html[data-theme='black'] {
+  --app-bg-page: #0b0f16;
+  --app-bg-main: #14181f;
+  --app-text: #e5e7eb;
+}
+
+html[data-theme='blue'] {
+  --app-bg-page: #0d2545;
+  --app-bg-main: #14315e;
+  --app-text: #e8f0f9;
 }
 
 * {
@@ -17,8 +34,16 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background-color: #f4f6f9;
-  color: #1e293b;
+  background-color: var(--app-bg-page);
+  color: var(--app-text);
+}
+
+.app-bg-surface {
+  background-color: var(--app-bg-main);
+  background-image: var(--app-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
 }
 
 .scrollbar-thin::-webkit-scrollbar {

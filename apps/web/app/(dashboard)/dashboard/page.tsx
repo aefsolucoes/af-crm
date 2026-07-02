@@ -1,10 +1,11 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
+import Link from 'next/link';
 import { Topbar } from '@/components/ui/topbar';
-import { ReportSummary, ReportConversion } from '@/types';
+import { ReportSummary, ReportConversion, Task, Conversation } from '@/types';
 import api from '@/lib/api';
-import { formatCurrency, formatDate } from '@/lib/utils';
-import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download } from 'lucide-react';
+import { formatCurrency, formatDate, isOverdue } from '@/lib/utils';
+import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download, AlertCircle, MessageCircle, Plus, Inbox } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useState } from 'react';
 import {
@@ -40,6 +41,16 @@ async function fetchConversion(): Promise<ReportConversion> {
   return data;
 }
 
+async function fetchTasks(): Promise<Task[]> {
+  const { data } = await api.get('/api/tasks');
+  return data;
+}
+
+async function fetchConversations(): Promise<Conversation[]> {
+  const { data } = await api.get('/api/messages');
+  return data;
+}
+
 function KpiCard({ title, value, subtitle, icon: Icon, color }: { title: string; value: string; subtitle?: string; icon: React.ElementType; color: string }) {
   return (
     <div className="bg-white rounded-xl border border-af-border p-5 shadow-sm">
@@ -57,9 +68,14 @@ function KpiCard({ title, value, subtitle, icon: Icon, color }: { title: string;
   );
 }
 
-export default function RelatoriosPage() {
+export default function DashboardPage() {
   const { data: summary, isLoading: loadingSummary } = useQuery({ queryKey: ['reports-summary'], queryFn: fetchSummary });
   const { data: conversion, isLoading: loadingConversion } = useQuery({ queryKey: ['reports-conversion'], queryFn: fetchConversion });
+  const { data: tasks, isLoading: loadingTasks } = useQuery({ queryKey: ['dashboard-tasks'], queryFn: fetchTasks });
+  const { data: conversations, isLoading: loadingConversations } = useQuery({ queryKey: ['dashboard-conversations'], queryFn: fetchConversations });
+
+  const overdueCount = (tasks || []).filter((t) => !t.done && isOverdue(t.dueAt)).length;
+  const unreadCount = (conversations || []).reduce((sum, c) => sum + (c._count?.messages || 0), 0);
 
   // Relatório Fechados
   const [from, setFrom] = useState(defaultFrom());
@@ -76,10 +92,34 @@ export default function RelatoriosPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Topbar title="Relatórios" subtitle="Dashboard de performance" />
+      <Topbar title="Dashboard" subtitle="Visão geral e performance" />
 
       <div className="flex-1 overflow-auto px-6 py-5 space-y-6 scrollbar-thin">
-        {/* KPIs */}
+        {/* Visão geral rápida */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {loadingTasks || loadingConversations ? (
+            [1, 2].map((i) => <Skeleton key={i} className="h-28" />)
+          ) : (
+            <>
+              <Link href="/tarefas">
+                <KpiCard title="Tarefas Vencidas" value={String(overdueCount)} subtitle="Requerem atenção" icon={AlertCircle} color="#ef4444" />
+              </Link>
+              <Link href="/inbox">
+                <KpiCard title="Mensagens Não Lidas" value={String(unreadCount)} subtitle="Na inbox" icon={MessageCircle} color="#2261a8" />
+              </Link>
+            </>
+          )}
+          <Link href="/funil" className="bg-af-navy rounded-xl p-5 shadow-sm flex flex-col items-center justify-center gap-1.5 text-white hover:bg-af-blue transition-colors">
+            <Inbox size={20} />
+            <span className="text-xs font-semibold">Ver Funil</span>
+          </Link>
+          <Link href="/funil" className="bg-af-mid rounded-xl p-5 shadow-sm flex flex-col items-center justify-center gap-1.5 text-white hover:bg-af-accent transition-colors">
+            <Plus size={20} />
+            <span className="text-xs font-semibold">Novo Lead</span>
+          </Link>
+        </div>
+
+        {/* KPIs de performance */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {isLoading ? (
             [1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-28" />)

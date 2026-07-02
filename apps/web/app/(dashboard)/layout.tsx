@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/ui/sidebar';
 import { ToastContainer } from '@/components/ui/toast';
+import { SupportChatButton } from '@/components/ui/support-chat';
 import { useAuthStore } from '@/store/auth.store';
 import { getSocket } from '@/lib/socket';
 
@@ -101,12 +102,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="flex h-screen overflow-hidden app-bg-surface">
       <Sidebar />
       <main className="flex-1 flex flex-col overflow-hidden">
         {children}
       </main>
       <ToastContainer />
+      <SupportChatButton />
     </div>
   );
 }

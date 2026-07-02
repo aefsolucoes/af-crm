@@ -15,6 +15,9 @@ interface KanbanColumnProps {
 const STAGE_DESCRIPTIONS: Record<string, string> = {
   // Pipeline Principal — Financiamento Habitacional
   'Prospecção':              'Respondendo questionário / tirando dúvidas',
+  'Qualificação':            'Lead qualificado — avaliando perfil e necessidade',
+  'Proposta':                'Proposta enviada — aguardando retorno do cliente',
+  'Negociação':              'Negociando condições — ajustando taxas e valores',
   'Follow Up':               'Não respondeu o questionário — acionar',
   'Aguardando Simulação':    'Questionário ok — realizar simulação',
   'Proposta Enviada':        'Proposta enviada — aguardando aprovação',
@@ -43,47 +46,57 @@ export function KanbanColumn({ stage, leads, onAddLead }: KanbanColumnProps) {
 
   return (
     <div className="flex flex-col w-72 flex-shrink-0">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-1">
-        <div className="flex items-center gap-2">
-          <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: stage.color }} />
-          <span className="text-sm font-semibold text-slate-700">{stage.name}</span>
-          <span className="text-xs bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full font-medium">
-            {leads.length}
-          </span>
+      <div className="flex flex-col rounded-xl bg-white/85 backdrop-blur-sm shadow-md overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-3 pt-3 pb-1">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: stage.color }} />
+            <span className="text-sm font-bold text-slate-800 truncate">{stage.name}</span>
+            <span className="text-xs bg-slate-200/80 text-slate-600 px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0">
+              {leads.length}
+            </span>
+          </div>
+          <button
+            onClick={() => onAddLead(stage.id)}
+            className="text-slate-400 hover:text-af-mid hover:bg-af-light rounded p-0.5 transition-colors flex-shrink-0"
+            title="Adicionar lead"
+          >
+            <Plus size={16} />
+          </button>
         </div>
+
+        {/* Descrição do estágio */}
+        {description && (
+          <p className="text-[11px] text-slate-400 leading-tight px-3 mb-1">{description}</p>
+        )}
+
+        {/* Total */}
+        {totalValue > 0 && (
+          <div className="text-xs text-slate-500 px-3 mb-2 font-medium">{formatCurrency(totalValue)}</div>
+        )}
+
+        {/* Cards */}
+        <SortableContext items={leads.map((l) => l.id)} strategy={verticalListSortingStrategy}>
+          <div
+            ref={setNodeRef}
+            className={`flex flex-col gap-2 min-h-[60px] p-2 pt-0 transition-colors ${
+              isOver ? 'bg-af-light/70' : ''
+            }`}
+          >
+            {leads.map((lead) => (
+              <KanbanCard key={lead.id} lead={lead} labelColor={stage.color} />
+            ))}
+          </div>
+        </SortableContext>
+
+        {/* Adicionar cartão */}
         <button
           onClick={() => onAddLead(stage.id)}
-          className="text-slate-400 hover:text-af-mid hover:bg-af-light rounded p-0.5 transition-colors"
-          title="Adicionar lead"
+          className="flex items-center gap-1.5 mx-2 mb-2 px-2 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-200/70 hover:text-slate-700 transition-colors"
         >
-          <Plus size={16} />
+          <Plus size={14} /> Adicionar um cartão
         </button>
       </div>
-
-      {/* Descrição do estágio */}
-      {description && (
-        <p className="text-[11px] text-slate-400 leading-tight mb-2 pl-5">{description}</p>
-      )}
-
-      {/* Total */}
-      {totalValue > 0 && (
-        <div className="text-xs text-slate-500 mb-2 font-medium pl-5">{formatCurrency(totalValue)}</div>
-      )}
-
-      {/* Cards */}
-      <SortableContext items={leads.map((l) => l.id)} strategy={verticalListSortingStrategy}>
-        <div
-          ref={setNodeRef}
-          className={`flex flex-col gap-2 flex-1 min-h-[200px] p-2 rounded-xl transition-colors ${
-            isOver ? 'bg-af-light' : 'bg-slate-100/60'
-          }`}
-        >
-          {leads.map((lead) => (
-            <KanbanCard key={lead.id} lead={lead} />
-          ))}
-        </div>
-      </SortableContext>
     </div>
   );
 }

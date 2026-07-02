@@ -12,6 +12,7 @@ import { MergeModal } from './merge-modal';
 
 interface KanbanCardProps {
   lead: Lead;
+  labelColor?: string;
 }
 
 function msgTime(dateStr: string) {
@@ -26,7 +27,7 @@ function msgTime(dateStr: string) {
   return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit' }).format(date);
 }
 
-export function KanbanCard({ lead }: KanbanCardProps) {
+export function KanbanCard({ lead, labelColor }: KanbanCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [showMerge, setShowMerge] = useState(false);
@@ -74,9 +75,10 @@ export function KanbanCard({ lead }: KanbanCardProps) {
     />
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
       <div
-        className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer select-none"
+        className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer select-none overflow-hidden"
         onClick={handleCardClick}
       >
+        {labelColor && <div className="h-1.5 w-full" style={{ backgroundColor: labelColor }} />}
         <div className="p-3">
           {/* Cabeçalho */}
           <div className="flex items-start gap-2.5 mb-2.5">
