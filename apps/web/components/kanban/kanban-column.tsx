@@ -46,7 +46,7 @@ export function KanbanColumn({ stage, leads, onAddLead }: KanbanColumnProps) {
 
   return (
     <div className="flex flex-col w-72 flex-shrink-0">
-      <div className="flex flex-col rounded-xl bg-white/85 backdrop-blur-sm shadow-md overflow-hidden">
+      <div className="flex flex-col rounded-xl app-column-surface shadow-md overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-3 pt-3 pb-1">
           <div className="flex items-center gap-2 min-w-0">

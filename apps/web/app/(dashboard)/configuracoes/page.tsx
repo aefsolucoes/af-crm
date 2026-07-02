@@ -1134,7 +1134,7 @@ const IMAGE_PRESETS: { label: string; url: string; thumb: string }[] = [
 const MAX_UPLOAD_BYTES = 3 * 1024 * 1024; // 3MB
 
 function AparenciaTab() {
-  const { theme, setTheme, bgImage, setBgImage } = useThemeStore();
+  const { theme, setTheme, bgImage, setBgImage, surfaceOpacity, setSurfaceOpacity } = useThemeStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1246,6 +1246,25 @@ function AparenciaTab() {
           </div>
           <input ref={fileInputRef} type="file" accept="image/*" onChange={handleUpload} className="hidden" />
           <p className="text-xs text-slate-400 mt-2">Imagens até 3MB. A imagem substitui a cor sólida como fundo do sistema.</p>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Transparência dos painéis</p>
+            <span className="text-xs font-semibold text-slate-600">{surfaceOpacity}%</span>
+          </div>
+          <input
+            type="range"
+            min={30}
+            max={100}
+            step={5}
+            value={surfaceOpacity}
+            onChange={(e) => setSurfaceOpacity(Number(e.target.value))}
+            onMouseUp={() => toast('Transparência atualizada!')}
+            onTouchEnd={() => toast('Transparência atualizada!')}
+            className="w-full accent-violet-500"
+          />
+          <p className="text-xs text-slate-400 mt-1">Controla o quanto o topo e as colunas do Funil deixam o fundo transparecer, como no Trello.</p>
         </div>
       </div>
     </div>

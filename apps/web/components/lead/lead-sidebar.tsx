@@ -45,7 +45,7 @@ function FieldEditor({
   if (fieldDef.type === 'SELECT') {
     return (
       <select
-        className="text-xs border border-af-border rounded px-2 py-1 w-full bg-white focus:outline-none focus:border-af-mid"
+        className="text-xs text-slate-800 border border-af-border rounded px-2 py-1 w-full bg-white focus:outline-none focus:border-af-mid"
         value={val}
         onChange={e => { setVal(e.target.value); onSave(e.target.value); }}
         autoFocus
@@ -70,7 +70,7 @@ function FieldEditor({
         type={inputType}
         inputMode={fieldDef.type === 'NUMBER' ? 'numeric' : undefined}
         placeholder={fieldDef.type === 'NUMBER' ? 'Ex: 250.000' : undefined}
-        className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
+        className="text-xs text-slate-800 border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
         value={val}
         onChange={e => {
           const v = fieldDef.type === 'PHONE' ? maskPhone(e.target.value)
@@ -327,7 +327,7 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                       type="text"
                       inputMode="numeric"
                       placeholder="Ex: 250000"
-                      className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
+                      className="text-xs text-slate-800 border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
                       value={valueInput}
                       onChange={e => setValueInput(e.target.value)}
                       onKeyDown={async e => {
@@ -404,7 +404,7 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                     type === 'select' ? (
                       <select
                         autoFocus
-                        className="text-xs border border-af-border rounded px-2 py-1 w-full bg-white focus:outline-none focus:border-af-mid"
+                        className="text-xs text-slate-800 border border-af-border rounded px-2 py-1 w-full bg-white focus:outline-none focus:border-af-mid"
                         value={String(customValues[key] ?? '')}
                         onChange={e => saveFieldValue(key, e.target.value)}
                       >
@@ -417,7 +417,7 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                           autoFocus
                           type={key.includes('nascimento') ? 'date' : key.includes('email') ? 'email' : 'text'}
                           inputMode={key.includes('renda') ? 'numeric' : undefined}
-                          className="text-xs border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
+                          className="text-xs text-slate-800 border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
                           value={String(customValues[key] ?? '')}
                           onChange={e => {
                             const v = (key === 'telefone_1' || key === 'telefone_2')

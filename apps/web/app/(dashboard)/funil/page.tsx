@@ -156,7 +156,7 @@ export default function FunilPage() {
     <div className="flex flex-col h-full">
       <Topbar title="Funil de Vendas" subtitle={search.trim() ? 'Todos os funis' : pipeline?.name} />
 
-      <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-af-border gap-4">
+      <div className="flex items-center justify-between px-6 py-3 app-topbar-surface border-b gap-4">
         <div className="flex items-center gap-3 flex-1">
           {/* Seletor de pipeline (oculto durante busca) */}
           {!search.trim() && pipeline && (

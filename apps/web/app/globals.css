@@ -12,20 +12,35 @@
 
   --app-bg-page: #f4f6f9;
   --app-bg-main: #f9fafb;
-  --app-text: #1e293b;
   --app-bg-image: none;
+  --app-surface-alpha: 0.85;
+  --app-column-bg-rgb: 255, 255, 255;
+  --app-sidebar-bg-rgb: 13, 37, 69;
+
+  --app-topbar-bg-rgb: 255, 255, 255;
+  --app-topbar-text: #0f172a;
+  --app-topbar-text-muted: #64748b;
+  --app-topbar-border: rgba(197, 214, 235, 0.7);
 }
 
 html[data-theme='black'] {
   --app-bg-page: #0b0f16;
   --app-bg-main: #14181f;
-  --app-text: #e5e7eb;
+
+  --app-topbar-bg-rgb: 12, 12, 16;
+  --app-topbar-text: #f1f5f9;
+  --app-topbar-text-muted: #cbd5e1;
+  --app-topbar-border: rgba(255, 255, 255, 0.08);
 }
 
 html[data-theme='blue'] {
   --app-bg-page: #0d2545;
   --app-bg-main: #14315e;
-  --app-text: #e8f0f9;
+
+  --app-topbar-bg-rgb: 13, 37, 69;
+  --app-topbar-text: #f1f5f9;
+  --app-topbar-text-muted: #cbd5e1;
+  --app-topbar-border: rgba(255, 255, 255, 0.12);
 }
 
 * {
@@ -35,7 +50,7 @@ html[data-theme='blue'] {
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background-color: var(--app-bg-page);
-  color: var(--app-text);
+  color: #1e293b;
 }
 
 .app-bg-surface {
@@ -44,6 +59,30 @@ body {
   background-size: cover;
   background-position: center;
   background-attachment: fixed;
+}
+
+.app-topbar-surface {
+  background-color: rgba(var(--app-topbar-bg-rgb), var(--app-surface-alpha));
+  border-color: var(--app-topbar-border);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: var(--app-topbar-text);
+}
+
+.app-topbar-text-muted {
+  color: var(--app-topbar-text-muted);
+}
+
+.app-column-surface {
+  background-color: rgba(var(--app-column-bg-rgb), var(--app-surface-alpha));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.app-sidebar-surface {
+  background-color: rgba(var(--app-sidebar-bg-rgb), var(--app-surface-alpha));
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .scrollbar-thin::-webkit-scrollbar {

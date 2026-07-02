@@ -42,7 +42,7 @@ export function Sidebar() {
   }
 
   return (
-    <aside className={cn('flex-shrink-0 bg-af-navy flex flex-col h-full transition-all duration-200', collapsed ? 'w-16' : 'w-60')}>
+    <aside className={cn('flex-shrink-0 app-sidebar-surface flex flex-col h-full transition-all duration-200', collapsed ? 'w-16' : 'w-60')}>
       {/* Logo */}
       <div className={cn('py-5 border-b border-af-blue flex items-center', collapsed ? 'px-3 justify-center' : 'px-5 justify-between gap-3')}>
         <div className={cn('flex items-center gap-3 min-w-0', collapsed && 'gap-0')}>

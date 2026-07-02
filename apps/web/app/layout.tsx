@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useThemeStore } from '@/store/theme.store';
 
-const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem('af_background_theme')||'white';document.documentElement.setAttribute('data-theme',t);var img=localStorage.getItem('af_background_image');document.documentElement.style.setProperty('--app-bg-image', img ? 'url("'+img+'")' : 'none');}catch(e){}})();`;
+const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem('af_background_theme')||'white';document.documentElement.setAttribute('data-theme',t);var img=localStorage.getItem('af_background_image');document.documentElement.style.setProperty('--app-bg-image', img ? 'url("'+img+'")' : 'none');var op=Number(localStorage.getItem('af_surface_opacity'))||85;document.documentElement.style.setProperty('--app-surface-alpha', String(op/100));}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient({
