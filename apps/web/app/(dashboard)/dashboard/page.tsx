@@ -84,7 +84,7 @@ export default function DashboardPage() {
     queryKey: ['reports-fechados', from, to],
     queryFn: async () => {
       const { data } = await api.get(`/api/reports/fechados?from=${from}&to=${to}`);
-      return data as { leads: any[]; total: number; totalValue: number };
+      return data as { leads: any[]; total: number; totalValue: number; missingStage?: boolean };
     },
   });
 
@@ -286,9 +286,14 @@ export default function DashboardPage() {
             <div className="p-5 space-y-3">
               {[1,2,3].map(i => <Skeleton key={i} className="h-10" />)}
             </div>
+          ) : fechados?.missingStage ? (
+            <div className="flex flex-col items-center justify-center py-10 px-6 text-center gap-1">
+              <p className="text-sm text-slate-500">A etapa <strong>"Concluído"</strong> ainda não existe no funil <strong>Fechamento</strong>.</p>
+              <p className="text-xs text-slate-400">Crie essa etapa no Funil de Vendas (botão "+ Adicionar etapa" no funil Fechamento) para este relatório passar a mostrar dados.</p>
+            </div>
           ) : fechados?.leads.length === 0 ? (
             <div className="flex items-center justify-center py-10 text-slate-400 text-sm">
-              Nenhum lead fechado neste período
+              Nenhum lead concluído neste período
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -316,7 +321,7 @@ export default function DashboardPage() {
                         {lead.value ? formatCurrency(lead.value) : '—'}
                       </td>
                       <td className="px-5 py-3 text-right text-slate-400 text-xs">
-                        {formatDate(lead.updatedAt)}
+                        {formatDate(lead.enteredAt)}
                       </td>
                     </tr>
                   ))}

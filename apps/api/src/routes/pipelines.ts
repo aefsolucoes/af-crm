@@ -13,6 +13,11 @@ const pipelineSchema = z.object({
   stages: z.array(z.object({ name: z.string(), color: z.string().optional(), order: z.number() })).optional(),
 });
 
+const stageCreateSchema = z.object({
+  name: z.string().min(1),
+  color: z.string().optional(),
+});
+
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const pipelines = await prisma.pipeline.findMany({
@@ -69,6 +74,30 @@ router.post('/rename', async (req: AuthRequest, res: Response) => {
     res.json({ success: true, updated: result.count });
   } catch {
     res.status(500).json({ error: 'Erro ao renomear pipeline' });
+  }
+});
+
+// POST /api/pipelines/:id/stages — adiciona uma nova etapa ao final do pipeline
+router.post('/:id/stages', validate(stageCreateSchema), async (req: AuthRequest, res: Response) => {
+  try {
+    const pipeline = await prisma.pipeline.findFirst({
+      where: { id: req.params.id, accountId: req.user!.accountId },
+      include: { stages: true },
+    });
+    if (!pipeline) return res.status(404).json({ error: 'Pipeline não encontrado' });
+
+    const maxOrder = pipeline.stages.reduce((max, s) => Math.max(max, s.order), 0);
+    const stage = await prisma.stage.create({
+      data: {
+        name: req.body.name,
+        color: req.body.color || '#64748b',
+        order: maxOrder + 1,
+        pipelineId: pipeline.id,
+      },
+    });
+    res.status(201).json(stage);
+  } catch {
+    res.status(500).json({ error: 'Erro ao criar etapa' });
   }
 });
 

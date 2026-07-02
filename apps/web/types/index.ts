@@ -101,6 +101,19 @@ export interface Task {
   lead?: Pick<Lead, 'id' | 'name'>;
 }
 
+export type TransactionType = 'INCOME' | 'EXPENSE' | 'SAVINGS';
+
+export interface Transaction {
+  id: string;
+  description: string;
+  amount: number;
+  type: TransactionType;
+  date: string;
+  userId?: string;
+  user?: Pick<User, 'id' | 'name'>;
+  createdAt: string;
+}
+
 export interface Note {
   id: string;
   content: string;

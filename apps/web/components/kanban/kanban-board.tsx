@@ -1,8 +1,10 @@
 'use client';
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   DndContext, DragEndEvent, PointerSensor, useSensor, useSensors, closestCorners,
 } from '@dnd-kit/core';
+import { Plus, X, Check } from 'lucide-react';
 import { Stage, Lead, Pipeline, Contact, User } from '@/types';
 import { KanbanColumn } from './kanban-column';
 import { LeadModal } from './lead-modal';
@@ -24,6 +26,27 @@ interface KanbanBoardProps {
 export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSearching }: KanbanBoardProps) {
   const { moveLeadOptimistic } = usePipelineStore();
   const [addLeadStageId, setAddLeadStageId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const [addingStage, setAddingStage] = useState(false);
+  const [newStageName, setNewStageName] = useState('');
+  const [savingStage, setSavingStage] = useState(false);
+
+  async function handleCreateStage() {
+    const name = newStageName.trim();
+    if (!name) return;
+    setSavingStage(true);
+    try {
+      await api.post(`/api/pipelines/${pipeline.id}/stages`, { name });
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      setNewStageName('');
+      setAddingStage(false);
+      toast(`Etapa "${name}" criada!`);
+    } catch {
+      toast('Erro ao criar etapa', 'error');
+    } finally {
+      setSavingStage(false);
+    }
+  }
 
   // Stage gate
   const [gateOpen, setGateOpen]       = useState(false);
@@ -109,6 +132,45 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
               onAddLead={(stageId) => setAddLeadStageId(stageId)}
             />
           ))}
+
+          {/* Adicionar etapa */}
+          <div className="flex flex-col w-72 flex-shrink-0">
+            {addingStage ? (
+              <div className="app-column-surface rounded-xl shadow-md p-2 flex items-center gap-1">
+                <input
+                  autoFocus
+                  value={newStageName}
+                  onChange={(e) => setNewStageName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleCreateStage();
+                    if (e.key === 'Escape') { setAddingStage(false); setNewStageName(''); }
+                  }}
+                  placeholder="Nome da etapa"
+                  className="flex-1 min-w-0 text-sm px-2 py-1.5 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent"
+                />
+                <button
+                  onClick={handleCreateStage}
+                  disabled={savingStage || !newStageName.trim()}
+                  className="text-green-600 hover:text-green-700 disabled:opacity-40 flex-shrink-0"
+                >
+                  <Check size={18} />
+                </button>
+                <button
+                  onClick={() => { setAddingStage(false); setNewStageName(''); }}
+                  className="text-slate-400 hover:text-slate-600 flex-shrink-0"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setAddingStage(true)}
+                className="flex items-center gap-1.5 rounded-xl app-column-surface shadow-md px-3 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors"
+              >
+                <Plus size={16} /> Adicionar etapa
+              </button>
+            )}
+          </div>
         </div>
       </DndContext>
 

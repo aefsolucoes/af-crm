@@ -20,6 +20,7 @@ model Account {
   whatsappConfig   WhatsAppConfig?
   metaLeadsConfig  MetaLeadsConfig?
   fieldDefinitions FieldDefinition[]
+  transactions     Transaction[]
 }
 
 model FieldDefinition {
@@ -58,6 +59,7 @@ model User {
   leads     Lead[]
   tasks     Task[]
   notes     Note[]
+  transactions Transaction[]
   createdAt DateTime @default(now())
 }
 
@@ -250,4 +252,24 @@ model SalesBot {
   flow      Json
   accountId String
   account   Account @relation(fields: [accountId], references: [id])
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  SAVINGS
+}
+
+model Transaction {
+  id          String          @id @default(cuid())
+  description String
+  amount      Float
+  type        TransactionType
+  date        DateTime
+  accountId   String
+  account     Account         @relation(fields: [accountId], references: [id])
+  userId      String?
+  user        User?           @relation(fields: [userId], references: [id])
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
 }

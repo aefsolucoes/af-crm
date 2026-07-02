@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, MessageSquare, Users, Contact, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -23,6 +23,7 @@ const NAV = [
   { href: '/templates', label: 'Templates', icon: FileText },
   { href: '/automacao', label: 'Automações', icon: Zap },
   { href: '/usuarios', label: 'Usuários', icon: UserCog },
+  { href: '/financeiro', label: 'Financeiro', icon: Wallet },
   { href: '/configuracoes', label: 'Configurações', icon: Settings },
 ];
 

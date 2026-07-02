@@ -86,6 +86,34 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
         const statusLabels: Record<string, string> = { WON: 'Ganho', LOST: 'Perdido', OPEN: 'Aberto' };
         await auditNote(req.params.id, req.user!.id,
           `Status alterado para "${statusLabels[req.body.status] || req.body.status}" por ${userName}`);
+
+        // ── Auto-migração: lead marcado como Ganho → etapa "Concluído" do pipeline "Fechamento" ──
+        if (req.body.status === 'WON') {
+          const fechamento = await prisma.pipeline.findFirst({
+            where: { accountId: req.user!.accountId, name: 'Fechamento' },
+            include: { stages: true },
+          });
+          const concluidoStage = fechamento?.stages.find(s => s.name === 'Concluído');
+          if (fechamento && concluidoStage) {
+            const movedLead = await prisma.lead.update({
+              where: { id: req.params.id },
+              data: {
+                pipelineId: fechamento.id,
+                stageId: concluidoStage.id,
+                notes: {
+                  create: {
+                    content: `Lead migrado automaticamente para "Concluído" (funil Fechamento) ao ser marcado como Ganho — por ${userName}.`,
+                    type: 'STAGE_CHANGE',
+                    userId: req.user!.id,
+                  },
+                },
+              },
+            });
+            const io = (req as any).app.get('io');
+            if (io) io.to(`account_${req.user!.accountId}`).emit('lead_moved', { lead: movedLead });
+            console.log(`[Auto-migração] Lead "${movedLead.name}" marcado como Ganho → Concluído (Fechamento)`);
+          }
+        }
       }
       if (req.body.userId && before?.userId !== req.body.userId) {
         const newUser = await prisma.user.findUnique({ where: { id: req.body.userId }, select: { name: true } });

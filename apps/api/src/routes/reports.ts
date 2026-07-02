@@ -15,8 +15,8 @@ router.get('/summary', async (req: AuthRequest, res: Response) => {
     const [totalLeads, newLeads, wonLeads, allLeads] = await Promise.all([
       prisma.lead.count({ where: { accountId } }),
       prisma.lead.count({ where: { accountId, createdAt: { gte: startOfMonth } } }),
-      prisma.lead.findMany({ where: { accountId, status: 'WON' }, select: { value: true } }),
-      prisma.lead.findMany({ where: { accountId }, select: { value: true, status: true, createdAt: true } }),
+      prisma.lead.findMany({ where: { accountId, status: 'WON', pipeline: { name: 'Fechamento' } }, select: { value: true } }),
+      prisma.lead.findMany({ where: { accountId, pipeline: { name: 'Fechamento' } }, select: { value: true, status: true, createdAt: true } }),
     ]);
 
     const totalRevenue = wonLeads.reduce((sum, l) => sum + (l.value || 0), 0);
@@ -102,31 +102,41 @@ router.get('/fechados', async (req: AuthRequest, res: Response) => {
       ? new Date(req.query.to as string)
       : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-    // Encontra pipeline Vendas e estágio Fechado
-    const vendas = await prisma.pipeline.findFirst({
-      where: { accountId, name: 'Vendas' },
+    // Encontra pipeline Fechamento e estágio Concluído
+    const fechamento = await prisma.pipeline.findFirst({
+      where: { accountId, name: 'Fechamento' },
       include: { stages: true },
     });
-    const fechadoStage = vendas?.stages.find(s => s.name === 'Fechado');
-    if (!fechadoStage) return res.json({ leads: [], total: 0, totalValue: 0 });
+    const concluidoStage = fechamento?.stages.find(s => s.name === 'Concluído');
+    if (!concluidoStage) {
+      return res.json({ leads: [], total: 0, totalValue: 0, missingStage: true });
+    }
 
     const leads = await prisma.lead.findMany({
-      where: {
-        accountId,
-        stageId: fechadoStage.id,
-        updatedAt: { gte: fromDate, lte: toDate },
-      },
+      where: { accountId, stageId: concluidoStage.id },
       include: {
         contact: true,
         user: { select: { id: true, name: true } },
         stage: true,
+        notes: { where: { type: 'STAGE_CHANGE' }, orderBy: { createdAt: 'desc' } },
       },
-      orderBy: { updatedAt: 'desc' },
     });
 
-    const totalValue = leads.reduce((sum, l) => sum + (l.value || 0), 0);
+    // Data de entrada em "Concluído": nota de mudança de estágio mais recente
+    // que menciona essa etapa; se não houver (edge case), cai para updatedAt.
+    const withEnteredAt = leads.map((l) => {
+      const note = l.notes.find((n) => n.content.includes('Concluído'));
+      const { notes, ...lead } = l;
+      return { ...lead, enteredAt: note?.createdAt || l.updatedAt };
+    });
 
-    res.json({ leads, total: leads.length, totalValue });
+    const filtered = withEnteredAt
+      .filter((l) => l.enteredAt >= fromDate && l.enteredAt <= toDate)
+      .sort((a, b) => b.enteredAt.getTime() - a.enteredAt.getTime());
+
+    const totalValue = filtered.reduce((sum, l) => sum + (l.value || 0), 0);
+
+    res.json({ leads: filtered, total: filtered.length, totalValue });
   } catch {
     res.status(500).json({ error: 'Erro ao gerar relatório de fechados' });
   }
