@@ -3,14 +3,16 @@ import { useEffect, useState, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { Button } from '@/components/ui/button';
+import { Modal } from '@/components/ui/modal';
 import { KanbanBoard } from '@/components/kanban/kanban-board';
 import { CardSkeleton } from '@/components/ui/skeleton';
 import { usePipelineStore } from '@/store/pipeline.store';
 import { LeadModal } from '@/components/kanban/lead-modal';
 import { Pipeline, Lead, Contact, User } from '@/types';
 import api from '@/lib/api';
-import { Plus, RefreshCw, Search, X } from 'lucide-react';
+import { Plus, RefreshCw, Search, X, Pencil, Trash2, FolderPlus } from 'lucide-react';
 import { getSocket } from '@/lib/socket';
+import { toast } from '@/components/ui/toast';
 
 // Ordem fixa dos pipelines
 const PIPELINE_ORDER = ['Vendas', 'Fechamento', 'Follow Up'];
@@ -40,6 +42,11 @@ export default function FunilPage() {
   const [openAddLead, setOpenAddLead] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedPipelineId, setSelectedPipelineId] = useState<string>('');
+  const [showNewPipeline, setShowNewPipeline] = useState(false);
+  const [newPipelineName, setNewPipelineName] = useState('');
+  const [showRenamePipeline, setShowRenamePipeline] = useState(false);
+  const [renamePipelineName, setRenamePipelineName] = useState('');
+  const [savingPipeline, setSavingPipeline] = useState(false);
   const queryClient = useQueryClient();
 
   // Atualiza o kanban em tempo real quando chega nova mensagem WhatsApp
@@ -152,6 +159,53 @@ export default function FunilPage() {
     if (search.trim()) refetchAll();
   }
 
+  async function handleCreatePipeline() {
+    const name = newPipelineName.trim();
+    if (!name) return;
+    setSavingPipeline(true);
+    try {
+      const { data } = await api.post('/api/pipelines', { name });
+      await queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      setSelectedPipelineId(data.id);
+      setNewPipelineName('');
+      setShowNewPipeline(false);
+      toast(`Funil "${name}" criado!`);
+    } catch {
+      toast('Erro ao criar funil', 'error');
+    } finally {
+      setSavingPipeline(false);
+    }
+  }
+
+  async function handleRenamePipeline() {
+    const name = renamePipelineName.trim();
+    if (!name || !pipeline) return;
+    setSavingPipeline(true);
+    try {
+      await api.patch(`/api/pipelines/${pipeline.id}`, { name });
+      await queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      setShowRenamePipeline(false);
+      toast('Funil renomeado!');
+    } catch {
+      toast('Erro ao renomear funil', 'error');
+    } finally {
+      setSavingPipeline(false);
+    }
+  }
+
+  async function handleDeletePipeline() {
+    if (!pipeline) return;
+    if (!window.confirm(`Excluir o funil "${pipeline.name}"? Só é possível excluir funis sem leads.`)) return;
+    try {
+      await api.delete(`/api/pipelines/${pipeline.id}`);
+      setSelectedPipelineId('');
+      await queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      toast('Funil excluído!');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao excluir funil', 'error');
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       <Topbar title="Funil de Vendas" subtitle={search.trim() ? 'Todos os funis' : pipeline?.name} />
@@ -160,13 +214,36 @@ export default function FunilPage() {
         <div className="flex items-center gap-3 flex-1">
           {/* Seletor de pipeline (oculto durante busca) */}
           {!search.trim() && pipeline && (
-            <select
-              value={selectedPipelineId}
-              onChange={e => setSelectedPipelineId(e.target.value)}
-              className="text-sm border border-af-border rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent flex-shrink-0"
-            >
-              {sortedPipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <select
+                value={selectedPipelineId}
+                onChange={e => setSelectedPipelineId(e.target.value)}
+                className="text-sm border border-af-border rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent"
+              >
+                {sortedPipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <button
+                onClick={() => setShowNewPipeline(true)}
+                title="Novo funil"
+                className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+              >
+                <FolderPlus size={16} />
+              </button>
+              <button
+                onClick={() => { setRenamePipelineName(pipeline.name); setShowRenamePipeline(true); }}
+                title="Renomear funil"
+                className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+              >
+                <Pencil size={16} />
+              </button>
+              <button
+                onClick={handleDeletePipeline}
+                title="Excluir funil"
+                className="p-1.5 rounded-lg text-white/80 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
           )}
 
           {/* Busca global */}
@@ -245,6 +322,44 @@ export default function FunilPage() {
           users={users}
         />
       )}
+
+      <Modal open={showNewPipeline} onClose={() => setShowNewPipeline(false)} title="Novo funil" size="sm">
+        <div className="space-y-3">
+          <input
+            autoFocus
+            value={newPipelineName}
+            onChange={e => setNewPipelineName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleCreatePipeline(); }}
+            placeholder="Nome do funil"
+            className="w-full text-sm px-3 py-2 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent"
+          />
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setShowNewPipeline(false)} className="text-sm px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100">Cancelar</button>
+            <button onClick={handleCreatePipeline} disabled={savingPipeline || !newPipelineName.trim()} className="text-sm px-4 py-2 rounded-lg bg-af-mid text-white hover:bg-af-dark disabled:opacity-50">
+              {savingPipeline ? 'Criando...' : 'Criar funil'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={showRenamePipeline} onClose={() => setShowRenamePipeline(false)} title="Renomear funil" size="sm">
+        <div className="space-y-3">
+          <input
+            autoFocus
+            value={renamePipelineName}
+            onChange={e => setRenamePipelineName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleRenamePipeline(); }}
+            placeholder="Nome do funil"
+            className="w-full text-sm px-3 py-2 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent"
+          />
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setShowRenamePipeline(false)} className="text-sm px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100">Cancelar</button>
+            <button onClick={handleRenamePipeline} disabled={savingPipeline || !renamePipelineName.trim()} className="text-sm px-4 py-2 rounded-lg bg-af-mid text-white hover:bg-af-dark disabled:opacity-50">
+              {savingPipeline ? 'Salvando...' : 'Salvar'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

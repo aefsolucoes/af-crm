@@ -4,7 +4,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { cn, CHANNEL_COLORS, CHANNEL_LABELS, formatDateTime } from '@/lib/utils';
 import { useState } from 'react';
 
-const CHANNELS: Channel[] = ['WHATSAPP', 'INSTAGRAM', 'TELEGRAM', 'WEBCHAT', 'EMAIL'];
+const CHANNELS: Channel[] = ['WHATSAPP'];
 
 interface ConversationListProps {
   conversations: Conversation[];

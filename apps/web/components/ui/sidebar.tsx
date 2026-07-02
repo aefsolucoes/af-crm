@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
-  LayoutDashboard, Kanban, MessageSquare, Users, Contact, CheckSquare, Bot, BarChart3, LogOut, Settings,
+  LayoutDashboard, Kanban, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
   FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
@@ -16,8 +16,6 @@ const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: BarChart3 },
   { href: '/funil', label: 'Funil de Vendas', icon: Kanban },
   { href: '/inbox', label: 'Inbox', icon: MessageSquare },
-  { href: '/leads', label: 'Leads', icon: Users },
-  { href: '/contatos', label: 'Contatos', icon: Contact },
   { href: '/tarefas', label: 'Tarefas', icon: CheckSquare },
   { href: '/salesbot', label: 'SalesBot', icon: Bot },
   { href: '/templates', label: 'Templates', icon: FileText },

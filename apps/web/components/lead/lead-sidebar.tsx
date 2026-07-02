@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
-import { Plus, Trash2, Tag, Check, X, ExternalLink } from 'lucide-react';
+import { Plus, Trash2, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
 import { formatCurrency, maskCPF, maskMoney } from '@/lib/utils';
 
 interface LeadSidebarProps {
@@ -135,6 +135,8 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
   const [showAddTab, setShowAddTab] = useState(false);
   const [newTabName, setNewTabName] = useState('');
   const [newField, setNewField] = useState({ name: '', type: 'TEXT', options: '' });
+  const [editingField, setEditingField] = useState<FieldDefinition | null>(null);
+  const [editField, setEditField] = useState({ name: '', type: 'TEXT', options: '' });
   const [saving, setSaving] = useState(false);
   const [tags, setTags] = useState<string[]>(lead.tags);
   const [tagInput, setTagInput] = useState('');
@@ -247,6 +249,23 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
       queryClient.invalidateQueries({ queryKey: ['fieldDefinitions'] });
       setShowAddField(false);
       setNewField({ name: '', type: 'TEXT', options: '' });
+    },
+  });
+
+  const editFieldMutation = useMutation({
+    mutationFn: async () => {
+      if (!editingField || !editField.name.trim()) return;
+      await api.put(`/api/fields/${editingField.id}`, {
+        name: editField.name.trim(),
+        type: editField.type,
+        tab: editingField.tab,
+        options: editField.type === 'SELECT' ? editField.options.split(',').map(o => o.trim()).filter(Boolean) : [],
+        order: editingField.order,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['fieldDefinitions'] });
+      setEditingField(null);
     },
   });
 
@@ -458,35 +477,95 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
           {fieldsForTab.map(field => (
             <div
               key={field.id}
-              className="group flex items-center justify-between py-2.5 border-b border-slate-100 gap-2"
+              className="group flex flex-col py-2.5 border-b border-slate-100 gap-2"
             >
-              <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">{field.name}</span>
-              <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
-                {editingKey === field.key ? (
-                  <FieldEditor
-                    fieldDef={field}
-                    value={customValues[field.key]}
-                    onSave={(v) => saveFieldValue(field.key, v)}
-                    onCancel={() => setEditingKey(null)}
+              {editingField?.id === field.id ? (
+                <div className="space-y-2">
+                  <input
+                    autoFocus
+                    placeholder="Nome do campo"
+                    className="w-full text-xs border border-af-border rounded px-2 py-1.5 focus:outline-none focus:border-af-mid"
+                    value={editField.name}
+                    onChange={e => setEditField(p => ({ ...p, name: e.target.value }))}
                   />
-                ) : (
-                  <>
+                  <select
+                    className="w-full text-xs border border-af-border rounded px-2 py-1.5 bg-white focus:outline-none"
+                    value={editField.type}
+                    onChange={e => setEditField(p => ({ ...p, type: e.target.value }))}
+                  >
+                    <option value="TEXT">Texto</option>
+                    <option value="NUMBER">Número</option>
+                    <option value="DATE">Data</option>
+                    <option value="SELECT">Seleção (dropdown)</option>
+                    <option value="EMAIL">E-mail</option>
+                    <option value="PHONE">Telefone</option>
+                    <option value="LINK">Link</option>
+                  </select>
+                  {editField.type === 'SELECT' && (
+                    <input
+                      placeholder="Opções separadas por vírgula"
+                      className="w-full text-xs border border-af-border rounded px-2 py-1.5 focus:outline-none focus:border-af-mid"
+                      value={editField.options}
+                      onChange={e => setEditField(p => ({ ...p, options: e.target.value }))}
+                    />
+                  )}
+                  <div className="flex gap-2">
                     <button
-                      onClick={() => setEditingKey(field.key)}
-                      className="flex-1 text-right hover:text-af-mid transition-colors min-w-0"
+                      onClick={() => editFieldMutation.mutate()}
+                      disabled={!editField.name.trim() || editFieldMutation.isPending}
+                      className="flex-1 text-xs bg-af-mid text-white rounded py-1.5 hover:bg-af-dark disabled:opacity-50 transition-colors"
                     >
-                      <DisplayValue fieldDef={field} value={customValues[field.key]} />
+                      {editFieldMutation.isPending ? 'Salvando...' : 'Salvar campo'}
                     </button>
                     <button
-                      onClick={() => deleteFieldMutation.mutate(field.id)}
-                      className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 flex-shrink-0 transition-opacity ml-1"
-                      title="Excluir campo"
+                      onClick={() => setEditingField(null)}
+                      className="text-xs text-slate-500 hover:text-slate-700 px-3 border border-af-border rounded"
                     >
-                      <Trash2 size={10} />
+                      Cancelar
                     </button>
-                  </>
-                )}
-              </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">{field.name}</span>
+                  <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
+                    {editingKey === field.key ? (
+                      <FieldEditor
+                        fieldDef={field}
+                        value={customValues[field.key]}
+                        onSave={(v) => saveFieldValue(field.key, v)}
+                        onCancel={() => setEditingKey(null)}
+                      />
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => setEditingKey(field.key)}
+                          className="flex-1 text-right hover:text-af-mid transition-colors min-w-0"
+                        >
+                          <DisplayValue fieldDef={field} value={customValues[field.key]} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingField(field);
+                            setEditField({ name: field.name, type: field.type, options: (field.options || []).join(', ') });
+                          }}
+                          className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-af-mid flex-shrink-0 transition-opacity ml-1"
+                          title="Editar campo"
+                        >
+                          <Pencil size={10} />
+                        </button>
+                        <button
+                          onClick={() => deleteFieldMutation.mutate(field.id)}
+                          className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 flex-shrink-0 transition-opacity"
+                          title="Excluir campo"
+                        >
+                          <Trash2 size={10} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
 

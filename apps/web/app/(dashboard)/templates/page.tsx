@@ -1,77 +1,30 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Topbar } from '@/components/ui/topbar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send } from 'lucide-react';
-
-type Category = 'vendas' | 'suporte' | 'cobranca' | 'boas_vindas' | 'follow_up' | 'geral';
-
-interface Template {
-  id: string;
-  name: string;
-  category: Category;
-  body: string;
-  variables: string[];
-  createdAt: string;
-}
-
-const CATEGORY_META: Record<Category, { label: string; color: string }> = {
-  vendas: { label: 'Vendas', color: 'bg-blue-100 text-blue-700' },
-  suporte: { label: 'Suporte', color: 'bg-purple-100 text-purple-700' },
-  cobranca: { label: 'Cobrança', color: 'bg-orange-100 text-orange-700' },
-  boas_vindas: { label: 'Boas-vindas', color: 'bg-green-100 text-green-700' },
-  follow_up: { label: 'Follow-up', color: 'bg-yellow-100 text-yellow-700' },
-  geral: { label: 'Geral', color: 'bg-slate-100 text-slate-600' },
-};
-
-function extractVariables(text: string): string[] {
-  const matches = text.match(/\{\{([^}]+)\}\}/g) || [];
-  return [...new Set(matches.map(m => m.replace(/\{\{|\}\}/g, '').trim()))];
-}
-
-const INITIAL_TEMPLATES: Template[] = [
-  {
-    id: 't1',
-    name: 'Boas-vindas inicial',
-    category: 'boas_vindas',
-    body: 'Olá, {{nome}}! 👋\n\nSeja bem-vindo(a) à *A&F Soluções Financeiras*!\n\nEstou aqui para ajudá-lo(a) a conquistar seus objetivos financeiros. Como posso ajudá-lo(a) hoje?',
-    variables: ['nome'],
-    createdAt: '2024-01-01',
-  },
-  {
-    id: 't2',
-    name: 'Follow-up de proposta',
-    category: 'follow_up',
-    body: 'Olá, {{nome}}! 😊\n\nPassando para verificar se teve a oportunidade de analisar a proposta que enviamos sobre *{{produto}}*.\n\nFicou com alguma dúvida? Estou à disposição!\n\nAtenciosamente,\n{{agente}}',
-    variables: ['nome', 'produto', 'agente'],
-    createdAt: '2024-01-10',
-  },
-  {
-    id: 't3',
-    name: 'Confirmação de reunião',
-    category: 'vendas',
-    body: '📅 *Confirmação de Reunião*\n\nOlá, {{nome}}!\n\nConfirmamos sua reunião para *{{data}}* às *{{horario}}*.\n\nLocal/Link: {{local}}\n\nEm caso de necessidade de reagendamento, entre em contato conosco.\n\nAté lá! 🤝',
-    variables: ['nome', 'data', 'horario', 'local'],
-    createdAt: '2024-01-15',
-  },
-  {
-    id: 't4',
-    name: 'Lembrete de pagamento',
-    category: 'cobranca',
-    body: 'Olá, {{nome}}!\n\nGostaríamos de lembrá-lo(a) que sua parcela no valor de *R$ {{valor}}* vence em *{{vencimento}}*.\n\nPara evitar juros e multas, efetue o pagamento até a data de vencimento.\n\nChave PIX: {{chave_pix}}\n\nDúvidas? Estamos à disposição.',
-    variables: ['nome', 'valor', 'vencimento', 'chave_pix'],
-    createdAt: '2024-02-01',
-  },
-];
+import {
+  MessageTemplate as Template, TemplateCategory as Category, CATEGORY_META,
+  extractVariables, fillTemplate, getTemplates, saveTemplates,
+} from '@/lib/templates';
 
 const EMPTY_FORM = { name: '', category: 'geral' as Category, body: '' };
 
 export default function TemplatesPage() {
-  const [templates, setTemplates] = useState<Template[]>(INITIAL_TEMPLATES);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    setTemplates(getTemplates());
+  }, []);
+
+  function persist(next: Template[]) {
+    setTemplates(next);
+    saveTemplates(next);
+  }
   const [filterCategory, setFilterCategory] = useState<Category | 'all'>('all');
   const [showModal, setShowModal] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
@@ -107,27 +60,23 @@ export default function TemplatesPage() {
     }
     const vars = extractVariables(form.body);
     if (editingTemplate) {
-      setTemplates(templates.map(t => t.id === editingTemplate.id ? { ...t, ...form, variables: vars } : t));
+      persist(templates.map(t => t.id === editingTemplate.id ? { ...t, ...form, variables: vars } : t));
       toast('Template atualizado!');
     } else {
-      setTemplates([...templates, { id: `t-${Date.now()}`, ...form, variables: vars, createdAt: new Date().toISOString().split('T')[0] }]);
+      persist([...templates, { id: `t-${Date.now()}`, ...form, variables: vars, createdAt: new Date().toISOString().split('T')[0] }]);
       toast('Template criado!');
     }
     setShowModal(false);
   }
 
   function handleDelete(id: string) {
-    setTemplates(templates.filter(t => t.id !== id));
+    persist(templates.filter(t => t.id !== id));
     toast('Template removido.');
   }
 
   function handleCopy(body: string) {
     navigator.clipboard?.writeText(body);
     toast('Template copiado!');
-  }
-
-  function getPreview(body: string, vars: Record<string, string>) {
-    return body.replace(/\{\{([^}]+)\}\}/g, (_, key) => vars[key.trim()] || `{{${key.trim()}}}`);
   }
 
   return (
@@ -279,7 +228,7 @@ export default function TemplatesPage() {
               <div className="flex flex-col gap-1">
                 <label className="text-sm font-medium text-slate-700">Preview</label>
                 <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-slate-700 whitespace-pre-wrap font-mono leading-relaxed">
-                  {getPreview(form.body, previewVars)}
+                  {fillTemplate(form.body, previewVars)}
                 </div>
               </div>
             )}

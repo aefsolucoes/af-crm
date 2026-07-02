@@ -4,8 +4,8 @@ import Link from 'next/link';
 import { Topbar } from '@/components/ui/topbar';
 import { ReportSummary, ReportConversion, Task, Conversation } from '@/types';
 import api from '@/lib/api';
-import { formatCurrency, formatDate, isOverdue } from '@/lib/utils';
-import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download, AlertCircle, MessageCircle, Plus, Inbox } from 'lucide-react';
+import { formatCurrency, formatDate, isOverdue, cn } from '@/lib/utils';
+import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download, AlertCircle, MessageCircle, Plus, Inbox, FileCheck } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useState } from 'react';
 import {
@@ -20,6 +20,15 @@ const CHART_OPTIONS = {
   responsive: true,
   maintainAspectRatio: false,
   plugins: { legend: { display: false } },
+};
+
+const FINALIDADE_COLORS: Record<string, string> = {
+  'Aquisição de terreno + Construção': 'bg-indigo-50 text-indigo-600',
+  'Construção': 'bg-orange-50 text-orange-600',
+  'Lote': 'bg-yellow-50 text-yellow-700',
+  'Residencial': 'bg-blue-50 text-blue-600',
+  'Comercial': 'bg-purple-50 text-purple-600',
+  'Crédito com garantia': 'bg-emerald-50 text-emerald-600',
 };
 
 // Datas padrão: primeiro e último dia do mês atual
@@ -84,6 +93,17 @@ export default function DashboardPage() {
     queryKey: ['reports-fechados', from, to],
     queryFn: async () => {
       const { data } = await api.get(`/api/reports/fechados?from=${from}&to=${to}`);
+      return data as { leads: any[]; total: number; totalValue: number; missingPipeline?: boolean };
+    },
+  });
+
+  // Relatório Documentação Enviada (etapa "Fechado" no funil Vendas)
+  const [docFrom, setDocFrom] = useState(defaultFrom());
+  const [docTo, setDocTo] = useState(defaultTo());
+  const { data: documentacao, isLoading: loadingDocumentacao, refetch: refetchDocumentacao } = useQuery({
+    queryKey: ['reports-documentacao', docFrom, docTo],
+    queryFn: async () => {
+      const { data } = await api.get(`/api/reports/documentacao?from=${docFrom}&to=${docTo}`);
       return data as { leads: any[]; total: number; totalValue: number; missingStage?: boolean };
     },
   });
@@ -286,10 +306,10 @@ export default function DashboardPage() {
             <div className="p-5 space-y-3">
               {[1,2,3].map(i => <Skeleton key={i} className="h-10" />)}
             </div>
-          ) : fechados?.missingStage ? (
+          ) : fechados?.missingPipeline ? (
             <div className="flex flex-col items-center justify-center py-10 px-6 text-center gap-1">
-              <p className="text-sm text-slate-500">A etapa <strong>"Concluído"</strong> ainda não existe no funil <strong>Fechamento</strong>.</p>
-              <p className="text-xs text-slate-400">Crie essa etapa no Funil de Vendas (botão "+ Adicionar etapa" no funil Fechamento) para este relatório passar a mostrar dados.</p>
+              <p className="text-sm text-slate-500">O funil <strong>"Concluído"</strong> ainda não existe.</p>
+              <p className="text-xs text-slate-400">Crie esse funil no Funil de Vendas (botão de "Novo funil" ao lado do seletor de pipeline) para este relatório passar a mostrar dados.</p>
             </div>
           ) : fechados?.leads.length === 0 ? (
             <div className="flex items-center justify-center py-10 text-slate-400 text-sm">
@@ -331,27 +351,89 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Lead sources */}
-        <div className="bg-white rounded-xl border border-af-border p-5 shadow-sm">
-          <h3 className="text-sm font-semibold text-slate-700 mb-4">Distribuição por Estágio</h3>
-          {isLoading ? <Skeleton className="h-24" /> : (
-            <div className="space-y-3">
-              {conversion?.stages.map((stage) => {
-                const total = conversion.stages.reduce((s, st) => s + st.count, 0);
-                const pct = total > 0 ? (stage.count / total) * 100 : 0;
+        {/* ── Relatório: Documentação Enviada ── */}
+        <div className="bg-white rounded-xl border border-af-border shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-af-border">
+            <div className="flex items-center gap-2">
+              <FileCheck size={16} className="text-af-mid" />
+              <h3 className="text-sm font-semibold text-slate-700">Documentação Enviada — por período</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              <Calendar size={13} className="text-slate-400" />
+              <input
+                type="date" value={docFrom} onChange={e => setDocFrom(e.target.value)}
+                className="text-xs px-2 py-1 border border-af-border rounded-lg focus:outline-none focus:ring-1 focus:ring-af-accent"
+              />
+              <span className="text-xs text-slate-400">até</span>
+              <input
+                type="date" value={docTo} onChange={e => setDocTo(e.target.value)}
+                className="text-xs px-2 py-1 border border-af-border rounded-lg focus:outline-none focus:ring-1 focus:ring-af-accent"
+              />
+              <button
+                onClick={() => refetchDocumentacao()}
+                className="text-xs px-3 py-1 bg-af-mid text-white rounded-lg hover:bg-af-dark"
+              >
+                Filtrar
+              </button>
+            </div>
+          </div>
+
+          {/* KPIs do período */}
+          {!loadingDocumentacao && documentacao && !documentacao.missingStage && (
+            <div className="grid grid-cols-2 gap-px bg-af-border border-b border-af-border">
+              <div className="bg-white px-5 py-3 text-center">
+                <p className="text-2xl font-bold text-slate-900">{documentacao.total}</p>
+                <p className="text-xs text-slate-500 mt-0.5">clientes com documentação enviada</p>
+              </div>
+              <div className="bg-white px-5 py-3 text-center">
+                <p className="text-2xl font-bold text-af-mid">{formatCurrency(documentacao.totalValue)}</p>
+                <p className="text-xs text-slate-500 mt-0.5">em crédito total</p>
+              </div>
+            </div>
+          )}
+
+          {/* Cards */}
+          {loadingDocumentacao ? (
+            <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {[1, 2, 3].map(i => <Skeleton key={i} className="h-28" />)}
+            </div>
+          ) : documentacao?.missingStage ? (
+            <div className="flex flex-col items-center justify-center py-10 px-6 text-center gap-1">
+              <p className="text-sm text-slate-500">A etapa <strong>"Fechado"</strong> não foi encontrada no funil <strong>Vendas</strong>.</p>
+              <p className="text-xs text-slate-400">Verifique se o funil "Vendas" tem uma etapa chamada exatamente "Fechado".</p>
+            </div>
+          ) : documentacao?.leads.length === 0 ? (
+            <div className="flex items-center justify-center py-10 text-slate-400 text-sm">
+              Nenhum cliente enviou documentação neste período
+            </div>
+          ) : (
+            <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {documentacao?.leads.map((lead: any) => {
+                const finalidade = lead.customFields?.finalidade as string | undefined;
                 return (
-                  <div key={stage.name} className="flex items-center gap-4">
-                    <span className="text-xs text-slate-600 w-28 text-right">{stage.name}</span>
-                    <div className="flex-1 h-2 bg-af-light rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: stage.color }} />
+                  <div key={lead.id} className="border border-af-border rounded-xl p-4">
+                    <p className="text-sm font-semibold text-slate-800 truncate">
+                      {(lead.customFields as any)?.participante_1 || lead.name}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {lead.contact?.phone || lead.contact?.email || '—'} · {lead.user?.name || '—'}
+                    </p>
+                    {finalidade && (
+                      <span className={cn('inline-block mt-2 text-xs font-medium px-2 py-0.5 rounded-full', FINALIDADE_COLORS[finalidade] || 'bg-slate-100 text-slate-600')}>
+                        {finalidade}
+                      </span>
+                    )}
+                    <div className="flex items-center justify-between mt-3 pt-2 border-t border-af-border">
+                      <span className="text-sm font-bold text-af-mid">{lead.value ? formatCurrency(lead.value) : '—'}</span>
+                      <span className="text-xs text-slate-400">{formatDate(lead.enteredAt)}</span>
                     </div>
-                    <span className="text-xs font-semibold text-slate-700 w-12">{stage.count} · {Math.round(pct)}%</span>
                   </div>
                 );
               })}
             </div>
           )}
         </div>
+
       </div>
     </div>
   );

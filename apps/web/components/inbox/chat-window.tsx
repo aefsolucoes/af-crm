@@ -2,11 +2,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Phone, MoreVertical, Check, CheckCheck, Sparkles, Loader2 } from 'lucide-react';
+import { Send, Paperclip, Smile, Phone, MoreVertical, Check, CheckCheck, Sparkles, Loader2, FileText } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { Avatar } from '@/components/ui/avatar';
+import { MessageTemplate, CATEGORY_META, getTemplates, fillTemplate } from '@/lib/templates';
 
 const CHANNEL_ICONS: Record<Channel, string> = {
   WHATSAPP: '📱',
@@ -47,6 +48,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   const [sending, setSending] = useState(false);
   const [aiLoading, setAiLoading] = useState<AIMode | null>(null);
   const [showAI, setShowAI] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   // Mapa de status atualizado via socket: messageId → status
   const [statusMap, setStatusMap] = useState<Record<string, string>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -95,6 +98,20 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
     } finally {
       setSending(false);
     }
+  }
+
+  function handleOpenTemplates() {
+    setTemplates(getTemplates());
+    setShowTemplates(v => !v);
+    setShowAI(false);
+  }
+
+  function handleUseTemplate(template: MessageTemplate) {
+    const firstName = leadName?.split(' ')[0] || leadName || '';
+    const filled = fillTemplate(template.body, { nome: leadName, primeiro_nome: firstName });
+    setContent(filled);
+    setShowTemplates(false);
+    inputRef.current?.focus();
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -190,7 +207,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
       {/* Channel selector */}
       <div className="relative z-10 flex items-center gap-2 px-4 py-2 bg-white/80 backdrop-blur border-b border-black/5">
         <span className="text-xs text-slate-500 font-medium">Canal:</span>
-        {(['WHATSAPP', 'INSTAGRAM', 'TELEGRAM', 'WEBCHAT', 'EMAIL'] as Channel[]).map((ch) => (
+        {(['WHATSAPP'] as Channel[]).map((ch) => (
           <button
             key={ch}
             onClick={() => setChannel(ch)}
@@ -289,6 +306,37 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
         <div ref={bottomRef} />
       </div>
 
+      {/* Templates toolbar */}
+      {showTemplates && (
+        <div className="relative z-10 max-h-56 overflow-y-auto bg-white/95 border-t border-black/5 scrollbar-thin">
+          {templates.length === 0 ? (
+            <div className="px-4 py-3 text-xs text-slate-400">Nenhum template cadastrado. Crie em Templates.</div>
+          ) : (
+            <div className="p-2 space-y-1">
+              {templates.map((t) => {
+                const cm = CATEGORY_META[t.category];
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => handleUseTemplate(t)}
+                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-af-light transition-colors flex items-start gap-2"
+                  >
+                    <FileText size={14} className="text-af-mid flex-shrink-0 mt-0.5" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-slate-800 truncate">{t.name}</span>
+                        <span className={cn('text-xs px-1.5 py-0.5 rounded-full flex-shrink-0', cm.color)}>{cm.label}</span>
+                      </div>
+                      <p className="text-xs text-slate-500 truncate">{t.body.replace(/\n/g, ' ')}</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* AI assistant toolbar */}
       {showAI && (
         <div className="relative z-10 flex items-center gap-2 px-3 py-2 bg-white/95 border-t border-black/5 flex-wrap">
@@ -344,10 +392,22 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           className="flex-1 resize-none px-4 py-2.5 text-sm bg-white rounded-3xl border-none outline-none text-slate-900 placeholder-slate-400 scrollbar-thin max-h-32"
           style={{ lineHeight: '1.4' }}
         />
+        {/* Templates toggle button */}
+        <button
+          type="button"
+          onClick={handleOpenTemplates}
+          title="Templates prontos"
+          className={cn(
+            'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
+            showTemplates ? 'bg-af-mid text-white' : 'bg-white/80 text-slate-500 hover:bg-white hover:text-af-mid'
+          )}
+        >
+          <FileText size={18} />
+        </button>
         {/* AI toggle button */}
         <button
           type="button"
-          onClick={() => setShowAI(v => !v)}
+          onClick={() => { setShowAI(v => !v); setShowTemplates(false); }}
           title="Assistente IA"
           className={cn(
             'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',

@@ -4,7 +4,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { Lead } from '@/types';
 import { formatCurrency, formatDate, CHANNEL_COLORS } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
-import { ArrowDownLeft, ArrowUpRight, Calendar, MessageCircle, GitMerge } from 'lucide-react';
+import { Calendar, MessageCircle, GitMerge } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -13,18 +13,6 @@ import { MergeModal } from './merge-modal';
 interface KanbanCardProps {
   lead: Lead;
   labelColor?: string;
-}
-
-function msgTime(dateStr: string) {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  if (diffDays === 0)
-    return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(date);
-  if (diffDays === 1) return 'ontem';
-  if (diffDays < 7) return `${diffDays}d`;
-  return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit' }).format(date);
 }
 
 export function KanbanCard({ lead, labelColor }: KanbanCardProps) {
@@ -54,8 +42,12 @@ export function KanbanCard({ lead, labelColor }: KanbanCardProps) {
 
   function openWhatsApp(e: React.MouseEvent, phone: string) {
     e.stopPropagation();
-    queryClient.invalidateQueries({ queryKey: ['lead', lead.id] });
-    router.push(`/leads/${lead.id}?t=${Date.now()}`);
+    router.push(`/inbox?leadId=${lead.id}`);
+  }
+
+  function openInbox(e: React.MouseEvent) {
+    e.stopPropagation();
+    router.push(`/inbox?leadId=${lead.id}`);
   }
 
   function handleCardClick() {
@@ -117,21 +109,6 @@ export function KanbanCard({ lead, labelColor }: KanbanCardProps) {
             </div>
           </div>
 
-          {/* Última mensagem */}
-          {lastMsg ? (
-            <div className="flex items-center gap-1.5 mb-2.5 bg-slate-50 rounded-lg px-2.5 py-1.5">
-              {lastMsg.direction === 'INBOUND'
-                ? <ArrowDownLeft size={11} className="text-emerald-500 flex-shrink-0" />
-                : <ArrowUpRight size={11} className="text-af-mid flex-shrink-0" />}
-              <span className="text-xs text-slate-600 flex-1 truncate leading-tight">{lastMsg.content}</span>
-              <span className="text-xs text-slate-400 flex-shrink-0 ml-1">{msgTime(lastMsg.createdAt)}</span>
-            </div>
-          ) : (
-            <div className="mb-2.5 bg-slate-50 rounded-lg px-2.5 py-1.5">
-              <span className="text-xs text-slate-300">Sem mensagens</span>
-            </div>
-          )}
-
           {/* Rodapé */}
           <div className="flex items-center justify-between pt-2 border-t border-af-border/60 gap-1">
             <span className={`text-xs font-bold ${lead.value ? 'text-af-mid' : 'text-slate-300'}`}>
@@ -142,6 +119,13 @@ export function KanbanCard({ lead, labelColor }: KanbanCardProps) {
               <span>{formatDate(lead.createdAt)}</span>
             </div>
             <div className="flex items-center gap-1">
+              <button
+                onClick={openInbox}
+                title="Ir para a conversa no Inbox"
+                className="p-1 rounded-lg text-slate-300 hover:text-emerald-600 hover:bg-emerald-50 transition-colors"
+              >
+                <MessageCircle size={12} />
+              </button>
               <button
                 onClick={e => { e.stopPropagation(); setShowMerge(true); }}
                 title="Verificar duplicatas"

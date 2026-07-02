@@ -15,8 +15,8 @@ router.get('/summary', async (req: AuthRequest, res: Response) => {
     const [totalLeads, newLeads, wonLeads, allLeads] = await Promise.all([
       prisma.lead.count({ where: { accountId } }),
       prisma.lead.count({ where: { accountId, createdAt: { gte: startOfMonth } } }),
-      prisma.lead.findMany({ where: { accountId, status: 'WON', pipeline: { name: 'Fechamento' } }, select: { value: true } }),
-      prisma.lead.findMany({ where: { accountId, pipeline: { name: 'Fechamento' } }, select: { value: true, status: true, createdAt: true } }),
+      prisma.lead.findMany({ where: { accountId, status: 'WON', pipeline: { name: 'Concluído' } }, select: { value: true } }),
+      prisma.lead.findMany({ where: { accountId, pipeline: { name: 'Concluído' } }, select: { value: true, status: true, createdAt: true } }),
     ]);
 
     const totalRevenue = wonLeads.reduce((sum, l) => sum + (l.value || 0), 0);
@@ -102,18 +102,16 @@ router.get('/fechados', async (req: AuthRequest, res: Response) => {
       ? new Date(req.query.to as string)
       : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-    // Encontra pipeline Fechamento e estágio Concluído
-    const fechamento = await prisma.pipeline.findFirst({
-      where: { accountId, name: 'Fechamento' },
-      include: { stages: true },
+    // Encontra o funil "Concluído"
+    const concluido = await prisma.pipeline.findFirst({
+      where: { accountId, name: 'Concluído' },
     });
-    const concluidoStage = fechamento?.stages.find(s => s.name === 'Concluído');
-    if (!concluidoStage) {
-      return res.json({ leads: [], total: 0, totalValue: 0, missingStage: true });
+    if (!concluido) {
+      return res.json({ leads: [], total: 0, totalValue: 0, missingPipeline: true });
     }
 
     const leads = await prisma.lead.findMany({
-      where: { accountId, stageId: concluidoStage.id },
+      where: { accountId, pipelineId: concluido.id },
       include: {
         contact: true,
         user: { select: { id: true, name: true } },
@@ -139,6 +137,72 @@ router.get('/fechados', async (req: AuthRequest, res: Response) => {
     res.json({ leads: filtered, total: filtered.length, totalValue });
   } catch {
     res.status(500).json({ error: 'Erro ao gerar relatório de fechados' });
+  }
+});
+
+// GET /api/reports/documentacao?from=YYYY-MM-DD&to=YYYY-MM-DD
+// Clientes que estão ou passaram pela etapa "Fechado" do funil "Vendas" (enviaram documentação),
+// filtrados pela data em que entraram nessa etapa.
+router.get('/documentacao', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const now = new Date();
+
+    const fromDate = req.query.from
+      ? new Date(req.query.from as string)
+      : new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const toDate = req.query.to
+      ? new Date(req.query.to as string)
+      : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+    const vendas = await prisma.pipeline.findFirst({
+      where: { accountId, name: 'Vendas' },
+      include: { stages: true },
+    });
+    const fechadoStage = vendas?.stages.find((s) => s.name === 'Fechado');
+    if (!fechadoStage) {
+      return res.json({ leads: [], total: 0, totalValue: 0, missingStage: true });
+    }
+
+    // Notas de auditoria que registram a entrada na etapa "Fechado"
+    const notes = await prisma.note.findMany({
+      where: {
+        type: 'STAGE_CHANGE',
+        content: { contains: '"Fechado"' },
+        lead: { is: { accountId } },
+      },
+      select: { leadId: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Um lead pode ter entrado mais de uma vez — considera a entrada mais recente
+    const enteredMap = new Map<string, Date>();
+    for (const n of notes) {
+      if (!enteredMap.has(n.leadId)) enteredMap.set(n.leadId, n.createdAt);
+    }
+
+    const leads = await prisma.lead.findMany({
+      where: { id: { in: [...enteredMap.keys()] } },
+      include: {
+        contact: true,
+        user: { select: { id: true, name: true } },
+        stage: true,
+        pipeline: true,
+      },
+    });
+
+    const withEnteredAt = leads.map((l) => ({ ...l, enteredAt: enteredMap.get(l.id)! }));
+
+    const filtered = withEnteredAt
+      .filter((l) => l.enteredAt >= fromDate && l.enteredAt <= toDate)
+      .sort((a, b) => b.enteredAt.getTime() - a.enteredAt.getTime());
+
+    const totalValue = filtered.reduce((sum, l) => sum + (l.value || 0), 0);
+
+    res.json({ leads: filtered, total: filtered.length, totalValue });
+  } catch {
+    res.status(500).json({ error: 'Erro ao gerar relatório de documentação' });
   }
 });
 

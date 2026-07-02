@@ -1,5 +1,6 @@
 'use client';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { ConversationList } from '@/components/inbox/conversation-list';
@@ -24,9 +25,28 @@ async function fetchLead(id: string): Promise<LeadDetail> {
 }
 
 export default function InboxPage() {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  return (
+    <Suspense fallback={<div className="flex flex-col h-full" />}>
+      <InboxPageInner />
+    </Suspense>
+  );
+}
+
+function InboxPageInner() {
+  const searchParams = useSearchParams();
+  const leadIdParam = searchParams.get('leadId');
+  const [selectedId, setSelectedId] = useState<string | null>(leadIdParam);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const queryClient = useQueryClient();
+
+  // Abre a conversa direto via ?leadId= (ex: vindo de um card do Funil)
+  useEffect(() => {
+    if (leadIdParam && leadIdParam !== selectedId) {
+      setSelectedId(leadIdParam);
+      setLocalMessages([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leadIdParam]);
 
   const { data: conversations, isLoading: loadingConvs } = useQuery({
     queryKey: ['conversations'],
