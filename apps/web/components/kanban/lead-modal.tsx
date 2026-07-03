@@ -7,7 +7,7 @@ import { Stage, Contact, User } from '@/types';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
-import { maskCPF, maskMoney } from '@/lib/utils';
+import { maskCPF, maskMoney, maskDateBR } from '@/lib/utils';
 
 interface LeadModalProps {
   open: boolean;
@@ -77,6 +77,7 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
       const masked =
         (field === 'telefone_1' || field === 'telefone_2') ? maskPhone(value) :
         (field === 'cpf_1' || field === 'cpf_2') ? maskCPF(value) :
+        (field === 'nascimento_1' || field === 'nascimento_2') ? maskDateBR(value) :
         (field === 'renda_1' || field === 'renda_2' ||
          field === 'valor_imovel' || field === 'valor_credito' || field === 'valor_entrada') ? maskMoney(value) :
         value;
@@ -208,7 +209,8 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
           <div className="grid grid-cols-2 gap-3">
             <Input
               label="Data de nascimento"
-              type="date"
+              type="text"
+              placeholder="DD/MM/AAAA"
               value={form.nascimento_1}
               onChange={e => handleChange('nascimento_1', e.target.value)}
             />
@@ -274,7 +276,8 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
           <div className="grid grid-cols-2 gap-3">
             <Input
               label="Data de nascimento"
-              type="date"
+              type="text"
+              placeholder="DD/MM/AAAA"
               value={form.nascimento_2}
               onChange={e => handleChange('nascimento_2', e.target.value)}
             />

@@ -13,9 +13,10 @@ import { MergeModal } from './merge-modal';
 interface KanbanCardProps {
   lead: Lead;
   labelColor?: string;
+  onOpen: (leadId: string) => void;
 }
 
-export function KanbanCard({ lead, labelColor }: KanbanCardProps) {
+export function KanbanCard({ lead, labelColor, onOpen }: KanbanCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [showMerge, setShowMerge] = useState(false);
@@ -51,9 +52,7 @@ export function KanbanCard({ lead, labelColor }: KanbanCardProps) {
   }
 
   function handleCardClick() {
-    queryClient.invalidateQueries({ queryKey: ['lead', lead.id] });
-    // Força re-navegação mesmo que a URL seja a mesma (bug: voltar e clicar no mesmo card)
-    router.push(`/leads/${lead.id}?t=${Date.now()}`);
+    onOpen(lead.id);
   }
 
   return (

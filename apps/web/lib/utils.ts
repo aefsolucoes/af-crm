@@ -46,6 +46,21 @@ export function maskCPF(value: string): string {
     .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
 }
 
+/** Máscara de data BR enquanto digita: DD/MM/AAAA */
+export function maskDateBR(value: string): string {
+  const d = value.replace(/\D/g, '').slice(0, 8);
+  return d
+    .replace(/(\d{2})(\d)/, '$1/$2')
+    .replace(/(\d{2})(\d)/, '$1/$2');
+}
+
+/** Converte data ISO (AAAA-MM-DD, vinda de dados antigos) para DD/MM/AAAA. Se já estiver em DD/MM/AAAA (ou vazio/inválido), retorna como está. */
+export function isoToBRDate(value: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value || '');
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  return value;
+}
+
 /**
  * Máscara de dinheiro (formato brasileiro).
  * Aceita strings brutas (de cálculos, ex: "50000") ou digitadas (ex: "50.000,00").

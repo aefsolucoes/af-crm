@@ -1,7 +1,7 @@
 'use client';
 import { Lead } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
-import { formatCurrency, formatDate } from '@/lib/utils';
+import { formatCurrency, formatDate, isoToBRDate } from '@/lib/utils';
 import { Tag, DollarSign, Calendar, ExternalLink, User, Phone, MessageCircle, FileText, Hash } from 'lucide-react';
 import Link from 'next/link';
 
@@ -52,12 +52,12 @@ export function LeadPanel({ lead }: LeadPanelProps) {
   const tel1   = cfVal('telefone_1') || lead.contact?.phone;
   const tel2   = cfVal('telefone_2');
   const cpf1   = cfVal('cpf_1');
-  const nasc1  = cfVal('nascimento_1');
+  const nasc1  = (v => v ? isoToBRDate(v) : v)(cfVal('nascimento_1'));
   const renda1 = cfVal('renda_1');
   const email1 = cfVal('email_1');
   const vin1   = cfVal('vinculo_1');
   const cpf2   = cfVal('cpf_2');
-  const nasc2  = cfVal('nascimento_2');
+  const nasc2  = (v => v ? isoToBRDate(v) : v)(cfVal('nascimento_2'));
   const renda2 = cfVal('renda_2');
   const email2 = cfVal('email_2');
   const vin2   = cfVal('vinculo_2');

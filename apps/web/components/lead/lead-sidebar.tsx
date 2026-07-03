@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
 import { Plus, Trash2, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
-import { formatCurrency, maskCPF, maskMoney } from '@/lib/utils';
+import { formatCurrency, maskCPF, maskMoney, maskDateBR, isoToBRDate } from '@/lib/utils';
 
 interface LeadSidebarProps {
   lead: LeadDetail;
@@ -59,22 +59,22 @@ function FieldEditor({
   }
 
   const inputType =
-    fieldDef.type === 'DATE' ? 'date' :
     fieldDef.type === 'EMAIL' ? 'email' :
     fieldDef.type === 'PHONE' ? 'tel' :
-    'text'; // NUMBER usa text para aceitar formato BR (1.000.000)
+    'text'; // NUMBER/DATE usam text para aceitar máscara BR (1.000.000 / DD/MM/AAAA)
 
   return (
     <div className="flex items-center gap-1 flex-1">
       <input
         type={inputType}
         inputMode={fieldDef.type === 'NUMBER' ? 'numeric' : undefined}
-        placeholder={fieldDef.type === 'NUMBER' ? 'Ex: 250.000' : undefined}
+        placeholder={fieldDef.type === 'NUMBER' ? 'Ex: 250.000' : fieldDef.type === 'DATE' ? 'DD/MM/AAAA' : undefined}
         className="text-xs text-slate-800 border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
         value={val}
         onChange={e => {
           const v = fieldDef.type === 'PHONE' ? maskPhone(e.target.value)
                   : fieldDef.type === 'NUMBER' ? maskMoney(e.target.value)
+                  : fieldDef.type === 'DATE' ? maskDateBR(e.target.value)
                   : e.target.value;
           setVal(v);
         }}
@@ -116,9 +116,7 @@ function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: F
     return <span className="text-xs font-medium text-slate-800">{formatted || String(value)}</span>;
   }
   if (fieldDef.type === 'DATE') {
-    try {
-      return <span className="text-xs font-medium text-slate-800">{new Date(String(value)).toLocaleDateString('pt-BR')}</span>;
-    } catch { return <span className="text-xs font-medium text-slate-800">{String(value)}</span>; }
+    return <span className="text-xs font-medium text-slate-800">{isoToBRDate(String(value))}</span>;
   }
   return <span className="text-xs font-medium text-slate-800 truncate max-w-[130px]">{String(value)}</span>;
 }
@@ -434,10 +432,11 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                       <div className="flex items-center gap-1 flex-1">
                         <input
                           autoFocus
-                          type={key.includes('nascimento') ? 'date' : key.includes('email') ? 'email' : 'text'}
+                          type={key.includes('email') ? 'email' : 'text'}
                           inputMode={key.includes('renda') ? 'numeric' : undefined}
+                          placeholder={key.includes('nascimento') ? 'DD/MM/AAAA' : undefined}
                           className="text-xs text-slate-800 border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
-                          value={String(customValues[key] ?? '')}
+                          value={key.includes('nascimento') ? isoToBRDate(String(customValues[key] ?? '')) : String(customValues[key] ?? '')}
                           onChange={e => {
                             const v = (key === 'telefone_1' || key === 'telefone_2')
                               ? maskPhone(e.target.value)
@@ -445,6 +444,8 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                               ? maskCPF(e.target.value)
                               : (key === 'renda_1' || key === 'renda_2')
                               ? maskMoney(e.target.value)
+                              : key.includes('nascimento')
+                              ? maskDateBR(e.target.value)
                               : e.target.value;
                             setCustomValues(prev => ({ ...prev, [key]: v }));
                           }}
@@ -463,6 +464,8 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                         ? <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">
                             {(key === 'renda_1' || key === 'renda_2')
                               ? maskMoney(String(customValues[key]))
+                              : key.includes('nascimento')
+                              ? isoToBRDate(String(customValues[key]))
                               : String(customValues[key])}
                           </span>
                         : <span className="text-slate-300 text-xs">...</span>}

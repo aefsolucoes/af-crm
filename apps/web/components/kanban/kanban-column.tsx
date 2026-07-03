@@ -10,6 +10,7 @@ interface KanbanColumnProps {
   stage: Stage;
   leads: Lead[];
   onAddLead: (stageId: string) => void;
+  onOpenLead: (leadId: string) => void;
 }
 
 const STAGE_DESCRIPTIONS: Record<string, string> = {
@@ -38,7 +39,7 @@ const STAGE_DESCRIPTIONS: Record<string, string> = {
   'Pagamento ao Vendedor':   'Transferência liberada — negócio concluído',
 };
 
-export function KanbanColumn({ stage, leads, onAddLead }: KanbanColumnProps) {
+export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
 
   const totalValue = leads.reduce((sum, l) => sum + (l.value || 0), 0);
@@ -84,7 +85,7 @@ export function KanbanColumn({ stage, leads, onAddLead }: KanbanColumnProps) {
             }`}
           >
             {leads.map((lead) => (
-              <KanbanCard key={lead.id} lead={lead} labelColor={stage.color} />
+              <KanbanCard key={lead.id} lead={lead} labelColor={stage.color} onOpen={onOpenLead} />
             ))}
           </div>
         </SortableContext>

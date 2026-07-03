@@ -8,6 +8,7 @@ import { Plus, X, Check } from 'lucide-react';
 import { Stage, Lead, Pipeline, Contact, User } from '@/types';
 import { KanbanColumn } from './kanban-column';
 import { LeadModal } from './lead-modal';
+import { LeadDetailModal } from './lead-detail-modal';
 import { StageGateModal } from './stage-gate-modal';
 import { usePipelineStore } from '@/store/pipeline.store';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
@@ -26,6 +27,7 @@ interface KanbanBoardProps {
 export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSearching }: KanbanBoardProps) {
   const { moveLeadOptimistic } = usePipelineStore();
   const [addLeadStageId, setAddLeadStageId] = useState<string | null>(null);
+  const [openLeadId, setOpenLeadId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const [addingStage, setAddingStage] = useState(false);
   const [newStageName, setNewStageName] = useState('');
@@ -130,6 +132,7 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
               stage={stage}
               leads={getLeadsForStage(stage.id)}
               onAddLead={(stageId) => setAddLeadStageId(stageId)}
+              onOpenLead={(leadId) => setOpenLeadId(leadId)}
             />
           ))}
 
@@ -183,6 +186,11 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
         defaultStageId={addLeadStageId || undefined}
         contacts={contacts}
         users={users}
+      />
+
+      <LeadDetailModal
+        leadId={openLeadId}
+        onClose={() => { setOpenLeadId(null); onRefresh(); }}
       />
     </>
   );
