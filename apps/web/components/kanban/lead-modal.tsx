@@ -7,7 +7,7 @@ import { Stage, Contact, User } from '@/types';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
-import { maskCPF, maskMoney, maskDateBR } from '@/lib/utils';
+import { maskCPF, maskMoney, maskMoneyInput, maskDateBR } from '@/lib/utils';
 
 interface LeadModalProps {
   open: boolean;
@@ -79,7 +79,7 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
         (field === 'cpf_1' || field === 'cpf_2') ? maskCPF(value) :
         (field === 'nascimento_1' || field === 'nascimento_2') ? maskDateBR(value) :
         (field === 'renda_1' || field === 'renda_2' ||
-         field === 'valor_imovel' || field === 'valor_credito' || field === 'valor_entrada') ? maskMoney(value) :
+         field === 'valor_imovel' || field === 'valor_credito' || field === 'valor_entrada') ? maskMoneyInput(value) :
         value;
       const next = { ...prev, [field]: masked };
 

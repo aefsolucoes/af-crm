@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
 import { Plus, Trash2, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
-import { formatCurrency, maskCPF, maskMoney, maskDateBR, isoToBRDate } from '@/lib/utils';
+import { formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate } from '@/lib/utils';
 
 interface LeadSidebarProps {
   lead: LeadDetail;
@@ -73,7 +73,7 @@ function FieldEditor({
         value={val}
         onChange={e => {
           const v = fieldDef.type === 'PHONE' ? maskPhone(e.target.value)
-                  : fieldDef.type === 'NUMBER' ? maskMoney(e.target.value)
+                  : fieldDef.type === 'NUMBER' ? maskMoneyInput(e.target.value)
                   : fieldDef.type === 'DATE' ? maskDateBR(e.target.value)
                   : e.target.value;
           setVal(v);
@@ -443,7 +443,7 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                               : (key === 'cpf_1' || key === 'cpf_2')
                               ? maskCPF(e.target.value)
                               : (key === 'renda_1' || key === 'renda_2')
-                              ? maskMoney(e.target.value)
+                              ? maskMoneyInput(e.target.value)
                               : key.includes('nascimento')
                               ? maskDateBR(e.target.value)
                               : e.target.value;
@@ -464,6 +464,8 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
                         ? <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">
                             {(key === 'renda_1' || key === 'renda_2')
                               ? maskMoney(String(customValues[key]))
+                              : (key === 'cpf_1' || key === 'cpf_2')
+                              ? maskCPF(String(customValues[key]))
                               : key.includes('nascimento')
                               ? isoToBRDate(String(customValues[key]))
                               : String(customValues[key])}

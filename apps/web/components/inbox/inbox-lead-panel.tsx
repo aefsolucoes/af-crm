@@ -161,7 +161,7 @@ export function InboxLeadPanel({ lead, onRefresh }: InboxLeadPanelProps) {
         </div>
       )}
 
-      <div className="w-96 flex-shrink-0 border-l border-af-border bg-white flex flex-col overflow-hidden">
+      <div className="w-96 flex-shrink-0 border-l border-af-border app-column-surface flex flex-col overflow-hidden">
 
         {/* ── Header do lead ── */}
         <div className="px-4 pt-4 pb-3 border-b border-af-border bg-af-light/30 flex-shrink-0">

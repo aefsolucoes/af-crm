@@ -88,6 +88,23 @@ export function maskMoney(value: string): string {
   return intPart;
 }
 
+/**
+ * Máscara de dinheiro para uso em onChange de inputs (digitação ao vivo).
+ * Sempre remove os pontos de milhar já inseridos antes de reformatar, evitando
+ * que o valor acumulado (ex: "1.234" + "5" digitado = "1.2345") seja confundido
+ * com um decimal em formato EN e trunque o valor após poucos dígitos.
+ */
+export function maskMoneyInput(value: string): string {
+  const cleaned = value.replace(/\./g, '').replace(/[^\d,]/g, '');
+  if (!cleaned) return '';
+  const [intRaw, centsRaw] = cleaned.split(',');
+  const intFormatted = (parseInt(intRaw || '0', 10)).toLocaleString('pt-BR');
+  if (cleaned.includes(',')) {
+    return `${intFormatted},${(centsRaw || '').slice(0, 2)}`;
+  }
+  return intFormatted;
+}
+
 export const CHANNEL_COLORS: Record<string, string> = {
   WHATSAPP: '#25D366',
   INSTAGRAM: '#E1306C',

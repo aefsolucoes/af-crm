@@ -66,7 +66,7 @@ export function KanbanCard({ lead, labelColor, onOpen }: KanbanCardProps) {
     />
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
       <div
-        className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer select-none overflow-hidden"
+        className="app-column-surface rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer select-none overflow-hidden"
         onClick={handleCardClick}
       >
         {labelColor && <div className="h-1.5 w-full" style={{ backgroundColor: labelColor }} />}

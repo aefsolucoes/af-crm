@@ -21,7 +21,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading 
     : conversations.filter((c) => c.messages[0]?.channel === filter);
 
   return (
-    <div className="flex flex-col h-full border-r border-af-border bg-white w-80 flex-shrink-0">
+    <div className="flex flex-col h-full border-r border-af-border app-column-surface w-80 flex-shrink-0">
       {/* Channel filter */}
       <div className="px-3 py-3 border-b border-af-border">
         <div className="flex gap-1 flex-wrap">
