@@ -26,8 +26,6 @@
 html[data-theme='black'] {
   --app-bg-page: #0b0f16;
   --app-bg-main: #14181f;
-  /* base clara com leve matiz do tema — cards/painéis continuam legíveis (texto escuro fixo) */
-  --app-column-bg-rgb: 226, 228, 232;
 
   --app-topbar-bg-rgb: 12, 12, 16;
   --app-topbar-text: #f1f5f9;
@@ -38,7 +36,6 @@ html[data-theme='black'] {
 html[data-theme='blue'] {
   --app-bg-page: #0d2545;
   --app-bg-main: #14315e;
-  --app-column-bg-rgb: 224, 234, 246;
 
   --app-topbar-bg-rgb: 13, 37, 69;
   --app-topbar-text: #f1f5f9;
