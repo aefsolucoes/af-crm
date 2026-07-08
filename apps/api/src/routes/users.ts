@@ -20,4 +20,25 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// PATCH /api/users/me/theme — atualiza a aparência do usuário logado (individual, não da conta)
+router.patch('/me/theme', async (req: AuthRequest, res: Response) => {
+  try {
+    const { themeColor, themeImage, themeOpacity } = req.body as {
+      themeColor?: string; themeImage?: string | null; themeOpacity?: number;
+    };
+    const user = await prisma.user.update({
+      where: { id: req.user!.id },
+      data: {
+        ...(themeColor !== undefined && { themeColor }),
+        ...(themeImage !== undefined && { themeImage }),
+        ...(themeOpacity !== undefined && { themeOpacity }),
+      },
+      select: { id: true, themeColor: true, themeImage: true, themeOpacity: true },
+    });
+    res.json(user);
+  } catch {
+    res.status(500).json({ error: 'Erro ao salvar aparência' });
+  }
+});
+
 export default router;

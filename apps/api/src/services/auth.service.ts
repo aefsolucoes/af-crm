@@ -18,7 +18,10 @@ export async function loginService(email: string, password: string) {
   return {
     accessToken,
     refreshToken,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role, accountId: user.accountId },
+    user: {
+      id: user.id, name: user.name, email: user.email, role: user.role, accountId: user.accountId,
+      themeColor: user.themeColor, themeImage: user.themeImage, themeOpacity: user.themeOpacity,
+    },
   };
 }
 

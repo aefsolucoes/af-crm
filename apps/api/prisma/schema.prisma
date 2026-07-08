@@ -60,6 +60,9 @@ model User {
   tasks     Task[]
   notes     Note[]
   transactions Transaction[]
+  themeColor   String  @default("white")
+  themeImage   String?
+  themeOpacity Int     @default(85)
   createdAt DateTime @default(now())
 }
 

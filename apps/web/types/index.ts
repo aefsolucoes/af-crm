@@ -23,6 +23,9 @@ export interface User {
   email: string;
   role: Role;
   accountId: string;
+  themeColor?: string;
+  themeImage?: string | null;
+  themeOpacity?: number;
 }
 
 export interface Account {
