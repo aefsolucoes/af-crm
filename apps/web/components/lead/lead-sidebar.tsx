@@ -83,12 +83,12 @@ function FieldEditor({
           setVal(v);
         }}
         onKeyDown={e => {
-          if (e.key === 'Enter') onSave(val);
+          if (e.key === 'Enter') onSave(normalizeForSave(fieldDef.type, val));
           if (e.key === 'Escape') onCancel();
         }}
         autoFocus
       />
-      <button onClick={() => onSave(val)} className="text-green-600 hover:text-green-700 flex-shrink-0">
+      <button onClick={() => onSave(normalizeForSave(fieldDef.type, val))} className="text-green-600 hover:text-green-700 flex-shrink-0">
         <Check size={12} />
       </button>
       <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
@@ -96,6 +96,13 @@ function FieldEditor({
       </button>
     </div>
   );
+}
+
+/** Normaliza o valor antes de salvar: campos NUMBER são guardados como número puro (sem separador de milhar), evitando ambiguidade na exibição depois */
+function normalizeForSave(fieldType: string, val: string): string {
+  if (fieldType !== 'NUMBER') return val;
+  if (!val.trim()) return '';
+  return String(parseBRNumber(val));
 }
 
 function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: FieldValue }) {
@@ -470,11 +477,11 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
                             setCustomValues(prev => ({ ...prev, [key]: v }));
                           }}
                           onKeyDown={e => {
-                            if (e.key === 'Enter') saveFieldValue(key, String(customValues[key] ?? ''));
+                            if (e.key === 'Enter') saveFieldValue(key, normalizeForSave(key.includes('renda') ? 'NUMBER' : 'TEXT', String(customValues[key] ?? '')));
                             if (e.key === 'Escape') setEditingKey(null);
                           }}
                         />
-                        <button onClick={() => saveFieldValue(key, String(customValues[key] ?? ''))} className="text-green-600 hover:text-green-700 flex-shrink-0"><Check size={12} /></button>
+                        <button onClick={() => saveFieldValue(key, normalizeForSave(key.includes('renda') ? 'NUMBER' : 'TEXT', String(customValues[key] ?? '')))} className="text-green-600 hover:text-green-700 flex-shrink-0"><Check size={12} /></button>
                         <button onClick={() => setEditingKey(null)} className="text-slate-400 hover:text-slate-600 flex-shrink-0"><X size={12} /></button>
                       </div>
                     )
