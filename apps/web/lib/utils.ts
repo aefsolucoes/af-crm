@@ -89,6 +89,26 @@ export function maskMoney(value: string): string {
 }
 
 /**
+ * Formata um valor monetário para exibição (somente leitura), sempre no
+ * padrão "xxx.xxx,xx" — com separador de milhar e 2 casas decimais, mesmo
+ * quando o valor bruto salvo é um inteiro sem decimais (ex: "450000" → "450.000,00").
+ */
+export function formatMoneyDisplay(value: string | number): string {
+  if (value === '' || value == null) return '';
+  const trimmed = String(value).trim();
+  let n: number;
+  if (/^\d+$/.test(trimmed) || /^\d+\.\d+$/.test(trimmed)) {
+    // Formato EN (vem de cálculos ou do banco): "450000" ou "450000.5"
+    n = parseFloat(trimmed);
+  } else {
+    // Formato BR digitado: pontos de milhar + vírgula decimal
+    n = parseFloat(trimmed.replace(/\./g, '').replace(',', '.'));
+  }
+  if (isNaN(n)) return '';
+  return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/**
  * Máscara de dinheiro para uso em onChange de inputs (digitação ao vivo).
  * Sempre remove os pontos de milhar já inseridos antes de reformatar, evitando
  * que o valor acumulado (ex: "1.234" + "5" digitado = "1.2345") seja confundido

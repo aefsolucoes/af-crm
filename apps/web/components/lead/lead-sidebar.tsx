@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
 import { Plus, Trash2, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
-import { formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate } from '@/lib/utils';
+import { formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate, formatMoneyDisplay } from '@/lib/utils';
 
 interface LeadSidebarProps {
   lead: LeadDetail;
@@ -116,7 +116,7 @@ function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: F
     );
   }
   if (fieldDef.type === 'NUMBER') {
-    const formatted = maskMoney(String(value));
+    const formatted = formatMoneyDisplay(String(value));
     return <span className="text-xs font-medium text-slate-800">{formatted || String(value)}</span>;
   }
   if (fieldDef.type === 'DATE') {
@@ -479,7 +479,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
                       {customValues[key]
                         ? <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">
                             {(key === 'renda_1' || key === 'renda_2')
-                              ? maskMoney(String(customValues[key]))
+                              ? formatMoneyDisplay(String(customValues[key]))
                               : (key === 'cpf_1' || key === 'cpf_2')
                               ? maskCPF(String(customValues[key]))
                               : key.includes('nascimento')
