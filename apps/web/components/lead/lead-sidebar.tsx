@@ -344,12 +344,14 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
           {/* Built-in fields only on Principal tab */}
           {activeTab === 'Principal' && (
             <>
-              <div className="flex items-center justify-between py-2.5 border-b border-slate-100">
-                <span className="text-xs text-slate-500 flex-shrink-0 w-36">Usuário responsável</span>
-                <span className="text-xs font-medium text-slate-800 truncate">{lead.user.name}</span>
+              <div className="flex items-center justify-between py-2.5 border-b border-slate-100 gap-2">
+                <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">Usuário responsável</span>
+                <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
+                  <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">{lead.user.name}</span>
+                </div>
               </div>
               <div className="flex items-center justify-between py-2.5 border-b border-slate-100 gap-2">
-                <span className="text-xs text-slate-500 flex-shrink-0 w-36">Valor da venda</span>
+                <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">Valor da venda</span>
                 {editingValue ? (
                   <div className="flex items-center gap-1 flex-1">
                     <input
@@ -393,12 +395,14 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
                     </button>
                   </div>
                 ) : (
-                  <button
-                    onClick={() => { setValueInput(String(lead.value ?? '')); setEditingValue(true); }}
-                    className="text-xs font-medium text-slate-800 hover:text-af-mid transition-colors"
-                  >
-                    {lead.value ? formatCurrency(lead.value) : <span className="text-slate-300">...</span>}
-                  </button>
+                  <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
+                    <button
+                      onClick={() => { setValueInput(String(lead.value ?? '')); setEditingValue(true); }}
+                      className="text-xs font-medium text-slate-800 hover:text-af-mid transition-colors truncate max-w-[130px]"
+                    >
+                      {lead.value ? formatCurrency(lead.value) : <span className="text-slate-300">...</span>}
+                    </button>
+                  </div>
                 )}
               </div>
             </>
