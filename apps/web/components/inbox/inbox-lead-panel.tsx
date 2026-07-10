@@ -7,7 +7,7 @@ import { StageGateModal } from '@/components/kanban/stage-gate-modal';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
-import { ExternalLink, ChevronRight, Shuffle, ListChecks, LayoutList } from 'lucide-react';
+import { ExternalLink, Shuffle, ListChecks, LayoutList } from 'lucide-react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { LeadTasks } from '@/components/lead/lead-tasks';
@@ -237,51 +237,31 @@ export function InboxLeadPanel({ lead, onRefresh }: InboxLeadPanelProps) {
         {/* ── Painel: Dados ── */}
         {activePanel === 'dados' && (
           <>
-            {/* Barra de fluxo */}
-            <div className="px-3 py-3 border-b border-af-border flex-shrink-0">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Fluxo</p>
-              <div className="flex flex-col gap-1 max-h-40 overflow-y-auto scrollbar-thin">
-                {lead.pipeline.stages.map((s: Stage) => {
-                  const isCurrent = s.id === lead.stageId;
-                  const stageIndex = lead.pipeline.stages.findIndex((x: Stage) => x.id === s.id);
-                  const currentIndex = lead.pipeline.stages.findIndex((x: Stage) => x.id === lead.stageId);
-                  const isPast = stageIndex < currentIndex;
-
-                  return (
-                    <button
-                      key={s.id}
-                      onClick={() => handleStageChange(s.id)}
-                      disabled={changingStage || isCurrent}
-                      className={`
-                        flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-left transition-all
-                        ${isCurrent
-                          ? 'text-white shadow-sm cursor-default'
-                          : isPast
-                            ? 'bg-slate-100 text-slate-400 hover:bg-slate-200'
-                            : 'bg-white border border-slate-200 text-slate-600 hover:border-af-mid hover:text-af-mid'
-                        }
-                        disabled:opacity-70
-                      `}
-                      style={isCurrent ? { backgroundColor: s.color } : {}}
-                    >
-                      <span
-                        className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: isCurrent ? 'rgba(255,255,255,0.7)' : s.color }}
-                      />
-                      <span className="flex-1 truncate">{s.name}</span>
-                      {isCurrent && <ChevronRight size={12} className="flex-shrink-0 opacity-70" />}
-                    </button>
-                  );
-                })}
-              </div>
+            {/* Barra de fluxo — compacta, uma linha */}
+            <div className="px-3 py-2.5 border-b border-af-border flex-shrink-0 flex items-center gap-2">
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex-shrink-0">Estágio</span>
+              <select
+                value={lead.stageId}
+                disabled={changingStage}
+                onChange={e => handleStageChange(e.target.value)}
+                className="flex-1 min-w-0 text-xs font-semibold text-white rounded-lg px-2.5 py-1.5 border-0 focus:outline-none focus:ring-2 focus:ring-af-accent cursor-pointer disabled:opacity-70"
+                style={{ backgroundColor: lead.stage.color }}
+              >
+                {lead.pipeline.stages.map((s: Stage) => (
+                  <option key={s.id} value={s.id} style={{ color: '#0f172a', backgroundColor: '#fff' }}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            {/* Campos editáveis */}
+            {/* Campos editáveis — apenas os mais importantes */}
             <div className="flex-1 overflow-hidden flex flex-col min-h-0">
               <LeadSidebar
                 lead={lead}
                 onRefresh={onRefresh}
                 className="w-full flex-1 border-r-0 border-l-0"
+                compact
               />
             </div>
           </>

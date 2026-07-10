@@ -10,7 +10,11 @@ interface LeadSidebarProps {
   lead: LeadDetail;
   onRefresh: () => void;
   className?: string;
+  /** Mostra apenas os dados mais importantes, com opção de expandir para ver tudo */
+  compact?: boolean;
 }
+
+const COMPACT_MAIN_KEYS = ['participante_1', 'telefone_1', 'cpf_1'];
 
 type FieldValue = string | number | null | undefined;
 
@@ -121,8 +125,9 @@ function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: F
   return <span className="text-xs font-medium text-slate-800 truncate max-w-[130px]">{String(value)}</span>;
 }
 
-export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
+export function LeadSidebar({ lead, onRefresh, className, compact = false }: LeadSidebarProps) {
   const [activeTab, setActiveTab] = useState('Principal');
+  const [expanded, setExpanded] = useState(!compact);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState(false);
   const [valueInput, setValueInput] = useState(String(lead.value ?? 0));
@@ -288,43 +293,50 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
   return (
     <aside className={`w-80 flex-shrink-0 border-r border-af-border bg-white overflow-y-auto flex flex-col ${className ?? ''}`}>
       {/* Tab bar */}
-      <div className="flex border-b border-af-border overflow-x-auto scrollbar-none flex-shrink-0">
-        {allTabs.map(tab => (
-          <button
-            key={tab}
-            onClick={() => { setActiveTab(tab); setShowAddField(false); }}
-            className={`px-3 py-2.5 text-xs font-medium whitespace-nowrap flex-shrink-0 border-b-2 transition-colors ${
-              activeTab === tab
-                ? 'border-af-mid text-af-mid'
-                : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            {tab}
-          </button>
-        ))}
-        {showAddTab ? (
-          <div className="flex items-center gap-1 px-2 py-1">
-            <input
-              autoFocus
-              placeholder="Nome da aba"
-              className="text-xs border border-af-border rounded px-2 py-0.5 w-24 focus:outline-none"
-              value={newTabName}
-              onChange={e => setNewTabName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') addTab(); if (e.key === 'Escape') setShowAddTab(false); }}
-            />
-            <button onClick={addTab} className="text-green-600"><Check size={12} /></button>
-            <button onClick={() => setShowAddTab(false)} className="text-slate-400"><X size={12} /></button>
-          </div>
-        ) : (
-          <button
-            onClick={() => setShowAddTab(true)}
-            className="px-2 py-2.5 text-slate-400 hover:text-af-mid flex-shrink-0 transition-colors"
-            title="Nova aba"
-          >
-            <Plus size={13} />
-          </button>
-        )}
-      </div>
+      {expanded && (
+        <div className="flex border-b border-af-border overflow-x-auto scrollbar-none flex-shrink-0">
+          {allTabs.map(tab => (
+            <button
+              key={tab}
+              onClick={() => { setActiveTab(tab); setShowAddField(false); }}
+              className={`px-3 py-2.5 text-xs font-medium whitespace-nowrap flex-shrink-0 border-b-2 transition-colors ${
+                activeTab === tab
+                  ? 'border-af-mid text-af-mid'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+          {showAddTab ? (
+            <div className="flex items-center gap-1 px-2 py-1">
+              <input
+                autoFocus
+                placeholder="Nome da aba"
+                className="text-xs border border-af-border rounded px-2 py-0.5 w-24 focus:outline-none"
+                value={newTabName}
+                onChange={e => setNewTabName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') addTab(); if (e.key === 'Escape') setShowAddTab(false); }}
+              />
+              <button onClick={addTab} className="text-green-600"><Check size={12} /></button>
+              <button onClick={() => setShowAddTab(false)} className="text-slate-400"><X size={12} /></button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowAddTab(true)}
+              className="px-2 py-2.5 text-slate-400 hover:text-af-mid flex-shrink-0 transition-colors"
+              title="Nova aba"
+            >
+              <Plus size={13} />
+            </button>
+          )}
+        </div>
+      )}
+      {!expanded && (
+        <div className="px-4 py-2.5 border-b border-af-border flex-shrink-0">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Dados principais</p>
+        </div>
+      )}
 
       {/* Fields list */}
       <div className="flex-1 overflow-y-auto">
@@ -413,7 +425,11 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
               { key: 'vinculo_2',     label: 'Tipo de vínculo 2', type: 'select', options: VINCULO_OPTS },
             ];
 
-            return builtinFields.map(({ key, label, type, options }) => (
+            const visibleFields = expanded
+              ? builtinFields
+              : builtinFields.filter(f => COMPACT_MAIN_KEYS.includes(f.key));
+
+            return visibleFields.map(({ key, label, type, options }) => (
               <div key={key} className="group flex items-center justify-between py-2.5 border-b border-slate-100 gap-2">
                 <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">{label}</span>
                 <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
@@ -478,8 +494,8 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
             ));
           })()}
 
-          {/* Custom fields for this tab */}
-          {fieldsForTab.map(field => (
+          {/* Custom fields for this tab (ocultos no modo compacto) */}
+          {expanded && fieldsForTab.map(field => (
             <div
               key={field.id}
               className="group flex flex-col py-2.5 border-b border-slate-100 gap-2"
@@ -574,12 +590,12 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
             </div>
           ))}
 
-          {fieldsForTab.length === 0 && !showAddField && (
+          {expanded && fieldsForTab.length === 0 && !showAddField && (
             <p className="text-xs text-slate-400 py-4 text-center">Nenhum campo nesta aba</p>
           )}
 
           {/* Add field form */}
-          {showAddField ? (
+          {expanded && (showAddField ? (
             <div className="py-3 space-y-2">
               <input
                 autoFocus
@@ -633,6 +649,16 @@ export function LeadSidebar({ lead, onRefresh, className }: LeadSidebarProps) {
             >
               <Plus size={12} />
               Adicionar campo
+            </button>
+          ))}
+
+          {/* Alternar entre visão compacta e completa */}
+          {compact && (
+            <button
+              onClick={() => setExpanded(e => !e)}
+              className="w-full text-xs font-medium text-af-mid hover:text-af-dark py-3 border-t border-slate-100 mt-1 transition-colors"
+            >
+              {expanded ? 'Mostrar apenas dados principais' : 'Mostrar todos os dados →'}
             </button>
           )}
         </div>
