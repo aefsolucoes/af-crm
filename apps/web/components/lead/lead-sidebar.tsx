@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
-import { Plus, Trash2, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
+import { Plus, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
 import { formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate, formatMoneyDisplay } from '@/lib/utils';
 
 interface LeadSidebarProps {
@@ -276,15 +276,6 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['fieldDefinitions'] });
       setEditingField(null);
-    },
-  });
-
-  const deleteFieldMutation = useMutation({
-    mutationFn: async (id: string) => {
-      await api.delete(`/api/fields/${id}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['fieldDefinitions'] });
     },
   });
 
@@ -585,13 +576,6 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
                           title="Editar campo"
                         >
                           <Pencil size={10} />
-                        </button>
-                        <button
-                          onClick={() => deleteFieldMutation.mutate(field.id)}
-                          className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 flex-shrink-0 transition-opacity"
-                          title="Excluir campo"
-                        >
-                          <Trash2 size={10} />
                         </button>
                       </>
                     )}
