@@ -6,6 +6,7 @@ import { X, MessageCircle } from 'lucide-react';
 import { LeadHeader } from '@/components/lead/lead-header';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
 import { LeadTasks } from '@/components/lead/lead-tasks';
+import { LeadMetaPanel } from '@/components/lead/lead-meta-panel';
 import { LeadDetail } from '@/types';
 import api from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -86,12 +87,15 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
             <div className="flex flex-1 overflow-hidden">
               <LeadSidebar lead={lead} onRefresh={handleRefresh} />
               <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">
-                <LeadTasks
-                  tasks={lead.tasks}
-                  notes={lead.notes}
-                  leadId={lead.id}
-                  onRefresh={handleRefresh}
-                />
+                <LeadMetaPanel lead={lead} onRefresh={handleRefresh} />
+                <div className="flex-1 min-h-0">
+                  <LeadTasks
+                    tasks={lead.tasks}
+                    notes={lead.notes}
+                    leadId={lead.id}
+                    onRefresh={handleRefresh}
+                  />
+                </div>
               </div>
             </div>
           </div>

@@ -144,7 +144,7 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-white">
 
       {/* ── Tabs ── */}
       <div className="flex border-b border-af-border bg-white">
@@ -223,8 +223,8 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
                 <div
                   key={task.id}
                   className={cn(
-                    'flex items-start gap-2.5 px-4 py-3 border-b border-af-border/50 hover:bg-af-light/50',
-                    overdue && 'bg-red-50/40'
+                    'flex items-start gap-2.5 px-4 py-3 border-b border-af-border/50 bg-white hover:bg-af-light/50',
+                    overdue && 'bg-red-50'
                   )}
                 >
                   <button onClick={() => handleToggle(task)} className="mt-0.5 flex-shrink-0 text-slate-300 hover:text-af-mid transition-colors">
@@ -248,7 +248,7 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
                   <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Concluídas ({done.length})</p>
                 </div>
                 {done.map(task => (
-                  <div key={task.id} className="flex items-start gap-2.5 px-4 py-3 border-b border-af-border/50 opacity-50">
+                  <div key={task.id} className="flex items-start gap-2.5 px-4 py-3 border-b border-af-border/50 bg-white opacity-50">
                     <button onClick={() => handleToggle(task)} className="mt-0.5 flex-shrink-0 text-green-500">
                       <CheckSquare size={15} />
                     </button>

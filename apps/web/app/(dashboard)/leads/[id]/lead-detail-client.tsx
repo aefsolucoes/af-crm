@@ -7,6 +7,7 @@ import { LeadHeader } from '@/components/lead/lead-header';
 import { ChatWindow } from '@/components/inbox/chat-window';
 import { LeadTasks } from '@/components/lead/lead-tasks';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
+import { LeadMetaPanel } from '@/components/lead/lead-meta-panel';
 import { LeadDetail, Message } from '@/types';
 import api from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -112,12 +113,15 @@ export default function LeadDetailClient({ id: propId }: Props) {
             </div>
 
             <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">
-              <LeadTasks
-                tasks={lead.tasks}
-                notes={lead.notes}
-                leadId={lead.id}
-                onRefresh={refetch}
-              />
+              <LeadMetaPanel lead={lead} onRefresh={refetch} />
+              <div className="flex-1 min-h-0">
+                <LeadTasks
+                  tasks={lead.tasks}
+                  notes={lead.notes}
+                  leadId={lead.id}
+                  onRefresh={refetch}
+                />
+              </div>
             </div>
           </div>
         </>
