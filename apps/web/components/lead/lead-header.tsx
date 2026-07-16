@@ -14,6 +14,14 @@ interface LeadHeaderProps {
   onStageChange: () => void;
 }
 
+// Paleta de labels estilo Trello — cor sólida por tag, escolhida por hash do nome
+const TAG_COLORS = ['#61bd4f', '#f2d600', '#ff9f1a', '#eb5a46', '#c377e0', '#0079bf', '#00c2e0', '#51e898', '#ff78cb', '#344563'];
+function tagColor(tag: string) {
+  let hash = 0;
+  for (let i = 0; i < tag.length; i++) hash = tag.charCodeAt(i) + ((hash << 5) - hash);
+  return TAG_COLORS[Math.abs(hash) % TAG_COLORS.length];
+}
+
 export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
   const [tagInput, setTagInput] = useState('');
   const [editingTags, setEditingTags] = useState(false);
@@ -74,11 +82,11 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
       {/* Linha 1: identidade + valor */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
-          <Avatar name={lead.name} size="lg" />
+          <Avatar name={lead.name} size="lg" className="w-12 h-12" />
           <div className="min-w-0">
-            <h1 className="text-lg font-bold text-slate-900 truncate">{lead.name}</h1>
+            <h1 className="text-2xl font-extrabold text-slate-900 truncate leading-tight">{lead.name}</h1>
             {lead.company && (
-              <div className="flex items-center gap-1 text-xs text-slate-500 mt-0.5">
+              <div className="flex items-center gap-1 text-xs text-slate-500 mt-1">
                 <Building2 size={12} />
                 <span className="truncate">{lead.company.name}</span>
               </div>
@@ -89,12 +97,12 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
         {lead.value && (
           <div className="text-right flex-shrink-0">
             <p className="text-xs text-slate-400 flex items-center gap-1 justify-end"><DollarSign size={11} />Valor</p>
-            <p className="text-lg font-bold text-af-mid leading-tight">{formatCurrency(lead.value)}</p>
+            <p className="text-xl font-extrabold text-af-mid leading-tight">{formatCurrency(lead.value)}</p>
           </div>
         )}
       </div>
 
-      {/* Linha 2: tags + status */}
+      {/* Linha 2: tags (estilo label do Trello) + status */}
       <div className="flex items-center flex-wrap gap-1.5">
         <Badge
           color={lead.status === 'WON' ? '#10b981' : lead.status === 'LOST' ? '#ef4444' : '#6b7280'}
@@ -102,9 +110,13 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
           {lead.status === 'WON' ? 'Ganho' : lead.status === 'LOST' ? 'Perdido' : 'Aberto'}
         </Badge>
         {lead.tags.map((tag) => (
-          <span key={tag} className="group flex items-center gap-1 text-xs bg-af-light text-af-mid px-2 py-0.5 rounded-full">
+          <span
+            key={tag}
+            className="group flex items-center gap-1.5 text-xs font-semibold text-white px-2.5 py-1 rounded-md shadow-sm"
+            style={{ backgroundColor: tagColor(tag) }}
+          >
             {tag}
-            <button onClick={() => handleRemoveTag(tag)} className="opacity-0 group-hover:opacity-100 hover:text-red-500 transition-opacity">
+            <button onClick={() => handleRemoveTag(tag)} className="opacity-0 group-hover:opacity-100 hover:text-slate-900 transition-opacity">
               <X size={10} />
             </button>
           </span>
@@ -117,14 +129,14 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
               onChange={e => setTagInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleAddTag(); if (e.key === 'Escape') { setEditingTags(false); setTagInput(''); } }}
               placeholder="nova tag"
-              className="text-xs border border-af-border rounded-full px-2 py-0.5 w-20 focus:outline-none focus:border-af-mid"
+              className="text-xs border border-af-border rounded-md px-2 py-1 w-24 focus:outline-none focus:border-af-mid"
             />
             <button onClick={handleAddTag} className="text-xs text-af-mid hover:text-af-dark font-medium">+</button>
             <button onClick={() => { setEditingTags(false); setTagInput(''); }} className="text-xs text-slate-400">✕</button>
           </div>
         ) : (
-          <button onClick={() => setEditingTags(true)} className="text-xs text-slate-400 hover:text-af-mid flex items-center gap-0.5 border border-dashed border-slate-300 hover:border-af-mid rounded-full px-2 py-0.5 transition-colors">
-            <Plus size={10} /> tag
+          <button onClick={() => setEditingTags(true)} className="text-xs text-slate-500 hover:text-af-mid flex items-center gap-1 border border-dashed border-slate-300 hover:border-af-mid rounded-md px-2.5 py-1 transition-colors font-medium">
+            <Plus size={11} /> Etiqueta
           </button>
         )}
       </div>
