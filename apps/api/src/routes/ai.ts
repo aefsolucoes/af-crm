@@ -1,7 +1,9 @@
 import { Router, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 const router = Router();
+const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 type AIMode = 'grammar' | 'professional' | 'friendly' | 'fun';
@@ -89,6 +91,11 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
   }
 
   try {
+    const agentConfig = await prisma.agentConfig.findUnique({
+      where: { accountId: req.user!.accountId },
+    });
+    const systemPrompt = agentConfig?.systemPrompt?.trim() || SUPPORT_SYSTEM_PROMPT;
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -99,7 +106,7 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
       body: JSON.stringify({
         model: 'claude-haiku-4-5',
         max_tokens: 1024,
-        system: SUPPORT_SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
       }),
     });

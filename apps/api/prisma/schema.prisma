@@ -19,6 +19,7 @@ model Account {
   salesBots        SalesBot[]
   whatsappConfig   WhatsAppConfig?
   metaLeadsConfig  MetaLeadsConfig?
+  agentConfig      AgentConfig?
   fieldDefinitions FieldDefinition[]
   transactions     Transaction[]
 }
@@ -246,6 +247,15 @@ model BaileysSession {
   data      Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model AgentConfig {
+  id           String   @id @default(cuid())
+  accountId    String   @unique
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  systemPrompt String   @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
 
 model SalesBot {

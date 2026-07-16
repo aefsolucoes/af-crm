@@ -4,12 +4,12 @@ import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Upload } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Upload, Bot } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Pipeline, Stage, User } from '@/types';
 import { useThemeStore, BackgroundTheme } from '@/store/theme.store';
 
-type Tab = 'api' | 'qr' | 'meta' | 'sons' | 'ia' | 'aparencia';
+type Tab = 'api' | 'qr' | 'meta' | 'sons' | 'ia' | 'aparencia' | 'agente';
 
 interface WAConfig {
   phoneNumberId: string;
@@ -432,6 +432,9 @@ export default function ConfiguracoesPage() {
             </button>
             <button onClick={() => setTab('aparencia')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'aparencia' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
               <Palette size={16} /> Aparência
+            </button>
+            <button onClick={() => setTab('agente')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'agente' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
+              <Bot size={16} /> Agente IA
             </button>
           </div>
 
@@ -1110,6 +1113,9 @@ export default function ConfiguracoesPage() {
           {/* Aparência Tab */}
           {tab === 'aparencia' && <AparenciaTab />}
 
+          {/* Agente IA Tab */}
+          {tab === 'agente' && <AgenteTab />}
+
         </div>
       </div>
     </div>
@@ -1267,6 +1273,73 @@ function AparenciaTab() {
           <p className="text-xs text-slate-400 mt-1">Controla o quanto o topo e as colunas do Funil deixam o fundo transparecer, como no Trello.</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AgenteTab() {
+  const [prompt, setPrompt] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api.get('/api/settings/agent')
+      .then(({ data }) => { if (active) setPrompt(data.systemPrompt || ''); })
+      .catch(() => toast('Erro ao carregar prompt do agente', 'error'))
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  async function handleSave() {
+    if (!prompt.trim()) { toast('O prompt não pode ficar vazio', 'error'); return; }
+    setSaving(true);
+    try {
+      await api.put('/api/settings/agent', { systemPrompt: prompt });
+      toast('Prompt do agente salvo!');
+    } catch {
+      toast('Erro ao salvar prompt do agente', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-xl p-4 flex items-start gap-3">
+        <div className="p-2 bg-purple-100 rounded-lg flex-shrink-0">
+          <Bot size={20} className="text-purple-600" />
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-purple-900">Agente interno (assistente dos colaboradores)</p>
+          <p className="text-xs text-purple-700 mt-0.5">
+            Esse é o prompt do assistente de IA que aparece no botão de chat dentro do CRM (canto inferior direito), usado pela sua equipe para tirar dúvidas, pedir ajuda e (conforme você for treinando) executar tarefas. Escreva aqui as instruções, o papel e os limites do agente — as mudanças valem para a próxima mensagem enviada por qualquer colaborador.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium text-slate-700">Prompt do agente</label>
+          <span className="text-xs text-slate-400">{prompt.length} caracteres</span>
+        </div>
+        <textarea
+          value={prompt}
+          onChange={e => setPrompt(e.target.value)}
+          disabled={loading}
+          rows={16}
+          placeholder="Descreva o papel do agente, o que ele pode e não pode fazer, o tom de voz, e qualquer contexto sobre o processo da empresa..."
+          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent font-mono leading-relaxed disabled:opacity-50"
+        />
+      </div>
+
+      <button
+        onClick={handleSave}
+        disabled={saving || loading}
+        className="px-4 py-2 bg-af-mid text-white text-sm font-semibold rounded-lg hover:bg-af-dark disabled:opacity-50 transition-colors"
+      >
+        {saving ? 'Salvando...' : 'Salvar prompt'}
+      </button>
     </div>
   );
 }
