@@ -129,7 +129,7 @@ function DisplayValue({ fieldDef, value }: { fieldDef: FieldDefinition; value: F
   if (fieldDef.type === 'DATE') {
     return <span className="text-xs font-medium text-slate-800">{isoToBRDate(String(value))}</span>;
   }
-  return <span className="text-xs font-medium text-slate-800 truncate max-w-[130px]">{String(value)}</span>;
+  return <span className="text-xs font-medium text-slate-800 text-right">{String(value)}</span>;
 }
 
 export function LeadSidebar({ lead, onRefresh, className, compact = false }: LeadSidebarProps) {
@@ -345,7 +345,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
               <div className="flex items-center justify-between py-2 border-b border-slate-100 gap-2">
                 <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">Usuário responsável</span>
                 <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
-                  <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">{lead.user.name}</span>
+                  <span className="text-xs font-medium text-slate-800 text-right block">{lead.user.name}</span>
                 </div>
               </div>
               <div className="flex items-center justify-between py-2 border-b border-slate-100 gap-2">
@@ -396,7 +396,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
                   <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
                     <button
                       onClick={() => { setValueInput(String(lead.value ?? '')); setEditingValue(true); }}
-                      className="text-xs font-medium text-slate-800 hover:text-af-mid transition-colors truncate max-w-[130px]"
+                      className="text-xs font-medium text-slate-800 hover:text-af-mid transition-colors text-right"
                     >
                       {lead.value ? formatCurrency(lead.value) : <span className="text-slate-300">...</span>}
                     </button>
@@ -479,7 +479,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
                   ) : (
                     <button onClick={() => setEditingKey(key)} className="flex-1 text-right hover:text-af-mid transition-colors min-w-0">
                       {customValues[key]
-                        ? <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">
+                        ? <span className="text-xs font-medium text-slate-800 text-right block">
                             {(key === 'renda_1' || key === 'renda_2')
                               ? formatMoneyDisplay(String(customValues[key]))
                               : (key === 'cpf_1' || key === 'cpf_2')
