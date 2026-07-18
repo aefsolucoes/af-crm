@@ -2,12 +2,8 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations } from '../services/message.service';
-import { sendWhatsAppMessage } from '../services/whatsapp.service';
-import { sendBaileysMessage, getQRStatus } from '../services/baileys.service';
-import { PrismaClient } from '@prisma/client';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp } from '../services/message.service';
 
-const prisma = new PrismaClient();
 const router = Router();
 router.use(authMiddleware);
 
@@ -39,48 +35,26 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 
 router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response) => {
   try {
-    let externalId: string | undefined;
-    let status: 'SENT' | 'FAILED' = 'SENT';
-
-    // If sending OUTBOUND via WhatsApp, call the API
+    // If sending OUTBOUND via WhatsApp, use the shared send helper
     if (req.body.direction === 'OUTBOUND' && req.body.channel === 'WHATSAPP') {
-      const lead = await prisma.lead.findUnique({
-        where: { id: req.body.leadId },
-        include: { contact: true },
+      const io = req.app.get('io');
+      const result = await sendOutboundWhatsApp({
+        accountId: req.user!.accountId,
+        leadId: req.body.leadId,
+        content: req.body.content,
+        io,
       });
-
-      const phone = lead?.contact?.whatsappPhone || lead?.contact?.phone;
-      console.log(`[Send] leadId=${req.body.leadId} phone=${phone} contact=${JSON.stringify(lead?.contact)}`);
-
-      if (!phone) {
-        return res.status(400).json({ error: 'Contato sem número de telefone cadastrado' });
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
       }
-
-      // Try QR (Baileys) first, then fall back to Cloud API
-      const qrStatus = getQRStatus(req.user!.accountId);
-      if (qrStatus.status === 'connected') {
-        const sent = await sendBaileysMessage(phone, req.body.content, req.user!.accountId);
-        if (!sent) status = 'FAILED';
-      } else {
-        const result = await sendWhatsAppMessage(phone, req.body.content, req.user!.accountId);
-        console.log(`[Send] WhatsApp result:`, result);
-        if (result.success) {
-          externalId = result.externalId;
-        } else {
-          console.warn('[WhatsApp] Mensagem não enviada:', result.error);
-          // Return error to frontend so user sees what went wrong
-          return res.status(400).json({ error: result.error || 'Falha ao enviar mensagem WhatsApp' });
-        }
-      }
+      return res.status(201).json(result.message);
     }
 
-    const message = await createMessage({ ...req.body, externalId, status });
+    const message = await createMessage(req.body);
 
     const io = req.app.get('io');
     if (io) {
-      // Atualiza o chat em tempo real para quem está com o lead aberto
       io.to(`lead:${message.leadId}`).emit('new_message', message);
-      // Atualiza o kanban/funil para todos na conta (mostra histórico no card)
       io.to(`account_${req.user!.accountId}`).emit('new_notification', { leadId: message.leadId, message });
     }
 

@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { sendOutboundWhatsApp } from '../services/message.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -68,12 +69,104 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
 });
 
 const SUPPORT_SYSTEM_PROMPT = `Você é o assistente interno de suporte do AF CRM, usado pelos funcionários da A&F Soluções Financeiras.
-Seu papel é tirar dúvidas dos funcionários sobre como usar o sistema e sobre o processo de vendas/atendimento da empresa: funil de vendas (Prospecção, Follow Up, Aguardando Simulação, Proposta Enviada, Aguardando Documentação, Fechado), inbox unificada (WhatsApp, Instagram, Telegram), cadastro de leads e contatos, tarefas, SalesBot (automação de mensagens), templates e relatórios.
+Seu papel é tirar dúvidas dos funcionários sobre como usar o sistema e sobre o processo de vendas/atendimento da empresa: funil de vendas, inbox unificada (WhatsApp), cadastro de leads e contatos, tarefas, SalesBot (automação de mensagens), templates e relatórios.
+Você também pode, quando um colaborador pedir explicitamente, ler o histórico de conversa de um lead no WhatsApp e enviar uma resposta ao cliente em nome do colaborador, usando as ferramentas disponíveis (find_lead, get_recent_messages, send_whatsapp_message). Nunca envie uma mensagem sem que o colaborador tenha pedido isso na conversa atual. Depois de enviar, confirme ao colaborador exatamente o que foi enviado e para quem.
 Responda em português, de forma curta, direta e prática, como se estivesse explicando para um colega de trabalho. Se a dúvida não tiver relação com o CRM ou o processo da empresa, explique educadamente que você só pode ajudar com isso.`;
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+}
+
+const AGENT_TOOLS = [
+  {
+    name: 'find_lead',
+    description: 'Busca leads/clientes pelo nome (ou parte do nome) para descobrir o ID do lead antes de ler mensagens ou enviar uma resposta. Retorna nome, telefone e id de cada lead encontrado.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Nome ou parte do nome do lead/cliente a buscar' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'get_recent_messages',
+    description: 'Busca as últimas mensagens trocadas com um lead no WhatsApp, para entender o contexto antes de responder.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        leadId: { type: 'string', description: 'ID do lead (obtido via find_lead)' },
+        limit: { type: 'number', description: 'Quantidade de mensagens a retornar (padrão 10)' },
+      },
+      required: ['leadId'],
+    },
+  },
+  {
+    name: 'send_whatsapp_message',
+    description: 'Envia uma mensagem de WhatsApp para o lead/cliente em nome do colaborador. Use somente quando o colaborador pedir explicitamente para responder/enviar algo ao cliente.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        leadId: { type: 'string', description: 'ID do lead (obtido via find_lead)' },
+        content: { type: 'string', description: 'Texto exato da mensagem a enviar ao cliente' },
+      },
+      required: ['leadId', 'content'],
+    },
+  },
+];
+
+async function executeAgentTool(
+  name: string,
+  input: Record<string, any>,
+  accountId: string,
+  io: any
+): Promise<unknown> {
+  if (name === 'find_lead') {
+    const leads = await prisma.lead.findMany({
+      where: { accountId, archived: false, name: { contains: String(input.name || ''), mode: 'insensitive' } },
+      include: { contact: true },
+      take: 5,
+    });
+    return leads.map(l => ({
+      id: l.id,
+      name: l.name,
+      phone: l.contact?.whatsappPhone || l.contact?.phone || null,
+    }));
+  }
+
+  if (name === 'get_recent_messages') {
+    const messages = await prisma.message.findMany({
+      where: { leadId: String(input.leadId), lead: { accountId } },
+      orderBy: { createdAt: 'desc' },
+      take: typeof input.limit === 'number' ? input.limit : 10,
+    });
+    return messages.reverse().map(m => ({
+      direction: m.direction,
+      content: m.content,
+      createdAt: m.createdAt,
+    }));
+  }
+
+  if (name === 'send_whatsapp_message') {
+    const result = await sendOutboundWhatsApp({
+      accountId,
+      leadId: String(input.leadId),
+      content: String(input.content || ''),
+      io,
+    });
+    return result;
+  }
+
+  return { error: `Ferramenta desconhecida: ${name}` };
+}
+
+interface AnthropicContentBlock {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, any>;
 }
 
 router.post('/support-chat', async (req: AuthRequest, res: Response) => {
@@ -90,36 +183,62 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
     return;
   }
 
+  const accountId = req.user!.accountId;
+  const io = req.app.get('io');
+
   try {
-    const agentConfig = await prisma.agentConfig.findUnique({
-      where: { accountId: req.user!.accountId },
-    });
+    const agentConfig = await prisma.agentConfig.findUnique({ where: { accountId } });
     const systemPrompt = agentConfig?.systemPrompt?.trim() || SUPPORT_SYSTEM_PROMPT;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5',
-        max_tokens: 1024,
-        system: systemPrompt,
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
-      }),
-    });
+    const convo: { role: string; content: string | AnthropicContentBlock[] }[] =
+      messages.map((m) => ({ role: m.role, content: m.content }));
 
-    if (!response.ok) {
-      const err = await response.text();
-      console.error('[AI] Anthropic error:', response.status, err);
-      res.status(502).json({ error: `Erro Anthropic ${response.status}: ${err}` });
-      return;
+    let reply = 'Não consegui gerar uma resposta agora.';
+
+    // Loop de tool-use: no máximo 5 idas e voltas com o modelo por requisição
+    for (let i = 0; i < 5; i++) {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-5',
+          max_tokens: 1024,
+          system: systemPrompt,
+          tools: AGENT_TOOLS,
+          messages: convo,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        console.error('[AI] Anthropic error:', response.status, err);
+        res.status(502).json({ error: `Erro Anthropic ${response.status}: ${err}` });
+        return;
+      }
+
+      const data = await response.json() as { content: AnthropicContentBlock[]; stop_reason: string };
+
+      if (data.stop_reason === 'tool_use') {
+        const toolUseBlocks = data.content.filter(b => b.type === 'tool_use');
+        const toolResults = await Promise.all(toolUseBlocks.map(async (block) => ({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: JSON.stringify(await executeAgentTool(block.name!, block.input || {}, accountId, io)),
+        })));
+
+        convo.push({ role: 'assistant', content: data.content });
+        convo.push({ role: 'user', content: toolResults });
+        continue;
+      }
+
+      reply = data.content.find(b => b.type === 'text')?.text ?? reply;
+      break;
     }
 
-    const data = await response.json() as { content: { type: string; text: string }[] };
-    const reply = data.content?.[0]?.text ?? 'Não consegui gerar uma resposta agora.';
     res.json({ reply });
   } catch (err) {
     console.error('[AI] Erro support-chat:', err);
