@@ -3,7 +3,7 @@ import { useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { X, MessageCircle } from 'lucide-react';
-import { LeadHeader } from '@/components/lead/lead-header';
+import { LeadHeaderTop, LeadHeaderActions } from '@/components/lead/lead-header';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
 import { LeadTasks } from '@/components/lead/lead-tasks';
 import { LeadMetaPanel } from '@/components/lead/lead-meta-panel';
@@ -54,7 +54,7 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
       <div
-        className="app-column-surface rounded-2xl shadow-2xl w-full max-w-4xl h-[75vh] flex flex-col overflow-hidden"
+        className="app-column-surface rounded-2xl shadow-2xl w-full max-w-3xl h-[75vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Barra de título — estilo janela */}
@@ -83,9 +83,12 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
           </div>
         ) : (
           <div className="flex-1 flex flex-col overflow-hidden">
-            <LeadHeader lead={lead} onStageChange={handleRefresh} />
+            <LeadHeaderTop lead={lead} />
             <div className="flex flex-1 overflow-hidden">
-              <LeadSidebar lead={lead} onRefresh={handleRefresh} className="w-auto flex-1" />
+              <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+                <LeadHeaderActions lead={lead} onStageChange={handleRefresh} />
+                <LeadSidebar lead={lead} onRefresh={handleRefresh} className="w-auto flex-1 border-r-0" />
+              </div>
               <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">
                 <LeadMetaPanel lead={lead} onRefresh={handleRefresh} />
                 <div className="flex-1 min-h-0">

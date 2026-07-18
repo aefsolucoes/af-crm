@@ -3,7 +3,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
-import { LeadHeader } from '@/components/lead/lead-header';
+import { LeadHeaderTop, LeadHeaderActions } from '@/components/lead/lead-header';
 import { ChatWindow } from '@/components/inbox/chat-window';
 import { LeadTasks } from '@/components/lead/lead-tasks';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
@@ -98,7 +98,8 @@ export default function LeadDetailClient({ id: propId }: Props) {
         </div>
       ) : lead ? (
         <>
-          <LeadHeader lead={lead} onStageChange={refetch} />
+          <LeadHeaderTop lead={lead} />
+          <LeadHeaderActions lead={lead} onStageChange={refetch} />
           <div className="flex flex-1 overflow-hidden">
             <LeadSidebar lead={lead} onRefresh={refetch} />
 

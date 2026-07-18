@@ -22,7 +22,37 @@ function tagColor(tag: string) {
   return TAG_COLORS[Math.abs(hash) % TAG_COLORS.length];
 }
 
-export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
+/** Linha 1: identidade + valor — fica no topo do modal, ocupando toda a largura */
+export function LeadHeaderTop({ lead }: { lead: LeadDetail }) {
+  return (
+    <div className="px-6 py-3 bg-white border-b border-af-border">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <Avatar name={lead.name} size="lg" className="w-12 h-12" />
+          <div className="min-w-0">
+            <h1 className="text-2xl font-extrabold text-slate-900 truncate leading-tight">{lead.name}</h1>
+            {lead.company && (
+              <div className="flex items-center gap-1 text-xs text-slate-500 mt-1">
+                <Building2 size={12} />
+                <span className="truncate">{lead.company.name}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {lead.value && (
+          <div className="text-right flex-shrink-0">
+            <p className="text-xs text-slate-400 flex items-center gap-1 justify-end"><DollarSign size={11} />Valor</p>
+            <p className="text-xl font-extrabold text-af-mid leading-tight">{formatCurrency(lead.value)}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Linhas 2 e 3: etiquetas + ações de status — ficam acima da aba Dados, na coluna da esquerda */
+export function LeadHeaderActions({ lead, onStageChange }: LeadHeaderProps) {
   const [tagInput, setTagInput] = useState('');
   const [editingTags, setEditingTags] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -78,31 +108,8 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
   }
 
   return (
-    <div className="px-6 py-3 bg-white border-b border-af-border space-y-2.5">
-      {/* Linha 1: identidade + valor */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3 min-w-0">
-          <Avatar name={lead.name} size="lg" className="w-12 h-12" />
-          <div className="min-w-0">
-            <h1 className="text-2xl font-extrabold text-slate-900 truncate leading-tight">{lead.name}</h1>
-            {lead.company && (
-              <div className="flex items-center gap-1 text-xs text-slate-500 mt-1">
-                <Building2 size={12} />
-                <span className="truncate">{lead.company.name}</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {lead.value && (
-          <div className="text-right flex-shrink-0">
-            <p className="text-xs text-slate-400 flex items-center gap-1 justify-end"><DollarSign size={11} />Valor</p>
-            <p className="text-xl font-extrabold text-af-mid leading-tight">{formatCurrency(lead.value)}</p>
-          </div>
-        )}
-      </div>
-
-      {/* Linha 2: tags (estilo label do Trello) + status */}
+    <div className="px-4 py-3 bg-white border-b border-af-border space-y-2.5 flex-shrink-0">
+      {/* Tags (estilo label do Trello) + status */}
       <div className="flex items-center flex-wrap gap-1.5">
         <Badge
           color={lead.status === 'WON' ? '#10b981' : lead.status === 'LOST' ? '#ef4444' : '#6b7280'}
@@ -141,7 +148,7 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
         )}
       </div>
 
-      {/* Linha 3: ações de status — compactas, em linha */}
+      {/* Ações de status — compactas, em linha */}
       <div className="flex items-center flex-wrap gap-1.5">
         {lead.status !== 'WON' && !lead.archived && (
           <button
