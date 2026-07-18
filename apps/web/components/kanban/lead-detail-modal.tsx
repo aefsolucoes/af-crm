@@ -54,7 +54,7 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
       <div
-        className="app-column-surface rounded-2xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden"
+        className="app-column-surface rounded-2xl shadow-2xl w-full max-w-4xl h-[75vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Barra de título — estilo janela */}

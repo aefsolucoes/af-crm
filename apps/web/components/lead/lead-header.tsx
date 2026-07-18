@@ -78,7 +78,7 @@ export function LeadHeader({ lead, onStageChange }: LeadHeaderProps) {
   }
 
   return (
-    <div className="px-6 py-4 bg-white border-b border-af-border space-y-4">
+    <div className="px-6 py-3 bg-white border-b border-af-border space-y-2.5">
       {/* Linha 1: identidade + valor */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">

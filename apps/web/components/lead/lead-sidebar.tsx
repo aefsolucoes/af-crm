@@ -342,13 +342,13 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
           {/* Built-in fields only on Principal tab */}
           {activeTab === 'Principal' && (
             <>
-              <div className="flex items-center justify-between py-2.5 border-b border-slate-100 gap-2">
+              <div className="flex items-center justify-between py-2 border-b border-slate-100 gap-2">
                 <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">Usuário responsável</span>
                 <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
                   <span className="text-xs font-medium text-slate-800 truncate max-w-[130px] block">{lead.user.name}</span>
                 </div>
               </div>
-              <div className="flex items-center justify-between py-2.5 border-b border-slate-100 gap-2">
+              <div className="flex items-center justify-between py-2 border-b border-slate-100 gap-2">
                 <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">Valor da venda</span>
                 {editingValue ? (
                   <div className="flex items-center gap-1 flex-1">
@@ -432,7 +432,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
               : builtinFields.filter(f => COMPACT_MAIN_KEYS.includes(f.key));
 
             return visibleFields.map(({ key, label, type, options }) => (
-              <div key={key} className="group flex items-center justify-between py-2.5 border-b border-slate-100 gap-2">
+              <div key={key} className="group flex items-center justify-between py-2 border-b border-slate-100 gap-2">
                 <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">{label}</span>
                 <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
                   {editingKey === key ? (
@@ -500,7 +500,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
           {expanded && fieldsForTab.map(field => (
             <div
               key={field.id}
-              className="group flex flex-col py-2.5 border-b border-slate-100 gap-2"
+              className="group flex flex-col py-2 border-b border-slate-100 gap-2"
             >
               {editingField?.id === field.id ? (
                 <div className="space-y-2">
