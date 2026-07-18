@@ -100,8 +100,15 @@ export async function startQRConnection(accountId: string): Promise<void> {
     const authDir = await restoreSessionFiles(accountId);
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-    // Always use a fixed stable WA version to avoid server rejection
-    const version = [2, 3000, 1015901307];
+    // Busca a versão mais recente do protocolo WA — versões fixas ficam
+    // desatualizadas e o servidor passa a rejeitar a conexão com erro 405
+    let version: number[];
+    try {
+      const latest = await fetchLatestBaileysVersion();
+      version = latest.version;
+    } catch {
+      version = [2, 3000, 1035194821]; // fallback (última versão conhecida que funcionou)
+    }
     console.log('[Baileys] Usando versão WA:', version);
 
     const silentLogger = {
