@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
 import { Plus, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
-import { formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate, formatMoneyDisplay } from '@/lib/utils';
+import { cn, formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate, formatMoneyDisplay } from '@/lib/utils';
 
 interface LeadSidebarProps {
   lead: LeadDetail;
@@ -289,7 +289,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
   };
 
   return (
-    <aside className={`w-80 flex-shrink-0 border-r border-af-border bg-white overflow-y-auto flex flex-col ${className ?? ''}`}>
+    <aside className={cn('w-80 flex-shrink-0 border-r border-af-border bg-white overflow-y-auto flex flex-col', className)}>
       {/* Tab bar */}
       {expanded && (
         <div className="flex border-b border-af-border overflow-x-auto scrollbar-none flex-shrink-0">

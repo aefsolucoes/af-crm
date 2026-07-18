@@ -85,7 +85,7 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
           <div className="flex-1 flex flex-col overflow-hidden">
             <LeadHeader lead={lead} onStageChange={handleRefresh} />
             <div className="flex flex-1 overflow-hidden">
-              <LeadSidebar lead={lead} onRefresh={handleRefresh} />
+              <LeadSidebar lead={lead} onRefresh={handleRefresh} className="w-auto flex-1" />
               <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">
                 <LeadMetaPanel lead={lead} onRefresh={handleRefresh} />
                 <div className="flex-1 min-h-0">
