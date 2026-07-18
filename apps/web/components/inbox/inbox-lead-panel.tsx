@@ -255,13 +255,12 @@ export function InboxLeadPanel({ lead, onRefresh }: InboxLeadPanelProps) {
               </select>
             </div>
 
-            {/* Campos editáveis — apenas os mais importantes */}
+            {/* Campos editáveis — todos os dados */}
             <div className="flex-1 overflow-hidden flex flex-col min-h-0">
               <LeadSidebar
                 lead={lead}
                 onRefresh={onRefresh}
                 className="w-full flex-1 border-r-0 border-l-0"
-                compact
               />
             </div>
           </>
