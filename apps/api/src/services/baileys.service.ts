@@ -211,6 +211,14 @@ export async function startQRConnection(accountId: string): Promise<void> {
       }
     });
 
+    // Histórico enviado pelo WhatsApp no pareamento — importa as conversas recentes
+    sock.ev.on('messaging-history.set', async ({ messages }: any) => {
+      if (!Array.isArray(messages) || messages.length === 0) return;
+      console.log(`[Baileys] Histórico recebido: ${messages.length} mensagens — importando...`);
+      importHistoryMessages(messages, accountId).catch(err =>
+        console.error('[Baileys] Erro ao importar histórico:', err));
+    });
+
   } catch (err) {
     console.error('[Baileys] Erro ao iniciar:', err);
     connections.delete(accountId);
@@ -219,45 +227,52 @@ export async function startQRConnection(accountId: string): Promise<void> {
   }
 }
 
+/** Extrai o texto de uma mensagem do WhatsApp (só mensagens de texto/legenda) */
+function extractText(msg: any): string {
+  return msg.message?.conversation ||
+    msg.message?.extendedTextMessage?.text ||
+    msg.message?.imageMessage?.caption || '';
+}
+
+/** Encontra/cria contato+lead para um número de WhatsApp; retorna o leadId */
+async function getOrCreateLeadForPhone(from: string, pushName: string | undefined, accountId: string): Promise<string | null> {
+  let contact = await prisma.contact.findFirst({
+    where: { accountId, OR: [{ whatsappPhone: from }, { phone: { contains: from.slice(-8) } }] },
+    include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
+  });
+
+  if (!contact) {
+    contact = await prisma.contact.create({
+      data: { name: pushName || `+${from}`, whatsappPhone: from, phone: `+${from}`, accountId },
+      include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
+    });
+  } else if (!contact.whatsappPhone) {
+    await prisma.contact.update({ where: { id: contact.id }, data: { whatsappPhone: from } });
+  }
+
+  const leads = (contact as any).leads || [];
+  if (leads.length > 0) return leads[0].id;
+
+  const pipeline = await prisma.pipeline.findFirst({
+    where: { accountId },
+    include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+  });
+  const admin = await prisma.user.findFirst({ where: { accountId } });
+  if (!pipeline?.stages.length || !admin) return null;
+  const lead = await prisma.lead.create({
+    data: { name: contact.name, accountId, pipelineId: pipeline.id, stageId: pipeline.stages[0].id, userId: admin.id, contactId: contact.id, status: 'OPEN' },
+  });
+  return lead.id;
+}
+
 async function processIncomingMessage(msg: any, accountId: string) {
   try {
     const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
-    const text =
-      msg.message?.conversation ||
-      msg.message?.extendedTextMessage?.text ||
-      msg.message?.imageMessage?.caption || '';
+    const text = extractText(msg);
     if (!text || !from) return;
 
-    let contact = await prisma.contact.findFirst({
-      where: { accountId, OR: [{ whatsappPhone: from }, { phone: { contains: from.slice(-8) } }] },
-      include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
-    });
-
-    if (!contact) {
-      contact = await prisma.contact.create({
-        data: { name: msg.pushName || `+${from}`, whatsappPhone: from, phone: `+${from}`, accountId },
-        include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
-      });
-    } else if (!contact.whatsappPhone) {
-      await prisma.contact.update({ where: { id: contact.id }, data: { whatsappPhone: from } });
-    }
-
-    let leadId: string;
-    const leads = (contact as any).leads || [];
-    if (leads.length > 0) {
-      leadId = leads[0].id;
-    } else {
-      const pipeline = await prisma.pipeline.findFirst({
-        where: { accountId },
-        include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
-      });
-      const admin = await prisma.user.findFirst({ where: { accountId } });
-      if (!pipeline?.stages.length || !admin) return;
-      const lead = await prisma.lead.create({
-        data: { name: contact.name, accountId, pipelineId: pipeline.id, stageId: pipeline.stages[0].id, userId: admin.id, contactId: contact.id, status: 'OPEN' },
-      });
-      leadId = lead.id;
-    }
+    const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId);
+    if (!leadId) return;
 
     const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
     if (dup) return;
@@ -271,6 +286,59 @@ async function processIncomingMessage(msg: any, accountId: string) {
   } catch (err) {
     console.error('[Baileys] Erro ao processar mensagem:', err);
   }
+}
+
+const HISTORY_IMPORT_LIMIT = 500;
+
+/** Importa mensagens do histórico recebido no pareamento (apenas conversas 1:1 de texto) */
+async function importHistoryMessages(messages: any[], accountId: string) {
+  // Mais recentes primeiro, limitado para não sobrecarregar
+  const sorted = [...messages]
+    .filter(m => {
+      const jid = m?.key?.remoteJid as string | undefined;
+      return jid && jid.endsWith('@s.whatsapp.net') && extractText(m);
+    })
+    .sort((a, b) => Number(b.messageTimestamp || 0) - Number(a.messageTimestamp || 0))
+    .slice(0, HISTORY_IMPORT_LIMIT);
+
+  let imported = 0;
+  const leadIds = new Set<string>();
+
+  for (const msg of sorted) {
+    try {
+      const from = (msg.key.remoteJid as string).replace('@s.whatsapp.net', '');
+      const text = extractText(msg);
+      const externalId = msg.key.id as string | undefined;
+      if (!externalId) continue;
+
+      const dup = await prisma.message.findFirst({ where: { externalId } });
+      if (dup) continue;
+
+      const leadId = await getOrCreateLeadForPhone(from, msg.key.fromMe ? undefined : msg.pushName, accountId);
+      if (!leadId) continue;
+
+      const ts = Number(msg.messageTimestamp || 0);
+      await prisma.message.create({
+        data: {
+          content: text,
+          direction: msg.key.fromMe ? 'OUTBOUND' : 'INBOUND',
+          channel: 'WHATSAPP',
+          leadId,
+          read: true, // histórico antigo não deve contar como não-lido
+          externalId,
+          status: 'DELIVERED',
+          ...(ts > 0 ? { createdAt: new Date(ts * 1000) } : {}),
+        },
+      });
+      leadIds.add(leadId);
+      imported++;
+    } catch (err) {
+      console.error('[Baileys] Erro ao importar mensagem do histórico:', err);
+    }
+  }
+
+  console.log(`[Baileys] Histórico importado: ${imported} mensagens em ${leadIds.size} conversas`);
+  if (imported > 0) globalIO?.emit('new_conversation', {});
 }
 
 export async function sendBaileysMessage(to: string, text: string, accountId: string): Promise<boolean> {

@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
 import { Send, Paperclip, Smile, Phone, MoreVertical, Check, CheckCheck, Sparkles, Loader2, FileText } from 'lucide-react';
@@ -42,10 +43,29 @@ const AI_BUTTONS: { mode: AIMode; label: string; emoji: string }[] = [
   { mode: 'fun',          label: 'Divertido',           emoji: '🎉' },
 ];
 
+type WhatsAppVia = 'qr' | 'api';
+
 export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessage }: ChatWindowProps) {
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
+  const [via, setVia] = useState<WhatsAppVia | null>(null);
   const [sending, setSending] = useState(false);
+
+  // Disponibilidade dos dois canais de WhatsApp (QR Code e API oficial)
+  const { data: qrStatus } = useQuery({
+    queryKey: ['whatsapp-qr-status'],
+    queryFn: async () => { const { data } = await api.get('/api/whatsapp-qr/status'); return data as { status: string }; },
+    refetchInterval: 30000,
+  });
+  const { data: apiConfig } = useQuery({
+    queryKey: ['whatsapp-api-config'],
+    queryFn: async () => { const { data } = await api.get('/api/settings/whatsapp'); return data as { active?: boolean } | null; },
+  });
+
+  const qrConnected = qrStatus?.status === 'connected';
+  const apiActive = !!apiConfig?.active;
+  // Canal efetivo: escolha manual, senão QR se conectado, senão API
+  const effectiveVia: WhatsAppVia = via ?? (qrConnected ? 'qr' : 'api');
   const [aiLoading, setAiLoading] = useState<AIMode | null>(null);
   const [showAI, setShowAI] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -89,6 +109,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
         direction: 'OUTBOUND',
         channel,
         leadId,
+        ...(channel === 'WHATSAPP' ? { via: effectiveVia } : {}),
       });
       onNewMessage(data);
       setContent('');
@@ -204,23 +225,36 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
         </div>
       </div>
 
-      {/* Channel selector */}
+      {/* Seletor: por qual WhatsApp enviar (QR Code ou API oficial) */}
       <div className="relative z-10 flex items-center gap-2 px-4 py-2 bg-white/80 backdrop-blur border-b border-black/5">
-        <span className="text-xs text-slate-500 font-medium">Canal:</span>
-        {(['WHATSAPP'] as Channel[]).map((ch) => (
-          <button
-            key={ch}
-            onClick={() => setChannel(ch)}
-            className={cn(
-              'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-all',
-              channel === ch
-                ? 'bg-[#075e54] text-white shadow-sm'
-                : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-            )}
-          >
-            {CHANNEL_ICONS[ch]} {CHANNEL_LABELS[ch]}
-          </button>
-        ))}
+        <span className="text-xs text-slate-500 font-medium">Enviar por:</span>
+        <button
+          onClick={() => setVia('qr')}
+          disabled={!qrConnected}
+          title={qrConnected ? 'WhatsApp conectado via QR Code' : 'QR Code desconectado — conecte em Configurações'}
+          className={cn(
+            'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed',
+            effectiveVia === 'qr' && qrConnected
+              ? 'bg-[#075e54] text-white shadow-sm'
+              : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+          )}
+        >
+          📱 WhatsApp QR
+          <span className={cn('w-1.5 h-1.5 rounded-full', qrConnected ? 'bg-green-400' : 'bg-red-400')} />
+        </button>
+        <button
+          onClick={() => setVia('api')}
+          title={apiActive ? 'API oficial da Meta ativa' : 'API oficial não configurada/inativa'}
+          className={cn(
+            'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all',
+            effectiveVia === 'api' || !qrConnected
+              ? (effectiveVia === 'api' ? 'bg-[#075e54] text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200')
+              : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+          )}
+        >
+          🌐 API Oficial
+          <span className={cn('w-1.5 h-1.5 rounded-full', apiActive ? 'bg-green-400' : 'bg-red-400')} />
+        </button>
       </div>
 
       {/* Timeline unificado: mensagens + eventos de fluxo */}

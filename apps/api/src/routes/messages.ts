@@ -12,6 +12,7 @@ const messageSchema = z.object({
   direction: z.enum(['INBOUND', 'OUTBOUND']),
   channel: z.enum(['WHATSAPP', 'INSTAGRAM', 'TELEGRAM', 'WEBCHAT', 'EMAIL']),
   leadId: z.string(),
+  via: z.enum(['qr', 'api']).optional(),
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -42,6 +43,7 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
         accountId: req.user!.accountId,
         leadId: req.body.leadId,
         content: req.body.content,
+        via: req.body.via,
         io,
       });
       if (!result.success) {

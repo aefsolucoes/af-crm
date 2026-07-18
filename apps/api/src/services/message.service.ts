@@ -31,9 +31,11 @@ export async function sendOutboundWhatsApp(params: {
   accountId: string;
   leadId: string;
   content: string;
+  /** Canal preferido: 'qr' (conexão via QR Code) ou 'api' (API oficial da Meta). Sem valor: QR se conectado, senão API. */
+  via?: 'qr' | 'api';
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string }> {
-  const { accountId, leadId, content, io } = params;
+  const { accountId, leadId, content, via, io } = params;
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -48,7 +50,12 @@ export async function sendOutboundWhatsApp(params: {
   let status: 'SENT' | 'FAILED' = 'SENT';
 
   const qrStatus = getQRStatus(accountId);
-  if (qrStatus.status === 'connected') {
+  const useQR = via === 'qr' ? true : via === 'api' ? false : qrStatus.status === 'connected';
+
+  if (useQR) {
+    if (qrStatus.status !== 'connected') {
+      return { success: false, error: 'WhatsApp via QR Code não está conectado. Conecte em Configurações → QR Code ou envie pela API oficial.' };
+    }
     const sent = await sendBaileysMessage(phone, content, accountId);
     if (!sent) status = 'FAILED';
   } else {
