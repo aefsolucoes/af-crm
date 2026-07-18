@@ -15,7 +15,7 @@ import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 
 // Ordem fixa dos pipelines
-const PIPELINE_ORDER = ['Vendas', 'Fechamento', 'Follow Up'];
+const PIPELINE_ORDER = ['Caixa de Entrada', 'Vendas', 'Em contratação', 'Follow Up'];
 
 async function fetchPipelines(): Promise<Pipeline[]> {
   const { data } = await api.get('/api/pipelines');
@@ -68,7 +68,7 @@ export default function FunilPage() {
     queryFn: fetchPipelines,
   });
 
-  // Pipelines ordenados: Vendas → Fechamento → Follow Up
+  // Pipelines ordenados: Caixa de Entrada → Vendas → Em contratação → Follow Up
   const sortedPipelines = useMemo(() => {
     if (!pipelines) return [];
     return [...pipelines].sort((a, b) => {

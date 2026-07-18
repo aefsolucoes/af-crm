@@ -152,20 +152,20 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
 
       // ── Auto-migração: se movido para "Fechado" no pipeline "Vendas" ────────
       if (newStage?.name === 'Fechado' && newStage.pipeline.name === 'Vendas') {
-        const fechamento = await prisma.pipeline.findFirst({
-          where: { accountId: req.user!.accountId, name: 'Fechamento' },
+        const emContratacao = await prisma.pipeline.findFirst({
+          where: { accountId: req.user!.accountId, name: 'Em contratação' },
           include: { stages: { orderBy: { order: 'asc' } } },
         });
-        const targetStage = fechamento?.stages.find(s => s.name === 'Documentação Recebida') || fechamento?.stages[0];
-        if (fechamento && targetStage) {
+        const targetStage = emContratacao?.stages.find(s => s.name === 'Documentação Recebida') || emContratacao?.stages[0];
+        if (emContratacao && targetStage) {
           const movedLead = await prisma.lead.update({
             where: { id: req.params.id },
             data: {
-              pipelineId: fechamento.id,
+              pipelineId: emContratacao.id,
               stageId: targetStage.id,
               notes: {
                 create: {
-                  content: `Lead migrado automaticamente para o funil "Fechamento" (${targetStage.name}) ao ser fechado em Vendas.`,
+                  content: `Lead migrado automaticamente para o funil "Em contratação" (${targetStage.name}) ao ser fechado em Vendas.`,
                   type: 'STAGE_CHANGE',
                   userId: req.user!.id,
                 },
@@ -174,7 +174,7 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
           });
           const io = (req as any).app.get('io');
           if (io) io.to(`account_${req.user!.accountId}`).emit('lead_moved', { lead: movedLead });
-          console.log(`[Auto-migração] Lead "${movedLead.name}" movido → Fechamento (${targetStage.name})`);
+          console.log(`[Auto-migração] Lead "${movedLead.name}" movido → Em contratação (${targetStage.name})`);
         }
       }
     } catch (migErr) {

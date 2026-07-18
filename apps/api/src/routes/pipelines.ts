@@ -120,11 +120,11 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /api/pipelines/setup — limpa pipelines extras e cria "Fechamento"
+// POST /api/pipelines/setup — limpa pipelines extras e cria "Em contratação"
 router.post('/setup', async (req: AuthRequest, res: Response) => {
   const KEEP = 'Financiamento Habitacional';
   const NEW_PIPELINE = {
-    name: 'Fechamento',
+    name: 'Em contratação',
     stages: [
       { order: 1, name: 'Documentação Recebida', color: '#3b82f6' },
       { order: 2, name: 'Crédito em Análise',    color: '#f59e0b' },
@@ -157,7 +157,7 @@ router.post('/setup', async (req: AuthRequest, res: Response) => {
     // Cria pipelines padrão se não existirem
     const EXTRA_PIPELINES = [
       {
-        name: 'Fechamento',
+        name: 'Em contratação',
         stages: [
           { order: 1, name: 'Documentação Recebida', color: '#3b82f6' },
           { order: 2, name: 'Crédito em Análise',    color: '#f59e0b' },
