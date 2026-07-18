@@ -166,10 +166,13 @@ export async function startQRConnection(accountId: string): Promise<void> {
         c.qr = null;
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
-        // Auth failure codes: 401 (Unauthorized), 403 (Forbidden), 515 (restart required)
-        const authFailed = loggedOut || statusCode === 401 || statusCode === 403 || statusCode === 515;
+        // Auth failure codes: 401 (Unauthorized), 403 (Forbidden)
+        const authFailed = loggedOut || statusCode === 401 || statusCode === 403;
+        // 515 (restartRequired) é NORMAL logo após parear o QR: o WhatsApp exige
+        // reconectar usando as credenciais recém-salvas — a sessão deve ser mantida
+        const restartRequired = statusCode === 515 || statusCode === DisconnectReason.restartRequired;
         globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'disconnected' });
-        console.log(`[Baileys] Conexão fechada. statusCode=${statusCode} loggedOut=${loggedOut}`);
+        console.log(`[Baileys] Conexão fechada. statusCode=${statusCode} loggedOut=${loggedOut} restartRequired=${restartRequired}`);
 
         if (authFailed) {
           // Clear invalid session so next connect generates fresh QR
@@ -177,8 +180,15 @@ export async function startQRConnection(accountId: string): Promise<void> {
           await prisma.baileysSession.deleteMany({ where: { accountId } });
           fs.rmSync(authDir, { recursive: true, force: true });
           console.log('[Baileys] Sessão inválida removida.');
+        } else if (restartRequired) {
+          // Salva a sessão pareada e reconecta imediatamente
+          await saveSessionFiles(accountId, authDir);
+          connections.delete(accountId);
+          console.log('[Baileys] Pareamento concluído — reconectando com a sessão salva...');
+          setTimeout(() => startQRConnection(accountId), 1000);
         } else {
           // Transient error — reconnect after delay
+          connections.delete(accountId);
           console.log('[Baileys] Reconectando em 5s...');
           setTimeout(() => startQRConnection(accountId), 5000);
         }
