@@ -68,7 +68,8 @@ function InboxPageInner() {
   });
 
   const handleNewMessage = useCallback((msg: Message) => {
-    setLocalMessages((prev) => [...prev, msg]);
+    // Evita duplicata: a mesma mensagem chega pela resposta do POST e pelo eco do socket
+    setLocalMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
   }, []);
 
   const handleRefresh = useCallback(() => {

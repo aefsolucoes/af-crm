@@ -101,19 +101,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
 
   async function handleSend(e?: React.FormEvent) {
     e?.preventDefault();
-    if (!content.trim()) return;
+    const text = content.trim();
+    if (!text || sending) return;   // trava contra envio duplo
     setSending(true);
+    setContent('');                 // feedback imediato: o campo esvazia na hora
     try {
       const { data } = await api.post('/api/messages', {
-        content: content.trim(),
+        content: text,
         direction: 'OUTBOUND',
         channel,
         leadId,
         ...(channel === 'WHATSAPP' ? { via: effectiveVia } : {}),
       });
       onNewMessage(data);
-      setContent('');
     } catch (err: any) {
+      setContent(text);             // falhou: devolve o texto para tentar de novo
       const msg = err?.response?.data?.error || err?.message || 'Erro ao enviar mensagem';
       toast(msg, 'error');
     } finally {
