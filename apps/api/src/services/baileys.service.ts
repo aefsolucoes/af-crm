@@ -162,7 +162,6 @@ export async function startQRConnection(accountId: string): Promise<void> {
       }
 
       if (connection === 'close') {
-        c.status = 'disconnected';
         c.qr = null;
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
@@ -171,23 +170,29 @@ export async function startQRConnection(accountId: string): Promise<void> {
         // 515 (restartRequired) é NORMAL logo após parear o QR: o WhatsApp exige
         // reconectar usando as credenciais recém-salvas — a sessão deve ser mantida
         const restartRequired = statusCode === 515 || statusCode === DisconnectReason.restartRequired;
-        globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'disconnected' });
         console.log(`[Baileys] Conexão fechada. statusCode=${statusCode} loggedOut=${loggedOut} restartRequired=${restartRequired}`);
 
         if (authFailed) {
-          // Clear invalid session so next connect generates fresh QR
+          // Sessão realmente perdida — usuário precisa reescanear o QR
+          c.status = 'disconnected';
+          globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'disconnected' });
           connections.delete(accountId);
           await prisma.baileysSession.deleteMany({ where: { accountId } });
           fs.rmSync(authDir, { recursive: true, force: true });
           console.log('[Baileys] Sessão inválida removida.');
         } else if (restartRequired) {
-          // Salva a sessão pareada e reconecta imediatamente
+          // Queda temporária esperada — mantém "conectando" (não assusta o usuário)
+          c.status = 'connecting';
+          globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'connecting' });
           await saveSessionFiles(accountId, authDir);
           connections.delete(accountId);
           console.log('[Baileys] Pareamento concluído — reconectando com a sessão salva...');
           setTimeout(() => startQRConnection(accountId), 1000);
         } else {
-          // Transient error — reconnect after delay
+          // Erro transitório (reinício do servidor, oscilação de rede) — reconecta
+          // mantendo a sessão; mostra "conectando" em vez de "desconectado"
+          c.status = 'connecting';
+          globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'connecting' });
           connections.delete(accountId);
           console.log('[Baileys] Reconectando em 5s...');
           setTimeout(() => startQRConnection(accountId), 5000);
