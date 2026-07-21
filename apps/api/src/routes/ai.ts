@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { sendOutboundWhatsApp } from '../services/message.service';
+import { sendOutboundWhatsApp, findOrCreateLeadByPhone } from '../services/message.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -70,7 +70,12 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
 
 const SUPPORT_SYSTEM_PROMPT = `Você é o assistente interno de suporte do AF CRM, usado pelos funcionários da A&F Soluções Financeiras.
 Seu papel é tirar dúvidas dos funcionários sobre como usar o sistema e sobre o processo de vendas/atendimento da empresa: funil de vendas, inbox unificada (WhatsApp), cadastro de leads e contatos, tarefas, SalesBot (automação de mensagens), templates e relatórios.
-Você também pode, quando um colaborador pedir explicitamente, ler o histórico de conversa de um lead no WhatsApp e enviar uma resposta ao cliente em nome do colaborador, usando as ferramentas disponíveis (find_lead, get_recent_messages, send_whatsapp_message). Nunca envie uma mensagem sem que o colaborador tenha pedido isso na conversa atual. Depois de enviar, confirme ao colaborador exatamente o que foi enviado e para quem.
+Você também pode, quando um colaborador pedir explicitamente, ler o histórico de conversa de um lead no WhatsApp e enviar uma mensagem ao cliente em nome do colaborador, usando as ferramentas disponíveis:
+- find_lead: busca um lead já cadastrado pelo nome.
+- get_recent_messages: lê o histórico de mensagens de um lead.
+- send_whatsapp_message: envia para um lead JÁ existente (por leadId).
+- send_whatsapp_to_number: quando o colaborador fornecer um NÚMERO de telefone (ex: "manda mensagem para o 61 99999-9999"), use esta ferramenta — ela cria o contato/lead automaticamente e envia. Sempre que o pedido incluir um número, use send_whatsapp_to_number diretamente, sem exigir que o lead já exista.
+Nunca envie uma mensagem sem que o colaborador tenha pedido isso na conversa atual. Depois de enviar, confirme ao colaborador exatamente o que foi enviado e para quem.
 Responda em português, de forma curta, direta e prática, como se estivesse explicando para um colega de trabalho. Se a dúvida não tiver relação com o CRM ou o processo da empresa, explique educadamente que você só pode ajudar com isso.`;
 
 interface ChatMessage {
@@ -104,7 +109,7 @@ const AGENT_TOOLS = [
   },
   {
     name: 'send_whatsapp_message',
-    description: 'Envia uma mensagem de WhatsApp para o lead/cliente em nome do colaborador. Use somente quando o colaborador pedir explicitamente para responder/enviar algo ao cliente.',
+    description: 'Envia uma mensagem de WhatsApp para um lead/cliente JÁ EXISTENTE (identificado por leadId) em nome do colaborador. Use somente quando o colaborador pedir explicitamente para responder/enviar algo ao cliente.',
     input_schema: {
       type: 'object',
       properties: {
@@ -112,6 +117,19 @@ const AGENT_TOOLS = [
         content: { type: 'string', description: 'Texto exato da mensagem a enviar ao cliente' },
       },
       required: ['leadId', 'content'],
+    },
+  },
+  {
+    name: 'send_whatsapp_to_number',
+    description: 'Inicia uma conversa e envia uma mensagem de WhatsApp para um NÚMERO DE TELEFONE fornecido pelo colaborador (mesmo que ainda não exista lead/contato). Cria o contato e o lead automaticamente se necessário. Use quando o colaborador fornecer um número (ex: "manda para o 61 99999-9999") em vez de um nome já cadastrado.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        phone: { type: 'string', description: 'Número de telefone com DDD (ex: 61999999999). Pode incluir DDI 55.' },
+        content: { type: 'string', description: 'Texto exato da mensagem a enviar' },
+        name: { type: 'string', description: 'Nome do cliente, se o colaborador informar (opcional)' },
+      },
+      required: ['phone', 'content'],
     },
   },
 ];
@@ -156,6 +174,20 @@ async function executeAgentTool(
       io,
     });
     return result;
+  }
+
+  if (name === 'send_whatsapp_to_number') {
+    const phone = String(input.phone || '').trim();
+    if (!phone) return { success: false, error: 'Número de telefone não informado' };
+    const lead = await findOrCreateLeadByPhone(accountId, phone, input.name ? String(input.name) : undefined);
+    if (!lead) return { success: false, error: 'Não foi possível criar o lead (funil/usuário não configurado)' };
+    const result = await sendOutboundWhatsApp({
+      accountId,
+      leadId: lead.leadId,
+      content: String(input.content || ''),
+      io,
+    });
+    return { ...result, leadCreated: lead.created };
   }
 
   return { error: `Ferramenta desconhecida: ${name}` };

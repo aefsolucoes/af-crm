@@ -259,8 +259,24 @@ async function getOrCreateLeadForPhone(from: string, pushName: string | undefine
   });
   const admin = await prisma.user.findFirst({ where: { accountId } });
   if (!pipeline?.stages.length || !admin) return null;
+
+  // Formata o telefone p/ exibição no card: (61) 99999-9999
+  const d = from.startsWith('55') ? from.slice(2) : from;
+  const telDisplay = d.length === 11 ? `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`
+    : d.length === 10 ? `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`
+    : `+${from}`;
+
   const lead = await prisma.lead.create({
-    data: { name: contact.name, accountId, pipelineId: pipeline.id, stageId: pipeline.stages[0].id, userId: admin.id, contactId: contact.id, status: 'OPEN' },
+    data: {
+      name: contact.name,
+      accountId,
+      pipelineId: pipeline.id,
+      stageId: pipeline.stages[0].id,
+      userId: admin.id,
+      contactId: contact.id,
+      status: 'OPEN',
+      customFields: { participante_1: contact.name, telefone_1: telDisplay } as any,
+    },
   });
   return lead.id;
 }

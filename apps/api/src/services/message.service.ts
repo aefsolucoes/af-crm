@@ -22,6 +22,79 @@ export async function createMessage(data: {
   return prisma.message.create({ data: data as any });
 }
 
+/** Só dígitos, e garante DDI 55 (Brasil) para números locais */
+function normalizeBRPhone(raw: string): string {
+  let digits = raw.replace(/\D/g, '');
+  if (digits.length <= 11 && !digits.startsWith('55')) digits = '55' + digits;
+  return digits;
+}
+
+/** Formata para exibição no card: (61) 99999-9999 */
+function formatPhoneDisplay(digits: string): string {
+  const d = digits.startsWith('55') ? digits.slice(2) : digits;
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `+${digits}`;
+}
+
+/**
+ * Encontra (ou cria) um lead a partir de um número de telefone.
+ * Preenche os campos do card (participante_1 + telefone_1) para que o
+ * telefone apareça no detalhe do lead. Retorna o leadId ou null se não
+ * houver funil/usuário configurado.
+ */
+export async function findOrCreateLeadByPhone(
+  accountId: string,
+  rawPhone: string,
+  name?: string
+): Promise<{ leadId: string; created: boolean } | null> {
+  const phone = normalizeBRPhone(rawPhone);
+  const last8 = phone.slice(-8);
+
+  let contact = await prisma.contact.findFirst({
+    where: { accountId, OR: [{ whatsappPhone: phone }, { phone: { contains: last8 } }] },
+    include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
+  });
+
+  const displayName = name?.trim() || formatPhoneDisplay(phone);
+
+  if (!contact) {
+    contact = await prisma.contact.create({
+      data: { name: displayName, whatsappPhone: phone, phone: `+${phone}`, accountId },
+      include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
+    });
+  } else if (!contact.whatsappPhone) {
+    await prisma.contact.update({ where: { id: contact.id }, data: { whatsappPhone: phone } });
+  }
+
+  const existing = (contact as any).leads?.[0];
+  if (existing) return { leadId: existing.id, created: false };
+
+  const pipeline = await prisma.pipeline.findFirst({
+    where: { accountId },
+    include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+  });
+  const admin = await prisma.user.findFirst({ where: { accountId } });
+  if (!pipeline?.stages.length || !admin) return null;
+
+  const lead = await prisma.lead.create({
+    data: {
+      name: contact.name,
+      accountId,
+      pipelineId: pipeline.id,
+      stageId: pipeline.stages[0].id,
+      userId: admin.id,
+      contactId: contact.id,
+      status: 'OPEN',
+      customFields: {
+        participante_1: contact.name,
+        telefone_1: formatPhoneDisplay(phone),
+      } as any,
+    },
+  });
+  return { leadId: lead.id, created: true };
+}
+
 /**
  * Envia uma mensagem WhatsApp de saída para o lead (via QR/Baileys se conectado,
  * senão via API oficial da Meta), grava o registro e emite os eventos de socket —
