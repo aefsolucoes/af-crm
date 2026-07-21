@@ -1,6 +1,6 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
 import { sendWhatsAppMessage } from './whatsapp.service';
-import { sendBaileysMessage, getQRStatus } from './baileys.service';
+import { sendBaileysMessage, isNumberConnected, getConnectedNumberIds } from './baileys.service';
 
 const prisma = new PrismaClient();
 
@@ -16,6 +16,7 @@ export async function createMessage(data: {
   direction: Direction;
   channel: Channel;
   leadId: string;
+  whatsappNumberId?: string;
   externalId?: string;
   status?: string;
 }) {
@@ -121,16 +122,29 @@ export async function sendOutboundWhatsApp(params: {
 
   let externalId: string | undefined;
   let status: 'SENT' | 'FAILED' = 'SENT';
+  let usedNumberId: string | null = null;
 
-  const qrStatus = getQRStatus(accountId);
-  const useQR = via === 'qr' ? true : via === 'api' ? false : qrStatus.status === 'connected';
+  const connectedNumbers = getConnectedNumberIds(accountId);
+  const useQR = via === 'qr' ? true : via === 'api' ? false : connectedNumbers.length > 0;
 
   if (useQR) {
-    if (qrStatus.status !== 'connected') {
-      return { success: false, error: 'WhatsApp via QR Code não está conectado. Conecte em Configurações → QR Code ou envie pela API oficial.' };
+    // Roteamento: responde pelo mesmo número que recebeu (lead.whatsappNumberId);
+    // se esse número não estiver conectado, usa o primeiro número conectado.
+    const preferred = lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)
+      ? lead.whatsappNumberId
+      : connectedNumbers[0];
+
+    if (!preferred) {
+      return { success: false, error: 'Nenhum WhatsApp conectado via QR Code. Conecte em Configurações → QR Code ou envie pela API oficial.' };
     }
-    const sent = await sendBaileysMessage(phone, content, accountId);
+    usedNumberId = preferred;
+    const sent = await sendBaileysMessage(phone, content, preferred);
     if (!sent) status = 'FAILED';
+
+    // Se a conversa ainda não estava vinculada a um número, vincula agora
+    if (!lead.whatsappNumberId) {
+      await prisma.lead.update({ where: { id: leadId }, data: { whatsappNumberId: preferred } }).catch(() => {});
+    }
   } else {
     const result = await sendWhatsAppMessage(phone, content, accountId);
     if (result.success) {
@@ -145,6 +159,7 @@ export async function sendOutboundWhatsApp(params: {
     direction: 'OUTBOUND',
     channel: 'WHATSAPP',
     leadId,
+    whatsappNumberId: usedNumberId ?? undefined,
     externalId,
     status,
   });
@@ -169,6 +184,7 @@ export async function getConversations(accountId: string) {
     where: { accountId, messages: { some: {} } },
     include: {
       contact: true,
+      whatsappNumber: { select: { id: true, label: true, phone: true } },
       messages: {
         orderBy: { createdAt: 'desc' },
         take: 1,

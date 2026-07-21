@@ -4,7 +4,7 @@ import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Upload, Bot } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Upload, Bot, Plus, Pencil, X as XIcon } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Pipeline, Stage, User } from '@/types';
 import { useThemeStore, BackgroundTheme } from '@/store/theme.store';
@@ -153,12 +153,6 @@ export default function ConfiguracoesPage() {
   const [saving, setSaving] = useState(false);
   const [isNew, setIsNew] = useState(true);
 
-  // QR state
-  const [qrStatus, setQrStatus] = useState<QRStatus>('disconnected');
-  const [qrImage, setQrImage] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
-  const socketRef = useRef<any>(null);
-
   // Load API config
   useEffect(() => {
     api.get('/api/settings/whatsapp').then(({ data }) => {
@@ -195,44 +189,6 @@ export default function ConfiguracoesPage() {
     queryKey: ['fields-settings'],
     queryFn: async () => { const { data } = await api.get('/api/fields'); return data; },
   });
-
-  // Load QR status + Socket.io
-  useEffect(() => {
-    api.get('/api/whatsapp-qr/status').then(({ data }) => {
-      setQrStatus(data.status);
-      if (data.qr) setQrImage(data.qr);
-    }).catch(() => {});
-
-    const socket = getSocket();
-    socketRef.current = socket;
-
-    // Ensure socket is connected
-    if (!socket.connected) socket.connect();
-
-    const accountId = typeof window !== 'undefined'
-      ? JSON.parse(localStorage.getItem('af_user') || '{}')?.accountId
-      : null;
-
-    if (accountId) {
-      socket.on(`whatsapp_qr_${accountId}`, ({ qr }: { qr: string }) => {
-        setQrImage(qr);
-        setQrStatus('qr_ready');
-        setConnecting(false);
-      });
-      socket.on(`whatsapp_status_${accountId}`, ({ status }: { status: QRStatus }) => {
-        setQrStatus(status);
-        if (status === 'connected') { setQrImage(null); setConnecting(false); }
-        if (status === 'disconnected') setConnecting(false);
-      });
-    }
-
-    return () => {
-      if (accountId) {
-        socket.off(`whatsapp_qr_${accountId}`);
-        socket.off(`whatsapp_status_${accountId}`);
-      }
-    };
-  }, []);
 
   // Busca formulários reais da página Meta (estilo Pluga)
   async function fetchMetaForms() {
@@ -296,53 +252,6 @@ export default function ConfiguracoesPage() {
     }));
   }
 
-  async function handleConnect() {
-    setConnecting(true);
-    setQrImage(null);
-    setQrStatus('connecting');
-    try {
-      await api.post('/api/whatsapp-qr/connect');
-
-      // Polling fallback: check status every 2s for 30s in case socket misses event
-      let attempts = 0;
-      const poll = setInterval(async () => {
-        attempts++;
-        try {
-          const { data } = await api.get('/api/whatsapp-qr/status');
-          if (data.qr) {
-            setQrImage(data.qr);
-            setQrStatus('qr_ready');
-            setConnecting(false);
-            clearInterval(poll);
-          } else if (data.status === 'connected') {
-            setQrStatus('connected');
-            setConnecting(false);
-            clearInterval(poll);
-          } else if (data.status === 'disconnected' && attempts > 3) {
-            setQrStatus('disconnected');
-            setConnecting(false);
-            clearInterval(poll);
-          }
-        } catch { /* ignore */ }
-        if (attempts >= 15) { setConnecting(false); clearInterval(poll); }
-      }, 2000);
-    } catch {
-      toast('Erro ao iniciar conexão', 'error');
-      setConnecting(false);
-    }
-  }
-
-  async function handleDisconnect() {
-    try {
-      await api.post('/api/whatsapp-qr/disconnect');
-      setQrStatus('disconnected');
-      setQrImage(null);
-      toast('WhatsApp desconectado');
-    } catch {
-      toast('Erro ao desconectar', 'error');
-    }
-  }
-
   async function handleSaveAPI(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -391,20 +300,6 @@ export default function ConfiguracoesPage() {
     toast('Copiado!');
   }
 
-  const statusLabel: Record<QRStatus, string> = {
-    disconnected: 'Desconectado',
-    connecting: 'Conectando...',
-    qr_ready: 'Aguardando leitura do QR',
-    connected: 'Conectado ✓',
-  };
-
-  const statusColor: Record<QRStatus, string> = {
-    disconnected: 'text-slate-400',
-    connecting: 'text-amber-500',
-    qr_ready: 'text-blue-500',
-    connected: 'text-green-600',
-  };
-
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <Topbar title="Configurações" subtitle="Integrações e canais" />
@@ -438,101 +333,8 @@ export default function ConfiguracoesPage() {
             </button>
           </div>
 
-          {/* QR Code Tab */}
-          {tab === 'qr' && (
-            <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
-              <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border" style={{ backgroundColor: '#075e54' }}>
-                <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
-                  <QrCode size={22} className="text-white" />
-                </div>
-                <div>
-                  <h2 className="text-white font-bold text-base">WhatsApp Business — QR Code</h2>
-                  <p className="text-white/70 text-xs">Conecta como o WhatsApp Web, sem aprovação da Meta</p>
-                </div>
-                <div className="ml-auto">
-                  {qrStatus === 'connected' ? (
-                    <span className="flex items-center gap-1 bg-green-400/20 text-green-200 text-xs px-3 py-1 rounded-full">
-                      <Wifi size={11} /> Conectado
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 bg-white/10 text-white/60 text-xs px-3 py-1 rounded-full">
-                      <WifiOff size={11} /> {statusLabel[qrStatus]}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="px-6 py-6">
-                {/* Info */}
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
-                  <div className="flex items-start gap-2">
-                    <Info size={15} className="text-amber-600 mt-0.5 flex-shrink-0" />
-                    <div className="text-xs text-amber-700">
-                      <p className="font-semibold mb-1">Como funciona:</p>
-                      <p>Conecta o número do WhatsApp via QR Code, igual ao WhatsApp Web. Funciona com qualquer número de WhatsApp Business, sem precisar de aprovação da Meta. A sessão pode ser perdida se o servidor reiniciar.</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Status */}
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-700">Status da conexão</p>
-                    <p className={`text-sm font-medium mt-0.5 ${statusColor[qrStatus]}`}>
-                      {statusLabel[qrStatus]}
-                    </p>
-                  </div>
-                  {qrStatus === 'connected' ? (
-                    <button
-                      onClick={handleDisconnect}
-                      className="flex items-center gap-2 px-4 py-2 rounded-xl border border-red-200 text-red-600 text-sm hover:bg-red-50"
-                    >
-                      <WifiOff size={14} />
-                      Desconectar
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleConnect}
-                      disabled={connecting || qrStatus === 'qr_ready'}
-                      className="flex items-center gap-2 px-4 py-2 rounded-xl text-white text-sm font-medium disabled:opacity-50"
-                      style={{ backgroundColor: '#075e54' }}
-                    >
-                      {connecting ? (
-                        <><RefreshCw size={14} className="animate-spin" /> Gerando QR...</>
-                      ) : qrStatus === 'qr_ready' ? (
-                        <><QrCode size={14} /> Escaneie o QR</>
-                      ) : (
-                        <><QrCode size={14} /> Conectar via QR</>
-                      )}
-                    </button>
-                  )}
-                </div>
-
-                {/* QR Code */}
-                {qrImage && (
-                  <div className="flex flex-col items-center py-4">
-                    <p className="text-sm font-semibold text-slate-700 mb-3">
-                      Abra o WhatsApp → Dispositivos conectados → Conectar dispositivo
-                    </p>
-                    <div className="p-4 bg-white border-4 border-[#075e54] rounded-2xl shadow-lg">
-                      <img src={qrImage} alt="QR Code WhatsApp" className="w-56 h-56" />
-                    </div>
-                    <p className="text-xs text-slate-400 mt-3">O QR Code expira em 60 segundos</p>
-                  </div>
-                )}
-
-                {qrStatus === 'connected' && (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="text-center">
-                      <CheckCircle2 size={48} className="text-green-500 mx-auto mb-3" />
-                      <p className="text-base font-semibold text-slate-800">WhatsApp conectado!</p>
-                      <p className="text-sm text-slate-500 mt-1">Mensagens recebidas e enviadas diretamente pelo CRM</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          {/* QR Code Tab — múltiplos números */}
+          {tab === 'qr' && <QRNumbersTab />}
 
           {/* API Oficial Tab */}
           {tab === 'api' && (
@@ -1138,6 +940,232 @@ const IMAGE_PRESETS: { label: string; url: string; thumb: string }[] = [
 ];
 
 const MAX_UPLOAD_BYTES = 3 * 1024 * 1024; // 3MB
+
+// ─── Aba QR Code: múltiplos números de WhatsApp ─────────────────────────────
+
+interface WANumber {
+  id: string;
+  label: string;
+  phone: string | null;
+  status: QRStatus;
+}
+
+function QRNumbersTab() {
+  const [numbers, setNumbers] = useState<WANumber[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newLabel, setNewLabel] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [qrByNumber, setQrByNumber] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState('');
+  const pollRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+
+  async function loadNumbers() {
+    try {
+      const { data } = await api.get('/api/whatsapp-qr/numbers');
+      setNumbers(data);
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => {
+    loadNumbers();
+    const socket = getSocket();
+    if (!socket.connected) socket.connect();
+    // atualiza status geral a cada 20s
+    const t = setInterval(loadNumbers, 20000);
+    return () => { clearInterval(t); Object.values(pollRef.current).forEach(clearInterval); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function pollNumber(id: string) {
+    if (pollRef.current[id]) clearInterval(pollRef.current[id]);
+    let attempts = 0;
+    pollRef.current[id] = setInterval(async () => {
+      attempts++;
+      try {
+        const { data } = await api.get(`/api/whatsapp-qr/numbers/${id}/status`);
+        if (data.qr) {
+          setQrByNumber(prev => ({ ...prev, [id]: data.qr }));
+          setNumbers(prev => prev.map(n => n.id === id ? { ...n, status: 'qr_ready' } : n));
+        } else if (data.status === 'connected') {
+          setQrByNumber(prev => { const c = { ...prev }; delete c[id]; return c; });
+          setNumbers(prev => prev.map(n => n.id === id ? { ...n, status: 'connected', phone: data.phone } : n));
+          clearInterval(pollRef.current[id]);
+        } else {
+          setNumbers(prev => prev.map(n => n.id === id ? { ...n, status: data.status } : n));
+        }
+      } catch { /* ignore */ }
+      if (attempts >= 40) clearInterval(pollRef.current[id]); // ~80s
+    }, 2000);
+  }
+
+  async function handleAdd() {
+    const label = newLabel.trim();
+    if (!label) return;
+    setAdding(true);
+    try {
+      const { data } = await api.post('/api/whatsapp-qr/numbers', { label });
+      setNumbers(prev => [...prev, data]);
+      setNewLabel('');
+    } catch { toast('Erro ao adicionar número', 'error'); }
+    finally { setAdding(false); }
+  }
+
+  async function handleConnect(id: string) {
+    setNumbers(prev => prev.map(n => n.id === id ? { ...n, status: 'connecting' } : n));
+    try {
+      await api.post(`/api/whatsapp-qr/numbers/${id}/connect`);
+      pollNumber(id);
+    } catch { toast('Erro ao iniciar conexão', 'error'); }
+  }
+
+  async function handleDisconnect(id: string) {
+    try {
+      await api.post(`/api/whatsapp-qr/numbers/${id}/disconnect`);
+      setNumbers(prev => prev.map(n => n.id === id ? { ...n, status: 'disconnected', phone: null } : n));
+      setQrByNumber(prev => { const c = { ...prev }; delete c[id]; return c; });
+      toast('WhatsApp desconectado');
+    } catch { toast('Erro ao desconectar', 'error'); }
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm('Remover este número? As conversas continuam salvas, mas ele deixa de enviar/receber.')) return;
+    try {
+      await api.delete(`/api/whatsapp-qr/numbers/${id}`);
+      setNumbers(prev => prev.filter(n => n.id !== id));
+    } catch { toast('Erro ao remover', 'error'); }
+  }
+
+  async function handleRename(id: string) {
+    const label = editLabel.trim();
+    if (!label) { setEditing(null); return; }
+    try {
+      await api.patch(`/api/whatsapp-qr/numbers/${id}`, { label });
+      setNumbers(prev => prev.map(n => n.id === id ? { ...n, label } : n));
+    } catch { toast('Erro ao renomear', 'error'); }
+    finally { setEditing(null); }
+  }
+
+  const statusMeta: Record<QRStatus, { label: string; color: string; dot: string }> = {
+    disconnected: { label: 'Desconectado', color: 'text-slate-400', dot: 'bg-slate-300' },
+    connecting:   { label: 'Conectando...', color: 'text-amber-500', dot: 'bg-amber-400' },
+    qr_ready:     { label: 'Escaneie o QR', color: 'text-blue-500', dot: 'bg-blue-400' },
+    connected:    { label: 'Conectado', color: 'text-green-600', dot: 'bg-green-500' },
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Info */}
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+        <div className="flex items-start gap-2">
+          <Info size={15} className="text-amber-600 mt-0.5 flex-shrink-0" />
+          <div className="text-xs text-amber-700">
+            <p className="font-semibold mb-1">Vários números via QR Code</p>
+            <p>Conecte quantos números de WhatsApp Business quiser, cada um com um apelido (ex: Vendas, Suporte). Cada conversa fica ligada ao número que a recebeu — ao responder, sai automaticamente por esse mesmo número.</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Adicionar número */}
+      <div className="flex items-center gap-2">
+        <input
+          value={newLabel}
+          onChange={e => setNewLabel(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+          placeholder="Apelido do número (ex: Vendas)"
+          className="flex-1 px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+        />
+        <button
+          onClick={handleAdd}
+          disabled={adding || !newLabel.trim()}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-medium disabled:opacity-50"
+          style={{ backgroundColor: '#075e54' }}
+        >
+          <Plus size={15} /> Adicionar
+        </button>
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-slate-400 py-6 text-center">Carregando...</p>
+      ) : numbers.length === 0 ? (
+        <p className="text-sm text-slate-400 py-6 text-center">Nenhum número ainda. Adicione um apelido acima e clique em Adicionar.</p>
+      ) : (
+        <div className="space-y-3">
+          {numbers.map(n => {
+            const meta = statusMeta[n.status] || statusMeta.disconnected;
+            const qr = qrByNumber[n.id];
+            return (
+              <div key={n.id} className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
+                <div className="flex items-center gap-3 px-5 py-3 border-b border-af-border">
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: '#075e54' }}>
+                    <QrCode size={18} className="text-white" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    {editing === n.id ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          autoFocus
+                          value={editLabel}
+                          onChange={e => setEditLabel(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handleRename(n.id); if (e.key === 'Escape') setEditing(null); }}
+                          className="text-sm border border-af-border rounded px-2 py-0.5 w-40 focus:outline-none"
+                        />
+                        <button onClick={() => handleRename(n.id)} className="text-green-600 text-xs">✓</button>
+                        <button onClick={() => setEditing(null)} className="text-slate-400 text-xs"><XIcon size={13} /></button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm font-semibold text-slate-800 truncate">{n.label}</p>
+                        <button onClick={() => { setEditing(n.id); setEditLabel(n.label); }} className="text-slate-300 hover:text-af-mid">
+                          <Pencil size={11} />
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-xs text-slate-400">{n.phone ? `+${n.phone}` : 'Número não conectado'}</p>
+                  </div>
+                  <span className={`flex items-center gap-1.5 text-xs font-medium ${meta.color}`}>
+                    <span className={`w-2 h-2 rounded-full ${meta.dot}`} /> {meta.label}
+                  </span>
+                </div>
+
+                <div className="px-5 py-4">
+                  {qr && (
+                    <div className="flex flex-col items-center py-2 mb-3">
+                      <p className="text-xs font-semibold text-slate-600 mb-2 text-center">
+                        Abra o WhatsApp → Dispositivos conectados → Conectar dispositivo
+                      </p>
+                      <div className="p-3 bg-white border-4 border-[#075e54] rounded-2xl shadow">
+                        <img src={qr} alt="QR Code" className="w-48 h-48" />
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-2">O QR expira em ~60s; se sumir, clique em Conectar de novo</p>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    {n.status === 'connected' ? (
+                      <button onClick={() => handleDisconnect(n.id)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs hover:bg-red-50">
+                        <WifiOff size={13} /> Desconectar
+                      </button>
+                    ) : (
+                      <button onClick={() => handleConnect(n.id)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white text-xs font-medium" style={{ backgroundColor: '#075e54' }}>
+                        {n.status === 'connecting' || n.status === 'qr_ready'
+                          ? <><RefreshCw size={13} className="animate-spin" /> {n.status === 'qr_ready' ? 'Aguardando leitura' : 'Gerando QR...'}</>
+                          : <><QrCode size={13} /> Conectar via QR</>}
+                      </button>
+                    )}
+                    <button onClick={() => handleDelete(n.id)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-af-border text-slate-500 text-xs hover:bg-slate-50 ml-auto">
+                      <Trash2 size={13} /> Remover
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AparenciaTab() {
   const { theme, setTheme, bgImage, setBgImage, surfaceOpacity, setSurfaceOpacity } = useThemeStore();

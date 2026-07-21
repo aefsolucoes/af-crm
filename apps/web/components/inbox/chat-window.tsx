@@ -51,10 +51,10 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   const [via, setVia] = useState<WhatsAppVia | null>(null);
   const [sending, setSending] = useState(false);
 
-  // Disponibilidade dos dois canais de WhatsApp (QR Code e API oficial)
-  const { data: qrStatus } = useQuery({
-    queryKey: ['whatsapp-qr-status'],
-    queryFn: async () => { const { data } = await api.get('/api/whatsapp-qr/status'); return data as { status: string }; },
+  // Disponibilidade dos canais de WhatsApp (números via QR Code e API oficial)
+  const { data: qrNumbers } = useQuery({
+    queryKey: ['whatsapp-qr-numbers'],
+    queryFn: async () => { const { data } = await api.get('/api/whatsapp-qr/numbers'); return data as { id: string; label: string; status: string }[]; },
     refetchInterval: 30000,
   });
   const { data: apiConfig } = useQuery({
@@ -62,7 +62,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
     queryFn: async () => { const { data } = await api.get('/api/settings/whatsapp'); return data as { active?: boolean } | null; },
   });
 
-  const qrConnected = qrStatus?.status === 'connected';
+  const qrConnected = !!qrNumbers?.some(n => n.status === 'connected');
   const apiActive = !!apiConfig?.active;
   // Canal efetivo: escolha manual, senão QR se conectado, senão API
   const effectiveVia: WhatsAppVia = via ?? (qrConnected ? 'qr' : 'api');

@@ -12,8 +12,10 @@ interface ConnectionState {
   sock: any;
   qr: string | null;
   status: ConnectionStatus;
+  accountId: string;
 }
 
+// Conexões keyed por numberId (WhatsAppNumber.id) — multi-sessão por conta
 const connections = new Map<string, ConnectionState>();
 let globalIO: any = null;
 
@@ -21,27 +23,41 @@ export function setBaileysIO(io: any) {
   globalIO = io;
 }
 
-export function getQRStatus(accountId: string) {
-  const conn = connections.get(accountId);
+export function getQRStatus(numberId: string) {
+  const conn = connections.get(numberId);
   return {
     status: (conn?.status || 'disconnected') as ConnectionStatus,
     qr: conn?.qr || null,
   };
 }
 
-function getAuthDir(accountId: string): string {
-  const dir = path.join(os.tmpdir(), 'af_baileys', accountId);
+/** true se um número específico está conectado */
+export function isNumberConnected(numberId: string): boolean {
+  return connections.get(numberId)?.status === 'connected';
+}
+
+/** Retorna os numberIds conectados de uma conta */
+export function getConnectedNumberIds(accountId: string): string[] {
+  const ids: string[] = [];
+  for (const [numberId, conn] of connections.entries()) {
+    if (conn.accountId === accountId && conn.status === 'connected') ids.push(numberId);
+  }
+  return ids;
+}
+
+function getAuthDir(numberId: string): string {
+  const dir = path.join(os.tmpdir(), 'af_baileys', numberId);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-// Restore session files from PostgreSQL to temp filesystem
-async function restoreSessionFiles(accountId: string): Promise<string> {
-  const dir = getAuthDir(accountId);
-  const row = await prisma.baileysSession.findUnique({ where: { accountId } });
-  if (row?.data && typeof row.data === 'object') {
-    const files = row.data as Record<string, string>;
-    // Clear dir first to avoid mixing old and new files
+// Restaura os arquivos de sessão do Postgres (WhatsAppNumber.session) para o filesystem
+async function restoreSessionFiles(numberId: string): Promise<string> {
+  const dir = getAuthDir(numberId);
+  const row = await prisma.whatsAppNumber.findUnique({ where: { id: numberId } });
+  const data = row?.session;
+  if (data && typeof data === 'object') {
+    const files = data as Record<string, string>;
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
     for (const [name, content] of Object.entries(files)) {
@@ -49,18 +65,17 @@ async function restoreSessionFiles(accountId: string): Promise<string> {
         fs.writeFileSync(path.join(dir, name), content, 'utf-8');
       }
     }
-    console.log(`[Baileys] Sessão restaurada do DB (${Object.keys(files).length} arquivos)`);
+    console.log(`[Baileys] Sessão ${numberId} restaurada (${Object.keys(files).length} arquivos)`);
   } else {
-    // No DB session — wipe any leftover temp files to force fresh QR
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
-    console.log('[Baileys] Nenhuma sessão no DB — diretório limpo para QR novo');
+    console.log(`[Baileys] Nenhuma sessão salva para ${numberId} — diretório limpo`);
   }
   return dir;
 }
 
-// Save session files from filesystem to PostgreSQL
-async function saveSessionFiles(accountId: string, authDir: string) {
+// Salva os arquivos de sessão do filesystem no Postgres (WhatsAppNumber.session)
+async function saveSessionFiles(numberId: string, authDir: string) {
   try {
     if (!fs.existsSync(authDir)) return;
     const files: Record<string, string> = {};
@@ -70,22 +85,18 @@ async function saveSessionFiles(accountId: string, authDir: string) {
         files[file] = fs.readFileSync(filePath, 'utf-8');
       }
     }
-    await prisma.baileysSession.upsert({
-      where: { accountId },
-      create: { accountId, data: files },
-      update: { data: files },
-    });
+    await prisma.whatsAppNumber.update({ where: { id: numberId }, data: { session: files as any } });
   } catch (err) {
-    console.error('[Baileys] Error saving session:', err);
+    console.error('[Baileys] Erro ao salvar sessão:', err);
   }
 }
 
-export async function startQRConnection(accountId: string): Promise<void> {
-  const existing = connections.get(accountId);
+export async function startQRConnection(numberId: string, accountId: string): Promise<void> {
+  const existing = connections.get(numberId);
   if (existing?.status === 'connected' || existing?.status === 'connecting') return;
 
-  connections.set(accountId, { sock: null, qr: null, status: 'connecting' });
-  globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'connecting' });
+  connections.set(numberId, { sock: null, qr: null, status: 'connecting', accountId });
+  globalIO?.emit(`whatsapp_status_${numberId}`, { numberId, status: 'connecting' });
 
   try {
     const baileys = await import('@whiskeysockets/baileys') as any;
@@ -96,18 +107,15 @@ export async function startQRConnection(accountId: string): Promise<void> {
       throw new Error(`makeWASocket não é uma função. Keys: ${Object.keys(baileys).join(', ')}`);
     }
 
-    // Restore session from DB to temp filesystem
-    const authDir = await restoreSessionFiles(accountId);
+    const authDir = await restoreSessionFiles(numberId);
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-    // Busca a versão mais recente do protocolo WA — versões fixas ficam
-    // desatualizadas e o servidor passa a rejeitar a conexão com erro 405
     let version: number[];
     try {
       const latest = await fetchLatestBaileysVersion();
       version = latest.version;
     } catch {
-      version = [2, 3000, 1035194821]; // fallback (última versão conhecida que funcionou)
+      version = [2, 3000, 1035194821];
     }
     console.log('[Baileys] Usando versão WA:', version);
 
@@ -118,7 +126,6 @@ export async function startQRConnection(accountId: string): Promise<void> {
       child: () => silentLogger,
     };
 
-    console.log('[Baileys] Criando socket...');
     const sock = makeWASocket({
       version,
       auth: state,
@@ -133,20 +140,18 @@ export async function startQRConnection(accountId: string): Promise<void> {
       retryRequestDelayMs: 2000,
       qrTimeout: 60_000,
     });
-    console.log('[Baileys] Socket criado, aguardando eventos...');
 
-    const conn = connections.get(accountId)!;
+    const conn = connections.get(numberId)!;
     conn.sock = sock;
 
     sock.ev.on('creds.update', async () => {
       await saveCreds();
-      await saveSessionFiles(accountId, authDir);
+      await saveSessionFiles(numberId, authDir);
     });
 
     sock.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
-      console.log('[Baileys] connection.update:', JSON.stringify({ connection, qr: !!qr, statusCode: (lastDisconnect?.error as any)?.output?.statusCode }));
-      const c = connections.get(accountId);
+      const c = connections.get(numberId);
       if (!c) return;
 
       if (qr) {
@@ -154,8 +159,8 @@ export async function startQRConnection(accountId: string): Promise<void> {
           const qrDataURL = await QRCode.toDataURL(qr);
           c.qr = qrDataURL;
           c.status = 'qr_ready';
-          globalIO?.emit(`whatsapp_qr_${accountId}`, { qr: qrDataURL });
-          console.log('[Baileys] QR Code gerado!');
+          globalIO?.emit(`whatsapp_qr_${numberId}`, { numberId, qr: qrDataURL });
+          console.log(`[Baileys] QR Code gerado para ${numberId}`);
         } catch (err) {
           console.error('[Baileys] Erro ao gerar QR:', err);
         }
@@ -165,46 +170,45 @@ export async function startQRConnection(accountId: string): Promise<void> {
         c.qr = null;
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
-        // Auth failure codes: 401 (Unauthorized), 403 (Forbidden)
         const authFailed = loggedOut || statusCode === 401 || statusCode === 403;
-        // 515 (restartRequired) é NORMAL logo após parear o QR: o WhatsApp exige
-        // reconectar usando as credenciais recém-salvas — a sessão deve ser mantida
         const restartRequired = statusCode === 515 || statusCode === DisconnectReason.restartRequired;
-        console.log(`[Baileys] Conexão fechada. statusCode=${statusCode} loggedOut=${loggedOut} restartRequired=${restartRequired}`);
+        console.log(`[Baileys] ${numberId} fechada. statusCode=${statusCode} loggedOut=${loggedOut} restartRequired=${restartRequired}`);
 
         if (authFailed) {
-          // Sessão realmente perdida — usuário precisa reescanear o QR
           c.status = 'disconnected';
-          globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'disconnected' });
-          connections.delete(accountId);
-          await prisma.baileysSession.deleteMany({ where: { accountId } });
+          globalIO?.emit(`whatsapp_status_${numberId}`, { numberId, status: 'disconnected' });
+          connections.delete(numberId);
+          await prisma.whatsAppNumber.update({ where: { id: numberId }, data: { session: undefined as any } }).catch(() => {});
           fs.rmSync(authDir, { recursive: true, force: true });
           console.log('[Baileys] Sessão inválida removida.');
         } else if (restartRequired) {
-          // Queda temporária esperada — mantém "conectando" (não assusta o usuário)
           c.status = 'connecting';
-          globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'connecting' });
-          await saveSessionFiles(accountId, authDir);
-          connections.delete(accountId);
-          console.log('[Baileys] Pareamento concluído — reconectando com a sessão salva...');
-          setTimeout(() => startQRConnection(accountId), 1000);
+          globalIO?.emit(`whatsapp_status_${numberId}`, { numberId, status: 'connecting' });
+          await saveSessionFiles(numberId, authDir);
+          connections.delete(numberId);
+          console.log('[Baileys] Pareamento concluído — reconectando...');
+          setTimeout(() => startQRConnection(numberId, accountId), 1000);
         } else {
-          // Erro transitório (reinício do servidor, oscilação de rede) — reconecta
-          // mantendo a sessão; mostra "conectando" em vez de "desconectado"
           c.status = 'connecting';
-          globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'connecting' });
-          connections.delete(accountId);
+          globalIO?.emit(`whatsapp_status_${numberId}`, { numberId, status: 'connecting' });
+          connections.delete(numberId);
           console.log('[Baileys] Reconectando em 5s...');
-          setTimeout(() => startQRConnection(accountId), 5000);
+          setTimeout(() => startQRConnection(numberId, accountId), 5000);
         }
       }
 
       if (connection === 'open') {
         c.status = 'connected';
         c.qr = null;
-        await saveSessionFiles(accountId, authDir);
-        globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'connected' });
-        console.log('[Baileys] WhatsApp conectado!');
+        await saveSessionFiles(numberId, authDir);
+        // Captura o número real conectado (ex: 5561999999999)
+        const rawJid = (sock.user?.id as string | undefined) || '';
+        const phone = rawJid.split(':')[0].split('@')[0] || null;
+        if (phone) {
+          await prisma.whatsAppNumber.update({ where: { id: numberId }, data: { phone } }).catch(() => {});
+        }
+        globalIO?.emit(`whatsapp_status_${numberId}`, { numberId, status: 'connected', phone });
+        console.log(`[Baileys] ${numberId} conectado! phone=${phone}`);
       }
     });
 
@@ -212,22 +216,21 @@ export async function startQRConnection(accountId: string): Promise<void> {
       if (type !== 'notify') return;
       for (const msg of messages) {
         if (!msg.message || msg.key.fromMe) continue;
-        await processIncomingMessage(msg, accountId);
+        await processIncomingMessage(msg, accountId, numberId);
       }
     });
 
-    // Histórico enviado pelo WhatsApp no pareamento — importa as conversas recentes
     sock.ev.on('messaging-history.set', async ({ messages }: any) => {
       if (!Array.isArray(messages) || messages.length === 0) return;
-      console.log(`[Baileys] Histórico recebido: ${messages.length} mensagens — importando...`);
-      importHistoryMessages(messages, accountId).catch(err =>
+      console.log(`[Baileys] Histórico recebido (${numberId}): ${messages.length} mensagens`);
+      importHistoryMessages(messages, accountId, numberId).catch(err =>
         console.error('[Baileys] Erro ao importar histórico:', err));
     });
 
   } catch (err) {
     console.error('[Baileys] Erro ao iniciar:', err);
-    connections.delete(accountId);
-    globalIO?.emit(`whatsapp_status_${accountId}`, { status: 'disconnected' });
+    connections.delete(numberId);
+    globalIO?.emit(`whatsapp_status_${numberId}`, { numberId, status: 'disconnected' });
     throw err;
   }
 }
@@ -239,8 +242,12 @@ function extractText(msg: any): string {
     msg.message?.imageMessage?.caption || '';
 }
 
-/** Encontra/cria contato+lead para um número de WhatsApp; retorna o leadId */
-async function getOrCreateLeadForPhone(from: string, pushName: string | undefined, accountId: string): Promise<string | null> {
+/**
+ * Encontra/cria contato+lead para um número de WhatsApp; retorna o leadId.
+ * Vincula a conversa ao número (whatsappNumberId) que recebeu a mensagem,
+ * para que as respostas saiam sempre pelo mesmo número.
+ */
+async function getOrCreateLeadForPhone(from: string, pushName: string | undefined, accountId: string, numberId: string): Promise<string | null> {
   let contact = await prisma.contact.findFirst({
     where: { accountId, OR: [{ whatsappPhone: from }, { phone: { contains: from.slice(-8) } }] },
     include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
@@ -256,7 +263,14 @@ async function getOrCreateLeadForPhone(from: string, pushName: string | undefine
   }
 
   const leads = (contact as any).leads || [];
-  if (leads.length > 0) return leads[0].id;
+  if (leads.length > 0) {
+    const lead = leads[0];
+    // Garante que a conversa aponte para o número que recebeu (se ainda não tiver)
+    if (!lead.whatsappNumberId) {
+      await prisma.lead.update({ where: { id: lead.id }, data: { whatsappNumberId: numberId } }).catch(() => {});
+    }
+    return lead.id;
+  }
 
   const pipeline = await prisma.pipeline.findFirst({
     where: { accountId },
@@ -265,7 +279,6 @@ async function getOrCreateLeadForPhone(from: string, pushName: string | undefine
   const admin = await prisma.user.findFirst({ where: { accountId } });
   if (!pipeline?.stages.length || !admin) return null;
 
-  // Formata o telefone p/ exibição no card: (61) 99999-9999
   const d = from.startsWith('55') ? from.slice(2) : from;
   const telDisplay = d.length === 11 ? `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`
     : d.length === 10 ? `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`
@@ -280,26 +293,27 @@ async function getOrCreateLeadForPhone(from: string, pushName: string | undefine
       userId: admin.id,
       contactId: contact.id,
       status: 'OPEN',
+      whatsappNumberId: numberId,
       customFields: { participante_1: contact.name, telefone_1: telDisplay } as any,
     },
   });
   return lead.id;
 }
 
-async function processIncomingMessage(msg: any, accountId: string) {
+async function processIncomingMessage(msg: any, accountId: string, numberId: string) {
   try {
     const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
     const text = extractText(msg);
     if (!text || !from) return;
 
-    const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId);
+    const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId, numberId);
     if (!leadId) return;
 
     const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
     if (dup) return;
 
     const message = await prisma.message.create({
-      data: { content: text, direction: 'INBOUND', channel: 'WHATSAPP', leadId, read: false, externalId: msg.key.id, status: 'DELIVERED' },
+      data: { content: text, direction: 'INBOUND', channel: 'WHATSAPP', leadId, whatsappNumberId: numberId, read: false, externalId: msg.key.id, status: 'DELIVERED' },
     });
 
     globalIO?.to(`lead:${leadId}`).emit('new_message', message);
@@ -311,9 +325,7 @@ async function processIncomingMessage(msg: any, accountId: string) {
 
 const HISTORY_IMPORT_LIMIT = 500;
 
-/** Importa mensagens do histórico recebido no pareamento (apenas conversas 1:1 de texto) */
-async function importHistoryMessages(messages: any[], accountId: string) {
-  // Mais recentes primeiro, limitado para não sobrecarregar
+async function importHistoryMessages(messages: any[], accountId: string, numberId: string) {
   const sorted = [...messages]
     .filter(m => {
       const jid = m?.key?.remoteJid as string | undefined;
@@ -335,7 +347,7 @@ async function importHistoryMessages(messages: any[], accountId: string) {
       const dup = await prisma.message.findFirst({ where: { externalId } });
       if (dup) continue;
 
-      const leadId = await getOrCreateLeadForPhone(from, msg.key.fromMe ? undefined : msg.pushName, accountId);
+      const leadId = await getOrCreateLeadForPhone(from, msg.key.fromMe ? undefined : msg.pushName, accountId, numberId);
       if (!leadId) continue;
 
       const ts = Number(msg.messageTimestamp || 0);
@@ -345,7 +357,8 @@ async function importHistoryMessages(messages: any[], accountId: string) {
           direction: msg.key.fromMe ? 'OUTBOUND' : 'INBOUND',
           channel: 'WHATSAPP',
           leadId,
-          read: true, // histórico antigo não deve contar como não-lido
+          whatsappNumberId: numberId,
+          read: true,
           externalId,
           status: 'DELIVERED',
           ...(ts > 0 ? { createdAt: new Date(ts * 1000) } : {}),
@@ -362,8 +375,9 @@ async function importHistoryMessages(messages: any[], accountId: string) {
   if (imported > 0) globalIO?.emit('new_conversation', {});
 }
 
-export async function sendBaileysMessage(to: string, text: string, accountId: string): Promise<boolean> {
-  const conn = connections.get(accountId);
+/** Envia por um número específico (numberId). Retorna false se esse número não estiver conectado. */
+export async function sendBaileysMessage(to: string, text: string, numberId: string): Promise<boolean> {
+  const conn = connections.get(numberId);
   if (!conn?.sock || conn.status !== 'connected') return false;
   try {
     const phone = to.replace(/\D/g, '');
@@ -375,23 +389,43 @@ export async function sendBaileysMessage(to: string, text: string, accountId: st
   }
 }
 
-export async function disconnectQR(accountId: string) {
-  const conn = connections.get(accountId);
+export async function disconnectQR(numberId: string) {
+  const conn = connections.get(numberId);
   if (conn?.sock) {
     try { await conn.sock.logout(); } catch { /* ignore */ }
   }
-  connections.delete(accountId);
-  await prisma.baileysSession.deleteMany({ where: { accountId } });
-  // Also wipe temp filesystem so stale credentials don't prevent QR generation
-  const authDir = getAuthDir(accountId);
+  connections.delete(numberId);
+  await prisma.whatsAppNumber.update({ where: { id: numberId }, data: { session: undefined as any, phone: null } }).catch(() => {});
+  const authDir = getAuthDir(numberId);
   fs.rmSync(authDir, { recursive: true, force: true });
-  console.log('[Baileys] Sessão limpa (DB + filesystem)');
+  console.log(`[Baileys] Sessão ${numberId} limpa (DB + filesystem)`);
 }
 
 export async function restoreActiveSessions() {
-  const sessions = await prisma.baileysSession.findMany();
-  for (const session of sessions) {
-    console.log(`[Baileys] Restaurando sessão: ${session.accountId}`);
-    startQRConnection(session.accountId).catch(console.error);
+  // Migração preguiçosa: converte a sessão legada (BaileysSession, 1 por conta)
+  // em um WhatsAppNumber "WhatsApp Principal", preservando a conexão existente.
+  try {
+    const legacy = await prisma.baileysSession.findMany();
+    for (const s of legacy) {
+      const hasNumber = await prisma.whatsAppNumber.findFirst({ where: { accountId: s.accountId } });
+      if (!hasNumber) {
+        await prisma.whatsAppNumber.create({
+          data: { accountId: s.accountId, label: 'WhatsApp Principal', session: s.data as any },
+        });
+        console.log(`[Baileys] Migrada sessão legada da conta ${s.accountId} para WhatsAppNumber`);
+      }
+      // Remove a linha legada para não migrar de novo
+      await prisma.baileysSession.delete({ where: { id: s.id } }).catch(() => {});
+    }
+  } catch (err) {
+    console.error('[Baileys] Erro na migração de sessão legada:', err);
+  }
+
+  // Reconecta todos os números que têm sessão salva
+  const numbers = await prisma.whatsAppNumber.findMany();
+  for (const n of numbers) {
+    if (!n.session || typeof n.session !== 'object') continue;
+    console.log(`[Baileys] Restaurando número ${n.id} (${n.label})`);
+    startQRConnection(n.id, n.accountId).catch(console.error);
   }
 }

@@ -20,6 +20,7 @@ model Account {
   whatsappConfig   WhatsAppConfig?
   metaLeadsConfig  MetaLeadsConfig?
   agentConfig      AgentConfig?
+  whatsappNumbers  WhatsAppNumber[]
   fieldDefinitions FieldDefinition[]
   transactions     Transaction[]
 }
@@ -109,6 +110,8 @@ model Lead {
   company      Company?   @relation(fields: [companyId], references: [id])
   accountId    String
   account      Account    @relation(fields: [accountId], references: [id])
+  whatsappNumberId String?
+  whatsappNumber   WhatsAppNumber? @relation(fields: [whatsappNumberId], references: [id])
   customFields Json?
   tags         String[]
   archived     Boolean    @default(false)
@@ -189,6 +192,8 @@ model Message {
   channel    Channel
   leadId     String
   lead       Lead       @relation(fields: [leadId], references: [id])
+  whatsappNumberId String?
+  whatsappNumber   WhatsAppNumber? @relation(fields: [whatsappNumberId], references: [id])
   read       Boolean    @default(false)
   externalId String?
   status     MsgStatus  @default(SENT)
@@ -247,6 +252,22 @@ model BaileysSession {
   data      Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Cada número de WhatsApp conectado via QR Code (multi-sessão por conta)
+model WhatsAppNumber {
+  id        String    @id @default(cuid())
+  accountId String
+  account   Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  label     String    // apelido definido pelo usuário (ex: "Vendas", "Suporte")
+  phone     String?   // número real, preenchido quando conecta
+  session   Json?     // credenciais Baileys desta sessão
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  leads     Lead[]
+  messages  Message[]
+
+  @@index([accountId])
 }
 
 model AgentConfig {

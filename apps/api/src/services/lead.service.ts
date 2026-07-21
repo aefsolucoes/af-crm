@@ -31,6 +31,7 @@ export async function getLeadById(id: string, accountId: string) {
       user: { select: { id: true, name: true, email: true } },
       contact: true,
       company: true,
+      whatsappNumber: { select: { id: true, label: true, phone: true } },
       tasks: { include: { user: { select: { id: true, name: true } } }, orderBy: { dueAt: 'asc' } },
       notes: { orderBy: { createdAt: 'desc' }, include: { user: { select: { id: true, name: true } } } },
       messages: { orderBy: { createdAt: 'asc' } },
