@@ -20,6 +20,7 @@ import noteRoutes from './routes/notes';
 import userRoutes from './routes/users';
 import aiRoutes from './routes/ai';
 import financeRoutes from './routes/finance';
+import googleRoutes from './routes/google';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 
 const app = express();
@@ -58,6 +59,7 @@ app.use('/api/notes', noteRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/finance', financeRoutes);
+app.use('/api/google', googleRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
 

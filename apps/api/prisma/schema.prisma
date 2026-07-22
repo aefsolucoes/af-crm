@@ -21,6 +21,7 @@ model Account {
   metaLeadsConfig  MetaLeadsConfig?
   agentConfig      AgentConfig?
   whatsappNumbers  WhatsAppNumber[]
+  googleConnection GoogleConnection?
   fieldDefinitions FieldDefinition[]
   transactions     Transaction[]
 }
@@ -252,6 +253,21 @@ model BaileysSession {
   data      Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Conexão com o Google Drive (OAuth) por conta
+model GoogleConnection {
+  id            String   @id @default(cuid())
+  accountId     String   @unique
+  account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  email         String?  // e-mail da conta Google conectada
+  refreshToken  String   @db.Text
+  accessToken   String?  @db.Text
+  expiresAt     DateTime?
+  rootFolderId  String?  // pasta-raiz onde ficam as pastas dos clientes
+  rootFolderName String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
 
 // Cada número de WhatsApp conectado via QR Code (multi-sessão por conta)

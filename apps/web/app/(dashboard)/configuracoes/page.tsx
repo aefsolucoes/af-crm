@@ -4,12 +4,12 @@ import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Upload, Bot, Plus, Pencil, X as XIcon } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, Megaphone, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Upload, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Pipeline, Stage, User } from '@/types';
 import { useThemeStore, BackgroundTheme } from '@/store/theme.store';
 
-type Tab = 'api' | 'qr' | 'meta' | 'sons' | 'ia' | 'aparencia' | 'agente';
+type Tab = 'api' | 'qr' | 'meta' | 'sons' | 'ia' | 'aparencia' | 'agente' | 'drive';
 
 interface WAConfig {
   phoneNumberId: string;
@@ -330,6 +330,9 @@ export default function ConfiguracoesPage() {
             </button>
             <button onClick={() => setTab('agente')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'agente' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
               <Bot size={16} /> Agente IA
+            </button>
+            <button onClick={() => setTab('drive')} className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all ${tab === 'drive' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
+              <HardDrive size={16} /> Google Drive
             </button>
           </div>
 
@@ -918,6 +921,9 @@ export default function ConfiguracoesPage() {
           {/* Agente IA Tab */}
           {tab === 'agente' && <AgenteTab />}
 
+          {/* Google Drive Tab */}
+          {tab === 'drive' && <GoogleDriveTab />}
+
         </div>
       </div>
     </div>
@@ -1161,6 +1167,184 @@ function QRNumbersTab() {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Aba Google Drive ───────────────────────────────────────────────────────
+
+interface DriveFolder { id: string; name: string; }
+
+function GoogleDriveTab() {
+  const [status, setStatus] = useState<{ connected: boolean; email: string | null; rootFolderId: string | null; rootFolderName: string | null; configured: boolean } | null>(null);
+  const [loading, setLoading] = useState(true);
+  // navegação de pastas para escolher a raiz
+  const [browsing, setBrowsing] = useState(false);
+  const [folders, setFolders] = useState<DriveFolder[]>([]);
+  const [path, setPath] = useState<{ id: string; name: string }[]>([]); // breadcrumb (id 'root' = Meu Drive)
+  const [loadingFolders, setLoadingFolders] = useState(false);
+
+  async function loadStatus() {
+    try { const { data } = await api.get('/api/google/status'); setStatus(data); }
+    catch { /* ignore */ }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { loadStatus(); }, []);
+
+  // recebe aviso do popup de OAuth
+  useEffect(() => {
+    function onMsg(e: MessageEvent) {
+      if (e.data?.type === 'google-oauth') { setTimeout(loadStatus, 500); }
+    }
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  async function handleConnect() {
+    try {
+      const { data } = await api.get('/api/google/oauth/start');
+      window.open(data.url, 'google-oauth', 'width=520,height=680');
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao iniciar conexão com o Google', 'error');
+    }
+  }
+
+  async function handleDisconnect() {
+    if (!confirm('Desconectar o Google Drive?')) return;
+    await api.post('/api/google/disconnect');
+    loadStatus();
+  }
+
+  async function openBrowser(parent?: { id: string; name: string }) {
+    setBrowsing(true);
+    setLoadingFolders(true);
+    const newPath = parent
+      ? (parent.id === 'root' ? [{ id: 'root', name: 'Meu Drive' }] : [...path, parent])
+      : [{ id: 'root', name: 'Meu Drive' }];
+    if (!parent) setPath([{ id: 'root', name: 'Meu Drive' }]);
+    else setPath(newPath);
+    try {
+      const parentId = parent?.id === 'root' || !parent ? undefined : parent.id;
+      const { data } = await api.get('/api/google/folders', { params: parentId ? { parent: parentId } : {} });
+      setFolders(data);
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao listar pastas', 'error');
+    } finally { setLoadingFolders(false); }
+  }
+
+  async function goToCrumb(index: number) {
+    const target = path[index];
+    setPath(path.slice(0, index + 1));
+    setLoadingFolders(true);
+    try {
+      const parentId = target.id === 'root' ? undefined : target.id;
+      const { data } = await api.get('/api/google/folders', { params: parentId ? { parent: parentId } : {} });
+      setFolders(data);
+    } catch { /* ignore */ } finally { setLoadingFolders(false); }
+  }
+
+  async function chooseCurrentFolder() {
+    const current = path[path.length - 1];
+    await api.post('/api/google/root-folder', { folderId: current.id, folderName: current.name });
+    setBrowsing(false);
+    loadStatus();
+    toast('Pasta-raiz definida!');
+  }
+
+  if (loading) return <p className="text-sm text-slate-400 py-6 text-center">Carregando...</p>;
+
+  if (status && !status.configured) {
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-700">
+        A integração do Google ainda não está configurada no servidor (faltam as credenciais). Avise o suporte técnico.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-af-border">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-gradient-to-br from-blue-500 to-green-500">
+            <HardDrive size={20} className="text-white" />
+          </div>
+          <div className="flex-1">
+            <h2 className="text-sm font-bold text-slate-800">Google Drive</h2>
+            <p className="text-xs text-slate-400">Criar pastas de clientes, renomear e salvar documentos automaticamente</p>
+          </div>
+          {status?.connected ? (
+            <span className="flex items-center gap-1.5 text-xs font-medium text-green-600">
+              <span className="w-2 h-2 rounded-full bg-green-500" /> Conectado
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-xs font-medium text-slate-400">
+              <span className="w-2 h-2 rounded-full bg-slate-300" /> Desconectado
+            </span>
+          )}
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {!status?.connected ? (
+            <button onClick={handleConnect} className="flex items-center gap-2 px-4 py-2 rounded-lg text-white text-sm font-medium" style={{ backgroundColor: '#2261a8' }}>
+              <HardDrive size={15} /> Conectar Google Drive
+            </button>
+          ) : (
+            <>
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-slate-500">Conta conectada: <span className="font-medium text-slate-700">{status.email || '—'}</span></div>
+                <button onClick={handleDisconnect} className="text-xs text-red-500 hover:text-red-600">Desconectar</button>
+              </div>
+
+              <div className="border-t border-af-border pt-4">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Pasta-raiz dos clientes</p>
+                <p className="text-xs text-slate-400 mb-2">É a pasta onde o agente vai criar as pastas de cada cliente.</p>
+                {status.rootFolderName ? (
+                  <div className="flex items-center gap-2 text-sm text-slate-700 mb-2">
+                    <FolderOpen size={15} className="text-af-mid" /> {status.rootFolderName}
+                  </div>
+                ) : (
+                  <p className="text-xs text-amber-600 mb-2">Nenhuma pasta-raiz definida ainda.</p>
+                )}
+                <button onClick={() => openBrowser()} className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50">
+                  {status.rootFolderName ? 'Trocar pasta' : 'Escolher pasta'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Navegador de pastas */}
+      {browsing && (
+        <div className="bg-white rounded-2xl border border-af-border shadow-sm p-4">
+          <div className="flex items-center gap-1 text-xs text-slate-500 mb-3 flex-wrap">
+            {path.map((c, i) => (
+              <span key={c.id} className="flex items-center gap-1">
+                {i > 0 && <ChevronRight size={12} className="text-slate-300" />}
+                <button onClick={() => goToCrumb(i)} className="hover:text-af-mid">{c.name}</button>
+              </span>
+            ))}
+          </div>
+          <div className="max-h-64 overflow-y-auto scrollbar-thin border border-af-border rounded-lg divide-y divide-slate-100">
+            {loadingFolders ? (
+              <p className="text-xs text-slate-400 py-4 text-center">Carregando pastas...</p>
+            ) : folders.length === 0 ? (
+              <p className="text-xs text-slate-400 py-4 text-center">Nenhuma subpasta aqui</p>
+            ) : folders.map(f => (
+              <button key={f.id} onClick={() => openBrowser(f)} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 text-left">
+                <Folder size={15} className="text-af-mid flex-shrink-0" /> <span className="flex-1 truncate">{f.name}</span>
+                <ChevronRight size={13} className="text-slate-300" />
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center justify-between mt-3">
+            <button onClick={() => setBrowsing(false)} className="text-xs text-slate-400 hover:text-slate-600">Cancelar</button>
+            <button onClick={chooseCurrentFolder} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg text-white font-medium" style={{ backgroundColor: '#2261a8' }}>
+              <CheckCircle2 size={14} /> Usar "{path[path.length - 1]?.name}" como raiz
+            </button>
+          </div>
         </div>
       )}
     </div>
