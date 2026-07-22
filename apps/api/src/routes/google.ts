@@ -22,8 +22,12 @@ router.get('/oauth/callback', async (req: Request, res: Response) => {
     await handleOAuthCallback(code, state);
     res.send(htmlClose('Google Drive conectado com sucesso! Pode fechar esta aba.', true));
   } catch (err: any) {
-    console.error('[Google] Erro no callback:', err?.message);
-    res.send(htmlClose('Erro ao conectar o Google Drive. Tente novamente.', false));
+    const googleErr = err?.response?.data?.error_description
+      || err?.response?.data?.error
+      || err?.message
+      || 'erro desconhecido';
+    console.error('[Google] Erro no callback:', googleErr, err?.response?.data);
+    res.send(htmlClose(`Erro ao conectar: ${googleErr}`, false));
   }
 });
 
