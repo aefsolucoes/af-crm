@@ -216,7 +216,13 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
       if (type !== 'notify') return;
       for (const msg of messages) {
         if (!msg.message || msg.key.fromMe) continue;
-        await processIncomingMessage(msg, accountId, numberId);
+        // Documento/imagem → captura o arquivo; senão trata como texto
+        if (hasMedia(msg)) {
+          await processIncomingMedia(msg, accountId, numberId, sock).catch(err =>
+            console.error('[Baileys] Erro ao capturar mídia:', err));
+        } else {
+          await processIncomingMessage(msg, accountId, numberId);
+        }
       }
     });
 
@@ -321,6 +327,68 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
   } catch (err) {
     console.error('[Baileys] Erro ao processar mensagem:', err);
   }
+}
+
+/** true se a mensagem contém um documento ou imagem */
+function hasMedia(msg: any): boolean {
+  const m = msg.message || {};
+  return !!(m.documentMessage || m.imageMessage
+    || m.documentWithCaptionMessage?.message?.documentMessage);
+}
+
+/** Extrai os metadados e o node de mídia (documento ou imagem) */
+function getMediaInfo(msg: any): { node: any; type: 'document' | 'image'; fileName: string; mimeType: string } | null {
+  const m = msg.message || {};
+  const doc = m.documentMessage || m.documentWithCaptionMessage?.message?.documentMessage;
+  if (doc) {
+    const mimeType = doc.mimetype || 'application/octet-stream';
+    const fileName = doc.fileName || `documento-${Date.now()}`;
+    return { node: doc, type: 'document', fileName, mimeType };
+  }
+  if (m.imageMessage) {
+    const mimeType = m.imageMessage.mimetype || 'image/jpeg';
+    const ext = mimeType.includes('png') ? 'png' : 'jpg';
+    return { node: m.imageMessage, type: 'image', fileName: `foto-${Date.now()}.${ext}`, mimeType };
+  }
+  return null;
+}
+
+async function processIncomingMedia(msg: any, accountId: string, numberId: string, sock: any) {
+  const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
+  if (!from) return;
+
+  const info = getMediaInfo(msg);
+  if (!info) return;
+
+  const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
+  if (dup) return;
+
+  const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId, numberId);
+  if (!leadId) return;
+
+  // Baixa o arquivo
+  const baileys = await import('@whiskeysockets/baileys') as any;
+  const buffer: Buffer = await baileys.downloadMediaMessage(
+    msg, 'buffer', {},
+    { reuploadRequest: sock.updateMediaMessage },
+  );
+
+  const caption = extractText(msg); // legenda, se houver
+  const content = `📎 ${info.fileName}${caption ? ` — ${caption}` : ''}`;
+
+  const message = await prisma.message.create({
+    data: {
+      content, direction: 'INBOUND', channel: 'WHATSAPP', leadId,
+      whatsappNumberId: numberId, read: false, externalId: msg.key.id, status: 'DELIVERED',
+      attachments: {
+        create: { leadId, fileName: info.fileName, mimeType: info.mimeType, data: buffer },
+      },
+    },
+  });
+
+  globalIO?.to(`lead:${leadId}`).emit('new_message', message);
+  globalIO?.emit('new_conversation', { leadId });
+  console.log(`[Baileys] Documento capturado: ${info.fileName} (${buffer.length} bytes) → lead ${leadId}`);
 }
 
 const HISTORY_IMPORT_LIMIT = 500;

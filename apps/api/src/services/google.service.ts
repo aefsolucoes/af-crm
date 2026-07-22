@@ -181,3 +181,60 @@ export async function renameFile(accountId: string, fileId: string, newName: str
   const drive = await getDrive(accountId);
   await drive.files.update({ fileId, requestBody: { name: newName }, supportsAllDrives: true });
 }
+
+export function folderLink(folderId: string): string {
+  return `https://drive.google.com/drive/folders/${folderId}`;
+}
+
+/**
+ * Cria (ou reutiliza) a pasta do cliente dentro da pasta-raiz e sobe todos os
+ * documentos capturados do lead que ainda não foram enviados. Retorna o link
+ * da pasta e a lista de arquivos enviados.
+ */
+export async function organizeLeadDocsToDrive(params: {
+  accountId: string;
+  leadId: string;
+  clientFolderName: string;
+}): Promise<{ folderId: string; folderName: string; folderUrl: string; uploaded: string[]; alreadyThere: number; noRoot?: boolean }> {
+  const { accountId, leadId, clientFolderName } = params;
+
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  if (!conn?.refreshToken) throw new Error('Google Drive não conectado');
+  if (!conn.rootFolderId) return { folderId: '', folderName: '', folderUrl: '', uploaded: [], alreadyThere: 0, noRoot: true };
+
+  // pasta do cliente dentro da raiz
+  const folder = await createFolder(accountId, clientFolderName.trim(), conn.rootFolderId);
+
+  // anexos do lead ainda não enviados (com bytes)
+  const attachments = await prisma.messageAttachment.findMany({
+    where: { leadId, driveFileId: null, NOT: { data: null } },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const uploaded: string[] = [];
+  for (const att of attachments) {
+    if (!att.data) continue;
+    const up = await uploadFile(accountId, {
+      name: att.fileName,
+      mimeType: att.mimeType,
+      data: Buffer.from(att.data),
+      parentId: folder.id,
+    });
+    // marca como enviado e limpa os bytes do banco (economia de espaço)
+    await prisma.messageAttachment.update({
+      where: { id: att.id },
+      data: { driveFileId: up.id, data: null },
+    });
+    uploaded.push(att.fileName);
+  }
+
+  const alreadyThere = await prisma.messageAttachment.count({ where: { leadId, NOT: { driveFileId: null } } });
+
+  return {
+    folderId: folder.id,
+    folderName: folder.name,
+    folderUrl: folderLink(folder.id),
+    uploaded,
+    alreadyThere: alreadyThere - uploaded.length,
+  };
+}
