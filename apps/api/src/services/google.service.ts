@@ -195,15 +195,27 @@ export async function organizeLeadDocsToDrive(params: {
   accountId: string;
   leadId: string;
   clientFolderName: string;
-}): Promise<{ folderId: string; folderName: string; folderUrl: string; uploaded: string[]; alreadyThere: number; noRoot?: boolean }> {
-  const { accountId, leadId, clientFolderName } = params;
+  /** sub-pasta dentro da raiz onde criar a pasta do cliente (ex: "LEADS ATIVOS"); opcional */
+  destinationFolderName?: string;
+}): Promise<{ folderId: string; folderName: string; folderUrl: string; parentFolderName: string; uploaded: string[]; alreadyThere: number; noRoot?: boolean }> {
+  const { accountId, leadId, clientFolderName, destinationFolderName } = params;
 
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
   if (!conn?.refreshToken) throw new Error('Google Drive não conectado');
-  if (!conn.rootFolderId) return { folderId: '', folderName: '', folderUrl: '', uploaded: [], alreadyThere: 0, noRoot: true };
+  if (!conn.rootFolderId) return { folderId: '', folderName: '', folderUrl: '', parentFolderName: '', uploaded: [], alreadyThere: 0, noRoot: true };
 
-  // pasta do cliente dentro da raiz
-  const folder = await createFolder(accountId, clientFolderName.trim(), conn.rootFolderId);
+  // define onde a pasta do cliente será criada: raiz ou uma sub-pasta (ex: "LEADS ATIVOS")
+  let parentId = conn.rootFolderId;
+  let parentFolderName = conn.rootFolderName || 'raiz';
+  const dest = destinationFolderName?.trim();
+  if (dest) {
+    const destFolder = await createFolder(accountId, dest, conn.rootFolderId);
+    parentId = destFolder.id;
+    parentFolderName = destFolder.name;
+  }
+
+  // pasta do cliente dentro do destino
+  const folder = await createFolder(accountId, clientFolderName.trim(), parentId);
 
   // anexos do lead ainda não enviados (com bytes)
   const attachments = await prisma.messageAttachment.findMany({
@@ -234,6 +246,7 @@ export async function organizeLeadDocsToDrive(params: {
     folderId: folder.id,
     folderName: folder.name,
     folderUrl: folderLink(folder.id),
+    parentFolderName,
     uploaded,
     alreadyThere: alreadyThere - uploaded.length,
   };

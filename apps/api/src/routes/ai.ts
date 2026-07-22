@@ -76,7 +76,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - get_recent_messages: lê o histórico de mensagens de um lead.
 - send_whatsapp_message: envia para um lead JÁ existente (por leadId).
 - send_whatsapp_to_number: quando o colaborador fornecer um NÚMERO de telefone (ex: "manda mensagem para o 61 99999-9999"), use esta ferramenta — ela cria o contato/lead automaticamente e envia. Sempre que o pedido incluir um número, use send_whatsapp_to_number diretamente, sem exigir que o lead já exista.
-- salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Ela cria a pasta do cliente no Drive e sobe os documentos recebidos no WhatsApp. Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados.
+- salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados.
 Nunca envie uma mensagem nem salve documentos sem que o colaborador tenha pedido isso na conversa atual. Depois de agir, confirme exatamente o que foi feito.
 Responda em português, de forma curta, direta e prática, como se estivesse explicando para um colega de trabalho. Se a dúvida não tiver relação com o CRM ou o processo da empresa, explique educadamente que você só pode ajudar com isso.`;
 
@@ -136,12 +136,13 @@ const AGENT_TOOLS = [
   },
   {
     name: 'salvar_documentos_no_drive',
-    description: 'Cria (ou reutiliza) a pasta do cliente no Google Drive, dentro da pasta-raiz configurada, e sobe todos os documentos que o cliente enviou no WhatsApp e que ainda não foram salvos. Use quando o colaborador pedir para "organizar a documentação", "criar a pasta do cliente no Drive" ou "salvar os documentos". Retorna o link da pasta.',
+    description: 'Cria (ou reutiliza) a pasta do cliente no Google Drive e sobe todos os documentos que o cliente enviou no WhatsApp e que ainda não foram salvos. Por padrão a pasta do cliente é criada dentro da pasta-raiz configurada; se o colaborador indicar uma sub-pasta de destino (ex: "em LEADS ATIVOS"), passe-a em pastaDestino. Use quando o colaborador pedir para "organizar a documentação", "criar a pasta do cliente no Drive" ou "salvar os documentos". Retorna o link da pasta.',
     input_schema: {
       type: 'object',
       properties: {
         leadId: { type: 'string', description: 'ID do lead (obtido via find_lead)' },
         nomePasta: { type: 'string', description: 'Nome da pasta do cliente. Se o colaborador não especificar, use o nome do lead/cliente.' },
+        pastaDestino: { type: 'string', description: 'Opcional. Sub-pasta dentro da raiz onde criar a pasta do cliente (ex: "LEADS ATIVOS"). Se o colaborador não indicar, deixe vazio para usar a pasta-raiz.' },
       },
       required: ['leadId', 'nomePasta'],
     },
@@ -207,16 +208,18 @@ async function executeAgentTool(
   if (name === 'salvar_documentos_no_drive') {
     const leadId = String(input.leadId || '');
     const nomePasta = String(input.nomePasta || '').trim();
+    const pastaDestino = String(input.pastaDestino || '').trim();
     if (!leadId || !nomePasta) return { success: false, error: 'leadId e nomePasta são obrigatórios' };
     // confirma que o lead é da conta
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
     try {
-      const res = await organizeLeadDocsToDrive({ accountId, leadId, clientFolderName: nomePasta });
+      const res = await organizeLeadDocsToDrive({ accountId, leadId, clientFolderName: nomePasta, destinationFolderName: pastaDestino || undefined });
       if (res.noRoot) return { success: false, error: 'Pasta-raiz dos clientes não definida. Configure em Configurações → Google Drive.' };
       return {
         success: true,
         pasta: res.folderName,
+        dentroDe: res.parentFolderName,
         link: res.folderUrl,
         enviados: res.uploaded,
         jaEstavamNaPasta: res.alreadyThere,
