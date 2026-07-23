@@ -45,6 +45,7 @@ export interface Contact {
   name: string;
   email?: string;
   phone?: string;
+  whatsappPhone?: string;
   company?: Company;
   companyId?: string;
 }

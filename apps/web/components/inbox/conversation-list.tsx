@@ -6,6 +6,11 @@ import { useState } from 'react';
 
 const CHANNELS: Channel[] = ['WHATSAPP'];
 
+/** true se a conversa é um grupo do WhatsApp (JID @g.us). */
+function isGroupConversation(c: Conversation): boolean {
+  return !!c.contact?.whatsappPhone?.endsWith('@g.us');
+}
+
 interface ConversationListProps {
   conversations: Conversation[];
   selectedId?: string;
@@ -13,12 +18,21 @@ interface ConversationListProps {
   loading?: boolean;
 }
 
-export function ConversationList({ conversations, selectedId, onSelect, loading }: ConversationListProps) {
-  const [filter, setFilter] = useState<Channel | 'ALL'>('ALL');
+type Filter = 'ALL' | 'GROUPS' | Channel;
 
-  const filtered = filter === 'ALL'
-    ? conversations
-    : conversations.filter((c) => c.messages[0]?.channel === filter);
+export function ConversationList({ conversations, selectedId, onSelect, loading }: ConversationListProps) {
+  const [filter, setFilter] = useState<Filter>('ALL');
+
+  const groupCount = conversations.filter(isGroupConversation).length;
+
+  const filtered = conversations.filter((c) => {
+    const isGroup = isGroupConversation(c);
+    if (filter === 'GROUPS') return isGroup;
+    // Nas demais visões (Todos / WhatsApp), os grupos ficam fora — têm aba própria.
+    if (isGroup) return false;
+    if (filter === 'ALL') return true;
+    return c.messages[0]?.channel === filter;
+  });
 
   return (
     <div className="flex flex-col h-full border-r border-af-border app-column-surface w-80 flex-shrink-0">
@@ -41,6 +55,14 @@ export function ConversationList({ conversations, selectedId, onSelect, loading 
               {CHANNEL_LABELS[ch]}
             </button>
           ))}
+          {groupCount > 0 && (
+            <button
+              onClick={() => setFilter('GROUPS')}
+              className={cn('px-2 py-1 text-xs rounded-full transition-colors', filter === 'GROUPS' ? 'bg-af-mid text-white' : 'bg-af-light text-af-mid hover:bg-af-border')}
+            >
+              Grupos ({groupCount})
+            </button>
+          )}
         </div>
       </div>
 
@@ -83,7 +105,12 @@ export function ConversationList({ conversations, selectedId, onSelect, loading 
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-slate-900 truncate">{conv.contact?.name || conv.name}</span>
+                  <span className="text-sm font-medium text-slate-900 truncate flex items-center gap-1.5">
+                    {isGroupConversation(conv) && (
+                      <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide bg-af-light text-af-mid px-1.5 py-0.5 rounded">Grupo</span>
+                    )}
+                    <span className="truncate">{conv.contact?.name || conv.name}</span>
+                  </span>
                   {lastMsg && <span className="text-xs text-slate-400 flex-shrink-0 ml-1">{formatDateTime(lastMsg.createdAt)}</span>}
                 </div>
                 {lastMsg && (

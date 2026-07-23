@@ -221,8 +221,19 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
           await processIncomingMedia(msg, accountId, numberId, sock).catch(err =>
             console.error('[Baileys] Erro ao capturar mídia:', err));
         } else {
-          await processIncomingMessage(msg, accountId, numberId);
+          await processIncomingMessage(msg, accountId, numberId, sock);
         }
+      }
+    });
+
+    // Quando o contato compartilha o número real (WhatsApp @lid → telefone),
+    // atualiza o contato para exibir/rotear pelo número verdadeiro.
+    sock.ev.on('chats.phoneNumberShare', async ({ lid, jid }: { lid?: string; jid?: string }) => {
+      try {
+        if (!lid || !jid) return;
+        await backfillRealPhone(accountId, lid, jid);
+      } catch (err) {
+        console.error('[Baileys] Erro no phoneNumberShare:', err);
       }
     });
 
@@ -265,15 +276,50 @@ function extractText(msg: any): string {
  * Vincula a conversa ao número (whatsappNumberId) que recebeu a mensagem,
  * para que as respostas saiam sempre pelo mesmo número.
  */
-async function getOrCreateLeadForPhone(from: string, pushName: string | undefined, accountId: string, numberId: string): Promise<string | null> {
+/** Formata um número de telefone brasileiro para exibição; vazio se não for número real. */
+function formatPhoneDisplay(realPhone: string | null): string {
+  if (!realPhone) return '';
+  const d = realPhone.startsWith('55') ? realPhone.slice(2) : realPhone;
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `+${realPhone}`;
+}
+
+async function getOrCreateLeadForPhone(
+  from: string,
+  pushName: string | undefined,
+  accountId: string,
+  numberId: string,
+  sock?: any,
+): Promise<string | null> {
+  const isGroup = from.endsWith('@g.us');
+  const isLid = from.endsWith('@lid');
+  // Só temos telefone real quando a mensagem veio de um JID de usuário comum (@s.whatsapp.net).
+  const realPhone = (!isGroup && !isLid) ? from.replace(/\D/g, '') : null;
+
+  // Matching por telefone só quando temos um número real (evita colidir LID com telefone).
+  const orMatch: any[] = [{ whatsappPhone: from }];
+  if (realPhone && realPhone.length >= 8) orMatch.push({ phone: { contains: realPhone.slice(-8) } });
+
   let contact = await prisma.contact.findFirst({
-    where: { accountId, OR: [{ whatsappPhone: from }, { phone: { contains: from.slice(-8) } }] },
+    where: { accountId, OR: orMatch },
     include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
   });
 
+  // Nome de exibição: para grupo, tenta o assunto do grupo; senão o pushName.
+  let displayName = pushName || (realPhone ? `+${realPhone}` : from);
+  if (isGroup) {
+    displayName = await getGroupSubject(sock, from) || pushName || 'Grupo do WhatsApp';
+  }
+
   if (!contact) {
     contact = await prisma.contact.create({
-      data: { name: pushName || `+${from}`, whatsappPhone: from, phone: `+${from}`, accountId },
+      data: {
+        name: displayName,
+        whatsappPhone: from,
+        phone: realPhone ? `+${realPhone}` : null,
+        accountId,
+      },
       include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
     });
   } else if (!contact.whatsappPhone) {
@@ -297,10 +343,10 @@ async function getOrCreateLeadForPhone(from: string, pushName: string | undefine
   const admin = await prisma.user.findFirst({ where: { accountId } });
   if (!pipeline?.stages.length || !admin) return null;
 
-  const d = from.startsWith('55') ? from.slice(2) : from;
-  const telDisplay = d.length === 11 ? `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`
-    : d.length === 10 ? `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`
-    : `+${from}`;
+  // telefone_1 só é preenchido quando temos número real; grupo/@lid ficam em branco.
+  const custom: any = { participante_1: contact.name };
+  const telDisplay = formatPhoneDisplay(realPhone);
+  if (telDisplay) custom.telefone_1 = telDisplay;
 
   const lead = await prisma.lead.create({
     data: {
@@ -312,19 +358,64 @@ async function getOrCreateLeadForPhone(from: string, pushName: string | undefine
       contactId: contact.id,
       status: 'OPEN',
       whatsappNumberId: numberId,
-      customFields: { participante_1: contact.name, telefone_1: telDisplay } as any,
+      customFields: custom,
     },
   });
   return lead.id;
 }
 
-async function processIncomingMessage(msg: any, accountId: string, numberId: string) {
+/**
+ * Backfill do telefone real: o WhatsApp entrega mensagens por @lid (sem número).
+ * Quando o contato compartilha o número (evento phoneNumberShare), atualizamos o
+ * contato que estava salvo com o @lid para passar a usar/exibir o telefone real.
+ */
+async function backfillRealPhone(accountId: string, lidJid: string, pnJid: string) {
+  const realPhone = pnJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+  if (!realPhone) return;
+
+  const contact = await prisma.contact.findFirst({
+    where: { accountId, whatsappPhone: lidJid },
+    include: { leads: { orderBy: { updatedAt: 'desc' } } },
+  });
+  if (!contact) return;
+
+  await prisma.contact.update({
+    where: { id: contact.id },
+    data: { whatsappPhone: pnJid, phone: `+${realPhone}` },
+  });
+
+  // Preenche o telefone de exibição nos leads desse contato (se ainda vazio)
+  const telDisplay = formatPhoneDisplay(realPhone);
+  for (const lead of (contact as any).leads || []) {
+    const cf = (lead.customFields as any) || {};
+    if (!cf.telefone_1) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { customFields: { ...cf, telefone_1: telDisplay } },
+      }).catch(() => {});
+    }
+  }
+  console.log(`[Baileys] Telefone real vinculado: ${lidJid} → ${realPhone}`);
+}
+
+/** Busca o assunto (nome) de um grupo do WhatsApp; retorna vazio em caso de erro. */
+async function getGroupSubject(sock: any, groupJid: string): Promise<string> {
+  if (!sock) return '';
+  try {
+    const meta = await sock.groupMetadata(groupJid);
+    return meta?.subject || '';
+  } catch {
+    return '';
+  }
+}
+
+async function processIncomingMessage(msg: any, accountId: string, numberId: string, sock?: any) {
   try {
     const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
     const text = extractText(msg);
     if (!text || !from) return;
 
-    const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId, numberId);
+    const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId, numberId, sock);
     if (!leadId) return;
 
     const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
@@ -375,7 +466,7 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
   const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
   if (dup) return;
 
-  const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId, numberId);
+  const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId, numberId, sock);
   if (!leadId) return;
 
   // Baixa o arquivo
