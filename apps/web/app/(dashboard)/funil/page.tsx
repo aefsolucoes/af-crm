@@ -8,9 +8,10 @@ import { KanbanBoard } from '@/components/kanban/kanban-board';
 import { CardSkeleton } from '@/components/ui/skeleton';
 import { usePipelineStore } from '@/store/pipeline.store';
 import { LeadModal } from '@/components/kanban/lead-modal';
+import { DuplicatesModal } from '@/components/kanban/duplicates-modal';
 import { Pipeline, Lead, Contact, User } from '@/types';
 import api from '@/lib/api';
-import { Plus, RefreshCw, Search, X, Pencil, Trash2, FolderPlus } from 'lucide-react';
+import { Plus, RefreshCw, Search, X, Pencil, Trash2, FolderPlus, GitMerge } from 'lucide-react';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 
@@ -40,6 +41,7 @@ async function fetchContacts(): Promise<Contact[]> {
 export default function FunilPage() {
   const { leads: storeLeads, setLeads, moveLeadOptimistic } = usePipelineStore();
   const [openAddLead, setOpenAddLead] = useState(false);
+  const [openDuplicates, setOpenDuplicates] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedPipelineId, setSelectedPipelineId] = useState<string>('');
   const [showNewPipeline, setShowNewPipeline] = useState(false);
@@ -273,6 +275,10 @@ export default function FunilPage() {
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          <Button variant="ghost" size="sm" onClick={() => setOpenDuplicates(true)}>
+            <GitMerge size={14} />
+            Juntar duplicados
+          </Button>
           <Button variant="ghost" size="sm" onClick={handleRefetch}>
             <RefreshCw size={14} />
             Atualizar
@@ -322,6 +328,12 @@ export default function FunilPage() {
           users={users}
         />
       )}
+
+      <DuplicatesModal
+        open={openDuplicates}
+        onClose={() => setOpenDuplicates(false)}
+        onMerged={handleRefetch}
+      />
 
       <Modal open={showNewPipeline} onClose={() => setShowNewPipeline(false)} title="Novo funil" size="sm">
         <div className="space-y-3">

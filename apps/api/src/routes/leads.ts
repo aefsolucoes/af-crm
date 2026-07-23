@@ -44,6 +44,83 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── GET /api/leads/duplicate-groups ──────────────────────────────────────────
+// Agrupa TODOS os leads duplicados da conta (mesmo telefone ou mesmo nome).
+// Registrado ANTES de '/:id' para não ser capturado como um id.
+router.get('/duplicate-groups', async (req: AuthRequest, res: Response) => {
+  try {
+    const leads = await prisma.lead.findMany({
+      where: { accountId: req.user!.accountId, archived: false },
+      include: {
+        contact: true,
+        stage: { include: { pipeline: true } },
+        _count: { select: { messages: true } },
+      },
+    });
+
+    const norm = (l: (typeof leads)[0]) => {
+      const cf = (l.customFields || {}) as Record<string, string>;
+      const phone = (cf.telefone_1 || l.contact?.phone || l.contact?.whatsappPhone || '').replace(/\D/g, '');
+      const name = (cf.participante_1 || l.name || '').toLowerCase().trim();
+      return { phone, name };
+    };
+
+    // Chave de agrupamento: últimos 8 dígitos do telefone; senão o nome (se tiver >3 letras)
+    const groupsMap = new Map<string, typeof leads>();
+    for (const l of leads) {
+      const { phone, name } = norm(l);
+      let key = '';
+      if (phone && phone.length >= 8) key = 'p:' + phone.slice(-8);
+      else if (name && name.replace(/[^a-z0-9]/g, '').length > 3) key = 'n:' + name;
+      else continue; // sem telefone nem nome útil → não agrupa
+      const arr = groupsMap.get(key) || [];
+      arr.push(l);
+      groupsMap.set(key, arr);
+    }
+
+    const groups = [...groupsMap.values()]
+      .filter((arr) => arr.length > 1)
+      .map((arr) => {
+        // Melhor candidato a manter: mais mensagens → mais dados → mais antigo
+        const scored = arr
+          .map((l) => {
+            const cf = (l.customFields || {}) as Record<string, string>;
+            const dataScore = Object.values(cf).filter((v) => String(v || '').trim()).length + (l.value ? 2 : 0);
+            return { l, msgs: l._count.messages, dataScore };
+          })
+          .sort((a, b) =>
+            b.msgs - a.msgs ||
+            b.dataScore - a.dataScore ||
+            a.l.createdAt.getTime() - b.l.createdAt.getTime(),
+          );
+        return {
+          leads: scored.map(({ l, msgs }) => {
+            const cf = (l.customFields || {}) as Record<string, string>;
+            return {
+              id: l.id,
+              name: cf.participante_1 || l.name,
+              phone: cf.telefone_1 || l.contact?.phone || null,
+              pipeline: l.stage?.pipeline?.name || null,
+              stage: l.stage?.name || null,
+              value: l.value,
+              messages: msgs,
+              isGroup: l.isGroup,
+              createdAt: l.createdAt,
+            };
+          }),
+        };
+      })
+      // grupos de conversa (@g.us) não entram na deduplicação
+      .filter((g) => !g.leads.every((l) => l.isGroup))
+      .sort((a, b) => b.leads.length - a.leads.length);
+
+    res.json({ groups, total: groups.length });
+  } catch (err) {
+    console.error('[DuplicateGroups]', err);
+    res.status(500).json({ error: 'Erro ao buscar duplicados' });
+  }
+});
+
 router.get('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const lead = await getLeadById(req.params.id, req.user!.accountId);
