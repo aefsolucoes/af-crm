@@ -241,6 +241,18 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
   }
 }
 
+/**
+ * Normaliza um destino para um JID válido do WhatsApp.
+ * - Já é um JID (@s.whatsapp.net, @lid, @g.us): usa como está.
+ * - É um número de telefone puro: vira <numero>@s.whatsapp.net.
+ */
+function toWhatsAppJid(to: string): string {
+  const t = (to || '').trim();
+  if (t.includes('@')) return t;               // @lid, @g.us ou @s.whatsapp.net
+  const digits = t.replace(/\D/g, '');
+  return `${digits}@s.whatsapp.net`;
+}
+
 /** Extrai o texto de uma mensagem do WhatsApp (só mensagens de texto/legenda) */
 function extractText(msg: any): string {
   return msg.message?.conversation ||
@@ -448,8 +460,11 @@ export async function sendBaileysMessage(to: string, text: string, numberId: str
   const conn = connections.get(numberId);
   if (!conn?.sock || conn.status !== 'connected') return false;
   try {
-    const phone = to.replace(/\D/g, '');
-    await conn.sock.sendMessage(`${phone}@s.whatsapp.net`, { text });
+    // Se já vier um JID completo (@lid, @g.us, @s.whatsapp.net), respeita-o.
+    // O WhatsApp passou a entregar mensagens com endereçamento @lid; nesses
+    // casos precisamos responder para o mesmo JID, não reconstruir como telefone.
+    const jid = toWhatsAppJid(to);
+    await conn.sock.sendMessage(jid, { text });
     return true;
   } catch (err) {
     console.error('[Baileys] Erro ao enviar:', err);
