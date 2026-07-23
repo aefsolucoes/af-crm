@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations, sendOutboundWhatsApp } from '../services/message.service';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, markConversationRead } from '../services/message.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -31,6 +31,18 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     } catch {
       res.status(500).json({ error: 'Erro ao buscar conversas' });
     }
+  }
+});
+
+// Marca as mensagens recebidas de um lead como lidas (some o contador de não lidas)
+router.post('/read', async (req: AuthRequest, res: Response) => {
+  const leadId = (req.body?.leadId || req.query.leadId) as string | undefined;
+  if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
+  try {
+    const result = await markConversationRead(leadId, req.user!.accountId);
+    res.json(result);
+  } catch {
+    res.status(500).json({ error: 'Erro ao marcar como lida' });
   }
 });
 

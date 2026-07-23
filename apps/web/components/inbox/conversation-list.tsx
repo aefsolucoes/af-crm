@@ -1,15 +1,19 @@
 'use client';
-import { Conversation, Channel } from '@/types';
+import { Conversation, WhatsAppNumber } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
-import { cn, CHANNEL_COLORS, CHANNEL_LABELS, formatDateTime } from '@/lib/utils';
+import { cn, formatDateTime } from '@/lib/utils';
 import { useState } from 'react';
 import { Users, UserMinus } from 'lucide-react';
-
-const CHANNELS: Channel[] = ['WHATSAPP'];
 
 /** true se a conversa é um grupo: marcada manualmente OU com JID de grupo (@g.us). */
 function isGroupConversation(c: Conversation): boolean {
   return c.isGroup === true || !!c.contact?.whatsappPhone?.endsWith('@g.us');
+}
+
+/** data da última mensagem (para ordenar as conversas) */
+function lastMessageTime(c: Conversation): number {
+  const t = c.messages?.[0]?.createdAt || c.updatedAt;
+  return t ? new Date(t).getTime() : 0;
 }
 
 interface ConversationListProps {
@@ -18,25 +22,30 @@ interface ConversationListProps {
   onSelect: (id: string) => void;
   onToggleGroup?: (id: string, isGroup: boolean) => void;
   onRefreshGroupNames?: () => Promise<void>;
+  whatsappNumbers?: WhatsAppNumber[];
   loading?: boolean;
 }
 
-type Filter = 'ALL' | 'GROUPS' | Channel;
+// 'ALL' | 'GROUPS' | <whatsappNumberId>
+type Filter = string;
 
-export function ConversationList({ conversations, selectedId, onSelect, onToggleGroup, onRefreshGroupNames, loading }: ConversationListProps) {
+export function ConversationList({ conversations, selectedId, onSelect, onToggleGroup, onRefreshGroupNames, whatsappNumbers = [], loading }: ConversationListProps) {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [refreshing, setRefreshing] = useState(false);
 
   const groupCount = conversations.filter(isGroupConversation).length;
 
-  const filtered = conversations.filter((c) => {
-    const isGroup = isGroupConversation(c);
-    if (filter === 'GROUPS') return isGroup;
-    // Nas demais visões (Todos / WhatsApp), os grupos ficam fora — têm aba própria.
-    if (isGroup) return false;
-    if (filter === 'ALL') return true;
-    return c.messages[0]?.channel === filter;
-  });
+  const filtered = conversations
+    .filter((c) => {
+      const isGroup = isGroupConversation(c);
+      if (filter === 'GROUPS') return isGroup;
+      // Nas demais visões, os grupos ficam fora — têm aba própria.
+      if (isGroup) return false;
+      if (filter === 'ALL') return true;
+      // filtro por número de WhatsApp conectado
+      return (c.whatsappNumber?.id || c.whatsappNumberId) === filter;
+    })
+    .sort((a, b) => lastMessageTime(b) - lastMessageTime(a));
 
   return (
     <div className="flex flex-col h-full border-r border-af-border app-column-surface w-80 flex-shrink-0">
@@ -49,14 +58,14 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
           >
             Todos
           </button>
-          {CHANNELS.map((ch) => (
+          {whatsappNumbers.map((n) => (
             <button
-              key={ch}
-              onClick={() => setFilter(ch)}
-              className={cn('px-2 py-1 text-xs rounded-full transition-colors', filter === ch ? 'text-white' : 'bg-af-light text-af-mid hover:bg-af-border')}
-              style={filter === ch ? { backgroundColor: CHANNEL_COLORS[ch] } : {}}
+              key={n.id}
+              onClick={() => setFilter(n.id)}
+              title={n.phone ? `+${n.phone}` : n.label}
+              className={cn('px-2 py-1 text-xs rounded-full transition-colors', filter === n.id ? 'bg-af-mid text-white' : 'bg-af-light text-af-mid hover:bg-af-border')}
             >
-              {CHANNEL_LABELS[ch]}
+              {n.label}
             </button>
           ))}
           <button
@@ -113,7 +122,7 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
                 {ch && (
                   <span
                     className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white"
-                    style={{ backgroundColor: CHANNEL_COLORS[ch] }}
+                    style={{ backgroundColor: '#25D366' }}
                   />
                 )}
               </div>

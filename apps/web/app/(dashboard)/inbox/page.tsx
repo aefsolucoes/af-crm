@@ -54,6 +54,20 @@ function InboxPageInner() {
     refetchInterval: 30000,
   });
 
+  // Números de WhatsApp conectados — para as abas por número na Inbox
+  const { data: whatsappNumbers } = useQuery({
+    queryKey: ['whatsapp-numbers'],
+    queryFn: async () => { const { data } = await api.get('/api/whatsapp-qr/numbers'); return data; },
+  });
+
+  // Ao abrir uma conversa, marca as mensagens como lidas (some o contador azul)
+  useEffect(() => {
+    if (!selectedId) return;
+    api.post('/api/messages/read', { leadId: selectedId })
+      .then(() => queryClient.invalidateQueries({ queryKey: ['conversations'] }))
+      .catch(() => {});
+  }, [selectedId, queryClient]);
+
   const { data: messages } = useQuery({
     queryKey: ['messages', selectedId],
     queryFn: () => fetchMessages(selectedId!),
@@ -99,6 +113,7 @@ function InboxPageInner() {
             await api.post('/api/whatsapp-qr/refresh-groups');
             queryClient.invalidateQueries({ queryKey: ['conversations'] });
           }}
+          whatsappNumbers={whatsappNumbers || []}
           loading={loadingConvs}
         />
 

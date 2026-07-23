@@ -99,60 +99,6 @@ function getAuthDir(numberId: string): string {
   return dir;
 }
 
-/**
- * Diagnóstico de envio: reporta o usuário conectado, tenta resolver o LID→número
- * e faz um envio de teste (para o próprio número por padrão) capturando o erro real.
- */
-export async function debugSend(accountId: string, target?: string, sendReal = false): Promise<any> {
-  const sock = getAnyConnectedSock(accountId);
-  if (!sock) return { error: 'Nenhum WhatsApp conectado' };
-
-  const out: any = {
-    userId: sock.user?.id || null,
-    userLid: sock.user?.lid || null,
-    hasLidMapping: !!sock.signalRepository?.lidMapping,
-  };
-
-  // Resolução LID→PN, se target for @lid
-  if (target && target.includes('@lid')) {
-    try {
-      const pn = await sock.signalRepository?.lidMapping?.getPNForLID?.(target);
-      out.lidToPn = pn || null;
-    } catch (e: any) { out.lidToPnError = e?.message; }
-  }
-
-  // Verifica se o número EXISTE no WhatsApp (para número real, não grupo)
-  if (target && !target.includes('@g.us')) {
-    try {
-      const digits = target.replace(/\D/g, '');
-      const res = await sock.onWhatsApp(digits ? `+${digits}` : target);
-      out.existsOnWhatsApp = res;
-    } catch (e: any) { out.onWhatsAppError = e?.message; }
-  }
-
-  // Envio de teste: por padrão para o próprio número (self), pra não spammar cliente
-  const dest = sendReal && target ? toWhatsAppJid(target) : (sock.user?.id ? jidBare(sock.user.id) : null);
-  out.destTried = dest;
-  if (dest) {
-    try {
-      const r = await sock.sendMessage(dest, { text: '🔧 Teste de diagnóstico AF CRM' });
-      out.sendOk = true;
-      out.sendResultId = r?.key?.id || null;
-    } catch (e: any) {
-      out.sendOk = false;
-      out.sendError = e?.message || String(e);
-      out.sendStack = (e?.stack || '').split('\n').slice(0, 4).join(' | ');
-    }
-  }
-  return out;
-}
-
-/** Remove o sufixo de device (ex: :12) de um JID, mantendo user@server. */
-function jidBare(jid: string): string {
-  const [user, server] = jid.split('@');
-  return `${user.split(':')[0]}@${server}`;
-}
-
 // Restaura os arquivos de sessão do Postgres (WhatsAppNumber.session) para o filesystem
 async function restoreSessionFiles(numberId: string): Promise<string> {
   const dir = getAuthDir(numberId);
@@ -438,10 +384,17 @@ async function getOrCreateLeadForPhone(
     return lead.id;
   }
 
-  const pipeline = await prisma.pipeline.findFirst({
-    where: { accountId },
-    include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
-  });
+  // Novos leads do WhatsApp entram na "Caixa de Entrada" (leads ainda não
+  // qualificados). Se esse funil não existir, cai no primeiro funil disponível.
+  const pipeline =
+    (await prisma.pipeline.findFirst({
+      where: { accountId, name: { contains: 'Caixa', mode: 'insensitive' } },
+      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+    })) ||
+    (await prisma.pipeline.findFirst({
+      where: { accountId },
+      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+    }));
   const admin = await prisma.user.findFirst({ where: { accountId } });
   if (!pipeline?.stages.length || !admin) return null;
 

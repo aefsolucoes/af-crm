@@ -46,8 +46,8 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColu
   const description = STAGE_DESCRIPTIONS[stage.name];
 
   return (
-    <div className="flex flex-col w-72 flex-shrink-0">
-      <div className="flex flex-col rounded-xl app-column-surface shadow-md overflow-hidden">
+    <div className="flex flex-col w-72 flex-shrink-0 h-full">
+      <div className="flex flex-col rounded-xl app-column-surface shadow-md overflow-hidden h-full min-h-0">
         {/* Header */}
         <div className="flex items-center justify-between px-3 pt-3 pb-1">
           <div className="flex items-center gap-2 min-w-0">
@@ -80,7 +80,7 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColu
         <SortableContext items={leads.map((l) => l.id)} strategy={verticalListSortingStrategy}>
           <div
             ref={setNodeRef}
-            className={`flex flex-col gap-2 min-h-[60px] p-2 pt-0 transition-colors ${
+            className={`flex flex-col gap-2 min-h-[60px] p-2 pt-0 flex-1 min-h-0 overflow-y-auto scrollbar-thin transition-colors ${
               isOver ? 'bg-af-light/70' : ''
             }`}
           >

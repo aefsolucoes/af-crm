@@ -193,7 +193,24 @@ export async function getConversations(accountId: string) {
         select: { messages: { where: { read: false, direction: 'INBOUND' } } },
       },
     },
-    orderBy: { updatedAt: 'desc' },
   });
-  return leads;
+  // Ordena pela data da ÚLTIMA MENSAGEM (não pelo updatedAt do lead, que muda
+  // quando se edita dados/estágio). Assim a conversa que recebeu/enviou msg mais
+  // recente fica no topo.
+  return leads.sort((a, b) => {
+    const ta = a.messages[0]?.createdAt?.getTime() ?? a.updatedAt.getTime();
+    const tb = b.messages[0]?.createdAt?.getTime() ?? b.updatedAt.getTime();
+    return tb - ta;
+  });
+}
+
+/** Marca como lidas todas as mensagens recebidas (INBOUND) de um lead. */
+export async function markConversationRead(leadId: string, accountId: string) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true } });
+  if (!lead) return { updated: 0 };
+  const res = await prisma.message.updateMany({
+    where: { leadId, direction: 'INBOUND', read: false },
+    data: { read: true },
+  });
+  return { updated: res.count };
 }

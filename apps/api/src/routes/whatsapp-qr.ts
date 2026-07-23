@@ -1,7 +1,7 @@
 import { Router, Response, Request } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { startQRConnection, getQRStatus, disconnectQR, refreshGroupNames, debugSend } from '../services/baileys.service';
+import { startQRConnection, getQRStatus, disconnectQR, refreshGroupNames } from '../services/baileys.service';
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -105,24 +105,6 @@ router.post('/refresh-groups', async (req: AuthRequest, res: Response) => {
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao atualizar grupos' });
-  }
-});
-
-// Diagnóstico de envio (temporário): ?leadId=xxx&real=1 tenta enviar de verdade
-router.get('/debug-send', async (req: AuthRequest, res: Response) => {
-  try {
-    let target: string | undefined;
-    const leadId = req.query.leadId as string | undefined;
-    if (leadId) {
-      const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, include: { contact: true } });
-      target = lead?.contact?.whatsappPhone || lead?.contact?.phone || undefined;
-    } else if (req.query.to) {
-      target = String(req.query.to);
-    }
-    const result = await debugSend(req.user!.accountId, target, req.query.real === '1');
-    res.json({ target, ...result });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message, stack: (err?.stack || '').split('\n').slice(0, 5) });
   }
 });
 

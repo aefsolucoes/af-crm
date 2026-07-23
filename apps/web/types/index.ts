@@ -143,6 +143,13 @@ export interface Message {
   createdAt: string;
 }
 
+export interface WhatsAppNumber {
+  id: string;
+  label: string;
+  phone?: string | null;
+  status?: string;
+}
+
 export interface Conversation {
   id: string;
   name: string;
@@ -151,6 +158,8 @@ export interface Conversation {
   _count: { messages: number };
   updatedAt: string;
   isGroup?: boolean;
+  whatsappNumberId?: string | null;
+  whatsappNumber?: { id: string; label: string; phone?: string | null } | null;
 }
 
 export interface SalesBot {
