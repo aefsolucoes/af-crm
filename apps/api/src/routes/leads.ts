@@ -60,23 +60,47 @@ router.get('/duplicate-groups', async (req: AuthRequest, res: Response) => {
 
     const norm = (l: (typeof leads)[0]) => {
       const cf = (l.customFields || {}) as Record<string, string>;
-      const phone = (cf.telefone_1 || l.contact?.phone || l.contact?.whatsappPhone || '').replace(/\D/g, '');
-      const name = (cf.participante_1 || l.name || '').toLowerCase().trim();
+      const phoneRaw = (cf.telefone_1 || l.contact?.phone || l.contact?.whatsappPhone || '').replace(/\D/g, '');
+      const phone = phoneRaw.length >= 8 ? phoneRaw.slice(-8) : '';
+      const nameRaw = (cf.participante_1 || l.name || '').toLowerCase().trim();
+      const name = nameRaw.replace(/[^a-z0-9]/g, '').length > 3 ? nameRaw : '';
       return { phone, name };
     };
 
-    // Chave de agrupamento: últimos 8 dígitos do telefone; senão o nome (se tiver >3 letras)
-    const groupsMap = new Map<string, typeof leads>();
-    for (const l of leads) {
+    // União por telefone OU nome (union-find). Assim o mesmo cliente que tem um
+    // lead com telefone e outro só com @lid (mesmo nome) cai no MESMO grupo.
+    const parent = new Map<number, number>();
+    const find = (x: number): number => {
+      let r = x;
+      while (parent.get(r) !== r) r = parent.get(r)!;
+      let c = x;
+      while (parent.get(c) !== r) { const n = parent.get(c)!; parent.set(c, r); c = n; }
+      return r;
+    };
+    const union = (a: number, b: number) => { parent.set(find(a), find(b)); };
+
+    leads.forEach((_, i) => parent.set(i, i));
+    const byPhone = new Map<string, number>();
+    const byName = new Map<string, number>();
+    leads.forEach((l, i) => {
       const { phone, name } = norm(l);
-      let key = '';
-      if (phone && phone.length >= 8) key = 'p:' + phone.slice(-8);
-      else if (name && name.replace(/[^a-z0-9]/g, '').length > 3) key = 'n:' + name;
-      else continue; // sem telefone nem nome útil → não agrupa
-      const arr = groupsMap.get(key) || [];
+      if (phone) {
+        if (byPhone.has(phone)) union(i, byPhone.get(phone)!); else byPhone.set(phone, i);
+      }
+      if (name) {
+        if (byName.has(name)) union(i, byName.get(name)!); else byName.set(name, i);
+      }
+    });
+
+    const groupsMap = new Map<number, typeof leads>();
+    leads.forEach((l, i) => {
+      const { phone, name } = norm(l);
+      if (!phone && !name) return; // sem telefone nem nome útil → não agrupa
+      const root = find(i);
+      const arr = groupsMap.get(root) || [];
       arr.push(l);
-      groupsMap.set(key, arr);
-    }
+      groupsMap.set(root, arr);
+    });
 
     const groups = [...groupsMap.values()]
       .filter((arr) => arr.length > 1)
