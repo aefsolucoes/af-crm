@@ -47,9 +47,9 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColu
 
   return (
     <div className="flex flex-col w-72 flex-shrink-0 h-full">
-      <div className="flex flex-col rounded-xl app-column-surface shadow-md overflow-hidden h-full min-h-0">
-        {/* Header */}
-        <div className="flex items-center justify-between px-3 pt-3 pb-1">
+      {/* Cabeçalho do estágio — único bloco com o fundo translúcido */}
+      <div className="rounded-xl app-column-surface shadow-md px-3 pt-3 pb-2 flex-shrink-0">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 min-w-0">
             <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: stage.color }} />
             <span className="text-sm font-bold text-slate-800 truncate">{stage.name}</span>
@@ -68,36 +68,36 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColu
 
         {/* Descrição do estágio */}
         {description && (
-          <p className="text-[11px] text-slate-400 leading-tight px-3 mb-1">{description}</p>
+          <p className="text-[11px] text-slate-400 leading-tight mt-1">{description}</p>
         )}
 
         {/* Total */}
         {totalValue > 0 && (
-          <div className="text-xs text-slate-500 px-3 mb-2 font-medium">{formatCurrency(totalValue)}</div>
+          <div className="text-xs text-slate-500 mt-1 font-medium">{formatCurrency(totalValue)}</div>
         )}
-
-        {/* Cards */}
-        <SortableContext items={leads.map((l) => l.id)} strategy={verticalListSortingStrategy}>
-          <div
-            ref={setNodeRef}
-            className={`flex flex-col gap-2 min-h-[60px] p-2 pt-0 flex-1 min-h-0 overflow-y-auto scrollbar-thin transition-colors ${
-              isOver ? 'bg-af-light/70' : ''
-            }`}
-          >
-            {leads.map((lead) => (
-              <KanbanCard key={lead.id} lead={lead} labelColor={stage.color} onOpen={onOpenLead} />
-            ))}
-          </div>
-        </SortableContext>
-
-        {/* Adicionar cartão */}
-        <button
-          onClick={() => onAddLead(stage.id)}
-          className="flex items-center gap-1.5 mx-2 mb-2 px-2 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-200/70 hover:text-slate-700 transition-colors"
-        >
-          <Plus size={14} /> Adicionar um cartão
-        </button>
       </div>
+
+      {/* Corpo — transparente (mostra o fundo). Os cards têm fundo próprio. */}
+      <SortableContext items={leads.map((l) => l.id)} strategy={verticalListSortingStrategy}>
+        <div
+          ref={setNodeRef}
+          className={`flex flex-col gap-2 min-h-[60px] pt-2 flex-1 min-h-0 overflow-y-auto scrollbar-thin transition-colors rounded-xl ${
+            isOver ? 'bg-af-light/40' : ''
+          }`}
+        >
+          {leads.map((lead) => (
+            <KanbanCard key={lead.id} lead={lead} labelColor={stage.color} onOpen={onOpenLead} />
+          ))}
+
+          {/* Adicionar cartão — rola junto com os cards */}
+          <button
+            onClick={() => onAddLead(stage.id)}
+            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:bg-white/40 hover:text-slate-800 transition-colors"
+          >
+            <Plus size={14} /> Adicionar um cartão
+          </button>
+        </div>
+      </SortableContext>
     </div>
   );
 }
