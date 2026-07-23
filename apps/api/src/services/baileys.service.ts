@@ -119,9 +119,14 @@ export async function debugSend(accountId: string, target?: string, sendReal = f
       const pn = await sock.signalRepository?.lidMapping?.getPNForLID?.(target);
       out.lidToPn = pn || null;
     } catch (e: any) { out.lidToPnError = e?.message; }
+  }
+
+  // Verifica se o número EXISTE no WhatsApp (para número real, não grupo)
+  if (target && !target.includes('@g.us')) {
     try {
-      const res = await sock.onWhatsApp(target);
-      out.onWhatsApp = res;
+      const digits = target.replace(/\D/g, '');
+      const res = await sock.onWhatsApp(digits ? `+${digits}` : target);
+      out.existsOnWhatsApp = res;
     } catch (e: any) { out.onWhatsAppError = e?.message; }
   }
 
