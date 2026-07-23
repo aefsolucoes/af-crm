@@ -67,6 +67,7 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
   companyId: string;
   tags: string[];
   customFields: Record<string, unknown>;
+  isGroup: boolean;
 }>) {
   return prisma.lead.update({ where: { id }, data: data as any });
 }

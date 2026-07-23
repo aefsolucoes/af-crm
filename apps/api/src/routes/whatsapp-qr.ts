@@ -1,7 +1,7 @@
 import { Router, Response, Request } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { startQRConnection, getQRStatus, disconnectQR } from '../services/baileys.service';
+import { startQRConnection, getQRStatus, disconnectQR, refreshGroupNames } from '../services/baileys.service';
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -96,6 +96,16 @@ router.post('/numbers/:id/disconnect', async (req: AuthRequest, res: Response) =
   if (!number) return res.status(404).json({ error: 'Número não encontrado' });
   await disconnectQR(number.id);
   res.json({ status: 'disconnected' });
+});
+
+// Atualiza os nomes dos grupos (assunto real) a partir do WhatsApp conectado
+router.post('/refresh-groups', async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await refreshGroupNames(req.user!.accountId);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao atualizar grupos' });
+  }
 });
 
 export default router;

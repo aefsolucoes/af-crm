@@ -23,6 +23,7 @@ const createLeadSchema = z.object({
 
 const updateLeadSchema = createLeadSchema.partial().extend({
   status: z.enum(['OPEN', 'WON', 'LOST']).optional(),
+  isGroup: z.boolean().optional(),
 });
 const stageSchema = z.object({ stageId: z.string() });
 

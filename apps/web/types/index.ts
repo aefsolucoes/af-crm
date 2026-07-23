@@ -150,6 +150,7 @@ export interface Conversation {
   messages: Message[];
   _count: { messages: number };
   updatedAt: string;
+  isGroup?: boolean;
 }
 
 export interface SalesBot {

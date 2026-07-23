@@ -116,6 +116,7 @@ model Lead {
   customFields Json?
   tags         String[]
   archived     Boolean    @default(false)
+  isGroup      Boolean    @default(false)
   tasks        Task[]
   notes        Note[]
   messages     Message[]

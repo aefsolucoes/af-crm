@@ -91,6 +91,14 @@ function InboxPageInner() {
           conversations={conversations || []}
           selectedId={selectedId || undefined}
           onSelect={(id) => { setSelectedId(id); setLocalMessages([]); }}
+          onToggleGroup={async (id, isGroup) => {
+            await api.put(`/api/leads/${id}`, { isGroup });
+            queryClient.invalidateQueries({ queryKey: ['conversations'] });
+          }}
+          onRefreshGroupNames={async () => {
+            await api.post('/api/whatsapp-qr/refresh-groups');
+            queryClient.invalidateQueries({ queryKey: ['conversations'] });
+          }}
           loading={loadingConvs}
         />
 

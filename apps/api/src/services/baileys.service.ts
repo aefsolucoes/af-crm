@@ -45,6 +45,46 @@ export function getConnectedNumberIds(accountId: string): string[] {
   return ids;
 }
 
+/** Retorna um socket conectado de uma conta (qualquer número), ou null. */
+function getAnyConnectedSock(accountId: string): any {
+  for (const conn of connections.values()) {
+    if (conn.accountId === accountId && conn.status === 'connected' && conn.sock) return conn.sock;
+  }
+  return null;
+}
+
+/**
+ * Atualiza o nome dos leads de grupo com o assunto real do grupo.
+ * Percorre os contatos com JID @g.us e usa groupMetadata do número conectado.
+ */
+export async function refreshGroupNames(accountId: string): Promise<{ updated: number; total: number }> {
+  const sock = getAnyConnectedSock(accountId);
+  if (!sock) throw new Error('Nenhum WhatsApp conectado para consultar os grupos');
+
+  const contacts = await prisma.contact.findMany({
+    where: { accountId, whatsappPhone: { endsWith: '@g.us' } },
+    include: { leads: true },
+  });
+
+  let updated = 0;
+  for (const c of contacts) {
+    const subject = await getGroupSubject(sock, c.whatsappPhone!);
+    if (!subject) continue;
+    if (c.name !== subject) {
+      await prisma.contact.update({ where: { id: c.id }, data: { name: subject } }).catch(() => {});
+    }
+    for (const lead of c.leads) {
+      const data: any = { isGroup: true };
+      if (lead.name !== subject) data.name = subject;
+      const cf = (lead.customFields as any) || {};
+      if (cf.participante_1 !== subject) data.customFields = { ...cf, participante_1: subject };
+      await prisma.lead.update({ where: { id: lead.id }, data }).catch(() => {});
+      updated++;
+    }
+  }
+  return { updated, total: contacts.length };
+}
+
 function getAuthDir(numberId: string): string {
   const dir = path.join(os.tmpdir(), 'af_baileys', numberId);
   fs.mkdirSync(dir, { recursive: true });
@@ -358,6 +398,7 @@ async function getOrCreateLeadForPhone(
       contactId: contact.id,
       status: 'OPEN',
       whatsappNumberId: numberId,
+      isGroup,
       customFields: custom,
     },
   });
