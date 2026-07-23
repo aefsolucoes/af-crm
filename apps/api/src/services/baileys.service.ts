@@ -6,6 +6,14 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
+// Baileys 7.x é ESM puro. Como este projeto compila para CommonJS, o tsc
+// converteria `import()` em `require()` — que quebra com pacotes ESM.
+// Este helper preserva um import dinâmico REAL em runtime (o tsc não o reescreve).
+const dynamicImport = new Function('specifier', 'return import(specifier)') as (s: string) => Promise<any>;
+function importBaileys(): Promise<any> {
+  return dynamicImport('@whiskeysockets/baileys');
+}
+
 type ConnectionStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
 
 interface ConnectionState {
@@ -139,7 +147,7 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
   globalIO?.emit(`whatsapp_status_${numberId}`, { numberId, status: 'connecting' });
 
   try {
-    const baileys = await import('@whiskeysockets/baileys') as any;
+    const baileys = await importBaileys();
     const makeWASocket = baileys.default?.default || baileys.default || baileys.makeWASocket;
     const { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers } = baileys;
 
@@ -511,7 +519,7 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
   if (!leadId) return;
 
   // Baixa o arquivo
-  const baileys = await import('@whiskeysockets/baileys') as any;
+  const baileys = await importBaileys();
   const buffer: Buffer = await baileys.downloadMediaMessage(
     msg, 'buffer', {},
     { reuploadRequest: sock.updateMediaMessage },

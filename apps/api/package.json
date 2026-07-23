@@ -2,6 +2,9 @@
   "name": "@af-crm/api",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "postinstall": "prisma generate",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
@@ -13,7 +16,7 @@
   },
   "dependencies": {
     "@prisma/client": "^5.10.2",
-    "@whiskeysockets/baileys": "^6.7.16",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
     "bcrypt": "^5.1.1",
     "bullmq": "^5.4.2",
     "cors": "^2.8.5",
