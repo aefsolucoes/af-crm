@@ -311,6 +311,15 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
       if (type !== 'notify' && type !== 'append') return;
       for (const msg of messages) {
         if (!msg.message) continue;
+
+        // Edição de mensagem: atualiza o conteúdo da mensagem original.
+        const edit = getEditInfo(msg);
+        if (edit) {
+          await applyMessageEdit(edit.targetId, edit.newText).catch(err =>
+            console.error('[Baileys] Erro ao editar mensagem:', err));
+          continue;
+        }
+
         // Mensagens do próprio número (fromMe): se saíram do CRM, ignoramos o
         // eco (já estão no banco). Se saíram do celular, entram como OUTBOUND
         // para espelhar a conversa completa.
@@ -406,11 +415,44 @@ function statusRank(status?: string | null): number {
   }
 }
 
-/** Extrai o texto de uma mensagem do WhatsApp (só mensagens de texto/legenda) */
+/**
+ * Desembrulha os "envelopes" comuns do WhatsApp (mensagem efêmera/temporária,
+ * view-once, documento com legenda, mensagem editada) para chegar no conteúdo real.
+ */
+function unwrapMessage(m: any): any {
+  if (!m || typeof m !== 'object') return m || {};
+  if (m.ephemeralMessage?.message) return unwrapMessage(m.ephemeralMessage.message);
+  if (m.viewOnceMessage?.message) return unwrapMessage(m.viewOnceMessage.message);
+  if (m.viewOnceMessageV2?.message) return unwrapMessage(m.viewOnceMessageV2.message);
+  if (m.viewOnceMessageV2Extension?.message) return unwrapMessage(m.viewOnceMessageV2Extension.message);
+  if (m.documentWithCaptionMessage?.message) return unwrapMessage(m.documentWithCaptionMessage.message);
+  if (m.editedMessage?.message) return unwrapMessage(m.editedMessage.message);
+  return m;
+}
+
+/** Extrai o texto de uma mensagem do WhatsApp (texto/legenda, incluindo respostas citadas). */
 function extractText(msg: any): string {
-  return msg.message?.conversation ||
-    msg.message?.extendedTextMessage?.text ||
-    msg.message?.imageMessage?.caption || '';
+  const m = unwrapMessage(msg.message);
+  return m.conversation
+    || m.extendedTextMessage?.text
+    || m.imageMessage?.caption
+    || m.videoMessage?.caption
+    || m.documentMessage?.caption
+    || m.buttonsResponseMessage?.selectedDisplayText
+    || m.listResponseMessage?.title
+    || m.templateButtonReplyMessage?.selectedDisplayText
+    || '';
+}
+
+/** Se a mensagem for uma EDIÇÃO de outra, retorna { targetId, newText }. */
+function getEditInfo(msg: any): { targetId: string; newText: string } | null {
+  const proto = msg.message?.protocolMessage;
+  // type 14 = MESSAGE_EDIT
+  if (proto && proto.editedMessage && proto.key?.id) {
+    const newText = extractText({ message: proto.editedMessage });
+    return { targetId: proto.key.id, newText };
+  }
+  return null;
 }
 
 /**
@@ -581,6 +623,16 @@ async function getGroupSubject(sock: any, groupJid: string): Promise<string> {
   }
 }
 
+/** Aplica a edição de uma mensagem já salva (busca pelo externalId original). */
+async function applyMessageEdit(targetId: string, newText: string) {
+  if (!newText) return;
+  const existing = await prisma.message.findFirst({ where: { externalId: targetId }, select: { id: true, leadId: true } });
+  if (!existing) return;
+  const updated = await prisma.message.update({ where: { id: existing.id }, data: { content: newText } });
+  globalIO?.to(`lead:${existing.leadId}`).emit('message_edited', { id: existing.id, content: newText });
+  globalIO?.to(`lead:${existing.leadId}`).emit('new_message', updated);
+}
+
 async function processIncomingMessage(msg: any, accountId: string, numberId: string, sock?: any) {
   try {
     const fromMe = !!msg.key.fromMe;
@@ -617,15 +669,14 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
 
 /** true se a mensagem contém um documento ou imagem */
 function hasMedia(msg: any): boolean {
-  const m = msg.message || {};
-  return !!(m.documentMessage || m.imageMessage
-    || m.documentWithCaptionMessage?.message?.documentMessage);
+  const m = unwrapMessage(msg.message);
+  return !!(m.documentMessage || m.imageMessage);
 }
 
 /** Extrai os metadados e o node de mídia (documento ou imagem) */
 function getMediaInfo(msg: any): { node: any; type: 'document' | 'image'; fileName: string; mimeType: string } | null {
-  const m = msg.message || {};
-  const doc = m.documentMessage || m.documentWithCaptionMessage?.message?.documentMessage;
+  const m = unwrapMessage(msg.message);
+  const doc = m.documentMessage;
   if (doc) {
     const mimeType = doc.mimetype || 'application/octet-stream';
     const fileName = doc.fileName || `documento-${Date.now()}`;
