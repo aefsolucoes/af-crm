@@ -265,7 +265,11 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }: any) => {
-      if (type !== 'notify') return;
+      // 'notify' = mensagem nova recebida; 'append' = mensagem adicionada à
+      // conversa (ex.: enviada por você em OUTRO aparelho/celular). Processamos
+      // ambos para espelhar a conversa completa. A deduplicação por externalId
+      // evita duplicar as que já estão no banco.
+      if (type !== 'notify' && type !== 'append') return;
       for (const msg of messages) {
         if (!msg.message) continue;
         // Mensagens do próprio número (fromMe): se saíram do CRM, ignoramos o
@@ -545,12 +549,19 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
   const leadId = await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock);
   if (!leadId) return;
 
-  // Baixa o arquivo
-  const baileys = await importBaileys();
-  const buffer: Buffer = await baileys.downloadMediaMessage(
-    msg, 'buffer', {},
-    { reuploadRequest: sock.updateMediaMessage },
-  );
+  // Tenta baixar o arquivo. Em documentos ENCAMINHADOS do celular, o download
+  // pode falhar (chaves de mídia indisponíveis neste aparelho) — nesse caso
+  // ainda salvamos a mensagem com o nome do arquivo, só sem os bytes.
+  let buffer: Buffer | null = null;
+  try {
+    const baileys = await importBaileys();
+    buffer = await baileys.downloadMediaMessage(
+      msg, 'buffer', {},
+      { reuploadRequest: sock.updateMediaMessage },
+    );
+  } catch (err) {
+    console.error(`[Baileys] Falha ao baixar mídia (${info.fileName}):`, (err as any)?.message);
+  }
 
   const caption = extractText(msg); // legenda, se houver
   const content = `📎 ${info.fileName}${caption ? ` — ${caption}` : ''}`;
@@ -560,15 +571,17 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
       content, direction: fromMe ? 'OUTBOUND' : 'INBOUND', channel: 'WHATSAPP', leadId,
       whatsappNumberId: numberId, read: fromMe ? true : false, externalId: msg.key.id,
       status: fromMe ? 'SENT' : 'DELIVERED',
-      attachments: {
-        create: { leadId, fileName: info.fileName, mimeType: info.mimeType, data: buffer },
-      },
+      ...(buffer ? {
+        attachments: {
+          create: { leadId, fileName: info.fileName, mimeType: info.mimeType, data: buffer },
+        },
+      } : {}),
     },
   });
 
   globalIO?.to(`lead:${leadId}`).emit('new_message', message);
   globalIO?.emit('new_conversation', { leadId });
-  console.log(`[Baileys] Documento capturado: ${info.fileName} (${buffer.length} bytes) → lead ${leadId}`);
+  console.log(`[Baileys] Mídia ${buffer ? 'capturada' : 'registrada (sem bytes)'}: ${info.fileName} → lead ${leadId}`);
 }
 
 const HISTORY_IMPORT_LIMIT = 500;
