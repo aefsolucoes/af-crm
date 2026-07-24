@@ -8,6 +8,7 @@ import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { Avatar } from '@/components/ui/avatar';
+import { AttachmentView } from '@/components/inbox/message-attachment';
 import { MessageTemplate, CATEGORY_META, getTemplates, fillTemplate } from '@/lib/templates';
 
 const CHANNEL_ICONS: Record<Channel, string> = {
@@ -328,7 +329,22 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                     )}
                     style={{ backgroundColor: isOut ? '#d9fdd3' : '#ffffff' }}
                   >
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{msg.content}</p>
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div className="flex flex-col gap-1.5 mb-1">
+                        {msg.attachments.map((att) => (
+                          <AttachmentView key={att.id} att={att} />
+                        ))}
+                      </div>
+                    )}
+                    {(() => {
+                      // Com anexo, o "📎 nome" já é mostrado pelo anexo; exibe só a legenda.
+                      const hasAtt = !!(msg.attachments && msg.attachments.length > 0);
+                      const text = hasAtt
+                        ? (msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '')
+                        : msg.content;
+                      if (!text) return null;
+                      return <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{text}</p>;
+                    })()}
                     <div className="absolute bottom-2 right-3 flex items-center gap-1">
                       <span className="text-xs text-slate-400">{time}</span>
                       {isOut && <StatusTick status={liveStatus} />}

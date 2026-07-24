@@ -27,6 +27,10 @@ interface ConnectionState {
 const connections = new Map<string, ConnectionState>();
 let globalIO: any = null;
 
+// IDs de mensagens enviadas PELO CRM — para ignorar o eco fromMe que o
+// Baileys reemite em messages.upsert (senão a mensagem apareceria duplicada).
+const selfSentIds = new Set<string>();
+
 export function setBaileysIO(io: any) {
   globalIO = io;
 }
@@ -263,7 +267,11 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
     sock.ev.on('messages.upsert', async ({ messages, type }: any) => {
       if (type !== 'notify') return;
       for (const msg of messages) {
-        if (!msg.message || msg.key.fromMe) continue;
+        if (!msg.message) continue;
+        // Mensagens do próprio número (fromMe): se saíram do CRM, ignoramos o
+        // eco (já estão no banco). Se saíram do celular, entram como OUTBOUND
+        // para espelhar a conversa completa.
+        if (msg.key.fromMe && selfSentIds.has(msg.key.id)) continue;
         // Documento/imagem → captura o arquivo; senão trata como texto
         if (hasMedia(msg)) {
           await processIncomingMedia(msg, accountId, numberId, sock).catch(err =>
@@ -467,18 +475,29 @@ async function getGroupSubject(sock: any, groupJid: string): Promise<string> {
 
 async function processIncomingMessage(msg: any, accountId: string, numberId: string, sock?: any) {
   try {
+    const fromMe = !!msg.key.fromMe;
     const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
     const text = extractText(msg);
     if (!text || !from) return;
 
-    const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId, numberId, sock);
+    // fromMe: remoteJid é o destinatário; não usamos pushName para o nome.
+    const leadId = await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock);
     if (!leadId) return;
 
     const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
     if (dup) return;
 
     const message = await prisma.message.create({
-      data: { content: text, direction: 'INBOUND', channel: 'WHATSAPP', leadId, whatsappNumberId: numberId, read: false, externalId: msg.key.id, status: 'DELIVERED' },
+      data: {
+        content: text,
+        direction: fromMe ? 'OUTBOUND' : 'INBOUND',
+        channel: 'WHATSAPP',
+        leadId,
+        whatsappNumberId: numberId,
+        read: fromMe ? true : false,
+        externalId: msg.key.id,
+        status: fromMe ? 'SENT' : 'DELIVERED',
+      },
     });
 
     globalIO?.to(`lead:${leadId}`).emit('new_message', message);
@@ -513,6 +532,7 @@ function getMediaInfo(msg: any): { node: any; type: 'document' | 'image'; fileNa
 }
 
 async function processIncomingMedia(msg: any, accountId: string, numberId: string, sock: any) {
+  const fromMe = !!msg.key.fromMe;
   const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
   if (!from) return;
 
@@ -522,7 +542,7 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
   const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
   if (dup) return;
 
-  const leadId = await getOrCreateLeadForPhone(from, msg.pushName, accountId, numberId, sock);
+  const leadId = await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock);
   if (!leadId) return;
 
   // Baixa o arquivo
@@ -537,8 +557,9 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
 
   const message = await prisma.message.create({
     data: {
-      content, direction: 'INBOUND', channel: 'WHATSAPP', leadId,
-      whatsappNumberId: numberId, read: false, externalId: msg.key.id, status: 'DELIVERED',
+      content, direction: fromMe ? 'OUTBOUND' : 'INBOUND', channel: 'WHATSAPP', leadId,
+      whatsappNumberId: numberId, read: fromMe ? true : false, externalId: msg.key.id,
+      status: fromMe ? 'SENT' : 'DELIVERED',
       attachments: {
         create: { leadId, fileName: info.fileName, mimeType: info.mimeType, data: buffer },
       },
@@ -602,20 +623,28 @@ async function importHistoryMessages(messages: any[], accountId: string, numberI
   if (imported > 0) globalIO?.emit('new_conversation', {});
 }
 
-/** Envia por um número específico (numberId). Retorna false se esse número não estiver conectado. */
-export async function sendBaileysMessage(to: string, text: string, numberId: string): Promise<boolean> {
+/**
+ * Envia por um número específico (numberId). Retorna o id da mensagem enviada
+ * (para deduplicar o eco fromMe), ou null se não estiver conectado / falhar.
+ */
+export async function sendBaileysMessage(to: string, text: string, numberId: string): Promise<string | null> {
   const conn = connections.get(numberId);
-  if (!conn?.sock || conn.status !== 'connected') return false;
+  if (!conn?.sock || conn.status !== 'connected') return null;
   try {
     // Se já vier um JID completo (@lid, @g.us, @s.whatsapp.net), respeita-o.
     // O WhatsApp passou a entregar mensagens com endereçamento @lid; nesses
     // casos precisamos responder para o mesmo JID, não reconstruir como telefone.
     const jid = toWhatsAppJid(to);
-    await conn.sock.sendMessage(jid, { text });
-    return true;
+    const sent = await conn.sock.sendMessage(jid, { text });
+    const id = sent?.key?.id || null;
+    if (id) {
+      selfSentIds.add(id);
+      setTimeout(() => selfSentIds.delete(id), 5 * 60 * 1000);
+    }
+    return id;
   } catch (err) {
     console.error('[Baileys] Erro ao enviar:', err);
-    return false;
+    return null;
   }
 }
 

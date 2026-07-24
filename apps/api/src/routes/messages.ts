@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, markConversationRead } from '../services/message.service';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, markConversationRead, getAttachment } from '../services/message.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -31,6 +31,24 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     } catch {
       res.status(500).json({ error: 'Erro ao buscar conversas' });
     }
+  }
+});
+
+// Serve os bytes de um anexo (imagem/documento) recebido no WhatsApp
+router.get('/attachment/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const att = await getAttachment(req.params.id, req.user!.accountId);
+    if (!att) return res.status(404).json({ error: 'Anexo não encontrado' });
+    if (!att.data) {
+      // Já foi movido para o Drive (bytes limpos do banco)
+      return res.status(410).json({ error: 'Arquivo movido para o Google Drive', driveFileId: att.driveFileId });
+    }
+    const isImage = att.mimeType.startsWith('image/');
+    res.setHeader('Content-Type', att.mimeType);
+    res.setHeader('Content-Disposition', `${isImage ? 'inline' : 'attachment'}; filename="${encodeURIComponent(att.fileName)}"`);
+    res.send(Buffer.from(att.data as any));
+  } catch {
+    res.status(500).json({ error: 'Erro ao carregar anexo' });
   }
 });
 

@@ -131,6 +131,13 @@ export interface Note {
 
 export type MsgStatus = 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
+export interface MessageAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  driveFileId?: string | null;
+}
+
 export interface Message {
   id: string;
   content: string;
@@ -140,6 +147,7 @@ export interface Message {
   read: boolean;
   externalId?: string;
   status?: MsgStatus;
+  attachments?: MessageAttachment[];
   createdAt: string;
 }
 

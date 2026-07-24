@@ -8,6 +8,11 @@ export async function getMessages(leadId: string) {
   return prisma.message.findMany({
     where: { leadId },
     orderBy: { createdAt: 'asc' },
+    include: {
+      attachments: {
+        select: { id: true, fileName: true, mimeType: true, driveFileId: true },
+      },
+    },
   });
 }
 
@@ -138,8 +143,11 @@ export async function sendOutboundWhatsApp(params: {
       return { success: false, error: 'Nenhum WhatsApp conectado via QR Code. Conecte em Configurações → QR Code ou envie pela API oficial.' };
     }
     usedNumberId = preferred;
-    const sent = await sendBaileysMessage(phone, content, preferred);
-    if (!sent) status = 'FAILED';
+    // Retorna o id da mensagem enviada; guardamos como externalId para
+    // deduplicar o eco fromMe que o Baileys emite em messages.upsert.
+    const sentId = await sendBaileysMessage(phone, content, preferred);
+    if (!sentId) status = 'FAILED';
+    else externalId = sentId;
 
     // Se a conversa ainda não estava vinculada a um número, vincula agora
     if (!lead.whatsappNumberId) {
@@ -202,6 +210,15 @@ export async function getConversations(accountId: string) {
     const tb = b.messages[0]?.createdAt?.getTime() ?? b.updatedAt.getTime();
     return tb - ta;
   });
+}
+
+/** Busca um anexo (com bytes) garantindo que pertence à conta. */
+export async function getAttachment(id: string, accountId: string) {
+  const att = await prisma.messageAttachment.findUnique({ where: { id } });
+  if (!att) return null;
+  const lead = await prisma.lead.findFirst({ where: { id: att.leadId, accountId }, select: { id: true } });
+  if (!lead) return null;
+  return att;
 }
 
 /** Marca como lidas todas as mensagens recebidas (INBOUND) de um lead. */
