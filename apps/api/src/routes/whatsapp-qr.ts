@@ -1,7 +1,7 @@
 import { Router, Response, Request } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { startQRConnection, getQRStatus, disconnectQR, refreshGroupNames } from '../services/baileys.service';
+import { startQRConnection, getQRStatus, disconnectQR, refreshGroupNames, resolveLidPhones } from '../services/baileys.service';
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -105,6 +105,16 @@ router.post('/refresh-groups', async (req: AuthRequest, res: Response) => {
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao atualizar grupos' });
+  }
+});
+
+// Resolve os telefones reais dos contatos @lid (backfill via mapa LID→número)
+router.post('/resolve-phones', async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await resolveLidPhones(req.user!.accountId);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao resolver telefones' });
   }
 });
 

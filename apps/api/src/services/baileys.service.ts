@@ -97,6 +97,40 @@ export async function refreshGroupNames(accountId: string): Promise<{ updated: n
   return { updated, total: contacts.length };
 }
 
+/**
+ * Backfill em massa: resolve o telefone real dos contatos @lid usando o mapa
+ * LID→número do Baileys 7. Preenche contact.phone e lead.customFields.telefone_1.
+ */
+export async function resolveLidPhones(accountId: string): Promise<{ updated: number; total: number }> {
+  const sock = getAnyConnectedSock(accountId);
+  if (!sock) throw new Error('Nenhum WhatsApp conectado');
+
+  const contacts = await prisma.contact.findMany({
+    where: { accountId, whatsappPhone: { endsWith: '@lid' }, OR: [{ phone: null }, { phone: '' }] },
+    include: { leads: true },
+  });
+
+  let updated = 0;
+  for (const c of contacts) {
+    try {
+      const pnJid = await sock.signalRepository?.lidMapping?.getPNForLID?.(c.whatsappPhone!);
+      if (!pnJid) continue;
+      const d = String(pnJid).split('@')[0].split(':')[0].replace(/\D/g, '');
+      if (d.length < 8) continue;
+      await prisma.contact.update({ where: { id: c.id }, data: { phone: `+${d}` } });
+      const tel = formatPhoneDisplay(d);
+      for (const lead of c.leads) {
+        const cf = (lead.customFields as any) || {};
+        if (!cf.telefone_1) {
+          await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, telefone_1: tel } } }).catch(() => {});
+        }
+      }
+      updated++;
+    } catch { /* mapeamento indisponível para este contato */ }
+  }
+  return { updated, total: contacts.length };
+}
+
 function getAuthDir(numberId: string): string {
   const dir = path.join(os.tmpdir(), 'af_baileys', numberId);
   fs.mkdirSync(dir, { recursive: true });
@@ -397,8 +431,18 @@ async function getOrCreateLeadForPhone(
 ): Promise<string | null> {
   const isGroup = from.endsWith('@g.us');
   const isLid = from.endsWith('@lid');
-  // Só temos telefone real quando a mensagem veio de um JID de usuário comum (@s.whatsapp.net).
-  const realPhone = (!isGroup && !isLid) ? from.replace(/\D/g, '') : null;
+  // Telefone real: direto do @s.whatsapp.net; para @lid, tenta resolver via
+  // o mapa LID→número do Baileys 7 (getPNForLID).
+  let realPhone = (!isGroup && !isLid) ? from.replace(/\D/g, '') : null;
+  if (!realPhone && isLid && sock) {
+    try {
+      const pnJid = await sock.signalRepository?.lidMapping?.getPNForLID?.(from);
+      if (pnJid) {
+        const d = String(pnJid).split('@')[0].split(':')[0].replace(/\D/g, '');
+        if (d.length >= 8) realPhone = d;
+      }
+    } catch { /* mapeamento ainda não disponível */ }
+  }
 
   // Matching por telefone só quando temos um número real (evita colidir LID com telefone).
   const orMatch: any[] = [{ whatsappPhone: from }];
@@ -429,12 +473,22 @@ async function getOrCreateLeadForPhone(
     await prisma.contact.update({ where: { id: contact.id }, data: { whatsappPhone: from } });
   }
 
+  // Backfill do telefone real quando acabamos de resolvê-lo (contato/lead antigos
+  // criados via @lid ficavam sem número). Mantém o whatsappPhone (@lid) p/ roteamento.
+  const telDisplayResolved = formatPhoneDisplay(realPhone);
+  if (realPhone && !contact.phone) {
+    await prisma.contact.update({ where: { id: contact.id }, data: { phone: `+${realPhone}` } }).catch(() => {});
+  }
+
   const leads = (contact as any).leads || [];
   if (leads.length > 0) {
     const lead = leads[0];
-    // Garante que a conversa aponte para o número que recebeu (se ainda não tiver)
-    if (!lead.whatsappNumberId) {
-      await prisma.lead.update({ where: { id: lead.id }, data: { whatsappNumberId: numberId } }).catch(() => {});
+    const data: any = {};
+    if (!lead.whatsappNumberId) data.whatsappNumberId = numberId;
+    const cf = (lead.customFields as any) || {};
+    if (telDisplayResolved && !cf.telefone_1) data.customFields = { ...cf, telefone_1: telDisplayResolved };
+    if (Object.keys(data).length) {
+      await prisma.lead.update({ where: { id: lead.id }, data }).catch(() => {});
     }
     return lead.id;
   }
