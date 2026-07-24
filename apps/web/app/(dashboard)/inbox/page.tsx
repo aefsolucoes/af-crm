@@ -8,6 +8,7 @@ import { ChatWindow } from '@/components/inbox/chat-window';
 import { InboxLeadPanel } from '@/components/inbox/inbox-lead-panel';
 import { Conversation, Message, LeadDetail } from '@/types';
 import api from '@/lib/api';
+import { getSocket } from '@/lib/socket';
 
 async function fetchConversations(): Promise<Conversation[]> {
   const { data } = await api.get('/api/messages');
@@ -51,8 +52,26 @@ function InboxPageInner() {
   const { data: conversations, isLoading: loadingConvs } = useQuery({
     queryKey: ['conversations'],
     queryFn: fetchConversations,
-    refetchInterval: 30000,
+    refetchInterval: 30000, // rede de segurança; o tempo real vem pelo socket abaixo
   });
+
+  // Atualiza a lista de conversas em TEMPO REAL (sem esperar o poll de 30s).
+  // O backend emite 'new_conversation' a cada mensagem nova (recebida ou enviada).
+  useEffect(() => {
+    const socket = getSocket();
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (t) return; // agrupa rajadas de eventos em 1 atualização
+      t = setTimeout(() => { t = null; queryClient.invalidateQueries({ queryKey: ['conversations'] }); }, 300);
+    };
+    socket.on('new_conversation', refresh);
+    socket.on('new_notification', refresh);
+    return () => {
+      if (t) clearTimeout(t);
+      socket.off('new_conversation', refresh);
+      socket.off('new_notification', refresh);
+    };
+  }, [queryClient]);
 
   // Números de WhatsApp conectados — para as abas por número na Inbox
   const { data: whatsappNumbers } = useQuery({

@@ -286,6 +286,29 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
       }
     });
 
+    // Recibos de entrega/leitura do WhatsApp → atualiza os tiques (1/2/2 azuis)
+    sock.ev.on('messages.update', async (updates: any[]) => {
+      for (const u of updates) {
+        try {
+          const waStatus = u.update?.status;
+          const id = u.key?.id;
+          if (waStatus == null || !id) continue;
+          const mapped = mapWaStatus(waStatus);
+          if (!mapped) continue;
+          const msg = await prisma.message.findFirst({
+            where: { externalId: id },
+            select: { id: true, leadId: true, status: true },
+          });
+          if (!msg) continue;
+          // só avança (SENT → DELIVERED → READ), nunca regride
+          if (statusRank(mapped) <= statusRank(msg.status)) continue;
+          await prisma.message.update({ where: { id: msg.id }, data: { status: mapped } });
+          globalIO?.to(`lead:${msg.leadId}`).emit('message_status', { id: msg.id, status: mapped });
+          globalIO?.to(`account_${accountId}`).emit('message_status', { id: msg.id, status: mapped });
+        } catch { /* ignore item */ }
+      }
+    });
+
     // Quando o contato compartilha o número real (WhatsApp @lid → telefone),
     // atualiza o contato para exibir/rotear pelo número verdadeiro.
     sock.ev.on('chats.phoneNumberShare', async ({ lid, jid }: { lid?: string; jid?: string }) => {
@@ -322,6 +345,26 @@ function toWhatsAppJid(to: string): string {
   if (t.includes('@')) return t;               // @lid, @g.us ou @s.whatsapp.net
   const digits = t.replace(/\D/g, '');
   return `${digits}@s.whatsapp.net`;
+}
+
+/** Mapeia o status numérico do WhatsApp para o nosso enum (tiques). */
+function mapWaStatus(waStatus: number | string): 'SENT' | 'DELIVERED' | 'READ' | null {
+  const n = typeof waStatus === 'string' ? parseInt(waStatus, 10) : waStatus;
+  // Baileys: 2=SERVER_ACK (enviado), 3=DELIVERY_ACK (entregue), 4=READ, 5=PLAYED
+  if (n >= 4) return 'READ';
+  if (n === 3) return 'DELIVERED';
+  if (n === 2) return 'SENT';
+  return null;
+}
+
+/** Ordem dos status para só avançar (nunca regredir READ→DELIVERED). */
+function statusRank(status?: string | null): number {
+  switch (status) {
+    case 'READ': return 3;
+    case 'DELIVERED': return 2;
+    case 'SENT': return 1;
+    default: return 0;
+  }
 }
 
 /** Extrai o texto de uma mensagem do WhatsApp (só mensagens de texto/legenda) */
