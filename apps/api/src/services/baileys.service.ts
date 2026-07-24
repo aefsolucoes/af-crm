@@ -105,8 +105,13 @@ export async function resolveLidPhones(accountId: string): Promise<{ updated: nu
   const sock = getAnyConnectedSock(accountId);
   if (!sock) throw new Error('Nenhum WhatsApp conectado');
 
+  // Contatos @lid sem telefone real: phone vazio OU com lixo (@lid/@g.us gravado).
   const contacts = await prisma.contact.findMany({
-    where: { accountId, whatsappPhone: { endsWith: '@lid' }, OR: [{ phone: null }, { phone: '' }] },
+    where: {
+      accountId,
+      whatsappPhone: { endsWith: '@lid' },
+      OR: [{ phone: null }, { phone: '' }, { phone: { contains: '@' } }],
+    },
     include: { leads: true },
   });
 
@@ -121,7 +126,7 @@ export async function resolveLidPhones(accountId: string): Promise<{ updated: nu
       const tel = formatPhoneDisplay(d);
       for (const lead of c.leads) {
         const cf = (lead.customFields as any) || {};
-        if (!cf.telefone_1) {
+        if (!cf.telefone_1 || String(cf.telefone_1).includes('@')) {
           await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, telefone_1: tel } } }).catch(() => {});
         }
       }
@@ -476,7 +481,8 @@ async function getOrCreateLeadForPhone(
   // Backfill do telefone real quando acabamos de resolvê-lo (contato/lead antigos
   // criados via @lid ficavam sem número). Mantém o whatsappPhone (@lid) p/ roteamento.
   const telDisplayResolved = formatPhoneDisplay(realPhone);
-  if (realPhone && !contact.phone) {
+  const contactPhoneBad = !contact.phone || contact.phone.includes('@');
+  if (realPhone && contactPhoneBad) {
     await prisma.contact.update({ where: { id: contact.id }, data: { phone: `+${realPhone}` } }).catch(() => {});
   }
 
@@ -486,7 +492,8 @@ async function getOrCreateLeadForPhone(
     const data: any = {};
     if (!lead.whatsappNumberId) data.whatsappNumberId = numberId;
     const cf = (lead.customFields as any) || {};
-    if (telDisplayResolved && !cf.telefone_1) data.customFields = { ...cf, telefone_1: telDisplayResolved };
+    const telBad = !cf.telefone_1 || String(cf.telefone_1).includes('@');
+    if (telDisplayResolved && telBad) data.customFields = { ...cf, telefone_1: telDisplayResolved };
     if (Object.keys(data).length) {
       await prisma.lead.update({ where: { id: lead.id }, data }).catch(() => {});
     }
