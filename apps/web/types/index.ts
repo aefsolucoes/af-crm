@@ -147,6 +147,7 @@ export interface Message {
   read: boolean;
   externalId?: string;
   status?: MsgStatus;
+  whatsappNumberId?: string | null;
   attachments?: MessageAttachment[];
   createdAt: string;
 }

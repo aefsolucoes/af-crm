@@ -50,6 +50,10 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
   const [via, setVia] = useState<WhatsAppVia | null>(null);
+  // Número de WhatsApp (QR) escolhido para enviar; null = automático (o número
+  // que a conversa já usa ou o primeiro conectado). Escolher outro NÃO duplica a
+  // conversa — é o mesmo lead, só muda por qual número a mensagem sai.
+  const [fromNumberId, setFromNumberId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
   // Disponibilidade dos canais de WhatsApp (números via QR Code e API oficial)
@@ -67,6 +71,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   const apiActive = !!apiConfig?.active;
   // Canal efetivo: escolha manual, senão QR se conectado, senão API
   const effectiveVia: WhatsAppVia = via ?? (qrConnected ? 'qr' : 'api');
+
+  // Números QR conectados + rótulos (id → apelido) para o seletor e p/ marcar
+  // cada mensagem enviada com o número que a mandou.
+  const connectedQr = (qrNumbers || []).filter(n => n.status === 'connected');
+  const numberLabels: Record<string, string> = Object.fromEntries((qrNumbers || []).map(n => [n.id, n.label]));
+  // Número que a conversa já vinha usando (última mensagem com número definido).
+  const lastRouted = [...messages].reverse().find(m => m.whatsappNumberId)?.whatsappNumberId ?? null;
+  // Número ativo para enviar: escolha do usuário, senão o da conversa (se conectado), senão o 1º conectado.
+  const activeNumberId =
+    fromNumberId ??
+    (lastRouted && connectedQr.some(n => n.id === lastRouted) ? lastRouted : connectedQr[0]?.id) ??
+    null;
+
+  // Ao trocar de conversa, volta o seletor para "automático".
+  useEffect(() => { setFromNumberId(null); }, [leadId]);
   const [aiLoading, setAiLoading] = useState<AIMode | null>(null);
   const [showAI, setShowAI] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -114,7 +133,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
         direction: 'OUTBOUND',
         channel,
         leadId,
-        ...(channel === 'WHATSAPP' ? { via: effectiveVia } : {}),
+        ...(channel === 'WHATSAPP'
+          ? { via: effectiveVia, ...(effectiveVia === 'qr' && activeNumberId ? { fromNumberId: activeNumberId } : {}) }
+          : {}),
       });
       onNewMessage(data);
     } catch (err: any) {
@@ -287,6 +308,30 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           🌐 API Oficial
           <span className={cn('w-1.5 h-1.5 rounded-full', apiActive ? 'bg-green-400' : 'bg-red-400')} />
         </button>
+
+        {/* Com 2+ números conectados, escolhe por qual WhatsApp esta mensagem sai
+            (mesma conversa, sem duplicar). */}
+        {effectiveVia === 'qr' && connectedQr.length >= 2 && (
+          <>
+            <span className="mx-1 h-4 w-px bg-slate-200" />
+            <span className="text-xs text-slate-500 font-medium">Número:</span>
+            {connectedQr.map(n => (
+              <button
+                key={n.id}
+                onClick={() => setFromNumberId(n.id)}
+                title={`Enviar por ${n.label}`}
+                className={cn(
+                  'px-2.5 py-1 rounded-full text-xs font-medium transition-all',
+                  activeNumberId === n.id
+                    ? 'bg-[#075e54] text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                )}
+              >
+                {n.label}
+              </button>
+            ))}
+          </>
+        )}
       </div>
 
       {/* Timeline unificado: mensagens + eventos de fluxo */}
@@ -358,6 +403,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                     )}
                     style={{ backgroundColor: isOut ? '#d9fdd3' : '#ffffff' }}
                   >
+                    {isOut && msg.whatsappNumberId && (qrNumbers?.length ?? 0) >= 2 && numberLabels[msg.whatsappNumberId] && (
+                      <p className="text-[10px] font-medium text-[#075e54]/70 mb-0.5">via {numberLabels[msg.whatsappNumberId]}</p>
+                    )}
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="flex flex-col gap-1.5 mb-1">
                         {msg.attachments.map((att) => (

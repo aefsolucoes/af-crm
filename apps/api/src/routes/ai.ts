@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { sendOutboundWhatsApp, findOrCreateLeadByPhone } from '../services/message.service';
+import { sendOutboundWhatsApp, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
 import { organizeLeadDocsToDrive } from '../services/google.service';
 
 const router = Router();
@@ -75,7 +75,10 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - find_lead: busca um lead já cadastrado pelo nome.
 - get_recent_messages: lê o histórico de mensagens de um lead.
 - send_whatsapp_message: envia para um lead JÁ existente (por leadId).
-- send_whatsapp_to_number: quando o colaborador fornecer um NÚMERO de telefone (ex: "manda mensagem para o 61 99999-9999"), use esta ferramenta — ela cria o contato/lead automaticamente e envia. Sempre que o pedido incluir um número, use send_whatsapp_to_number diretamente, sem exigir que o lead já exista.
+- send_whatsapp_to_number: quando o colaborador fornecer um NÚMERO de telefone (ex: "manda mensagem para o 61 99999-9999"), use esta ferramenta — ela cria o contato/lead automaticamente e envia. Sempre que o pedido incluir um número, use send_whatsapp_to_number diretamente, sem exigir que o lead já exista. Aceita stageId (para criar o card num funil/estágio específico) e fromNumberId (número de WhatsApp de origem).
+- list_whatsapp_numbers: lista os números de WhatsApp conectados (id + apelido). Use antes de enviar quando houver MAIS DE UM número conectado e o colaborador não tiver dito de qual enviar: mostre os apelidos e PERGUNTE qual usar. Se só houver um conectado, use-o sem perguntar. Passe o id escolhido em fromNumberId ao enviar.
+- list_pipelines: lista os funis e seus estágios (com ids). Use para achar o stageId quando o colaborador pedir para criar o card num funil/estágio específico (ex: "no funil Follow-up, estágio Remarketing números"). Depois passe esse stageId em send_whatsapp_to_number. Você TEM, sim, como criar o card num estágio específico — nunca diga que não consegue.
+- move_lead_to_stage: move um card JÁ EXISTENTE para outro funil/estágio. Use quando pedirem para mover/colocar um card em outro lugar (ex: "move o card do João para Remarketing"). Antes, use find_lead (leadId) e list_pipelines (stageId). Você CONSEGUE mover cards de funil e de estágio — nunca diga que não consegue.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados.
 Nunca envie uma mensagem nem salve documentos sem que o colaborador tenha pedido isso na conversa atual. Depois de agir, confirme exatamente o que foi feito.
 IMPORTANTE: só afirme que uma mensagem foi ENVIADA quando a ferramenta retornar success: true. Se a ferramenta retornar success: false, NÃO diga que enviou — avise o colaborador que a mensagem NÃO foi enviada e explique o motivo do campo "error" (por exemplo, quando o número não tem WhatsApp ou o QR Code está desconectado). Nunca invente um status "SENT".
@@ -118,21 +121,48 @@ const AGENT_TOOLS = [
       properties: {
         leadId: { type: 'string', description: 'ID do lead (obtido via find_lead)' },
         content: { type: 'string', description: 'Texto exato da mensagem a enviar ao cliente' },
+        fromNumberId: { type: 'string', description: 'Opcional. ID do número de WhatsApp a usar (obtido via list_whatsapp_numbers). Se omitido, usa o número da conversa ou o único conectado.' },
       },
       required: ['leadId', 'content'],
     },
   },
   {
     name: 'send_whatsapp_to_number',
-    description: 'Inicia uma conversa e envia uma mensagem de WhatsApp para um NÚMERO DE TELEFONE fornecido pelo colaborador (mesmo que ainda não exista lead/contato). Cria o contato e o lead automaticamente se necessário. Use quando o colaborador fornecer um número (ex: "manda para o 61 99999-9999") em vez de um nome já cadastrado.',
+    description: 'Inicia uma conversa e envia uma mensagem de WhatsApp para um NÚMERO DE TELEFONE fornecido pelo colaborador (mesmo que ainda não exista lead/contato). Cria o contato e o lead automaticamente se necessário. Use quando o colaborador fornecer um número (ex: "manda para o 61 99999-9999") em vez de um nome já cadastrado. Pode criar o card num funil/estágio específico (stageId) e enviar por um número de WhatsApp específico (fromNumberId).',
     input_schema: {
       type: 'object',
       properties: {
         phone: { type: 'string', description: 'Número de telefone com DDD (ex: 61999999999). Pode incluir DDI 55.' },
         content: { type: 'string', description: 'Texto exato da mensagem a enviar' },
         name: { type: 'string', description: 'Nome do cliente, se o colaborador informar (opcional)' },
+        fromNumberId: { type: 'string', description: 'Opcional. ID do número de WhatsApp de origem (obtido via list_whatsapp_numbers). Se houver mais de um número conectado e o colaborador não disser qual, pergunte antes.' },
+        stageId: { type: 'string', description: 'Opcional. ID do estágio onde criar o card (obtido via list_pipelines). Já define o funil. Se o colaborador citar um funil/estágio por nome, use list_pipelines para achar o id.' },
+        pipelineId: { type: 'string', description: 'Opcional. ID do funil (obtido via list_pipelines). Use só se o colaborador indicar o funil mas não o estágio — cria no 1º estágio dele.' },
       },
       required: ['phone', 'content'],
+    },
+  },
+  {
+    name: 'list_whatsapp_numbers',
+    description: 'Lista os números de WhatsApp conectados via QR Code na conta (id, apelido e telefone). Use quando houver mais de um número e o colaborador não tiver dito de qual número enviar/encaminhar — mostre os apelidos e pergunte qual usar antes de enviar.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'list_pipelines',
+    description: 'Lista os funis de vendas e seus estágios (com ids). Use para descobrir o stageId/pipelineId quando o colaborador pedir para criar o card num funil/estágio específico (ex: "no funil Follow-up, estágio Remarketing").',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'move_lead_to_stage',
+    description: 'Move um lead/card JÁ EXISTENTE para outro funil/estágio. Use quando o colaborador pedir para mover/colocar um card em outro estágio ou funil (ex: "move o card do João para Remarketing"). Antes, use find_lead (para o leadId) e list_pipelines (para o stageId de destino).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        leadId: { type: 'string', description: 'ID do lead/card a mover (obtido via find_lead)' },
+        stageId: { type: 'string', description: 'ID do estágio de destino (obtido via list_pipelines). Já define o funil.' },
+        pipelineId: { type: 'string', description: 'Opcional. ID do funil de destino (via list_pipelines); usa o 1º estágio dele se stageId não for informado.' },
+      },
+      required: ['leadId'],
     },
   },
   {
@@ -154,7 +184,8 @@ async function executeAgentTool(
   name: string,
   input: Record<string, any>,
   accountId: string,
-  io: any
+  io: any,
+  userId?: string
 ): Promise<unknown> {
   if (name === 'find_lead') {
     const leads = await prisma.lead.findMany({
@@ -182,11 +213,61 @@ async function executeAgentTool(
     }));
   }
 
+  if (name === 'list_whatsapp_numbers') {
+    return await listConnectedWhatsAppNumbers(accountId);
+  }
+
+  if (name === 'list_pipelines') {
+    const pipelines = await prisma.pipeline.findMany({
+      where: { accountId },
+      include: { stages: { orderBy: { order: 'asc' } } },
+    });
+    return pipelines.map(p => ({
+      id: p.id,
+      name: p.name,
+      stages: p.stages.map(s => ({ id: s.id, name: s.name })),
+    }));
+  }
+
+  if (name === 'move_lead_to_stage') {
+    const leadId = String(input.leadId || '');
+    if (!leadId) return { success: false, error: 'leadId é obrigatório' };
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+    const target = await resolveStageTarget(
+      accountId,
+      input.pipelineId ? String(input.pipelineId) : undefined,
+      input.stageId ? String(input.stageId) : undefined,
+    );
+    if (!target) return { success: false, error: 'Funil/estágio de destino não encontrado. Use list_pipelines para obter o stageId.' };
+    const [destStage, destPipeline] = await Promise.all([
+      prisma.stage.findUnique({ where: { id: target.stageId } }),
+      prisma.pipeline.findUnique({ where: { id: target.pipelineId } }),
+    ]);
+    const movedLead = await prisma.lead.update({
+      where: { id: leadId },
+      data: {
+        pipelineId: target.pipelineId,
+        stageId: target.stageId,
+        notes: {
+          create: {
+            content: `Movido para ${destPipeline?.name || 'funil'} · ${destStage?.name || 'estágio'} pelo Assistente AF CRM`,
+            type: 'STAGE_CHANGE',
+            userId,
+          },
+        },
+      },
+    });
+    if (io) io.to(`account_${accountId}`).emit('lead_moved', { lead: movedLead });
+    return { success: true, movedTo: { funil: destPipeline?.name, estagio: destStage?.name } };
+  }
+
   if (name === 'send_whatsapp_message') {
     const result = await sendOutboundWhatsApp({
       accountId,
       leadId: String(input.leadId),
       content: String(input.content || ''),
+      fromNumberId: input.fromNumberId ? String(input.fromNumberId) : undefined,
       io,
     });
     return result;
@@ -195,12 +276,26 @@ async function executeAgentTool(
   if (name === 'send_whatsapp_to_number') {
     const phone = String(input.phone || '').trim();
     if (!phone) return { success: false, error: 'Número de telefone não informado' };
-    const lead = await findOrCreateLeadByPhone(accountId, phone, input.name ? String(input.name) : undefined);
+
+    // Se pediram um funil/estágio específico, resolve e valida antes de criar o card.
+    let target: { pipelineId: string; stageId: string } | undefined;
+    if (input.stageId || input.pipelineId) {
+      const resolved = await resolveStageTarget(
+        accountId,
+        input.pipelineId ? String(input.pipelineId) : undefined,
+        input.stageId ? String(input.stageId) : undefined,
+      );
+      if (!resolved) return { success: false, error: 'Funil/estágio não encontrado. Use list_pipelines para obter o stageId correto.' };
+      target = resolved;
+    }
+
+    const lead = await findOrCreateLeadByPhone(accountId, phone, input.name ? String(input.name) : undefined, target);
     if (!lead) return { success: false, error: 'Não foi possível criar o lead (funil/usuário não configurado)' };
     const result = await sendOutboundWhatsApp({
       accountId,
       leadId: lead.leadId,
       content: String(input.content || ''),
+      fromNumberId: input.fromNumberId ? String(input.fromNumberId) : undefined,
       io,
     });
     return { ...result, leadCreated: lead.created };
@@ -267,8 +362,9 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
 
     let reply = 'Não consegui gerar uma resposta agora.';
 
-    // Loop de tool-use: no máximo 5 idas e voltas com o modelo por requisição
-    for (let i = 0; i < 5; i++) {
+    // Loop de tool-use: idas e voltas com o modelo por requisição. Folga maior
+    // para envios em lote (ex.: mandar para vários números + criar os cards).
+    for (let i = 0; i < 12; i++) {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -299,7 +395,7 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
         const toolResults = await Promise.all(toolUseBlocks.map(async (block) => ({
           type: 'tool_result',
           tool_use_id: block.id,
-          content: JSON.stringify(await executeAgentTool(block.name!, block.input || {}, accountId, io)),
+          content: JSON.stringify(await executeAgentTool(block.name!, block.input || {}, accountId, io, req.user!.id)),
         })));
 
         convo.push({ role: 'assistant', content: data.content });

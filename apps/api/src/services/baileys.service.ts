@@ -31,6 +31,10 @@ let globalIO: any = null;
 // Baileys reemite em messages.upsert (senão a mensagem apareceria duplicada).
 const selfSentIds = new Set<string>();
 
+// Contatos para os quais já desativamos o "modo temporário" (mensagens que
+// somem) há pouco — evita reenviar a alteração a cada mensagem. jid → timestamp.
+const ephemeralDisabled = new Map<string, number>();
+
 export function setBaileysIO(io: any) {
   globalIO = io;
 }
@@ -326,6 +330,8 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
         if (msg.key.fromMe && selfSentIds.has(msg.key.id)) continue;
         // Conversa "de mim para mim mesmo" (chat Você) → conversa própria do número
         const selfChat = isSelfChat(msg, sock);
+        // Se o cliente estiver com "mensagens temporárias" ligado, desliga sozinho.
+        maybeDisableDisappearing(sock, msg);
         // Documento/imagem → captura o arquivo; senão trata como texto
         if (hasMedia(msg)) {
           await processIncomingMedia(msg, accountId, numberId, sock, selfChat).catch(err =>
@@ -698,6 +704,30 @@ async function applyMessageEdit(targetId: string, newText: string) {
   const updated = await prisma.message.update({ where: { id: existing.id }, data: { content: newText } });
   globalIO?.to(`lead:${existing.leadId}`).emit('message_edited', { id: existing.id, content: newText });
   globalIO?.to(`lead:${existing.leadId}`).emit('new_message', updated);
+}
+
+/**
+ * "Modo temporário" (mensagens que somem): quando o CLIENTE está com essa opção
+ * ligada, as mensagens dele chegam embrulhadas em `ephemeralMessage`. Nesses casos
+ * desativamos automaticamente o modo temporário da conversa (para não perder o
+ * histórico no atendimento). Só reagimos a mensagens do cliente, ignoramos grupos
+ * e usamos um cooldown por contato para não reenviar a alteração toda hora.
+ */
+async function maybeDisableDisappearing(sock: any, msg: any) {
+  try {
+    if (!sock || msg.key?.fromMe) return;
+    if (!msg.message?.ephemeralMessage) return;      // modo temporário desligado → nada a fazer
+    const jid = msg.key?.remoteJid as string;
+    if (!jid) return;
+    if (jid.endsWith('@g.us') || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return;
+    const last = ephemeralDisabled.get(jid) || 0;
+    if (Date.now() - last < 10 * 60 * 1000) return;  // já desativamos há < 10 min
+    ephemeralDisabled.set(jid, Date.now());
+    await sock.sendMessage(jid, { disappearingMessagesInChat: false });
+    console.log('[Baileys] Modo temporário desativado automaticamente para', jid);
+  } catch (err) {
+    console.warn('[Baileys] Falha ao desativar modo temporário:', err);
+  }
 }
 
 async function processIncomingMessage(msg: any, accountId: string, numberId: string, sock?: any, selfChat = false) {

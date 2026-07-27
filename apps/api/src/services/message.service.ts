@@ -101,21 +101,38 @@ export async function findOrCreateLeadByPhone(
   }
 
   const existing = (contact as any).leads?.[0];
-  if (existing) return { leadId: existing.id, created: false };
+  if (existing) {
+    // Lead já existe: se pediram um funil/estágio específico, move o card para lá.
+    if (target) {
+      await prisma.lead.update({
+        where: { id: existing.id },
+        data: { pipelineId: target.pipelineId, stageId: target.stageId },
+      }).catch(() => {});
+    }
+    return { leadId: existing.id, created: false };
+  }
 
-  const pipeline = await prisma.pipeline.findFirst({
-    where: { accountId },
-    include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
-  });
+  // Destino do card: o funil/estágio pedido (target) ou o 1º estágio do 1º funil.
+  let pipelineId = target?.pipelineId;
+  let stageId = target?.stageId;
+  if (!pipelineId || !stageId) {
+    const pipeline = await prisma.pipeline.findFirst({
+      where: { accountId },
+      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+    });
+    if (!pipeline?.stages.length) return null;
+    pipelineId = pipeline.id;
+    stageId = pipeline.stages[0].id;
+  }
   const admin = await prisma.user.findFirst({ where: { accountId } });
-  if (!pipeline?.stages.length || !admin) return null;
+  if (!admin) return null;
 
   const lead = await prisma.lead.create({
     data: {
       name: contact.name,
       accountId,
-      pipelineId: pipeline.id,
-      stageId: pipeline.stages[0].id,
+      pipelineId,
+      stageId,
       userId: admin.id,
       contactId: contact.id,
       status: 'OPEN',
