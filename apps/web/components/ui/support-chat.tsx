@@ -19,10 +19,20 @@ export function SupportChatButton() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, open]);
+
+  // Faz o campo crescer conforme o texto (até ~5 linhas) e voltar ao tamanho
+  // normal quando é limpo — permite escrever várias linhas (Shift+Enter).
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  }, [input]);
 
   async function sendMessage() {
     const text = input.trim();
@@ -84,13 +94,15 @@ export function SupportChatButton() {
           </div>
 
           <div className="p-3 border-t border-af-border flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <input
+            <div className="flex items-end gap-2">
+              <textarea
+                ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                placeholder="Digite sua dúvida..."
-                className="flex-1 border border-af-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-af-accent/40"
+                rows={1}
+                placeholder="Digite sua dúvida...  (Shift+Enter pula linha)"
+                className="flex-1 resize-none max-h-[120px] leading-snug border border-af-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-af-accent/40"
               />
               <button
                 onClick={sendMessage}

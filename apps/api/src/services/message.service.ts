@@ -44,15 +44,42 @@ function formatPhoneDisplay(digits: string): string {
 }
 
 /**
+ * Resolve um funil/estágio de destino para o accountId. Aceita id do estágio
+ * (preferido — já define o funil) ou id do funil (usa o 1º estágio dele).
+ * Retorna null se os ids não pertencerem à conta / não existirem.
+ */
+export async function resolveStageTarget(
+  accountId: string,
+  pipelineId?: string,
+  stageId?: string
+): Promise<{ pipelineId: string; stageId: string } | null> {
+  if (stageId) {
+    const stage = await prisma.stage.findFirst({ where: { id: stageId, pipeline: { accountId } } });
+    if (stage) return { pipelineId: stage.pipelineId, stageId: stage.id };
+  }
+  if (pipelineId) {
+    const pipeline = await prisma.pipeline.findFirst({
+      where: { id: pipelineId, accountId },
+      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+    });
+    if (pipeline?.stages.length) return { pipelineId: pipeline.id, stageId: pipeline.stages[0].id };
+  }
+  return null;
+}
+
+/**
  * Encontra (ou cria) um lead a partir de um número de telefone.
  * Preenche os campos do card (participante_1 + telefone_1) para que o
  * telefone apareça no detalhe do lead. Retorna o leadId ou null se não
  * houver funil/usuário configurado.
+ * Se `target` (funil/estágio já resolvido) for informado, cria o card nesse
+ * estágio — e, se o lead já existir, move-o para lá.
  */
 export async function findOrCreateLeadByPhone(
   accountId: string,
   rawPhone: string,
-  name?: string
+  name?: string,
+  target?: { pipelineId: string; stageId: string }
 ): Promise<{ leadId: string; created: boolean } | null> {
   const phone = normalizeBRPhone(rawPhone);
   const last8 = phone.slice(-8);
@@ -101,6 +128,14 @@ export async function findOrCreateLeadByPhone(
   return { leadId: lead.id, created: true };
 }
 
+/** Números de WhatsApp conectados via QR (id + apelido + telefone) para a conta. */
+export async function listConnectedWhatsAppNumbers(accountId: string) {
+  const ids = getConnectedNumberIds(accountId);
+  if (ids.length === 0) return [];
+  const rows = await prisma.whatsAppNumber.findMany({ where: { accountId, id: { in: ids } } });
+  return rows.map((n) => ({ id: n.id, label: n.label, phone: n.phone }));
+}
+
 /**
  * Envia uma mensagem WhatsApp de saída para o lead (via QR/Baileys se conectado,
  * senão via API oficial da Meta), grava o registro e emite os eventos de socket —
@@ -112,9 +147,11 @@ export async function sendOutboundWhatsApp(params: {
   content: string;
   /** Canal preferido: 'qr' (conexão via QR Code) ou 'api' (API oficial da Meta). Sem valor: QR se conectado, senão API. */
   via?: 'qr' | 'api';
+  /** Número (WhatsAppNumber.id) do qual enviar via QR. Se ausente, usa o número da conversa ou o primeiro conectado. */
+  fromNumberId?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string }> {
-  const { accountId, leadId, content, via, io } = params;
+  const { accountId, leadId, content, via, fromNumberId, io } = params;
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -126,18 +163,26 @@ export async function sendOutboundWhatsApp(params: {
   if (!phone) return { success: false, error: 'Contato sem número de telefone cadastrado' };
 
   let externalId: string | undefined;
-  let status: 'SENT' | 'FAILED' = 'SENT';
   let usedNumberId: string | null = null;
 
   const connectedNumbers = getConnectedNumberIds(accountId);
-  const useQR = via === 'qr' ? true : via === 'api' ? false : connectedNumbers.length > 0;
+  const useQR = via === 'qr' ? true : via === 'api' ? false : (!!fromNumberId || connectedNumbers.length > 0);
 
   if (useQR) {
-    // Roteamento: responde pelo mesmo número que recebeu (lead.whatsappNumberId);
-    // se esse número não estiver conectado, usa o primeiro número conectado.
-    const preferred = lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)
-      ? lead.whatsappNumberId
-      : connectedNumbers[0];
+    // Se o colaborador escolheu um número específico (fromNumberId), envia por ele
+    // — desde que esteja conectado e pertença à conta. Senão, roteia pelo mesmo
+    // número que recebeu a conversa (lead.whatsappNumberId) ou o primeiro conectado.
+    let preferred: string | undefined;
+    if (fromNumberId) {
+      if (!connectedNumbers.includes(fromNumberId)) {
+        return { success: false, error: 'O número de WhatsApp escolhido não está conectado. Verifique em Configurações → QR Code ou escolha outro.' };
+      }
+      preferred = fromNumberId;
+    } else {
+      preferred = lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)
+        ? lead.whatsappNumberId
+        : connectedNumbers[0];
+    }
 
     if (!preferred) {
       return { success: false, error: 'Nenhum WhatsApp conectado via QR Code. Conecte em Configurações → QR Code ou envie pela API oficial.' };
@@ -145,9 +190,19 @@ export async function sendOutboundWhatsApp(params: {
     usedNumberId = preferred;
     // Retorna o id da mensagem enviada; guardamos como externalId para
     // deduplicar o eco fromMe que o Baileys emite em messages.upsert.
-    const sentId = await sendBaileysMessage(phone, content, preferred);
-    if (!sentId) status = 'FAILED';
-    else externalId = sentId;
+    // Se o envio falhar, NÃO gravamos a mensagem nem reportamos sucesso —
+    // senão o agente/inbox diria "enviada" para algo que não saiu.
+    const outcome = await sendBaileysMessage(phone, content, preferred);
+    if ('failed' in outcome) {
+      const error =
+        outcome.failed === 'no_whatsapp'
+          ? `O número ${formatPhoneDisplay(phone)} não tem WhatsApp (ou está em formato inválido). A mensagem NÃO foi enviada.`
+          : outcome.failed === 'not_connected'
+          ? 'O WhatsApp (QR Code) foi desconectado. Reconecte em Configurações → QR Code e tente novamente.'
+          : 'Não foi possível enviar a mensagem pelo WhatsApp. Tente novamente.';
+      return { success: false, error };
+    }
+    externalId = outcome.id;
 
     // Se a conversa ainda não estava vinculada a um número, vincula agora
     if (!lead.whatsappNumberId) {
@@ -169,7 +224,7 @@ export async function sendOutboundWhatsApp(params: {
     leadId,
     whatsappNumberId: usedNumberId ?? undefined,
     externalId,
-    status,
+    status: 'SENT',
   });
 
   if (io) {

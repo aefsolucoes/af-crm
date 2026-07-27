@@ -324,12 +324,14 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
         // eco (já estão no banco). Se saíram do celular, entram como OUTBOUND
         // para espelhar a conversa completa.
         if (msg.key.fromMe && selfSentIds.has(msg.key.id)) continue;
+        // Conversa "de mim para mim mesmo" (chat Você) → conversa própria do número
+        const selfChat = isSelfChat(msg, sock);
         // Documento/imagem → captura o arquivo; senão trata como texto
         if (hasMedia(msg)) {
-          await processIncomingMedia(msg, accountId, numberId, sock).catch(err =>
+          await processIncomingMedia(msg, accountId, numberId, sock, selfChat).catch(err =>
             console.error('[Baileys] Erro ao capturar mídia:', err));
         } else {
-          await processIncomingMessage(msg, accountId, numberId, sock);
+          await processIncomingMessage(msg, accountId, numberId, sock, selfChat);
         }
       }
     });
@@ -467,6 +469,71 @@ function formatPhoneDisplay(realPhone: string | null): string {
   if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
   if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
   return `+${realPhone}`;
+}
+
+/** true se a mensagem é do próprio número para ele mesmo (chat "Você"). */
+function isSelfChat(msg: any, sock: any): boolean {
+  const rjid = msg?.key?.remoteJid || '';
+  if (!rjid || rjid.endsWith('@g.us')) return false;
+  const rNum = rjid.split('@')[0].split(':')[0];
+  const selfPn = sock?.user?.id ? String(sock.user.id).split('@')[0].split(':')[0] : '';
+  const selfLid = sock?.user?.lid ? String(sock.user.lid).split('@')[0].split(':')[0] : '';
+  return !!(rNum && (rNum === selfPn || rNum === selfLid));
+}
+
+/** Funil de entrada + admin da conta (usado ao criar leads automaticamente). */
+async function resolveInboxTarget(accountId: string) {
+  const pipeline =
+    (await prisma.pipeline.findFirst({
+      where: { accountId, name: { contains: 'Caixa', mode: 'insensitive' } },
+      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+    })) ||
+    (await prisma.pipeline.findFirst({
+      where: { accountId },
+      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+    }));
+  const admin = await prisma.user.findFirst({ where: { accountId } });
+  return { pipeline, admin };
+}
+
+/**
+ * Conversa "de mim para mim mesmo" de um número conectado (chat Você/anotações).
+ * Fica SEPARADA dos contatos — chaveada por self:<numberId> — para não misturar
+ * com um contato que por acaso tenha o mesmo telefone do número conectado.
+ */
+async function getOrCreateSelfLead(accountId: string, numberId: string): Promise<string | null> {
+  const numberRec = await prisma.whatsAppNumber.findUnique({ where: { id: numberId } });
+  const label = numberRec?.label || 'Meu número';
+  const selfKey = `self:${numberId}`;
+  const name = `📝 Você (${label})`;
+  let contact = await prisma.contact.findFirst({
+    where: { accountId, whatsappPhone: selfKey },
+    include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
+  });
+  if (!contact) {
+    contact = await prisma.contact.create({
+      data: { name, whatsappPhone: selfKey, accountId },
+      include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
+    });
+  }
+  const leads = (contact as any).leads || [];
+  if (leads.length > 0) {
+    const lead = leads[0];
+    if (!lead.whatsappNumberId) {
+      await prisma.lead.update({ where: { id: lead.id }, data: { whatsappNumberId: numberId } }).catch(() => {});
+    }
+    return lead.id;
+  }
+  const { pipeline, admin } = await resolveInboxTarget(accountId);
+  if (!pipeline?.stages.length || !admin) return null;
+  const lead = await prisma.lead.create({
+    data: {
+      name, accountId, pipelineId: pipeline.id, stageId: pipeline.stages[0].id,
+      userId: admin.id, contactId: contact.id, status: 'OPEN',
+      whatsappNumberId: numberId, customFields: { participante_1: name } as any,
+    },
+  });
+  return lead.id;
 }
 
 async function getOrCreateLeadForPhone(
@@ -633,15 +700,17 @@ async function applyMessageEdit(targetId: string, newText: string) {
   globalIO?.to(`lead:${existing.leadId}`).emit('new_message', updated);
 }
 
-async function processIncomingMessage(msg: any, accountId: string, numberId: string, sock?: any) {
+async function processIncomingMessage(msg: any, accountId: string, numberId: string, sock?: any, selfChat = false) {
   try {
     const fromMe = !!msg.key.fromMe;
     const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
     const text = extractText(msg);
     if (!text || !from) return;
 
-    // fromMe: remoteJid é o destinatário; não usamos pushName para o nome.
-    const leadId = await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock);
+    // self-chat (Você) → conversa própria do número; senão, contato normal.
+    const leadId = selfChat
+      ? await getOrCreateSelfLead(accountId, numberId)
+      : await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock);
     if (!leadId) return;
 
     const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
@@ -690,7 +759,7 @@ function getMediaInfo(msg: any): { node: any; type: 'document' | 'image'; fileNa
   return null;
 }
 
-async function processIncomingMedia(msg: any, accountId: string, numberId: string, sock: any) {
+async function processIncomingMedia(msg: any, accountId: string, numberId: string, sock: any, selfChat = false) {
   const fromMe = !!msg.key.fromMe;
   const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
   if (!from) return;
@@ -701,7 +770,9 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
   const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
   if (dup) return;
 
-  const leadId = await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock);
+  const leadId = selfChat
+    ? await getOrCreateSelfLead(accountId, numberId)
+    : await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock);
   if (!leadId) return;
 
   // Tenta baixar o arquivo. Em documentos ENCAMINHADOS do celular, o download
@@ -795,24 +866,52 @@ async function importHistoryMessages(messages: any[], accountId: string, numberI
  * Envia por um número específico (numberId). Retorna o id da mensagem enviada
  * (para deduplicar o eco fromMe), ou null se não estiver conectado / falhar.
  */
-export async function sendBaileysMessage(to: string, text: string, numberId: string): Promise<string | null> {
+/**
+ * Resultado de um envio: `id` quando enviou de fato; `failed` com o motivo
+ * quando não enviou — para o chamador nunca reportar sucesso falso.
+ * - not_connected: a sessão QR não está conectada.
+ * - no_whatsapp: o número não tem conta no WhatsApp (ou formato inválido).
+ * - error: exceção/resposta inesperada ao enviar.
+ */
+export type BaileysSendOutcome =
+  | { id: string }
+  | { failed: 'not_connected' | 'no_whatsapp' | 'error' };
+
+export async function sendBaileysMessage(to: string, text: string, numberId: string): Promise<BaileysSendOutcome> {
   const conn = connections.get(numberId);
-  if (!conn?.sock || conn.status !== 'connected') return null;
+  if (!conn?.sock || conn.status !== 'connected') return { failed: 'not_connected' };
   try {
     // Se já vier um JID completo (@lid, @g.us, @s.whatsapp.net), respeita-o.
     // O WhatsApp passou a entregar mensagens com endereçamento @lid; nesses
     // casos precisamos responder para o mesmo JID, não reconstruir como telefone.
-    const jid = toWhatsAppJid(to);
+    let jid = toWhatsAppJid(to);
+
+    // Número de telefone (@s.whatsapp.net): confirmamos no servidor do WhatsApp
+    // que a conta existe e usamos o JID canônico. Sem isso, um número novo/mal
+    // formatado (ex.: 9º dígito) era "enviado" para um JID inexistente — o
+    // servidor aceitava, devolvia um id e a mensagem nunca chegava, dando falsa
+    // aparência de sucesso. @lid e grupos (@g.us) passam direto.
+    if (jid.endsWith('@s.whatsapp.net')) {
+      try {
+        const [hit] = (await conn.sock.onWhatsApp(jid)) || [];
+        if (!hit?.exists) return { failed: 'no_whatsapp' };
+        if (hit.jid) jid = hit.jid; // JID canônico (corrige 9º dígito, etc.)
+      } catch (checkErr) {
+        // Falha transitória na verificação não deve bloquear o envio:
+        // segue com o JID construído (comportamento anterior).
+        console.warn('[Baileys] onWhatsApp falhou, enviando assim mesmo:', checkErr);
+      }
+    }
+
     const sent = await conn.sock.sendMessage(jid, { text });
     const id = sent?.key?.id || null;
-    if (id) {
-      selfSentIds.add(id);
-      setTimeout(() => selfSentIds.delete(id), 5 * 60 * 1000);
-    }
-    return id;
+    if (!id) return { failed: 'error' };
+    selfSentIds.add(id);
+    setTimeout(() => selfSentIds.delete(id), 5 * 60 * 1000);
+    return { id };
   } catch (err) {
     console.error('[Baileys] Erro ao enviar:', err);
-    return null;
+    return { failed: 'error' };
   }
 }
 
