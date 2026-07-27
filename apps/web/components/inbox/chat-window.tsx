@@ -75,6 +75,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   const [statusMap, setStatusMap] = useState<Record<string, string>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -121,6 +123,33 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
       toast(msg, 'error');
     } finally {
       setSending(false);
+    }
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite reenviar o mesmo arquivo
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) { toast('Arquivo muito grande (máx. 25 MB)', 'error'); return; }
+    setUploadingFile(true);
+    try {
+      const dataBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const { data } = await api.post('/api/messages/send-media', {
+        leadId,
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        dataBase64,
+      });
+      onNewMessage(data);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao enviar o arquivo', 'error');
+    } finally {
+      setUploadingFile(false);
     }
   }
 
@@ -428,11 +457,20 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
         >
           <Smile size={22} />
         </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          onChange={handleFileChange}
+        />
         <button
           type="button"
-          className="flex-shrink-0 p-2 text-slate-500 hover:text-slate-700"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploadingFile}
+          title="Anexar documento ou imagem"
+          className="flex-shrink-0 p-2 text-slate-500 hover:text-slate-700 disabled:opacity-50"
         >
-          <Paperclip size={22} />
+          {uploadingFile ? <Loader2 size={22} className="animate-spin" /> : <Paperclip size={22} />}
         </button>
         <textarea
           ref={inputRef}

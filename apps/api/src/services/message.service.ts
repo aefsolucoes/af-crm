@@ -1,6 +1,6 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
 import { sendWhatsAppMessage } from './whatsapp.service';
-import { sendBaileysMessage, isNumberConnected, getConnectedNumberIds } from './baileys.service';
+import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds } from './baileys.service';
 
 const prisma = new PrismaClient();
 
@@ -177,6 +177,53 @@ export async function sendOutboundWhatsApp(params: {
     io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
   }
 
+  return { success: true, message };
+}
+
+/** Envia um documento/imagem pelo WhatsApp (QR) e salva na conversa com o anexo. */
+export async function sendOutboundMedia(params: {
+  accountId: string;
+  leadId: string;
+  buffer: Buffer;
+  fileName: string;
+  mimeType: string;
+  caption?: string;
+  io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
+}): Promise<{ success: true; message: any } | { success: false; error: string }> {
+  const { accountId, leadId, buffer, fileName, mimeType, caption, io } = params;
+
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true } });
+  if (!lead) return { success: false, error: 'Lead não encontrado' };
+  const phone = lead.contact?.whatsappPhone || lead.contact?.phone;
+  if (!phone) return { success: false, error: 'Contato sem número cadastrado' };
+
+  const connectedNumbers = getConnectedNumberIds(accountId);
+  const preferred = lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)
+    ? lead.whatsappNumberId
+    : connectedNumbers[0];
+  if (!preferred) return { success: false, error: 'Nenhum WhatsApp conectado via QR Code.' };
+
+  const sentId = await sendBaileysMedia(phone, buffer, fileName, mimeType, caption || '', preferred);
+  if (!sentId) return { success: false, error: 'Falha ao enviar o arquivo pelo WhatsApp.' };
+
+  if (!lead.whatsappNumberId) {
+    await prisma.lead.update({ where: { id: leadId }, data: { whatsappNumberId: preferred } }).catch(() => {});
+  }
+
+  const content = `📎 ${fileName}${caption ? ` — ${caption}` : ''}`;
+  const message = await prisma.message.create({
+    data: {
+      content, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId,
+      whatsappNumberId: preferred, read: true, externalId: sentId, status: 'SENT',
+      attachments: { create: { leadId, fileName, mimeType, data: buffer } },
+    },
+    include: { attachments: { select: { id: true, fileName: true, mimeType: true, driveFileId: true } } },
+  });
+
+  if (io) {
+    io.to(`lead:${leadId}`).emit('new_message', message);
+    io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
+  }
   return { success: true, message };
 }
 

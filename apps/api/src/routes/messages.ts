@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, markConversationRead, getAttachment } from '../services/message.service';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, markConversationRead, getAttachment, sendOutboundMedia } from '../services/message.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -49,6 +49,30 @@ router.get('/attachment/:id', async (req: AuthRequest, res: Response) => {
     res.send(Buffer.from(att.data as any));
   } catch {
     res.status(500).json({ error: 'Erro ao carregar anexo' });
+  }
+});
+
+// Envia um documento/imagem pelo WhatsApp (base64). Limite de corpo elevado só aqui.
+router.post('/send-media', async (req: AuthRequest, res: Response) => {
+  const { leadId, fileName, mimeType, dataBase64, caption } = req.body as {
+    leadId?: string; fileName?: string; mimeType?: string; dataBase64?: string; caption?: string;
+  };
+  if (!leadId || !fileName || !mimeType || !dataBase64) {
+    return res.status(400).json({ error: 'leadId, fileName, mimeType e dataBase64 são obrigatórios' });
+  }
+  try {
+    const buffer = Buffer.from(dataBase64, 'base64');
+    if (buffer.length > 25 * 1024 * 1024) {
+      return res.status(413).json({ error: 'Arquivo muito grande (máx. 25 MB)' });
+    }
+    const io = req.app.get('io');
+    const result = await sendOutboundMedia({
+      accountId: req.user!.accountId, leadId, buffer, fileName, mimeType, caption, io,
+    });
+    if (!result.success) return res.status(400).json({ error: result.error });
+    res.status(201).json(result.message);
+  } catch {
+    res.status(500).json({ error: 'Erro ao enviar o arquivo' });
   }
 });
 

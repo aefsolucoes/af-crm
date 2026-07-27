@@ -38,7 +38,8 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json());
+// Limite elevado para permitir envio de documentos/imagens em base64 pela Inbox
+app.use(express.json({ limit: '30mb' }));
 
 const io = setupWebSocket(httpServer);
 app.set('io', io);

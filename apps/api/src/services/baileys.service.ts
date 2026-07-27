@@ -816,6 +816,39 @@ export async function sendBaileysMessage(to: string, text: string, numberId: str
   }
 }
 
+/**
+ * Envia um documento/imagem por um número específico. Retorna o id da mensagem
+ * enviada, ou null se não estiver conectado / falhar.
+ */
+export async function sendBaileysMedia(
+  to: string,
+  buffer: Buffer,
+  fileName: string,
+  mimeType: string,
+  caption: string,
+  numberId: string,
+): Promise<string | null> {
+  const conn = connections.get(numberId);
+  if (!conn?.sock || conn.status !== 'connected') return null;
+  try {
+    const jid = toWhatsAppJid(to);
+    const isImage = mimeType.startsWith('image/');
+    const content: any = isImage
+      ? { image: buffer, mimetype: mimeType, caption: caption || undefined }
+      : { document: buffer, mimetype: mimeType, fileName, caption: caption || undefined };
+    const sent = await conn.sock.sendMessage(jid, content);
+    const id = sent?.key?.id || null;
+    if (id) {
+      selfSentIds.add(id);
+      setTimeout(() => selfSentIds.delete(id), 5 * 60 * 1000);
+    }
+    return id;
+  } catch (err) {
+    console.error('[Baileys] Erro ao enviar mídia:', err);
+    return null;
+  }
+}
+
 export async function disconnectQR(numberId: string) {
   const conn = connections.get(numberId);
   if (conn?.sock) {
