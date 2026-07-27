@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Phone, MoreVertical, Check, CheckCheck, Sparkles, Loader2, FileText } from 'lucide-react';
+import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -33,6 +33,8 @@ interface ChatWindowProps {
   messages: Message[];
   notes?: Note[];
   onNewMessage: (msg: Message) => void;
+  /** Fecha a conversa (ESC), como no WhatsApp. */
+  onClose?: () => void;
 }
 
 type AIMode = 'grammar' | 'professional' | 'friendly' | 'fun';
@@ -46,7 +48,7 @@ const AI_BUTTONS: { mode: AIMode; label: string; emoji: string }[] = [
 
 type WhatsAppVia = 'qr' | 'api';
 
-export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessage }: ChatWindowProps) {
+export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessage, onClose }: ChatWindowProps) {
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
   const [via, setVia] = useState<WhatsAppVia | null>(null);
@@ -90,6 +92,22 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   const [showAI, setShowAI] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+
+  // ESC fecha a conversa (como no WhatsApp). Se houver um popup aberto
+  // (templates/IA), o ESC fecha o popup primeiro.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return;
+      if (showAI || showTemplates) {
+        setShowAI(false);
+        setShowTemplates(false);
+        return;
+      }
+      onClose?.();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showAI, showTemplates, onClose]);
   // Mapa de status atualizado via socket: messageId → status
   const [statusMap, setStatusMap] = useState<Record<string, string>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -271,10 +289,6 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           <p className="text-xs opacity-80">
             {CHANNEL_ICONS[channel]} {CHANNEL_LABELS[channel]}
           </p>
-        </div>
-        <div className="flex items-center gap-3 text-white/80">
-          <Phone size={18} className="cursor-pointer hover:text-white" />
-          <MoreVertical size={18} className="cursor-pointer hover:text-white" />
         </div>
       </div>
 

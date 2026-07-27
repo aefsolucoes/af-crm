@@ -144,6 +144,7 @@ function InboxPageInner() {
               messages={allMessages}
               notes={lead.notes}
               onNewMessage={handleNewMessage}
+              onClose={() => setSelectedId(null)}
             />
             <InboxLeadPanel lead={lead} onRefresh={handleRefresh} />
           </>

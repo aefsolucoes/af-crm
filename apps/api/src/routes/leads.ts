@@ -506,6 +506,17 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
   try {
     const { customFields } = req.body;
     const lead = await updateLead(req.params.id, req.user!.accountId, { customFields } as any);
+
+    // O nome que aparece na conversa/Inbox é o do CONTATO. Como o "Participante 1"
+    // é o nome da pessoa, mantemos o contato em sincronia: renomear o Participante 1
+    // renomeia o contato (e atualiza a lista de conversas ao vivo).
+    const p1 = customFields?.participante_1;
+    if (typeof p1 === 'string' && p1.trim() && lead.contactId) {
+      await prisma.contact.update({ where: { id: lead.contactId }, data: { name: p1.trim() } }).catch(() => {});
+      const io = req.app.get('io');
+      io?.to(`account_${req.user!.accountId}`).emit('new_conversation', { leadId: lead.id });
+    }
+
     res.json(lead);
   } catch {
     res.status(500).json({ error: 'Erro ao salvar campos' });
