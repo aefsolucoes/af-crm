@@ -1552,6 +1552,136 @@ function AgenteTab() {
       >
         {saving ? 'Salvando...' : 'Salvar prompt'}
       </button>
+
+      <KnowledgeBasePanel />
+    </div>
+  );
+}
+
+interface KBFile { id: string; name: string; mimeType: string; status: string; chunkCount: number; error?: string | null; indexedAt?: string | null; }
+interface KBStatus { voyageConfigured: boolean; folderId: string | null; folderName: string | null; files: KBFile[]; totalChunks: number; }
+
+function KnowledgeBasePanel() {
+  const [status, setStatus] = useState<KBStatus | null>(null);
+  const [folder, setFolder] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [savingFolder, setSavingFolder] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  async function load() {
+    try {
+      const { data } = await api.get('/api/knowledge/status');
+      setStatus(data);
+    } catch {
+      toast('Erro ao carregar a base de conhecimento', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function saveFolder() {
+    if (!folder.trim()) { toast('Cole o link da pasta do Drive', 'error'); return; }
+    setSavingFolder(true);
+    try {
+      await api.put('/api/knowledge/folder', { folder });
+      toast('Pasta salva!');
+      setFolder('');
+      await load();
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao salvar a pasta', 'error');
+    } finally {
+      setSavingFolder(false);
+    }
+  }
+
+  async function sync() {
+    setSyncing(true);
+    try {
+      const { data } = await api.post('/api/knowledge/sync');
+      toast(`Sincronizado: ${data.indexed} indexado(s), ${data.skipped} em dia, ${data.removed} removido(s)${data.failed ? `, ${data.failed} com erro` : ''}.`);
+      await load();
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao sincronizar', 'error');
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <div className="mt-8 pt-6 border-t border-af-border space-y-4">
+      <div className="flex items-start gap-3">
+        <div className="p-2 bg-emerald-100 rounded-lg flex-shrink-0"><HardDrive size={20} className="text-emerald-600" /></div>
+        <div>
+          <p className="text-sm font-semibold text-slate-800">Base de conhecimento (treinamento)</p>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Aponte uma pasta do Google Drive com os documentos de treinamento (processos, passo a passo, normativos). O assistente passa a responder com base neles.
+            <strong className="text-slate-700"> Coloque só material genérico da empresa — nunca CPF ou dados de cliente.</strong>
+          </p>
+        </div>
+      </div>
+
+      {status && !status.voyageConfigured && (
+        <div className="flex items-center gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          <Info size={14} /> A busca inteligente está desligada: falta definir a chave <code className="font-mono">VOYAGE_API_KEY</code> no servidor.
+        </div>
+      )}
+
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-medium text-slate-600">Pasta do Drive (cole o link)</label>
+        <div className="flex gap-2">
+          <input
+            value={folder}
+            onChange={e => setFolder(e.target.value)}
+            placeholder={status?.folderId ? 'Trocar a pasta...' : 'https://drive.google.com/drive/folders/...'}
+            className="flex-1 px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+          />
+          <button onClick={saveFolder} disabled={savingFolder} className="px-3 py-2 bg-slate-100 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-200 disabled:opacity-50">
+            {savingFolder ? 'Salvando...' : 'Salvar pasta'}
+          </button>
+        </div>
+        {status?.folderId && (
+          <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
+            <Folder size={12} /> Pasta atual: <span className="font-medium">{status.folderName || status.folderId}</span>
+          </p>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={sync}
+          disabled={syncing || !status?.folderId || !status?.voyageConfigured}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-af-mid text-white text-sm font-semibold rounded-lg hover:bg-af-dark disabled:opacity-50 transition-colors"
+        >
+          <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} /> {syncing ? 'Sincronizando...' : 'Sincronizar base'}
+        </button>
+        {status && status.files.length > 0 && (
+          <span className="text-xs text-slate-500">{status.files.length} arquivo(s) · {status.totalChunks} trechos indexados</span>
+        )}
+      </div>
+
+      {loading ? (
+        <p className="text-xs text-slate-400">Carregando...</p>
+      ) : status && status.files.length > 0 ? (
+        <div className="border border-af-border rounded-lg divide-y divide-slate-100 overflow-hidden">
+          {status.files.map(f => (
+            <div key={f.id} className="flex items-center justify-between px-3 py-2 text-sm">
+              <span className="truncate text-slate-700">{f.name}</span>
+              <span className="flex items-center gap-2 flex-shrink-0 ml-3">
+                {f.status === 'indexed' ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 size={12} /> {f.chunkCount} trechos</span>
+                ) : f.status === 'error' ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-red-600" title={f.error || ''}><XCircle size={12} /> erro</span>
+                ) : (
+                  <span className="text-xs text-slate-400">pendente</span>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-slate-400">Nenhum arquivo indexado ainda. Defina a pasta e clique em Sincronizar.</p>
+      )}
     </div>
   );
 }

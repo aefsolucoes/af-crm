@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { sendOutboundWhatsApp, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
+import { searchKnowledge } from '../services/knowledge.service';
 import { organizeLeadDocsToDrive } from '../services/google.service';
 
 const router = Router();
@@ -355,7 +356,23 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
 
   try {
     const agentConfig = await prisma.agentConfig.findUnique({ where: { accountId } });
-    const systemPrompt = agentConfig?.systemPrompt?.trim() || SUPPORT_SYSTEM_PROMPT;
+    let systemPrompt = agentConfig?.systemPrompt?.trim() || SUPPORT_SYSTEM_PROMPT;
+
+    // Base de Conhecimento: injeta os trechos relevantes à pergunta atual, para o
+    // assistente responder com base no material da empresa (e citar o documento).
+    // Funciona mesmo com prompt personalizado, pois o contexto é anexado aqui.
+    try {
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() || '';
+      if (lastUser) {
+        const hits = await searchKnowledge(accountId, lastUser);
+        if (hits.length) {
+          const contexto = hits.map((h, i) => `[${i + 1}] (${h.fileName})\n${h.content}`).join('\n\n');
+          systemPrompt += `\n\n---\nBASE DE CONHECIMENTO (material interno da empresa). Use estes trechos para responder e cite o documento entre parênteses quando usar. Se a resposta não estiver aqui, diga que não encontrou na base:\n\n${contexto}`;
+        }
+      }
+    } catch (err) {
+      console.error('[AI] Busca na base de conhecimento falhou:', err);
+    }
 
     const convo: { role: string; content: string | AnthropicContentBlock[] }[] =
       messages.map((m) => ({ role: m.role, content: m.content }));

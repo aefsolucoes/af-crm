@@ -19,6 +19,7 @@ import fieldRoutes from './routes/fields';
 import noteRoutes from './routes/notes';
 import userRoutes from './routes/users';
 import aiRoutes from './routes/ai';
+import knowledgeRoutes from './routes/knowledge';
 import financeRoutes from './routes/finance';
 import googleRoutes from './routes/google';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
@@ -59,6 +60,7 @@ app.use('/api/fields', fieldRoutes);
 app.use('/api/notes', noteRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/google', googleRoutes);
 
