@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import pdf from 'pdf-parse';
 import mammoth from 'mammoth';
-import { listKnowledgeFiles, downloadDriveFile } from './google.service';
+import { listKnowledgeFiles, downloadDriveFile, ocrDriveFileToText } from './google.service';
 import { embedDocuments, embedQuery, isVoyageConfigured } from './voyage.service';
 
 const prisma = new PrismaClient();
@@ -116,9 +116,24 @@ export async function syncKnowledgeBase(accountId: string): Promise<SyncResult> 
       totalChunks += prev.chunkCount;
       continue;
     }
+    let stage = 'download';
     try {
       const buffer = await downloadDriveFile(accountId, df.id, df.mimeType);
-      const text = await extractDocumentText(buffer, df.mimeType, df.name);
+      stage = 'leitura do texto';
+      let text = await extractDocumentText(buffer, df.mimeType, df.name);
+
+      // PDF sem texto extraível → provável escaneado. Tenta OCR via Google Drive
+      // (converte para Google Doc com OCR e lê o texto). Reaproveita a conexão do Drive.
+      if (!text.trim() && df.mimeType === 'application/pdf') {
+        stage = 'OCR (Google Drive)';
+        text = await ocrDriveFileToText(accountId, df.id).catch(() => '');
+      }
+
+      if (!text.trim()) {
+        throw new Error('Nenhum texto extraído. Se for um PDF escaneado, o OCR não conseguiu ler — melhore a qualidade do scan ou salve o conteúdo como Word/Google Doc.');
+      }
+
+      stage = 'indexação (Voyage)';
       const pieces = chunkText(text);
       const embeddings = pieces.length ? await embedDocuments(pieces) : [];
 
@@ -144,7 +159,7 @@ export async function syncKnowledgeBase(accountId: string): Promise<SyncResult> 
       totalChunks += pieces.length;
     } catch (err: any) {
       failed++;
-      const msg = String(err?.message || err).slice(0, 500);
+      const msg = `Falha na etapa "${stage}": ${String(err?.message || err)}`.slice(0, 500);
       await prisma.knowledgeFile.upsert({
         where: { accountId_driveFileId: { accountId, driveFileId: df.id } },
         create: { accountId, driveFileId: df.id, name: df.name, mimeType: df.mimeType, modifiedTime: df.modifiedTime, status: 'error', error: msg },

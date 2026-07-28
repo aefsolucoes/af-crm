@@ -238,6 +238,33 @@ export async function downloadDriveFile(accountId: string, fileId: string, mimeT
 }
 
 /**
+ * OCR de um PDF/imagem via Google Drive: copia o arquivo como Google Doc (o Drive
+ * roda OCR na conversão), lê o texto e apaga a cópia temporária. Reaproveita a
+ * conexão do Drive — sem serviço nem custo extra de OCR.
+ */
+export async function ocrDriveFileToText(accountId: string, fileId: string): Promise<string> {
+  const drive = await getDrive(accountId);
+  let tempDocId: string | undefined;
+  try {
+    const copy = await drive.files.copy({
+      fileId,
+      requestBody: { name: `__ocr_tmp_${Date.now()}`, mimeType: 'application/vnd.google-apps.document' },
+      ocrLanguage: 'pt',
+      supportsAllDrives: true,
+    });
+    tempDocId = copy.data.id || undefined;
+    if (!tempDocId) return '';
+    const exported = await drive.files.export(
+      { fileId: tempDocId, mimeType: 'text/plain' },
+      { responseType: 'arraybuffer' },
+    );
+    return Buffer.from(exported.data as ArrayBuffer).toString('utf-8').trim();
+  } finally {
+    if (tempDocId) await drive.files.delete({ fileId: tempDocId, supportsAllDrives: true }).catch(() => {});
+  }
+}
+
+/**
  * Cria (ou reutiliza) a pasta do cliente dentro da pasta-raiz e sobe todos os
  * documentos capturados do lead que ainda não foram enviados. Retorna o link
  * da pasta e a lista de arquivos enviados.

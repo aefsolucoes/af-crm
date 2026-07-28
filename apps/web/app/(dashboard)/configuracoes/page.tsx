@@ -1665,17 +1665,22 @@ function KnowledgeBasePanel() {
       ) : status && status.files.length > 0 ? (
         <div className="border border-af-border rounded-lg divide-y divide-slate-100 overflow-hidden">
           {status.files.map(f => (
-            <div key={f.id} className="flex items-center justify-between px-3 py-2 text-sm">
-              <span className="truncate text-slate-700">{f.name}</span>
-              <span className="flex items-center gap-2 flex-shrink-0 ml-3">
-                {f.status === 'indexed' ? (
-                  <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 size={12} /> {f.chunkCount} trechos</span>
-                ) : f.status === 'error' ? (
-                  <span className="inline-flex items-center gap-1 text-xs text-red-600" title={f.error || ''}><XCircle size={12} /> erro</span>
-                ) : (
-                  <span className="text-xs text-slate-400">pendente</span>
-                )}
-              </span>
+            <div key={f.id} className="px-3 py-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="truncate text-slate-700">{f.name}</span>
+                <span className="flex items-center gap-2 flex-shrink-0 ml-3">
+                  {f.status === 'indexed' ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 size={12} /> {f.chunkCount} trechos</span>
+                  ) : f.status === 'error' ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle size={12} /> erro</span>
+                  ) : (
+                    <span className="text-xs text-slate-400">pendente</span>
+                  )}
+                </span>
+              </div>
+              {f.status === 'error' && f.error && (
+                <p className="text-xs text-red-500 mt-1 leading-snug">{f.error}</p>
+              )}
             </div>
           ))}
         </div>

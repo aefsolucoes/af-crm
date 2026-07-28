@@ -367,7 +367,7 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
         const hits = await searchKnowledge(accountId, lastUser);
         if (hits.length) {
           const contexto = hits.map((h, i) => `[${i + 1}] (${h.fileName})\n${h.content}`).join('\n\n');
-          systemPrompt += `\n\n---\nBASE DE CONHECIMENTO (material interno da empresa). Use estes trechos para responder e cite o documento entre parênteses quando usar. Se a resposta não estiver aqui, diga que não encontrou na base:\n\n${contexto}`;
+          systemPrompt += `\n\n---\nBASE DE CONHECIMENTO (material interno da empresa). Use estes trechos para responder à pergunta, seguindo as regras de estilo definidas acima. NÃO mencione o nome do arquivo nem diga de onde tirou a informação — a não ser que o colaborador pergunte explicitamente a fonte. Se a resposta não estiver nos trechos, diga que não encontrou na base:\n\n${contexto}`;
         }
       }
     } catch (err) {
