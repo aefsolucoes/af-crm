@@ -24,6 +24,7 @@ model Account {
   googleConnection GoogleConnection?
   fieldDefinitions FieldDefinition[]
   transactions     Transaction[]
+  knowledgeFiles   KnowledgeFile[]
 }
 
 model FieldDefinition {
@@ -304,12 +305,52 @@ model WhatsAppNumber {
 }
 
 model AgentConfig {
-  id           String   @id @default(cuid())
-  accountId    String   @unique
-  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  systemPrompt String   @db.Text
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  accountId           String   @unique
+  account             Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  systemPrompt        String   @db.Text
+  // Pasta do Google Drive usada como Base de Conhecimento (treinamento do assistente).
+  knowledgeFolderId   String?
+  knowledgeFolderName String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+/// Base de Conhecimento: um arquivo (Word/PDF/Google Doc) da pasta do Drive.
+/// Só material genérico da empresa — nunca dados de cliente.
+model KnowledgeFile {
+  id           String           @id @default(cuid())
+  accountId    String
+  account      Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  driveFileId  String
+  name         String
+  mimeType     String
+  modifiedTime String? // modifiedTime do Drive — p/ re-sincronizar só o que mudou
+  chunkCount   Int              @default(0)
+  status       String           @default("pending") // pending | indexed | error
+  error        String?          @db.Text
+  indexedAt    DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  chunks       KnowledgeChunk[]
+
+  @@unique([accountId, driveFileId])
+  @@index([accountId])
+}
+
+/// Um pedaço de texto de um documento + seu embedding (vetor de significado).
+model KnowledgeChunk {
+  id         String        @id @default(cuid())
+  accountId  String
+  fileId     String
+  file       KnowledgeFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  chunkIndex Int
+  content    String        @db.Text
+  embedding  Float[] // vetor gerado pela Voyage
+  createdAt  DateTime      @default(now())
+
+  @@index([accountId])
+  @@index([fileId])
 }
 
 model SalesBot {

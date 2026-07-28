@@ -186,6 +186,57 @@ export function folderLink(folderId: string): string {
   return `https://drive.google.com/drive/folders/${folderId}`;
 }
 
+// ─── Base de conhecimento (leitura de documentos da pasta) ──────────────────
+
+/** Tipos de arquivo que sabemos ler para a base de conhecimento. */
+export const KNOWLEDGE_MIME_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+  'application/msword', // .doc (legado)
+  'application/vnd.google-apps.document', // Google Docs
+] as const;
+
+export interface DriveFileMeta {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime: string | null;
+}
+
+/** Lista os arquivos (Word/PDF/Google Docs) dentro de uma pasta do Drive. */
+export async function listKnowledgeFiles(accountId: string, folderId: string): Promise<DriveFileMeta[]> {
+  const drive = await getDrive(accountId);
+  const mimeQ = KNOWLEDGE_MIME_TYPES.map(m => `mimeType = '${m}'`).join(' or ');
+  const res = await drive.files.list({
+    q: `'${folderId}' in parents and (${mimeQ}) and trashed = false`,
+    fields: 'files(id, name, mimeType, modifiedTime)',
+    orderBy: 'name',
+    pageSize: 500,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  return (res.data.files || []).map(f => ({
+    id: f.id!, name: f.name!, mimeType: f.mimeType!, modifiedTime: f.modifiedTime || null,
+  }));
+}
+
+/** Baixa o conteúdo de um arquivo do Drive como Buffer (Google Docs são exportados como texto). */
+export async function downloadDriveFile(accountId: string, fileId: string, mimeType: string): Promise<Buffer> {
+  const drive = await getDrive(accountId);
+  if (mimeType === 'application/vnd.google-apps.document') {
+    const res = await drive.files.export(
+      { fileId, mimeType: 'text/plain' },
+      { responseType: 'arraybuffer' },
+    );
+    return Buffer.from(res.data as ArrayBuffer);
+  }
+  const res = await drive.files.get(
+    { fileId, alt: 'media', supportsAllDrives: true },
+    { responseType: 'arraybuffer' },
+  );
+  return Buffer.from(res.data as ArrayBuffer);
+}
+
 /**
  * Cria (ou reutiliza) a pasta do cliente dentro da pasta-raiz e sobe todos os
  * documentos capturados do lead que ainda não foram enviados. Retorna o link
