@@ -323,27 +323,33 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           <span className={cn('w-1.5 h-1.5 rounded-full', apiActive ? 'bg-green-400' : 'bg-red-400')} />
         </button>
 
-        {/* Com 2+ números conectados, escolhe por qual WhatsApp esta mensagem sai
-            (mesma conversa, sem duplicar). */}
-        {effectiveVia === 'qr' && connectedQr.length >= 2 && (
+        {/* Com 2+ números cadastrados, escolhe por qual WhatsApp esta mensagem sai
+            (mesma conversa, sem duplicar). Os desconectados aparecem em cinza
+            (não dá pra enviar por eles até reconectar). */}
+        {effectiveVia === 'qr' && (qrNumbers?.length ?? 0) >= 2 && (
           <>
             <span className="mx-1 h-4 w-px bg-slate-200" />
             <span className="text-xs text-slate-500 font-medium">Número:</span>
-            {connectedQr.map(n => (
-              <button
-                key={n.id}
-                onClick={() => setFromNumberId(n.id)}
-                title={`Enviar por ${n.label}`}
-                className={cn(
-                  'px-2.5 py-1 rounded-full text-xs font-medium transition-all',
-                  activeNumberId === n.id
-                    ? 'bg-[#075e54] text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-                )}
-              >
-                {n.label}
-              </button>
-            ))}
+            {(qrNumbers || []).map(n => {
+              const isConn = n.status === 'connected';
+              return (
+                <button
+                  key={n.id}
+                  onClick={() => isConn && setFromNumberId(n.id)}
+                  disabled={!isConn}
+                  title={isConn ? `Enviar por ${n.label}` : `${n.label} está desconectado — reconecte em Configurações → QR Code`}
+                  className={cn(
+                    'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed',
+                    isConn && activeNumberId === n.id
+                      ? 'bg-[#075e54] text-white shadow-sm'
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  )}
+                >
+                  {n.label}
+                  <span className={cn('w-1.5 h-1.5 rounded-full', isConn ? 'bg-green-400' : 'bg-red-400')} />
+                </button>
+              );
+            })}
           </>
         )}
       </div>
@@ -417,8 +423,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                     )}
                     style={{ backgroundColor: isOut ? '#d9fdd3' : '#ffffff' }}
                   >
-                    {isOut && msg.whatsappNumberId && (qrNumbers?.length ?? 0) >= 2 && numberLabels[msg.whatsappNumberId] && (
-                      <p className="text-[10px] font-medium text-[#075e54]/70 mb-0.5">via {numberLabels[msg.whatsappNumberId]}</p>
+                    {isOut && (qrNumbers?.length ?? 0) >= 2 && numberLabels[msg.whatsappNumberId || lastRouted || ''] && (
+                      <p className="text-[10px] font-medium text-[#075e54]/70 mb-0.5">via {numberLabels[msg.whatsappNumberId || lastRouted || '']}</p>
                     )}
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="flex flex-col gap-1.5 mb-1">
