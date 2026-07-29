@@ -3,7 +3,7 @@ import { Conversation, WhatsAppNumber } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatDateTime } from '@/lib/utils';
 import { useState } from 'react';
-import { Users, UserMinus } from 'lucide-react';
+import { Users, UserMinus, Search, X } from 'lucide-react';
 
 /** true se a conversa é um grupo: marcada manualmente OU com JID de grupo (@g.us). */
 function isGroupConversation(c: Conversation): boolean {
@@ -31,13 +31,25 @@ type Filter = string;
 
 export function ConversationList({ conversations, selectedId, onSelect, onToggleGroup, onRefreshGroupNames, whatsappNumbers = [], loading }: ConversationListProps) {
   const [filter, setFilter] = useState<Filter>('ALL');
+  const [search, setSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
 
   const groupCount = conversations.filter(isGroupConversation).length;
 
+  const q = search.trim().toLowerCase();
+  const qDigits = q.replace(/\D/g, '');
+
   const filtered = conversations
     .filter((c) => {
       const isGroup = isGroupConversation(c);
+      // Busca por nome ou número — vale sobre qualquer filtro (inclusive grupos).
+      if (q) {
+        const name = (c.contact?.name || c.name || '').toLowerCase();
+        const phone = (c.contact?.whatsappPhone || c.contact?.phone || '').replace(/\D/g, '');
+        const hit = name.includes(q) || (qDigits.length >= 3 && phone.includes(qDigits));
+        if (!hit) return false;
+        return true; // ao buscar, ignora as abas e procura em tudo
+      }
       if (filter === 'GROUPS') return isGroup;
       // Nas demais visões, os grupos ficam fora — têm aba própria.
       if (isGroup) return false;
@@ -49,9 +61,31 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
 
   return (
     <div className="flex flex-col h-full border-r border-af-border app-column-surface w-80 flex-shrink-0">
+      {/* Busca por nome ou número */}
+      <div className="px-3 pt-3">
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-af-mid pointer-events-none" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar por nome ou número..."
+            className="w-full pl-8 pr-8 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent/40"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              title="Limpar busca"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Channel filter */}
       <div className="px-3 py-3 border-b border-af-border">
-        <div className="flex gap-1 flex-wrap">
+        <div className={cn('flex gap-1 flex-wrap', q && 'opacity-40 pointer-events-none')}>
           <button
             onClick={() => setFilter('ALL')}
             className={cn('px-2 py-1 text-xs rounded-full transition-colors', filter === 'ALL' ? 'bg-af-mid text-white' : 'bg-af-light text-af-mid hover:bg-af-border')}
