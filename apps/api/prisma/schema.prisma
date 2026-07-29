@@ -67,6 +67,10 @@ model User {
   themeColor   String  @default("white")
   themeImage   String?
   themeOpacity Int     @default(85)
+  // Número de WhatsApp que o usuário opera — usado para dividir os clientes por
+  // usuário no Relatório Matinal.
+  whatsAppNumberId String?
+  whatsAppNumber   WhatsAppNumber? @relation(fields: [whatsAppNumberId], references: [id])
   createdAt DateTime @default(now())
 }
 
@@ -300,6 +304,7 @@ model WhatsAppNumber {
   updatedAt DateTime  @updatedAt
   leads     Lead[]
   messages  Message[]
+  users     User[]
 
   @@index([accountId])
 }

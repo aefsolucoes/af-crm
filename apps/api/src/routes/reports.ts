@@ -206,4 +206,67 @@ router.get('/documentacao', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Relatório Matinal: o que o usuário logado tem pra hoje.
+// - Tarefas dele (vencendo hoje ou atrasadas).
+// - Clientes esperando resposta: conversas do NÚMERO dele (WhatsApp vinculado)
+//   cuja última mensagem foi do cliente (INBOUND).
+router.get('/morning', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const userId = req.user!.id;
+
+    const user = await prisma.user.findFirst({
+      where: { id: userId, accountId },
+      include: { whatsAppNumber: { select: { id: true, label: true } } },
+    });
+    if (!user) { res.status(404).json({ error: 'Usuário não encontrado' }); return; }
+
+    const now = new Date();
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+
+    const tasksRaw = await prisma.task.findMany({
+      where: { userId, done: false, dueAt: { lte: endOfToday } },
+      include: { lead: { select: { id: true, name: true } } },
+      orderBy: { dueAt: 'asc' },
+      take: 50,
+    });
+
+    // Clientes esperando resposta no número do usuário.
+    let clients: Array<{ leadId: string; name: string; phone: string | null; lastMessage: string; at: Date | null }> = [];
+    if (user.whatsAppNumberId) {
+      const leads = await prisma.lead.findMany({
+        where: { accountId, whatsappNumberId: user.whatsAppNumberId, archived: false },
+        include: {
+          contact: { select: { name: true, whatsappPhone: true, phone: true } },
+          messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { direction: true, content: true, createdAt: true } },
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 200,
+      });
+      clients = leads
+        .filter((l) => l.messages[0]?.direction === 'INBOUND')
+        .map((l) => ({
+          leadId: l.id,
+          name: l.name || l.contact?.name || 'Sem nome',
+          phone: l.contact?.whatsappPhone || l.contact?.phone || null,
+          lastMessage: (l.messages[0]?.content || '').slice(0, 90),
+          at: l.messages[0]?.createdAt || null,
+        }));
+    }
+
+    res.json({
+      user: { name: user.name },
+      number: user.whatsAppNumber || null,
+      tasks: tasksRaw.map((t) => ({
+        id: t.id, title: t.title, dueAt: t.dueAt, overdue: t.dueAt < now,
+        leadId: t.leadId, leadName: t.lead?.name || null,
+      })),
+      clients,
+    });
+  } catch (err) {
+    console.error('[Reports] morning:', err);
+    res.status(500).json({ error: 'Erro ao montar o relatório matinal' });
+  }
+});
+
 export default router;
