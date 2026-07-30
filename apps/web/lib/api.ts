@@ -22,7 +22,13 @@ api.interceptors.response.use(
       try {
         const refreshToken = localStorage.getItem('af_refresh_token');
         if (!refreshToken) throw new Error('no refresh');
-        const { data } = await axios.post('/api/auth/refresh', { refreshToken });
+        // Renova na API (mesmo baseURL das demais chamadas), não no domínio do site —
+        // antes ia para /api/auth/refresh relativo (o site) e sempre dava 404,
+        // derrubando a sessão após ~1h.
+        const { data } = await axios.post(
+          `${process.env.NEXT_PUBLIC_API_URL || ''}/api/auth/refresh`,
+          { refreshToken }
+        );
         localStorage.setItem('af_access_token', data.accessToken);
         original.headers.Authorization = `Bearer ${data.accessToken}`;
         return api(original);
