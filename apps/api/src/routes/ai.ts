@@ -298,6 +298,7 @@ async function executeAgentTool(
       leadId: String(input.leadId),
       content: String(input.content || ''),
       fromNumberId: input.fromNumberId ? String(input.fromNumberId) : undefined,
+      userId,
       io,
     });
     return result;
@@ -326,6 +327,7 @@ async function executeAgentTool(
       leadId: lead.leadId,
       content: String(input.content || ''),
       fromNumberId: input.fromNumberId ? String(input.fromNumberId) : undefined,
+      userId,
       io,
     });
     return { ...result, leadCreated: lead.created };

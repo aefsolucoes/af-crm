@@ -423,9 +423,19 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                     )}
                     style={{ backgroundColor: isOut ? '#d9fdd3' : '#ffffff' }}
                   >
-                    {isOut && (qrNumbers?.length ?? 0) >= 2 && numberLabels[msg.whatsappNumberId || lastRouted || ''] && (
-                      <p className="text-[10px] font-medium text-[#075e54]/70 mb-0.5">via {numberLabels[msg.whatsappNumberId || lastRouted || '']}</p>
-                    )}
+                    {isOut && (() => {
+                      // "via {apelido do número} · {quem enviou}". O apelido vem do
+                      // número que mandou (ou o da conversa); o nome só existe nas
+                      // mensagens enviadas pela Inbox do CRM (não as mandadas pelo celular).
+                      const numLabel = numberLabels[msg.whatsappNumberId || lastRouted || ''];
+                      const sender = (msg as any).sentBy?.name as string | undefined;
+                      if (!numLabel && !sender) return null;
+                      return (
+                        <p className="text-[10px] font-medium text-[#075e54]/70 mb-0.5">
+                          {[numLabel && `via ${numLabel}`, sender].filter(Boolean).join(' · ')}
+                        </p>
+                      );
+                    })()}
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="flex flex-col gap-1.5 mb-1">
                         {msg.attachments.map((att) => (

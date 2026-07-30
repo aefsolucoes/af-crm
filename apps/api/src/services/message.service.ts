@@ -12,6 +12,8 @@ export async function getMessages(leadId: string) {
       attachments: {
         select: { id: true, fileName: true, mimeType: true, driveFileId: true },
       },
+      // Nome de quem enviou (só nas mensagens enviadas pela Inbox do CRM).
+      sentBy: { select: { id: true, name: true } },
     },
   });
 }
@@ -22,10 +24,14 @@ export async function createMessage(data: {
   channel: Channel;
   leadId: string;
   whatsappNumberId?: string;
+  sentByUserId?: string;
   externalId?: string;
   status?: string;
 }) {
-  return prisma.message.create({ data: data as any });
+  return prisma.message.create({
+    data: data as any,
+    include: { sentBy: { select: { id: true, name: true } } },
+  });
 }
 
 /** Só dígitos, e garante DDI 55 (Brasil) para números locais */
@@ -166,9 +172,11 @@ export async function sendOutboundWhatsApp(params: {
   via?: 'qr' | 'api';
   /** Número (WhatsAppNumber.id) do qual enviar via QR. Se ausente, usa o número da conversa ou o primeiro conectado. */
   fromNumberId?: string;
+  /** Usuário do CRM que está enviando (para carimbar "enviado por" na mensagem). */
+  userId?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string }> {
-  const { accountId, leadId, content, via, fromNumberId, io } = params;
+  const { accountId, leadId, content, via, fromNumberId, userId, io } = params;
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -240,6 +248,7 @@ export async function sendOutboundWhatsApp(params: {
     channel: 'WHATSAPP',
     leadId,
     whatsappNumberId: usedNumberId ?? undefined,
+    sentByUserId: userId,
     externalId,
     status: 'SENT',
   });
@@ -260,9 +269,11 @@ export async function sendOutboundMedia(params: {
   fileName: string;
   mimeType: string;
   caption?: string;
+  /** Usuário do CRM que está enviando (para carimbar "enviado por"). */
+  userId?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: any } | { success: false; error: string }> {
-  const { accountId, leadId, buffer, fileName, mimeType, caption, io } = params;
+  const { accountId, leadId, buffer, fileName, mimeType, caption, userId, io } = params;
 
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true } });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
@@ -286,10 +297,13 @@ export async function sendOutboundMedia(params: {
   const message = await prisma.message.create({
     data: {
       content, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId,
-      whatsappNumberId: preferred, read: true, externalId: sentId, status: 'SENT',
+      whatsappNumberId: preferred, sentByUserId: userId ?? null, read: true, externalId: sentId, status: 'SENT',
       attachments: { create: { leadId, fileName, mimeType, data: buffer } },
     },
-    include: { attachments: { select: { id: true, fileName: true, mimeType: true, driveFileId: true } } },
+    include: {
+      attachments: { select: { id: true, fileName: true, mimeType: true, driveFileId: true } },
+      sentBy: { select: { id: true, name: true } },
+    },
   });
 
   if (io) {

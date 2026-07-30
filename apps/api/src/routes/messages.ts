@@ -68,7 +68,7 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
     }
     const io = req.app.get('io');
     const result = await sendOutboundMedia({
-      accountId: req.user!.accountId, leadId, buffer, fileName, mimeType, caption, io,
+      accountId: req.user!.accountId, leadId, buffer, fileName, mimeType, caption, userId: req.user!.id, io,
     });
     if (!result.success) return res.status(400).json({ error: result.error });
     res.status(201).json(result.message);
@@ -100,6 +100,7 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
         content: req.body.content,
         via: req.body.via,
         fromNumberId: req.body.fromNumberId,
+        userId: req.user!.id,
         io,
       });
       if (!result.success) {

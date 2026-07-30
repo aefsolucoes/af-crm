@@ -64,6 +64,7 @@ model User {
   tasks     Task[]
   notes     Note[]
   transactions Transaction[]
+  messagesSent Message[]
   themeColor   String  @default("white")
   themeImage   String?
   themeOpacity Int     @default(85)
@@ -201,6 +202,9 @@ model Message {
   lead       Lead       @relation(fields: [leadId], references: [id])
   whatsappNumberId String?
   whatsappNumber   WhatsAppNumber? @relation(fields: [whatsappNumberId], references: [id])
+  // Usuário do CRM que enviou a mensagem (só para as enviadas pela Inbox).
+  sentByUserId String?
+  sentBy       User?      @relation(fields: [sentByUserId], references: [id])
   read       Boolean    @default(false)
   externalId String?
   status     MsgStatus  @default(SENT)
