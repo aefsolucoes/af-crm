@@ -73,7 +73,7 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
 const SUPPORT_SYSTEM_PROMPT = `Você é o assistente interno de suporte do AF CRM, usado pelos funcionários da A&F Soluções Financeiras.
 Seu papel é tirar dúvidas dos funcionários sobre como usar o sistema e sobre o processo de vendas/atendimento da empresa: funil de vendas, inbox unificada (WhatsApp), cadastro de leads e contatos, tarefas, SalesBot (automação de mensagens), templates e relatórios.
 Você também pode, quando um colaborador pedir explicitamente, ler o histórico de conversa de um lead no WhatsApp e enviar uma mensagem ao cliente em nome do colaborador, usando as ferramentas disponíveis:
-- find_lead: busca um lead já cadastrado pelo nome.
+- find_lead: busca um lead já cadastrado pelo NOME ou pelo TELEFONE. Quando o colaborador der um número e perguntar se existe cliente com ele (ex: "tem algum cliente com o número 61 8454-9012?"), use find_lead com o parâmetro phone — a busca ignora pontuação, o DDI 55 e o 9º dígito do celular, e procura no contato e nos campos do cadastro. Não invente dígitos: passe o número como o colaborador escreveu.
 - get_recent_messages: lê o histórico de mensagens de um lead.
 - send_whatsapp_message: envia para um lead JÁ existente (por leadId).
 - send_whatsapp_to_number: quando o colaborador fornecer um NÚMERO de telefone (ex: "manda mensagem para o 61 99999-9999"), use esta ferramenta — ela cria o contato/lead automaticamente e envia. Sempre que o pedido incluir um número, use send_whatsapp_to_number diretamente, sem exigir que o lead já exista. Aceita stageId (para criar o card num funil/estágio específico) e fromNumberId (número de WhatsApp de origem).
@@ -93,13 +93,14 @@ interface ChatMessage {
 const AGENT_TOOLS = [
   {
     name: 'find_lead',
-    description: 'Busca leads/clientes pelo nome (ou parte do nome) para descobrir o ID do lead antes de ler mensagens ou enviar uma resposta. Retorna nome, telefone e id de cada lead encontrado.',
+    description: 'Busca leads/clientes pelo NOME (ou parte) ou pelo TELEFONE. Informe name para buscar por nome, ou phone para buscar por número. A busca por telefone ignora pontuação, o DDI 55 e o 9º dígito do celular, e procura tanto no contato quanto nos campos do cadastro. Retorna nome, telefone e id de cada lead encontrado.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Nome ou parte do nome do lead/cliente a buscar' },
+        phone: { type: 'string', description: 'Telefone a buscar, em qualquer formato (ex: "(61) 8454-9012" ou "61984549012"). A busca ignora pontuação, o DDI 55 e o 9º dígito.' },
       },
-      required: ['name'],
+      required: [],
     },
   },
   {
@@ -189,8 +190,36 @@ async function executeAgentTool(
   userId?: string
 ): Promise<unknown> {
   if (name === 'find_lead') {
+    const nameQuery = String(input.name || '').trim();
+    const phoneQuery = String(input.phone || '').trim();
+
+    // Busca por telefone: ignora formatação, DDI 55 e o 9º dígito do celular.
+    // Compara pelo "núcleo" (últimos 8 dígitos), cobrindo o contato e os campos
+    // personalizados do cadastro (customFields), que guardam o telefone digitado.
+    if (phoneQuery) {
+      const digits = phoneQuery.replace(/\D/g, '');
+      const core = digits.length > 8 ? digits.slice(-8) : digits;
+      if (core.length < 4) return [];
+      const leads = await prisma.lead.findMany({
+        where: { accountId, archived: false },
+        include: { contact: true },
+        take: 500,
+      });
+      const matches = leads.filter(l => {
+        const cf = l.customFields && typeof l.customFields === 'object'
+          ? Object.values(l.customFields as Record<string, unknown>) : [];
+        const candidates = [l.contact?.phone, l.contact?.whatsappPhone, ...cf];
+        return candidates.some(c => typeof c === 'string' && c.replace(/\D/g, '').includes(core));
+      }).slice(0, 5);
+      return matches.map(l => ({
+        id: l.id,
+        name: l.name,
+        phone: l.contact?.whatsappPhone || l.contact?.phone || null,
+      }));
+    }
+
     const leads = await prisma.lead.findMany({
-      where: { accountId, archived: false, name: { contains: String(input.name || ''), mode: 'insensitive' } },
+      where: { accountId, archived: false, name: { contains: nameQuery, mode: 'insensitive' } },
       include: { contact: true },
       take: 5,
     });

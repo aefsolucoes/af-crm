@@ -36,7 +36,9 @@ function issueTokens(user: User) {
 // código, envia para o e-mail cadastrado e pede a 2ª etapa. Caso contrário,
 // entra direto (para não trancar ninguém antes do SMTP estar pronto).
 export async function loginService(email: string, password: string) {
-  const user = await prisma.user.findUnique({ where: { email } });
+  // E-mail é sempre guardado em minúsculas na criação; normaliza aqui também
+  // para o login não ligar para maiúscula/minúscula (ex.: "Fabio@..." x "fabio@...").
+  const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
   if (!user) throw new Error('Credenciais inválidas');
 
   const valid = await bcrypt.compare(password, user.password);
@@ -63,7 +65,7 @@ export async function loginService(email: string, password: string) {
 
 // 2ª etapa: confere o código enviado por e-mail e só então entrega os tokens.
 export async function verifyLoginCodeService(email: string, code: string) {
-  const user = await prisma.user.findUnique({ where: { email } });
+  const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
   if (!user) throw new Error('Código inválido');
 
   const rec = loginCodes.get(user.id);
