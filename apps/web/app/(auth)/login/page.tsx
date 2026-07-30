@@ -22,7 +22,7 @@ export default function LoginPage() {
     try {
       const { data } = await api.post('/api/auth/login', { email, password });
       setAuth(data.user, data.accessToken, data.refreshToken);
-      router.push('/funil');
+      router.push('/dashboard');
     } catch {
       setError('E-mail ou senha inválidos. Tente novamente.');
     } finally {
@@ -78,13 +78,6 @@ export default function LoginPage() {
               Entrar
             </Button>
           </form>
-
-          <div className="mt-6 p-4 bg-af-light rounded-lg">
-            <p className="text-xs text-slate-600 font-medium mb-2">Credenciais de demonstração:</p>
-            <p className="text-xs text-slate-500">admin@af.com.br / af2026</p>
-            <p className="text-xs text-slate-500">gerente@af.com.br / af2026</p>
-            <p className="text-xs text-slate-500">agente@af.com.br / af2026</p>
-          </div>
         </div>
       </div>
     </div>

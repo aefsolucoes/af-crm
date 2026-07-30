@@ -1,22 +1,164 @@
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Role } from '@prisma/client';
+import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
 
+const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true } as const;
+const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
+
+// Só admin/gerente gerencia a equipe (criar, editar, excluir).
+function canManageUsers(req: AuthRequest) {
+  return req.user!.role === 'ADMIN' || req.user!.role === 'MANAGER';
+}
+
 // GET /api/users — lista usuários da conta
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const users = await prisma.user.findMany({
       where: { accountId: req.user!.accountId },
-      select: { id: true, name: true, email: true, role: true, whatsAppNumberId: true },
+      select: USER_SELECT,
       orderBy: { name: 'asc' },
     });
     res.json(users);
   } catch {
     res.status(500).json({ error: 'Erro ao buscar usuários' });
+  }
+});
+
+// POST /api/users — cria um novo membro da equipe.
+router.post('/', async (req: AuthRequest, res: Response) => {
+  try {
+    if (!canManageUsers(req)) {
+      return res.status(403).json({ error: 'Apenas admin/gerente pode gerenciar usuários' });
+    }
+    const accountId = req.user!.accountId;
+    const { name, email, password, role, whatsAppNumberId } = req.body as {
+      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null;
+    };
+
+    const cleanName = (name || '').trim();
+    const cleanEmail = (email || '').trim().toLowerCase();
+    if (!cleanName || !cleanEmail || !password) {
+      return res.status(400).json({ error: 'Nome, e-mail e senha são obrigatórios' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'A senha deve ter pelo menos 6 caracteres' });
+    }
+    const existing = await prisma.user.findUnique({ where: { email: cleanEmail } });
+    if (existing) return res.status(409).json({ error: 'Já existe um usuário com esse e-mail' });
+
+    if (whatsAppNumberId) {
+      const num = await prisma.whatsAppNumber.findFirst({ where: { id: whatsAppNumberId, accountId } });
+      if (!num) return res.status(400).json({ error: 'Número de WhatsApp inválido' });
+    }
+
+    const hashed = await bcrypt.hash(password, 10);
+    const user = await prisma.user.create({
+      data: {
+        name: cleanName,
+        email: cleanEmail,
+        password: hashed,
+        role: (VALID_ROLES.includes(role as Role) ? role : 'AGENT') as Role,
+        accountId,
+        whatsAppNumberId: whatsAppNumberId || null,
+      },
+      select: USER_SELECT,
+    });
+    res.status(201).json(user);
+  } catch {
+    res.status(500).json({ error: 'Erro ao criar usuário' });
+  }
+});
+
+// PATCH /api/users/:id — atualiza nome, e-mail, senha, papel e número do membro.
+router.patch('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    if (!canManageUsers(req)) {
+      return res.status(403).json({ error: 'Apenas admin/gerente pode gerenciar usuários' });
+    }
+    const accountId = req.user!.accountId;
+    const target = await prisma.user.findFirst({ where: { id: req.params.id, accountId } });
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+    const { name, email, password, role, whatsAppNumberId } = req.body as {
+      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null;
+    };
+    const data: Record<string, unknown> = {};
+
+    if (name !== undefined) {
+      if (!name.trim()) return res.status(400).json({ error: 'O nome não pode ficar vazio' });
+      data.name = name.trim();
+    }
+    if (email !== undefined) {
+      const cleanEmail = email.trim().toLowerCase();
+      if (!cleanEmail) return res.status(400).json({ error: 'O e-mail não pode ficar vazio' });
+      if (cleanEmail !== target.email) {
+        const dup = await prisma.user.findUnique({ where: { email: cleanEmail } });
+        if (dup) return res.status(409).json({ error: 'Já existe um usuário com esse e-mail' });
+        data.email = cleanEmail;
+      }
+    }
+    if (password) {
+      if (password.length < 6) return res.status(400).json({ error: 'A senha deve ter pelo menos 6 caracteres' });
+      data.password = await bcrypt.hash(password, 10);
+    }
+    if (role && VALID_ROLES.includes(role as Role)) {
+      // Não deixar rebaixar o último admin (evita conta sem administrador).
+      if (target.role === 'ADMIN' && role !== 'ADMIN') {
+        const admins = await prisma.user.count({ where: { accountId, role: 'ADMIN' } });
+        if (admins <= 1) return res.status(400).json({ error: 'A conta precisa de pelo menos um administrador' });
+      }
+      data.role = role as Role;
+    }
+    if (whatsAppNumberId !== undefined) {
+      if (whatsAppNumberId) {
+        const num = await prisma.whatsAppNumber.findFirst({ where: { id: whatsAppNumberId, accountId } });
+        if (!num) return res.status(400).json({ error: 'Número de WhatsApp inválido' });
+      }
+      data.whatsAppNumberId = whatsAppNumberId || null;
+    }
+
+    const user = await prisma.user.update({ where: { id: target.id }, data, select: USER_SELECT });
+    res.json(user);
+  } catch {
+    res.status(500).json({ error: 'Erro ao atualizar usuário' });
+  }
+});
+
+// DELETE /api/users/:id — remove um membro. Os registros dele (leads, tarefas,
+// notas) são transferidos para quem está excluindo, para não perder histórico.
+router.delete('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    if (!canManageUsers(req)) {
+      return res.status(403).json({ error: 'Apenas admin/gerente pode gerenciar usuários' });
+    }
+    if (req.params.id === req.user!.id) {
+      return res.status(400).json({ error: 'Você não pode excluir a sua própria conta' });
+    }
+    const accountId = req.user!.accountId;
+    const target = await prisma.user.findFirst({ where: { id: req.params.id, accountId } });
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+    if (target.role === 'ADMIN') {
+      const admins = await prisma.user.count({ where: { accountId, role: 'ADMIN' } });
+      if (admins <= 1) return res.status(400).json({ error: 'Não é possível excluir o último administrador' });
+    }
+
+    const heir = req.user!.id;
+    await prisma.$transaction([
+      prisma.lead.updateMany({ where: { userId: target.id }, data: { userId: heir } }),
+      prisma.task.updateMany({ where: { userId: target.id }, data: { userId: heir } }),
+      prisma.note.updateMany({ where: { userId: target.id }, data: { userId: heir } }),
+      prisma.transaction.updateMany({ where: { userId: target.id }, data: { userId: heir } }),
+      prisma.user.delete({ where: { id: target.id } }),
+    ]);
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Erro ao excluir usuário' });
   }
 });
 
