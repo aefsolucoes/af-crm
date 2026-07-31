@@ -51,8 +51,9 @@ async function auditNote(leadId: string, userId: string | undefined, content: st
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
+    const isAdmin = req.user!.role === 'ADMIN';
     const archived = req.query.archived === 'true';
-    const leads = await getLeads(req.user!.accountId, req.query.pipelineId as string, req.query.stageId as string, archived);
+    const leads = await getLeads(req.user!.accountId, req.query.pipelineId as string, req.query.stageId as string, archived, isAdmin);
     res.json(leads);
   } catch (err: unknown) {
     res.status(500).json({ error: 'Erro ao buscar leads' });

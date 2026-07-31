@@ -11,9 +11,10 @@ import { LeadModal } from '@/components/kanban/lead-modal';
 import { DuplicatesModal } from '@/components/kanban/duplicates-modal';
 import { Pipeline, Lead, Contact, User } from '@/types';
 import api from '@/lib/api';
-import { Plus, RefreshCw, Search, X, Pencil, Trash2, FolderPlus, GitMerge } from 'lucide-react';
+import { Plus, RefreshCw, Search, X, Pencil, Trash2, FolderPlus, GitMerge, Archive } from 'lucide-react';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
+import { useAuthStore } from '@/store/auth.store';
 
 // Ordem fixa dos pipelines
 const PIPELINE_ORDER = ['Caixa de Entrada', 'Vendas', 'Em contratação', 'Follow Up'];
@@ -23,8 +24,8 @@ async function fetchPipelines(): Promise<Pipeline[]> {
   return data;
 }
 
-async function fetchLeads(pipelineId: string): Promise<Lead[]> {
-  const { data } = await api.get(`/api/leads?pipelineId=${pipelineId}`);
+async function fetchLeads(pipelineId: string, archived = false): Promise<Lead[]> {
+  const { data } = await api.get(`/api/leads?pipelineId=${pipelineId}${archived ? '&archived=true' : ''}`);
   return data;
 }
 
@@ -43,6 +44,9 @@ export default function FunilPage() {
   const [openAddLead, setOpenAddLead] = useState(false);
   const [openDuplicates, setOpenDuplicates] = useState(false);
   const [search, setSearch] = useState('');
+  const me = useAuthStore((s) => s.user);
+  const isAdmin = me?.role === 'ADMIN';
+  const [showArchived, setShowArchived] = useState(false);
   const [selectedPipelineId, setSelectedPipelineId] = useState<string>('');
   const [showNewPipeline, setShowNewPipeline] = useState(false);
   const [newPipelineName, setNewPipelineName] = useState('');
@@ -93,8 +97,8 @@ export default function FunilPage() {
 
   // Leads do pipeline atual
   const { data: rawLeads, isLoading: loadingLeads, refetch } = useQuery({
-    queryKey: ['leads', selectedPipelineId],
-    queryFn: () => fetchLeads(selectedPipelineId),
+    queryKey: ['leads', selectedPipelineId, showArchived],
+    queryFn: () => fetchLeads(selectedPipelineId, isAdmin && showArchived),
     enabled: !!selectedPipelineId && !search.trim(),
   });
 
@@ -275,6 +279,17 @@ export default function FunilPage() {
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {isAdmin && (
+            <Button
+              variant={showArchived ? 'primary' : 'ghost'}
+              size="sm"
+              onClick={() => setShowArchived((v) => !v)}
+              title="Ver leads arquivados (somente admin)"
+            >
+              <Archive size={14} />
+              {showArchived ? 'Vendo arquivados' : 'Ver arquivados'}
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={() => setOpenDuplicates(true)}>
             <GitMerge size={14} />
             Juntar duplicados

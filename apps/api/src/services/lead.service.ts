@@ -2,13 +2,15 @@ import { PrismaClient, LeadStatus } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-export async function getLeads(accountId: string, pipelineId?: string, stageId?: string, archived = false) {
+export async function getLeads(accountId: string, pipelineId?: string, stageId?: string, archived = false, isAdmin = true) {
   return prisma.lead.findMany({
     where: {
       accountId,
-      archived,
+      // Só admin enxerga arquivados e leads ganhos (WON); demais nunca.
+      archived: isAdmin ? archived : false,
       ...(pipelineId && { pipelineId }),
       ...(stageId && { stageId }),
+      ...(isAdmin ? {} : { status: { not: LeadStatus.WON } }),
     },
     include: {
       stage: true,
