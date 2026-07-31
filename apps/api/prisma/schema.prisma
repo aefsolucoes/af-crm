@@ -208,6 +208,8 @@ model Message {
   // Usuário do CRM que enviou a mensagem (só para as enviadas pela Inbox).
   sentByUserId String?
   sentBy       User?      @relation(fields: [sentByUserId], references: [id])
+  // Nome de quem enviou, quando é grupo (o participante que mandou a mensagem).
+  senderName   String?
   read       Boolean    @default(false)
   externalId String?
   status     MsgStatus  @default(SENT)

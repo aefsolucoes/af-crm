@@ -6,6 +6,8 @@ export async function getLeads(accountId: string, pipelineId?: string, stageId?:
   return prisma.lead.findMany({
     where: {
       accountId,
+      // Grupos do WhatsApp não são cards de venda — ficam só na Inbox, não no Funil.
+      isGroup: false,
       // Só admin enxerga arquivados e leads ganhos (WON); demais nunca.
       archived: isAdmin ? archived : false,
       ...(pipelineId && { pipelineId }),

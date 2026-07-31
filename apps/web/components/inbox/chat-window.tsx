@@ -11,6 +11,14 @@ import { Avatar } from '@/components/ui/avatar';
 import { AttachmentView } from '@/components/inbox/message-attachment';
 import { MessageTemplate, CATEGORY_META, getTemplates, fillTemplate } from '@/lib/templates';
 
+// Cor estável por remetente em grupos (estilo WhatsApp: mesma pessoa, mesma cor).
+const SENDER_COLORS = ['#e542a3', '#00a884', '#ff7e00', '#6a5cff', '#0ea5e9', '#e0453e', '#7c9c00', '#b26bff'];
+function groupSenderColor(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return SENDER_COLORS[h % SENDER_COLORS.length];
+}
+
 const CHANNEL_ICONS: Record<Channel, string> = {
   WHATSAPP: '📱',
   INSTAGRAM: '📸',
@@ -420,6 +428,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                         </p>
                       );
                     })()}
+                    {/* Em grupo: nome de quem enviou, acima da mensagem (estilo WhatsApp). */}
+                    {!isOut && (msg as any).senderName && (
+                      <p className="text-[11px] font-semibold mb-0.5" style={{ color: groupSenderColor((msg as any).senderName) }}>
+                        {(msg as any).senderName}
+                      </p>
+                    )}
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="flex flex-col gap-1.5 mb-1">
                         {msg.attachments.map((att) => (

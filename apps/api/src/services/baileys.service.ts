@@ -573,10 +573,12 @@ async function getOrCreateLeadForPhone(
     include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
   });
 
-  // Nome de exibição: para grupo, tenta o assunto do grupo; senão o pushName.
+  // Nome de exibição: para grupo, SÓ o assunto do grupo (nunca o nome de um
+  // participante); se não der para buscar, um nome neutro (o botão "Atualizar
+  // nomes dos grupos" corrige depois). Para 1:1, o pushName do contato.
   let displayName = pushName || (realPhone ? `+${realPhone}` : from);
   if (isGroup) {
-    displayName = await getGroupSubject(sock, from) || pushName || 'Grupo do WhatsApp';
+    displayName = await getGroupSubject(sock, from) || 'Grupo do WhatsApp';
   }
 
   if (!contact) {
@@ -757,6 +759,10 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
     const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
     if (dup) return;
 
+    // Em grupo, guarda quem enviou (o participante) para mostrar acima da mensagem.
+    const isGroupMsg = (msg.key.remoteJid as string)?.endsWith('@g.us');
+    const senderName = (!fromMe && isGroupMsg) ? (msg.pushName || null) : null;
+
     const message = await prisma.message.create({
       data: {
         content: text,
@@ -764,6 +770,7 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
         channel: 'WHATSAPP',
         leadId,
         whatsappNumberId: numberId,
+        senderName,
         read: fromMe ? true : false,
         externalId: msg.key.id,
         status: fromMe ? 'SENT' : 'DELIVERED',
@@ -832,11 +839,13 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
 
   const caption = extractText(msg); // legenda, se houver
   const content = `📎 ${info.fileName}${caption ? ` — ${caption}` : ''}`;
+  const isGroupMsg = (msg.key.remoteJid as string)?.endsWith('@g.us');
+  const senderName = (!fromMe && isGroupMsg) ? (msg.pushName || null) : null;
 
   const message = await prisma.message.create({
     data: {
       content, direction: fromMe ? 'OUTBOUND' : 'INBOUND', channel: 'WHATSAPP', leadId,
-      whatsappNumberId: numberId, read: fromMe ? true : false, externalId: msg.key.id,
+      whatsappNumberId: numberId, senderName, read: fromMe ? true : false, externalId: msg.key.id,
       status: fromMe ? 'SENT' : 'DELIVERED',
       ...(buffer ? {
         attachments: {
