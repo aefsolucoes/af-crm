@@ -1,8 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import type { PermissionMap } from '../lib/permissions';
 
 export interface AuthRequest extends Request {
   user?: { id: string; accountId: string; role: string };
+  // Permissões efetivas do usuário, preenchidas pelo requirePermission quando a
+  // rota é gateada (para checagens mais finas dentro do handler).
+  perms?: PermissionMap;
 }
 
 export function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {

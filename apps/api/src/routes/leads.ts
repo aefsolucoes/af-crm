@@ -2,12 +2,27 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead } from '../services/lead.service';
 
 const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
+
+// Leitura (GET) fica aberta — a Inbox e outras telas dependem dos dados do lead.
+// Qualquer escrita no funil (criar/editar/mover/arquivar/excluir/merge) exige a
+// permissão "gerenciar cards".
+router.use(async (req: AuthRequest, res: Response, next) => {
+  if (req.method === 'GET') return next();
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.funnel_manage) return res.status(403).json({ error: 'Você não tem permissão para editar cards do funil.' });
+    next();
+  } catch {
+    res.status(500).json({ error: 'Erro ao verificar permissão' });
+  }
+});
 
 const createLeadSchema = z.object({
   name: z.string().min(1),

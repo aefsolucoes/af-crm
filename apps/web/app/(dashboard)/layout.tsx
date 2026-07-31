@@ -1,10 +1,11 @@
 'use client';
 import { useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/ui/sidebar';
 import { ToastContainer } from '@/components/ui/toast';
 import { SupportChatButton } from '@/components/ui/support-chat';
 import { useAuthStore } from '@/store/auth.store';
+import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
 
 type SoundKey = 'whatsapp' | 'ding' | 'pop' | 'chime' | 'bell' | 'soft' | 'alert' | 'none';
@@ -45,6 +46,7 @@ function playNotificationSound(key: SoundKey = 'whatsapp') {
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, init } = useAuthStore();
   const router = useRouter();
+  const pathname = usePathname();
   const lastSoundRef = useRef<number>(0);
 
   useEffect(() => {
@@ -57,6 +59,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       if (!token) router.replace('/login');
     }
   }, [user, router]);
+
+  // Barra o acesso direto por URL a áreas sem permissão: manda para a primeira
+  // área que o usuário pode acessar.
+  useEffect(() => {
+    if (!user) return;
+    const perms = effectivePermissions(user.role, user.permissions ?? null);
+    const rule = ROUTE_PERMISSION.find((r) => pathname.startsWith(r.prefix));
+    if (rule && !perms[rule.perm]) {
+      const firstAllowed = ROUTE_PERMISSION.find((r) => perms[r.perm]);
+      router.replace(firstAllowed ? firstAllowed.prefix : '/login');
+    }
+  }, [user, pathname, router]);
 
   // Conecta Socket.io na sala da conta e escuta mensagens
   useEffect(() => {

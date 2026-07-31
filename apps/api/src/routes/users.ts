@@ -2,17 +2,31 @@ import { Router, Response } from 'express';
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { loadPerms } from '../middleware/permission';
+import { PERMISSION_KEYS } from '../lib/permissions';
 
 const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
 
-const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true } as const;
+const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true, permissions: true } as const;
 const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
 
-// Só admin/gerente gerencia a equipe (criar, editar, excluir).
-function canManageUsers(req: AuthRequest) {
-  return req.user!.role === 'ADMIN' || req.user!.role === 'MANAGER';
+// Normaliza o objeto de permissões recebido: mantém só as chaves conhecidas como
+// boolean. null = usuário sem permissões próprias (usa o padrão do papel).
+function sanitizePermissions(input: unknown): Record<string, boolean> | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const src = input as Record<string, unknown>;
+  const out: Record<string, boolean> = {};
+  for (const k of PERMISSION_KEYS) out[k] = !!src[k];
+  return out;
+}
+
+// Gerenciar a equipe (criar, editar, excluir, tirar acesso) exige a permissão
+// "users". Admin sempre tem; Gerente por padrão também; Agente não.
+async function canManageUsers(req: AuthRequest) {
+  const perms = await loadPerms(req);
+  return perms.users;
 }
 
 // GET /api/users — lista usuários da conta
@@ -32,8 +46,8 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 // POST /api/users — cria um novo membro da equipe.
 router.post('/', async (req: AuthRequest, res: Response) => {
   try {
-    if (!canManageUsers(req)) {
-      return res.status(403).json({ error: 'Apenas admin/gerente pode gerenciar usuários' });
+    if (!(await canManageUsers(req))) {
+      return res.status(403).json({ error: 'Você não tem permissão para gerenciar usuários' });
     }
     const accountId = req.user!.accountId;
     const { name, email, password, role, whatsAppNumberId } = req.body as {
@@ -65,6 +79,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         role: (VALID_ROLES.includes(role as Role) ? role : 'AGENT') as Role,
         accountId,
         whatsAppNumberId: whatsAppNumberId || null,
+        permissions: sanitizePermissions((req.body as { permissions?: unknown }).permissions) ?? undefined,
       },
       select: USER_SELECT,
     });
@@ -77,8 +92,8 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 // PATCH /api/users/:id — atualiza nome, e-mail, senha, papel e número do membro.
 router.patch('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    if (!canManageUsers(req)) {
-      return res.status(403).json({ error: 'Apenas admin/gerente pode gerenciar usuários' });
+    if (!(await canManageUsers(req))) {
+      return res.status(403).json({ error: 'Você não tem permissão para gerenciar usuários' });
     }
     const accountId = req.user!.accountId;
     const target = await prisma.user.findFirst({ where: { id: req.params.id, accountId } });
@@ -121,6 +136,9 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
       }
       data.whatsAppNumberId = whatsAppNumberId || null;
     }
+    if ('permissions' in (req.body as object)) {
+      data.permissions = sanitizePermissions((req.body as { permissions?: unknown }).permissions);
+    }
 
     const user = await prisma.user.update({ where: { id: target.id }, data, select: USER_SELECT });
     res.json(user);
@@ -133,8 +151,8 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
 // notas) são transferidos para quem está excluindo, para não perder histórico.
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    if (!canManageUsers(req)) {
-      return res.status(403).json({ error: 'Apenas admin/gerente pode gerenciar usuários' });
+    if (!(await canManageUsers(req))) {
+      return res.status(403).json({ error: 'Você não tem permissão para gerenciar usuários' });
     }
     if (req.params.id === req.user!.id) {
       return res.status(400).json({ error: 'Você não pode excluir a sua própria conta' });

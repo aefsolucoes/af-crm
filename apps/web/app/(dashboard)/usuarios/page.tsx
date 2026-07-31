@@ -9,7 +9,8 @@ import { Avatar } from '@/components/ui/avatar';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
 import api from '@/lib/api';
-import { Plus, Trash2, Edit2, Shield, ShieldCheck, ShieldAlert, Smartphone } from 'lucide-react';
+import { Plus, Trash2, Edit2, Shield, ShieldCheck, ShieldAlert, Smartphone, Check, Lock } from 'lucide-react';
+import { PERMISSION_KEYS, PERMISSION_LABELS, ROLE_DEFAULTS, effectivePermissions, PermissionMap } from '@/lib/permissions';
 
 type Role = 'ADMIN' | 'MANAGER' | 'AGENT';
 
@@ -19,6 +20,7 @@ interface UserRecord {
   email: string;
   role: Role;
   whatsAppNumberId: string | null;
+  permissions: Record<string, boolean> | null;
 }
 
 interface WhatsNumber {
@@ -32,7 +34,10 @@ const ROLE_META: Record<Role, { label: string; color: string; icon: React.ReactN
   AGENT: { label: 'Agente', color: 'text-blue-600 bg-blue-50', icon: <Shield size={13} /> },
 };
 
-const EMPTY_FORM = { name: '', email: '', password: '', role: 'AGENT' as Role, whatsAppNumberId: '' };
+const EMPTY_FORM = {
+  name: '', email: '', password: '', role: 'AGENT' as Role, whatsAppNumberId: '',
+  permissions: { ...ROLE_DEFAULTS.AGENT } as PermissionMap,
+};
 
 function errMsg(e: unknown, fallback: string) {
   const r = e as { response?: { data?: { error?: string } } };
@@ -65,6 +70,8 @@ export default function UsuariosPage() {
         email: form.email,
         role: form.role,
         whatsAppNumberId: form.whatsAppNumberId || null,
+        // Admin sempre tem tudo (guardamos null = usa o padrão do papel).
+        permissions: form.role === 'ADMIN' ? null : form.permissions,
         ...(form.password ? { password: form.password } : {}),
       };
       if (editingUser) return (await api.patch(`/api/users/${editingUser.id}`, payload)).data;
@@ -95,8 +102,21 @@ export default function UsuariosPage() {
 
   function openEdit(u: UserRecord) {
     setEditingUser(u);
-    setForm({ name: u.name, email: u.email, password: '', role: u.role, whatsAppNumberId: u.whatsAppNumberId || '' });
+    setForm({
+      name: u.name, email: u.email, password: '', role: u.role,
+      whatsAppNumberId: u.whatsAppNumberId || '',
+      permissions: effectivePermissions(u.role, u.permissions),
+    });
     setShowModal(true);
+  }
+
+  // Ao trocar a função, as caixinhas voltam ao padrão daquela função.
+  function changeRole(role: Role) {
+    setForm((f) => ({ ...f, role, permissions: effectivePermissions(role, null) }));
+  }
+
+  function togglePerm(key: string) {
+    setForm((f) => ({ ...f, permissions: { ...f.permissions, [key]: !f.permissions[key as keyof PermissionMap] } as PermissionMap }));
   }
 
   function handleSave() {
@@ -255,7 +275,7 @@ export default function UsuariosPage() {
                     <button
                       key={role}
                       type="button"
-                      onClick={() => setForm({ ...form, role })}
+                      onClick={() => changeRole(role)}
                       className={`flex items-center justify-center gap-1.5 px-2 py-2.5 rounded-lg border-2 text-xs font-medium transition-colors ${form.role === role ? 'border-af-accent bg-af-light' : 'border-af-border hover:border-af-mid'}`}
                     >
                       <span className={`p-1 rounded ${rm.color}`}>{rm.icon}</span>
@@ -279,6 +299,41 @@ export default function UsuariosPage() {
                 ))}
               </select>
               <p className="text-xs text-slate-400 mt-1">Usado no Relatório Matinal para mostrar os clientes desse número para o usuário.</p>
+            </div>
+
+            {/* Permissões (as caixinhas) */}
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-700">O que este usuário pode acessar</label>
+              {form.role === 'ADMIN' ? (
+                <div className="flex items-center gap-2 text-xs text-slate-500 bg-af-light rounded-lg p-3">
+                  <Lock size={14} /> Administrador tem acesso total ao sistema — não dá para restringir.
+                </div>
+              ) : (
+                <>
+                  <p className="text-xs text-slate-400 mb-1">A função já marca um padrão. Ajuste caixinha por caixinha se quiser.</p>
+                  <div className="grid grid-cols-1 gap-1.5 max-h-64 overflow-y-auto pr-1">
+                    {PERMISSION_KEYS.map((key) => {
+                      const on = !!form.permissions[key];
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => togglePerm(key)}
+                          className={`flex items-center gap-3 p-2.5 rounded-lg border text-left transition-colors ${on ? 'border-af-accent bg-af-light' : 'border-af-border hover:bg-slate-50'}`}
+                        >
+                          <div className={`flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${on ? 'bg-af-accent border-af-accent' : 'border-slate-300'}`}>
+                            {on && <Check size={12} className="text-white" />}
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-slate-700">{PERMISSION_LABELS[key].label}</p>
+                            <p className="text-xs text-slate-400">{PERMISSION_LABELS[key].hint}</p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
           </div>
 

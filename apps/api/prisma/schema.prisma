@@ -72,6 +72,9 @@ model User {
   // usuário no Relatório Matinal.
   whatsAppNumberId String?
   whatsAppNumber   WhatsAppNumber? @relation(fields: [whatsAppNumberId], references: [id])
+  // Permissões por usuário (as "caixinhas"): { chave: boolean }. Null = usa o
+  // padrão do papel. Admin sempre tem tudo. Ver src/lib/permissions.ts.
+  permissions Json?
   createdAt DateTime @default(now())
 }
 

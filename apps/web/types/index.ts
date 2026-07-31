@@ -26,6 +26,9 @@ export interface User {
   themeColor?: string;
   themeImage?: string | null;
   themeOpacity?: number;
+  // Permissões efetivas (as "caixinhas"). Pode faltar em sessões antigas — nesse
+  // caso o front recalcula pelo papel via effectivePermissions().
+  permissions?: Record<string, boolean>;
 }
 
 export interface Account {

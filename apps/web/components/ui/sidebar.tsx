@@ -11,18 +11,19 @@ import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
 import { useRouter } from 'next/navigation';
 import { Avatar } from './avatar';
+import { effectivePermissions, PermissionKey } from '@/lib/permissions';
 
-const NAV = [
-  { href: '/dashboard', label: 'Dashboard', icon: BarChart3 },
-  { href: '/funil', label: 'Funil de Vendas', icon: Kanban },
-  { href: '/inbox', label: 'Inbox', icon: MessageSquare },
-  { href: '/tarefas', label: 'Tarefas', icon: CheckSquare },
-  { href: '/salesbot', label: 'SalesBot', icon: Bot },
-  { href: '/templates', label: 'Templates', icon: FileText },
-  { href: '/automacao', label: 'Automações', icon: Zap },
-  { href: '/usuarios', label: 'Usuários', icon: UserCog },
-  { href: '/financeiro', label: 'Financeiro', icon: Wallet },
-  { href: '/configuracoes', label: 'Configurações', icon: Settings },
+const NAV: { href: string; label: string; icon: typeof BarChart3; perm: PermissionKey }[] = [
+  { href: '/dashboard', label: 'Dashboard', icon: BarChart3, perm: 'dashboard' },
+  { href: '/funil', label: 'Funil de Vendas', icon: Kanban, perm: 'funnel_view' },
+  { href: '/inbox', label: 'Inbox', icon: MessageSquare, perm: 'inbox_view' },
+  { href: '/tarefas', label: 'Tarefas', icon: CheckSquare, perm: 'tasks' },
+  { href: '/salesbot', label: 'SalesBot', icon: Bot, perm: 'salesbot' },
+  { href: '/templates', label: 'Templates', icon: FileText, perm: 'templates' },
+  { href: '/automacao', label: 'Automações', icon: Zap, perm: 'automations' },
+  { href: '/usuarios', label: 'Usuários', icon: UserCog, perm: 'users' },
+  { href: '/financeiro', label: 'Financeiro', icon: Wallet, perm: 'finance' },
+  { href: '/configuracoes', label: 'Configurações', icon: Settings, perm: 'settings' },
 ];
 
 export function Sidebar() {
@@ -30,6 +31,10 @@ export function Sidebar() {
   const { user, logout } = useAuthStore();
   const { collapsed, toggle, init } = useSidebarStore();
   const router = useRouter();
+
+  // Mostra no menu só o que o usuário tem permissão de acessar.
+  const perms = effectivePermissions(user?.role || 'AGENT', user?.permissions ?? null);
+  const nav = NAV.filter((item) => perms[item.perm]);
 
   useEffect(() => {
     init();
@@ -78,7 +83,7 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {NAV.map(({ href, label, icon: Icon }) => {
+        {nav.map(({ href, label, icon: Icon }) => {
           const active = pathname.startsWith(href);
           return (
             <Link

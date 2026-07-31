@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, markConversationRead, getAttachment, sendOutboundMedia } from '../services/message.service';
 
@@ -62,6 +63,8 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
     return res.status(400).json({ error: 'leadId, fileName, mimeType e dataBase64 são obrigatórios' });
   }
   try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para enviar mensagens.' });
     const buffer = Buffer.from(dataBase64, 'base64');
     if (buffer.length > 25 * 1024 * 1024) {
       return res.status(413).json({ error: 'Arquivo muito grande (máx. 25 MB)' });
@@ -91,6 +94,11 @@ router.post('/read', async (req: AuthRequest, res: Response) => {
 
 router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response) => {
   try {
+    // Enviar mensagem exige permissão "responder no Inbox".
+    if (req.body.direction === 'OUTBOUND') {
+      const perms = await loadPerms(req);
+      if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para enviar mensagens.' });
+    }
     // If sending OUTBOUND via WhatsApp, use the shared send helper
     if (req.body.direction === 'OUTBOUND' && req.body.channel === 'WHATSAPP') {
       const io = req.app.get('io');

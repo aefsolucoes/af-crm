@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { randomInt } from 'crypto';
 import { isEmailConfigured, sendLoginCodeEmail } from './email.service';
+import { effectivePermissions } from '../lib/permissions';
 
 const prisma = new PrismaClient();
 
@@ -28,6 +29,7 @@ function issueTokens(user: User) {
     user: {
       id: user.id, name: user.name, email: user.email, role: user.role, accountId: user.accountId,
       themeColor: user.themeColor, themeImage: user.themeImage, themeOpacity: user.themeOpacity,
+      permissions: effectivePermissions(user.role, user.permissions),
     },
   };
 }
