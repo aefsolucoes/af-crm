@@ -323,33 +323,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           <span className={cn('w-1.5 h-1.5 rounded-full', apiActive ? 'bg-green-400' : 'bg-red-400')} />
         </button>
 
-        {/* Com 2+ números cadastrados, escolhe por qual WhatsApp esta mensagem sai
-            (mesma conversa, sem duplicar). Os desconectados aparecem em cinza
-            (não dá pra enviar por eles até reconectar). */}
-        {effectiveVia === 'qr' && (qrNumbers?.length ?? 0) >= 2 && (
+        {/* Cada conversa é de um número só (igual WhatsApp real). Aqui mostramos,
+            só para referência, por qual número você está respondendo — não dá para
+            trocar: para falar por outro número, é outra conversa (outra aba). */}
+        {effectiveVia === 'qr' && (qrNumbers?.length ?? 0) >= 2 && lastRouted && numberLabels[lastRouted] && (
           <>
             <span className="mx-1 h-4 w-px bg-slate-200" />
-            <span className="text-xs text-slate-500 font-medium">Número:</span>
-            {(qrNumbers || []).map(n => {
-              const isConn = n.status === 'connected';
-              return (
-                <button
-                  key={n.id}
-                  onClick={() => isConn && setFromNumberId(n.id)}
-                  disabled={!isConn}
-                  title={isConn ? `Enviar por ${n.label}` : `${n.label} está desconectado — reconecte em Configurações → QR Code`}
-                  className={cn(
-                    'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed',
-                    isConn && activeNumberId === n.id
-                      ? 'bg-[#075e54] text-white shadow-sm'
-                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-                  )}
-                >
-                  {n.label}
-                  <span className={cn('w-1.5 h-1.5 rounded-full', isConn ? 'bg-green-400' : 'bg-red-400')} />
-                </button>
-              );
-            })}
+            <span className="text-xs text-slate-500">Número desta conversa:</span>
+            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">
+              {numberLabels[lastRouted]}
+              <span className={cn('w-1.5 h-1.5 rounded-full', connectedQr.some(n => n.id === lastRouted) ? 'bg-green-400' : 'bg-red-400')} />
+            </span>
           </>
         )}
       </div>

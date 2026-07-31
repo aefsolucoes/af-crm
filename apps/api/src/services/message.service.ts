@@ -198,15 +198,21 @@ export async function sendOutboundWhatsApp(params: {
     // — desde que esteja conectado e pertença à conta. Senão, roteia pelo mesmo
     // número que recebeu a conversa (lead.whatsappNumberId) ou o primeiro conectado.
     let preferred: string | undefined;
-    if (fromNumberId) {
+    if (lead.whatsappNumberId) {
+      // Cada conversa é de um número só (igual WhatsApp real): responde SEMPRE
+      // pelo número dela. Se estiver desconectado, avisa para reconectar — não
+      // envia por outro número (senão as conversas voltariam a se misturar).
+      if (!isNumberConnected(lead.whatsappNumberId)) {
+        return { success: false, error: 'O número de WhatsApp desta conversa está desconectado. Reconecte-o em Configurações → QR Code para responder por aqui.' };
+      }
+      preferred = lead.whatsappNumberId;
+    } else if (fromNumberId) {
       if (!connectedNumbers.includes(fromNumberId)) {
         return { success: false, error: 'O número de WhatsApp escolhido não está conectado. Verifique em Configurações → QR Code ou escolha outro.' };
       }
       preferred = fromNumberId;
     } else {
-      preferred = lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)
-        ? lead.whatsappNumberId
-        : connectedNumbers[0];
+      preferred = connectedNumbers[0];
     }
 
     if (!preferred) {

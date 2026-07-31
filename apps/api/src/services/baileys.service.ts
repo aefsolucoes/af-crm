@@ -601,16 +601,27 @@ async function getOrCreateLeadForPhone(
     await prisma.contact.update({ where: { id: contact.id }, data: { phone: `+${realPhone}` } }).catch(() => {});
   }
 
-  const leads = (contact as any).leads || [];
-  if (leads.length > 0) {
-    const lead = leads[0];
-    const data: any = {};
-    if (!lead.whatsappNumberId) data.whatsappNumberId = numberId;
+  // Conversa por (contato × número): cada um dos seus números tem a SUA própria
+  // conversa com o mesmo cliente (igual ao WhatsApp real). Procura um lead deste
+  // contato NESTE número; senão adota um lead legado sem número; senão cria um novo.
+  let lead = await prisma.lead.findFirst({
+    where: { contactId: contact.id, whatsappNumberId: numberId, accountId },
+    orderBy: { updatedAt: 'desc' },
+  });
+  if (!lead) {
+    const legacy = await prisma.lead.findFirst({
+      where: { contactId: contact.id, whatsappNumberId: null, accountId },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (legacy) {
+      lead = await prisma.lead.update({ where: { id: legacy.id }, data: { whatsappNumberId: numberId } });
+    }
+  }
+  if (lead) {
     const cf = (lead.customFields as any) || {};
     const telBad = !cf.telefone_1 || String(cf.telefone_1).includes('@');
-    if (telDisplayResolved && telBad) data.customFields = { ...cf, telefone_1: telDisplayResolved };
-    if (Object.keys(data).length) {
-      await prisma.lead.update({ where: { id: lead.id }, data }).catch(() => {});
+    if (telDisplayResolved && telBad) {
+      await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, telefone_1: telDisplayResolved } } }).catch(() => {});
     }
     return lead.id;
   }
@@ -634,7 +645,7 @@ async function getOrCreateLeadForPhone(
   const telDisplay = formatPhoneDisplay(realPhone);
   if (telDisplay) custom.telefone_1 = telDisplay;
 
-  const lead = await prisma.lead.create({
+  const newLead = await prisma.lead.create({
     data: {
       name: contact.name,
       accountId,
@@ -648,7 +659,7 @@ async function getOrCreateLeadForPhone(
       customFields: custom,
     },
   });
-  return lead.id;
+  return newLead.id;
 }
 
 /**
