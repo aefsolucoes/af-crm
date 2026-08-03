@@ -101,6 +101,41 @@ export async function refreshGroupNames(accountId: string): Promise<{ updated: n
   return { updated, total: contacts.length };
 }
 
+/** Integrantes de um grupo (para o painel da Inbox). Resolve nomes pelos contatos. */
+export async function getGroupParticipants(accountId: string, leadId: string) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true } });
+  const groupJid = lead?.contact?.whatsappPhone;
+  if (!lead?.isGroup || !groupJid?.endsWith('@g.us')) return null;
+
+  // Usa a sessão do número da conversa (se conectado); senão, qualquer conectado.
+  const own = lead.whatsappNumberId ? connections.get(lead.whatsappNumberId) : null;
+  const sock = (own?.status === 'connected' && own.sock) ? own.sock : getAnyConnectedSock(accountId);
+  if (!sock) throw new Error('Nenhum WhatsApp conectado para consultar o grupo');
+
+  const meta = await sock.groupMetadata(groupJid).catch(() => null);
+  if (!meta) return null;
+
+  // Nomes: uma consulta só nos contatos, casando pelos últimos 8 dígitos.
+  const contacts = await prisma.contact.findMany({ where: { accountId }, select: { name: true, phone: true } });
+  const nameByCore = new Map<string, string>();
+  for (const c of contacts) {
+    const d = (c.phone || '').replace(/\D/g, '');
+    if (d.length >= 8) nameByCore.set(d.slice(-8), c.name);
+  }
+
+  const members = (meta.participants || []).map((p: any) => {
+    const digits = String(p.id || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+    return {
+      phone: digits,
+      name: nameByCore.get(digits.slice(-8)) || null,
+      isAdmin: p.admin === 'admin' || p.admin === 'superadmin',
+    };
+  });
+  members.sort((a: any, b: any) =>
+    (Number(b.isAdmin) - Number(a.isAdmin)) || (a.name || a.phone).localeCompare(b.name || b.phone));
+  return { subject: meta.subject || '', count: members.length, members };
+}
+
 /**
  * Backfill em massa: resolve o telefone real dos contatos @lid usando o mapa
  * LID→número do Baileys 7. Preenche contact.phone e lead.customFields.telefone_1.

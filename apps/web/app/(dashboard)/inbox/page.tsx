@@ -6,6 +6,7 @@ import { Topbar } from '@/components/ui/topbar';
 import { ConversationList } from '@/components/inbox/conversation-list';
 import { ChatWindow } from '@/components/inbox/chat-window';
 import { InboxLeadPanel } from '@/components/inbox/inbox-lead-panel';
+import { GroupMembersPanel } from '@/components/inbox/group-members-panel';
 import { Conversation, Message, LeadDetail } from '@/types';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
@@ -146,7 +147,11 @@ function InboxPageInner() {
               onNewMessage={handleNewMessage}
               onClose={() => setSelectedId(null)}
             />
-            <InboxLeadPanel lead={lead} onRefresh={handleRefresh} />
+            {(lead as any).isGroup ? (
+              <GroupMembersPanel leadId={selectedId} groupName={displayName} />
+            ) : (
+              <InboxLeadPanel lead={lead} onRefresh={handleRefresh} />
+            )}
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center bg-slate-50">

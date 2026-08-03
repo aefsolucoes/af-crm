@@ -1,7 +1,7 @@
 import { Router, Response, Request } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { startQRConnection, getQRStatus, disconnectQR, refreshGroupNames, resolveLidPhones } from '../services/baileys.service';
+import { startQRConnection, getQRStatus, disconnectQR, refreshGroupNames, resolveLidPhones, getGroupParticipants } from '../services/baileys.service';
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -105,6 +105,17 @@ router.post('/refresh-groups', async (req: AuthRequest, res: Response) => {
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao atualizar grupos' });
+  }
+});
+
+// Integrantes de um grupo (para o painel da Inbox)
+router.get('/group/:leadId/members', async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await getGroupParticipants(req.user!.accountId, req.params.leadId);
+    if (!result) return res.status(404).json({ error: 'Conversa não é um grupo ou não foi encontrada' });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao buscar integrantes do grupo' });
   }
 });
 
