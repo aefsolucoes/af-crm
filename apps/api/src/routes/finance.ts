@@ -106,6 +106,43 @@ router.post('/', validate(transactionSchema), async (req: AuthRequest, res: Resp
   }
 });
 
+// PATCH /api/finance/:id — edita um lançamento (descrição, valor, tipo, data)
+router.patch('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const existing = await prisma.transaction.findFirst({
+      where: { id: req.params.id, accountId: req.user!.accountId },
+    });
+    if (!existing) return res.status(404).json({ error: 'Lançamento não encontrado' });
+
+    const { description, amount, type, date } = req.body as {
+      description?: string; amount?: number; type?: string; date?: string;
+    };
+    const data: Record<string, unknown> = {};
+    if (description !== undefined) {
+      if (!String(description).trim()) return res.status(400).json({ error: 'Descrição obrigatória' });
+      data.description = String(description).trim();
+    }
+    if (amount !== undefined) {
+      if (typeof amount !== 'number' || amount <= 0) return res.status(400).json({ error: 'Valor inválido' });
+      data.amount = amount;
+    }
+    if (type !== undefined) {
+      if (!['INCOME', 'EXPENSE'].includes(type)) return res.status(400).json({ error: 'Tipo inválido' });
+      data.type = type;
+    }
+    if (date !== undefined) data.date = new Date(date);
+
+    const transaction = await prisma.transaction.update({
+      where: { id: req.params.id },
+      data,
+      include: { user: { select: { id: true, name: true } } },
+    });
+    res.json(transaction);
+  } catch {
+    res.status(500).json({ error: 'Erro ao atualizar lançamento' });
+  }
+});
+
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const transaction = await prisma.transaction.findFirst({

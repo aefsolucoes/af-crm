@@ -7,7 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import api from '@/lib/api';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
 import { Transaction, TransactionType } from '@/types';
-import { Plus, TrendingUp, TrendingDown, Wallet, Trash2, X, PiggyBank } from 'lucide-react';
+import { Plus, TrendingUp, TrendingDown, Wallet, Trash2, X, PiggyBank, Pencil } from 'lucide-react';
 
 interface FinanceResponse {
   transactions: Transaction[];
@@ -48,6 +48,7 @@ export default function FinanceiroPage() {
   const [from, setFrom] = useState(defaultFrom());
   const [to, setTo] = useState(defaultTo());
   const [showAdd, setShowAdd] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [formType, setFormType] = useState<TransactionType>('INCOME');
   const [formDescription, setFormDescription] = useState('');
   const [formAmount, setFormAmount] = useState('');
@@ -70,7 +71,18 @@ export default function FinanceiroPage() {
     setFormAmount('');
     setFormDate(new Date().toISOString().slice(0, 10));
     setFormType('INCOME');
+    setEditingId(null);
     setShowAdd(false);
+  }
+
+  // Abre o formulário já preenchido para editar um lançamento existente.
+  function openEdit(t: Transaction) {
+    setEditingId(t.id);
+    setFormType(t.type === 'EXPENSE' ? 'EXPENSE' : 'INCOME');
+    setFormDescription(t.description);
+    setFormAmount(String(t.amount).replace('.', ','));
+    setFormDate(new Date(t.date).toISOString().slice(0, 10));
+    setShowAdd(true);
   }
 
   async function handleSave() {
@@ -81,13 +93,14 @@ export default function FinanceiroPage() {
     }
     setSaving(true);
     try {
-      await api.post('/api/finance', {
-        description: formDescription.trim(),
-        amount,
-        type: formType,
-        date: formDate,
-      });
-      toast(formType === 'INCOME' ? 'Receita lançada!' : 'Despesa lançada!');
+      const payload = { description: formDescription.trim(), amount, type: formType, date: formDate };
+      if (editingId) {
+        await api.patch(`/api/finance/${editingId}`, payload);
+        toast('Lançamento atualizado!');
+      } else {
+        await api.post('/api/finance', payload);
+        toast(formType === 'INCOME' ? 'Receita lançada!' : 'Despesa lançada!');
+      }
       queryClient.invalidateQueries({ queryKey: ['finance'] });
       resetForm();
     } catch {
@@ -134,6 +147,19 @@ export default function FinanceiroPage() {
       toast('Erro ao excluir lançamento', 'error');
     }
   }
+
+  // Maiores gastos do período (agrupados por descrição) — base do gráfico.
+  const topExpenses = (() => {
+    const map = new Map<string, number>();
+    (data?.transactions || [])
+      .filter((t) => t.type === 'EXPENSE')
+      .forEach((t) => map.set(t.description, (map.get(t.description) || 0) + t.amount));
+    return Array.from(map.entries())
+      .map(([description, total]) => ({ description, total }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 6);
+  })();
+  const maxExpense = topExpenses[0]?.total || 1;
 
   return (
     <div className="flex flex-col h-full">
@@ -200,11 +226,33 @@ export default function FinanceiroPage() {
           )}
         </div>
 
+        {/* Gráfico: onde mais gastou no período (por descrição) */}
+        {!isLoading && topExpenses.length > 0 && (
+          <div className="bg-white rounded-2xl border border-af-border shadow-sm p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
+              <TrendingDown size={16} className="text-red-500" /> Onde você mais gastou no período
+            </h3>
+            <div className="space-y-2.5">
+              {topExpenses.map((e) => (
+                <div key={e.description}>
+                  <div className="flex items-center justify-between text-xs mb-1 gap-2">
+                    <span className="text-slate-600 truncate">{e.description}</span>
+                    <span className="font-semibold text-red-500 flex-shrink-0">{formatCurrency(e.total)}</span>
+                  </div>
+                  <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full bg-red-400" style={{ width: `${Math.max(4, (e.total / maxExpense) * 100)}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Formulário de novo lançamento */}
         {showAdd && (
           <div className="bg-white rounded-2xl border border-af-border shadow-sm p-5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-slate-700">Novo lançamento</h3>
+              <h3 className="text-sm font-semibold text-slate-700">{editingId ? 'Editar lançamento' : 'Novo lançamento'}</h3>
               <button onClick={resetForm} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -253,7 +301,7 @@ export default function FinanceiroPage() {
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={resetForm} className="text-sm px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100">Cancelar</button>
               <button onClick={handleSave} disabled={saving} className="text-sm px-4 py-2 rounded-lg bg-af-mid text-white hover:bg-af-dark disabled:opacity-50">
-                {saving ? 'Salvando...' : 'Salvar lançamento'}
+                {saving ? 'Salvando...' : editingId ? 'Salvar alterações' : 'Salvar lançamento'}
               </button>
             </div>
           </div>
@@ -337,9 +385,16 @@ export default function FinanceiroPage() {
                       </td>
                       <td className="px-4 py-3 text-right text-slate-400 text-xs">{formatDate(t.date)}</td>
                       <td className="px-5 py-3 text-right">
-                        <button onClick={() => handleDelete(t.id)} className="text-slate-300 hover:text-red-500 transition-colors">
-                          <Trash2 size={14} />
-                        </button>
+                        <div className="flex items-center justify-end gap-2">
+                          {t.type !== 'SAVINGS' && (
+                            <button onClick={() => openEdit(t)} className="text-slate-300 hover:text-af-mid transition-colors" title="Editar">
+                              <Pencil size={14} />
+                            </button>
+                          )}
+                          <button onClick={() => handleDelete(t.id)} className="text-slate-300 hover:text-red-500 transition-colors" title="Excluir">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
