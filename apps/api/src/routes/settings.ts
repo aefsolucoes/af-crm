@@ -100,6 +100,35 @@ router.get('/whatsapp/test', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /api/settings/whatsapp/register — registra (ativa) o número na Cloud API com o PIN
+router.post('/whatsapp/register', async (req: AuthRequest, res: Response) => {
+  try {
+    const { pin } = req.body as { pin?: string };
+    if (!pin || !/^\d{6}$/.test(pin)) {
+      return res.status(400).json({ ok: false, error: 'Informe o PIN de 6 dígitos (verificação em duas etapas).' });
+    }
+    const config = await getWhatsAppConfig(req.user!.accountId);
+    if (!config?.phoneNumberId || !config.accessToken) {
+      return res.status(400).json({ ok: false, error: 'Configure o Phone Number ID e o Access Token primeiro (e salve).' });
+    }
+    // Ativa o número na Cloud API. Tira do "Offline" e coloca "Online".
+    const r = await fetch(`https://graph.facebook.com/v20.0/${config.phoneNumberId}/register`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+    });
+    const j = await r.json() as any;
+    if (!r.ok || j.error) {
+      const code = j.error?.code ?? r.status;
+      const msg  = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
+      return res.json({ ok: false, error: `${msg} (código: ${code})`, code });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: 'Falha ao ativar o número na Meta' });
+  }
+});
+
 // ─── Meta Lead Ads Settings ──────────────────────────────────────────────────
 
 const metaLeadsSchema = z.object({

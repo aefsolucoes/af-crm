@@ -152,6 +152,9 @@ export default function ConfiguracoesPage() {
   const [loadingConfig, setLoadingConfig] = useState(true);
   const [saving, setSaving] = useState(false);
   const [isNew, setIsNew] = useState(true);
+  // Ativação (registro) do número na Cloud API com o PIN de 2 etapas
+  const [regPin, setRegPin] = useState('');
+  const [registering, setRegistering] = useState(false);
 
   // Load API config
   useEffect(() => {
@@ -479,6 +482,46 @@ export default function ConfiguracoesPage() {
                       className="flex items-center gap-1 px-4 py-3 rounded-xl border border-af-border text-slate-600 text-sm hover:bg-af-light">
                       <ExternalLink size={14} /> Meta
                     </a>
+                  </div>
+
+                  {/* Ativar (registrar) o número na Cloud API com o PIN */}
+                  <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 space-y-2">
+                    <p className="text-sm font-semibold text-amber-800">Ativar número (registrar na Cloud API)</p>
+                    <p className="text-xs text-amber-700">Se o número estiver <strong>Offline</strong> na Meta, use o PIN de 6 dígitos (verificação em duas etapas) para ativá-lo. Salve o Phone Number ID e o Access Token acima antes.</p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={6}
+                        value={regPin}
+                        onChange={(e) => setRegPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        placeholder="PIN de 6 dígitos"
+                        className="flex-1 px-3 py-2 text-sm border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                      />
+                      <button
+                        type="button"
+                        disabled={registering || regPin.length !== 6}
+                        onClick={async () => {
+                          setRegistering(true);
+                          try {
+                            const { data } = await api.post('/api/settings/whatsapp/register', { pin: regPin });
+                            if (data.ok) {
+                              toast('✅ Número ativado! Agora teste a conexão.', 'success');
+                              setRegPin('');
+                            } else {
+                              toast(`❌ ${data.error}`, 'error');
+                            }
+                          } catch {
+                            toast('Erro ao ativar o número', 'error');
+                          } finally {
+                            setRegistering(false);
+                          }
+                        }}
+                        className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold hover:bg-amber-600 disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {registering ? 'Ativando...' : 'Ativar número'}
+                      </button>
+                    </div>
                   </div>
                 </form>
               )}
