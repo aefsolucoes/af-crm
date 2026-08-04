@@ -783,7 +783,8 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
     const fromMe = !!msg.key.fromMe;
     const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
     const text = extractText(msg);
-    if (!text || !from) return;
+    // Ignora Status/Stories (status@broadcast) — não é conversa nem grupo.
+    if (!text || !from || from.endsWith('@broadcast')) return;
 
     // self-chat (Você) → conversa própria do número; senão, contato normal.
     const leadId = selfChat
@@ -845,7 +846,8 @@ function getMediaInfo(msg: any): { node: any; type: 'document' | 'image'; fileNa
 async function processIncomingMedia(msg: any, accountId: string, numberId: string, sock: any, selfChat = false) {
   const fromMe = !!msg.key.fromMe;
   const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
-  if (!from) return;
+  // Ignora Status/Stories (status@broadcast) — não é conversa nem grupo.
+  if (!from || from.endsWith('@broadcast')) return;
 
   const info = getMediaInfo(msg);
   if (!info) return;

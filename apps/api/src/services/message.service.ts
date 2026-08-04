@@ -328,7 +328,12 @@ export async function markMessagesRead(leadId: string) {
 
 export async function getConversations(accountId: string) {
   const leads = await prisma.lead.findMany({
-    where: { accountId, messages: { some: {} } },
+    where: {
+      accountId,
+      messages: { some: {} },
+      // Esconde Status/Stories (status@broadcast) — não são conversas de verdade.
+      NOT: { contact: { whatsappPhone: { endsWith: '@broadcast' } } },
+    },
     include: {
       contact: true,
       whatsappNumber: { select: { id: true, label: true, phone: true } },
