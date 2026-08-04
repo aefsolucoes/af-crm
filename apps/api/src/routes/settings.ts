@@ -129,6 +129,76 @@ router.post('/whatsapp/register', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /api/settings/whatsapp/request-code — envia código de verificação (SMS/voz)
+router.post('/whatsapp/request-code', async (req: AuthRequest, res: Response) => {
+  try {
+    const method = (req.body?.method === 'VOICE' ? 'VOICE' : 'SMS');
+    const config = await getWhatsAppConfig(req.user!.accountId);
+    if (!config?.phoneNumberId || !config.accessToken) {
+      return res.status(400).json({ ok: false, error: 'Configure o Phone Number ID e o Access Token primeiro (e salve).' });
+    }
+    const r = await fetch(`https://graph.facebook.com/v20.0/${config.phoneNumberId}/request_code`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code_method: method, language: 'pt_BR' }).toString(),
+    });
+    const j = await r.json() as any;
+    if (!r.ok || j.error) {
+      const code = j.error?.code ?? r.status;
+      const msg  = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
+      return res.json({ ok: false, error: `${msg} (código: ${code})`, code });
+    }
+    return res.json({ ok: true, method });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: 'Falha ao enviar o código de verificação' });
+  }
+});
+
+// POST /api/settings/whatsapp/verify-code — verifica o código e ativa (registra) com o PIN
+router.post('/whatsapp/verify-code', async (req: AuthRequest, res: Response) => {
+  try {
+    const { code, pin } = req.body as { code?: string; pin?: string };
+    if (!code || !/^\d{4,8}$/.test(code)) {
+      return res.status(400).json({ ok: false, error: 'Informe o código recebido por SMS/ligação.' });
+    }
+    if (!pin || !/^\d{6}$/.test(pin)) {
+      return res.status(400).json({ ok: false, error: 'Informe um PIN novo de 6 dígitos.' });
+    }
+    const config = await getWhatsAppConfig(req.user!.accountId);
+    if (!config?.phoneNumberId || !config.accessToken) {
+      return res.status(400).json({ ok: false, error: 'Configure o Phone Number ID e o Access Token primeiro (e salve).' });
+    }
+    const auth = { Authorization: `Bearer ${config.accessToken}` };
+    // 1) Verifica o código de posse do número
+    const vr = await fetch(`https://graph.facebook.com/v20.0/${config.phoneNumberId}/verify_code`, {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code }).toString(),
+    });
+    const vj = await vr.json() as any;
+    if (!vr.ok || vj.error) {
+      const c = vj.error?.code ?? vr.status;
+      const m = vj.error?.error_user_msg || vj.error?.message || 'Erro ao verificar o código';
+      return res.json({ ok: false, error: `${m} (código: ${c})`, code: c });
+    }
+    // 2) Registra (ativa) definindo o PIN
+    const rr = await fetch(`https://graph.facebook.com/v20.0/${config.phoneNumberId}/register`, {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+    });
+    const rj = await rr.json() as any;
+    if (!rr.ok || rj.error) {
+      const c = rj.error?.code ?? rr.status;
+      const m = rj.error?.error_user_msg || rj.error?.message || 'Erro ao ativar';
+      return res.json({ ok: false, error: `Código verificado, mas falhou ao ativar: ${m} (código: ${c})`, code: c, verified: true });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: 'Falha ao verificar/ativar o número' });
+  }
+});
+
 // ─── Meta Lead Ads Settings ──────────────────────────────────────────────────
 
 const metaLeadsSchema = z.object({

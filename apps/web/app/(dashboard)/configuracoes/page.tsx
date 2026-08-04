@@ -154,6 +154,8 @@ export default function ConfiguracoesPage() {
   const [isNew, setIsNew] = useState(true);
   // Ativação (registro) do número na Cloud API com o PIN de 2 etapas
   const [regPin, setRegPin] = useState('');
+  const [regCode, setRegCode] = useState('');
+  const [sendingCode, setSendingCode] = useState(false);
   const [registering, setRegistering] = useState(false);
 
   // Load API config
@@ -484,18 +486,56 @@ export default function ConfiguracoesPage() {
                     </a>
                   </div>
 
-                  {/* Ativar (registrar) o número na Cloud API com o PIN */}
-                  <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 space-y-2">
-                    <p className="text-sm font-semibold text-amber-800">Ativar número (registrar na Cloud API)</p>
-                    <p className="text-xs text-amber-700">Se o número estiver <strong>Offline</strong> na Meta, use o PIN de 6 dígitos (verificação em duas etapas) para ativá-lo. Salve o Phone Number ID e o Access Token acima antes.</p>
-                    <div className="flex gap-2">
+                  {/* Ativar (registrar) o número na Cloud API */}
+                  <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 space-y-3">
+                    <div>
+                      <p className="text-sm font-semibold text-amber-800">Ativar número (registrar na Cloud API)</p>
+                      <p className="text-xs text-amber-700 mt-0.5">Se o número estiver <strong>Offline</strong> na Meta. Salve o Phone Number ID e o Access Token acima antes. Se a Meta pedir reverificação, envie o código por SMS.</p>
+                    </div>
+
+                    {/* Passo 1: enviar código (quando a Meta pede reverificação) */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-amber-800 w-5 flex-shrink-0">1.</span>
+                      <button
+                        type="button"
+                        disabled={sendingCode}
+                        onClick={async () => {
+                          setSendingCode(true);
+                          try {
+                            const { data } = await api.post('/api/settings/whatsapp/request-code', { method: 'SMS' });
+                            if (data.ok) toast('📩 Código enviado por SMS para o número.', 'success');
+                            else toast(`❌ ${data.error}`, 'error');
+                          } catch {
+                            toast('Erro ao enviar o código', 'error');
+                          } finally {
+                            setSendingCode(false);
+                          }
+                        }}
+                        className="px-3 py-2 rounded-lg border border-amber-400 text-amber-800 text-sm font-medium hover:bg-amber-100 disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {sendingCode ? 'Enviando...' : 'Enviar código (SMS)'}
+                      </button>
+                      <span className="text-xs text-amber-700">só se a Meta pedir reverificação (erro 133006)</span>
+                    </div>
+
+                    {/* Passo 2: código (opcional) + PIN novo + ativar */}
+                    <div className="flex items-start gap-2">
+                      <span className="text-xs font-semibold text-amber-800 w-5 flex-shrink-0 pt-2">2.</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={regCode}
+                        onChange={(e) => setRegCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                        placeholder="Código SMS (se pedido)"
+                        className="w-40 px-3 py-2 text-sm border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                      />
                       <input
                         type="text"
                         inputMode="numeric"
                         maxLength={6}
                         value={regPin}
                         onChange={(e) => setRegPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                        placeholder="PIN de 6 dígitos"
+                        placeholder="PIN novo (6 dígitos)"
                         className="flex-1 px-3 py-2 text-sm border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
                       />
                       <button
@@ -504,10 +544,13 @@ export default function ConfiguracoesPage() {
                         onClick={async () => {
                           setRegistering(true);
                           try {
-                            const { data } = await api.post('/api/settings/whatsapp/register', { pin: regPin });
+                            // Com código → verifica e ativa; sem código → só registra.
+                            const url = regCode ? '/api/settings/whatsapp/verify-code' : '/api/settings/whatsapp/register';
+                            const body = regCode ? { code: regCode, pin: regPin } : { pin: regPin };
+                            const { data } = await api.post(url, body);
                             if (data.ok) {
                               toast('✅ Número ativado! Agora teste a conexão.', 'success');
-                              setRegPin('');
+                              setRegPin(''); setRegCode('');
                             } else {
                               toast(`❌ ${data.error}`, 'error');
                             }
