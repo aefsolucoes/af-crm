@@ -272,25 +272,25 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
 
   // Ícone e cor por tipo de nota
   const NOTE_STYLE: Record<string, { icon: string; label: string; bg: string; text: string }> = {
-    STAGE_CHANGE: { icon: '↕️', label: 'Etapa alterada',   bg: 'bg-blue-50',   text: 'text-blue-700'   },
-    DATA_EDIT:    { icon: '✏️', label: 'Dados editados',   bg: 'bg-slate-100', text: 'text-slate-500'  },
-    COMMENT:      { icon: '💬', label: 'Comentário',       bg: 'bg-amber-50',  text: 'text-amber-800'  },
-    CALL:         { icon: '📞', label: 'Ligação',          bg: 'bg-green-50',  text: 'text-green-700'  },
-    EMAIL:        { icon: '📧', label: 'E-mail',           bg: 'bg-purple-50', text: 'text-purple-700' },
+    STAGE_CHANGE: { icon: '↕️', label: 'Etapa alterada',   bg: 'bg-[#182229]', text: 'text-[#53bdeb]' },
+    DATA_EDIT:    { icon: '✏️', label: 'Dados editados',   bg: 'bg-[#182229]', text: 'text-[#8696a0]' },
+    COMMENT:      { icon: '💬', label: 'Comentário',       bg: 'bg-[#182229]', text: 'text-[#f0b232]' },
+    CALL:         { icon: '📞', label: 'Ligação',          bg: 'bg-[#182229]', text: 'text-[#00a884]' },
+    EMAIL:        { icon: '📧', label: 'E-mail',           bg: 'bg-[#182229]', text: 'text-[#bf7fff]' },
   };
 
   return (
-    <div className="flex flex-col flex-1 h-full" style={{ background: '#e5ddd5' }}>
+    <div className="flex flex-col flex-1 h-full" style={{ background: '#0b141a' }}>
       {/* WhatsApp-style background pattern */}
       <div
-        className="absolute inset-0 pointer-events-none opacity-5"
+        className="absolute inset-0 pointer-events-none opacity-[0.06]"
         style={{
           backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23000000' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
         }}
       />
 
-      {/* Header — WhatsApp green */}
-      <div className="relative z-10 flex items-center gap-3 px-4 py-3 text-white shadow-md" style={{ backgroundColor: '#075e54' }}>
+      {/* Header — WhatsApp dark */}
+      <div className="relative z-10 flex items-center gap-3 px-4 py-3 text-[#e9edef] shadow-md" style={{ backgroundColor: '#202c33' }}>
         <Avatar name={leadName} size="md" />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold truncate">{leadName}</p>
@@ -301,8 +301,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
       </div>
 
       {/* Seletor: por qual WhatsApp enviar (QR Code ou API oficial) */}
-      <div className="relative z-10 flex items-center gap-2 px-4 py-2 bg-white/80 backdrop-blur border-b border-black/5">
-        <span className="text-xs text-slate-500 font-medium">Enviar por:</span>
+      <div className="relative z-10 flex items-center gap-2 px-4 py-2 bg-[#202c33] border-b border-[#222e35]">
+        <span className="text-xs text-[#8696a0] font-medium">Enviar por:</span>
         <button
           onClick={() => setVia('qr')}
           disabled={!qrConnected}
@@ -310,8 +310,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           className={cn(
             'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed',
             effectiveVia === 'qr' && qrConnected
-              ? 'bg-[#075e54] text-white shadow-sm'
-              : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+              ? 'bg-[#00a884] text-[#111b21] shadow-sm'
+              : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c]'
           )}
         >
           📱 WhatsApp QR
@@ -323,8 +323,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           className={cn(
             'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all',
             effectiveVia === 'api' || !qrConnected
-              ? (effectiveVia === 'api' ? 'bg-[#075e54] text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200')
-              : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+              ? (effectiveVia === 'api' ? 'bg-[#00a884] text-[#111b21] shadow-sm' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c]')
+              : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c]'
           )}
         >
           🌐 API Oficial
@@ -336,9 +336,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
             trocar: para falar por outro número, é outra conversa (outra aba). */}
         {effectiveVia === 'qr' && (qrNumbers?.length ?? 0) >= 2 && lastRouted && numberLabels[lastRouted] && (
           <>
-            <span className="mx-1 h-4 w-px bg-slate-200" />
-            <span className="text-xs text-slate-500">Número desta conversa:</span>
-            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">
+            <span className="mx-1 h-4 w-px bg-[#2a3942]" />
+            <span className="text-xs text-[#8696a0]">Número desta conversa:</span>
+            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-[#2a3942] text-[#e9edef]">
               {numberLabels[lastRouted]}
               <span className={cn('w-1.5 h-1.5 rounded-full', connectedQr.some(n => n.id === lastRouted) ? 'bg-green-400' : 'bg-red-400')} />
             </span>
@@ -352,7 +352,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           <div key={date}>
             {/* Separador de data */}
             <div className="flex justify-center my-3">
-              <span className="bg-white/90 text-slate-500 text-xs px-3 py-1 rounded-full shadow-sm">
+              <span className="bg-[#182229] text-[#8696a0] text-xs px-3 py-1 rounded-full shadow-sm">
                 {date}
               </span>
             </div>
@@ -408,12 +408,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                     className={cn(
                       'relative max-w-xs lg:max-w-md px-3 py-2 shadow-sm',
                       isOut
-                        ? 'rounded-tl-2xl rounded-tr-2xl rounded-bl-2xl text-slate-800'
-                        : 'rounded-tl-2xl rounded-tr-2xl rounded-br-2xl text-slate-800',
+                        ? 'rounded-tl-2xl rounded-tr-2xl rounded-bl-2xl text-[#e9edef]'
+                        : 'rounded-tl-2xl rounded-tr-2xl rounded-br-2xl text-[#e9edef]',
                       showTail && isOut  ? 'rounded-br-sm' : '',
                       showTail && !isOut ? 'rounded-bl-sm' : '',
                     )}
-                    style={{ backgroundColor: isOut ? '#d9fdd3' : '#ffffff' }}
+                    style={{ backgroundColor: isOut ? '#005c4b' : '#202c33' }}
                   >
                     {isOut && (() => {
                       // "via {apelido do número} · {quem enviou}". O apelido vem do
@@ -423,7 +423,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                       const sender = (msg as any).sentBy?.name as string | undefined;
                       if (!numLabel && !sender) return null;
                       return (
-                        <p className="text-[10px] font-medium text-[#075e54]/70 mb-0.5">
+                        <p className="text-[10px] font-medium text-[#e9edef]/55 mb-0.5">
                           {[numLabel && `via ${numLabel}`, sender].filter(Boolean).join(' · ')}
                         </p>
                       );
@@ -451,7 +451,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                       return <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{text}</p>;
                     })()}
                     <div className="absolute bottom-2 right-3 flex items-center gap-1">
-                      <span className="text-xs text-slate-400">{time}</span>
+                      <span className="text-[10px] text-[#e9edef]/50">{time}</span>
                       {isOut && <StatusTick status={liveStatus} />}
                     </div>
                   </div>
@@ -465,9 +465,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
 
       {/* Templates toolbar */}
       {showTemplates && (
-        <div className="relative z-10 max-h-56 overflow-y-auto bg-white/95 border-t border-black/5 scrollbar-thin">
+        <div className="relative z-10 max-h-56 overflow-y-auto bg-[#202c33] border-t border-[#222e35] scrollbar-thin">
           {templates.length === 0 ? (
-            <div className="px-4 py-3 text-xs text-slate-400">Nenhum template cadastrado. Crie em Templates.</div>
+            <div className="px-4 py-3 text-xs text-[#8696a0]">Nenhum template cadastrado. Crie em Templates.</div>
           ) : (
             <div className="p-2 space-y-1">
               {templates.map((t) => {
@@ -476,15 +476,15 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                   <button
                     key={t.id}
                     onClick={() => handleUseTemplate(t)}
-                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-af-light transition-colors flex items-start gap-2"
+                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#2a3942] transition-colors flex items-start gap-2"
                   >
-                    <FileText size={14} className="text-af-mid flex-shrink-0 mt-0.5" />
+                    <FileText size={14} className="text-[#00a884] flex-shrink-0 mt-0.5" />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-slate-800 truncate">{t.name}</span>
+                        <span className="text-sm font-medium text-[#e9edef] truncate">{t.name}</span>
                         <span className={cn('text-xs px-1.5 py-0.5 rounded-full flex-shrink-0', cm.color)}>{cm.label}</span>
                       </div>
-                      <p className="text-xs text-slate-500 truncate">{t.body.replace(/\n/g, ' ')}</p>
+                      <p className="text-xs text-[#8696a0] truncate">{t.body.replace(/\n/g, ' ')}</p>
                     </div>
                   </button>
                 );
@@ -496,9 +496,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
 
       {/* AI assistant toolbar */}
       {showAI && (
-        <div className="relative z-10 flex items-center gap-2 px-3 py-2 bg-white/95 border-t border-black/5 flex-wrap">
-          <Sparkles size={13} className="text-af-mid flex-shrink-0" />
-          <span className="text-xs text-slate-500 font-medium mr-1">IA:</span>
+        <div className="relative z-10 flex items-center gap-2 px-3 py-2 bg-[#202c33] border-t border-[#222e35] flex-wrap">
+          <Sparkles size={13} className="text-[#00a884] flex-shrink-0" />
+          <span className="text-xs text-[#8696a0] font-medium mr-1">IA:</span>
           {AI_BUTTONS.map(({ mode, label, emoji }) => (
             <button
               key={mode}
@@ -508,8 +508,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
               className={cn(
                 'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-all border',
                 aiLoading === mode
-                  ? 'bg-af-mid text-white border-af-mid'
-                  : 'bg-white text-slate-600 border-af-border hover:bg-af-light hover:border-af-mid hover:text-af-mid',
+                  ? 'bg-[#00a884] text-[#111b21] border-[#00a884]'
+                  : 'bg-[#2a3942] text-[#8696a0] border-[#33434c] hover:bg-[#33434c] hover:text-[#e9edef]',
                 !!aiLoading && aiLoading !== mode && 'opacity-50 cursor-not-allowed'
               )}
             >
@@ -525,11 +525,11 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
       {/* Input bar */}
       <form
         onSubmit={handleSend}
-        className="relative z-10 flex items-end gap-2 px-3 py-3 bg-[#f0f2f5]"
+        className="relative z-10 flex items-end gap-2 px-3 py-3 bg-[#202c33]"
       >
         <button
           type="button"
-          className="flex-shrink-0 p-2 text-slate-500 hover:text-slate-700"
+          className="flex-shrink-0 p-2 text-[#8696a0] hover:text-[#e9edef]"
         >
           <Smile size={22} />
         </button>
@@ -544,7 +544,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           onClick={() => fileInputRef.current?.click()}
           disabled={uploadingFile}
           title="Anexar documento ou imagem"
-          className="flex-shrink-0 p-2 text-slate-500 hover:text-slate-700 disabled:opacity-50"
+          className="flex-shrink-0 p-2 text-[#8696a0] hover:text-[#e9edef] disabled:opacity-50"
         >
           {uploadingFile ? <Loader2 size={22} className="animate-spin" /> : <Paperclip size={22} />}
         </button>
@@ -555,7 +555,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           onKeyDown={handleKeyDown}
           placeholder="Digite uma mensagem"
           rows={1}
-          className="flex-1 resize-none px-4 py-2.5 text-sm bg-white rounded-3xl border-none outline-none text-slate-900 placeholder-slate-400 scrollbar-thin max-h-32"
+          className="flex-1 resize-none px-4 py-2.5 text-sm bg-[#2a3942] rounded-3xl border-none outline-none text-[#e9edef] placeholder-[#8696a0] scrollbar-thin max-h-32"
           style={{ lineHeight: '1.4' }}
         />
         {/* Templates toggle button */}
@@ -565,7 +565,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           title="Templates prontos"
           className={cn(
             'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
-            showTemplates ? 'bg-af-mid text-white' : 'bg-white/80 text-slate-500 hover:bg-white hover:text-af-mid'
+            showTemplates ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
           )}
         >
           <FileText size={18} />
@@ -577,7 +577,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           title="Assistente IA"
           className={cn(
             'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
-            showAI ? 'bg-af-mid text-white' : 'bg-white/80 text-slate-500 hover:bg-white hover:text-af-mid'
+            showAI ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
           )}
         >
           <Sparkles size={18} />
@@ -589,7 +589,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
             'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-white transition-all',
             content.trim() ? 'opacity-100 scale-100' : 'opacity-50 scale-95',
           )}
-          style={{ backgroundColor: '#075e54' }}
+          style={{ backgroundColor: '#00a884' }}
         >
           <Send size={18} />
         </button>

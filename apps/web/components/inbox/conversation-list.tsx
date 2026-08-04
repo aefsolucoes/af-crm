@@ -59,23 +59,29 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
     })
     .sort((a, b) => lastMessageTime(b) - lastMessageTime(a));
 
+  const chip = (active: boolean) =>
+    cn(
+      'px-2.5 py-1 text-xs rounded-full transition-colors',
+      active ? 'bg-[#00a884] text-[#111b21] font-medium' : 'bg-[#202c33] text-[#8696a0] hover:bg-[#2a3942]'
+    );
+
   return (
-    <div className="flex flex-col h-full border-r border-af-border app-column-surface w-80 flex-shrink-0">
+    <div className="flex flex-col h-full border-r border-[#222e35] bg-[#111b21] w-80 flex-shrink-0">
       {/* Busca por nome ou número */}
       <div className="px-3 pt-3">
         <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-af-mid pointer-events-none" />
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8696a0] pointer-events-none" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar por nome ou número..."
-            className="w-full pl-8 pr-8 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent/40"
+            placeholder="Pesquisar"
+            className="w-full pl-8 pr-8 py-2 text-sm rounded-lg bg-[#202c33] text-[#e9edef] placeholder-[#8696a0] border border-transparent focus:outline-none focus:border-[#00a884]/40"
           />
           {search && (
             <button
               onClick={() => setSearch('')}
               title="Limpar busca"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8696a0] hover:text-[#e9edef]"
             >
               <X size={14} />
             </button>
@@ -84,28 +90,22 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
       </div>
 
       {/* Channel filter */}
-      <div className="px-3 py-3 border-b border-af-border">
+      <div className="px-3 py-3 border-b border-[#222e35]">
         <div className={cn('flex gap-1 flex-wrap', q && 'opacity-40 pointer-events-none')}>
-          <button
-            onClick={() => setFilter('ALL')}
-            className={cn('px-2 py-1 text-xs rounded-full transition-colors', filter === 'ALL' ? 'bg-af-mid text-white' : 'bg-af-light text-af-mid hover:bg-af-border')}
-          >
-            Todos
+          <button onClick={() => setFilter('ALL')} className={chip(filter === 'ALL')}>
+            Todas
           </button>
           {whatsappNumbers.map((n) => (
             <button
               key={n.id}
               onClick={() => setFilter(n.id)}
               title={n.phone ? `+${n.phone}` : n.label}
-              className={cn('px-2 py-1 text-xs rounded-full transition-colors', filter === n.id ? 'bg-af-mid text-white' : 'bg-af-light text-af-mid hover:bg-af-border')}
+              className={chip(filter === n.id)}
             >
               {n.label}
             </button>
           ))}
-          <button
-            onClick={() => setFilter('GROUPS')}
-            className={cn('px-2 py-1 text-xs rounded-full transition-colors flex items-center gap-1', filter === 'GROUPS' ? 'bg-af-mid text-white' : 'bg-af-light text-af-mid hover:bg-af-border')}
-          >
+          <button onClick={() => setFilter('GROUPS')} className={cn(chip(filter === 'GROUPS'), 'flex items-center gap-1')}>
             <Users size={12} /> Grupos{groupCount > 0 ? ` (${groupCount})` : ''}
           </button>
         </div>
@@ -113,7 +113,7 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
           <button
             onClick={async () => { setRefreshing(true); try { await onRefreshGroupNames(); } finally { setRefreshing(false); } }}
             disabled={refreshing}
-            className="mt-2 w-full text-xs text-af-mid hover:text-af-dark underline decoration-dotted disabled:opacity-50"
+            className="mt-2 w-full text-xs text-[#00a884] hover:text-[#00c49a] underline decoration-dotted disabled:opacity-50"
           >
             {refreshing ? 'Atualizando nomes…' : 'Atualizar nomes dos grupos'}
           </button>
@@ -125,11 +125,11 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
         {loading && (
           <div className="flex flex-col gap-0">
             {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="flex gap-3 px-4 py-3 border-b border-af-border/50 animate-pulse">
-                <div className="w-9 h-9 bg-slate-200 rounded-full flex-shrink-0" />
+              <div key={i} className="flex gap-3 px-4 py-3 border-b border-[#222e35] animate-pulse">
+                <div className="w-9 h-9 bg-[#202c33] rounded-full flex-shrink-0" />
                 <div className="flex-1 space-y-2">
-                  <div className="h-3 bg-slate-200 rounded w-2/3" />
-                  <div className="h-3 bg-slate-200 rounded w-full" />
+                  <div className="h-3 bg-[#202c33] rounded w-2/3" />
+                  <div className="h-3 bg-[#202c33] rounded w-full" />
                 </div>
               </div>
             ))}
@@ -147,36 +147,36 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
               tabIndex={0}
               onClick={() => onSelect(conv.id)}
               className={cn(
-                'group w-full flex items-start gap-3 px-4 py-3 border-b border-af-border/40 text-left transition-colors hover:bg-af-light cursor-pointer',
-                selectedId === conv.id ? 'bg-af-light' : ''
+                'group w-full flex items-start gap-3 px-4 py-3 border-b border-[#222e35] text-left transition-colors cursor-pointer',
+                selectedId === conv.id ? 'bg-[#2a3942]' : 'hover:bg-[#202c33]'
               )}
             >
               <div className="relative flex-shrink-0">
                 <Avatar name={conv.contact?.name || conv.name} size="md" />
                 {ch && (
                   <span
-                    className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white"
+                    className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-[#111b21]"
                     style={{ backgroundColor: '#25D366' }}
                   />
                 )}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-slate-900 truncate flex items-center gap-1.5">
+                  <span className="text-sm font-medium text-[#e9edef] truncate flex items-center gap-1.5">
                     {isGroup && (
-                      <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide bg-af-light text-af-mid px-1.5 py-0.5 rounded">Grupo</span>
+                      <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide bg-[#202c33] text-[#8696a0] px-1.5 py-0.5 rounded">Grupo</span>
                     )}
                     <span className="truncate">{conv.contact?.name || conv.name}</span>
                   </span>
-                  {lastMsg && <span className="text-xs text-slate-400 flex-shrink-0 ml-1">{formatDateTime(lastMsg.createdAt)}</span>}
+                  {lastMsg && <span className={cn('text-xs flex-shrink-0 ml-1', unread > 0 ? 'text-[#00a884]' : 'text-[#8696a0]')}>{formatDateTime(lastMsg.createdAt)}</span>}
                 </div>
                 {lastMsg && (
-                  <p className="text-xs text-slate-500 truncate mt-0.5">{lastMsg.content}</p>
+                  <p className="text-xs text-[#8696a0] truncate mt-0.5">{lastMsg.content}</p>
                 )}
               </div>
               <div className="flex flex-col items-end gap-1 flex-shrink-0">
                 {unread > 0 && (
-                  <span className="bg-af-mid text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-medium">
+                  <span className="bg-[#00a884] text-[#111b21] text-xs rounded-full min-w-5 h-5 px-1.5 flex items-center justify-center font-semibold">
                     {unread}
                   </span>
                 )}
@@ -186,7 +186,7 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
                     tabIndex={0}
                     title={isGroup ? 'Tirar de Grupos' : 'Mover para Grupos'}
                     onClick={(e) => { e.stopPropagation(); onToggleGroup(conv.id, !isGroup); }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-af-mid hover:text-af-dark p-0.5 rounded hover:bg-af-border/50"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-[#8696a0] hover:text-[#e9edef] p-0.5 rounded hover:bg-[#2a3942]"
                   >
                     {isGroup ? <UserMinus size={14} /> : <Users size={14} />}
                   </span>
@@ -196,7 +196,7 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
           );
         })}
         {!loading && filtered.length === 0 && (
-          <div className="flex items-center justify-center h-40 text-slate-400 text-sm">
+          <div className="flex items-center justify-center h-40 text-[#8696a0] text-sm">
             Nenhuma conversa encontrada
           </div>
         )}
