@@ -1,9 +1,21 @@
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Role } from '@prisma/client';
+import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { sendOutboundWhatsApp, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
 import { searchKnowledge } from '../services/knowledge.service';
 import { organizeLeadDocsToDrive } from '../services/google.service';
+import { deleteLead } from '../services/lead.service';
+import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
+
+const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
+function sanitizePermsInput(input: unknown): Record<string, boolean> | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const src = input as Record<string, unknown>;
+  const out: Record<string, boolean> = {};
+  for (const k of PERMISSION_KEYS) out[k] = !!src[k];
+  return out;
+}
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -81,6 +93,10 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - list_pipelines: lista os funis e seus estágios (com ids). Use para achar o stageId quando o colaborador pedir para criar o card num funil/estágio específico (ex: "no funil Follow-up, estágio Remarketing números"). Depois passe esse stageId em send_whatsapp_to_number. Você TEM, sim, como criar o card num estágio específico — nunca diga que não consegue.
 - move_lead_to_stage: move um card JÁ EXISTENTE para outro funil/estágio. Use quando pedirem para mover/colocar um card em outro lugar (ex: "move o card do João para Remarketing"). Antes, use find_lead (leadId) e list_pipelines (stageId). Você CONSEGUE mover cards de funil e de estágio — nunca diga que não consegue.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados.
+- create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
+- list_users / create_user / update_user / delete_user: gerenciar a equipe (criar, editar nome/e-mail/senha/função/permissões e EXCLUIR/tirar acesso). Para "tirar acesso" use update_user (mudando função/permissões) ou delete_user.
+Você tem acesso completo ao CRM, MAS sempre respeitando o nível de acesso do colaborador: cada ferramenta checa a permissão dele. Se uma ferramenta retornar erro de permissão, explique com educação que ele não tem acesso àquela ação e não tente por outro caminho.
+CONFIRMAÇÃO DUPLA obrigatória para ações IRREVERSÍVEIS (excluir card, excluir usuário / tirar acesso): antes de executar, pergunte se o colaborador confirma; quando ele confirmar, pergunte MAIS UMA VEZ ("Tem certeza? Isso não pode ser desfeito.") e só após a SEGUNDA confirmação chame a ferramenta com confirmed:true. Nunca passe confirmed:true sem ter perguntado duas vezes. Se a ferramenta retornar needsConfirmation, é porque faltou confirmar — não invente que foi feito.
 Nunca envie uma mensagem nem salve documentos sem que o colaborador tenha pedido isso na conversa atual. Depois de agir, confirme exatamente o que foi feito.
 IMPORTANTE: só afirme que uma mensagem foi ENVIADA quando a ferramenta retornar success: true. Se a ferramenta retornar success: false, NÃO diga que enviou — avise o colaborador que a mensagem NÃO foi enviada e explique o motivo do campo "error" (por exemplo, quando o número não tem WhatsApp ou o QR Code está desconectado). Nunca invente um status "SENT".
 Responda em português, de forma curta, direta e prática, como se estivesse explicando para um colega de trabalho. Se a dúvida não tiver relação com o CRM ou o processo da empresa, explique educadamente que você só pode ajudar com isso.`;
@@ -180,6 +196,73 @@ const AGENT_TOOLS = [
       required: ['leadId', 'nomePasta'],
     },
   },
+  {
+    name: 'create_lead',
+    description: 'Cria um novo card/lead no funil. Use quando pedirem para "criar um card/cliente". Exige permissão de gerenciar o funil.',
+    input_schema: { type: 'object', properties: {
+      name: { type: 'string', description: 'Nome do cliente/card' },
+      phone: { type: 'string', description: 'Telefone (opcional)' },
+      value: { type: 'number', description: 'Valor do negócio (opcional)' },
+      stageId: { type: 'string', description: 'Estágio de destino (via list_pipelines). Sem ele, cai na Caixa de Entrada.' },
+      pipelineId: { type: 'string', description: 'Funil de destino (opcional).' },
+    }, required: ['name'] },
+  },
+  {
+    name: 'update_lead',
+    description: 'Edita um card existente: nome, valor e/ou campos do cadastro (customFields por chave). Use find_lead antes. Exige permissão de gerenciar o funil.',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string', description: 'ID do lead (via find_lead)' },
+      name: { type: 'string' },
+      value: { type: 'number' },
+      fields: { type: 'object', description: 'Campos do cadastro por chave (ex: { "cpf_1": "000...", "corretorindicacao": "Fulano" })' },
+    }, required: ['leadId'] },
+  },
+  {
+    name: 'archive_lead',
+    description: 'Arquiva (ou restaura) um card. archived=true arquiva, false restaura. Exige permissão de gerenciar o funil.',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string' },
+      archived: { type: 'boolean', description: 'true = arquivar (padrão), false = restaurar' },
+    }, required: ['leadId'] },
+  },
+  {
+    name: 'delete_lead',
+    description: 'EXCLUI um card permanentemente (IRREVERSÍVEL). Antes, confirme com o colaborador DUAS vezes; só passe confirmed:true após as duas confirmações. Exige permissão de gerenciar o funil.',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string' },
+      confirmed: { type: 'boolean', description: 'Só true após confirmar DUAS vezes com o colaborador.' },
+    }, required: ['leadId'] },
+  },
+  {
+    name: 'list_users',
+    description: 'Lista os usuários da equipe (id, nome, e-mail, função). Exige permissão de usuários.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'create_user',
+    description: 'Cria um usuário da equipe. Exige permissão de usuários. Defina uma senha inicial (mín. 6). role: ADMIN, MANAGER ou AGENT.',
+    input_schema: { type: 'object', properties: {
+      name: { type: 'string' }, email: { type: 'string' }, password: { type: 'string' },
+      role: { type: 'string', enum: ['ADMIN', 'MANAGER', 'AGENT'] },
+    }, required: ['name', 'email', 'password'] },
+  },
+  {
+    name: 'update_user',
+    description: 'Edita um usuário: nome, e-mail, senha, função (role) e/ou permissões. "Tirar acesso" = mudar role/permissions. Exige permissão de usuários.',
+    input_schema: { type: 'object', properties: {
+      userId: { type: 'string' }, name: { type: 'string' }, email: { type: 'string' },
+      password: { type: 'string' }, role: { type: 'string', enum: ['ADMIN', 'MANAGER', 'AGENT'] },
+      permissions: { type: 'object', description: 'Mapa permissão→boolean (ex: { "finance": false })' },
+    }, required: ['userId'] },
+  },
+  {
+    name: 'delete_user',
+    description: 'EXCLUI um usuário e tira o acesso (IRREVERSÍVEL; leads/tarefas passam para quem excluiu). Confirme DUAS vezes antes; só passe confirmed:true depois. Exige permissão de usuários.',
+    input_schema: { type: 'object', properties: {
+      userId: { type: 'string' },
+      confirmed: { type: 'boolean', description: 'Só true após confirmar DUAS vezes.' },
+    }, required: ['userId'] },
+  },
 ];
 
 async function executeAgentTool(
@@ -189,6 +272,14 @@ async function executeAgentTool(
   io: any,
   userId?: string
 ): Promise<unknown> {
+  // Permissões efetivas do colaborador que está usando o assistente. Toda ação
+  // sensível checa isto; ações irreversíveis exigem confirmação dupla (o modelo
+  // pergunta duas vezes e só então passa confirmed:true — ver system prompt).
+  const me = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { role: true, permissions: true } }) : null;
+  const perms = effectivePermissions(me?.role || 'AGENT', me?.permissions ?? null);
+  const deny = (key: PermissionKey, acao: string) =>
+    ({ success: false as const, error: `Você não tem permissão para ${acao}. (Falta o acesso "${key}".)` });
+
   if (name === 'find_lead') {
     const nameQuery = String(input.name || '').trim();
     const phoneQuery = String(input.phone || '').trim();
@@ -260,6 +351,7 @@ async function executeAgentTool(
   }
 
   if (name === 'move_lead_to_stage') {
+    if (!perms.funnel_manage) return deny('funnel_manage', 'mover cards no funil');
     const leadId = String(input.leadId || '');
     if (!leadId) return { success: false, error: 'leadId é obrigatório' };
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
@@ -292,7 +384,151 @@ async function executeAgentTool(
     return { success: true, movedTo: { funil: destPipeline?.name, estagio: destStage?.name } };
   }
 
+  // ── Cards (leads): criar, editar, arquivar, excluir ────────────────────────
+  if (name === 'create_lead') {
+    if (!perms.funnel_manage) return deny('funnel_manage', 'criar cards');
+    const nome = String(input.name || '').trim();
+    if (!nome) return { success: false, error: 'Informe o nome do cliente/card' };
+    let target = (input.stageId || input.pipelineId)
+      ? await resolveStageTarget(accountId, input.pipelineId ? String(input.pipelineId) : undefined, input.stageId ? String(input.stageId) : undefined)
+      : null;
+    if (!target) {
+      const pipeline = await prisma.pipeline.findFirst({
+        where: { accountId }, include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+      });
+      if (!pipeline?.stages.length) return { success: false, error: 'Nenhum funil configurado' };
+      target = { pipelineId: pipeline.id, stageId: pipeline.stages[0].id };
+    }
+    const owner = await prisma.user.findFirst({ where: { accountId } });
+    const custom: Record<string, unknown> = { participante_1: nome };
+    if (input.phone) custom.telefone_1 = String(input.phone);
+    const lead = await prisma.lead.create({
+      data: {
+        name: nome, accountId, pipelineId: target.pipelineId, stageId: target.stageId,
+        userId: userId || owner!.id, status: 'OPEN',
+        ...(typeof input.value === 'number' ? { value: input.value } : {}),
+        customFields: custom as any,
+      },
+    });
+    if (io) io.to(`account_${accountId}`).emit('lead_moved', { lead });
+    return { success: true, leadId: lead.id, name: lead.name };
+  }
+
+  if (name === 'update_lead') {
+    if (!perms.funnel_manage) return deny('funnel_manage', 'editar cards');
+    const lead = await prisma.lead.findFirst({ where: { id: String(input.leadId || ''), accountId } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+    const data: Record<string, unknown> = {};
+    if (input.name !== undefined) data.name = String(input.name).trim();
+    if (typeof input.value === 'number') data.value = input.value;
+    if (input.fields && typeof input.fields === 'object') {
+      const cf = (lead.customFields as Record<string, unknown>) || {};
+      data.customFields = { ...cf, ...(input.fields as Record<string, unknown>) };
+    }
+    const updated = await prisma.lead.update({ where: { id: lead.id }, data });
+    if (io) io.to(`account_${accountId}`).emit('lead_moved', { lead: updated });
+    return { success: true, leadId: updated.id };
+  }
+
+  if (name === 'archive_lead') {
+    if (!perms.funnel_manage) return deny('funnel_manage', 'arquivar cards');
+    const lead = await prisma.lead.findFirst({ where: { id: String(input.leadId || ''), accountId } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+    const archived = input.archived !== false;
+    await prisma.lead.update({ where: { id: lead.id }, data: { archived } });
+    if (io) io.to(`account_${accountId}`).emit('lead_moved', { lead: { ...lead, archived } });
+    return { success: true, archived };
+  }
+
+  if (name === 'delete_lead') {
+    if (!perms.funnel_manage) return deny('funnel_manage', 'excluir cards');
+    const lead = await prisma.lead.findFirst({ where: { id: String(input.leadId || ''), accountId } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+    if (input.confirmed !== true) {
+      return { success: false, needsConfirmation: true, error: `Ação IRREVERSÍVEL: excluir o card "${lead.name}". Pergunte ao colaborador DUAS vezes se confirma; só então chame de novo com confirmed:true.` };
+    }
+    await deleteLead(lead.id, accountId);
+    if (io) io.to(`account_${accountId}`).emit('lead_deleted', { leadId: lead.id });
+    return { success: true, deleted: lead.name };
+  }
+
+  // ── Usuários (equipe): listar, criar, editar, excluir/tirar acesso ─────────
+  if (name === 'list_users') {
+    if (!perms.users) return deny('users', 'ver a equipe');
+    return await prisma.user.findMany({ where: { accountId }, select: { id: true, name: true, email: true, role: true } });
+  }
+
+  if (name === 'create_user') {
+    if (!perms.users) return deny('users', 'criar usuários');
+    const nome = String(input.name || '').trim();
+    const email = String(input.email || '').trim().toLowerCase();
+    const senha = String(input.password || '');
+    if (!nome || !email || !senha) return { success: false, error: 'Informe nome, e-mail e senha' };
+    if (senha.length < 6) return { success: false, error: 'A senha deve ter ao menos 6 caracteres' };
+    if (await prisma.user.findUnique({ where: { email } })) return { success: false, error: 'Já existe um usuário com esse e-mail' };
+    const role = VALID_ROLES.includes(input.role as Role) ? (input.role as Role) : 'AGENT';
+    const user = await prisma.user.create({
+      data: { name: nome, email, password: await bcrypt.hash(senha, 10), role, accountId, permissions: sanitizePermsInput(input.permissions) ?? undefined },
+      select: { id: true, name: true, email: true, role: true },
+    });
+    return { success: true, user };
+  }
+
+  if (name === 'update_user') {
+    if (!perms.users) return deny('users', 'editar usuários');
+    const target = await prisma.user.findFirst({ where: { id: String(input.userId || ''), accountId } });
+    if (!target) return { success: false, error: 'Usuário não encontrado' };
+    const data: Record<string, unknown> = {};
+    if (input.name !== undefined) data.name = String(input.name).trim();
+    if (input.email !== undefined) {
+      const email = String(input.email).trim().toLowerCase();
+      if (email && email !== target.email) {
+        if (await prisma.user.findUnique({ where: { email } })) return { success: false, error: 'Já existe um usuário com esse e-mail' };
+        data.email = email;
+      }
+    }
+    if (input.password) {
+      if (String(input.password).length < 6) return { success: false, error: 'A senha deve ter ao menos 6 caracteres' };
+      data.password = await bcrypt.hash(String(input.password), 10);
+    }
+    if (input.role && VALID_ROLES.includes(input.role as Role)) {
+      if (target.role === 'ADMIN' && input.role !== 'ADMIN') {
+        const admins = await prisma.user.count({ where: { accountId, role: 'ADMIN' } });
+        if (admins <= 1) return { success: false, error: 'A conta precisa de pelo menos um administrador' };
+      }
+      data.role = input.role as Role;
+    }
+    if (input.permissions !== undefined) data.permissions = sanitizePermsInput(input.permissions);
+    const user = await prisma.user.update({ where: { id: target.id }, data, select: { id: true, name: true, email: true, role: true } });
+    return { success: true, user };
+  }
+
+  if (name === 'delete_user') {
+    if (!perms.users) return deny('users', 'excluir usuários / tirar acesso');
+    const targetId = String(input.userId || '');
+    if (targetId === userId) return { success: false, error: 'Você não pode excluir a sua própria conta' };
+    const target = await prisma.user.findFirst({ where: { id: targetId, accountId } });
+    if (!target) return { success: false, error: 'Usuário não encontrado' };
+    if (input.confirmed !== true) {
+      return { success: false, needsConfirmation: true, error: `Ação IRREVERSÍVEL: excluir/tirar acesso de "${target.name}". Pergunte ao colaborador DUAS vezes se confirma; só então chame de novo com confirmed:true.` };
+    }
+    if (target.role === 'ADMIN') {
+      const admins = await prisma.user.count({ where: { accountId, role: 'ADMIN' } });
+      if (admins <= 1) return { success: false, error: 'Não é possível excluir o último administrador' };
+    }
+    const heir = userId!;
+    await prisma.$transaction([
+      prisma.lead.updateMany({ where: { userId: target.id }, data: { userId: heir } }),
+      prisma.task.updateMany({ where: { userId: target.id }, data: { userId: heir } }),
+      prisma.note.updateMany({ where: { userId: target.id }, data: { userId: heir } }),
+      prisma.transaction.updateMany({ where: { userId: target.id }, data: { userId: heir } }),
+      prisma.user.delete({ where: { id: target.id } }),
+    ]);
+    return { success: true, deleted: target.name };
+  }
+
   if (name === 'send_whatsapp_message') {
+    if (!perms.inbox_reply) return deny('inbox_reply', 'enviar mensagens');
     const result = await sendOutboundWhatsApp({
       accountId,
       leadId: String(input.leadId),
@@ -305,6 +541,7 @@ async function executeAgentTool(
   }
 
   if (name === 'send_whatsapp_to_number') {
+    if (!perms.inbox_reply) return deny('inbox_reply', 'enviar mensagens');
     const phone = String(input.phone || '').trim();
     if (!phone) return { success: false, error: 'Número de telefone não informado' };
 
