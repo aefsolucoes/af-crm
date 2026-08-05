@@ -127,6 +127,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Cresce a caixa de mensagem conforme o texto (até um limite), como no WhatsApp.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  }, [content]);
+
   useEffect(() => {
     const socket = getSocket();
     socket.emit('join_lead', leadId);
