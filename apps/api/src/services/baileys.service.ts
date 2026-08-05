@@ -123,14 +123,24 @@ export async function getGroupParticipants(accountId: string, leadId: string) {
     if (d.length >= 8) nameByCore.set(d.slice(-8), c.name);
   }
 
-  const members = (meta.participants || []).map((p: any) => {
-    const digits = String(p.id || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+  const members = await Promise.all((meta.participants || []).map(async (p: any) => {
+    const rawJid = String(p.id || '');
+    let digits = rawJid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    // Baileys 7: participantes de grupo vêm como @lid (não é telefone).
+    // Resolve para o número real via o mapa LID→número.
+    if (rawJid.includes('@lid')) {
+      try {
+        const pnJid = await sock.signalRepository?.lidMapping?.getPNForLID?.(rawJid);
+        const d = pnJid ? String(pnJid).split('@')[0].split(':')[0].replace(/\D/g, '') : '';
+        if (d.length >= 8) digits = d;
+      } catch { /* mapeamento indisponível */ }
+    }
     return {
       phone: digits,
       name: nameByCore.get(digits.slice(-8)) || null,
       isAdmin: p.admin === 'admin' || p.admin === 'superadmin',
     };
-  });
+  }));
   members.sort((a: any, b: any) =>
     (Number(b.isAdmin) - Number(a.isAdmin)) || (a.name || a.phone).localeCompare(b.name || b.phone));
   return { subject: meta.subject || '', count: members.length, members };
