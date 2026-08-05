@@ -199,6 +199,34 @@ router.post('/whatsapp/verify-code', async (req: AuthRequest, res: Response) => 
   }
 });
 
+// POST /api/settings/whatsapp/subscribe-waba — inscreve o app na conta (WABA)
+// para RECEBER as mensagens no webhook. Sem isso, o webhook nunca é chamado.
+router.post('/whatsapp/subscribe-waba', async (req: AuthRequest, res: Response) => {
+  try {
+    const { wabaId } = req.body as { wabaId?: string };
+    if (!wabaId || !/^\d{6,}$/.test(wabaId)) {
+      return res.status(400).json({ ok: false, error: 'Informe o ID da conta do WhatsApp Business (WABA).' });
+    }
+    const config = await getWhatsAppConfig(req.user!.accountId);
+    if (!config?.accessToken) {
+      return res.status(400).json({ ok: false, error: 'Salve o Access Token primeiro.' });
+    }
+    const r = await fetch(`https://graph.facebook.com/v20.0/${wabaId}/subscribed_apps`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.accessToken}` },
+    });
+    const j = await r.json() as any;
+    if (!r.ok || j.error) {
+      const code = j.error?.code ?? r.status;
+      const msg  = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
+      return res.json({ ok: false, error: `${msg} (código: ${code})`, code });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: 'Falha ao inscrever o app na WABA' });
+  }
+});
+
 // ─── Meta Lead Ads Settings ──────────────────────────────────────────────────
 
 const metaLeadsSchema = z.object({

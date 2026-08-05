@@ -157,6 +157,8 @@ export default function ConfiguracoesPage() {
   const [regCode, setRegCode] = useState('');
   const [sendingCode, setSendingCode] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [wabaId, setWabaId] = useState('');
+  const [subscribing, setSubscribing] = useState(false);
 
   // Load API config
   useEffect(() => {
@@ -563,6 +565,43 @@ export default function ConfiguracoesPage() {
                         className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold hover:bg-amber-600 disabled:opacity-50 whitespace-nowrap"
                       >
                         {registering ? 'Ativando...' : 'Ativar número'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Ativar recebimento — inscreve o app na WABA (subscribed_apps) */}
+                  <div className="p-4 bg-blue-50 rounded-xl border border-blue-200 space-y-2">
+                    <div>
+                      <p className="text-sm font-semibold text-blue-800">Ativar recebimento (webhook)</p>
+                      <p className="text-xs text-blue-700 mt-0.5">Se você envia mas as mensagens não chegam na Inbox, inscreva o app na conta do WhatsApp Business. Cole o <strong>ID da conta do WhatsApp Business (WABA)</strong> — na Meta aparece como "Identificação da conta do WhatsApp Business".</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={wabaId}
+                        onChange={(e) => setWabaId(e.target.value.replace(/\D/g, ''))}
+                        placeholder="ID da conta do WhatsApp Business (WABA)"
+                        className="flex-1 px-3 py-2 text-sm border border-blue-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                      <button
+                        type="button"
+                        disabled={subscribing || wabaId.length < 6}
+                        onClick={async () => {
+                          setSubscribing(true);
+                          try {
+                            const { data } = await api.post('/api/settings/whatsapp/subscribe-waba', { wabaId });
+                            if (data.ok) toast('✅ Recebimento ativado! Agora as mensagens chegam na Inbox.', 'success');
+                            else toast(`❌ ${data.error}`, 'error');
+                          } catch {
+                            toast('Erro ao ativar o recebimento', 'error');
+                          } finally {
+                            setSubscribing(false);
+                          }
+                        }}
+                        className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {subscribing ? 'Ativando...' : 'Ativar recebimento'}
                       </button>
                     </div>
                   </div>
