@@ -606,7 +606,7 @@ interface AnthropicContentBlock {
 }
 
 router.post('/support-chat', async (req: AuthRequest, res: Response) => {
-  const { messages } = req.body as { messages?: ChatMessage[] };
+  const { messages, conversationId } = req.body as { messages?: ChatMessage[]; conversationId?: string };
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     res.status(400).json({ error: 'messages é obrigatório e deve ser uma lista não vazia' });
@@ -692,10 +692,74 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
       break;
     }
 
-    res.json({ reply });
+    // Persiste o histórico da conversa (por colaborador).
+    const userId = req.user!.id;
+    const fullMessages = [...messages, { role: 'assistant', content: reply }];
+    let convId = conversationId;
+    if (convId) {
+      const existing = await prisma.assistantConversation.findFirst({ where: { id: convId, userId } });
+      if (existing) {
+        await prisma.assistantConversation.update({ where: { id: convId }, data: { messages: fullMessages as any } });
+      } else {
+        convId = undefined;
+      }
+    }
+    if (!convId) {
+      const firstUser = messages.find((m) => m.role === 'user')?.content?.trim() || 'Nova conversa';
+      const title = firstUser.length > 60 ? firstUser.slice(0, 60) + '…' : firstUser;
+      const created = await prisma.assistantConversation.create({
+        data: { accountId, userId, title, messages: fullMessages as any },
+      });
+      convId = created.id;
+    }
+
+    res.json({ reply, conversationId: convId });
   } catch (err) {
     console.error('[AI] Erro support-chat:', err);
     res.status(500).json({ error: 'Erro interno ao processar IA' });
+  }
+});
+
+// ── Histórico do chat do assistente (por colaborador) ────────────────────────
+// Lista as conversas do colaborador logado (mais recentes primeiro).
+router.get('/conversations', async (req: AuthRequest, res: Response) => {
+  try {
+    const conversations = await prisma.assistantConversation.findMany({
+      where: { userId: req.user!.id },
+      select: { id: true, title: true, updatedAt: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+    });
+    res.json(conversations);
+  } catch {
+    res.status(500).json({ error: 'Erro ao listar conversas' });
+  }
+});
+
+// Abre uma conversa (mensagens) para continuar de onde parou.
+router.get('/conversations/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const conv = await prisma.assistantConversation.findFirst({
+      where: { id: req.params.id, userId: req.user!.id },
+    });
+    if (!conv) return res.status(404).json({ error: 'Conversa não encontrada' });
+    res.json({ id: conv.id, title: conv.title, messages: conv.messages });
+  } catch {
+    res.status(500).json({ error: 'Erro ao abrir conversa' });
+  }
+});
+
+// Exclui uma conversa do histórico.
+router.delete('/conversations/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const conv = await prisma.assistantConversation.findFirst({
+      where: { id: req.params.id, userId: req.user!.id },
+    });
+    if (!conv) return res.status(404).json({ error: 'Conversa não encontrada' });
+    await prisma.assistantConversation.delete({ where: { id: conv.id } });
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Erro ao excluir conversa' });
   }
 });
 

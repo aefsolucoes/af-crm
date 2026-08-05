@@ -395,3 +395,17 @@ model Transaction {
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 }
+
+// Histórico do chat do Assistente AF CRM, por colaborador. messages guarda o
+// array de { role, content } da conversa. Cada colaborador tem as suas.
+model AssistantConversation {
+  id        String   @id @default(cuid())
+  accountId String
+  userId    String
+  title     String   @default("Nova conversa")
+  messages  Json     @default("[]")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
