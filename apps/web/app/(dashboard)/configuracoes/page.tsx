@@ -1348,6 +1348,8 @@ function GoogleDriveTab() {
   const [folders, setFolders] = useState<DriveFolder[]>([]);
   const [path, setPath] = useState<{ id: string; name: string }[]>([]); // breadcrumb (id 'root' = Meu Drive)
   const [loadingFolders, setLoadingFolders] = useState(false);
+  const [folderLinkInput, setFolderLinkInput] = useState('');
+  const [settingByLink, setSettingByLink] = useState(false);
 
   async function loadStatus() {
     try { const { data } = await api.get('/api/google/status'); setStatus(data); }
@@ -1416,6 +1418,21 @@ function GoogleDriveTab() {
     toast('Pasta-raiz definida!');
   }
 
+  async function handleSetFolderByLink() {
+    if (!folderLinkInput.trim()) return;
+    setSettingByLink(true);
+    try {
+      const { data } = await api.post('/api/google/root-folder', { folderLink: folderLinkInput.trim() });
+      setFolderLinkInput('');
+      loadStatus();
+      toast(`Pasta-raiz definida: ${data.folderName}!`);
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Não consegui usar esse link — confira se é uma pasta do Drive', 'error');
+    } finally {
+      setSettingByLink(false);
+    }
+  }
+
   if (loading) return <p className="text-sm text-slate-400 py-6 text-center">Carregando...</p>;
 
   if (status && !status.configured) {
@@ -1470,9 +1487,26 @@ function GoogleDriveTab() {
                 ) : (
                   <p className="text-xs text-amber-600 mb-2">Nenhuma pasta-raiz definida ainda.</p>
                 )}
-                <button onClick={() => openBrowser()} className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50">
-                  {status.rootFolderName ? 'Trocar pasta' : 'Escolher pasta'}
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button onClick={() => openBrowser()} className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50">
+                    {status.rootFolderName ? 'Trocar pasta' : 'Escolher pasta'}
+                  </button>
+                  <span className="text-xs text-slate-300">ou</span>
+                  <input
+                    value={folderLinkInput}
+                    onChange={(e) => setFolderLinkInput(e.target.value)}
+                    placeholder="Cole o link da pasta do Drive"
+                    className="text-xs px-2.5 py-1.5 rounded-lg border border-af-border flex-1 min-w-[200px] focus:outline-none focus:ring-1 focus:ring-af-accent"
+                  />
+                  <button
+                    onClick={handleSetFolderByLink}
+                    disabled={!folderLinkInput.trim() || settingByLink}
+                    className="text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50"
+                    style={{ backgroundColor: '#2261a8' }}
+                  >
+                    {settingByLink ? 'Definindo…' : 'Usar este link'}
+                  </button>
+                </div>
               </div>
 
               {status.rootFolderName && (

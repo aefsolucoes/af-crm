@@ -3,6 +3,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import {
   getAuthUrl, handleOAuthCallback, getGoogleStatus, disconnectGoogle,
   listFolders, setRootFolder, createFolder, isGoogleConfigured, bulkArchiveOldAttachments,
+  getFolderName, extractFolderId,
 } from '../services/google.service';
 
 const router = Router();
@@ -84,12 +85,25 @@ router.get('/folders', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Define a pasta-raiz onde ficam as pastas dos clientes
+// Define a pasta-raiz onde ficam as pastas dos clientes. Aceita folderId (do
+// navegador de pastas) OU folderLink (link colado do Drive) — nesse caso o
+// nome da pasta é resolvido automaticamente.
 router.post('/root-folder', async (req: AuthRequest, res: Response) => {
-  const { folderId, folderName } = req.body as { folderId?: string; folderName?: string };
-  if (!folderId) return res.status(400).json({ error: 'folderId é obrigatório' });
-  await setRootFolder(req.user!.accountId, folderId, folderName || '');
-  res.json({ success: true });
+  try {
+    const { folderId, folderName, folderLink } = req.body as { folderId?: string; folderName?: string; folderLink?: string };
+    const accountId = req.user!.accountId;
+    if (folderLink) {
+      const id = extractFolderId(folderLink);
+      const name = await getFolderName(accountId, id);
+      await setRootFolder(accountId, id, name);
+      return res.json({ success: true, folderId: id, folderName: name });
+    }
+    if (!folderId) return res.status(400).json({ error: 'folderId ou folderLink é obrigatório' });
+    await setRootFolder(accountId, folderId, folderName || '');
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao definir a pasta-raiz' });
+  }
 });
 
 // Teste rápido: cria uma pasta dentro da raiz configurada

@@ -118,6 +118,23 @@ export async function setRootFolder(accountId: string, folderId: string, folderN
   });
 }
 
+/** Nome real de uma pasta do Drive a partir do ID (para colar um link direto, sem navegar). */
+export async function getFolderName(accountId: string, folderId: string): Promise<string> {
+  const drive = await getDrive(accountId);
+  const res = await drive.files.get({ fileId: folderId, fields: 'id, name, mimeType', supportsAllDrives: true });
+  if (res.data.mimeType !== 'application/vnd.google-apps.folder') {
+    throw new Error('O link não aponta para uma pasta do Drive');
+  }
+  return res.data.name || 'Pasta sem nome';
+}
+
+/** Extrai o ID de uma pasta a partir de um link do Drive (ou aceita o ID puro). */
+export function extractFolderId(input: string): string {
+  const trimmed = input.trim();
+  const match = trimmed.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  return match ? match[1] : trimmed;
+}
+
 // ─── Operações no Drive ─────────────────────────────────────────────────────
 
 /** Lista pastas dentro de um parent (ou da raiz "root"/rootFolder se não informado) */
