@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { autoUploadAttachmentToDrive } from './google.service';
 
 const prisma = new PrismaClient();
 
@@ -193,8 +194,53 @@ export async function processWhatsAppStatus(body: any, io: any) {
   }
 }
 
+/** Extrai metadados de uma mídia recebida pela Cloud API (image/audio/video/document/sticker).
+ *  Retorna null para texto e para tipos sem mídia (location, contacts, reaction, etc.). */
+function getCloudApiMediaInfo(msg: any): { mediaId: string; fileName: string; mimeType: string; caption?: string } | null {
+  const node = msg?.[msg?.type];
+  const mediaId = node?.id;
+  if (!mediaId) return null;
+  // O WhatsApp às vezes manda "audio/ogg; codecs=opus" — guardamos só o mime base.
+  const mimeType = (node.mime_type || 'application/octet-stream').split(';')[0].trim();
+  let fileName: string;
+  switch (msg.type) {
+    case 'image':    fileName = `foto-${Date.now()}.${mimeType.includes('png') ? 'png' : 'jpg'}`; break;
+    case 'video':    fileName = `video-${Date.now()}.${mimeType.includes('3gpp') ? '3gp' : 'mp4'}`; break;
+    case 'audio':    fileName = `audio-${Date.now()}.${mimeType.includes('mpeg') ? 'mp3' : mimeType.includes('ogg') ? 'ogg' : 'm4a'}`; break;
+    case 'sticker':  fileName = `sticker-${Date.now()}.webp`; break;
+    case 'document': fileName = node.filename || `documento-${Date.now()}`; break;
+    default: return null;
+  }
+  return { mediaId, fileName, mimeType, caption: node.caption };
+}
+
+/** Baixa a mídia da Cloud API: 1) resolve a URL temporária pelo media-id, 2) baixa os bytes.
+ *  Os dois passos exigem o token. Retorna null (sem derrubar o recebimento) se algo falhar. */
+async function downloadCloudApiMedia(mediaId: string, token: string): Promise<Buffer | null> {
+  try {
+    const metaRes = await fetch(`https://graph.facebook.com/v19.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const meta = await metaRes.json() as { url?: string; error?: { message?: string } };
+    if (!meta.url) {
+      console.error('[WA Media] sem URL para media', mediaId, meta.error?.message);
+      return null;
+    }
+    const fileRes = await fetch(meta.url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!fileRes.ok) {
+      console.error('[WA Media] download falhou:', fileRes.status);
+      return null;
+    }
+    return Buffer.from(await fileRes.arrayBuffer());
+  } catch (err) {
+    console.error('[WA Media] erro ao baixar:', (err as any)?.message);
+    return null;
+  }
+}
+
 export async function processIncomingWhatsApp(body: any, accountId: string, io: any) {
   try {
+    const config = await getWhatsAppConfig(accountId);
     const entry = body?.entry?.[0];
     const changes = entry?.changes?.[0];
     const value = changes?.value;
@@ -202,10 +248,15 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
     if (!value?.messages?.length) return;
 
     for (const msg of value.messages) {
-      if (msg.type !== 'text') continue;
+      const mediaInfo = getCloudApiMediaInfo(msg);
+      // Processa texto OU mídia suportada (imagem/áudio/vídeo/documento/sticker).
+      // Ignora location, contacts, reaction, etc.
+      if (msg.type !== 'text' && !mediaInfo) continue;
 
       const from = msg.from as string; // e.g. "5561999990001"
-      const text = msg.text?.body as string;
+      const text = mediaInfo
+        ? `📎 ${mediaInfo.fileName}${mediaInfo.caption ? ` — ${mediaInfo.caption}` : ''}`
+        : (msg.text?.body as string) || '';
       const externalId = msg.id as string;
       const profileName = value.contacts?.[0]?.profile?.name || `+${from}`;
       const formattedPhone = formatPhoneDisplay(from);
@@ -300,6 +351,12 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       const existing = await prisma.message.findFirst({ where: { externalId } });
       if (existing) continue;
 
+      // ── Baixa a mídia, se houver (não bloqueia o texto se falhar) ────────
+      let mediaBuffer: Buffer | null = null;
+      if (mediaInfo && config?.accessToken) {
+        mediaBuffer = await downloadCloudApiMedia(mediaInfo.mediaId, config.accessToken);
+      }
+
       // ── Save message ────────────────────────────────────────────────────
       const message = await prisma.message.create({
         data: {
@@ -310,8 +367,22 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
           read: false,
           externalId,
           status: 'DELIVERED',
+          ...(mediaBuffer && mediaInfo ? {
+            attachments: {
+              create: { leadId, fileName: mediaInfo.fileName, mimeType: mediaInfo.mimeType, data: mediaBuffer },
+            },
+          } : {}),
         },
+        include: { attachments: true },
       });
+
+      // Sobe o anexo para o Drive em segundo plano (se configurado) — não bloqueia
+      // o recebimento e evita acumular bytes no Postgres. Erro só vira log.
+      const att = message.attachments?.[0];
+      if (att) {
+        autoUploadAttachmentToDrive(accountId, leadId, att.id).catch((err) =>
+          console.error('[Drive] Auto-upload (API) falhou:', (err as any)?.message));
+      }
 
       // ── Emit via Socket.io ──────────────────────────────────────────────
       if (io) {
