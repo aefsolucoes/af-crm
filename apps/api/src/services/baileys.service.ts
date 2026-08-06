@@ -649,27 +649,22 @@ async function getOrCreateLeadForPhone(
     await prisma.contact.update({ where: { id: contact.id }, data: { phone: `+${realPhone}` } }).catch(() => {});
   }
 
-  // Conversa por (contato × número): cada um dos seus números tem a SUA própria
-  // conversa com o mesmo cliente (igual ao WhatsApp real). Procura um lead deste
-  // contato NESTE número; senão adota um lead legado sem número; senão cria um novo.
+  // Conversa única por contato — o mesmo cliente pode falar pelos dois números
+  // que continua no MESMO card, sem duplicar (cada mensagem grava o SEU número
+  // em Message.whatsappNumberId, para o "via {número}"; lead.whatsappNumberId
+  // só acompanha o último número usado, como sugestão padrão da tela).
   let lead = await prisma.lead.findFirst({
-    where: { contactId: contact.id, whatsappNumberId: numberId, accountId },
+    where: { contactId: contact.id, accountId },
     orderBy: { updatedAt: 'desc' },
   });
-  if (!lead) {
-    const legacy = await prisma.lead.findFirst({
-      where: { contactId: contact.id, whatsappNumberId: null, accountId },
-      orderBy: { updatedAt: 'desc' },
-    });
-    if (legacy) {
-      lead = await prisma.lead.update({ where: { id: legacy.id }, data: { whatsappNumberId: numberId } });
-    }
-  }
   if (lead) {
+    const data: any = {};
+    if (lead.whatsappNumberId !== numberId) data.whatsappNumberId = numberId;
     const cf = (lead.customFields as any) || {};
     const telBad = !cf.telefone_1 || String(cf.telefone_1).includes('@');
-    if (telDisplayResolved && telBad) {
-      await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, telefone_1: telDisplayResolved } } }).catch(() => {});
+    if (telDisplayResolved && telBad) data.customFields = { ...cf, telefone_1: telDisplayResolved };
+    if (Object.keys(data).length) {
+      await prisma.lead.update({ where: { id: lead.id }, data }).catch(() => {});
     }
     return lead.id;
   }

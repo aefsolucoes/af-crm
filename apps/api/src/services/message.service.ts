@@ -196,22 +196,18 @@ export async function sendOutboundWhatsApp(params: {
 
   if (useQR) {
     // Se o colaborador escolheu um número específico (fromNumberId), envia por ele
-    // — desde que esteja conectado e pertença à conta. Senão, roteia pelo mesmo
-    // número que recebeu a conversa (lead.whatsappNumberId) ou o primeiro conectado.
+    // — desde que esteja conectado. Senão, sugere o último número usado nesta
+    // conversa (lead.whatsappNumberId) ou o primeiro conectado. Um cliente pode
+    // falar pelos dois números sem duplicar o card — cada mensagem guarda o SEU
+    // próprio número (para o "via {número}"), mas a conversa é uma só.
     let preferred: string | undefined;
-    if (lead.whatsappNumberId) {
-      // Cada conversa é de um número só (igual WhatsApp real): responde SEMPRE
-      // pelo número dela. Se estiver desconectado, avisa para reconectar — não
-      // envia por outro número (senão as conversas voltariam a se misturar).
-      if (!isNumberConnected(lead.whatsappNumberId)) {
-        return { success: false, error: 'O número de WhatsApp desta conversa está desconectado. Reconecte-o em Configurações → QR Code para responder por aqui.' };
-      }
-      preferred = lead.whatsappNumberId;
-    } else if (fromNumberId) {
+    if (fromNumberId) {
       if (!connectedNumbers.includes(fromNumberId)) {
         return { success: false, error: 'O número de WhatsApp escolhido não está conectado. Verifique em Configurações → QR Code ou escolha outro.' };
       }
       preferred = fromNumberId;
+    } else if (lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)) {
+      preferred = lead.whatsappNumberId;
     } else {
       preferred = connectedNumbers[0];
     }
@@ -236,8 +232,9 @@ export async function sendOutboundWhatsApp(params: {
     }
     externalId = outcome.id;
 
-    // Se a conversa ainda não estava vinculada a um número, vincula agora
-    if (!lead.whatsappNumberId) {
+    // Mantém o "número atual" da conversa acompanhando o último usado (é só a
+    // sugestão padrão da tela — não impede responder por outro número depois).
+    if (lead.whatsappNumberId !== preferred) {
       await prisma.lead.update({ where: { id: leadId }, data: { whatsappNumberId: preferred } }).catch(() => {});
     }
   } else {

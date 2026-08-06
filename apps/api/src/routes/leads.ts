@@ -4,7 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead } from '../services/lead.service';
+import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact } from '../services/lead.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -514,6 +514,18 @@ router.post('/:id/merge', async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[Merge]', err);
     res.status(500).json({ error: 'Erro ao unificar leads' });
+  }
+});
+
+// POST /api/leads/merge-same-contact — correção pontual do incidente de
+// conversas separadas por número: junta de volta os cards do mesmo contato.
+router.post('/merge-same-contact', async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await mergeLeadsBySameContact(req.user!.accountId);
+    res.json(result);
+  } catch (err) {
+    console.error('[Merge automático]', err);
+    res.status(500).json({ error: 'Erro ao unificar cards duplicados' });
   }
 });
 

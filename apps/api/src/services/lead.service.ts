@@ -84,6 +84,66 @@ export async function updateLeadStage(id: string, accountId: string, stageId: st
   });
 }
 
+/**
+ * Correção do incidente 2026-08 (conversas separadas por número): junta de
+ * volta os cards que se duplicaram só porque o mesmo contato falou por dois
+ * números diferentes. Une TODOS os leads (não-grupo) de um mesmo contactId
+ * num único card — mantém o que tem mais mensagens, move mensagens/tarefas/
+ * notas dos demais para ele, mescla campos e valor, e apaga os duplicados.
+ */
+export async function mergeLeadsBySameContact(accountId: string): Promise<{ merged: number; groups: number }> {
+  const leads = await prisma.lead.findMany({
+    where: { accountId, isGroup: false, contactId: { not: null } },
+    include: { _count: { select: { messages: true } } },
+  });
+
+  const byContact = new Map<string, typeof leads>();
+  for (const l of leads) {
+    if (!l.contactId) continue;
+    if (!byContact.has(l.contactId)) byContact.set(l.contactId, [] as any);
+    byContact.get(l.contactId)!.push(l);
+  }
+
+  let merged = 0;
+  let groups = 0;
+  for (const [, group] of byContact) {
+    if (group.length < 2) continue;
+    groups++;
+
+    // Mantém o card com mais mensagens (desempate: mais recente).
+    const sorted = [...group].sort((a, b) =>
+      (b._count.messages - a._count.messages) || (b.updatedAt.getTime() - a.updatedAt.getTime()));
+    const keep = sorted[0];
+    const rest = sorted.slice(1);
+
+    for (const source of rest) {
+      const mergedCF = { ...((source.customFields as any) || {}), ...((keep.customFields as any) || {}) };
+      const mergedValue = Math.max(keep.value || 0, source.value || 0) || undefined;
+      try {
+        await prisma.$transaction([
+          prisma.message.updateMany({ where: { leadId: source.id }, data: { leadId: keep.id } }),
+          prisma.task.updateMany({ where: { leadId: source.id }, data: { leadId: keep.id } }),
+          prisma.note.updateMany({ where: { leadId: source.id }, data: { leadId: keep.id } }),
+          prisma.lead.update({ where: { id: keep.id }, data: { customFields: mergedCF as any, value: mergedValue } }),
+          prisma.note.create({
+            data: {
+              leadId: keep.id,
+              content: `Card unificado automaticamente com "${source.name}" (conversa que havia se separado por número de WhatsApp).`,
+              type: 'DATA_EDIT',
+            },
+          }),
+          prisma.lead.delete({ where: { id: source.id } }),
+        ]);
+        merged++;
+      } catch (err) {
+        console.error('[Merge automático] Falhou para', source.id, err);
+      }
+    }
+  }
+
+  return { merged, groups };
+}
+
 export async function deleteLead(id: string, accountId: string) {
   return prisma.lead.delete({ where: { id } });
 }
