@@ -3,11 +3,18 @@ import { Conversation, WhatsAppNumber } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatDateTime } from '@/lib/utils';
 import { useState } from 'react';
-import { Users, UserMinus, Search, X } from 'lucide-react';
+import { Users, UserMinus, Search, X, BadgeCheck } from 'lucide-react';
 
 /** true se a conversa é um grupo: marcada manualmente OU com JID de grupo (@g.us). */
 function isGroupConversation(c: Conversation): boolean {
   return c.isGroup === true || !!c.contact?.whatsappPhone?.endsWith('@g.us');
+}
+
+/** true se a conversa é da API Oficial (Meta Cloud API) — mensagens têm id `wamid.*`
+ *  e não carregam whatsappNumberId (que só existe nos números conectados por QR code). */
+function isApiConversation(c: Conversation): boolean {
+  const ext = c.messages?.[0]?.externalId;
+  return typeof ext === 'string' && ext.startsWith('wamid');
 }
 
 /** data da última mensagem (para ordenar as conversas) */
@@ -35,6 +42,7 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
   const [refreshing, setRefreshing] = useState(false);
 
   const groupCount = conversations.filter(isGroupConversation).length;
+  const apiCount = conversations.filter((c) => !isGroupConversation(c) && isApiConversation(c)).length;
 
   const q = search.trim().toLowerCase();
   const qDigits = q.replace(/\D/g, '');
@@ -54,8 +62,10 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
       // Nas demais visões, os grupos ficam fora — têm aba própria.
       if (isGroup) return false;
       if (filter === 'ALL') return true;
-      // filtro por número de WhatsApp conectado
-      return (c.whatsappNumber?.id || c.whatsappNumberId) === filter;
+      // aba da API Oficial (Meta Cloud API)
+      if (filter === 'API') return isApiConversation(c);
+      // filtro por número de WhatsApp conectado (QR) — API não tem whatsappNumberId
+      return (c.whatsappNumber?.id || c.whatsappNumberId) === filter && !isApiConversation(c);
     })
     .sort((a, b) => lastMessageTime(b) - lastMessageTime(a));
 
@@ -105,6 +115,13 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
               {n.label}
             </button>
           ))}
+          <button
+            onClick={() => setFilter('API')}
+            title="Conversas do WhatsApp API oficial (Meta Cloud API)"
+            className={cn(chip(filter === 'API'), 'flex items-center gap-1')}
+          >
+            <BadgeCheck size={12} /> API Oficial{apiCount > 0 ? ` (${apiCount})` : ''}
+          </button>
           <button onClick={() => setFilter('GROUPS')} className={cn(chip(filter === 'GROUPS'), 'flex items-center gap-1')}>
             <Users size={12} /> Grupos{groupCount > 0 ? ` (${groupCount})` : ''}
           </button>
