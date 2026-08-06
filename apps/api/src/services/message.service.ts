@@ -1,7 +1,6 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
 import { sendWhatsAppMessage } from './whatsapp.service';
 import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds } from './baileys.service';
-import { autoUploadAttachmentToDrive } from './google.service';
 
 const prisma = new PrismaClient();
 
@@ -315,12 +314,7 @@ export async function sendOutboundMedia(params: {
     io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
   }
 
-  // Sobe para o Drive em segundo plano (se configurado) — evita acumular bytes no Postgres.
-  const att = message.attachments[0];
-  if (att) {
-    autoUploadAttachmentToDrive(accountId, leadId, att.id).catch(err =>
-      console.error('[Drive] Auto-upload falhou:', (err as any)?.message));
-  }
+  // Mídia fica no CRM (banco) — o upload pro Drive agora é só sob-demanda.
 
   return { success: true, message };
 }

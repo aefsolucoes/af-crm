@@ -3,7 +3,6 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { PrismaClient } from '@prisma/client';
-import { autoUploadAttachmentToDrive } from './google.service';
 
 const prisma = new PrismaClient();
 
@@ -903,13 +902,8 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
   globalIO?.emit('new_conversation', { leadId });
   console.log(`[Baileys] Mídia ${buffer ? 'capturada' : 'registrada (sem bytes)'}: ${info.fileName} → lead ${leadId}`);
 
-  // Sobe para o Drive em segundo plano (se configurado) — evita acumular bytes
-  // no Postgres. Não bloqueia o recebimento da mensagem; erro só vira log.
-  const att = message.attachments[0];
-  if (att) {
-    autoUploadAttachmentToDrive(accountId, leadId, att.id).catch(err =>
-      console.error('[Drive] Auto-upload falhou:', (err as any)?.message));
-  }
+  // Mídia fica no CRM (banco) — o upload pro Drive agora é só sob-demanda.
+  // A válvula de disco arquiva apenas os anexos ANTIGOS (bulkArchiveOldAttachments).
 }
 
 const HISTORY_IMPORT_LIMIT = 500;

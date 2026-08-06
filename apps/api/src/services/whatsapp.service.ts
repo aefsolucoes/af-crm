@@ -1,5 +1,4 @@
 import { PrismaClient } from '@prisma/client';
-import { autoUploadAttachmentToDrive } from './google.service';
 
 const prisma = new PrismaClient();
 
@@ -376,13 +375,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         include: { attachments: true },
       });
 
-      // Sobe o anexo para o Drive em segundo plano (se configurado) — não bloqueia
-      // o recebimento e evita acumular bytes no Postgres. Erro só vira log.
-      const att = message.attachments?.[0];
-      if (att) {
-        autoUploadAttachmentToDrive(accountId, leadId, att.id).catch((err) =>
-          console.error('[Drive] Auto-upload (API) falhou:', (err as any)?.message));
-      }
+      // Mídia fica no CRM (banco) — o upload pro Drive agora é só sob-demanda.
 
       // ── Emit via Socket.io ──────────────────────────────────────────────
       if (io) {

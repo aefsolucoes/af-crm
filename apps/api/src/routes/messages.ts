@@ -4,6 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, markConversationRead, getAttachment, sendOutboundMedia } from '../services/message.service';
+import { downloadDriveFile } from '../services/google.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -41,14 +42,30 @@ router.get('/attachment/:id', async (req: AuthRequest, res: Response) => {
   try {
     const att = await getAttachment(req.params.id, req.user!.accountId);
     if (!att) return res.status(404).json({ error: 'Anexo não encontrado' });
-    if (!att.data) {
-      // Já foi movido para o Drive (bytes limpos do banco)
-      return res.status(410).json({ error: 'Arquivo movido para o Google Drive', driveFileId: att.driveFileId });
-    }
     const isImage = att.mimeType.startsWith('image/');
-    res.setHeader('Content-Type', att.mimeType);
-    res.setHeader('Content-Disposition', `${isImage ? 'inline' : 'attachment'}; filename="${encodeURIComponent(att.fileName)}"`);
-    res.send(Buffer.from(att.data as any));
+
+    // Bytes ainda no banco → serve direto.
+    if (att.data) {
+      res.setHeader('Content-Type', att.mimeType);
+      res.setHeader('Content-Disposition', `${isImage ? 'inline' : 'attachment'}; filename="${encodeURIComponent(att.fileName)}"`);
+      return res.send(Buffer.from(att.data as any));
+    }
+
+    // Já arquivado no Drive → busca de volta e serve (miniatura inline / download).
+    if (att.driveFileId) {
+      try {
+        const buf = await downloadDriveFile(req.user!.accountId, att.driveFileId, att.mimeType);
+        res.setHeader('Content-Type', att.mimeType);
+        res.setHeader('Content-Disposition', `${isImage ? 'inline' : 'attachment'}; filename="${encodeURIComponent(att.fileName)}"`);
+        res.setHeader('Cache-Control', 'private, max-age=86400');
+        return res.send(buf);
+      } catch (err) {
+        console.error('[Attachment] Falha ao baixar do Drive:', (err as any)?.message);
+        return res.status(410).json({ error: 'Arquivo no Google Drive', driveFileId: att.driveFileId });
+      }
+    }
+
+    return res.status(410).json({ error: 'Arquivo indisponível', driveFileId: att.driveFileId });
   } catch {
     res.status(500).json({ error: 'Erro ao carregar anexo' });
   }
