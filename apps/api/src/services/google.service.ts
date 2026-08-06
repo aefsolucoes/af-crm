@@ -329,3 +329,84 @@ export async function organizeLeadDocsToDrive(params: {
     alreadyThere: alreadyThere - uploaded.length,
   };
 }
+
+/**
+ * Sobe UM anexo (já salvo com bytes) direto para a pasta do cliente no Drive e
+ * limpa os bytes do banco. Chamado em segundo plano assim que um anexo do
+ * WhatsApp chega/é enviado — evita acumular peso no Postgres (foi a causa do
+ * disco cheio em 2026-08-05). Se o Drive não estiver configurado (sem conexão
+ * ou sem pasta-raiz), não faz nada — o anexo fica no banco como antes, e
+ * alguém organiza manualmente depois (botão/assistente).
+ */
+export async function autoUploadAttachmentToDrive(accountId: string, leadId: string, attachmentId: string): Promise<void> {
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  if (!conn?.refreshToken || !conn.rootFolderId) return;
+
+  const [att, lead] = await Promise.all([
+    prisma.messageAttachment.findUnique({ where: { id: attachmentId } }),
+    prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } }),
+  ]);
+  if (!att || !att.data || att.driveFileId) return;
+
+  const folder = await createFolder(accountId, (lead?.name || 'Sem nome').trim() || 'Sem nome', conn.rootFolderId);
+  const up = await uploadFile(accountId, {
+    name: att.fileName,
+    mimeType: att.mimeType,
+    data: Buffer.from(att.data),
+    parentId: folder.id,
+  });
+  await prisma.messageAttachment.update({
+    where: { id: att.id },
+    data: { driveFileId: up.id, data: null },
+  });
+}
+
+/**
+ * Limpeza única: sobe para o Drive todos os anexos antigos que ainda estão com
+ * bytes guardados no banco (de antes do auto-upload existir), agrupados por
+ * cliente. Usado para liberar espaço do Postgres de uma vez.
+ */
+export async function bulkArchiveOldAttachments(accountId: string): Promise<{ archived: number; errors: number; leads: number }> {
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  if (!conn?.refreshToken || !conn.rootFolderId) throw new Error('Conecte o Google Drive e escolha a pasta-raiz primeiro');
+
+  const attachments = await prisma.messageAttachment.findMany({
+    where: { driveFileId: null, NOT: { data: null } },
+    orderBy: { createdAt: 'asc' },
+  });
+  const leadIds = [...new Set(attachments.map(a => a.leadId))];
+  const leads = await prisma.lead.findMany({ where: { id: { in: leadIds } }, select: { id: true, name: true } });
+  const leadNames = new Map(leads.map(l => [l.id, l.name]));
+
+  const byLead = new Map<string, { name: string; items: typeof attachments }>();
+  for (const att of attachments) {
+    const name = leadNames.get(att.leadId);
+    if (!name) continue; // lead pode ter sido excluído
+    if (!byLead.has(att.leadId)) byLead.set(att.leadId, { name, items: [] as any });
+    byLead.get(att.leadId)!.items.push(att);
+  }
+
+  let archived = 0;
+  let errors = 0;
+  for (const [, group] of byLead) {
+    try {
+      const folder = await createFolder(accountId, (group.name || 'Sem nome').trim() || 'Sem nome', conn.rootFolderId);
+      for (const att of group.items) {
+        if (!att.data) continue;
+        try {
+          const up = await uploadFile(accountId, {
+            name: att.fileName, mimeType: att.mimeType, data: Buffer.from(att.data), parentId: folder.id,
+          });
+          await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
+          archived++;
+        } catch {
+          errors++;
+        }
+      }
+    } catch {
+      errors += group.items.length;
+    }
+  }
+
+  return { archived, errors, leads: byLead.size };
+}

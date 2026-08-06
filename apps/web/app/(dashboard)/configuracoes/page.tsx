@@ -1302,6 +1302,44 @@ function QRNumbersTab() {
 
 interface DriveFolder { id: string; name: string; }
 
+function ArchiveOldAttachmentsButton() {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<{ archived: number; errors: number; leads: number } | null>(null);
+
+  async function handleArchive() {
+    if (!confirm('Arquivar agora todos os anexos antigos no Drive? Pode levar alguns minutos, dependendo da quantidade.')) return;
+    setRunning(true);
+    setResult(null);
+    try {
+      const { data } = await api.post('/api/google/archive-old-attachments');
+      setResult(data);
+      toast(`Arquivamento concluído: ${data.archived} anexo(s) em ${data.leads} cliente(s).`);
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao arquivar anexos antigos', 'error');
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div>
+      <button
+        onClick={handleArchive}
+        disabled={running}
+        className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+      >
+        {running ? 'Arquivando…' : 'Arquivar anexos antigos agora'}
+      </button>
+      {result && (
+        <p className="text-xs text-slate-400 mt-1.5">
+          {result.archived} anexo(s) arquivado(s) em {result.leads} cliente(s)
+          {result.errors > 0 ? ` — ${result.errors} falharam (tente de novo depois)` : ''}.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function GoogleDriveTab() {
   const [status, setStatus] = useState<{ connected: boolean; email: string | null; rootFolderId: string | null; rootFolderName: string | null; configured: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1436,6 +1474,17 @@ function GoogleDriveTab() {
                   {status.rootFolderName ? 'Trocar pasta' : 'Escolher pasta'}
                 </button>
               </div>
+
+              {status.rootFolderName && (
+                <div className="border-t border-af-border pt-4">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Anexos do WhatsApp</p>
+                  <p className="text-xs text-slate-400 mb-2">
+                    Fotos e documentos recebidos/enviados agora sobem direto para o Drive (não ficam guardados no banco).
+                    Use o botão abaixo uma vez para arquivar os que já estavam salvos de antes.
+                  </p>
+                  <ArchiveOldAttachmentsButton />
+                </div>
+              )}
             </>
           )}
         </div>

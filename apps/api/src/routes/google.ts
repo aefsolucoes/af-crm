@@ -2,7 +2,7 @@ import { Router, Response, Request } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import {
   getAuthUrl, handleOAuthCallback, getGoogleStatus, disconnectGoogle,
-  listFolders, setRootFolder, createFolder, isGoogleConfigured,
+  listFolders, setRootFolder, createFolder, isGoogleConfigured, bulkArchiveOldAttachments,
 } from '../services/google.service';
 
 const router = Router();
@@ -102,6 +102,17 @@ router.post('/test-folder', async (req: AuthRequest, res: Response) => {
     res.json(folder);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao criar pasta' });
+  }
+});
+
+// Limpeza única: sobe para o Drive os anexos antigos que ainda têm bytes no
+// banco (de antes do auto-upload existir), liberando espaço do Postgres.
+router.post('/archive-old-attachments', async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await bulkArchiveOldAttachments(req.user!.accountId);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao arquivar anexos antigos' });
   }
 });
 
