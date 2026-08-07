@@ -115,10 +115,12 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
     });
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  // Cria o lead com o que já foi preenchido. Usado tanto pelo botão "Criar"
+  // quanto ao clicar fora do modal com o formulário preenchido (silent=true
+  // não mostra o aviso de campo obrigatório — só fecha sem criar nada).
+  async function doCreate(silent = false): Promise<void> {
     if (!form.participante_1.trim()) {
-      toast('Informe o nome do Participante 1', 'error');
+      if (!silent) toast('Informe o nome do Participante 1', 'error');
       return;
     }
     setLoading(true);
@@ -172,11 +174,23 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
     }
   }
 
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    doCreate();
+  }
+
+  // Clicar fora do modal: se já tem o nome preenchido, cria o lead com o que
+  // foi digitado (em vez de descartar); se está vazio, só fecha normalmente.
+  function handleBackdropClick() {
+    if (form.participante_1.trim()) doCreate(true);
+    else onClose();
+  }
+
   const labelCls = 'text-sm font-medium text-slate-700 mb-1 block';
   const selectCls = 'w-full px-3 py-2 text-sm border border-af-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-af-accent';
 
   return (
-    <Modal open={open} onClose={onClose} title="Novo Lead">
+    <Modal open={open} onClose={onClose} onBackdropClick={handleBackdropClick} title="Novo Lead">
       <form onSubmit={handleSubmit} className="space-y-5 max-h-[75vh] overflow-y-auto pr-1 scrollbar-thin">
 
         {/* ── Participante 1 ── */}
