@@ -6,8 +6,8 @@ import { toast } from '@/components/ui/toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import api from '@/lib/api';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
-import { Transaction, TransactionType } from '@/types';
-import { Plus, TrendingUp, TrendingDown, Wallet, Trash2, X, PiggyBank, Pencil } from 'lucide-react';
+import { Transaction, TransactionType, CommissionSuggestion } from '@/types';
+import { Plus, TrendingUp, TrendingDown, Wallet, Trash2, X, PiggyBank, Pencil, Percent, Check } from 'lucide-react';
 
 interface FinanceResponse {
   transactions: Transaction[];
@@ -34,6 +34,81 @@ const TYPE_SIGN: Record<TransactionType, string> = { INCOME: '+', EXPENSE: '-', 
 async function fetchFinance(from: string, to: string): Promise<FinanceResponse> {
   const { data } = await api.get(`/api/finance?from=${from}&to=${to}`);
   return data;
+}
+
+async function fetchCommissionSuggestions(): Promise<CommissionSuggestion[]> {
+  const { data } = await api.get('/api/finance/commission-suggestions');
+  return data;
+}
+
+/** Linha de uma sugestão de comissão: mostra a base de cálculo, deixa o valor
+ *  editável, e confirma (vira lançamento de Receita) ou descarta. */
+function CommissionSuggestionRow({ s, onResolved }: { s: CommissionSuggestion; onResolved: () => void }) {
+  const [amount, setAmount] = useState(String(s.suggestedAmount).replace('.', ','));
+  const [busy, setBusy] = useState(false);
+
+  async function confirm() {
+    const value = Number(amount.replace(/\./g, '').replace(',', '.'));
+    if (!value || value <= 0) {
+      toast('Informe um valor válido', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post(`/api/finance/commission-suggestions/${s.id}/confirm`, { amount: value });
+      toast('Comissão lançada!');
+      onResolved();
+    } catch {
+      toast('Erro ao confirmar comissão', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function dismiss() {
+    setBusy(true);
+    try {
+      await api.post(`/api/finance/commission-suggestions/${s.id}/dismiss`);
+      onResolved();
+    } catch {
+      toast('Erro ao descartar sugestão', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200">
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-slate-800 truncate">{s.leadName}</p>
+        <p className="text-xs text-slate-500">1% de {formatCurrency(s.baseAmount)} (valor de crédito)</p>
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="relative">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-400">R$</span>
+          <input
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="w-28 text-sm pl-8 pr-2 py-1.5 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent"
+          />
+        </div>
+        <button
+          onClick={confirm}
+          disabled={busy}
+          className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 disabled:opacity-50"
+        >
+          <Check size={13} /> Confirmar
+        </button>
+        <button
+          onClick={dismiss}
+          disabled={busy}
+          className="text-xs font-medium px-2.5 py-1.5 text-slate-500 rounded-lg hover:bg-slate-100 disabled:opacity-50"
+        >
+          Descartar
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function defaultFrom() {
@@ -65,6 +140,15 @@ export default function FinanceiroPage() {
     queryKey: ['finance', from, to],
     queryFn: () => fetchFinance(from, to),
   });
+  const { data: suggestions } = useQuery({
+    queryKey: ['commission-suggestions'],
+    queryFn: fetchCommissionSuggestions,
+  });
+
+  function onSuggestionResolved() {
+    queryClient.invalidateQueries({ queryKey: ['commission-suggestions'] });
+    queryClient.invalidateQueries({ queryKey: ['finance'] });
+  }
 
   function resetForm() {
     setFormDescription('');
@@ -225,6 +309,21 @@ export default function FinanceiroPage() {
             </>
           )}
         </div>
+
+        {/* Comissões sugeridas — geradas ao marcar um lead como Ganho (1% do valor de crédito) */}
+        {!!suggestions?.length && (
+          <div className="bg-white rounded-2xl border border-af-border shadow-sm p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
+              <Percent size={16} className="text-amber-500" /> Comissões sugeridas
+              <span className="text-xs font-normal text-slate-400">({suggestions.length})</span>
+            </h3>
+            <div className="space-y-2">
+              {suggestions.map((s) => (
+                <CommissionSuggestionRow key={s.id} s={s} onResolved={onSuggestionResolved} />
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Gráfico: onde mais gastou no período (por descrição) */}
         {!isLoading && topExpenses.length > 0 && (

@@ -396,6 +396,31 @@ model Transaction {
   updatedAt   DateTime        @updatedAt
 }
 
+enum CommissionSuggestionStatus {
+  PENDING
+  CONFIRMED
+  DISMISSED
+}
+
+// Sugestão de comissão (ex: 1% do valor de crédito) gerada quando um lead é
+// marcado como Ganho. Fica pendente até o usuário revisar/ajustar o valor e
+// confirmar no Financeiro — só então vira uma Transaction de verdade. Usa
+// leadId/accountId como campos simples (sem @relation), no mesmo padrão já
+// usado em MessageAttachment.leadId, para não alterar os modelos Lead/Account.
+model CommissionSuggestion {
+  id              String                      @id @default(cuid())
+  accountId       String
+  leadId          String
+  baseAmount      Float                       // valor do crédito usado como base do cálculo
+  suggestedAmount Float                       // baseAmount * 1% — o valor sugerido (editável ao confirmar)
+  status          CommissionSuggestionStatus  @default(PENDING)
+  transactionId   String?                     // preenchido quando confirmada
+  createdAt       DateTime                    @default(now())
+  resolvedAt      DateTime?
+
+  @@index([accountId, status])
+}
+
 // Histórico do chat do Assistente AF CRM, por colaborador. messages guarda o
 // array de { role, content } da conversa. Cada colaborador tem as suas.
 model AssistantConversation {

@@ -121,6 +121,18 @@ export interface Transaction {
   createdAt: string;
 }
 
+export type CommissionSuggestionStatus = 'PENDING' | 'CONFIRMED' | 'DISMISSED';
+
+export interface CommissionSuggestion {
+  id: string;
+  leadId: string;
+  leadName: string;
+  baseAmount: number;
+  suggestedAmount: number;
+  status: CommissionSuggestionStatus;
+  createdAt: string;
+}
+
 export interface Note {
   id: string;
   content: string;

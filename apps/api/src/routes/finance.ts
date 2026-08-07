@@ -156,4 +156,79 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ── Sugestões de comissão ────────────────────────────────────────────────────
+// Geradas sozinhas quando um lead é marcado como Ganho (1% do valor de
+// crédito) — ver leads.ts. Ficam pendentes até o usuário revisar/ajustar o
+// valor aqui no Financeiro e confirmar; só então viram uma Transaction real.
+
+// GET /api/finance/commission-suggestions — sugestões pendentes
+router.get('/commission-suggestions', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const suggestions = await prisma.commissionSuggestion.findMany({
+      where: { accountId, status: 'PENDING' },
+      orderBy: { createdAt: 'desc' },
+    });
+    const leadIds = [...new Set(suggestions.map((s) => s.leadId))];
+    const leads = await prisma.lead.findMany({ where: { id: { in: leadIds } }, select: { id: true, name: true } });
+    const leadNames = new Map(leads.map((l) => [l.id, l.name]));
+    res.json(suggestions.map((s) => ({ ...s, leadName: leadNames.get(s.leadId) || 'Lead removido' })));
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar sugestões de comissão' });
+  }
+});
+
+// POST /api/finance/commission-suggestions/:id/confirm — vira um lançamento (Receita) de verdade
+router.post('/commission-suggestions/:id/confirm', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const suggestion = await prisma.commissionSuggestion.findFirst({ where: { id: req.params.id, accountId, status: 'PENDING' } });
+    if (!suggestion) return res.status(404).json({ error: 'Sugestão não encontrada (ou já resolvida)' });
+
+    const { amount, description } = req.body as { amount?: number; description?: string };
+    const finalAmount = typeof amount === 'number' && amount > 0 ? amount : suggestion.suggestedAmount;
+    if (finalAmount <= 0) return res.status(400).json({ error: 'Valor inválido' });
+
+    const lead = await prisma.lead.findUnique({ where: { id: suggestion.leadId }, select: { name: true } });
+    const finalDescription = description?.trim() || `Comissão — ${lead?.name || 'cliente'}`;
+
+    const transaction = await prisma.transaction.create({
+      data: {
+        description: finalDescription,
+        amount: finalAmount,
+        type: 'INCOME',
+        date: new Date(),
+        accountId,
+        userId: req.user!.id,
+      },
+      include: { user: { select: { id: true, name: true } } },
+    });
+
+    await prisma.commissionSuggestion.update({
+      where: { id: suggestion.id },
+      data: { status: 'CONFIRMED', transactionId: transaction.id, resolvedAt: new Date() },
+    });
+
+    res.status(201).json(transaction);
+  } catch {
+    res.status(500).json({ error: 'Erro ao confirmar comissão' });
+  }
+});
+
+// POST /api/finance/commission-suggestions/:id/dismiss — descarta a sugestão
+router.post('/commission-suggestions/:id/dismiss', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const suggestion = await prisma.commissionSuggestion.findFirst({ where: { id: req.params.id, accountId, status: 'PENDING' } });
+    if (!suggestion) return res.status(404).json({ error: 'Sugestão não encontrada (ou já resolvida)' });
+    await prisma.commissionSuggestion.update({
+      where: { id: suggestion.id },
+      data: { status: 'DISMISSED', resolvedAt: new Date() },
+    });
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ error: 'Erro ao descartar sugestão' });
+  }
+});
+
 export default router;

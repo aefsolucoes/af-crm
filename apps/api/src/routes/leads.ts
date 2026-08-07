@@ -35,6 +35,21 @@ function currentMonthNamePT(): string {
   return MONTH_NAMES_PT[idx];
 }
 
+/** Converte um valor de campo do cadastro (customFields) para número. Aceita
+ *  tanto o formato "puro" já normalizado pelo front ("500000") quanto, por
+ *  segurança, um formato BR digitado direto ("500.000,00"). */
+function parseFieldNumber(raw: unknown): number {
+  if (typeof raw === 'number') return raw;
+  const s = String(raw ?? '').trim();
+  if (!s) return 0;
+  const cleaned = s.replace(/[^\d,.-]/g, '');
+  if (cleaned.includes(',') && cleaned.includes('.')) {
+    return parseFloat(cleaned.replace(/\./g, '').replace(',', '.')) || 0;
+  }
+  if (cleaned.includes(',')) return parseFloat(cleaned.replace(',', '.')) || 0;
+  return parseFloat(cleaned) || 0;
+}
+
 /** Funil "Concluído" — para onde vão os leads marcados como Ganho, um estágio
  *  por mês do ano (para saber quantos fecharam em cada mês). Cria sozinho na
  *  primeira vez que precisar, sem exigir configuração manual antes. */
@@ -260,6 +275,30 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
             const io = (req as any).app.get('io');
             if (io) io.to(`account_${req.user!.accountId}`).emit('lead_moved', { lead: movedLead });
             console.log(`[Auto-migração] Lead "${movedLead.name}" marcado como Ganho → funil Concluído (${targetStage.name})`);
+          }
+
+          // ── Sugestão de comissão: 1% do valor de crédito, para revisar no Financeiro ──
+          try {
+            const cf = (before?.customFields as Record<string, unknown>) || {};
+            const baseAmount = parseFieldNumber(cf.valor_credito);
+            if (baseAmount > 0) {
+              const already = await prisma.commissionSuggestion.findFirst({
+                where: { leadId: req.params.id, status: { in: ['PENDING', 'CONFIRMED'] } },
+              });
+              if (!already) {
+                await prisma.commissionSuggestion.create({
+                  data: {
+                    accountId: req.user!.accountId,
+                    leadId: req.params.id,
+                    baseAmount,
+                    suggestedAmount: Math.round(baseAmount * 0.01 * 100) / 100,
+                  },
+                });
+                console.log(`[Comissão] Sugestão criada para lead ${req.params.id}: 1% de ${baseAmount}`);
+              }
+            }
+          } catch (err) {
+            console.error('[Comissão] Falha ao criar sugestão:', (err as any)?.message);
           }
         }
       }
