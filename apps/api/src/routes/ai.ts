@@ -95,7 +95,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - list_whatsapp_numbers: lista os números de WhatsApp conectados (id + apelido). Use antes de enviar quando houver MAIS DE UM número conectado e o colaborador não tiver dito de qual enviar: mostre os apelidos e PERGUNTE qual usar. Se só houver um conectado, use-o sem perguntar. Passe o id escolhido em fromNumberId ao enviar.
 - list_pipelines: lista os funis e seus estágios (com ids). Use para achar o stageId quando o colaborador pedir para criar o card num funil/estágio específico (ex: "no funil Follow-up, estágio Remarketing números"). Depois passe esse stageId em send_whatsapp_to_number. Você TEM, sim, como criar o card num estágio específico — nunca diga que não consegue.
 - move_lead_to_stage: move um card JÁ EXISTENTE para outro funil/estágio. Use quando pedirem para mover/colocar um card em outro lugar (ex: "move o card do João para Remarketing"). Antes, use find_lead (leadId) e list_pipelines (stageId). Você CONSEGUE mover cards de funil e de estágio — nunca diga que não consegue.
-- salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados.
+- salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
@@ -109,6 +109,19 @@ Responda em português, de forma curta, direta e prática, como se estivesse exp
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+}
+
+// Chave fixa do campo "Pasta no Drive" (tipo LINK) no cadastro do lead. O
+// assistente cria essa FieldDefinition sozinho na primeira vez que precisa
+// salvar um link de pasta — não exige nenhuma configuração manual antes.
+const DRIVE_LINK_FIELD_KEY = 'link_pasta_drive';
+
+async function ensureDriveLinkField(accountId: string): Promise<void> {
+  const existing = await prisma.fieldDefinition.findFirst({ where: { accountId, key: DRIVE_LINK_FIELD_KEY } });
+  if (existing) return;
+  await prisma.fieldDefinition.create({
+    data: { accountId, name: 'Pasta no Drive', key: DRIVE_LINK_FIELD_KEY, type: 'LINK', tab: 'Principal', order: 999 },
+  }).catch((err) => console.error('[AI] Falha ao criar campo "Pasta no Drive":', (err as any)?.message)); // não é crítico: o link ainda é salvo em customFields, só o rótulo bonito no painel que pode faltar
 }
 
 const AGENT_TOOLS = [
@@ -483,6 +496,7 @@ async function executeAgentTool(
     if (input.fields && typeof input.fields === 'object') {
       const cf = (lead.customFields as Record<string, unknown>) || {};
       data.customFields = { ...cf, ...(input.fields as Record<string, unknown>) };
+      if (DRIVE_LINK_FIELD_KEY in (input.fields as Record<string, unknown>)) await ensureDriveLinkField(accountId);
     }
     const updated = await prisma.lead.update({ where: { id: lead.id }, data });
     if (io) io.to(`account_${accountId}`).emit('lead_moved', { lead: updated });
@@ -640,6 +654,17 @@ async function executeAgentTool(
     try {
       const res = await organizeLeadDocsToDrive({ accountId, leadId, clientFolderName: nomePasta, destinationFolderName: pastaDestino || undefined });
       if (res.noRoot) return { success: false, error: 'Pasta-raiz dos clientes não definida. Configure em Configurações → Google Drive.' };
+
+      // Salva o link da pasta no card do cliente (campo "Pasta no Drive"), criando
+      // o campo sozinho na primeira vez — não bloqueia a resposta se falhar.
+      try {
+        await ensureDriveLinkField(accountId);
+        const cf = (lead.customFields as Record<string, unknown>) || {};
+        await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, [DRIVE_LINK_FIELD_KEY]: res.folderUrl } } });
+      } catch (err) {
+        console.error('[AI] Falha ao salvar o link da pasta no card:', (err as any)?.message);
+      }
+
       return {
         success: true,
         pasta: res.folderName,
@@ -647,6 +672,7 @@ async function executeAgentTool(
         link: res.folderUrl,
         enviados: res.uploaded,
         jaEstavamNaPasta: res.alreadyThere,
+        linkSalvoNoCard: true,
       };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao salvar no Drive' };
