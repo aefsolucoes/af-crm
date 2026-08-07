@@ -400,38 +400,44 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
         </div>
       </div>
 
-      {/* Seletor: por qual WhatsApp enviar (QR Code ou API oficial) */}
-      <div className="relative z-10 flex items-center gap-2 px-4 py-2 bg-[#202c33] border-b border-[#222e35]">
-        <span className="text-xs text-[#8696a0] font-medium">Enviar por:</span>
-        <button
-          onClick={() => setVia('qr')}
-          disabled={!qrConnected}
-          title={qrConnected ? 'WhatsApp conectado via QR Code' : 'QR Code desconectado — conecte em Configurações'}
-          className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed',
-            effectiveVia === 'qr' && qrConnected
-              ? 'bg-[#00a884] text-[#111b21] shadow-sm'
-              : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c]'
-          )}
-        >
-          📱 WhatsApp QR
-          <span className={cn('w-1.5 h-1.5 rounded-full', qrConnected ? 'bg-green-400' : 'bg-red-400')} />
-        </button>
+      {/* Seletor: por qual WhatsApp enviar — lista única e discreta (cada número
+          pelo apelido, mais a API oficial), sem separar em dois níveis */}
+      <div className="relative z-10 flex items-center gap-1 px-4 py-2 bg-[#202c33] border-b border-[#222e35] flex-wrap">
+        <span className="text-xs text-[#8696a0] font-medium mr-1">Enviar por:</span>
+
+        {(qrNumbers || []).map((n) => {
+          const isConn = n.status === 'connected';
+          const selected = effectiveVia === 'qr' && activeNumberId === n.id;
+          return (
+            <button
+              key={n.id}
+              onClick={() => { if (isConn) { setVia('qr'); setFromNumberId(n.id); } }}
+              disabled={!isConn}
+              title={isConn ? `Enviar por ${n.label}` : `${n.label} desconectado — reconecte em Configurações → QR Code`}
+              className={cn(
+                'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+                selected ? 'bg-[#2a3942] text-[#e9edef] font-medium' : 'text-[#8696a0] hover:text-[#e9edef]'
+              )}
+            >
+              <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', isConn ? 'bg-green-400' : 'bg-red-400')} />
+              {n.label}
+            </button>
+          );
+        })}
+
         <button
           onClick={() => setVia('api')}
           title={apiActive ? 'API oficial da Meta ativa' : 'API oficial não configurada/inativa'}
           className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all',
-            effectiveVia === 'api' || !qrConnected
-              ? (effectiveVia === 'api' ? 'bg-[#00a884] text-[#111b21] shadow-sm' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c]')
-              : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c]'
+            'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors',
+            effectiveVia === 'api' ? 'bg-[#2a3942] text-[#e9edef] font-medium' : 'text-[#8696a0] hover:text-[#e9edef]'
           )}
         >
-          🌐 API Oficial
-          <span className={cn('w-1.5 h-1.5 rounded-full', apiActive ? 'bg-green-400' : 'bg-red-400')} />
+          <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', apiActive ? 'bg-green-400' : 'bg-red-400')} />
+          API Oficial
         </button>
 
-        {/* Janela de 24h da API oficial — só um aviso discreto, não é um botão */}
+        {/* Janela de 24h da API oficial — aviso discreto, não é um botão */}
         {windowOpen !== null && (
           <>
             <span className="h-4 w-px bg-[#2a3942]" />
@@ -451,37 +457,6 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                   })()
                 : 'Janela fechada'}
             </span>
-          </>
-        )}
-        )}
-
-        {/* Com 2+ números cadastrados, escolhe por qual WhatsApp esta mensagem sai
-            (mesma conversa, sem duplicar — um cliente pode falar pelos dois números
-            no mesmo card). Os desconectados aparecem em cinza. */}
-        {effectiveVia === 'qr' && (qrNumbers?.length ?? 0) >= 2 && (
-          <>
-            <span className="mx-1 h-4 w-px bg-[#2a3942]" />
-            <span className="text-xs text-[#8696a0]">Número:</span>
-            {(qrNumbers || []).map(n => {
-              const isConn = n.status === 'connected';
-              return (
-                <button
-                  key={n.id}
-                  onClick={() => isConn && setFromNumberId(n.id)}
-                  disabled={!isConn}
-                  title={isConn ? `Enviar por ${n.label}` : `${n.label} está desconectado — reconecte em Configurações → QR Code`}
-                  className={cn(
-                    'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed',
-                    isConn && activeNumberId === n.id
-                      ? 'bg-[#00a884] text-[#111b21] shadow-sm'
-                      : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c]'
-                  )}
-                >
-                  {n.label}
-                  <span className={cn('w-1.5 h-1.5 rounded-full', isConn ? 'bg-green-400' : 'bg-red-400')} />
-                </button>
-              );
-            })}
           </>
         )}
       </div>
