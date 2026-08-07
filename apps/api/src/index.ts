@@ -23,6 +23,7 @@ import knowledgeRoutes from './routes/knowledge';
 import financeRoutes from './routes/finance';
 import googleRoutes from './routes/google';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
+import { archiveOldAttachmentsAllAccounts } from './services/google.service';
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -172,4 +173,16 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 API AF CRM rodando em http://localhost:${PORT}`);
   // Restore WhatsApp QR sessions after restart
   restoreActiveSessions().catch(console.error);
+
+  // Válvula de segurança do disco: arquiva no Drive só os anexos com 30+ dias,
+  // numa pasta técnica separada — nunca mexe na organização manual do usuário.
+  // Primeira rodada 10min após o boot (não compete com a restauração de sessões
+  // acima); depois repete a cada 6h. Nunca derruba o processo se falhar.
+  const SIX_HOURS = 6 * 60 * 60 * 1000;
+  setTimeout(() => {
+    archiveOldAttachmentsAllAccounts().catch((err) => console.error('[Drive] Arquivamento automático (boot):', err?.message));
+    setInterval(() => {
+      archiveOldAttachmentsAllAccounts().catch((err) => console.error('[Drive] Arquivamento automático:', err?.message));
+    }, SIX_HOURS);
+  }, 10 * 60 * 1000);
 });

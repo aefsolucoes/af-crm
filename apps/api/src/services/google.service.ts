@@ -427,3 +427,68 @@ export async function bulkArchiveOldAttachments(accountId: string): Promise<{ ar
 
   return { archived, errors, leads: byLead.size };
 }
+
+/**
+ * Arquivamento automático de anexos ANTIGOS (padrão: 30+ dias) — roda sozinho em
+ * segundo plano para o Postgres não encher de novo (ver incidente 2026-08-05),
+ * mas sem mexer nas pastas organizadas pelo usuário: tudo cai numa pasta técnica
+ * própria ("WhatsApp — arquivo automático"), separada da estrutura de clientes.
+ * Anexos recentes ficam no CRM (com miniatura) até o usuário organizar manualmente.
+ */
+export async function archiveOldAttachmentsAutomatic(accountId: string, olderThanDays = 30): Promise<{ archived: number; errors: number }> {
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  if (!conn?.refreshToken || !conn.rootFolderId) return { archived: 0, errors: 0 };
+
+  const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+  const attachments = await prisma.messageAttachment.findMany({
+    where: { driveFileId: null, NOT: { data: null }, createdAt: { lt: cutoff } },
+    orderBy: { createdAt: 'asc' },
+    take: 200, // por execução — evita rodadas gigantes de uma vez
+  });
+  if (!attachments.length) return { archived: 0, errors: 0 };
+
+  const leadIds = [...new Set(attachments.map(a => a.leadId))];
+  const leads = await prisma.lead.findMany({ where: { id: { in: leadIds } }, select: { id: true, name: true } });
+  const leadNames = new Map(leads.map(l => [l.id, l.name]));
+
+  const techFolder = await createFolder(accountId, 'WhatsApp — arquivo automático', conn.rootFolderId);
+
+  let archived = 0;
+  let errors = 0;
+  for (const att of attachments) {
+    try {
+      const leadName = (leadNames.get(att.leadId) || 'Sem nome').trim() || 'Sem nome';
+      const up = await uploadFile(accountId, {
+        name: `${leadName} — ${att.fileName}`,
+        mimeType: att.mimeType,
+        data: Buffer.from(att.data!),
+        parentId: techFolder.id,
+      });
+      await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
+      archived++;
+    } catch (err) {
+      errors++;
+      console.error('[Drive] Arquivamento automático falhou:', (err as any)?.message);
+    }
+  }
+
+  return { archived, errors };
+}
+
+/** Roda o arquivamento automático (30+ dias) para TODAS as contas com Drive conectado. */
+export async function archiveOldAttachmentsAllAccounts(): Promise<void> {
+  const conns = await prisma.googleConnection.findMany({
+    where: { rootFolderId: { not: null } },
+    select: { accountId: true },
+  });
+  for (const conn of conns) {
+    try {
+      const result = await archiveOldAttachmentsAutomatic(conn.accountId);
+      if (result.archived > 0 || result.errors > 0) {
+        console.log(`[Drive] Arquivamento automático accountId=${conn.accountId}: ${result.archived} arquivados, ${result.errors} erros`);
+      }
+    } catch (err) {
+      console.error(`[Drive] Arquivamento automático falhou para accountId=${conn.accountId}:`, (err as any)?.message);
+    }
+  }
+}
