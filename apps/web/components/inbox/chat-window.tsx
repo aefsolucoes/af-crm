@@ -440,10 +440,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                     style={{ backgroundColor: isOut ? '#005c4b' : '#202c33' }}
                   >
                     {isOut && (() => {
-                      // "via {apelido do número} · {quem enviou}". O apelido vem do
-                      // número que mandou (ou o da conversa); o nome só existe nas
-                      // mensagens enviadas pela Inbox do CRM (não as mandadas pelo celular).
-                      const numLabel = numberLabels[msg.whatsappNumberId || lastRouted || ''];
+                      // "via {apelido do número} · {quem enviou}". Mensagens da API
+                      // Oficial (id começa com "wamid") não têm whatsappNumberId — não
+                      // dá pra cair no "último número QR usado" (isso rotulava errado,
+                      // como se tivesse saído pelo QR). O apelido só cai no "último
+                      // número" quando a MESMA mensagem realmente não tem essa info.
+                      const isApiMsg = typeof msg.externalId === 'string' && msg.externalId.startsWith('wamid');
+                      const numLabel = msg.whatsappNumberId
+                        ? numberLabels[msg.whatsappNumberId]
+                        : isApiMsg
+                        ? 'API Oficial'
+                        : numberLabels[lastRouted || ''];
                       const sender = (msg as any).sentBy?.name as string | undefined;
                       if (!numLabel && !sender) return null;
                       return (
