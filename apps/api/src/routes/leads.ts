@@ -24,6 +24,38 @@ router.use(async (req: AuthRequest, res: Response, next) => {
   }
 });
 
+const MONTH_NAMES_PT = [
+  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
+];
+
+/** Nome do mês atual no fuso de Brasília, independente do fuso do servidor. */
+function currentMonthNamePT(): string {
+  const idx = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', month: 'numeric' }).format(new Date()), 10) - 1;
+  return MONTH_NAMES_PT[idx];
+}
+
+/** Funil "Concluído" — para onde vão os leads marcados como Ganho, um estágio
+ *  por mês do ano (para saber quantos fecharam em cada mês). Cria sozinho na
+ *  primeira vez que precisar, sem exigir configuração manual antes. */
+async function getOrCreateConcluidoPipeline(accountId: string) {
+  let pipeline = await prisma.pipeline.findFirst({
+    where: { accountId, name: 'Concluído' },
+    include: { stages: { orderBy: { order: 'asc' } } },
+  });
+  if (!pipeline) {
+    pipeline = await prisma.pipeline.create({
+      data: {
+        name: 'Concluído',
+        accountId,
+        stages: { create: MONTH_NAMES_PT.map((name, i) => ({ name, order: i + 1, color: '#10b981' })) },
+      },
+      include: { stages: { orderBy: { order: 'asc' } } },
+    });
+  }
+  return pipeline;
+}
+
 const createLeadSchema = z.object({
   name: z.string().min(1),
   value: z.number().optional(),
@@ -205,14 +237,12 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
         await auditNote(req.params.id, req.user!.id,
           `Status alterado para "${statusLabels[req.body.status] || req.body.status}" por ${userName}`);
 
-        // ── Auto-migração: lead marcado como Ganho → funil "Concluído" ──
+        // ── Auto-migração: lead marcado como Ganho → funil "Concluído" (mês atual) ──
         if (req.body.status === 'WON') {
-          const concluido = await prisma.pipeline.findFirst({
-            where: { accountId: req.user!.accountId, name: 'Concluído' },
-            include: { stages: { orderBy: { order: 'asc' } } },
-          });
-          const targetStage = concluido?.stages[0];
-          if (concluido && targetStage) {
+          const concluido = await getOrCreateConcluidoPipeline(req.user!.accountId);
+          const mesAtual = currentMonthNamePT();
+          const targetStage = concluido.stages.find((s) => s.name === mesAtual) || concluido.stages[0];
+          if (targetStage) {
             const movedLead = await prisma.lead.update({
               where: { id: req.params.id },
               data: {
@@ -220,7 +250,7 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
                 stageId: targetStage.id,
                 notes: {
                   create: {
-                    content: `Lead migrado automaticamente para o funil "Concluído" ao ser marcado como Ganho — por ${userName}.`,
+                    content: `Lead migrado automaticamente para o funil "Concluído" (${targetStage.name}) ao ser marcado como Ganho — por ${userName}.`,
                     type: 'STAGE_CHANGE',
                     userId: req.user!.id,
                   },
@@ -229,7 +259,7 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
             });
             const io = (req as any).app.get('io');
             if (io) io.to(`account_${req.user!.accountId}`).emit('lead_moved', { lead: movedLead });
-            console.log(`[Auto-migração] Lead "${movedLead.name}" marcado como Ganho → funil Concluído`);
+            console.log(`[Auto-migração] Lead "${movedLead.name}" marcado como Ganho → funil Concluído (${targetStage.name})`);
           }
         }
       }
