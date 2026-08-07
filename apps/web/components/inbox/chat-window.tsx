@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText } from 'lucide-react';
+import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -56,6 +56,40 @@ const AI_BUTTONS: { mode: AIMode; label: string; emoji: string }[] = [
 
 type WhatsAppVia = 'qr' | 'api';
 
+// ── Templates aprovados pela Meta (janela de 24h) ────────────────────────────
+interface MetaTemplate {
+  name: string;
+  status: string;
+  category: string;
+  language: string;
+  components: { type: string; text?: string }[];
+}
+
+/** Números de variáveis {{1}}, {{2}}... usados no corpo do template (ordenados, sem repetir). */
+function extractMetaVariables(text: string): number[] {
+  const matches = text.match(/\{\{(\d+)\}\}/g) || [];
+  const nums = [...new Set(matches.map((m) => parseInt(m.replace(/\D/g, ''), 10)))];
+  return nums.sort((a, b) => a - b);
+}
+
+function fillMetaTemplate(text: string, vars: Record<number, string>): string {
+  return text.replace(/\{\{(\d+)\}\}/g, (_, n) => vars[parseInt(n, 10)] || `{{${n}}}`);
+}
+
+const JANELA_24H_MS = 24 * 60 * 60 * 1000;
+
+/** Última mensagem RECEBIDA pelo canal da API oficial (id começa com "wamid") —
+ *  é ela que abre/reabre a janela de 24h de atendimento gratuito da Meta. */
+function lastInboundApiMessage(messages: Message[]): Message | null {
+  let latest: Message | null = null;
+  for (const m of messages) {
+    if (m.direction !== 'INBOUND') continue;
+    if (!m.externalId?.startsWith('wamid')) continue;
+    if (!latest || new Date(m.createdAt).getTime() > new Date(latest.createdAt).getTime()) latest = m;
+  }
+  return latest;
+}
+
 export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessage, onClose }: ChatWindowProps) {
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
@@ -82,6 +116,13 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   // Canal efetivo: escolha manual, senão QR se conectado, senão API
   const effectiveVia: WhatsAppVia = via ?? (qrConnected ? 'qr' : 'api');
 
+  // Janela de 24h da API oficial: conta a partir da última mensagem que o
+  // CLIENTE mandou por lá. Passado isso, só dá para responder com template.
+  const lastInbound = lastInboundApiMessage(messages);
+  const windowDeadline = lastInbound ? new Date(lastInbound.createdAt).getTime() + JANELA_24H_MS : null;
+  const windowRemainingMs = windowDeadline ? windowDeadline - Date.now() : null;
+  const windowOpen = windowRemainingMs === null ? null : windowRemainingMs > 0;
+
   // Números QR conectados + rótulos (id → apelido) para o seletor e p/ marcar
   // cada mensagem enviada com o número que a mandou.
   const connectedQr = (qrNumbers || []).filter(n => n.status === 'connected');
@@ -100,6 +141,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   const [showAI, setShowAI] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [metaTemplates, setMetaTemplates] = useState<MetaTemplate[] | null>(null);
+  const [pendingMetaTemplate, setPendingMetaTemplate] = useState<MetaTemplate | null>(null);
+  const [metaTemplateVars, setMetaTemplateVars] = useState<Record<number, string>>({});
+  const [sendingTemplate, setSendingTemplate] = useState(false);
+
+  // Só para o contador de 24h "tickar" (recalcula a cada minuto).
+  const [, setNowTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setNowTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // ESC fecha a conversa (como no WhatsApp). Se houver um popup aberto
   // (templates/IA), o ESC fecha o popup primeiro.
@@ -212,6 +264,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
     setTemplates(getTemplates());
     setShowTemplates(v => !v);
     setShowAI(false);
+    setPendingMetaTemplate(null);
+    if (metaTemplates === null) {
+      api.get('/api/settings/whatsapp/templates')
+        .then(({ data }) => setMetaTemplates((data.templates || []).filter((t: MetaTemplate) => t.status === 'APPROVED')))
+        .catch(() => setMetaTemplates([])); // sem WABA/config ainda — mostra a seção vazia, sem quebrar o painel
+    }
   }
 
   function handleUseTemplate(template: MessageTemplate) {
@@ -220,6 +278,40 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
     setContent(filled);
     setShowTemplates(false);
     inputRef.current?.focus();
+  }
+
+  // ── Templates aprovados pela Meta ──────────────────────────────────────────
+  function handleSelectMetaTemplate(template: MetaTemplate) {
+    const body = template.components.find((c) => c.type === 'BODY')?.text || '';
+    const vars = extractMetaVariables(body);
+    setPendingMetaTemplate(template);
+    setMetaTemplateVars(Object.fromEntries(vars.map((n) => [n, ''])));
+  }
+
+  async function handleSendMetaTemplate() {
+    if (!pendingMetaTemplate) return;
+    const body = pendingMetaTemplate.components.find((c) => c.type === 'BODY')?.text || '';
+    const varNums = extractMetaVariables(body);
+    const bodyParams = varNums.map((n) => metaTemplateVars[n] || '');
+    const previewText = fillMetaTemplate(body, metaTemplateVars);
+    setSendingTemplate(true);
+    try {
+      const { data } = await api.post('/api/messages/send-template', {
+        leadId,
+        templateName: pendingMetaTemplate.name,
+        language: pendingMetaTemplate.language,
+        bodyParams,
+        previewText,
+      });
+      onNewMessage(data);
+      setPendingMetaTemplate(null);
+      setShowTemplates(false);
+      toast('Template enviado!');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao enviar o template', 'error');
+    } finally {
+      setSendingTemplate(false);
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -338,6 +430,26 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           🌐 API Oficial
           <span className={cn('w-1.5 h-1.5 rounded-full', apiActive ? 'bg-green-400' : 'bg-red-400')} />
         </button>
+
+        {/* Janela de 24h da API oficial — quanto falta até só dar para responder com template */}
+        {windowOpen !== null && (
+          <span
+            title={windowOpen ? 'Tempo restante para responder com texto livre pela API oficial' : 'Fora da janela de 24h — só é possível responder com um template aprovado'}
+            className={cn(
+              'flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium',
+              windowOpen ? 'bg-[#2a3942] text-[#8696a0]' : 'bg-amber-500/15 text-amber-400'
+            )}
+          >
+            <Clock size={11} />
+            {windowOpen
+              ? (() => {
+                  const h = Math.floor((windowRemainingMs as number) / 3_600_000);
+                  const m = Math.floor(((windowRemainingMs as number) % 3_600_000) / 60_000);
+                  return `${h}h ${m}min restantes`;
+                })()
+              : 'Janela fechada — use um template'}
+          </span>
+        )}
 
         {/* Com 2+ números cadastrados, escolhe por qual WhatsApp esta mensagem sai
             (mesma conversa, sem duplicar — um cliente pode falar pelos dois números
@@ -496,31 +608,87 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
 
       {/* Templates toolbar */}
       {showTemplates && (
-        <div className="relative z-10 max-h-56 overflow-y-auto bg-[#202c33] border-t border-[#222e35] scrollbar-thin">
-          {templates.length === 0 ? (
-            <div className="px-4 py-3 text-xs text-[#8696a0]">Nenhum template cadastrado. Crie em Templates.</div>
-          ) : (
-            <div className="p-2 space-y-1">
-              {templates.map((t) => {
-                const cm = CATEGORY_META[t.category];
-                return (
-                  <button
-                    key={t.id}
-                    onClick={() => handleUseTemplate(t)}
-                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#2a3942] transition-colors flex items-start gap-2"
-                  >
-                    <FileText size={14} className="text-[#00a884] flex-shrink-0 mt-0.5" />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-[#e9edef] truncate">{t.name}</span>
-                        <span className={cn('text-xs px-1.5 py-0.5 rounded-full flex-shrink-0', cm.color)}>{cm.label}</span>
-                      </div>
-                      <p className="text-xs text-[#8696a0] truncate">{t.body.replace(/\n/g, ' ')}</p>
-                    </div>
-                  </button>
-                );
-              })}
+        <div className="relative z-10 max-h-80 overflow-y-auto bg-[#202c33] border-t border-[#222e35] scrollbar-thin">
+          {pendingMetaTemplate ? (
+            // ── Preenche as variáveis do template Meta escolhido, antes de enviar ──
+            <div className="p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-[#e9edef]">{pendingMetaTemplate.name}</span>
+                <button onClick={() => setPendingMetaTemplate(null)} className="text-xs text-[#8696a0] hover:text-[#e9edef]">Cancelar</button>
+              </div>
+              {Object.keys(metaTemplateVars).map((n) => (
+                <div key={n} className="flex flex-col gap-1">
+                  <label className="text-xs text-[#8696a0]">Variável {`{{${n}}}`}</label>
+                  <input
+                    value={metaTemplateVars[Number(n)] || ''}
+                    onChange={(e) => setMetaTemplateVars((v) => ({ ...v, [Number(n)]: e.target.value }))}
+                    className="w-full px-2.5 py-1.5 text-sm rounded-lg bg-[#2a3942] text-[#e9edef] border border-transparent focus:outline-none focus:border-[#00a884]/40"
+                  />
+                </div>
+              ))}
+              <div className="p-2.5 rounded-lg bg-[#111b21] text-xs text-[#8696a0] whitespace-pre-wrap">
+                {fillMetaTemplate(pendingMetaTemplate.components.find((c) => c.type === 'BODY')?.text || '', metaTemplateVars)}
+              </div>
+              <button
+                onClick={handleSendMetaTemplate}
+                disabled={sendingTemplate}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-[#00a884] text-[#111b21] text-sm font-medium disabled:opacity-50"
+              >
+                {sendingTemplate ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                {sendingTemplate ? 'Enviando...' : 'Enviar template'}
+              </button>
             </div>
+          ) : (
+            <>
+              <div className="p-2 space-y-1">
+                <p className="px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#8696a0]">Respostas rápidas</p>
+                {templates.length === 0 ? (
+                  <div className="px-2 py-2 text-xs text-[#8696a0]">Nenhuma cadastrada. Crie em Templates.</div>
+                ) : templates.map((t) => {
+                  const cm = CATEGORY_META[t.category];
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => handleUseTemplate(t)}
+                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#2a3942] transition-colors flex items-start gap-2"
+                    >
+                      <FileText size={14} className="text-[#00a884] flex-shrink-0 mt-0.5" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-[#e9edef] truncate">{t.name}</span>
+                          <span className={cn('text-xs px-1.5 py-0.5 rounded-full flex-shrink-0', cm.color)}>{cm.label}</span>
+                        </div>
+                        <p className="text-xs text-[#8696a0] truncate">{t.body.replace(/\n/g, ' ')}</p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="border-t border-[#222e35] p-2 space-y-1">
+                <p className="px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#8696a0]">Templates Meta (aprovados)</p>
+                {metaTemplates === null ? (
+                  <div className="px-2 py-2 text-xs text-[#8696a0]">Carregando...</div>
+                ) : metaTemplates.length === 0 ? (
+                  <div className="px-2 py-2 text-xs text-[#8696a0]">Nenhum template aprovado ainda. Crie em Templates → WhatsApp (Meta).</div>
+                ) : metaTemplates.map((t) => {
+                  const body = t.components.find((c) => c.type === 'BODY')?.text || '';
+                  return (
+                    <button
+                      key={t.name}
+                      onClick={() => handleSelectMetaTemplate(t)}
+                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#2a3942] transition-colors flex items-start gap-2"
+                    >
+                      <BadgeCheck size={14} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+                      <div className="min-w-0 flex-1">
+                        <span className="text-sm font-medium text-[#e9edef] truncate block">{t.name}</span>
+                        <p className="text-xs text-[#8696a0] truncate">{body.replace(/\n/g, ' ')}</p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
           )}
         </div>
       )}

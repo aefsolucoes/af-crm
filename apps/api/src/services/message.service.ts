@@ -1,5 +1,5 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
-import { sendWhatsAppMessage } from './whatsapp.service';
+import { sendWhatsAppMessage, sendWhatsAppTemplateMessage } from './whatsapp.service';
 import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds } from './baileys.service';
 
 const prisma = new PrismaClient();
@@ -253,6 +253,49 @@ export async function sendOutboundWhatsApp(params: {
     whatsappNumberId: usedNumberId ?? undefined,
     sentByUserId: userId,
     externalId,
+    status: 'SENT',
+  });
+
+  if (io) {
+    io.to(`lead:${leadId}`).emit('new_message', message);
+    io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
+  }
+
+  return { success: true, message };
+}
+
+/** Envia uma mensagem de TEMPLATE aprovado pela Meta (API oficial) — funciona
+ *  mesmo fora da janela de 24h de atendimento gratuito, ao contrário do texto
+ *  livre. Só disponível pela API (templates não existem no WhatsApp pessoal/QR). */
+export async function sendOutboundWhatsAppTemplate(params: {
+  accountId: string;
+  leadId: string;
+  templateName: string;
+  language: string;
+  bodyParams: string[];
+  /** Texto final (com as variáveis já preenchidas), para exibir na conversa. */
+  previewText: string;
+  userId?: string;
+  io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
+}): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string }> {
+  const { accountId, leadId, templateName, language, bodyParams, previewText, userId, io } = params;
+
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true } });
+  if (!lead) return { success: false, error: 'Lead não encontrado' };
+
+  const phone = lead.contact?.whatsappPhone || lead.contact?.phone;
+  if (!phone) return { success: false, error: 'Contato sem número de telefone cadastrado' };
+
+  const result = await sendWhatsAppTemplateMessage(phone, templateName, language, bodyParams, accountId);
+  if (!result.success) return { success: false, error: result.error || 'Falha ao enviar template' };
+
+  const message = await createMessage({
+    content: previewText,
+    direction: 'OUTBOUND',
+    channel: 'WHATSAPP',
+    leadId,
+    sentByUserId: userId,
+    externalId: result.externalId,
     status: 'SENT',
   });
 

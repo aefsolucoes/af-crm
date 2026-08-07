@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, markConversationRead, getAttachment, sendOutboundMedia } from '../services/message.service';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia } from '../services/message.service';
 import { downloadDriveFile } from '../services/google.service';
 
 const router = Router();
@@ -94,6 +94,30 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
     res.status(201).json(result.message);
   } catch {
     res.status(500).json({ error: 'Erro ao enviar o arquivo' });
+  }
+});
+
+// Envia um template aprovado pela Meta (API oficial) — único jeito de reabrir
+// conversa fora da janela de 24h de atendimento gratuito.
+router.post('/send-template', async (req: AuthRequest, res: Response) => {
+  const { leadId, templateName, language, bodyParams, previewText } = req.body as {
+    leadId?: string; templateName?: string; language?: string; bodyParams?: string[]; previewText?: string;
+  };
+  if (!leadId || !templateName || !previewText) {
+    return res.status(400).json({ error: 'leadId, templateName e previewText são obrigatórios' });
+  }
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para enviar mensagens.' });
+    const io = req.app.get('io');
+    const result = await sendOutboundWhatsAppTemplate({
+      accountId: req.user!.accountId, leadId, templateName, language: language || 'pt_BR',
+      bodyParams: Array.isArray(bodyParams) ? bodyParams.map(String) : [], previewText, userId: req.user!.id, io,
+    });
+    if (!result.success) return res.status(400).json({ error: result.error });
+    res.status(201).json(result.message);
+  } catch {
+    res.status(500).json({ error: 'Erro ao enviar o template' });
   }
 });
 

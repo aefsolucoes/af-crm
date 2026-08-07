@@ -19,6 +19,35 @@ export async function saveWhatsAppConfig(accountId: string, data: {
   });
 }
 
+/** Garante DDI 55 e o 9º dígito do celular brasileiro (ex: 556184549012 → 5561984549012). */
+function normalizeBrazilianWhatsAppPhone(to: string): string {
+  let phone = to.replace(/\D/g, '');
+
+  if (phone.length === 10 || phone.length === 11) {
+    phone = `55${phone}`;
+  }
+
+  if (phone.length === 12 && phone.startsWith('55')) {
+    const local = phone.slice(4); // 8 dígitos locais (ex: 84549012)
+    const first = parseInt(local[0], 10);
+    if (first >= 6 && first <= 9) {
+      phone = phone.slice(0, 4) + '9' + local; // 5561 + 9 + 84549012
+    }
+  }
+
+  return phone;
+}
+
+/** Interpreta o erro da Graph API num formato consistente. */
+function parseGraphError(json: { error?: { message: string; code: number } }, res: Response, phone: string): string {
+  const errMsg  = json.error?.message || 'Erro desconhecido';
+  const errCode = json.error?.code ?? res.status;
+  if (errCode === 190) {
+    return `Token de acesso inválido ou expirado. Acesse Configurações → API Oficial e gere um novo token. (código: 190)`;
+  }
+  return `${errMsg} (código: ${errCode}, número: ${phone})`;
+}
+
 export async function sendWhatsAppMessage(
   to: string,
   message: string,
@@ -34,25 +63,7 @@ export async function sendWhatsAppMessage(
     return { success: false, error: 'WhatsApp inativo. Acesse Configurações → API Oficial e ative a integração.' };
   }
 
-  let phone = to.replace(/\D/g, '');
-
-  // Garante código do país 55 (Brasil)
-  if (phone.length === 10 || phone.length === 11) {
-    phone = `55${phone}`;
-  }
-
-  // Corrige celular brasileiro de 8 dígitos → adiciona o 9 obrigatório
-  // Ex: 556184549012 (12 dígitos) → 5561984549012 (13 dígitos)
-  // Só aplica se: começa com 55 + 2 dígitos de DDD + 8 dígitos locais (= 12 total)
-  // e o primeiro dígito local for 6, 7, 8 ou 9 (faixa de celular)
-  if (phone.length === 12 && phone.startsWith('55')) {
-    const local = phone.slice(4); // 8 dígitos locais (ex: 84549012)
-    const first = parseInt(local[0], 10);
-    if (first >= 6 && first <= 9) {
-      phone = phone.slice(0, 4) + '9' + local; // 5561 + 9 + 84549012
-    }
-  }
-
+  const phone = normalizeBrazilianWhatsAppPhone(to);
   console.log(`[WA Send] to="${to}" → phone="${phone}" (${phone.length} digits) phoneNumberId="${config.phoneNumberId}"`);
   const url = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
 
@@ -77,20 +88,68 @@ export async function sendWhatsAppMessage(
     };
 
     if (!res.ok || json.error) {
-      const errMsg  = json.error?.message || 'Erro desconhecido';
-      const errCode = json.error?.code ?? res.status;
-      console.error(`[WhatsApp] Send error code=${errCode} para "${phone}":`, json.error);
-
-      // Código 190 = token inválido/expirado
-      if (errCode === 190) {
-        return { success: false, error: `Token de acesso inválido ou expirado. Acesse Configurações → API Oficial e gere um novo token. (código: 190)` };
-      }
-      return { success: false, error: `${errMsg} (código: ${errCode}, número: ${phone})` };
+      console.error(`[WhatsApp] Send error para "${phone}":`, json.error);
+      return { success: false, error: parseGraphError(json, res, phone) };
     }
 
     return { success: true, externalId: json.messages?.[0]?.id };
   } catch (err) {
     console.error('[WhatsApp] Fetch error:', err);
+    return { success: false, error: 'Falha na conexão com a API do WhatsApp' };
+  }
+}
+
+/** Envia uma mensagem de TEMPLATE (aprovado pela Meta) — único jeito de reabrir
+ *  conversa fora da janela de 24h de atendimento gratuito. */
+export async function sendWhatsAppTemplateMessage(
+  to: string,
+  templateName: string,
+  language: string,
+  bodyParams: string[],
+  accountId: string
+): Promise<{ success: boolean; externalId?: string; error?: string }> {
+  const config = await getWhatsAppConfig(accountId);
+  if (!config) {
+    return { success: false, error: 'WhatsApp não configurado. Acesse Configurações → API Oficial e salve suas credenciais.' };
+  }
+  if (!config.active) {
+    return { success: false, error: 'WhatsApp inativo. Acesse Configurações → API Oficial e ative a integração.' };
+  }
+
+  const phone = normalizeBrazilianWhatsAppPhone(to);
+  const url = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
+  const components = bodyParams.length > 0
+    ? [{ type: 'body', parameters: bodyParams.map((text) => ({ type: 'text', text })) }]
+    : [];
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: phone,
+        type: 'template',
+        template: { name: templateName, language: { code: language }, components },
+      }),
+    });
+
+    const json = await res.json() as {
+      messages?: { id: string }[];
+      error?: { message: string; code: number };
+    };
+
+    if (!res.ok || json.error) {
+      console.error(`[WhatsApp] Template send error para "${phone}":`, json.error);
+      return { success: false, error: parseGraphError(json, res, phone) };
+    }
+
+    return { success: true, externalId: json.messages?.[0]?.id };
+  } catch (err) {
+    console.error('[WhatsApp] Template fetch error:', err);
     return { success: false, error: 'Falha na conexão com a API do WhatsApp' };
   }
 }
