@@ -215,6 +215,11 @@ model Message {
   status     MsgStatus  @default(SENT)
   attachments MessageAttachment[]
   createdAt  DateTime   @default(now())
+  // Preenchido quando esta mensagem foi ENCAMINHADA de outra conversa. Guarda
+  // o nome do lead de origem "congelado" no momento do envio (não é uma
+  // relação de verdade — sobrevive mesmo se aquele lead for excluído depois).
+  forwardedFromLeadId   String?
+  forwardedFromLeadName String?
 }
 
 // Documento/imagem recebido no WhatsApp (guardado até ir para o Drive)

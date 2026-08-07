@@ -1,6 +1,7 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
 import { sendWhatsAppMessage, sendWhatsAppTemplateMessage } from './whatsapp.service';
 import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds } from './baileys.service';
+import { downloadDriveFile } from './google.service';
 
 const prisma = new PrismaClient();
 
@@ -360,6 +361,68 @@ export async function sendOutboundMedia(params: {
   // Mídia fica no CRM (banco) — o upload pro Drive agora é só sob-demanda.
 
   return { success: true, message };
+}
+
+/** Encaminha uma mensagem (texto ou anexo) para OUTRA conversa/lead — reenvia
+ *  de verdade pelo WhatsApp (não é só copiar no banco) e marca de onde veio,
+ *  para aparecer com a etiqueta "Encaminhada de X" na conversa de destino. */
+export async function forwardMessage(params: {
+  accountId: string;
+  messageId: string;
+  toLeadId: string;
+  userId?: string;
+  io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
+}): Promise<{ success: true; message: any } | { success: false; error: string }> {
+  const { accountId, messageId, toLeadId, userId, io } = params;
+
+  const source = await prisma.message.findUnique({
+    where: { id: messageId },
+    include: { attachments: true, lead: { select: { id: true, accountId: true, name: true } } },
+  });
+  if (!source || source.lead.accountId !== accountId) return { success: false, error: 'Mensagem não encontrada' };
+  if (source.leadId === toLeadId) return { success: false, error: 'Escolha uma conversa diferente da atual' };
+
+  const toLead = await prisma.lead.findFirst({ where: { id: toLeadId, accountId } });
+  if (!toLead) return { success: false, error: 'Conversa de destino não encontrada' };
+
+  let result: { success: true; message: any } | { success: false; error: string };
+
+  const att = source.attachments[0];
+  if (att) {
+    let buffer: Buffer | null = null;
+    try {
+      buffer = att.data
+        ? Buffer.from(att.data)
+        : att.driveFileId
+        ? await downloadDriveFile(accountId, att.driveFileId, att.mimeType)
+        : null;
+    } catch (err: any) {
+      return { success: false, error: `Falha ao baixar o anexo original: ${err?.message || 'erro desconhecido'}` };
+    }
+    if (!buffer) return { success: false, error: 'Não foi possível recuperar o arquivo desta mensagem.' };
+    const caption = source.content.includes(' — ') ? source.content.split(' — ').slice(1).join(' — ') : undefined;
+    result = await sendOutboundMedia({ accountId, leadId: toLeadId, buffer, fileName: att.fileName, mimeType: att.mimeType, caption, userId, io });
+  } else {
+    result = await sendOutboundWhatsApp({ accountId, leadId: toLeadId, content: source.content, userId, io });
+  }
+
+  if (!result.success) return result;
+
+  const patched = await prisma.message.update({
+    where: { id: result.message.id },
+    data: { forwardedFromLeadId: source.leadId, forwardedFromLeadName: source.lead.name },
+    include: {
+      attachments: { select: { id: true, fileName: true, mimeType: true, driveFileId: true } },
+      sentBy: { select: { id: true, name: true } },
+    },
+  });
+
+  // Nota: sendOutbound*/sendOutboundMedia já emitiram "new_message" (antes de
+  // gravarmos forwardedFromLeadId); o front dedupa por id, então não reemitimos
+  // aqui. Quem estiver com a conversa de destino aberta na hora vê a mensagem
+  // no ato — só a etiqueta "Encaminhada de X" aparece ao reabrir/recarregar.
+
+  return { success: true, message: patched };
 }
 
 export async function markMessagesRead(leadId: string) {

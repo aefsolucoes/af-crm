@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck } from 'lucide-react';
+import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Search, X } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -145,6 +145,45 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   const [pendingMetaTemplate, setPendingMetaTemplate] = useState<MetaTemplate | null>(null);
   const [metaTemplateVars, setMetaTemplateVars] = useState<Record<number, string>>({});
   const [sendingTemplate, setSendingTemplate] = useState(false);
+
+  // ── Encaminhar mensagem para outra conversa ──────────────────────────────
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [forwardLeads, setForwardLeads] = useState<{ id: string; name: string; contact?: { name?: string; phone?: string; whatsappPhone?: string } }[] | null>(null);
+  const [forwardSearch, setForwardSearch] = useState('');
+  const [forwardBusy, setForwardBusy] = useState(false);
+
+  function openForward(msg: Message) {
+    setForwardingMessage(msg);
+    setForwardSearch('');
+    if (forwardLeads === null) {
+      api.get('/api/leads').then(({ data }) => setForwardLeads(data)).catch(() => setForwardLeads([]));
+    }
+  }
+
+  async function handleConfirmForward(toLeadId: string) {
+    if (!forwardingMessage) return;
+    setForwardBusy(true);
+    try {
+      await api.post(`/api/messages/${forwardingMessage.id}/forward`, { toLeadId });
+      toast('Mensagem encaminhada!');
+      setForwardingMessage(null);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao encaminhar a mensagem', 'error');
+    } finally {
+      setForwardBusy(false);
+    }
+  }
+
+  const forwardMatches = (forwardLeads || [])
+    .filter((l) => l.id !== leadId)
+    .filter((l) => {
+      const q = forwardSearch.trim().toLowerCase();
+      if (!q) return true;
+      const phone = (l.contact?.whatsappPhone || l.contact?.phone || '').replace(/\D/g, '');
+      const qDigits = q.replace(/\D/g, '');
+      return l.name.toLowerCase().includes(q) || (qDigits.length >= 3 && phone.includes(qDigits));
+    })
+    .slice(0, 30);
 
   // Só para o contador de 24h "tickar" (recalcula a cada minuto).
   const [, setNowTick] = useState(0);
@@ -518,7 +557,16 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
               const liveStatus = statusMap[msg.id] || (msg as any).status;
 
               return (
-                <div key={msg.id} className={cn('flex mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
+                <div key={msg.id} className={cn('group flex items-center gap-1 mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
+                  {isOut && (
+                    <button
+                      onClick={() => openForward(msg)}
+                      title="Encaminhar"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[#8696a0] hover:text-[#e9edef] flex-shrink-0"
+                    >
+                      <Forward size={14} />
+                    </button>
+                  )}
                   <div
                     className={cn(
                       'relative max-w-xs lg:max-w-md px-3 py-2 shadow-sm',
@@ -530,6 +578,11 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                     )}
                     style={{ backgroundColor: isOut ? '#005c4b' : '#202c33' }}
                   >
+                    {msg.forwardedFromLeadName && (
+                      <p className="text-[10px] italic text-[#e9edef]/55 mb-0.5 flex items-center gap-1">
+                        <Forward size={10} /> Encaminhada de {msg.forwardedFromLeadName}
+                      </p>
+                    )}
                     {isOut && (() => {
                       // "via {apelido do número} · {quem enviou}". Mensagens da API
                       // Oficial (id começa com "wamid") não têm whatsappNumberId — não
@@ -577,6 +630,15 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                       {isOut && <StatusTick status={liveStatus} />}
                     </div>
                   </div>
+                  {!isOut && (
+                    <button
+                      onClick={() => openForward(msg)}
+                      title="Encaminhar"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[#8696a0] hover:text-[#e9edef] flex-shrink-0"
+                    >
+                      <Forward size={14} />
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -774,6 +836,63 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           <Send size={18} />
         </button>
       </form>
+
+      {/* Encaminhar mensagem — escolher a conversa de destino */}
+      {forwardingMessage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setForwardingMessage(null)}>
+          <div
+            className="w-full max-w-sm max-h-[70vh] flex flex-col rounded-2xl overflow-hidden shadow-xl"
+            style={{ backgroundColor: '#202c33' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-[#222e35]">
+              <p className="text-sm font-semibold text-[#e9edef] flex items-center gap-1.5">
+                <Forward size={14} /> Encaminhar para...
+              </p>
+              <p className="text-xs text-[#8696a0] truncate mt-0.5">
+                {forwardingMessage.attachments?.length ? `📎 ${forwardingMessage.attachments[0].fileName}` : forwardingMessage.content}
+              </p>
+            </div>
+            <div className="px-3 pt-3">
+              <div className="relative">
+                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8696a0] pointer-events-none" />
+                <input
+                  autoFocus
+                  value={forwardSearch}
+                  onChange={(e) => setForwardSearch(e.target.value)}
+                  placeholder="Buscar por nome ou telefone"
+                  className="w-full pl-8 pr-8 py-2 text-sm rounded-lg bg-[#2a3942] text-[#e9edef] placeholder-[#8696a0] border border-transparent focus:outline-none focus:border-[#00a884]/40"
+                />
+                {forwardSearch && (
+                  <button onClick={() => setForwardSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8696a0] hover:text-[#e9edef]">
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto scrollbar-thin p-2">
+              {forwardLeads === null ? (
+                <p className="px-2 py-3 text-xs text-[#8696a0]">Carregando conversas...</p>
+              ) : forwardMatches.length === 0 ? (
+                <p className="px-2 py-3 text-xs text-[#8696a0]">Nenhuma conversa encontrada</p>
+              ) : forwardMatches.map((l) => (
+                <button
+                  key={l.id}
+                  onClick={() => handleConfirmForward(l.id)}
+                  disabled={forwardBusy}
+                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#2a3942] transition-colors flex items-center gap-2 disabled:opacity-50"
+                >
+                  <Avatar name={l.contact?.name || l.name} size="sm" />
+                  <span className="text-sm text-[#e9edef] truncate">{l.contact?.name || l.name}</span>
+                </button>
+              ))}
+            </div>
+            <div className="px-4 py-2.5 border-t border-[#222e35] flex justify-end">
+              <button onClick={() => setForwardingMessage(null)} className="text-xs text-[#8696a0] hover:text-[#e9edef]">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

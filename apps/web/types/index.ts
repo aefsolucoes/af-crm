@@ -165,6 +165,9 @@ export interface Message {
   whatsappNumberId?: string | null;
   attachments?: MessageAttachment[];
   createdAt: string;
+  /** Preenchido quando esta mensagem foi encaminhada de outra conversa. */
+  forwardedFromLeadId?: string | null;
+  forwardedFromLeadName?: string | null;
 }
 
 export interface WhatsAppNumber {
