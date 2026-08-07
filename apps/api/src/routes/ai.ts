@@ -4,7 +4,7 @@ import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { sendOutboundWhatsApp, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
 import { searchKnowledge } from '../services/knowledge.service';
-import { organizeLeadDocsToDrive } from '../services/google.service';
+import { organizeLeadDocsToDrive, downloadDriveFile } from '../services/google.service';
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
 
@@ -93,6 +93,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - list_pipelines: lista os funis e seus estágios (com ids). Use para achar o stageId quando o colaborador pedir para criar o card num funil/estágio específico (ex: "no funil Follow-up, estágio Remarketing números"). Depois passe esse stageId em send_whatsapp_to_number. Você TEM, sim, como criar o card num estágio específico — nunca diga que não consegue.
 - move_lead_to_stage: move um card JÁ EXISTENTE para outro funil/estágio. Use quando pedirem para mover/colocar um card em outro lugar (ex: "move o card do João para Remarketing"). Antes, use find_lead (leadId) e list_pipelines (stageId). Você CONSEGUE mover cards de funil e de estágio — nunca diga que não consegue.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados.
+- ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — por padrão ela lê a foto ou PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, passe attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
 - list_users / create_user / update_user / delete_user: gerenciar a equipe (criar, editar nome/e-mail/senha/função/permissões e EXCLUIR/tirar acesso). Para "tirar acesso" use update_user (mudando função/permissões) ou delete_user.
 Você tem acesso completo ao CRM, MAS sempre respeitando o nível de acesso do colaborador: cada ferramenta checa a permissão dele. Se uma ferramenta retornar erro de permissão, explique com educação que ele não tem acesso àquela ação e não tente por outro caminho.
@@ -195,6 +196,14 @@ const AGENT_TOOLS = [
       },
       required: ['leadId', 'nomePasta'],
     },
+  },
+  {
+    name: 'ler_documento_identificacao',
+    description: 'Lê uma foto ou PDF de documento (CNH, RG, ou comprovante de renda/holerite) já enviado pelo cliente no WhatsApp, e extrai nome completo, CPF, data de nascimento e renda (quando o documento for um comprovante de renda). Use quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade", "extrair CPF e nascimento do RG que ele mandou" etc. Primeiro use find_lead para achar o leadId. Por padrão lê o documento (foto ou PDF) mais recente enviado pelo cliente na conversa; se o colaborador apontar um arquivo específico, passe attachmentId. Depois de extrair, MOSTRE os dados ao colaborador para ele conferir (leitura de documento pode errar) e, se ele confirmar, use update_lead com fields — participante_1 (nome), cpf_1 (CPF), nascimento_1 (data de nascimento) e/ou renda_1 (renda) — preenchendo só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string', description: 'ID do lead (via find_lead)' },
+      attachmentId: { type: 'string', description: 'ID do anexo específico a ler (opcional — sem isso, lê o documento mais recente do lead)' },
+    }, required: ['leadId'] },
   },
   {
     name: 'create_lead',
@@ -591,6 +600,92 @@ async function executeAgentTool(
       };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao salvar no Drive' };
+    }
+  }
+
+  if (name === 'ler_documento_identificacao') {
+    const leadId = String(input.leadId || '');
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+
+    // Acha o anexo: o indicado (attachmentId), ou a foto/PDF mais recente do lead.
+    const att = input.attachmentId
+      ? await prisma.messageAttachment.findFirst({ where: { id: String(input.attachmentId), leadId } })
+      : await prisma.messageAttachment.findFirst({
+          where: { leadId, OR: [{ mimeType: { startsWith: 'image/' } }, { mimeType: 'application/pdf' }] },
+          orderBy: { createdAt: 'desc' },
+        });
+    if (!att) return { success: false, error: 'Nenhum documento (foto ou PDF) encontrado na conversa desse cliente.' };
+
+    const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+    if (!SUPPORTED.includes(att.mimeType)) {
+      return { success: false, error: `Tipo de arquivo não suportado para leitura (${att.mimeType}). Peça uma foto (JPG/PNG) ou PDF do documento.` };
+    }
+
+    // Busca os bytes: do banco (recentes) ou do Drive (já arquivados).
+    let buffer: Buffer;
+    try {
+      if (att.data) {
+        buffer = Buffer.from(att.data);
+      } else if (att.driveFileId) {
+        buffer = await downloadDriveFile(accountId, att.driveFileId, att.mimeType);
+      } else {
+        return { success: false, error: 'Não foi possível recuperar o arquivo do documento.' };
+      }
+    } catch (err: any) {
+      return { success: false, error: `Falha ao baixar o documento: ${err?.message || 'erro desconhecido'}` };
+    }
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return { success: false, error: 'ANTHROPIC_API_KEY não configurada' };
+
+    const isPdf = att.mimeType === 'application/pdf';
+    const contentBlock = isPdf
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') } }
+      : { type: 'image', source: { type: 'base64', media_type: att.mimeType, data: buffer.toString('base64') } };
+
+    try {
+      const visionRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-5',
+          max_tokens: 1024,
+          system: 'Você extrai dados de documentos de identificação e comprovantes brasileiros (CNH, RG, carteira de trabalho, contracheque/holerite etc). Responda SOMENTE com um JSON válido, sem markdown e sem texto antes ou depois, no formato exato: {"nomeCompleto": string|null, "cpf": string|null, "dataNascimento": string|null, "renda": string|null}. CPF no formato 000.000.000-00; data de nascimento no formato DD/MM/AAAA; renda como número em texto (ex: "5000.00") e SÓ se o documento for claramente um comprovante de renda/holerite — senão null. Se não conseguir ler algum campo com certeza no documento, use null nesse campo. NUNCA invente valores.',
+          messages: [{
+            role: 'user',
+            content: [contentBlock, { type: 'text', text: 'Extraia os dados deste documento.' }],
+          }],
+        }),
+      });
+
+      if (!visionRes.ok) {
+        const errText = await visionRes.text();
+        return { success: false, error: `Erro ao ler o documento: ${visionRes.status} ${errText.slice(0, 200)}` };
+      }
+
+      const visionData = await visionRes.json() as { content: { type: string; text?: string }[] };
+      const raw = visionData.content?.find((b) => b.type === 'text')?.text || '{}';
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+
+      return {
+        success: true,
+        fileName: att.fileName,
+        attachmentId: att.id,
+        extraido: {
+          nomeCompleto: parsed.nomeCompleto ?? null,
+          cpf: parsed.cpf ?? null,
+          dataNascimento: parsed.dataNascimento ?? null,
+          renda: parsed.renda ?? null,
+        },
+      };
+    } catch (err: any) {
+      return { success: false, error: `Falha ao processar o documento: ${err?.message || 'erro desconhecido'}` };
     }
   }
 
