@@ -221,9 +221,89 @@ router.post('/whatsapp/subscribe-waba', async (req: AuthRequest, res: Response) 
       const msg  = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
       return res.json({ ok: false, error: `${msg} (código: ${code})`, code });
     }
+    // Salva o WABA ID — reaproveitado depois para listar/criar templates, sem
+    // precisar digitar de novo.
+    await prisma.whatsAppConfig.update({ where: { accountId: req.user!.accountId }, data: { wabaId } }).catch(() => {});
     return res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: 'Falha ao inscrever o app na WABA' });
+  }
+});
+
+// ─── Templates do WhatsApp (Meta) ────────────────────────────────────────────
+// Templates precisam ser aprovados pela Meta antes de poder enviar mensagem
+// fora da janela de 24h de atendimento. Usam o mesmo WABA ID salvo acima.
+
+/** Nome técnico do template exigido pela Meta: minúsculo, só letras/números/_. */
+function slugifyTemplateName(raw: string): string {
+  const slug = raw
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 512);
+  return slug || 'template';
+}
+
+const templateSchema = z.object({
+  name: z.string().min(1).max(120),
+  category: z.enum(['MARKETING', 'UTILITY', 'AUTHENTICATION']),
+  language: z.string().min(2).default('pt_BR'),
+  body: z.string().min(1).max(1024),
+  footer: z.string().max(60).optional(),
+});
+
+// GET /api/settings/whatsapp/templates — lista os templates da conta (com status de aprovação)
+router.get('/whatsapp/templates', async (req: AuthRequest, res: Response) => {
+  try {
+    const config = await getWhatsAppConfig(req.user!.accountId);
+    if (!config?.accessToken) return res.status(400).json({ error: 'Configure o Access Token primeiro (aba API Oficial).' });
+    if (!config.wabaId) return res.status(400).json({ error: 'Informe o WABA ID em "Ativar recebimento" primeiro.' });
+
+    const r = await fetch(
+      `https://graph.facebook.com/v20.0/${config.wabaId}/message_templates?fields=name,status,category,language,components,rejected_reason&limit=100`,
+      { headers: { Authorization: `Bearer ${config.accessToken}` } },
+    );
+    const j = await r.json() as any;
+    if (!r.ok || j.error) {
+      const code = j.error?.code ?? r.status;
+      const msg  = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
+      return res.status(400).json({ error: `${msg} (código: ${code})` });
+    }
+    res.json({ templates: j.data || [] });
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar templates' });
+  }
+});
+
+// POST /api/settings/whatsapp/templates — envia um novo template para aprovação da Meta
+router.post('/whatsapp/templates', validate(templateSchema), async (req: AuthRequest, res: Response) => {
+  try {
+    const config = await getWhatsAppConfig(req.user!.accountId);
+    if (!config?.accessToken) return res.status(400).json({ error: 'Configure o Access Token primeiro (aba API Oficial).' });
+    if (!config.wabaId) return res.status(400).json({ error: 'Informe o WABA ID em "Ativar recebimento" primeiro.' });
+
+    const { name, category, language, body, footer } = req.body as {
+      name: string; category: string; language: string; body: string; footer?: string;
+    };
+
+    const components: Record<string, unknown>[] = [{ type: 'BODY', text: body }];
+    if (footer?.trim()) components.push({ type: 'FOOTER', text: footer.trim() });
+
+    const r = await fetch(`https://graph.facebook.com/v20.0/${config.wabaId}/message_templates`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: slugifyTemplateName(name), category, language, components }),
+    });
+    const j = await r.json() as any;
+    if (!r.ok || j.error) {
+      const code = j.error?.code ?? r.status;
+      const msg  = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
+      return res.status(400).json({ error: `${msg} (código: ${code})` });
+    }
+    res.status(201).json(j);
+  } catch {
+    res.status(500).json({ error: 'Erro ao enviar template para aprovação' });
   }
 });
 

@@ -247,6 +247,7 @@ model WhatsAppConfig {
   accessToken   String
   verifyToken   String   @default("af_crm_verify")
   active        Boolean  @default(false)
+  wabaId        String?  // ID da conta do WhatsApp Business (WABA) — salvo em "Ativar recebimento", reaproveitado para templates
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
