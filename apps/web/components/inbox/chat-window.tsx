@@ -431,24 +431,28 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
           <span className={cn('w-1.5 h-1.5 rounded-full', apiActive ? 'bg-green-400' : 'bg-red-400')} />
         </button>
 
-        {/* Janela de 24h da API oficial — quanto falta até só dar para responder com template */}
+        {/* Janela de 24h da API oficial — só um aviso discreto, não é um botão */}
         {windowOpen !== null && (
-          <span
-            title={windowOpen ? 'Tempo restante para responder com texto livre pela API oficial' : 'Fora da janela de 24h — só é possível responder com um template aprovado'}
-            className={cn(
-              'flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium',
-              windowOpen ? 'bg-[#2a3942] text-[#8696a0]' : 'bg-amber-500/15 text-amber-400'
-            )}
-          >
-            <Clock size={11} />
-            {windowOpen
-              ? (() => {
-                  const h = Math.floor((windowRemainingMs as number) / 3_600_000);
-                  const m = Math.floor(((windowRemainingMs as number) % 3_600_000) / 60_000);
-                  return `${h}h ${m}min restantes`;
-                })()
-              : 'Janela fechada — use um template'}
-          </span>
+          <>
+            <span className="h-4 w-px bg-[#2a3942]" />
+            <span
+              title={windowOpen ? 'Tempo restante para responder com texto livre pela API oficial' : 'Fora da janela de 24h — só é possível responder com um template aprovado'}
+              className={cn(
+                'flex items-center gap-1 text-xs',
+                windowOpen ? 'text-[#8696a0]' : 'text-amber-400 font-medium'
+              )}
+            >
+              <Clock size={12} className="flex-shrink-0" />
+              {windowOpen
+                ? (() => {
+                    const h = Math.floor((windowRemainingMs as number) / 3_600_000);
+                    const m = Math.floor(((windowRemainingMs as number) % 3_600_000) / 60_000);
+                    return `${h}h ${m}min`;
+                  })()
+                : 'Janela fechada'}
+            </span>
+          </>
+        )}
         )}
 
         {/* Com 2+ números cadastrados, escolhe por qual WhatsApp esta mensagem sai
