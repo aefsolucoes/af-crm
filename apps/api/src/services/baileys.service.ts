@@ -374,7 +374,7 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
         // para espelhar a conversa completa.
         if (msg.key.fromMe && selfSentIds.has(msg.key.id)) continue;
         // Conversa "de mim para mim mesmo" (chat Você) → conversa própria do número
-        const selfChat = isSelfChat(msg, sock);
+        const selfChat = await isSelfChat(msg, sock);
         // Se o cliente estiver com "mensagens temporárias" ligado, desliga sozinho.
         maybeDisableDisappearing(sock, msg);
         // Documento/imagem → captura o arquivo; senão trata como texto
@@ -522,14 +522,29 @@ function formatPhoneDisplay(realPhone: string | null): string {
   return `+${realPhone}`;
 }
 
-/** true se a mensagem é do próprio número para ele mesmo (chat "Você"). */
-function isSelfChat(msg: any, sock: any): boolean {
+/**
+ * true se a mensagem é do próprio número para ele mesmo (chat "Você").
+ * sock.user.lid nem sempre vem preenchido pelo Baileys — quando a mensagem
+ * chega em formato @lid e a comparação direta falha, resolve o LID para o
+ * telefone real (mesmo mecanismo usado para integrantes de grupo) antes de
+ * desistir, para não perder mensagens do chat "Você" enviadas pelo celular.
+ */
+async function isSelfChat(msg: any, sock: any): Promise<boolean> {
   const rjid = msg?.key?.remoteJid || '';
   if (!rjid || rjid.endsWith('@g.us')) return false;
   const rNum = rjid.split('@')[0].split(':')[0];
   const selfPn = sock?.user?.id ? String(sock.user.id).split('@')[0].split(':')[0] : '';
   const selfLid = sock?.user?.lid ? String(sock.user.lid).split('@')[0].split(':')[0] : '';
-  return !!(rNum && (rNum === selfPn || rNum === selfLid));
+  if (rNum && (rNum === selfPn || rNum === selfLid)) return true;
+
+  if (rjid.endsWith('@lid') && selfPn) {
+    try {
+      const pnJid = await sock.signalRepository?.lidMapping?.getPNForLID?.(rjid);
+      const resolved = pnJid ? String(pnJid).split('@')[0].split(':')[0] : '';
+      if (resolved && resolved === selfPn) return true;
+    } catch { /* mapeamento indisponível */ }
+  }
+  return false;
 }
 
 /** Funil de entrada + admin da conta (usado ao criar leads automaticamente). */
