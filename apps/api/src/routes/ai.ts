@@ -4,7 +4,10 @@ import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { sendOutboundWhatsApp, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
 import { searchKnowledge } from '../services/knowledge.service';
-import { organizeLeadDocsToDrive, downloadDriveFile } from '../services/google.service';
+import {
+  organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
+  createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink,
+} from '../services/google.service';
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
 
@@ -93,11 +96,12 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - list_pipelines: lista os funis e seus estágios (com ids). Use para achar o stageId quando o colaborador pedir para criar o card num funil/estágio específico (ex: "no funil Follow-up, estágio Remarketing números"). Depois passe esse stageId em send_whatsapp_to_number. Você TEM, sim, como criar o card num estágio específico — nunca diga que não consegue.
 - move_lead_to_stage: move um card JÁ EXISTENTE para outro funil/estágio. Use quando pedirem para mover/colocar um card em outro lugar (ex: "move o card do João para Remarketing"). Antes, use find_lead (leadId) e list_pipelines (stageId). Você CONSEGUE mover cards de funil e de estágio — nunca diga que não consegue.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados.
-- ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — por padrão ela lê a foto ou PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, passe attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
+- ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
+- listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
 - list_users / create_user / update_user / delete_user: gerenciar a equipe (criar, editar nome/e-mail/senha/função/permissões e EXCLUIR/tirar acesso). Para "tirar acesso" use update_user (mudando função/permissões) ou delete_user.
 Você tem acesso completo ao CRM, MAS sempre respeitando o nível de acesso do colaborador: cada ferramenta checa a permissão dele. Se uma ferramenta retornar erro de permissão, explique com educação que ele não tem acesso àquela ação e não tente por outro caminho.
-CONFIRMAÇÃO DUPLA obrigatória para ações IRREVERSÍVEIS (excluir card, excluir usuário / tirar acesso): antes de executar, pergunte se o colaborador confirma; quando ele confirmar, pergunte MAIS UMA VEZ ("Tem certeza? Isso não pode ser desfeito.") e só após a SEGUNDA confirmação chame a ferramenta com confirmed:true. Nunca passe confirmed:true sem ter perguntado duas vezes. Se a ferramenta retornar needsConfirmation, é porque faltou confirmar — não invente que foi feito.
+CONFIRMAÇÃO DUPLA obrigatória para ações IRREVERSÍVEIS (excluir card, excluir usuário / tirar acesso, excluir arquivo/pasta do Drive): antes de executar, pergunte se o colaborador confirma; quando ele confirmar, pergunte MAIS UMA VEZ ("Tem certeza? Isso não pode ser desfeito.") e só após a SEGUNDA confirmação chame a ferramenta com confirmed:true. Nunca passe confirmed:true sem ter perguntado duas vezes. Se a ferramenta retornar needsConfirmation, é porque faltou confirmar — não invente que foi feito.
 Nunca envie uma mensagem nem salve documentos sem que o colaborador tenha pedido isso na conversa atual. Depois de agir, confirme exatamente o que foi feito.
 IMPORTANTE: só afirme que uma mensagem foi ENVIADA quando a ferramenta retornar success: true. Se a ferramenta retornar success: false, NÃO diga que enviou — avise o colaborador que a mensagem NÃO foi enviada e explique o motivo do campo "error" (por exemplo, quando o número não tem WhatsApp ou o QR Code está desconectado). Nunca invente um status "SENT".
 Responda em português, de forma curta, direta e prática, como se estivesse explicando para um colega de trabalho. Se a dúvida não tiver relação com o CRM ou o processo da empresa, explique educadamente que você só pode ajudar com isso.`;
@@ -199,11 +203,57 @@ const AGENT_TOOLS = [
   },
   {
     name: 'ler_documento_identificacao',
-    description: 'Lê uma foto ou PDF de documento (CNH, RG, ou comprovante de renda/holerite) já enviado pelo cliente no WhatsApp, e extrai nome completo, CPF, data de nascimento e renda (quando o documento for um comprovante de renda). Use quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade", "extrair CPF e nascimento do RG que ele mandou" etc. Primeiro use find_lead para achar o leadId. Por padrão lê o documento (foto ou PDF) mais recente enviado pelo cliente na conversa; se o colaborador apontar um arquivo específico, passe attachmentId. Depois de extrair, MOSTRE os dados ao colaborador para ele conferir (leitura de documento pode errar) e, se ele confirmar, use update_lead com fields — participante_1 (nome), cpf_1 (CPF), nascimento_1 (data de nascimento) e/ou renda_1 (renda) — preenchendo só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.',
+    description: 'Lê uma foto ou PDF de documento (CNH, RG, ou comprovante de renda/holerite) e extrai nome completo, CPF, data de nascimento e renda (quando o documento for um comprovante de renda). Use quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade", "extrair CPF e nascimento do RG que ele mandou" etc. Primeiro use find_lead para achar o leadId. ORDEM DE BUSCA do documento: 1) procura na PASTA DO CLIENTE no Drive (a mesma que salvar_documentos_no_drive usa/cria — por nome, use nomePasta se o colaborador indicou um nome diferente do nome do lead); se houver mais de um arquivo lá, tenta reconhecer pelo nome (ex: contém "cnh", "rg", "holerite") ou, se o colaborador apontou um arquivo, use nomeArquivo para casar pelo nome; 2) se não achar nada útil na pasta do Drive, cai para o anexo (foto/PDF) mais recente enviado pelo cliente no WhatsApp — ou o attachmentId indicado, se o colaborador apontou um anexo específico da conversa. Depois de extrair, MOSTRE os dados ao colaborador para ele conferir (leitura de documento pode errar) e, se ele confirmar, use update_lead com fields — participante_1 (nome), cpf_1 (CPF), nascimento_1 (data de nascimento) e/ou renda_1 (renda) — preenchendo só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.',
     input_schema: { type: 'object', properties: {
       leadId: { type: 'string', description: 'ID do lead (via find_lead)' },
-      attachmentId: { type: 'string', description: 'ID do anexo específico a ler (opcional — sem isso, lê o documento mais recente do lead)' },
+      nomePasta: { type: 'string', description: 'Nome da pasta do cliente no Drive, se diferente do nome do lead (opcional).' },
+      nomeArquivo: { type: 'string', description: 'Trecho do nome do arquivo a ler dentro da pasta do cliente, se o colaborador apontou um específico (opcional).' },
+      attachmentId: { type: 'string', description: 'ID de um anexo específico da conversa do WhatsApp a ler (opcional — usado só se o colaborador apontar um anexo da conversa, não da pasta do Drive).' },
     }, required: ['leadId'] },
+  },
+  {
+    name: 'listar_pasta_drive',
+    description: 'Lista os arquivos e sub-pastas dentro de uma pasta do Drive. Use para "ver o que tem na pasta do cliente", "mostrar os documentos que já foram salvos", "o que tem dentro de LEADS ATIVOS" etc. Informe leadId (via find_lead) para listar a pasta do cliente (por padrão usa o nome do lead; use nomePasta se o colaborador indicar outro nome), OU nomePasta sozinho para listar qualquer pasta pelo nome (ex: "LEADS ATIVOS"), OU pastaId se já souber o ID exato (obtido de uma listagem/criação anterior).',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string', description: 'ID do lead — lista a pasta desse cliente (opcional se nomePasta ou pastaId forem dados).' },
+      nomePasta: { type: 'string', description: 'Nome de uma pasta a procurar e listar (opcional).' },
+      pastaId: { type: 'string', description: 'ID de uma pasta do Drive já conhecido (opcional).' },
+    } },
+  },
+  {
+    name: 'criar_pasta_drive',
+    description: 'Cria uma pasta nova no Drive, em qualquer lugar (não só a pasta de um cliente). Use quando o colaborador pedir para "criar uma pasta chamada X", opcionalmente "dentro de Y". Se dentroDe não for informado, cria direto na pasta-raiz.',
+    input_schema: { type: 'object', properties: {
+      nome: { type: 'string', description: 'Nome da nova pasta.' },
+      dentroDe: { type: 'string', description: 'Nome da pasta onde criar esta (opcional — sem isso, cria na pasta-raiz).' },
+    }, required: ['nome'] },
+  },
+  {
+    name: 'renomear_item_drive',
+    description: 'Renomeia um arquivo ou pasta do Drive. Use quando o colaborador pedir para "renomear a pasta do cliente para o nome completo em caixa alta", "mudar o nome desse arquivo" etc. Informe itemId (obtido via listar_pasta_drive ou de uma criação/organização anterior) OU leadId (sem itemId, renomeia diretamente a pasta atual desse cliente no Drive — encontrada pelo nome do lead, ou por nomePastaAtual se o colaborador indicar). Se o colaborador pedir "em caixa alta com o nome completo do cliente" e não especificar novoNome, use o nome do lead em MAIÚSCULAS.',
+    input_schema: { type: 'object', properties: {
+      itemId: { type: 'string', description: 'ID do arquivo/pasta do Drive a renomear (opcional se leadId for dado).' },
+      leadId: { type: 'string', description: 'ID do lead — renomeia a pasta atual desse cliente no Drive (opcional se itemId for dado).' },
+      nomePastaAtual: { type: 'string', description: 'Nome atual da pasta do cliente, se diferente do nome do lead (opcional, usado só com leadId).' },
+      novoNome: { type: 'string', description: 'Novo nome do arquivo/pasta.' },
+    }, required: ['novoNome'] },
+  },
+  {
+    name: 'mover_item_drive',
+    description: 'Move um arquivo ou pasta do Drive para dentro de outra pasta. Use quando o colaborador pedir para "mover essa pasta para dentro de LEADS ATIVOS", "colocar esse documento em outra pasta" etc. Informe itemId (via listar_pasta_drive) e o destino: novaPastaNome (nome de uma pasta existente) ou novaPastaId (se já souber o ID).',
+    input_schema: { type: 'object', properties: {
+      itemId: { type: 'string', description: 'ID do arquivo/pasta a mover.' },
+      novaPastaNome: { type: 'string', description: 'Nome da pasta de destino (opcional se novaPastaId for dado).' },
+      novaPastaId: { type: 'string', description: 'ID da pasta de destino, se já conhecido (opcional).' },
+    }, required: ['itemId'] },
+  },
+  {
+    name: 'excluir_item_drive',
+    description: 'EXCLUI (move para a lixeira) um arquivo ou pasta do Drive — IRREVERSÍVEL para efeitos do CRM. Exige permissão de gerenciar o funil. Antes de executar, pergunte ao colaborador DUAS vezes se confirma; só passe confirmed:true após a SEGUNDA confirmação. Use itemId (via listar_pasta_drive).',
+    input_schema: { type: 'object', properties: {
+      itemId: { type: 'string' },
+      confirmed: { type: 'boolean', description: 'Só true após confirmar DUAS vezes com o colaborador.' },
+    }, required: ['itemId'] },
   },
   {
     name: 'create_lead',
@@ -608,41 +658,75 @@ async function executeAgentTool(
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
 
-    // Acha o anexo: o indicado (attachmentId), ou a foto/PDF mais recente do lead.
-    const att = input.attachmentId
-      ? await prisma.messageAttachment.findFirst({ where: { id: String(input.attachmentId), leadId } })
-      : await prisma.messageAttachment.findFirst({
+    const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+    let buffer: Buffer | null = null;
+    let mimeType = '';
+    let fileName = '';
+    let fonte: 'drive' | 'whatsapp' = 'whatsapp';
+
+    if (input.attachmentId) {
+      // Anexo específico da conversa do WhatsApp, apontado pelo colaborador.
+      const att = await prisma.messageAttachment.findFirst({ where: { id: String(input.attachmentId), leadId } });
+      if (!att) return { success: false, error: 'Anexo não encontrado.' };
+      if (!SUPPORTED.includes(att.mimeType)) return { success: false, error: `Tipo de arquivo não suportado (${att.mimeType}).` };
+      try {
+        buffer = att.data ? Buffer.from(att.data) : att.driveFileId ? await downloadDriveFile(accountId, att.driveFileId, att.mimeType) : null;
+      } catch (err: any) {
+        return { success: false, error: `Falha ao baixar o anexo: ${err?.message || 'erro desconhecido'}` };
+      }
+      if (buffer) { mimeType = att.mimeType; fileName = att.fileName; fonte = 'whatsapp'; }
+    } else {
+      // 1ª tentativa: a pasta do cliente no Drive.
+      const nomePasta = String(input.nomePasta || lead.name || '').trim();
+      try {
+        const folder = nomePasta ? await findFolderByNameUnderRoot(accountId, nomePasta) : null;
+        if (folder) {
+          const files = (await listFolderContents(accountId, folder.folderId)).filter((f) => !f.isFolder && SUPPORTED.includes(f.mimeType));
+          const nomeArquivo = String(input.nomeArquivo || '').trim().toLowerCase();
+          let chosen = files[0] || null;
+          if (nomeArquivo) {
+            chosen = files.find((f) => f.name.toLowerCase().includes(nomeArquivo)) || chosen;
+          } else {
+            const heur = files.find((f) => /cnh|rg|identidade|habilita|holerite|contracheque|comprovante|renda/i.test(f.name));
+            if (heur) chosen = heur;
+          }
+          if (chosen) {
+            buffer = await downloadDriveFile(accountId, chosen.id, chosen.mimeType);
+            mimeType = chosen.mimeType; fileName = chosen.name; fonte = 'drive';
+          }
+        }
+      } catch (err) {
+        console.error('[AI] Busca na pasta do Drive falhou:', (err as any)?.message);
+        // não interrompe — cai no fallback do WhatsApp abaixo
+      }
+
+      // 2ª tentativa (fallback): a foto/PDF mais recente enviada pelo cliente no WhatsApp.
+      if (!buffer) {
+        const att = await prisma.messageAttachment.findFirst({
           where: { leadId, OR: [{ mimeType: { startsWith: 'image/' } }, { mimeType: 'application/pdf' }] },
           orderBy: { createdAt: 'desc' },
         });
-    if (!att) return { success: false, error: 'Nenhum documento (foto ou PDF) encontrado na conversa desse cliente.' };
-
-    const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
-    if (!SUPPORTED.includes(att.mimeType)) {
-      return { success: false, error: `Tipo de arquivo não suportado para leitura (${att.mimeType}). Peça uma foto (JPG/PNG) ou PDF do documento.` };
-    }
-
-    // Busca os bytes: do banco (recentes) ou do Drive (já arquivados).
-    let buffer: Buffer;
-    try {
-      if (att.data) {
-        buffer = Buffer.from(att.data);
-      } else if (att.driveFileId) {
-        buffer = await downloadDriveFile(accountId, att.driveFileId, att.mimeType);
-      } else {
-        return { success: false, error: 'Não foi possível recuperar o arquivo do documento.' };
+        if (att) {
+          try {
+            buffer = att.data ? Buffer.from(att.data) : att.driveFileId ? await downloadDriveFile(accountId, att.driveFileId, att.mimeType) : null;
+          } catch (err: any) {
+            return { success: false, error: `Falha ao baixar o documento: ${err?.message || 'erro desconhecido'}` };
+          }
+          if (buffer) { mimeType = att.mimeType; fileName = att.fileName; fonte = 'whatsapp'; }
+        }
       }
-    } catch (err: any) {
-      return { success: false, error: `Falha ao baixar o documento: ${err?.message || 'erro desconhecido'}` };
     }
+
+    if (!buffer) return { success: false, error: 'Nenhum documento (foto ou PDF) encontrado — nem na pasta do cliente no Drive, nem na conversa do WhatsApp.' };
+    if (!SUPPORTED.includes(mimeType)) return { success: false, error: `Tipo de arquivo não suportado para leitura (${mimeType}). Peça uma foto (JPG/PNG) ou PDF do documento.` };
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return { success: false, error: 'ANTHROPIC_API_KEY não configurada' };
 
-    const isPdf = att.mimeType === 'application/pdf';
+    const isPdf = mimeType === 'application/pdf';
     const contentBlock = isPdf
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') } }
-      : { type: 'image', source: { type: 'base64', media_type: att.mimeType, data: buffer.toString('base64') } };
+      : { type: 'image', source: { type: 'base64', media_type: mimeType, data: buffer.toString('base64') } };
 
     try {
       const visionRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -675,8 +759,8 @@ async function executeAgentTool(
 
       return {
         success: true,
-        fileName: att.fileName,
-        attachmentId: att.id,
+        fileName,
+        fonte: fonte === 'drive' ? 'pasta do cliente no Drive' : 'conversa do WhatsApp',
         extraido: {
           nomeCompleto: parsed.nomeCompleto ?? null,
           cpf: parsed.cpf ?? null,
@@ -686,6 +770,110 @@ async function executeAgentTool(
       };
     } catch (err: any) {
       return { success: false, error: `Falha ao processar o documento: ${err?.message || 'erro desconhecido'}` };
+    }
+  }
+
+  if (name === 'listar_pasta_drive') {
+    let folderId = String(input.pastaId || '').trim();
+    let folderLabel = '';
+    if (!folderId) {
+      let nomePasta = String(input.nomePasta || '').trim();
+      if (!nomePasta && input.leadId) {
+        const lead = await prisma.lead.findFirst({ where: { id: String(input.leadId), accountId } });
+        if (!lead) return { success: false, error: 'Lead não encontrado' };
+        nomePasta = lead.name;
+      }
+      if (!nomePasta) return { success: false, error: 'Informe leadId, nomePasta ou pastaId.' };
+      const folder = await findFolderByNameUnderRoot(accountId, nomePasta);
+      if (!folder) return { success: false, error: `Pasta "${nomePasta}" não encontrada no Drive.` };
+      folderId = folder.folderId;
+      folderLabel = nomePasta;
+    }
+    try {
+      const items = await listFolderContents(accountId, folderId);
+      return {
+        success: true,
+        pasta: folderLabel || undefined,
+        itens: items.map((i) => ({ id: i.id, nome: i.name, tipo: i.isFolder ? 'pasta' : 'arquivo', link: i.link })),
+      };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao listar a pasta' };
+    }
+  }
+
+  if (name === 'criar_pasta_drive') {
+    const nome = String(input.nome || '').trim();
+    if (!nome) return { success: false, error: 'nome é obrigatório' };
+    const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+    if (!conn?.rootFolderId) return { success: false, error: 'Pasta-raiz dos clientes não definida. Configure em Configurações → Google Drive.' };
+    try {
+      let parentId = conn.rootFolderId;
+      const dentroDe = String(input.dentroDe || '').trim();
+      if (dentroDe) {
+        const parent = await findFolderByNameUnderRoot(accountId, dentroDe);
+        if (!parent) return { success: false, error: `Pasta "${dentroDe}" não encontrada no Drive.` };
+        parentId = parent.folderId;
+      }
+      const folder = await createFolder(accountId, nome, parentId);
+      return { success: true, pasta: folder.name, id: folder.id, jaExistia: folder.existed, link: folderLink(folder.id) };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao criar a pasta' };
+    }
+  }
+
+  if (name === 'renomear_item_drive') {
+    const novoNome = String(input.novoNome || '').trim();
+    if (!novoNome) return { success: false, error: 'novoNome é obrigatório' };
+    let itemId = String(input.itemId || '').trim();
+    if (!itemId) {
+      const leadId = String(input.leadId || '');
+      if (!leadId) return { success: false, error: 'Informe itemId ou leadId.' };
+      const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
+      if (!lead) return { success: false, error: 'Lead não encontrado' };
+      const nomePastaAtual = String(input.nomePastaAtual || lead.name || '').trim();
+      const folder = nomePastaAtual ? await findFolderByNameUnderRoot(accountId, nomePastaAtual) : null;
+      if (!folder) return { success: false, error: `Pasta do cliente "${nomePastaAtual}" não encontrada no Drive.` };
+      itemId = folder.folderId;
+    }
+    try {
+      await renameFile(accountId, itemId, novoNome);
+      return { success: true, novoNome };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao renomear' };
+    }
+  }
+
+  if (name === 'mover_item_drive') {
+    const itemId = String(input.itemId || '').trim();
+    if (!itemId) return { success: false, error: 'itemId é obrigatório' };
+    let novaPastaId = String(input.novaPastaId || '').trim();
+    if (!novaPastaId) {
+      const novaPastaNome = String(input.novaPastaNome || '').trim();
+      if (!novaPastaNome) return { success: false, error: 'Informe novaPastaNome ou novaPastaId.' };
+      const folder = await findFolderByNameUnderRoot(accountId, novaPastaNome);
+      if (!folder) return { success: false, error: `Pasta de destino "${novaPastaNome}" não encontrada no Drive.` };
+      novaPastaId = folder.folderId;
+    }
+    try {
+      const moved = await moveDriveItem(accountId, itemId, novaPastaId);
+      return { success: true, item: moved.name };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao mover' };
+    }
+  }
+
+  if (name === 'excluir_item_drive') {
+    if (!perms.funnel_manage) return deny('funnel_manage', 'excluir arquivos/pastas do Drive');
+    const itemId = String(input.itemId || '').trim();
+    if (!itemId) return { success: false, error: 'itemId é obrigatório' };
+    if (input.confirmed !== true) {
+      return { success: false, needsConfirmation: true, error: 'Ação IRREVERSÍVEL: excluir este item do Drive. Pergunte ao colaborador DUAS vezes se confirma; só então chame de novo com confirmed:true.' };
+    }
+    try {
+      const trashed = await trashDriveItem(accountId, itemId);
+      return { success: true, deleted: trashed.name };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao excluir' };
     }
   }
 

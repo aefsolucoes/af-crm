@@ -492,3 +492,91 @@ export async function archiveOldAttachmentsAllAccounts(): Promise<void> {
     }
   }
 }
+
+// ─── Navegação/gestão geral do Drive (usado pelo assistente de chat) ────────
+
+/**
+ * Acha uma pasta pelo nome dentro da pasta-raiz configurada — direto na raiz,
+ * ou dentro de UMA sub-pasta dela (ex: "LEADS ATIVOS"), que é onde
+ * organizeLeadDocsToDrive costuma criar as pastas de cliente. Não cria nada,
+ * só procura. Serve tanto para achar "a pasta do cliente Fulano" quanto
+ * qualquer outra pasta pelo nome (ex: "LEADS ATIVOS" em si).
+ */
+export async function findFolderByNameUnderRoot(accountId: string, name: string): Promise<{ folderId: string; path: string } | null> {
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  if (!conn?.rootFolderId) return null;
+
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+
+  const direct = await findFolder(accountId, trimmed, conn.rootFolderId);
+  if (direct) return { folderId: direct, path: conn.rootFolderName || 'raiz' };
+
+  const subfolders = await listFolders(accountId, conn.rootFolderId);
+  for (const sub of subfolders) {
+    const found = await findFolder(accountId, trimmed, sub.id);
+    if (found) return { folderId: found, path: sub.name };
+  }
+  return null;
+}
+
+export interface DriveItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  isFolder: boolean;
+  modifiedTime?: string;
+  link: string;
+}
+
+/** Lista TODO o conteúdo (arquivos e sub-pastas) de uma pasta do Drive, por ID. */
+export async function listFolderContents(accountId: string, folderId: string): Promise<DriveItem[]> {
+  const drive = await getDrive(accountId);
+  const res = await drive.files.list({
+    q: `'${folderId}' in parents and trashed = false`,
+    fields: 'files(id, name, mimeType, modifiedTime)',
+    orderBy: 'folder,name',
+    pageSize: 200,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  return (res.data.files || []).map((f) => {
+    const isFolder = f.mimeType === 'application/vnd.google-apps.folder';
+    return {
+      id: f.id!,
+      name: f.name!,
+      mimeType: f.mimeType!,
+      isFolder,
+      modifiedTime: f.modifiedTime || undefined,
+      link: isFolder ? folderLink(f.id!) : `https://drive.google.com/file/d/${f.id}/view`,
+    };
+  });
+}
+
+/** Move um arquivo/pasta do Drive para outro pai (outra pasta), por ID. */
+export async function moveDriveItem(accountId: string, itemId: string, newParentId: string): Promise<{ id: string; name: string }> {
+  const drive = await getDrive(accountId);
+  const current = await drive.files.get({ fileId: itemId, fields: 'parents', supportsAllDrives: true });
+  const removeParents = (current.data.parents || []).join(',');
+  const res = await drive.files.update({
+    fileId: itemId,
+    addParents: newParentId,
+    ...(removeParents ? { removeParents } : {}),
+    fields: 'id, name',
+    supportsAllDrives: true,
+  });
+  return { id: res.data.id!, name: res.data.name! };
+}
+
+/** Move um arquivo/pasta do Drive para a lixeira (o CRM trata como irreversível,
+ *  mesmo que o Google mantenha por ~30 dias — exige dupla confirmação no chat). */
+export async function trashDriveItem(accountId: string, itemId: string): Promise<{ id: string; name: string }> {
+  const drive = await getDrive(accountId);
+  const res = await drive.files.update({
+    fileId: itemId,
+    requestBody: { trashed: true },
+    fields: 'id, name',
+    supportsAllDrives: true,
+  });
+  return { id: res.data.id!, name: res.data.name! };
+}
