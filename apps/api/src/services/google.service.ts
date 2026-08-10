@@ -166,6 +166,28 @@ export async function findFolder(accountId: string, name: string, parentId: stri
   return res.data.files?.[0]?.id || null;
 }
 
+/**
+ * Acha uma subpasta cujo nome CONTÉM o termo (não precisa ser exato) dentro de
+ * um parent — usado como fallback quando o nome exato não bate (ex.: colaborador
+ * diz "leads ativos" e a pasta real é "1. LEADS ATIVOS"). Retorna null se não
+ * achar nenhuma, ou se achar mais de uma (ambíguo — quem chamou decide o que fazer).
+ */
+export async function findFolderLoose(accountId: string, name: string, parentId: string): Promise<{ id: string; name: string } | null> {
+  const drive = await getDrive(accountId);
+  const safe = name.trim().replace(/'/g, "\\'");
+  if (!safe) return null;
+  const res = await drive.files.list({
+    q: `'${parentId}' in parents and name contains '${safe}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    fields: 'files(id, name)',
+    pageSize: 5,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  const files = res.data.files || [];
+  if (files.length !== 1) return null; // 0 ou ambíguo (2+) — não arrisca escolher errado
+  return { id: files[0].id!, name: files[0].name! };
+}
+
 /** Cria uma pasta (ou retorna a existente de mesmo nome) dentro de um parent */
 export async function createFolder(accountId: string, name: string, parentId: string): Promise<{ id: string; name: string; existed: boolean }> {
   const existing = await findFolder(accountId, name, parentId);
@@ -517,6 +539,18 @@ export async function findFolderByNameUnderRoot(accountId: string, name: string)
     const found = await findFolder(accountId, trimmed, sub.id);
     if (found) return { folderId: found, path: sub.name };
   }
+
+  // Nome exato não bateu em lugar nenhum — tenta um nome PARECIDO (ex.: o
+  // colaborador diz "leads ativos" e a pasta real é "1. LEADS ATIVOS"),
+  // primeiro na raiz, depois dentro de cada sub-pasta já listada acima.
+  const looseDirect = await findFolderLoose(accountId, trimmed, conn.rootFolderId);
+  if (looseDirect) return { folderId: looseDirect.id, path: conn.rootFolderName || 'raiz' };
+
+  for (const sub of subfolders) {
+    const found = await findFolderLoose(accountId, trimmed, sub.id);
+    if (found) return { folderId: found.id, path: sub.name };
+  }
+
   return null;
 }
 
