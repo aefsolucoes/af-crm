@@ -3,7 +3,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import {
   getAuthUrl, handleOAuthCallback, getGoogleStatus, disconnectGoogle,
   listFolders, setRootFolder, createFolder, isGoogleConfigured, bulkArchiveOldAttachments,
-  getFolderName, extractFolderId,
+  getFolderName, extractFolderId, moveDriveItem,
 } from '../services/google.service';
 
 const router = Router();
@@ -116,6 +116,20 @@ router.post('/test-folder', async (req: AuthRequest, res: Response) => {
     res.json(folder);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao criar pasta' });
+  }
+});
+
+// Move um item (arquivo ou pasta) do Drive para dentro de outra pasta, por ID.
+// Uso administrativo direto (fora do assistente) — ex.: corrigir uma pasta que
+// o assistente moveu para o lugar errado.
+router.post('/move-item', async (req: AuthRequest, res: Response) => {
+  try {
+    const { itemId, newParentId } = req.body as { itemId?: string; newParentId?: string };
+    if (!itemId || !newParentId) return res.status(400).json({ error: 'itemId e newParentId são obrigatórios' });
+    const moved = await moveDriveItem(req.user!.accountId, itemId, newParentId);
+    res.json({ success: true, item: moved });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao mover item' });
   }
 });
 
