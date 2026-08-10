@@ -24,6 +24,7 @@ import financeRoutes from './routes/finance';
 import googleRoutes from './routes/google';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
+import { generateRecurringTransactions } from './routes/finance';
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -181,8 +182,10 @@ httpServer.listen(PORT, () => {
   const SIX_HOURS = 6 * 60 * 60 * 1000;
   setTimeout(() => {
     archiveOldAttachmentsAllAccounts().catch((err) => console.error('[Drive] Arquivamento automático (boot):', err?.message));
+    generateRecurringTransactions().catch((err) => console.error('[Financeiro] Lançamentos fixos (boot):', err?.message));
     setInterval(() => {
       archiveOldAttachmentsAllAccounts().catch((err) => console.error('[Drive] Arquivamento automático:', err?.message));
+      generateRecurringTransactions().catch((err) => console.error('[Financeiro] Lançamentos fixos:', err?.message));
     }, SIX_HOURS);
   }, 10 * 60 * 1000);
 });

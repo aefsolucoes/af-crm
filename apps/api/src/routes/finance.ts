@@ -15,6 +15,8 @@ const transactionSchema = z.object({
   amount: z.number().positive(),
   type: z.enum(['INCOME', 'EXPENSE']),
   date: z.string(),
+  // Lançamento fixo — repete todo mês sozinho a partir do dia deste primeiro lançamento.
+  recurring: z.boolean().optional(),
 });
 
 const savingsSchema = z.object({
@@ -28,7 +30,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const accountId = req.user!.accountId;
     const { from, to } = req.query;
 
-    const [transactions, savingsTotalAgg] = await Promise.all([
+    const [transactions, savingsTotalAgg, previousAgg] = await Promise.all([
       prisma.transaction.findMany({
         where: {
           accountId,
@@ -47,6 +49,15 @@ router.get('/', async (req: AuthRequest, res: Response) => {
         where: { accountId, type: 'SAVINGS' },
         _sum: { amount: true },
       }),
+      // Saldo de TUDO antes do período filtrado — o "residual" que entra como
+      // ponto de partida do mês (sem isso, cada mês parecia começar do zero).
+      from
+        ? prisma.transaction.groupBy({
+            by: ['type'],
+            where: { accountId, date: { lt: new Date(from as string) } },
+            _sum: { amount: true },
+          })
+        : Promise.resolve(null),
     ]);
 
     const totalIncome = transactions.filter(t => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0);
@@ -54,13 +65,20 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const totalSavingsPeriod = transactions.filter(t => t.type === 'SAVINGS').reduce((s, t) => s + t.amount, 0);
     const totalSavingsAllTime = savingsTotalAgg._sum.amount || 0;
 
+    const sumByType = (type: string) => previousAgg?.find((g) => g.type === type)?._sum.amount || 0;
+    const previousBalance = previousAgg
+      ? sumByType('INCOME') - sumByType('EXPENSE') - sumByType('SAVINGS')
+      : 0;
+
     res.json({
       transactions,
       totalIncome,
       totalExpense,
       totalSavingsPeriod,
       totalSavingsAllTime,
-      balance: totalIncome - totalExpense - totalSavingsPeriod,
+      previousBalance,
+      // Saldo acumulado: o que sobrou de antes + o que aconteceu neste período.
+      balance: previousBalance + (totalIncome - totalExpense - totalSavingsPeriod),
     });
   } catch {
     res.status(500).json({ error: 'Erro ao buscar lançamentos' });
@@ -89,14 +107,16 @@ router.post('/savings', validate(savingsSchema), async (req: AuthRequest, res: R
 
 router.post('/', validate(transactionSchema), async (req: AuthRequest, res: Response) => {
   try {
+    const date = new Date(req.body.date);
     const transaction = await prisma.transaction.create({
       data: {
         description: req.body.description,
         amount: req.body.amount,
         type: req.body.type,
-        date: new Date(req.body.date),
+        date,
         accountId: req.user!.accountId,
         userId: req.user!.id,
+        ...(req.body.recurring ? { isRecurring: true, recurringDay: date.getDate() } : {}),
       },
       include: { user: { select: { id: true, name: true } } },
     });
@@ -230,5 +250,53 @@ router.post('/commission-suggestions/:id/dismiss', async (req: AuthRequest, res:
     res.status(500).json({ error: 'Erro ao descartar sugestão' });
   }
 });
+
+// ── Lançamentos fixos (repetem todo mês sozinhos) ────────────────────────────
+
+/** Cria a ocorrência do mês para cada lançamento marcado como fixo, se ainda
+ *  não existir uma para o mês atual e se já chegou o dia. Roda sozinha,
+ *  agendada no index.ts — ninguém precisa abrir o Financeiro para acontecer. */
+export async function generateRecurringTransactions(): Promise<void> {
+  const templates = await prisma.transaction.findMany({ where: { isRecurring: true } });
+  if (!templates.length) return;
+
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth(); // 0-based
+  const monthStart = new Date(year, month, 1);
+  const monthEnd = new Date(year, month + 1, 0, 23, 59, 59, 999);
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  for (const t of templates) {
+    try {
+      const day = Math.min(t.recurringDay || new Date(t.date).getDate(), daysInMonth);
+      if (now.getDate() < day) continue; // ainda não chegou o dia deste mês
+
+      const exists = await prisma.transaction.findFirst({
+        where: {
+          accountId: t.accountId,
+          date: { gte: monthStart, lte: monthEnd },
+          OR: [{ id: t.id }, { recurringParentId: t.id }],
+        },
+      });
+      if (exists) continue;
+
+      await prisma.transaction.create({
+        data: {
+          description: t.description,
+          amount: t.amount,
+          type: t.type,
+          date: new Date(year, month, day),
+          accountId: t.accountId,
+          userId: t.userId,
+          recurringParentId: t.id,
+        },
+      });
+      console.log(`[Financeiro] Lançamento fixo gerado: "${t.description}" (${t.type}) — ${year}-${month + 1}`);
+    } catch (err) {
+      console.error(`[Financeiro] Falha ao gerar ocorrência fixa (template ${t.id}):`, (err as any)?.message);
+    }
+  }
+}
 
 export default router;

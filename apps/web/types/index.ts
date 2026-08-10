@@ -119,6 +119,10 @@ export interface Transaction {
   userId?: string;
   user?: Pick<User, 'id' | 'name'>;
   createdAt: string;
+  /** true no lançamento "molde" que repete todo mês sozinho. */
+  isRecurring?: boolean;
+  /** preenchido nas ocorrências geradas automaticamente a partir de um molde fixo. */
+  recurringParentId?: string | null;
 }
 
 export type CommissionSuggestionStatus = 'PENDING' | 'CONFIRMED' | 'DISMISSED';

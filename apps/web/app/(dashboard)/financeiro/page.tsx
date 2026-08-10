@@ -7,7 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import api from '@/lib/api';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
 import { Transaction, TransactionType, CommissionSuggestion } from '@/types';
-import { Plus, TrendingUp, TrendingDown, Wallet, Trash2, X, PiggyBank, Pencil, Percent, Check } from 'lucide-react';
+import { Plus, TrendingUp, TrendingDown, Wallet, Trash2, X, PiggyBank, Pencil, Percent, Check, Repeat } from 'lucide-react';
 
 interface FinanceResponse {
   transactions: Transaction[];
@@ -15,6 +15,7 @@ interface FinanceResponse {
   totalExpense: number;
   totalSavingsPeriod: number;
   totalSavingsAllTime: number;
+  previousBalance: number;
   balance: number;
 }
 
@@ -128,6 +129,7 @@ export default function FinanceiroPage() {
   const [formDescription, setFormDescription] = useState('');
   const [formAmount, setFormAmount] = useState('');
   const [formDate, setFormDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [formRecurring, setFormRecurring] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [showSavings, setShowSavings] = useState(false);
@@ -155,6 +157,7 @@ export default function FinanceiroPage() {
     setFormAmount('');
     setFormDate(new Date().toISOString().slice(0, 10));
     setFormType('INCOME');
+    setFormRecurring(false);
     setEditingId(null);
     setShowAdd(false);
   }
@@ -166,6 +169,7 @@ export default function FinanceiroPage() {
     setFormDescription(t.description);
     setFormAmount(String(t.amount).replace('.', ','));
     setFormDate(new Date(t.date).toISOString().slice(0, 10));
+    setFormRecurring(false);
     setShowAdd(true);
   }
 
@@ -177,7 +181,10 @@ export default function FinanceiroPage() {
     }
     setSaving(true);
     try {
-      const payload = { description: formDescription.trim(), amount, type: formType, date: formDate };
+      const payload = {
+        description: formDescription.trim(), amount, type: formType, date: formDate,
+        ...(!editingId && formRecurring ? { recurring: true } : {}),
+      };
       if (editingId) {
         await api.patch(`/api/finance/${editingId}`, payload);
         toast('Lançamento atualizado!');
@@ -294,8 +301,11 @@ export default function FinanceiroPage() {
               </div>
               <div className="bg-white rounded-xl border border-af-border p-5 shadow-sm flex items-start justify-between">
                 <div>
-                  <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Saldo do período</p>
+                  <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Saldo acumulado</p>
                   <p className={cn('text-2xl font-bold mt-1', (data?.balance || 0) >= 0 ? 'text-slate-900' : 'text-red-500')}>{formatCurrency(data?.balance || 0)}</p>
+                  {!!data?.previousBalance && (
+                    <p className="text-[11px] text-slate-400 mt-0.5">inclui {formatCurrency(data.previousBalance)} de antes</p>
+                  )}
                 </div>
                 <div className="p-2.5 rounded-xl bg-af-light"><Wallet size={20} className="text-af-mid" /></div>
               </div>
@@ -396,6 +406,18 @@ export default function FinanceiroPage() {
                   className="w-full text-sm px-3 py-2 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent"
                 />
               </div>
+              {!editingId && (
+                <label className="sm:col-span-2 flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={formRecurring}
+                    onChange={e => setFormRecurring(e.target.checked)}
+                    className="rounded border-af-border text-af-mid focus:ring-af-accent"
+                  />
+                  <Repeat size={13} className="text-slate-400" />
+                  Lançamento fixo — repete todo mês automaticamente (todo dia {parseInt(formDate.split('-')[2], 10) || '—'})
+                </label>
+              )}
             </div>
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={resetForm} className="text-sm px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100">Cancelar</button>
@@ -472,7 +494,14 @@ export default function FinanceiroPage() {
                 <tbody className="divide-y divide-af-border">
                   {data?.transactions.map((t) => (
                     <tr key={t.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-5 py-3 font-medium text-slate-800">{t.description}</td>
+                      <td className="px-5 py-3 font-medium text-slate-800">
+                        <span className="flex items-center gap-1.5">
+                          {(t.isRecurring || t.recurringParentId) && (
+                            <Repeat size={12} className="text-slate-400 flex-shrink-0" title="Lançamento fixo (repete todo mês)" />
+                          )}
+                          {t.description}
+                        </span>
+                      </td>
                       <td className="px-4 py-3">
                         <span className={cn('text-xs font-semibold px-2 py-0.5 rounded-full', TYPE_BADGE[t.type])}>
                           {TYPE_LABELS[t.type]}

@@ -400,6 +400,11 @@ model Transaction {
   user        User?           @relation(fields: [userId], references: [id])
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
+  // Lançamento fixo (repete todo mês sozinho). true só no "molde" original;
+  // as ocorrências geradas automaticamente apontam pra ele via recurringParentId.
+  isRecurring       Boolean  @default(false)
+  recurringDay      Int?     // dia do mês em que repete (1-31)
+  recurringParentId String?  // preenchido nas ocorrências geradas — aponta pro molde
 }
 
 enum CommissionSuggestionStatus {
