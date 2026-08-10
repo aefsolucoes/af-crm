@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
-import { StickyNote, Plus, X, Users, Lock } from 'lucide-react';
+import { StickyNote, Plus, X, Users, Lock, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface DashboardNoteItem {
@@ -51,6 +51,9 @@ export function NotesBoard() {
   const [scope, setScope] = useState<Scope>('PRIVATE');
   const [draft, setDraft] = useState('');
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: notes, isLoading } = useQuery({
@@ -92,6 +95,32 @@ export function NotesBoard() {
       invalidate();
     } catch {
       toast('Erro ao excluir anotação', 'error');
+    }
+  }
+
+  function startEdit(note: DashboardNoteItem) {
+    setEditingId(note.id);
+    setEditDraft(note.content);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditDraft('');
+  }
+
+  async function saveEdit() {
+    if (!editingId) return;
+    const content = editDraft.trim();
+    if (!content) { cancelEdit(); return; }
+    setSavingEdit(true);
+    try {
+      await api.patch(`/api/dashboard-notes/${editingId}`, { content });
+      invalidate();
+      cancelEdit();
+    } catch {
+      toast('Erro ao editar anotação', 'error');
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -160,25 +189,63 @@ export function NotesBoard() {
                   className="absolute -top-2 left-1/2 -translate-x-1/2 w-8 h-3 rounded-sm opacity-80"
                   style={{ backgroundColor: color.tape }}
                 />
-                <button
-                  onClick={() => handleDelete(note.id)}
-                  title="Excluir"
-                  className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-slate-800 p-0.5"
-                >
-                  <X size={13} />
-                </button>
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={note.done}
-                    onChange={() => toggleDone(note)}
-                    className="mt-0.5 rounded border-slate-400 flex-shrink-0"
-                  />
-                  <span className={cn('text-sm text-slate-800 leading-snug break-words', note.done && 'line-through opacity-50')}>
-                    {note.content}
-                  </span>
-                </label>
-                {scope === 'TEAM' && note.authorName && (
+                {editingId !== note.id && (
+                  <>
+                    <button
+                      onClick={() => startEdit(note)}
+                      title="Editar"
+                      className="absolute top-1.5 right-7 opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-slate-800 p-0.5"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(note.id)}
+                      title="Excluir"
+                      className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-slate-800 p-0.5"
+                    >
+                      <X size={13} />
+                    </button>
+                  </>
+                )}
+
+                {editingId === note.id ? (
+                  <div className="flex flex-col gap-1.5">
+                    <textarea
+                      autoFocus
+                      value={editDraft}
+                      onChange={(e) => setEditDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEdit(); }
+                        if (e.key === 'Escape') cancelEdit();
+                      }}
+                      rows={3}
+                      className="w-full text-sm text-slate-800 leading-snug bg-white/70 rounded-md px-2 py-1.5 border border-slate-300 focus:outline-none focus:border-af-accent resize-none"
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button onClick={cancelEdit} className="text-[11px] text-slate-500 hover:text-slate-700">Cancelar</button>
+                      <button onClick={saveEdit} disabled={savingEdit} className="text-[11px] font-medium text-af-mid hover:text-af-dark disabled:opacity-50">
+                        {savingEdit ? 'Salvando...' : 'Salvar'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={note.done}
+                      onChange={() => toggleDone(note)}
+                      className="mt-0.5 rounded border-slate-400 flex-shrink-0 cursor-pointer"
+                    />
+                    <span
+                      onClick={() => startEdit(note)}
+                      title="Clique para editar"
+                      className={cn('text-sm text-slate-800 leading-snug break-words cursor-text', note.done && 'line-through opacity-50')}
+                    >
+                      {note.content}
+                    </span>
+                  </div>
+                )}
+                {editingId !== note.id && scope === 'TEAM' && note.authorName && (
                   <p className="text-[10px] text-slate-500/80 mt-2 text-right italic">— {note.authorName}</p>
                 )}
               </div>
