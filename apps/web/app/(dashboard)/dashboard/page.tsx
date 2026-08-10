@@ -8,6 +8,7 @@ import { formatCurrency, formatDate, isOverdue, cn } from '@/lib/utils';
 import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download, AlertCircle, MessageCircle, Plus, Inbox, FileCheck } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MorningReport } from '@/components/dashboard/morning-report';
+import { NotesBoard } from '@/components/dashboard/notes-board';
 import { useState } from 'react';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement,
@@ -118,6 +119,9 @@ export default function DashboardPage() {
       <div className="flex-1 overflow-auto px-6 py-5 space-y-6 scrollbar-thin">
         {/* Relatório Matinal — o que o usuário tem pra hoje */}
         <MorningReport />
+
+        {/* Anotações — bloco pessoal + mural da equipe */}
+        <NotesBoard />
 
         {/* Visão geral rápida */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

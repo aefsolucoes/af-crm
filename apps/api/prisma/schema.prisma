@@ -445,3 +445,25 @@ model AssistantConversation {
 
   @@index([userId])
 }
+
+enum DashboardNoteScope {
+  PRIVATE // só quem escreveu vê
+  TEAM    // mural — todos os colaboradores da conta veem
+}
+
+// Bloco de anotações do Dashboard ("o que tenho pra hoje"). PRIVATE é só do
+// autor; TEAM é um mural compartilhado por toda a conta. Sem @relation com
+// User/Account — mesmo padrão leve já usado em CommissionSuggestion.
+model DashboardNote {
+  id        String             @id @default(cuid())
+  accountId String
+  userId    String
+  scope     DashboardNoteScope @default(PRIVATE)
+  content   String
+  done      Boolean            @default(false)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@index([accountId, scope])
+  @@index([userId])
+}

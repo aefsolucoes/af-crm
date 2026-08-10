@@ -22,6 +22,7 @@ import aiRoutes from './routes/ai';
 import knowledgeRoutes from './routes/knowledge';
 import financeRoutes from './routes/finance';
 import googleRoutes from './routes/google';
+import dashboardNoteRoutes from './routes/dashboard-notes';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
 import { generateRecurringTransactions } from './routes/finance';
@@ -65,6 +66,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/google', googleRoutes);
+app.use('/api/dashboard-notes', dashboardNoteRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
 
