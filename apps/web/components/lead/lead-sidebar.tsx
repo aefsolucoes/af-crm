@@ -45,6 +45,9 @@ function FieldEditor({
   onCancel: () => void;
 }) {
   const [val, setVal] = useState(String(value ?? ''));
+  // Evita que o blur (disparado quando o campo some da tela ao confirmar/
+  // cancelar pelo teclado) salve de novo ou desfaça o cancelamento.
+  const suppressBlurRef = useRef(false);
 
   if (fieldDef.type === 'SELECT') {
     return (
@@ -83,15 +86,30 @@ function FieldEditor({
           setVal(v);
         }}
         onKeyDown={e => {
-          if (e.key === 'Enter') onSave(normalizeForSave(fieldDef.type, val));
-          if (e.key === 'Escape') onCancel();
+          if (e.key === 'Enter') { suppressBlurRef.current = true; onSave(normalizeForSave(fieldDef.type, val)); }
+          if (e.key === 'Escape') { suppressBlurRef.current = true; onCancel(); }
+        }}
+        // Clicar fora também salva. Enter/Esc já resolveram antes (a trava
+        // acima evita salvar de novo, ou desfazer o cancelamento, quando o
+        // campo some da tela e dispara blur por conta própria).
+        onBlur={() => {
+          if (suppressBlurRef.current) { suppressBlurRef.current = false; return; }
+          onSave(normalizeForSave(fieldDef.type, val));
         }}
         autoFocus
       />
-      <button onClick={() => onSave(normalizeForSave(fieldDef.type, val))} className="text-green-600 hover:text-green-700 flex-shrink-0">
+      <button
+        onMouseDown={e => e.preventDefault()}
+        onClick={() => onSave(normalizeForSave(fieldDef.type, val))}
+        className="text-green-600 hover:text-green-700 flex-shrink-0"
+      >
         <Check size={12} />
       </button>
-      <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
+      <button
+        onMouseDown={e => e.preventDefault()}
+        onClick={onCancel}
+        className="text-slate-400 hover:text-slate-600 flex-shrink-0"
+      >
         <X size={12} />
       </button>
     </div>
@@ -138,6 +156,10 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState(false);
   const [valueInput, setValueInput] = useState(String(lead.value ?? 0));
+  // Evita que o blur (disparado quando o campo some da tela ao confirmar/
+  // cancelar pelo teclado) salve de novo ou desfaça o cancelamento — só um
+  // campo built-in é editado por vez, então um único ref serve para os dois.
+  const suppressBlurRef = useRef(false);
   const [customValues, setCustomValues] = useState<Record<string, FieldValue>>(
     (lead.customFields as Record<string, FieldValue>) || {}
   );
@@ -242,6 +264,20 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
     } finally {
       setSaving(false);
     }
+  };
+
+  // Salva "Valor da venda" (lead.value + customFields.valor_credito juntos) —
+  // usado pelo Enter, pelo check verde e ao clicar fora (onBlur).
+  const saveValueField = async () => {
+    const numeric = parseBRNumber(valueInput);
+    const newCF = { ...customValues, valor_credito: String(numeric) };
+    setCustomValues(newCF);
+    setEditingValue(false);
+    await Promise.all([
+      api.put(`/api/leads/${lead.id}`, { value: numeric }),
+      api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newCF }),
+    ]);
+    onRefresh();
   };
 
   const addFieldMutation = useMutation({
@@ -359,36 +395,20 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
                       className="text-xs text-slate-800 border border-af-border rounded px-2 py-1 flex-1 bg-white focus:outline-none focus:border-af-mid min-w-0"
                       value={valueInput}
                       onChange={e => setValueInput(e.target.value)}
-                      onKeyDown={async e => {
-                        if (e.key === 'Enter') {
-                          const numeric = parseBRNumber(valueInput);
-                          const newCF = { ...customValues, valor_credito: String(numeric) };
-                          setCustomValues(newCF);
-                          await Promise.all([
-                            api.put(`/api/leads/${lead.id}`, { value: numeric }),
-                            api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newCF }),
-                          ]);
-                          setEditingValue(false);
-                          onRefresh();
-                        }
-                        if (e.key === 'Escape') setEditingValue(false);
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { suppressBlurRef.current = true; saveValueField(); }
+                        if (e.key === 'Escape') { suppressBlurRef.current = true; setEditingValue(false); }
+                      }}
+                      onBlur={() => {
+                        if (suppressBlurRef.current) { suppressBlurRef.current = false; return; }
+                        saveValueField();
                       }}
                       autoFocus
                     />
-                    <button onClick={async () => {
-                      const numeric = parseBRNumber(valueInput);
-                      const newCF = { ...customValues, valor_credito: String(numeric) };
-                      setCustomValues(newCF);
-                      await Promise.all([
-                        api.put(`/api/leads/${lead.id}`, { value: numeric }),
-                        api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newCF }),
-                      ]);
-                      setEditingValue(false);
-                      onRefresh();
-                    }} className="text-green-600 hover:text-green-700 flex-shrink-0">
+                    <button onMouseDown={e => e.preventDefault()} onClick={saveValueField} className="text-green-600 hover:text-green-700 flex-shrink-0">
                       <Check size={12} />
                     </button>
-                    <button onClick={() => setEditingValue(false)} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
+                    <button onMouseDown={e => e.preventDefault()} onClick={() => setEditingValue(false)} className="text-slate-400 hover:text-slate-600 flex-shrink-0">
                       <X size={12} />
                     </button>
                   </div>
@@ -468,12 +488,16 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
                             setCustomValues(prev => ({ ...prev, [key]: v }));
                           }}
                           onKeyDown={e => {
-                            if (e.key === 'Enter') saveFieldValue(key, normalizeForSave(key.includes('renda') ? 'NUMBER' : 'TEXT', String(customValues[key] ?? '')));
-                            if (e.key === 'Escape') setEditingKey(null);
+                            if (e.key === 'Enter') { suppressBlurRef.current = true; saveFieldValue(key, normalizeForSave(key.includes('renda') ? 'NUMBER' : 'TEXT', String(customValues[key] ?? ''))); }
+                            if (e.key === 'Escape') { suppressBlurRef.current = true; setEditingKey(null); }
+                          }}
+                          onBlur={() => {
+                            if (suppressBlurRef.current) { suppressBlurRef.current = false; return; }
+                            saveFieldValue(key, normalizeForSave(key.includes('renda') ? 'NUMBER' : 'TEXT', String(customValues[key] ?? '')));
                           }}
                         />
-                        <button onClick={() => saveFieldValue(key, normalizeForSave(key.includes('renda') ? 'NUMBER' : 'TEXT', String(customValues[key] ?? '')))} className="text-green-600 hover:text-green-700 flex-shrink-0"><Check size={12} /></button>
-                        <button onClick={() => setEditingKey(null)} className="text-slate-400 hover:text-slate-600 flex-shrink-0"><X size={12} /></button>
+                        <button onMouseDown={e => e.preventDefault()} onClick={() => saveFieldValue(key, normalizeForSave(key.includes('renda') ? 'NUMBER' : 'TEXT', String(customValues[key] ?? '')))} className="text-green-600 hover:text-green-700 flex-shrink-0"><Check size={12} /></button>
+                        <button onMouseDown={e => e.preventDefault()} onClick={() => setEditingKey(null)} className="text-slate-400 hover:text-slate-600 flex-shrink-0"><X size={12} /></button>
                       </div>
                     )
                   ) : (
