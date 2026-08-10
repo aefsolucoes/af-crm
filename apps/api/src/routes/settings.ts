@@ -249,8 +249,12 @@ const templateSchema = z.object({
   name: z.string().min(1).max(120),
   category: z.enum(['MARKETING', 'UTILITY', 'AUTHENTICATION']),
   language: z.string().min(2).default('pt_BR'),
-  body: z.string().min(1).max(1024),
+  // Obrigatório para MARKETING/UTILITY; ignorado em AUTHENTICATION (a Meta
+  // gera o texto do código sozinha — não aceita corpo customizado).
+  body: z.string().max(1024).optional(),
   footer: z.string().max(60).optional(),
+  // Só usado em AUTHENTICATION: minutos até o código expirar (padrão 10).
+  codeExpirationMinutes: z.number().int().min(1).max(90).optional(),
 });
 
 // GET /api/settings/whatsapp/templates — lista os templates da conta (com status de aprovação)
@@ -283,12 +287,26 @@ router.post('/whatsapp/templates', validate(templateSchema), async (req: AuthReq
     if (!config?.accessToken) return res.status(400).json({ error: 'Configure o Access Token primeiro (aba API Oficial).' });
     if (!config.wabaId) return res.status(400).json({ error: 'Informe o WABA ID em "Ativar recebimento" primeiro.' });
 
-    const { name, category, language, body, footer } = req.body as {
-      name: string; category: string; language: string; body: string; footer?: string;
+    const { name, category, language, body, footer, codeExpirationMinutes } = req.body as {
+      name: string; category: string; language: string; body?: string; footer?: string; codeExpirationMinutes?: number;
     };
 
-    const components: Record<string, unknown>[] = [{ type: 'BODY', text: body }];
-    if (footer?.trim()) components.push({ type: 'FOOTER', text: footer.trim() });
+    let components: Record<string, unknown>[];
+    if (category === 'AUTHENTICATION') {
+      // Autenticação: a Meta gera o texto do código sozinha — o componente
+      // BODY não pode ter "text" (é rejeitado com código 100). Só dá pra
+      // configurar a recomendação de segurança, a expiração do código e o
+      // botão de copiar código.
+      components = [
+        { type: 'BODY', add_security_recommendation: true },
+        { type: 'FOOTER', code_expiration_minutes: codeExpirationMinutes ?? 10 },
+        { type: 'BUTTONS', buttons: [{ type: 'OTP', otp_type: 'COPY_CODE' }] },
+      ];
+    } else {
+      if (!body?.trim()) return res.status(400).json({ error: 'Corpo da mensagem é obrigatório para esta categoria.' });
+      components = [{ type: 'BODY', text: body.trim() }];
+      if (footer?.trim()) components.push({ type: 'FOOTER', text: footer.trim() });
+    }
 
     const r = await fetch(`https://graph.facebook.com/v20.0/${config.wabaId}/message_templates`, {
       method: 'POST',

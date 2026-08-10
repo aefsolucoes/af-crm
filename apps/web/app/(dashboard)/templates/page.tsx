@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle } from 'lucide-react';
+import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck } from 'lucide-react';
 import {
   MessageTemplate as Template, TemplateCategory as Category, CATEGORY_META,
   extractVariables, fillTemplate, getTemplates, saveTemplates,
@@ -30,7 +30,7 @@ const META_STATUS_META: Record<string, { label: string; color: string; icon: typ
   PENDING:  { label: 'Em análise', color: 'bg-amber-50 text-amber-600', icon: Clock },
   REJECTED: { label: 'Rejeitado', color: 'bg-red-50 text-red-500', icon: XCircle },
 };
-const META_EMPTY_FORM = { name: '', category: 'UTILITY', language: 'pt_BR', body: '', footer: '' };
+const META_EMPTY_FORM = { name: '', category: 'UTILITY', language: 'pt_BR', body: '', footer: '', codeExpirationMinutes: '10' };
 
 function WhatsAppTemplatesTab() {
   const [items, setItems] = useState<MetaTemplate[] | null>(null);
@@ -56,14 +56,19 @@ function WhatsAppTemplatesTab() {
 
   useEffect(() => { load(); }, []);
 
+  const isAuth = form.category === 'AUTHENTICATION';
+
   async function handleSubmit() {
-    if (!form.name.trim() || !form.body.trim()) {
-      toast('Preencha nome e corpo da mensagem.', 'warning');
+    if (!form.name.trim() || (!isAuth && !form.body.trim())) {
+      toast(isAuth ? 'Preencha o nome do template.' : 'Preencha nome e corpo da mensagem.', 'warning');
       return;
     }
     setSaving(true);
     try {
-      await api.post('/api/settings/whatsapp/templates', form);
+      await api.post('/api/settings/whatsapp/templates', {
+        ...form,
+        codeExpirationMinutes: isAuth ? (parseInt(form.codeExpirationMinutes, 10) || 10) : undefined,
+      });
       toast('Template enviado para aprovação da Meta!');
       setShowModal(false);
       setForm(META_EMPTY_FORM);
@@ -150,21 +155,46 @@ function WhatsAppTemplatesTab() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-slate-700">Corpo da mensagem</label>
-                <span className="text-xs text-slate-400">Use {'{{1}}'}, {'{{2}}'}… para campos dinâmicos (a Meta usa número, não nome)</span>
+            {isAuth ? (
+              <div className="space-y-3">
+                <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700">
+                  <ShieldCheck size={15} className="flex-shrink-0 mt-0.5" />
+                  <span>
+                    Templates de <strong>Autenticação</strong> usam uma mensagem de código de verificação
+                    gerada automaticamente pela Meta (com recomendação de segurança e botão de
+                    "copiar código") — não dá pra escrever o texto aqui.
+                  </span>
+                </div>
+                <div className="w-40">
+                  <Input
+                    label="Código expira em (minutos)"
+                    type="number"
+                    min={1}
+                    max={90}
+                    value={form.codeExpirationMinutes}
+                    onChange={(e) => setForm({ ...form, codeExpirationMinutes: e.target.value })}
+                  />
+                </div>
               </div>
-              <textarea
-                value={form.body}
-                onChange={(e) => setForm({ ...form, body: e.target.value })}
-                className="w-full px-3 py-2 text-sm border border-af-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-af-accent font-mono"
-                rows={6}
-                placeholder={'Olá, {{1}}!\n\nSua mensagem aqui...'}
-              />
-            </div>
+            ) : (
+              <>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium text-slate-700">Corpo da mensagem</label>
+                    <span className="text-xs text-slate-400">Use {'{{1}}'}, {'{{2}}'}… para campos dinâmicos (a Meta usa número, não nome)</span>
+                  </div>
+                  <textarea
+                    value={form.body}
+                    onChange={(e) => setForm({ ...form, body: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-af-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-af-accent font-mono"
+                    rows={6}
+                    placeholder={'Olá, {{1}}!\n\nSua mensagem aqui...'}
+                  />
+                </div>
 
-            <Input label="Rodapé (opcional)" value={form.footer} onChange={(e) => setForm({ ...form, footer: e.target.value })} placeholder="Ex: A&F Soluções Financeiras" />
+                <Input label="Rodapé (opcional)" value={form.footer} onChange={(e) => setForm({ ...form, footer: e.target.value })} placeholder="Ex: A&F Soluções Financeiras" />
+              </>
+            )}
           </div>
 
           <div className="flex justify-end gap-2 mt-6 pt-4 border-t border-af-border">
