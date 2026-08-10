@@ -587,6 +587,46 @@ export async function listFolderContents(accountId: string, folderId: string): P
   });
 }
 
+/** Busca um ARQUIVO (não pasta) pelo nome dentro de uma pasta e de todas as
+ *  suas sub-pastas, até uma profundidade máxima — cobre o caso comum de o
+ *  cliente ter uma subpasta temática (ex.: "ITBI", "COMPROVANTES") dentro da
+ *  própria pasta, onde uma busca só no nível direto não encontraria nada.
+ *  Retorna todos os arquivos cujo nome contém o termo, com o caminho (path)
+ *  de sub-pastas percorrido, para o chamador poder desambiguar se achar mais de um. */
+export async function findFilesInFolderTree(
+  accountId: string,
+  rootFolderId: string,
+  nameQuery: string,
+  maxDepth = 3
+): Promise<{ id: string; name: string; mimeType: string; path: string }[]> {
+  const drive = await getDrive(accountId);
+  const query = nameQuery.trim().toLowerCase();
+  const results: { id: string; name: string; mimeType: string; path: string }[] = [];
+
+  async function walk(folderId: string, path: string, depth: number): Promise<void> {
+    if (depth > maxDepth) return;
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: 'files(id, name, mimeType)',
+      pageSize: 200,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    const files = res.data.files || [];
+    for (const f of files) {
+      const isFolder = f.mimeType === 'application/vnd.google-apps.folder';
+      if (isFolder) {
+        await walk(f.id!, path ? `${path} > ${f.name}` : f.name!, depth + 1);
+      } else if (query && f.name!.toLowerCase().includes(query)) {
+        results.push({ id: f.id!, name: f.name!, mimeType: f.mimeType!, path });
+      }
+    }
+  }
+
+  await walk(rootFolderId, '', 0);
+  return results;
+}
+
 /** Move um arquivo/pasta do Drive para outro pai (outra pasta), por ID. */
 export async function moveDriveItem(accountId: string, itemId: string, newParentId: string): Promise<{ id: string; name: string }> {
   const drive = await getDrive(accountId);

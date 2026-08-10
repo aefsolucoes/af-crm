@@ -6,7 +6,7 @@ import { sendOutboundWhatsApp, sendOutboundMedia, findOrCreateLeadByPhone, listC
 import { searchKnowledge } from '../services/knowledge.service';
 import {
   organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
-  createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink,
+  createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink, findFilesInFolderTree,
 } from '../services/google.service';
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
@@ -229,7 +229,7 @@ const AGENT_TOOLS = [
   },
   {
     name: 'enviar_arquivo_whatsapp',
-    description: 'Envia um arquivo (PDF, foto, etc) pelo WhatsApp para o cliente do lead — via QR Code. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp" ou "reenviar o documento que ele mandou". Informe leadId e a origem do arquivo: attachmentId (reenvia um anexo que o cliente já mandou nesta conversa) OU nomeArquivo (busca um arquivo pelo nome dentro da pasta do cliente no Drive; use nomePasta se a pasta tiver nome diferente do lead). Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista de opções — NUNCA escolha sozinho, pergunte ao colaborador qual enviar antes de chamar de novo com o nome mais específico ou o attachmentId certo.',
+    description: 'Envia um arquivo (PDF, foto, etc) pelo WhatsApp para o cliente do lead — via QR Code. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp" ou "reenviar o documento que ele mandou". Informe leadId e a origem do arquivo: attachmentId (reenvia um anexo que o cliente já mandou nesta conversa) OU nomeArquivo (busca um arquivo pelo nome dentro da pasta do cliente no Drive — inclusive dentro de SUBPASTAS, ex.: um arquivo "ITBI PLINIO.pdf" guardado dentro de uma subpasta "ITBI"; use nomePasta se a pasta do cliente tiver nome diferente do lead). Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista de opções (com a subpasta de cada um) — NUNCA escolha sozinho, pergunte ao colaborador qual enviar antes de chamar de novo com o nome mais específico ou o attachmentId certo.',
     input_schema: { type: 'object', properties: {
       leadId: { type: 'string', description: 'ID do lead (via find_lead)' },
       attachmentId: { type: 'string', description: 'ID de um anexo já recebido do cliente na conversa do WhatsApp, para reenviá-lo (opcional).' },
@@ -723,9 +723,14 @@ async function executeAgentTool(
         if (folder) {
           const files = (await listFolderContents(accountId, folder.folderId)).filter((f) => !f.isFolder && SUPPORTED.includes(f.mimeType));
           const nomeArquivo = String(input.nomeArquivo || '').trim().toLowerCase();
-          let chosen = files[0] || null;
+          let chosen: { id: string; name: string; mimeType: string } | null = files[0] || null;
           if (nomeArquivo) {
-            chosen = files.find((f) => f.name.toLowerCase().includes(nomeArquivo)) || chosen;
+            chosen = files.find((f) => f.name.toLowerCase().includes(nomeArquivo)) || null;
+            // Não achou no nível direto da pasta — procura em subpastas (ex.: "ITBI" dentro da pasta do cliente).
+            if (!chosen) {
+              const deep = (await findFilesInFolderTree(accountId, folder.folderId, nomeArquivo)).filter((f) => SUPPORTED.includes(f.mimeType));
+              if (deep.length === 1) chosen = deep[0];
+            }
           } else {
             const heur = files.find((f) => /cnh|rg|identidade|habilita|holerite|contracheque|comprovante|renda/i.test(f.name));
             if (heur) chosen = heur;
@@ -833,15 +838,18 @@ async function executeAgentTool(
       }
       if (buffer) { mimeType = att.mimeType; fileName = att.fileName; }
     } else {
-      const nomeArquivo = String(input.nomeArquivo || '').trim().toLowerCase();
+      const nomeArquivo = String(input.nomeArquivo || '').trim();
       if (!nomeArquivo) return { success: false, error: 'Informe nomeArquivo (o arquivo a enviar) ou attachmentId.' };
       const nomePasta = String(input.nomePasta || lead.name || '').trim();
       const folder = nomePasta ? await findFolderByNameUnderRoot(accountId, nomePasta) : null;
       if (!folder) return { success: false, error: `Pasta do cliente "${nomePasta}" não encontrada no Drive.` };
-      const files = (await listFolderContents(accountId, folder.folderId)).filter((f) => !f.isFolder && f.name.toLowerCase().includes(nomeArquivo));
-      if (files.length === 0) return { success: false, error: `Nenhum arquivo com "${input.nomeArquivo}" no nome foi encontrado na pasta do cliente.` };
+      // Busca em TODA a árvore da pasta do cliente (não só no nível direto) —
+      // é comum o arquivo estar dentro de uma subpasta temática (ex.: "ITBI").
+      const files = await findFilesInFolderTree(accountId, folder.folderId, nomeArquivo);
+      if (files.length === 0) return { success: false, error: `Nenhum arquivo com "${nomeArquivo}" no nome foi encontrado na pasta do cliente (nem em subpastas).` };
       if (files.length > 1) {
-        return { success: false, error: `Mais de um arquivo bate com "${input.nomeArquivo}": ${files.map((f) => f.name).join(', ')}. Pergunte ao colaborador qual dos dois enviar (pode chamar de novo com um nome mais específico).` };
+        const lista = files.map((f) => `${f.name}${f.path ? ` (em ${f.path})` : ''}`).join('; ');
+        return { success: false, error: `Mais de um arquivo bate com "${nomeArquivo}": ${lista}. Pergunte ao colaborador qual enviar (pode chamar de novo com um nome mais específico).` };
       }
       const chosen = files[0];
       try {
