@@ -25,6 +25,7 @@ model Account {
   fieldDefinitions FieldDefinition[]
   transactions     Transaction[]
   knowledgeFiles   KnowledgeFile[]
+  assistantQuestions AssistantQuestion[]
 }
 
 model FieldDefinition {
@@ -76,6 +77,8 @@ model User {
   // padrão do papel. Admin sempre tem tudo. Ver src/lib/permissions.ts.
   permissions Json?
   createdAt DateTime @default(now())
+  assistantQuestionsAsked    AssistantQuestion[] @relation("AssistantQuestionAskedBy")
+  assistantQuestionsReceived AssistantQuestion[] @relation("AssistantQuestionTarget")
 }
 
 enum Role {
@@ -129,8 +132,35 @@ model Lead {
   tasks        Task[]
   notes        Note[]
   messages     Message[]
+  assistantQuestions AssistantQuestion[]
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
+}
+
+// Pergunta que um colaborador pede para o assistente fazer a OUTRO colaborador,
+// sobre um lead específico (ex.: "pergunta pra Andreia qual o banco desse
+// cliente"). Fica pendente até o destinatário responder no próprio chat dele
+// com o assistente — a resposta preenche o campo do card automaticamente.
+model AssistantQuestion {
+  id            String   @id @default(cuid())
+  accountId     String
+  account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  askedByUserId String
+  askedBy       User     @relation("AssistantQuestionAskedBy", fields: [askedByUserId], references: [id])
+  targetUserId  String
+  targetUser    User     @relation("AssistantQuestionTarget", fields: [targetUserId], references: [id])
+  leadId        String
+  lead          Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  // Chave do campo a preencher: "nome"/"valor" (campos nativos do card) ou
+  // qualquer chave de FieldDefinition (customFields).
+  campo         String
+  pergunta      String
+  resposta      String?
+  answered      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  answeredAt    DateTime?
+
+  @@index([accountId, targetUserId, answered])
 }
 
 enum LeadStatus {

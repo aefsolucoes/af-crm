@@ -99,6 +99,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - list_whatsapp_numbers: lista os números de WhatsApp conectados (id + apelido). Use antes de enviar quando houver MAIS DE UM número conectado e o colaborador não tiver dito de qual enviar: mostre os apelidos e PERGUNTE qual usar. Se só houver um conectado, use-o sem perguntar. Passe o id escolhido em fromNumberId ao enviar.
 - list_pipelines: lista os funis e seus estágios (com ids). Use para achar o stageId quando o colaborador pedir para criar o card num funil/estágio específico (ex: "no funil Follow-up, estágio Remarketing números"). Depois passe esse stageId em send_whatsapp_to_number. Você TEM, sim, como criar o card num estágio específico — nunca diga que não consegue.
 - move_lead_to_stage: move um card JÁ EXISTENTE para outro funil/estágio. Use quando pedirem para mover/colocar um card em outro lugar (ex: "move o card do João para Remarketing"). Antes, use find_lead (leadId) e list_pipelines (stageId). Você CONSEGUE mover cards de funil e de estágio — nunca diga que não consegue.
+- perguntar_colaborador / ver_minhas_perguntas_pendentes / responder_pergunta_pendente: sistema de "recado" entre colaboradores sobre dados de um card. Quando o colaborador pedir para "perguntar pra Fulano" algo sobre um ou mais leads (ex.: "pergunta pra Andreia o banco desses clientes sem instituição preenchida"), use perguntar_colaborador — informe o destinatário e uma pergunta por leadId (campo pode ser "nome", "valor" ou uma chave de listar_campos_cadastro). A pergunta NÃO é respondida na hora: ela fica pendente até o Fulano usar o chat DELE. Nunca prometa uma resposta imediata — diga algo como "deixei a pergunta pendente pra Andreia, ela vai ver na próxima vez que abrir o chat". Quando VOCÊ estiver conversando com alguém que tem pergunta(s) pendente(s) — isso é informado automaticamente no início desta conversa, se houver — traga a pergunta de forma natural (uma de cada vez se forem várias) e, assim que a pessoa responder, use responder_pergunta_pendente com o id certo para preencher o card sozinho. ver_minhas_perguntas_pendentes é só para o caso de o colaborador perguntar explicitamente se tem pendência.
 - listar_templates_whatsapp / criar_template_whatsapp: gerenciar templates de mensagem do WhatsApp (API Oficial/Meta) — necessários para mandar mensagem pra cliente fora da janela de 24h. listar_templates_whatsapp mostra os já criados (com status de aprovação). criar_template_whatsapp cria um novo e manda pra aprovação da Meta (categorias MARKETING, UTILITY ou AUTHENTICATION — explique a diferença se o colaborador não souber qual usar). CONFIRMAÇÃO OBRIGATÓRIA antes de enviar: a primeira chamada sem confirmed:true só valida e devolve um resumo — leia esse resumo (nome, categoria, corpo) para o colaborador e só chame de novo com confirmed:true depois que ele confirmar. A aprovação em si demora (minutos a dias) e não depende do CRM — avise disso.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
@@ -166,6 +167,47 @@ const AGENT_TOOLS = [
     name: 'listar_campos_cadastro',
     description: 'Lista todos os campos personalizados do cadastro de lead (chave, nome de exibição, aba e tipo) — use antes de consultar_leads quando não souber a chave exata de um campo (ex.: para saber que o campo do banco/financeira se chama "instituicao").',
     input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'perguntar_colaborador',
+    description: 'Deixa uma ou mais perguntas pendentes para OUTRO colaborador responder — sobre qualquer campo de um card (nome, valor, prazo, instituição, ou qualquer campo do cadastro). Use quando o colaborador atual pedir para "perguntar pra Fulano" algo sobre um lead (ex.: "pergunta pra Andreia o banco desses clientes que não têm instituição preenchida"). A pergunta NÃO é respondida na hora: ela fica pendente e aparece automaticamente na próxima vez que o destinatário (Fulano) usar o CHAT DELE — o assistente traz a pergunta na conversa dela de forma natural, e quando ela responder, o campo é preenchido sozinho no card. Informe destinatarioNome e uma lista de perguntas, uma por lead (use find_lead/consultar_leads antes para achar os leadIds certos). campo deve ser "nome", "valor" ou uma chave de listar_campos_cadastro.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        destinatarioNome: { type: 'string', description: 'Nome do colaborador que deve responder (ex.: "Andreia").' },
+        perguntas: {
+          type: 'array',
+          description: 'Uma pergunta por lead.',
+          items: {
+            type: 'object',
+            properties: {
+              leadId: { type: 'string', description: 'ID do lead (via find_lead ou consultar_leads).' },
+              campo: { type: 'string', description: '"nome", "valor" ou a chave do campo do cadastro (via listar_campos_cadastro) que a resposta vai preencher.' },
+              pergunta: { type: 'string', description: 'Texto da pergunta, já pronto para mostrar ao destinatário (ex.: "Qual a instituição financeira do cliente João Silva?").' },
+            },
+            required: ['leadId', 'campo', 'pergunta'],
+          },
+        },
+      },
+      required: ['destinatarioNome', 'perguntas'],
+    },
+  },
+  {
+    name: 'ver_minhas_perguntas_pendentes',
+    description: 'Lista as perguntas que outros colaboradores pediram para você (o colaborador atual da conversa) responder, ainda sem resposta. Normalmente você já recebe isso automaticamente no início da conversa quando houver pendências — use esta ferramenta só se o colaborador perguntar explicitamente "tenho pergunta pendente?" ou similar.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'responder_pergunta_pendente',
+    description: 'Registra a resposta do colaborador atual a uma pergunta pendente (perguntar_colaborador) e PREENCHE sozinho o campo correspondente no card do lead. Use assim que o colaborador responder, dentro da própria conversa, a uma pergunta que você trouxe para ela. Depois de responder, confirme o que foi preenchido.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        perguntaId: { type: 'string', description: 'ID da pergunta pendente (veio junto da pergunta trazida na conversa, ou de ver_minhas_perguntas_pendentes).' },
+        resposta: { type: 'string', description: 'Resposta dada pelo colaborador, no formato pronto para gravar no campo.' },
+      },
+      required: ['perguntaId', 'resposta'],
+    },
   },
   {
     name: 'listar_templates_whatsapp',
@@ -436,6 +478,100 @@ async function executeAgentTool(
   if (name === 'listar_campos_cadastro') {
     const fields = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }] });
     return fields.map((f) => ({ chave: f.key, nome: f.name, aba: f.tab, tipo: f.type }));
+  }
+
+  if (name === 'perguntar_colaborador') {
+    const destNome = String(input.destinatarioNome || '').trim();
+    if (!destNome) return { success: false, error: 'Informe destinatarioNome.' };
+    const perguntas = Array.isArray(input.perguntas) ? input.perguntas : [];
+    if (perguntas.length === 0) return { success: false, error: 'Informe ao menos uma pergunta em perguntas.' };
+
+    const candidatos = await prisma.user.findMany({ where: { accountId, name: { contains: destNome, mode: 'insensitive' } } });
+    if (candidatos.length === 0) return { success: false, error: `Nenhum colaborador encontrado com o nome "${destNome}".` };
+    if (candidatos.length > 1) {
+      return { success: false, error: `Mais de um colaborador bate com "${destNome}": ${candidatos.map((u) => u.name).join(', ')}. Pergunte ao colaborador qual é o certo.` };
+    }
+    const destinatario = candidatos[0];
+    if (destinatario.id === userId) return { success: false, error: 'Você não pode perguntar para si mesmo — informe outro colaborador.' };
+
+    const criadas: { id: string; leadId: string; campo: string }[] = [];
+    const erros: string[] = [];
+    for (const p of perguntas as { leadId?: string; campo?: string; pergunta?: string }[]) {
+      const leadId = String(p.leadId || '').trim();
+      const campo = String(p.campo || '').trim();
+      const perguntaTexto = String(p.pergunta || '').trim();
+      if (!leadId || !campo || !perguntaTexto) { erros.push('Item inválido (faltou leadId, campo ou pergunta).'); continue; }
+      const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
+      if (!lead) { erros.push(`Lead ${leadId} não encontrado.`); continue; }
+      const created = await prisma.assistantQuestion.create({
+        data: { accountId, askedByUserId: userId!, targetUserId: destinatario.id, leadId, campo, pergunta: perguntaTexto },
+      });
+      criadas.push({ id: created.id, leadId, campo });
+    }
+
+    // Toca um som só pra ela (sala pessoal, não a conta inteira) — avisa que
+    // tem pergunta pendente esperando na próxima vez que abrir o chat dela.
+    if (criadas.length > 0 && io) {
+      io.to(`user_${destinatario.id}`).emit('assistant_question', { count: criadas.length });
+    }
+
+    return {
+      success: true,
+      destinatario: destinatario.name,
+      criadas: criadas.length,
+      erros: erros.length ? erros : undefined,
+    };
+  }
+
+  if (name === 'ver_minhas_perguntas_pendentes') {
+    if (!userId) return { success: false, error: 'Sem usuário identificado.' };
+    const pendentes = await prisma.assistantQuestion.findMany({
+      where: { targetUserId: userId, accountId, answered: false },
+      include: { lead: { select: { name: true } }, askedBy: { select: { name: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    return pendentes.map((p) => ({
+      id: p.id, cliente: p.lead.name, campo: p.campo, pergunta: p.pergunta,
+      perguntadoPor: p.askedBy.name, criadoEm: p.createdAt,
+    }));
+  }
+
+  if (name === 'responder_pergunta_pendente') {
+    if (!userId) return { success: false, error: 'Sem usuário identificado.' };
+    const perguntaId = String(input.perguntaId || '').trim();
+    const resposta = String(input.resposta || '').trim();
+    if (!perguntaId || !resposta) return { success: false, error: 'Informe perguntaId e resposta.' };
+
+    const pergunta = await prisma.assistantQuestion.findFirst({ where: { id: perguntaId, targetUserId: userId, accountId } });
+    if (!pergunta) return { success: false, error: 'Pergunta não encontrada (ou não é sua).' };
+    if (pergunta.answered) return { success: false, error: 'Essa pergunta já tinha sido respondida.' };
+
+    const lead = await prisma.lead.findFirst({ where: { id: pergunta.leadId, accountId } });
+    if (!lead) return { success: false, error: 'O lead dessa pergunta não existe mais.' };
+
+    const data: Record<string, unknown> = {};
+    if (pergunta.campo === 'nome') {
+      data.name = resposta;
+    } else if (pergunta.campo === 'valor') {
+      const cleaned = resposta.replace(/[^\d,.-]/g, '');
+      const num = cleaned.includes(',') && cleaned.includes('.')
+        ? parseFloat(cleaned.replace(/\./g, '').replace(',', '.'))
+        : cleaned.includes(',') ? parseFloat(cleaned.replace(',', '.')) : parseFloat(cleaned);
+      if (Number.isNaN(num)) return { success: false, error: `Não consegui entender "${resposta}" como um valor numérico.` };
+      data.value = num;
+    } else {
+      const cf = (lead.customFields && typeof lead.customFields === 'object' ? lead.customFields : {}) as Record<string, unknown>;
+      data.customFields = { ...cf, [pergunta.campo]: resposta };
+    }
+
+    const [updatedLead] = await prisma.$transaction([
+      prisma.lead.update({ where: { id: lead.id }, data }),
+      prisma.assistantQuestion.update({ where: { id: pergunta.id }, data: { resposta, answered: true, answeredAt: new Date() } }),
+    ]);
+
+    if (io) io.to(`account_${accountId}`).emit('lead_moved', { lead: updatedLead });
+
+    return { success: true, cliente: lead.name, campo: pergunta.campo, valorSalvo: resposta };
   }
 
   if (name === 'listar_templates_whatsapp') {
@@ -1316,6 +1452,25 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
     // no Drive (ex.: escolher "CONCLUIDOS/2025" quando o mês atual é de 2026).
     const hojeBR = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: 'long', year: 'numeric' });
     systemPrompt = `Hoje é ${hojeBR}. Use esta data como referência sempre que precisar saber o mês/ano atual — por exemplo, ao decidir em qual pasta de ano/mês salvar ou mover algo no Drive.\n\n${systemPrompt}`;
+
+    // Perguntas pendentes de outros colaboradores para ESTE colaborador (ver
+    // perguntar_colaborador) — trazidas automaticamente pro início da conversa
+    // dele, sem precisar de tela nova. Limita a 8 pra não sobrecarregar a
+    // primeira resposta se houver muitas.
+    try {
+      const pendentes = await prisma.assistantQuestion.findMany({
+        where: { targetUserId: req.user!.id, accountId, answered: false },
+        include: { lead: { select: { name: true } }, askedBy: { select: { name: true } } },
+        orderBy: { createdAt: 'asc' },
+        take: 8,
+      });
+      if (pendentes.length) {
+        const lista = pendentes.map((p) => `- [id: ${p.id}] ${p.askedBy.name} pediu pra perguntar sobre o cliente "${p.lead.name}": ${p.pergunta}`).join('\n');
+        systemPrompt = `IMPORTANTE: este colaborador tem ${pendentes.length} pergunta(s) pendente(s) que outro colega pediu para você fazer a ele:\n${lista}\n\nTraga isso à tona na conversa de forma natural (pode ser logo na primeira resposta) — uma pergunta de cada vez se forem várias, sem despejar tudo de uma vez. Assim que ele responder cada uma, use responder_pergunta_pendente com o id certo para preencher o card sozinho e marcar como respondida. Não invente respostas por ele.\n\n${systemPrompt}`;
+      }
+    } catch (err) {
+      console.error('[AI] Falha ao buscar perguntas pendentes:', err);
+    }
 
     // Base de Conhecimento: injeta os trechos relevantes à pergunta atual, para o
     // assistente responder com base no material da empresa (e citar o documento).

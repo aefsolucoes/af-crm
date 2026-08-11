@@ -89,9 +89,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       }
     }
 
+    // Sala pessoal — para notificações direcionadas só a este colaborador
+    // (ex.: pergunta pendente do assistente), sem tocar som pra conta inteira.
+    const userId = typeof window !== 'undefined'
+      ? JSON.parse(localStorage.getItem('af_user') || '{}')?.id
+      : null;
+
+    function joinUser() {
+      if (userId) socket.emit('join_user', userId);
+    }
+
     // Entra imediatamente se já conectado, ou quando conectar
-    if (socket.connected) joinAccount();
+    if (socket.connected) { joinAccount(); joinUser(); }
     socket.on('connect', joinAccount);
+    socket.on('connect', joinUser);
 
     function triggerSound() {
       const now = Date.now();
@@ -107,11 +118,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       triggerSound();
     }
 
+    // assistant_question — outro colaborador pediu para o assistente perguntar
+    // algo a este colaborador (fica pendente no chat dele). Toca som pra avisar.
+    function onAssistantQuestion() {
+      triggerSound();
+    }
+
     socket.on('new_notification', onNewNotification);
+    socket.on('assistant_question', onAssistantQuestion);
 
     return () => {
       socket.off('connect', joinAccount);
+      socket.off('connect', joinUser);
       socket.off('new_notification', onNewNotification);
+      socket.off('assistant_question', onAssistantQuestion);
     };
   }, []);
 

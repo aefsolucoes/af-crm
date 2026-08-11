@@ -26,6 +26,17 @@ export function setupWebSocket(httpServer: HttpServer) {
       socket.leave(`account_${accountId}`);
     });
 
+    // Sala pessoal do colaborador — para notificações direcionadas a ele (ex.:
+    // "o assistente tem uma pergunta pendente pra você"), sem tocar som pra
+    // conta inteira como o account_${accountId} faz.
+    socket.on('join_user', (userId: string) => {
+      socket.join(`user_${userId}`);
+    });
+
+    socket.on('leave_user', (userId: string) => {
+      socket.leave(`user_${userId}`);
+    });
+
     // Sala de lead específico (para o chat aberto)
     socket.on('join_lead', (leadId: string) => {
       socket.join(`lead:${leadId}`);
