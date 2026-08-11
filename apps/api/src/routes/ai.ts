@@ -108,6 +108,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
 - create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
+- adicionar_nota_lead: registra um comentário/observação em texto livre no histórico de um ou mais cards (aparece no timeline do lead) — use quando o colaborador pedir para "anotar", "registrar" ou "jogar essa informação nos cards" algo que é status/observação, não um campo estruturado (para dado estruturado, use update_lead com fields). Aceita várias notas de vários leads numa chamada só — se o colaborador mandar uma lista com vários clientes de uma vez, resolva TODOS os leadIds primeiro (find_lead/consultar_leads) e chame adicionar_nota_lead UMA vez com todas as notas juntas, em vez de uma chamada por cliente.
 - list_users / create_user / update_user / delete_user: gerenciar a equipe (criar, editar nome/e-mail/senha/função/permissões e EXCLUIR/tirar acesso). Para "tirar acesso" use update_user (mudando função/permissões) ou delete_user.
 Você tem acesso completo ao CRM, MAS sempre respeitando o nível de acesso do colaborador: cada ferramenta checa a permissão dele. Se uma ferramenta retornar erro de permissão, explique com educação que ele não tem acesso àquela ação e não tente por outro caminho.
 REGRA FIXA — pastas do funil "Em contratação": todo lead nesse funil deve ter a pasta dele dentro de "1. LEADS ATIVOS" no Drive. Quando o colaborador pedir para conferir/organizar isso, use auditar_pastas_contratacao — ela retorna a lista de leads do funil com a situação de cada um (ok, fora do lugar — com o local atual, ou pasta não encontrada). Apresente as divergências ao colaborador e resolva UMA DE CADA VEZ, perguntando antes de agir em cada uma (nunca mova todas de uma vez sozinho, mesmo que pareça óbvio): se a pasta existe em outro lugar, confirme e use mover_item_drive para trazer para "1. LEADS ATIVOS"; se não existe, confirme e crie lá (criar_pasta_drive ou salvar_documentos_no_drive, se for organizar documentos do zero).
@@ -411,6 +412,20 @@ const AGENT_TOOLS = [
       value: { type: 'number' },
       fields: { type: 'object', description: 'Campos do cadastro por chave (ex: { "cpf_1": "000...", "corretorindicacao": "Fulano" })' },
     }, required: ['leadId'] },
+  },
+  {
+    name: 'adicionar_nota_lead',
+    description: 'Adiciona um comentário/nota no histórico de um ou mais cards — aparece na aba de atividades do lead, junto com o resto do timeline. Use quando o colaborador pedir para "anotar", "registrar", "jogar essa informação no card" etc, algo em formato de texto livre (status, observação, andamento) que não é um campo estruturado do cadastro (para isso, use update_lead). Aceita VÁRIOS de uma vez — uma nota por lead, numa única chamada, sem precisar chamar a ferramenta separadamente para cada cliente.',
+    input_schema: { type: 'object', properties: {
+      notas: {
+        type: 'array',
+        description: 'Uma nota por lead (use find_lead antes para achar cada leadId).',
+        items: { type: 'object', properties: {
+          leadId: { type: 'string', description: 'ID do lead (via find_lead)' },
+          content: { type: 'string', description: 'Texto da nota/comentário.' },
+        }, required: ['leadId', 'content'] },
+      },
+    }, required: ['notas'] },
   },
   {
     name: 'archive_lead',
@@ -857,6 +872,26 @@ async function executeAgentTool(
     const updated = await prisma.lead.update({ where: { id: lead.id }, data });
     if (io) io.to(`account_${accountId}`).emit('lead_moved', { lead: updated });
     return { success: true, leadId: updated.id };
+  }
+
+  if (name === 'adicionar_nota_lead') {
+    if (!perms.funnel_manage) return deny('funnel_manage', 'adicionar notas nos cards');
+    const notas = Array.isArray(input.notas) ? input.notas : [];
+    if (notas.length === 0) return { success: false, error: 'Informe ao menos uma nota em notas.' };
+
+    const criadas: string[] = [];
+    const erros: string[] = [];
+    for (const n of notas as { leadId?: string; content?: string }[]) {
+      const leadId = String(n.leadId || '').trim();
+      const content = String(n.content || '').trim();
+      if (!leadId || !content) { erros.push('Item inválido (faltou leadId ou content).'); continue; }
+      const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
+      if (!lead) { erros.push(`Lead ${leadId} não encontrado.`); continue; }
+      await prisma.note.create({ data: { leadId, content, type: 'COMMENT', userId } });
+      criadas.push(lead.name);
+    }
+
+    return { success: criadas.length > 0, notasCriadas: criadas.length, clientes: criadas, erros: erros.length ? erros : undefined };
   }
 
   if (name === 'archive_lead') {
@@ -1511,11 +1546,13 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
       }
     }
 
-    let reply = 'Não consegui gerar uma resposta agora.';
+    let reply = 'Essa tarefa tinha passos demais para eu terminar de uma vez — pode pedir de novo separando em partes menores (ex.: alguns clientes por mensagem)?';
 
     // Loop de tool-use: idas e voltas com o modelo por requisição. Folga maior
-    // para envios em lote (ex.: mandar para vários números + criar os cards).
-    for (let i = 0; i < 12; i++) {
+    // para pedidos em lote (ex.: mandar para vários números, criar vários
+    // cards, ou atualizar vários leads de uma vez — cada nome que não bate de
+    // primeira com find_lead consome uma ida a mais).
+    for (let i = 0; i < 24; i++) {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
