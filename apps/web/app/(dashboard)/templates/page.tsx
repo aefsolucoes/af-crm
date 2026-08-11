@@ -6,13 +6,21 @@ import { Input } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck } from 'lucide-react';
+import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck, Zap } from 'lucide-react';
 import {
-  MessageTemplate as Template, TemplateCategory as Category, CATEGORY_META,
-  extractVariables, fillTemplate, getTemplates, saveTemplates,
+  MessageTemplate as LocalTemplate, TemplateCategory as Category, CATEGORY_META,
+  extractVariables, fillTemplate, getTemplates,
 } from '@/lib/templates';
 
-const EMPTY_FORM = { name: '', category: 'geral' as Category, body: '' };
+// Template salvo no banco (compartilhado pela conta) — mesma forma do local,
+// mais os campos de gatilho automático.
+interface Template extends Omit<LocalTemplate, 'category'> {
+  category: Category;
+  triggerText?: string | null;
+  triggerActive?: boolean;
+}
+
+const EMPTY_FORM = { name: '', category: 'geral' as Category, body: '', triggerText: '', triggerActive: false };
 
 // ── Templates do WhatsApp (Meta) — precisam de aprovação antes de usar ───────
 type MetaTemplateStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | string;
@@ -212,21 +220,45 @@ function WhatsAppTemplatesTab() {
 export default function TemplatesPage() {
   const [tab, setTab] = useState<'local' | 'meta'>('local');
   const [templates, setTemplates] = useState<Template[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(true);
   const [search, setSearch] = useState('');
 
-  useEffect(() => {
-    setTemplates(getTemplates());
-  }, []);
+  // Carrega do banco (compartilhado pela conta) — e, na primeira vez que
+  // alguém abrir esta tela depois do lançamento desta função, migra sozinho
+  // pro banco o que ainda só existia no navegador de cada um (localStorage).
+  async function loadTemplates() {
+    setLoadingTemplates(true);
+    try {
+      const { data } = await api.get('/api/message-templates');
+      let list: Template[] = data;
 
-  function persist(next: Template[]) {
-    setTemplates(next);
-    saveTemplates(next);
+      try {
+        const local = getTemplates();
+        const existingNames = new Set(list.map((t) => t.name.trim().toLowerCase()));
+        const toImport = local.filter((t) => !existingNames.has(t.name.trim().toLowerCase()));
+        if (toImport.length > 0) {
+          await api.post('/api/message-templates/import', { templates: toImport });
+          const { data: refreshed } = await api.get('/api/message-templates');
+          list = refreshed;
+        }
+      } catch { /* segue com o que já tinha do banco — a migração não é crítica */ }
+
+      setTemplates(list);
+    } catch {
+      toast('Erro ao carregar templates', 'error');
+    } finally {
+      setLoadingTemplates(false);
+    }
   }
+
+  useEffect(() => { loadTemplates(); }, []);
+
   const [filterCategory, setFilterCategory] = useState<Category | 'all'>('all');
   const [showModal, setShowModal] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [previewVars, setPreviewVars] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
 
   const filtered = templates.filter(t => {
     const matchSearch = t.name.toLowerCase().includes(search.toLowerCase()) || t.body.toLowerCase().includes(search.toLowerCase());
@@ -245,30 +277,43 @@ export default function TemplatesPage() {
 
   function openEdit(t: Template) {
     setEditingTemplate(t);
-    setForm({ name: t.name, category: t.category, body: t.body });
+    setForm({ name: t.name, category: t.category, body: t.body, triggerText: t.triggerText || '', triggerActive: !!t.triggerActive });
     setPreviewVars(Object.fromEntries(t.variables.map(v => [v, v])));
     setShowModal(true);
   }
 
-  function handleSave() {
+  async function handleSave() {
     if (!form.name.trim() || !form.body.trim()) {
       toast('Preencha nome e conteúdo do template.', 'warning');
       return;
     }
-    const vars = extractVariables(form.body);
-    if (editingTemplate) {
-      persist(templates.map(t => t.id === editingTemplate.id ? { ...t, ...form, variables: vars } : t));
-      toast('Template atualizado!');
-    } else {
-      persist([...templates, { id: `t-${Date.now()}`, ...form, variables: vars, createdAt: new Date().toISOString().split('T')[0] }]);
-      toast('Template criado!');
+    setSaving(true);
+    try {
+      if (editingTemplate) {
+        const { data } = await api.patch(`/api/message-templates/${editingTemplate.id}`, form);
+        setTemplates(prev => prev.map(t => t.id === data.id ? data : t));
+        toast('Template atualizado!');
+      } else {
+        const { data } = await api.post('/api/message-templates', form);
+        setTemplates(prev => [...prev, data]);
+        toast('Template criado!');
+      }
+      setShowModal(false);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao salvar template', 'error');
+    } finally {
+      setSaving(false);
     }
-    setShowModal(false);
   }
 
-  function handleDelete(id: string) {
-    persist(templates.filter(t => t.id !== id));
-    toast('Template removido.');
+  async function handleDelete(id: string) {
+    try {
+      await api.delete(`/api/message-templates/${id}`);
+      setTemplates(prev => prev.filter(t => t.id !== id));
+      toast('Template removido.');
+    } catch {
+      toast('Erro ao excluir template', 'error');
+    }
   }
 
   function handleCopy(body: string) {
@@ -336,7 +381,7 @@ export default function TemplatesPage() {
         {/* Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map(t => {
-            const cm = CATEGORY_META[t.category];
+            const cm = CATEGORY_META[t.category] || CATEGORY_META.geral;
             return (
               <div key={t.id} className="bg-white rounded-xl border border-af-border shadow-sm hover:shadow-md transition-shadow flex flex-col">
                 <div className="p-4 flex-1">
@@ -349,6 +394,13 @@ export default function TemplatesPage() {
                       {cm.label}
                     </span>
                   </div>
+
+                  {t.triggerActive && t.triggerText && (
+                    <div className="mt-2 flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                      <Zap size={11} className="flex-shrink-0" />
+                      <span className="truncate">Gatilho automático ativo</span>
+                    </div>
+                  )}
 
                   <div className="mt-3 p-3 bg-slate-50 rounded-lg border border-af-border text-xs text-slate-600 whitespace-pre-wrap line-clamp-5 font-mono leading-relaxed">
                     {t.body}
@@ -447,12 +499,33 @@ export default function TemplatesPage() {
                 </div>
               </div>
             )}
+
+            <div className="flex flex-col gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+              <label className="flex items-center gap-2 text-sm font-medium text-amber-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.triggerActive}
+                  onChange={e => setForm({ ...form, triggerActive: e.target.checked })}
+                  className="rounded"
+                />
+                <Zap size={14} /> Disparar automaticamente ao receber uma mensagem
+              </label>
+              <p className="text-xs text-amber-700">
+                Quando uma mensagem RECEBIDA no WhatsApp começar com o texto abaixo, este template é enviado sozinho como resposta.
+              </p>
+              <Input
+                value={form.triggerText}
+                onChange={e => setForm({ ...form, triggerText: e.target.value })}
+                placeholder='Ex: "Olá! Vim pelo site da A&F..."'
+                disabled={!form.triggerActive}
+              />
+            </div>
           </div>
 
           <div className="flex justify-end gap-2 mt-6 pt-4 border-t border-af-border">
             <Button variant="ghost" onClick={() => setShowModal(false)}>Cancelar</Button>
-            <Button onClick={handleSave}>
-              <Send size={14} /> {editingTemplate ? 'Salvar alterações' : 'Criar template'}
+            <Button onClick={handleSave} disabled={saving}>
+              <Send size={14} /> {saving ? 'Salvando...' : editingTemplate ? 'Salvar alterações' : 'Criar template'}
             </Button>
           </div>
         </Modal>

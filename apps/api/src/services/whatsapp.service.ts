@@ -542,8 +542,44 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         // Para o dashboard inteiro — evento SEPARADO só para som/badge (sem duplicar mensagem)
         io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
       }
+
+      // Gatilho automático (Templates → "Disparar automaticamente") — só para
+      // texto de verdade, não mídia.
+      if (msg.type === 'text' && text) {
+        await maybeAutoReplyCloudApi(accountId, leadId, text, from, io);
+      }
     }
   } catch (err) {
     console.error('[WhatsApp] Process incoming error:', err);
+  }
+}
+
+/** Verifica se algum template com gatilho automático ativo bate com o início
+ *  da mensagem recebida e, se achar, envia o corpo dele como resposta pela
+ *  API Oficial. Implementado aqui (não em message.service) de propósito, pra
+ *  não criar import circular. */
+async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any) {
+  try {
+    const norm = incomingText.trim().toLowerCase();
+    if (!norm) return;
+    const templates = await prisma.messageTemplate.findMany({ where: { accountId, triggerActive: true } });
+    const match = templates.find((t: any) => t.triggerText && norm.startsWith(String(t.triggerText).trim().toLowerCase()));
+    if (!match) return;
+
+    const alreadySent = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: match.body } });
+    if (alreadySent) return;
+
+    const result = await sendWhatsAppMessage(phone, match.body, accountId);
+    if (!result.success) {
+      console.error(`[WhatsApp] Gatilho automático "${match.name}" falhou ao enviar:`, result.error);
+      return;
+    }
+    const sent = await prisma.message.create({
+      data: { content: match.body, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT' },
+    });
+    if (io) io.to(`lead:${leadId}`).emit('new_message', sent);
+    console.log(`[WhatsApp] Gatilho automático "${match.name}" disparado para lead ${leadId}`);
+  } catch (err) {
+    console.error('[WhatsApp] Erro no gatilho automático:', err);
   }
 }

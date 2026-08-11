@@ -835,8 +835,49 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
 
     globalIO?.to(`lead:${leadId}`).emit('new_message', message);
     globalIO?.emit('new_conversation', { leadId });
+
+    // Gatilho automático (Templates → "Disparar automaticamente"): só para
+    // mensagem de cliente de verdade (não eco, não grupo, não self-chat).
+    if (!fromMe && !isGroupMsg && !selfChat) {
+      await maybeAutoReplyQR(accountId, leadId, text, from, numberId);
+    }
   } catch (err) {
     console.error('[Baileys] Erro ao processar mensagem:', err);
+  }
+}
+
+/** Verifica se algum template com gatilho automático ativo bate com o início
+ *  da mensagem recebida e, se achar, envia o corpo dele como resposta pelo
+ *  mesmo número (QR) que recebeu. Implementado aqui (não em message.service)
+ *  de propósito, para não criar import circular neste arquivo crítico. */
+async function maybeAutoReplyQR(accountId: string, leadId: string, incomingText: string, phone: string, numberId: string) {
+  try {
+    const norm = incomingText.trim().toLowerCase();
+    if (!norm) return;
+    const templates = await prisma.messageTemplate.findMany({ where: { accountId, triggerActive: true } });
+    const match = templates.find((t: any) => t.triggerText && norm.startsWith(String(t.triggerText).trim().toLowerCase()));
+    if (!match) return;
+
+    // Não repete se esse template já foi mandado pra esse lead (evita duplicar
+    // com eventos repetidos do WhatsApp ou o cliente reenviando a saudação).
+    const alreadySent = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: match.body } });
+    if (alreadySent) return;
+
+    const outcome = await sendBaileysMessage(phone, match.body, numberId);
+    if ('failed' in outcome) {
+      console.error(`[Baileys] Gatilho automático "${match.name}" falhou ao enviar:`, outcome.failed);
+      return;
+    }
+    const sent = await prisma.message.create({
+      data: {
+        content: match.body, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId,
+        whatsappNumberId: numberId, read: true, externalId: outcome.id, status: 'SENT',
+      },
+    });
+    globalIO?.to(`lead:${leadId}`).emit('new_message', sent);
+    console.log(`[Baileys] Gatilho automático "${match.name}" disparado para lead ${leadId}`);
+  } catch (err) {
+    console.error('[Baileys] Erro no gatilho automático:', err);
   }
 }
 
