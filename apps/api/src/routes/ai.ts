@@ -89,7 +89,9 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
 const SUPPORT_SYSTEM_PROMPT = `Você é o assistente interno de suporte do AF CRM, usado pelos funcionários da A&F Soluções Financeiras.
 Seu papel é tirar dúvidas dos funcionários sobre como usar o sistema e sobre o processo de vendas/atendimento da empresa: funil de vendas, inbox unificada (WhatsApp), cadastro de leads e contatos, tarefas, SalesBot (automação de mensagens), templates e relatórios.
 Você também pode, quando um colaborador pedir explicitamente, ler o histórico de conversa de um lead no WhatsApp e enviar uma mensagem ao cliente em nome do colaborador, usando as ferramentas disponíveis:
-- find_lead: busca um lead já cadastrado pelo NOME ou pelo TELEFONE. Quando o colaborador der um número e perguntar se existe cliente com ele (ex: "tem algum cliente com o número 61 8454-9012?"), use find_lead com o parâmetro phone — a busca ignora pontuação, o DDI 55 e o 9º dígito do celular, e procura no contato e nos campos do cadastro. Não invente dígitos: passe o número como o colaborador escreveu.
+- consultar_leads: ACESSO AMPLO para contar, somar e listar leads por qualquer critério — funil, estágio, status, valor, tags, dono, data de criação e QUALQUER campo do cadastro (customFields — ex.: "quantas propostas temos com o BRB" usa campos: [{"chave":"instituicao","valor":"BRB"}]). Use SEMPRE que a pergunta envolver contar/somar/listar vários leads, mesmo que pareça um "relatório" — você TEM esse acesso, nunca diga que não tem. Se não souber a chave de um campo, use listar_campos_cadastro primeiro.
+- listar_campos_cadastro: lista os campos personalizados do cadastro (chave, nome, aba, tipo) — use para descobrir a chave certa antes de filtrar por um campo em consultar_leads.
+- find_lead: busca um lead já cadastrado pelo NOME ou pelo TELEFONE (um lead específico, não uma lista/contagem — para isso use consultar_leads). Quando o colaborador der um número e perguntar se existe cliente com ele (ex: "tem algum cliente com o número 61 8454-9012?"), use find_lead com o parâmetro phone — a busca ignora pontuação, o DDI 55 e o 9º dígito do celular, e procura no contato e nos campos do cadastro. Não invente dígitos: passe o número como o colaborador escreveu.
 - get_recent_messages: lê o histórico de mensagens de um lead.
 - send_whatsapp_message: envia para um lead JÁ existente (por leadId).
 - send_whatsapp_to_number: quando o colaborador fornecer um NÚMERO de telefone (ex: "manda mensagem para o 61 99999-9999"), use esta ferramenta — ela cria o contato/lead automaticamente e envia. Sempre que o pedido incluir um número, use send_whatsapp_to_number diretamente, sem exigir que o lead já exista. Aceita stageId (para criar o card num funil/estágio específico) e fromNumberId (número de WhatsApp de origem).
@@ -133,6 +135,36 @@ async function ensureDriveLinkField(accountId: string): Promise<void> {
 }
 
 const AGENT_TOOLS = [
+  {
+    name: 'consultar_leads',
+    description: 'Busca, filtra e TOTALIZA leads/cards por qualquer critério — funil, estágio, status, faixa de valor, tags, dono do card, data de criação e também por CAMPOS DO CADASTRO (customFields — ex.: Instituição/banco, Finalidade, Administradora do consórcio, Corretor/Indicação etc, use listar_campos_cadastro se não souber a chave certa). Use esta ferramenta sempre que a pergunta pedir CONTAR, SOMAR ou LISTAR vários leads por um critério (ex.: "quantas propostas temos com o BRB", "qual o valor total em Análise Jurídica", "quantos leads o Carlos tem", "leads criados este mês") — NÃO diga que não tem acesso a esse tipo de relatório, use esta ferramenta. Para achar UM lead específico pelo nome/telefone, use find_lead. Retorna total (contagem de TODOS que bateram, não só os listados), somaValor (soma do campo valor de todos que bateram) e uma amostra (até 100) com os dados de cada um.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pipelineNome: { type: 'string', description: 'Nome do funil (ex.: "Em contratação"). Aceita nome parecido, não precisa ser exato. Opcional — sem isso, busca em todos os funis.' },
+        estagioNome: { type: 'string', description: 'Nome do estágio (ex.: "Análise Jurídica"). Opcional.' },
+        status: { type: 'string', enum: ['OPEN', 'WON', 'LOST'], description: 'Status do lead. Opcional.' },
+        arquivados: { type: 'boolean', description: 'true = só leads arquivados. Padrão (omitido ou false) = só ativos.' },
+        valorMin: { type: 'number', description: 'Valor mínimo do negócio (opcional).' },
+        valorMax: { type: 'number', description: 'Valor máximo do negócio (opcional).' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Filtra leads que tenham QUALQUER uma dessas tags (opcional).' },
+        donoNome: { type: 'string', description: 'Nome do usuário responsável pelo card (opcional).' },
+        criadoDe: { type: 'string', description: 'Data mínima de criação, formato AAAA-MM-DD (opcional).' },
+        criadoAte: { type: 'string', description: 'Data máxima de criação, formato AAAA-MM-DD (opcional).' },
+        campos: {
+          type: 'array',
+          description: 'Filtros nos campos do cadastro (customFields). Ex.: [{"chave":"instituicao","valor":"BRB"}] para leads com Instituição contendo "BRB". "valor" faz correspondência parcial, sem diferenciar maiúsculas/acentos — omita "valor" para exigir só que o campo tenha algum valor preenchido. Vários itens no array = todos precisam bater (E lógico). Use listar_campos_cadastro para ver as chaves existentes.',
+          items: { type: 'object', properties: { chave: { type: 'string' }, valor: { type: 'string' } }, required: ['chave'] },
+        },
+        limite: { type: 'number', description: 'Quantos leads detalhar na resposta (padrão 30, máximo 100). O total e a soma sempre consideram TODOS os que bateram, não só os listados aqui.' },
+      },
+    },
+  },
+  {
+    name: 'listar_campos_cadastro',
+    description: 'Lista todos os campos personalizados do cadastro de lead (chave, nome de exibição, aba e tipo) — use antes de consultar_leads quando não souber a chave exata de um campo (ex.: para saber que o campo do banco/financeira se chama "instituicao").',
+    input_schema: { type: 'object', properties: {} },
+  },
   {
     name: 'find_lead',
     description: 'Busca leads/clientes pelo NOME (ou parte) ou pelo TELEFONE. Informe name para buscar por nome, ou phone para buscar por número. A busca por telefone ignora pontuação, o DDI 55 e o 9º dígito do celular, e procura tanto no contato quanto nos campos do cadastro. Retorna nome, telefone e id de cada lead encontrado.',
@@ -376,6 +408,97 @@ async function executeAgentTool(
   const perms = effectivePermissions(me?.role || 'AGENT', me?.permissions ?? null);
   const deny = (key: PermissionKey, acao: string) =>
     ({ success: false as const, error: `Você não tem permissão para ${acao}. (Falta o acesso "${key}".)` });
+
+  if (name === 'listar_campos_cadastro') {
+    const fields = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }] });
+    return fields.map((f) => ({ chave: f.key, nome: f.name, aba: f.tab, tipo: f.type }));
+  }
+
+  if (name === 'consultar_leads') {
+    const normalize = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    const where: Record<string, unknown> = { accountId, archived: input.arquivados === true };
+
+    if (input.status && ['OPEN', 'WON', 'LOST'].includes(String(input.status))) where.status = input.status;
+    if (typeof input.valorMin === 'number' || typeof input.valorMax === 'number') {
+      const value: Record<string, number> = {};
+      if (typeof input.valorMin === 'number') value.gte = input.valorMin;
+      if (typeof input.valorMax === 'number') value.lte = input.valorMax;
+      where.value = value;
+    }
+    if (input.criadoDe || input.criadoAte) {
+      const createdAt: Record<string, Date> = {};
+      if (input.criadoDe) createdAt.gte = new Date(String(input.criadoDe));
+      if (input.criadoAte) createdAt.lte = new Date(`${input.criadoAte}T23:59:59`);
+      where.createdAt = createdAt;
+    }
+    if (input.pipelineNome) {
+      const pipelines = await prisma.pipeline.findMany({ where: { accountId } });
+      const match = pipelines.filter((p) => normalize(p.name).includes(normalize(String(input.pipelineNome))));
+      if (match.length === 0) return { success: false, error: `Nenhum funil encontrado com "${input.pipelineNome}".` };
+      where.pipelineId = { in: match.map((p) => p.id) };
+    }
+    if (input.estagioNome) {
+      const stages = await prisma.stage.findMany({ where: { pipeline: { accountId } } });
+      const match = stages.filter((s) => normalize(s.name).includes(normalize(String(input.estagioNome))));
+      if (match.length === 0) return { success: false, error: `Nenhum estágio encontrado com "${input.estagioNome}".` };
+      where.stageId = { in: match.map((s) => s.id) };
+    }
+    if (input.donoNome) {
+      const users = await prisma.user.findMany({ where: { accountId, name: { contains: String(input.donoNome), mode: 'insensitive' } } });
+      if (users.length === 0) return { success: false, error: `Nenhum usuário encontrado com "${input.donoNome}".` };
+      where.userId = { in: users.map((u) => u.id) };
+    }
+
+    const candidatos = await prisma.lead.findMany({
+      where,
+      include: {
+        stage: { select: { name: true } },
+        pipeline: { select: { name: true } },
+        contact: { select: { phone: true, whatsappPhone: true } },
+        user: { select: { name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 3000, // teto de segurança — filtros abaixo (tags/campos) rodam em memória
+    });
+
+    let filtrados = candidatos;
+
+    if (Array.isArray(input.tags) && input.tags.length > 0) {
+      const wanted = (input.tags as unknown[]).map((t) => normalize(String(t)));
+      filtrados = filtrados.filter((l) => (l.tags || []).some((t) => wanted.includes(normalize(t))));
+    }
+
+    if (Array.isArray(input.campos) && input.campos.length > 0) {
+      filtrados = filtrados.filter((l) => {
+        const cf = l.customFields && typeof l.customFields === 'object' ? (l.customFields as Record<string, unknown>) : {};
+        return (input.campos as { chave?: string; valor?: string }[]).every((filtro) => {
+          const chave = String(filtro?.chave || '').trim();
+          if (!chave) return true;
+          const atual = cf[chave];
+          if (atual === undefined || atual === null || atual === '') return false;
+          if (filtro.valor === undefined || filtro.valor === '') return true; // só exige que o campo tenha algum valor
+          return normalize(String(atual)).includes(normalize(String(filtro.valor)));
+        });
+      });
+    }
+
+    const total = filtrados.length;
+    const somaValor = filtrados.reduce((s, l) => s + (l.value || 0), 0);
+    const limite = Math.min(Math.max(Number(input.limite) || 30, 1), 100);
+    const amostra = filtrados.slice(0, limite).map((l) => ({
+      id: l.id,
+      nome: l.name,
+      valor: l.value,
+      status: l.status,
+      funil: l.pipeline.name,
+      estagio: l.stage.name,
+      dono: l.user.name,
+      telefone: l.contact?.whatsappPhone || l.contact?.phone || null,
+      tags: l.tags,
+    }));
+
+    return { success: true, total, somaValor, mostrando: amostra.length, leads: amostra };
+  }
 
   if (name === 'find_lead') {
     const nameQuery = String(input.name || '').trim();
