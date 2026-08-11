@@ -109,6 +109,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
 - create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
 - adicionar_nota_lead: registra um comentário/observação em texto livre no histórico de um ou mais cards (aparece no timeline do lead) — use quando o colaborador pedir para "anotar", "registrar" ou "jogar essa informação nos cards" algo que é status/observação, não um campo estruturado (para dado estruturado, use update_lead com fields). Aceita várias notas de vários leads numa chamada só — se o colaborador mandar uma lista com vários clientes de uma vez, resolva TODOS os leadIds primeiro (find_lead/consultar_leads) e chame adicionar_nota_lead UMA vez com todas as notas juntas, em vez de uma chamada por cliente.
+- criar_tarefa_lead: cria uma tarefa vinculada a um card específico (aparece na aba Tarefas e no Dashboard do responsável). Use quando o colaborador pedir para "criar uma tarefa", "lembrar de ligar/cobrar/enviar algo", "agendar um follow-up" etc para um cliente. Use find_lead antes para o leadId. Se não disser a data, use hoje; se não disser a hora, use um horário razoável.
 - list_users / create_user / update_user / delete_user: gerenciar a equipe (criar, editar nome/e-mail/senha/função/permissões e EXCLUIR/tirar acesso). Para "tirar acesso" use update_user (mudando função/permissões) ou delete_user.
 Você tem acesso completo ao CRM, MAS sempre respeitando o nível de acesso do colaborador: cada ferramenta checa a permissão dele. Se uma ferramenta retornar erro de permissão, explique com educação que ele não tem acesso àquela ação e não tente por outro caminho.
 REGRA FIXA — pastas do funil "Em contratação": todo lead nesse funil deve ter a pasta dele dentro de "1. LEADS ATIVOS" no Drive. Quando o colaborador pedir para conferir/organizar isso, use auditar_pastas_contratacao — ela retorna a lista de leads do funil com a situação de cada um (ok, fora do lugar — com o local atual, ou pasta não encontrada). Apresente as divergências ao colaborador e resolva UMA DE CADA VEZ, perguntando antes de agir em cada uma (nunca mova todas de uma vez sozinho, mesmo que pareça óbvio): se a pasta existe em outro lugar, confirme e use mover_item_drive para trazer para "1. LEADS ATIVOS"; se não existe, confirme e crie lá (criar_pasta_drive ou salvar_documentos_no_drive, se for organizar documentos do zero).
@@ -426,6 +427,16 @@ const AGENT_TOOLS = [
         }, required: ['leadId', 'content'] },
       },
     }, required: ['notas'] },
+  },
+  {
+    name: 'criar_tarefa_lead',
+    description: 'Cria uma tarefa vinculada a um card/lead — aparece na aba Tarefas e no Dashboard do responsável. Use quando o colaborador pedir para "criar uma tarefa", "lembrar de ligar/enviar/cobrar", "agendar um follow-up" etc para um cliente específico. Use find_lead antes para achar o leadId.',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string', description: 'ID do lead (via find_lead)' },
+      title: { type: 'string', description: 'Título/descrição da tarefa (ex.: "Ligar para confirmar documentação").' },
+      dueAt: { type: 'string', description: 'Data/hora de vencimento (AAAA-MM-DD ou AAAA-MM-DDTHH:mm). Se o colaborador não der hora, use um horário razoável (09:00). Se não der data, use hoje.' },
+      responsavelNome: { type: 'string', description: 'Nome do colaborador responsável pela tarefa, se for diferente de quem está pedindo (opcional — padrão é quem está na conversa agora).' },
+    }, required: ['leadId', 'title'] },
   },
   {
     name: 'archive_lead',
@@ -892,6 +903,40 @@ async function executeAgentTool(
     }
 
     return { success: criadas.length > 0, notasCriadas: criadas.length, clientes: criadas, erros: erros.length ? erros : undefined };
+  }
+
+  if (name === 'criar_tarefa_lead') {
+    if (!perms.tasks) return deny('tasks', 'criar tarefas');
+    const leadId = String(input.leadId || '').trim();
+    const title = String(input.title || '').trim();
+    if (!leadId || !title) return { success: false, error: 'Informe leadId e title.' };
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+
+    let assigneeId = userId;
+    if (input.responsavelNome) {
+      const candidatos = await prisma.user.findMany({ where: { accountId, name: { contains: String(input.responsavelNome), mode: 'insensitive' } } });
+      if (candidatos.length === 0) return { success: false, error: `Nenhum colaborador encontrado com "${input.responsavelNome}".` };
+      if (candidatos.length > 1) return { success: false, error: `Mais de um colaborador bate com "${input.responsavelNome}": ${candidatos.map((u) => u.name).join(', ')}. Pergunte ao colaborador qual é o certo.` };
+      assigneeId = candidatos[0].id;
+    }
+    if (!assigneeId) return { success: false, error: 'Não foi possível identificar o responsável pela tarefa.' };
+
+    let dueAt = new Date();
+    if (input.dueAt) {
+      const parsed = new Date(String(input.dueAt));
+      if (Number.isNaN(parsed.getTime())) return { success: false, error: `Não consegui entender a data "${input.dueAt}".` };
+      dueAt = parsed;
+    }
+
+    const task = await prisma.task.create({
+      data: { title, dueAt, userId: assigneeId, leadId },
+      include: { user: { select: { name: true } } },
+    });
+
+    if (io) io.to(`account_${accountId}`).emit('task_created', { task });
+
+    return { success: true, taskId: task.id, cliente: lead.name, responsavel: task.user.name, vencimento: task.dueAt };
   }
 
   if (name === 'archive_lead') {
