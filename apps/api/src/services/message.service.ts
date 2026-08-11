@@ -5,6 +5,18 @@ import { downloadDriveFile } from './google.service';
 
 const prisma = new PrismaClient();
 
+/** Telefone "puro" (E.164, sem sufixo @lid/@s.whatsapp.net/@g.us) — a API
+ *  Oficial da Meta exige isso e rejeita qualquer outra coisa com "Message
+ *  Undeliverable" (código 131026). O Baileys (QR) é diferente: ele aceita —
+ *  e às vezes PRECISA — do JID @lid direto (toWhatsAppJid trata isso de
+ *  propósito), então essa função NÃO deve ser usada nos envios via QR. */
+function plainPhone(contact?: { phone?: string | null; whatsappPhone?: string | null } | null): string | undefined {
+  const wp = contact?.whatsappPhone?.trim();
+  if (wp && !wp.includes('@')) return wp;
+  const p = contact?.phone?.trim();
+  return p && !p.includes('@') ? p : undefined;
+}
+
 export async function getMessages(leadId: string) {
   return prisma.message.findMany({
     where: { leadId },
@@ -238,7 +250,13 @@ export async function sendOutboundWhatsApp(params: {
       await prisma.lead.update({ where: { id: leadId }, data: { whatsappNumberId: preferred } }).catch(() => {});
     }
   } else {
-    const result = await sendWhatsAppMessage(phone, content, accountId);
+    // API Oficial exige um número de verdade — o "phone" acima pode ser um
+    // @lid (válido só pro QR/Baileys), então resolve de novo aqui.
+    const cloudPhone = plainPhone(lead.contact);
+    if (!cloudPhone) {
+      return { success: false, error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card ou envie pelo QR Code.' };
+    }
+    const result = await sendWhatsAppMessage(cloudPhone, content, accountId);
     if (result.success) {
       externalId = result.externalId;
     } else {
@@ -284,8 +302,9 @@ export async function sendOutboundWhatsAppTemplate(params: {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true } });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
 
-  const phone = lead.contact?.whatsappPhone || lead.contact?.phone;
-  if (!phone) return { success: false, error: 'Contato sem número de telefone cadastrado' };
+  // Template só vai pela API Oficial — precisa de telefone de verdade, não @lid.
+  const phone = plainPhone(lead.contact);
+  if (!phone) return { success: false, error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card.' };
 
   const result = await sendWhatsAppTemplateMessage(phone, templateName, language, bodyParams, accountId);
   if (!result.success) return { success: false, error: result.error || 'Falha ao enviar template' };
