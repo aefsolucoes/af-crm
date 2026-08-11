@@ -627,23 +627,27 @@ export async function findFilesInFolderTree(
   return results;
 }
 
-/** Busca uma PASTA (não arquivo) pelo nome EXATO em toda a árvore a partir de
- *  um folder raiz, retornando o(s) caminho(s) onde foi encontrada — usado para
- *  auditar se a pasta de um cliente está no lugar certo (ex.: comparar com o
- *  funil/estágio em que o lead está hoje). Nome exato (não "contains") para
- *  não confundir pastas de clientes com nomes parecidos entre si. */
-export async function findFolderPathsInTree(
+/** Busca VÁRIAS pastas (não arquivos) por nome EXATO em toda a árvore a partir
+ *  de um folder raiz, numa ÚNICA varredura (com os irmãos de cada nível
+ *  buscados em paralelo) — usado para auditar se as pastas de vários clientes
+ *  estão no lugar certo, sem repetir uma varredura da árvore inteira por
+ *  cliente (isso era lento demais: uma conta com anos de "CONCLUIDOS" tem
+ *  centenas de sub-pastas, e antes cada lead pagava esse custo sozinho).
+ *  Retorna um Map (nome em minúsculas → lista de {id, path}), só com os nomes
+ *  que foram encontrados. Nome exato (não "contains") para não confundir
+ *  pastas de clientes com nomes parecidos entre si. */
+export async function findFoldersByNamesInTree(
   accountId: string,
   rootFolderId: string,
-  name: string,
+  names: string[],
   maxDepth = 4
-): Promise<{ id: string; path: string }[]> {
+): Promise<Map<string, { id: string; path: string }[]>> {
   const drive = await getDrive(accountId);
-  const target = name.trim().toLowerCase();
-  const results: { id: string; path: string }[] = [];
+  const targets = new Set(names.map((n) => n.trim().toLowerCase()).filter(Boolean));
+  const results = new Map<string, { id: string; path: string }[]>();
 
   async function walk(folderId: string, path: string, depth: number): Promise<void> {
-    if (depth > maxDepth) return;
+    if (depth > maxDepth || targets.size === 0) return;
     const res = await drive.files.list({
       q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: 'files(id, name)',
@@ -652,14 +656,19 @@ export async function findFolderPathsInTree(
       includeItemsFromAllDrives: true,
     });
     const folders = res.data.files || [];
+    const descidas: Promise<void>[] = [];
     for (const f of folders) {
       const folderPath = path ? `${path} > ${f.name}` : f.name!;
-      if (f.name!.trim().toLowerCase() === target) {
-        results.push({ id: f.id!, path: folderPath });
-        continue; // não precisa descer dentro da pasta do próprio cliente
+      const key = f.name!.trim().toLowerCase();
+      if (targets.has(key)) {
+        const arr = results.get(key) || [];
+        arr.push({ id: f.id!, path: folderPath });
+        results.set(key, arr);
+        continue; // não desce dentro da pasta do próprio cliente encontrada
       }
-      await walk(f.id!, folderPath, depth + 1);
+      descidas.push(walk(f.id!, folderPath, depth + 1));
     }
+    await Promise.all(descidas); // busca os irmãos deste nível em paralelo, não um de cada vez
   }
 
   await walk(rootFolderId, '', 0);

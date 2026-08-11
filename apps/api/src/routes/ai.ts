@@ -7,7 +7,7 @@ import { searchKnowledge } from '../services/knowledge.service';
 import {
   organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
   createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink, findFilesInFolderTree,
-  listFolders, findFolderPathsInTree,
+  listFolders, findFoldersByNamesInTree,
 } from '../services/google.service';
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
@@ -1000,25 +1000,33 @@ async function executeAgentTool(
     if (!leadsAtivosFolder) return { success: false, error: 'Não encontrei a pasta "LEADS ATIVOS" na raiz do Drive.' };
 
     const stageIds = pipeline.stages.map((s) => s.id);
-    const LIMITE = 40; // evita estourar tempo/rate-limit do Drive numa conta com muitos leads nesse funil
+    const LIMITE = 80; // evita estourar tempo/rate-limit do Drive numa conta com muitos leads nesse funil
     const leads = await prisma.lead.findMany({
       where: { accountId, archived: false, pipelineId: pipeline.id, stageId: { in: stageIds } },
       include: { stage: { select: { name: true } } },
       take: LIMITE,
     });
 
+    // Fase 1 (rápida, 1 chamada): lista o conteúdo direto de LEADS ATIVOS e
+    // casa por nome — resolve a maioria dos leads sem varrer a árvore inteira.
+    const leadsAtivosContents = await listFolderContents(accountId, leadsAtivosFolder.id);
+    const emLugarCerto = new Set(leadsAtivosContents.filter((f) => f.isFolder).map((f) => normalize(f.name)));
+
+    const pendentes = leads.filter((l) => !emLugarCerto.has(normalize(l.name)));
+    const ok = leads.length - pendentes.length;
+
+    // Fase 2 (só para quem não bateu na Fase 1): UMA única varredura paralela
+    // da árvore do Drive procurando o nome de todos os pendentes de uma vez —
+    // bem mais rápido do que varrer a árvore inteira uma vez por lead.
     const divergencias: Record<string, unknown>[] = [];
-    let ok = 0;
-    for (const lead of leads) {
-      const matches = await findFolderPathsInTree(accountId, conn.rootFolderId, lead.name);
-      if (matches.length === 0) {
-        divergencias.push({ leadId: lead.id, nome: lead.name, estagio: lead.stage.name, situacao: 'nao_encontrada' });
-      } else if (matches.length > 1) {
-        divergencias.push({ leadId: lead.id, nome: lead.name, estagio: lead.stage.name, situacao: 'ambiguo', locais: matches.map((m) => m.path) });
-      } else {
-        const [primeiraPasta] = matches[0].path.split(' > ');
-        if (normalize(primeiraPasta) === normalize(leadsAtivosFolder.name)) {
-          ok++;
+    if (pendentes.length > 0) {
+      const found = await findFoldersByNamesInTree(accountId, conn.rootFolderId, pendentes.map((l) => l.name));
+      for (const lead of pendentes) {
+        const matches = found.get(lead.name.trim().toLowerCase()) || [];
+        if (matches.length === 0) {
+          divergencias.push({ leadId: lead.id, nome: lead.name, estagio: lead.stage.name, situacao: 'nao_encontrada' });
+        } else if (matches.length > 1) {
+          divergencias.push({ leadId: lead.id, nome: lead.name, estagio: lead.stage.name, situacao: 'ambiguo', locais: matches.map((m) => m.path) });
         } else {
           divergencias.push({ leadId: lead.id, nome: lead.name, estagio: lead.stage.name, situacao: 'fora_do_lugar', localAtual: matches[0].path, itemId: matches[0].id });
         }
