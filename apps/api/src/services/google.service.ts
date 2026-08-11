@@ -627,6 +627,45 @@ export async function findFilesInFolderTree(
   return results;
 }
 
+/** Busca uma PASTA (não arquivo) pelo nome EXATO em toda a árvore a partir de
+ *  um folder raiz, retornando o(s) caminho(s) onde foi encontrada — usado para
+ *  auditar se a pasta de um cliente está no lugar certo (ex.: comparar com o
+ *  funil/estágio em que o lead está hoje). Nome exato (não "contains") para
+ *  não confundir pastas de clientes com nomes parecidos entre si. */
+export async function findFolderPathsInTree(
+  accountId: string,
+  rootFolderId: string,
+  name: string,
+  maxDepth = 4
+): Promise<{ id: string; path: string }[]> {
+  const drive = await getDrive(accountId);
+  const target = name.trim().toLowerCase();
+  const results: { id: string; path: string }[] = [];
+
+  async function walk(folderId: string, path: string, depth: number): Promise<void> {
+    if (depth > maxDepth) return;
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      fields: 'files(id, name)',
+      pageSize: 200,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    const folders = res.data.files || [];
+    for (const f of folders) {
+      const folderPath = path ? `${path} > ${f.name}` : f.name!;
+      if (f.name!.trim().toLowerCase() === target) {
+        results.push({ id: f.id!, path: folderPath });
+        continue; // não precisa descer dentro da pasta do próprio cliente
+      }
+      await walk(f.id!, folderPath, depth + 1);
+    }
+  }
+
+  await walk(rootFolderId, '', 0);
+  return results;
+}
+
 /** Move um arquivo/pasta do Drive para outro pai (outra pasta), por ID. */
 export async function moveDriveItem(accountId: string, itemId: string, newParentId: string): Promise<{ id: string; name: string }> {
   const drive = await getDrive(accountId);

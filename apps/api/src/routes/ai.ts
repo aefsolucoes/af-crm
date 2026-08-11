@@ -7,6 +7,7 @@ import { searchKnowledge } from '../services/knowledge.service';
 import {
   organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
   createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink, findFilesInFolderTree,
+  listFolders, findFolderPathsInTree,
 } from '../services/google.service';
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
@@ -99,9 +100,11 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - enviar_arquivo_whatsapp: envia um arquivo (PDF, foto etc) pelo WhatsApp ao cliente — você CONSEGUE, sim, encaminhar arquivos, não só texto; nunca diga que só sabe mandar mensagem de texto. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp", "reenviar o documento que ele mandou" etc. Duas origens possíveis do arquivo: (1) attachmentId — reenvia um anexo que o PRÓPRIO CLIENTE já mandou na conversa do WhatsApp; (2) nomeArquivo (+ nomePasta opcional, padrão o nome do lead) — busca um arquivo pelo nome dentro da pasta do cliente no Drive. Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista — NUNCA escolha um sozinho, mostre as opções e pergunte qual enviar (regra de ambiguidade abaixo). legenda é opcional (texto que acompanha o arquivo).
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
+- auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
 - create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
 - list_users / create_user / update_user / delete_user: gerenciar a equipe (criar, editar nome/e-mail/senha/função/permissões e EXCLUIR/tirar acesso). Para "tirar acesso" use update_user (mudando função/permissões) ou delete_user.
 Você tem acesso completo ao CRM, MAS sempre respeitando o nível de acesso do colaborador: cada ferramenta checa a permissão dele. Se uma ferramenta retornar erro de permissão, explique com educação que ele não tem acesso àquela ação e não tente por outro caminho.
+REGRA FIXA — pastas do funil "Em contratação": todo lead nesse funil deve ter a pasta dele dentro de "1. LEADS ATIVOS" no Drive. Quando o colaborador pedir para conferir/organizar isso, use auditar_pastas_contratacao — ela retorna a lista de leads do funil com a situação de cada um (ok, fora do lugar — com o local atual, ou pasta não encontrada). Apresente as divergências ao colaborador e resolva UMA DE CADA VEZ, perguntando antes de agir em cada uma (nunca mova todas de uma vez sozinho, mesmo que pareça óbvio): se a pasta existe em outro lugar, confirme e use mover_item_drive para trazer para "1. LEADS ATIVOS"; se não existe, confirme e crie lá (criar_pasta_drive ou salvar_documentos_no_drive, se for organizar documentos do zero).
 AMBIGUIDADE ao localizar algo (principalmente no Drive): NUNCA escolha sozinho quando houver mais de uma opção plausível — nomes de pasta parecidos, mais de uma pasta de ANO/MÊS (ex.: "3. CONCLUIDOS" tem uma sub-pasta por ano, e cada ano tem uma por mês — "08. AGOSTO" existe dentro de 2025 E de 2026), mais de um arquivo que bate com o pedido, mais de um lead com nome parecido, etc. Isso vale tanto quando uma ferramenta retorna mais de um resultado quanto quando VOCÊ MESMO está navegando pasta a pasta com listar_pasta_drive (ex.: abriu "CONCLUIDOS", viu vários anos, e precisa decidir em qual entrar) — nesse caso PARE, liste as opções encontradas e pergunte ao colaborador qual é a certa antes de mover, renomear, criar dentro ou excluir qualquer coisa. Se o colaborador disser só "mês de agosto" sem dizer o ano, não assuma — use a data de hoje (informada no início desta conversa) como referência e, mesmo assim, confirme antes de agir se houver dúvida.
 CONFIRMAÇÃO DUPLA obrigatória para ações IRREVERSÍVEIS (excluir card, excluir usuário / tirar acesso, excluir arquivo/pasta do Drive): antes de executar, pergunte se o colaborador confirma; quando ele confirmar, pergunte MAIS UMA VEZ ("Tem certeza? Isso não pode ser desfeito.") e só após a SEGUNDA confirmação chame a ferramenta com confirmed:true. Nunca passe confirmed:true sem ter perguntado duas vezes. Se a ferramenta retornar needsConfirmation, é porque faltou confirmar — não invente que foi feito.
 Nunca envie uma mensagem nem salve documentos sem que o colaborador tenha pedido isso na conversa atual. Depois de agir, confirme exatamente o que foi feito.
@@ -282,6 +285,11 @@ const AGENT_TOOLS = [
       itemId: { type: 'string' },
       confirmed: { type: 'boolean', description: 'Só true após confirmar DUAS vezes com o colaborador.' },
     }, required: ['itemId'] },
+  },
+  {
+    name: 'auditar_pastas_contratacao',
+    description: 'Compara os leads do funil "Em contratação" com as pastas deles no Drive e retorna quais estão fora de lugar (deveriam estar em "1. LEADS ATIVOS"). Para cada lead do funil, informa: ok (pasta já está no lugar certo), fora_do_lugar (achou a pasta, mas em outro lugar — retorna localAtual e itemId para mover) ou nao_encontrada (não achou nenhuma pasta com o nome do lead). Não move nada sozinha — só relata. Use o resultado para ir revisando as divergências UMA DE CADA VEZ com o colaborador, conforme a REGRA FIXA no início deste prompt.',
+    input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'create_lead',
@@ -975,6 +983,58 @@ async function executeAgentTool(
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao excluir' };
     }
+  }
+
+  if (name === 'auditar_pastas_contratacao') {
+    const normalize = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+    const pipelines = await prisma.pipeline.findMany({ where: { accountId }, include: { stages: true } });
+    const pipeline = pipelines.find((p) => normalize(p.name).includes('contratacao'));
+    if (!pipeline) return { success: false, error: 'Não encontrei o funil "Em contratação".' };
+
+    const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+    if (!conn?.rootFolderId) return { success: false, error: 'Pasta-raiz dos clientes não definida no Drive. Configure em Configurações → Google Drive.' };
+
+    const rootSubfolders = await listFolders(accountId, conn.rootFolderId);
+    const leadsAtivosFolder = rootSubfolders.find((f) => normalize(f.name).includes('leads ativos'));
+    if (!leadsAtivosFolder) return { success: false, error: 'Não encontrei a pasta "LEADS ATIVOS" na raiz do Drive.' };
+
+    const stageIds = pipeline.stages.map((s) => s.id);
+    const LIMITE = 40; // evita estourar tempo/rate-limit do Drive numa conta com muitos leads nesse funil
+    const leads = await prisma.lead.findMany({
+      where: { accountId, archived: false, pipelineId: pipeline.id, stageId: { in: stageIds } },
+      include: { stage: { select: { name: true } } },
+      take: LIMITE,
+    });
+
+    const divergencias: Record<string, unknown>[] = [];
+    let ok = 0;
+    for (const lead of leads) {
+      const matches = await findFolderPathsInTree(accountId, conn.rootFolderId, lead.name);
+      if (matches.length === 0) {
+        divergencias.push({ leadId: lead.id, nome: lead.name, estagio: lead.stage.name, situacao: 'nao_encontrada' });
+      } else if (matches.length > 1) {
+        divergencias.push({ leadId: lead.id, nome: lead.name, estagio: lead.stage.name, situacao: 'ambiguo', locais: matches.map((m) => m.path) });
+      } else {
+        const [primeiraPasta] = matches[0].path.split(' > ');
+        if (normalize(primeiraPasta) === normalize(leadsAtivosFolder.name)) {
+          ok++;
+        } else {
+          divergencias.push({ leadId: lead.id, nome: lead.name, estagio: lead.stage.name, situacao: 'fora_do_lugar', localAtual: matches[0].path, itemId: matches[0].id });
+        }
+      }
+    }
+
+    return {
+      success: true,
+      funil: pipeline.name,
+      pastaAlvo: leadsAtivosFolder.name,
+      pastaAlvoId: leadsAtivosFolder.id,
+      totalLeads: leads.length,
+      truncado: leads.length === LIMITE,
+      ok,
+      divergencias,
+    };
   }
 
   return { error: `Ferramenta desconhecida: ${name}` };
