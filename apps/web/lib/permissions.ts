@@ -64,6 +64,7 @@ export const ROUTE_PERMISSION: { prefix: string; perm: PermissionKey }[] = [
   { prefix: '/automacao', perm: 'automations' },
   { prefix: '/usuarios', perm: 'users' },
   { prefix: '/financeiro', perm: 'finance' },
+  { prefix: '/importar', perm: 'funnel_manage' },
   { prefix: '/configuracoes', perm: 'settings' },
 ];
 

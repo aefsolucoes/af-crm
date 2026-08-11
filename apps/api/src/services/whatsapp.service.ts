@@ -155,7 +155,7 @@ export async function sendWhatsAppTemplateMessage(
 }
 
 // Finds or creates the "Caixa de Entrada" pipeline for incoming WhatsApp leads
-async function getOrCreateWhatsAppPipeline(accountId: string) {
+export async function getOrCreateWhatsAppPipeline(accountId: string) {
   // Try to find existing pipeline named "Caixa de Entrada" (or legacy names)
   let pipeline = await prisma.pipeline.findFirst({
     where: {
