@@ -840,14 +840,14 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
   }
 }
 
-/** true se a mensagem contém um documento ou imagem */
+/** true se a mensagem contém documento, imagem, áudio (nota de voz) ou vídeo */
 function hasMedia(msg: any): boolean {
   const m = unwrapMessage(msg.message);
-  return !!(m.documentMessage || m.imageMessage);
+  return !!(m.documentMessage || m.imageMessage || m.audioMessage || m.videoMessage);
 }
 
-/** Extrai os metadados e o node de mídia (documento ou imagem) */
-function getMediaInfo(msg: any): { node: any; type: 'document' | 'image'; fileName: string; mimeType: string } | null {
+/** Extrai os metadados e o node de mídia (documento, imagem, áudio ou vídeo) */
+function getMediaInfo(msg: any): { node: any; type: 'document' | 'image' | 'audio' | 'video'; fileName: string; mimeType: string } | null {
   const m = unwrapMessage(msg.message);
   const doc = m.documentMessage;
   if (doc) {
@@ -859,6 +859,17 @@ function getMediaInfo(msg: any): { node: any; type: 'document' | 'image'; fileNa
     const mimeType = m.imageMessage.mimetype || 'image/jpeg';
     const ext = mimeType.includes('png') ? 'png' : 'jpg';
     return { node: m.imageMessage, type: 'image', fileName: `foto-${Date.now()}.${ext}`, mimeType };
+  }
+  if (m.audioMessage) {
+    // Nota de voz (PTT) manda "audio/ogg; codecs=opus" — guarda só o mime base.
+    const mimeType = (m.audioMessage.mimetype || 'audio/ogg').split(';')[0].trim();
+    const ext = mimeType.includes('mpeg') ? 'mp3' : mimeType.includes('ogg') ? 'ogg' : 'm4a';
+    return { node: m.audioMessage, type: 'audio', fileName: `audio-${Date.now()}.${ext}`, mimeType };
+  }
+  if (m.videoMessage) {
+    const mimeType = (m.videoMessage.mimetype || 'video/mp4').split(';')[0].trim();
+    const ext = mimeType.includes('3gpp') ? '3gp' : 'mp4';
+    return { node: m.videoMessage, type: 'video', fileName: `video-${Date.now()}.${ext}`, mimeType };
   }
   return null;
 }

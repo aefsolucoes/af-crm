@@ -6,12 +6,14 @@ import { FileText, Download, Loader2, ImageOff, Cloud } from 'lucide-react';
 
 export function AttachmentView({ att }: { att: MessageAttachment }) {
   const isImage = att.mimeType.startsWith('image/');
+  const isAudio = att.mimeType.startsWith('audio/');
+  const isVideo = att.mimeType.startsWith('video/');
   const [url, setUrl] = useState<string | null>(null);
   const [state, setState] = useState<'idle' | 'loading' | 'error' | 'drive'>('idle');
 
-  // Imagens carregam automaticamente; documentos só ao clicar em baixar.
+  // Imagem/áudio/vídeo carregam automaticamente (viram player); documentos só ao clicar em baixar.
   useEffect(() => {
-    if (!isImage) return;
+    if (!isImage && !isAudio && !isVideo) return;
     let revoked = false;
     let objUrl: string | null = null;
     setState('loading');
@@ -26,7 +28,7 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
         setState(err?.response?.status === 410 ? 'drive' : 'error');
       });
     return () => { revoked = true; if (objUrl) URL.revokeObjectURL(objUrl); };
-  }, [att.id, isImage]);
+  }, [att.id, isImage, isAudio, isVideo]);
 
   async function download() {
     setState('loading');
@@ -62,6 +64,32 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
         <img src={url} alt={att.fileName} className="rounded-lg max-w-full max-h-64 object-cover" />
       </a>
     );
+  }
+
+  if (isAudio) {
+    if (state === 'loading') {
+      return <div className="flex items-center justify-center w-56 h-10 rounded-lg bg-black/5 text-slate-400"><Loader2 size={16} className="animate-spin" /></div>;
+    }
+    if (state === 'drive') {
+      return <div className="flex items-center gap-1.5 text-xs text-slate-500 py-1"><Cloud size={13} /> Áudio salvo no Google Drive</div>;
+    }
+    if (state === 'error' || !url) {
+      return <div className="flex items-center gap-1.5 text-xs text-slate-400 py-1"><ImageOff size={13} /> Não foi possível carregar o áudio</div>;
+    }
+    return <audio controls src={url} className="max-w-full h-10" style={{ minWidth: 220 }} />;
+  }
+
+  if (isVideo) {
+    if (state === 'loading') {
+      return <div className="flex items-center justify-center w-48 h-32 rounded-lg bg-black/5 text-slate-400"><Loader2 size={18} className="animate-spin" /></div>;
+    }
+    if (state === 'drive') {
+      return <div className="flex items-center gap-1.5 text-xs text-slate-500 py-1"><Cloud size={13} /> Vídeo salvo no Google Drive</div>;
+    }
+    if (state === 'error' || !url) {
+      return <div className="flex items-center gap-1.5 text-xs text-slate-400 py-1"><ImageOff size={13} /> Não foi possível carregar o vídeo</div>;
+    }
+    return <video controls src={url} className="rounded-lg max-w-full max-h-64" />;
   }
 
   // Documento (pdf, pfx, etc.) → botão de baixar
