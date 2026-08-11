@@ -99,7 +99,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um arquivo (imagem ou PDF) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo do arquivo vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare ou extraia o que o colaborador pedir sobre o documento anexado. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
-- enviar_arquivo_whatsapp: envia um arquivo (PDF, foto etc) pelo WhatsApp ao cliente — você CONSEGUE, sim, encaminhar arquivos, não só texto; nunca diga que só sabe mandar mensagem de texto. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp", "reenviar o documento que ele mandou" etc. Duas origens possíveis do arquivo: (1) attachmentId — reenvia um anexo que o PRÓPRIO CLIENTE já mandou na conversa do WhatsApp; (2) nomeArquivo (+ nomePasta opcional, padrão o nome do lead) — busca um arquivo pelo nome dentro da pasta do cliente no Drive. Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista — NUNCA escolha um sozinho, mostre as opções e pergunte qual enviar (regra de ambiguidade abaixo). legenda é opcional (texto que acompanha o arquivo).
+- enviar_arquivo_whatsapp: envia um arquivo (PDF, foto etc) pelo WhatsApp ao cliente — você CONSEGUE, sim, encaminhar arquivos, não só texto; nunca diga que só sabe mandar mensagem de texto. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp", "reenviar o documento que ele mandou" etc. Duas origens possíveis do arquivo: (1) attachmentId — reenvia um anexo que o PRÓPRIO CLIENTE já mandou na conversa do WhatsApp; (2) nomeArquivo (+ nomePasta opcional, padrão o nome do lead) — busca um arquivo pelo nome dentro da pasta do cliente no Drive. Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista — NUNCA escolha um sozinho, mostre as opções e pergunte qual enviar (regra de ambiguidade abaixo). CONFIRMAÇÃO ANTES DE ENVIAR (obrigatória, mesmo fora do caso de ambiguidade): a primeira chamada sem confirmed:true não envia nada — ela só resolve qual é o arquivo e devolve needsConfirmation. Ao receber isso, diga ao colaborador exatamente qual arquivo vai ser encaminhado e para qual cliente, e pergunte se ele quer incluir alguma mensagem (legenda) junto. Só chame a ferramenta de novo, com confirmed:true (e legenda, se ele pedir), depois que o colaborador responder.
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
 - create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
@@ -234,13 +234,14 @@ const AGENT_TOOLS = [
   },
   {
     name: 'enviar_arquivo_whatsapp',
-    description: 'Envia um arquivo (PDF, foto, etc) pelo WhatsApp para o cliente do lead — via QR Code. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp" ou "reenviar o documento que ele mandou". Informe leadId e a origem do arquivo: attachmentId (reenvia um anexo que o cliente já mandou nesta conversa) OU nomeArquivo (busca um arquivo pelo nome dentro da pasta do cliente no Drive — inclusive dentro de SUBPASTAS, ex.: um arquivo "ITBI PLINIO.pdf" guardado dentro de uma subpasta "ITBI"; use nomePasta se a pasta do cliente tiver nome diferente do lead). Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista de opções (com a subpasta de cada um) — NUNCA escolha sozinho, pergunte ao colaborador qual enviar antes de chamar de novo com o nome mais específico ou o attachmentId certo.',
+    description: 'Envia um arquivo (PDF, foto, etc) pelo WhatsApp para o cliente do lead — via QR Code. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp" ou "reenviar o documento que ele mandou". Informe leadId e a origem do arquivo: attachmentId (reenvia um anexo que o cliente já mandou nesta conversa) OU nomeArquivo (busca um arquivo pelo nome dentro da pasta do cliente no Drive — inclusive dentro de SUBPASTAS, ex.: um arquivo "ITBI PLINIO.pdf" guardado dentro de uma subpasta "ITBI"; use nomePasta se a pasta do cliente tiver nome diferente do lead). Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista de opções (com a subpasta de cada um) — NUNCA escolha sozinho, pergunte ao colaborador qual enviar antes de chamar de novo com o nome mais específico ou o attachmentId certo. CONFIRMAÇÃO OBRIGATÓRIA: na primeira chamada (sem confirmed:true), ela só RESOLVE o arquivo e retorna needsConfirmation — informe ao colaborador exatamente qual arquivo (e para qual cliente) e pergunte se ele quer incluir uma mensagem/legenda junto; só chame de novo com confirmed:true (e legenda, se pedida) depois que ele confirmar.',
     input_schema: { type: 'object', properties: {
       leadId: { type: 'string', description: 'ID do lead (via find_lead)' },
       attachmentId: { type: 'string', description: 'ID de um anexo já recebido do cliente na conversa do WhatsApp, para reenviá-lo (opcional).' },
       nomeArquivo: { type: 'string', description: 'Trecho do nome do arquivo a enviar, buscado na pasta do cliente no Drive (opcional se attachmentId for dado).' },
       nomePasta: { type: 'string', description: 'Nome da pasta do cliente no Drive, se diferente do nome do lead (opcional, usado só com nomeArquivo).' },
-      legenda: { type: 'string', description: 'Texto/legenda opcional que acompanha o arquivo.' },
+      legenda: { type: 'string', description: 'Texto/legenda opcional que acompanha o arquivo — pergunte ao colaborador antes de enviar se ele quer incluir uma.' },
+      confirmed: { type: 'boolean', description: 'Só true depois que o colaborador já foi informado do arquivo/cliente e confirmou o envio (e disse se quer legenda).' },
     }, required: ['leadId'] },
   },
   {
@@ -834,19 +835,19 @@ async function executeAgentTool(
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
 
-    let buffer: Buffer | null = null;
-    let mimeType = '';
+    const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+
+    // 1ª etapa: só RESOLVE qual arquivo seria enviado (sem baixar nem mandar
+    // nada ainda) — precisa disso antes de pedir confirmação ao colaborador.
     let fileName = '';
+    let mimeType = '';
+    let attRef: { id: string; data: any; driveFileId: string | null } | null = null;
+    let driveRef: { id: string; mimeType: string } | null = null;
 
     if (input.attachmentId) {
       const att = await prisma.messageAttachment.findFirst({ where: { id: String(input.attachmentId), leadId } });
       if (!att) return { success: false, error: 'Anexo não encontrado.' };
-      try {
-        buffer = att.data ? Buffer.from(att.data) : att.driveFileId ? await downloadDriveFile(accountId, att.driveFileId, att.mimeType) : null;
-      } catch (err: any) {
-        return { success: false, error: `Falha ao baixar o anexo: ${err?.message || 'erro desconhecido'}` };
-      }
-      if (buffer) { mimeType = att.mimeType; fileName = att.fileName; }
+      fileName = att.fileName; mimeType = att.mimeType; attRef = att;
     } else {
       const nomeArquivo = String(input.nomeArquivo || '').trim();
       if (!nomeArquivo) return { success: false, error: 'Informe nomeArquivo (o arquivo a enviar) ou attachmentId.' };
@@ -861,18 +862,34 @@ async function executeAgentTool(
         const lista = files.map((f) => `${f.name}${f.path ? ` (em ${f.path})` : ''}`).join('; ');
         return { success: false, error: `Mais de um arquivo bate com "${nomeArquivo}": ${lista}. Pergunte ao colaborador qual enviar (pode chamar de novo com um nome mais específico).` };
       }
-      const chosen = files[0];
-      try {
-        buffer = await downloadDriveFile(accountId, chosen.id, chosen.mimeType);
-      } catch (err: any) {
-        return { success: false, error: `Falha ao baixar o arquivo do Drive: ${err?.message || 'erro desconhecido'}` };
-      }
-      mimeType = chosen.mimeType; fileName = chosen.name;
+      fileName = files[0].name; mimeType = files[0].mimeType; driveRef = files[0];
     }
 
-    if (!buffer) return { success: false, error: 'Não foi possível obter o conteúdo do arquivo.' };
-    const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
     if (!SUPPORTED.includes(mimeType)) return { success: false, error: `Tipo de arquivo não suportado para envio pelo WhatsApp (${mimeType}).` };
+
+    // 2ª etapa: CONFIRMAÇÃO — antes de baixar/enviar de verdade, exige que o
+    // colaborador já tenha sido informado do arquivo e perguntado sobre legenda.
+    if (input.confirmed !== true) {
+      return {
+        success: false,
+        needsConfirmation: true,
+        arquivo: fileName,
+        cliente: lead.name,
+        error: `Antes de enviar, informe ao colaborador que vai encaminhar "${fileName}" para ${lead.name} e pergunte se ele quer incluir alguma mensagem (legenda) junto. Só chame esta ferramenta de novo com confirmed:true (e legenda, se ele quiser) depois que o colaborador confirmar.`,
+      };
+    }
+
+    let buffer: Buffer | null = null;
+    try {
+      buffer = attRef
+        ? (attRef.data ? Buffer.from(attRef.data) : attRef.driveFileId ? await downloadDriveFile(accountId, attRef.driveFileId, mimeType) : null)
+        : driveRef
+        ? await downloadDriveFile(accountId, driveRef.id, mimeType)
+        : null;
+    } catch (err: any) {
+      return { success: false, error: `Falha ao baixar o arquivo: ${err?.message || 'erro desconhecido'}` };
+    }
+    if (!buffer) return { success: false, error: 'Não foi possível obter o conteúdo do arquivo.' };
 
     const result = await sendOutboundMedia({
       accountId, leadId, buffer, fileName, mimeType,
