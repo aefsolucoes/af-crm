@@ -314,20 +314,32 @@ export async function processWhatsAppStatus(body: any, io: any) {
           const newStatus = statusMap[rawStatus];
           if (!newStatus || !externalId) continue;
 
+          // Quando falha, a Meta manda o motivo em s.errors — sem guardar isso,
+          // a mensagem só aparecia "falhou" sem nenhuma explicação do porquê.
+          let statusError: string | null = null;
+          if (newStatus === 'FAILED' && Array.isArray(s.errors) && s.errors.length > 0) {
+            const e = s.errors[0];
+            const details = e?.error_data?.details;
+            statusError = [e?.title || e?.message, details].filter(Boolean).join(' — ');
+            if (e?.code) statusError = `${statusError} (código: ${e.code})`;
+            console.error(`[WA Status] Falha ao entregar ${externalId}:`, JSON.stringify(s.errors));
+          }
+
           // Atualiza mensagem pelo externalId
           const updated = await prisma.message.updateMany({
             where: { externalId },
-            data:  { status: newStatus as any },
+            data:  { status: newStatus as any, ...(statusError ? { statusError } : {}) },
           });
 
           if (updated.count > 0) {
-            console.log(`[WA Status] ${externalId} → ${newStatus}`);
+            console.log(`[WA Status] ${externalId} → ${newStatus}${statusError ? ` (${statusError})` : ''}`);
             // Busca a mensagem para emitir via socket
             const msg = await prisma.message.findFirst({ where: { externalId } });
             if (msg && io) {
               io.to(`lead:${msg.leadId}`).emit('message_status', {
                 id: msg.id,
                 status: newStatus,
+                statusError: msg.statusError,
               });
             }
           }

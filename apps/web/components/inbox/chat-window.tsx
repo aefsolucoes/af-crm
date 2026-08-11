@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Search, X } from 'lucide-react';
+import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Search, X, AlertCircle } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -209,6 +209,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   }, [showAI, showTemplates, onClose]);
   // Mapa de status atualizado via socket: messageId → status
   const [statusMap, setStatusMap] = useState<Record<string, string>>({});
+  const [statusErrorMap, setStatusErrorMap] = useState<Record<string, string | null>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -234,9 +235,10 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
       if (msg.leadId === leadId) onNewMessage(msg);
     });
 
-    // Atualiza tick em tempo real quando a Meta confirma entrega/leitura
-    socket.on('message_status', ({ id, status }: { id: string; status: string }) => {
+    // Atualiza tick em tempo real quando a Meta confirma entrega/leitura/falha
+    socket.on('message_status', ({ id, status, statusError }: { id: string; status: string; statusError?: string | null }) => {
       setStatusMap(prev => ({ ...prev, [id]: status }));
+      if (statusError !== undefined) setStatusErrorMap(prev => ({ ...prev, [id]: statusError }));
     });
 
     return () => {
@@ -379,7 +381,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
     }
   }
 
-  function StatusTick({ status }: { status?: string }) {
+  function StatusTick({ status, error }: { status?: string; error?: string | null }) {
+    if (status === 'FAILED') {
+      return (
+        <span title={error ? `Falhou: ${error}` : 'Falhou ao enviar — a mensagem não chegou ao destinatário'}>
+          <AlertCircle size={14} className="text-red-400" />
+        </span>
+      );
+    }
     if (status === 'READ') return <CheckCheck size={14} className="text-blue-400" />;
     if (status === 'DELIVERED') return <CheckCheck size={14} className="text-slate-300" />;
     return <Check size={14} className="text-slate-300" />;
@@ -627,7 +636,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
                     })()}
                     <div className="absolute bottom-2 right-3 flex items-center gap-1">
                       <span className="text-[10px] text-[#e9edef]/50">{time}</span>
-                      {isOut && <StatusTick status={liveStatus} />}
+                      {isOut && <StatusTick status={liveStatus} error={statusErrorMap[msg.id] ?? (msg as any).statusError} />}
                     </div>
                   </div>
                   {!isOut && (

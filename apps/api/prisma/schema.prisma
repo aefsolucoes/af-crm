@@ -265,6 +265,9 @@ model Message {
   read       Boolean    @default(false)
   externalId String?
   status     MsgStatus  @default(SENT)
+  // Motivo do erro quando status = FAILED (vem do webhook de status da Meta,
+  // API Oficial) — sem isso, uma falha de envio ficava sem explicação nenhuma.
+  statusError String?
   attachments MessageAttachment[]
   createdAt  DateTime   @default(now())
   // Preenchido quando esta mensagem foi ENCAMINHADA de outra conversa. Guarda
