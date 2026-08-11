@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { getWhatsAppConfig, saveWhatsAppConfig } from '../services/whatsapp.service';
+import { getWhatsAppConfig, saveWhatsAppConfig, listMetaTemplates, createMetaTemplate } from '../services/whatsapp.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -232,18 +232,9 @@ router.post('/whatsapp/subscribe-waba', async (req: AuthRequest, res: Response) 
 
 // ─── Templates do WhatsApp (Meta) ────────────────────────────────────────────
 // Templates precisam ser aprovados pela Meta antes de poder enviar mensagem
-// fora da janela de 24h de atendimento. Usam o mesmo WABA ID salvo acima.
-
-/** Nome técnico do template exigido pela Meta: minúsculo, só letras/números/_. */
-function slugifyTemplateName(raw: string): string {
-  const slug = raw
-    .toLowerCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 512);
-  return slug || 'template';
-}
+// fora da janela de 24h de atendimento. Lógica de chamar a Graph API mora em
+// whatsapp.service.ts (compartilhada com o assistente de IA, que também sabe
+// listar/criar templates pelo chat).
 
 const templateSchema = z.object({
   name: z.string().min(1).max(120),
@@ -260,68 +251,19 @@ const templateSchema = z.object({
 // GET /api/settings/whatsapp/templates — lista os templates da conta (com status de aprovação)
 router.get('/whatsapp/templates', async (req: AuthRequest, res: Response) => {
   try {
-    const config = await getWhatsAppConfig(req.user!.accountId);
-    if (!config?.accessToken) return res.status(400).json({ error: 'Configure o Access Token primeiro (aba API Oficial).' });
-    if (!config.wabaId) return res.status(400).json({ error: 'Informe o WABA ID em "Ativar recebimento" primeiro.' });
-
-    const r = await fetch(
-      `https://graph.facebook.com/v20.0/${config.wabaId}/message_templates?fields=name,status,category,language,components,rejected_reason&limit=100`,
-      { headers: { Authorization: `Bearer ${config.accessToken}` } },
-    );
-    const j = await r.json() as any;
-    if (!r.ok || j.error) {
-      const code = j.error?.code ?? r.status;
-      const msg  = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
-      return res.status(400).json({ error: `${msg} (código: ${code})` });
-    }
-    res.json({ templates: j.data || [] });
-  } catch {
-    res.status(500).json({ error: 'Erro ao buscar templates' });
+    res.json({ templates: await listMetaTemplates(req.user!.accountId) });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao buscar templates' });
   }
 });
 
 // POST /api/settings/whatsapp/templates — envia um novo template para aprovação da Meta
 router.post('/whatsapp/templates', validate(templateSchema), async (req: AuthRequest, res: Response) => {
   try {
-    const config = await getWhatsAppConfig(req.user!.accountId);
-    if (!config?.accessToken) return res.status(400).json({ error: 'Configure o Access Token primeiro (aba API Oficial).' });
-    if (!config.wabaId) return res.status(400).json({ error: 'Informe o WABA ID em "Ativar recebimento" primeiro.' });
-
-    const { name, category, language, body, footer, codeExpirationMinutes } = req.body as {
-      name: string; category: string; language: string; body?: string; footer?: string; codeExpirationMinutes?: number;
-    };
-
-    let components: Record<string, unknown>[];
-    if (category === 'AUTHENTICATION') {
-      // Autenticação: a Meta gera o texto do código sozinha — o componente
-      // BODY não pode ter "text" (é rejeitado com código 100). Só dá pra
-      // configurar a recomendação de segurança, a expiração do código e o
-      // botão de copiar código.
-      components = [
-        { type: 'BODY', add_security_recommendation: true },
-        { type: 'FOOTER', code_expiration_minutes: codeExpirationMinutes ?? 10 },
-        { type: 'BUTTONS', buttons: [{ type: 'OTP', otp_type: 'COPY_CODE' }] },
-      ];
-    } else {
-      if (!body?.trim()) return res.status(400).json({ error: 'Corpo da mensagem é obrigatório para esta categoria.' });
-      components = [{ type: 'BODY', text: body.trim() }];
-      if (footer?.trim()) components.push({ type: 'FOOTER', text: footer.trim() });
-    }
-
-    const r = await fetch(`https://graph.facebook.com/v20.0/${config.wabaId}/message_templates`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: slugifyTemplateName(name), category, language, components }),
-    });
-    const j = await r.json() as any;
-    if (!r.ok || j.error) {
-      const code = j.error?.code ?? r.status;
-      const msg  = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
-      return res.status(400).json({ error: `${msg} (código: ${code})` });
-    }
-    res.status(201).json(j);
-  } catch {
-    res.status(500).json({ error: 'Erro ao enviar template para aprovação' });
+    const result = await createMetaTemplate(req.user!.accountId, req.body);
+    res.status(201).json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao enviar template para aprovação' });
   }
 });
 

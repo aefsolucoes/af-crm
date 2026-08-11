@@ -19,6 +19,93 @@ export async function saveWhatsAppConfig(accountId: string, data: {
   });
 }
 
+// ─── Templates do WhatsApp (Meta) ────────────────────────────────────────────
+// Templates precisam ser aprovados pela Meta antes de poder enviar mensagem
+// fora da janela de 24h de atendimento. Usam o WABA ID salvo em WhatsAppConfig.
+// Compartilhado entre a tela de Configurações (settings.ts) e o assistente de
+// IA (ai.ts) — a lógica de chamar a Graph API mora só aqui.
+
+/** Nome técnico do template exigido pela Meta: minúsculo, só letras/números/_. */
+export function slugifyTemplateName(raw: string): string {
+  const slug = raw
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 512);
+  return slug || 'template';
+}
+
+export type TemplateCategory = 'MARKETING' | 'UTILITY' | 'AUTHENTICATION';
+
+/** Lista os templates da conta na Meta, com status de aprovação. Lança erro
+ *  (Error) com mensagem pronta para mostrar ao usuário/colaborador em caso de
+ *  falha (WABA/token não configurado, erro da Graph API etc). */
+export async function listMetaTemplates(accountId: string): Promise<any[]> {
+  const config = await getWhatsAppConfig(accountId);
+  if (!config?.accessToken) throw new Error('Configure o Access Token primeiro (aba API Oficial).');
+  if (!config.wabaId) throw new Error('Informe o WABA ID em "Ativar recebimento" primeiro.');
+
+  const r = await fetch(
+    `https://graph.facebook.com/v20.0/${config.wabaId}/message_templates?fields=name,status,category,language,components,rejected_reason&limit=100`,
+    { headers: { Authorization: `Bearer ${config.accessToken}` } },
+  );
+  const j = await r.json() as any;
+  if (!r.ok || j.error) {
+    const code = j.error?.code ?? r.status;
+    const msg = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
+    throw new Error(`${msg} (código: ${code})`);
+  }
+  return j.data || [];
+}
+
+/** Envia um novo template para aprovação da Meta. Lança erro (Error) com
+ *  mensagem pronta para mostrar em caso de falha. */
+export async function createMetaTemplate(accountId: string, params: {
+  name: string;
+  category: TemplateCategory;
+  language?: string;
+  body?: string;
+  footer?: string;
+  /** Só usado em AUTHENTICATION: minutos até o código expirar (padrão 10). */
+  codeExpirationMinutes?: number;
+}): Promise<any> {
+  const config = await getWhatsAppConfig(accountId);
+  if (!config?.accessToken) throw new Error('Configure o Access Token primeiro (aba API Oficial).');
+  if (!config.wabaId) throw new Error('Informe o WABA ID em "Ativar recebimento" primeiro.');
+
+  const { name, category, language = 'pt_BR', body, footer, codeExpirationMinutes } = params;
+
+  let components: Record<string, unknown>[];
+  if (category === 'AUTHENTICATION') {
+    // Autenticação: a Meta gera o texto do código sozinha — o componente BODY
+    // não pode ter "text" (é rejeitado com código 100). Só dá pra configurar a
+    // recomendação de segurança, a expiração do código e o botão de copiar.
+    components = [
+      { type: 'BODY', add_security_recommendation: true },
+      { type: 'FOOTER', code_expiration_minutes: codeExpirationMinutes ?? 10 },
+      { type: 'BUTTONS', buttons: [{ type: 'OTP', otp_type: 'COPY_CODE' }] },
+    ];
+  } else {
+    if (!body?.trim()) throw new Error('Corpo da mensagem é obrigatório para esta categoria.');
+    components = [{ type: 'BODY', text: body.trim() }];
+    if (footer?.trim()) components.push({ type: 'FOOTER', text: footer.trim() });
+  }
+
+  const r = await fetch(`https://graph.facebook.com/v20.0/${config.wabaId}/message_templates`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: slugifyTemplateName(name), category, language, components }),
+  });
+  const j = await r.json() as any;
+  if (!r.ok || j.error) {
+    const code = j.error?.code ?? r.status;
+    const msg = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
+    throw new Error(`${msg} (código: ${code})`);
+  }
+  return j;
+}
+
 /** Garante DDI 55 e o 9º dígito do celular brasileiro (ex: 556184549012 → 5561984549012). */
 function normalizeBrazilianWhatsAppPhone(to: string): string {
   let phone = to.replace(/\D/g, '');

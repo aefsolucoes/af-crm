@@ -3,6 +3,7 @@ import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { sendOutboundWhatsApp, sendOutboundMedia, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
+import { listMetaTemplates, createMetaTemplate, TemplateCategory } from '../services/whatsapp.service';
 import { searchKnowledge } from '../services/knowledge.service';
 import {
   organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
@@ -98,6 +99,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - list_whatsapp_numbers: lista os números de WhatsApp conectados (id + apelido). Use antes de enviar quando houver MAIS DE UM número conectado e o colaborador não tiver dito de qual enviar: mostre os apelidos e PERGUNTE qual usar. Se só houver um conectado, use-o sem perguntar. Passe o id escolhido em fromNumberId ao enviar.
 - list_pipelines: lista os funis e seus estágios (com ids). Use para achar o stageId quando o colaborador pedir para criar o card num funil/estágio específico (ex: "no funil Follow-up, estágio Remarketing números"). Depois passe esse stageId em send_whatsapp_to_number. Você TEM, sim, como criar o card num estágio específico — nunca diga que não consegue.
 - move_lead_to_stage: move um card JÁ EXISTENTE para outro funil/estágio. Use quando pedirem para mover/colocar um card em outro lugar (ex: "move o card do João para Remarketing"). Antes, use find_lead (leadId) e list_pipelines (stageId). Você CONSEGUE mover cards de funil e de estágio — nunca diga que não consegue.
+- listar_templates_whatsapp / criar_template_whatsapp: gerenciar templates de mensagem do WhatsApp (API Oficial/Meta) — necessários para mandar mensagem pra cliente fora da janela de 24h. listar_templates_whatsapp mostra os já criados (com status de aprovação). criar_template_whatsapp cria um novo e manda pra aprovação da Meta (categorias MARKETING, UTILITY ou AUTHENTICATION — explique a diferença se o colaborador não souber qual usar). CONFIRMAÇÃO OBRIGATÓRIA antes de enviar: a primeira chamada sem confirmed:true só valida e devolve um resumo — leia esse resumo (nome, categoria, corpo) para o colaborador e só chame de novo com confirmed:true depois que ele confirmar. A aprovação em si demora (minutos a dias) e não depende do CRM — avise disso.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um arquivo (imagem ou PDF) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo do arquivo vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare ou extraia o que o colaborador pedir sobre o documento anexado. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
@@ -164,6 +166,28 @@ const AGENT_TOOLS = [
     name: 'listar_campos_cadastro',
     description: 'Lista todos os campos personalizados do cadastro de lead (chave, nome de exibição, aba e tipo) — use antes de consultar_leads quando não souber a chave exata de um campo (ex.: para saber que o campo do banco/financeira se chama "instituicao").',
     input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'listar_templates_whatsapp',
+    description: 'Lista os templates de mensagem do WhatsApp (API Oficial/Meta) já criados na conta, com nome, categoria, idioma e status de aprovação (PENDING, APPROVED, REJECTED etc). Use quando o colaborador pedir para "ver os templates", "quais modelos já temos", "esse template já foi aprovado" etc.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'criar_template_whatsapp',
+    description: 'Cria um novo template de mensagem do WhatsApp e envia para aprovação da Meta — necessário para poder mandar mensagem para um cliente fora da janela de 24h de atendimento (API Oficial). A aprovação pode levar minutos a dias e não depende do CRM. Categorias: MARKETING (promoções/ofertas), UTILITY (avisos/atualizações relacionados a uma transação, ex.: "sua proposta foi aprovada"), AUTHENTICATION (código de verificação — a Meta gera o texto sozinha, não aceita corpo customizado, só footer com o prazo de expiração do código). Para variáveis dinâmicas no corpo (ex.: nome do cliente), use {{1}}, {{2}} etc. CONFIRMAÇÃO OBRIGATÓRIA: a primeira chamada (sem confirmed:true) não envia nada — ela só valida os dados e retorna needsConfirmation com um resumo do template. Leia o resumo para o colaborador (nome técnico, categoria, corpo) e só chame de novo com confirmed:true depois que ele confirmar — enviar para aprovação da Meta não é algo pra desfazer com facilidade.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Nome do template em linguagem natural (ex.: "Proposta aprovada") — é convertido sozinho para o formato técnico exigido pela Meta (minúsculo, com _ no lugar de espaço/acento).' },
+        category: { type: 'string', enum: ['MARKETING', 'UTILITY', 'AUTHENTICATION'], description: 'Categoria do template.' },
+        language: { type: 'string', description: 'Idioma no formato da Meta (padrão "pt_BR" se não informado).' },
+        body: { type: 'string', description: 'Corpo da mensagem (obrigatório para MARKETING/UTILITY; ignorado em AUTHENTICATION). Use {{1}}, {{2}} etc para variáveis.' },
+        footer: { type: 'string', description: 'Rodapé opcional (texto curto, até 60 caracteres).' },
+        codeExpirationMinutes: { type: 'number', description: 'Só para AUTHENTICATION: minutos até o código expirar (padrão 10).' },
+        confirmed: { type: 'boolean', description: 'Só true depois que o colaborador já viu o resumo do template e confirmou o envio para aprovação.' },
+      },
+      required: ['name', 'category'],
+    },
   },
   {
     name: 'find_lead',
@@ -412,6 +436,54 @@ async function executeAgentTool(
   if (name === 'listar_campos_cadastro') {
     const fields = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }] });
     return fields.map((f) => ({ chave: f.key, nome: f.name, aba: f.tab, tipo: f.type }));
+  }
+
+  if (name === 'listar_templates_whatsapp') {
+    if (!perms.templates) return deny('templates', 'ver os templates de WhatsApp');
+    try {
+      const templates = await listMetaTemplates(accountId);
+      return { success: true, templates: templates.map((t: any) => ({ nome: t.name, categoria: t.category, idioma: t.language, status: t.status, motivoRejeicao: t.rejected_reason || null })) };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao buscar templates' };
+    }
+  }
+
+  if (name === 'criar_template_whatsapp') {
+    if (!perms.templates) return deny('templates', 'criar templates de WhatsApp');
+    const nome = String(input.name || '').trim();
+    const category = String(input.category || '') as TemplateCategory;
+    if (!nome || !['MARKETING', 'UTILITY', 'AUTHENTICATION'].includes(category)) {
+      return { success: false, error: 'Informe name e category (MARKETING, UTILITY ou AUTHENTICATION).' };
+    }
+    if (category !== 'AUTHENTICATION' && !String(input.body || '').trim()) {
+      return { success: false, error: 'body é obrigatório para as categorias MARKETING e UTILITY.' };
+    }
+
+    if (input.confirmed !== true) {
+      const resumo = category === 'AUTHENTICATION'
+        ? `código de verificação (a Meta gera o texto sozinha), expira em ${input.codeExpirationMinutes || 10} min`
+        : `"${String(input.body || '').trim()}"${input.footer ? ` — rodapé: "${String(input.footer).trim()}"` : ''}`;
+      return {
+        success: false,
+        needsConfirmation: true,
+        template: { nome, categoria: category, idioma: input.language || 'pt_BR', resumo },
+        error: `Antes de enviar, leia para o colaborador: template "${nome}" (categoria ${category}, idioma ${input.language || 'pt_BR'}) com o conteúdo: ${resumo}. Confirme que está correto e que ele quer enviar para aprovação da Meta — isso não é algo pra desfazer com facilidade. Só chame de novo com confirmed:true depois que ele confirmar.`,
+      };
+    }
+
+    try {
+      const result = await createMetaTemplate(accountId, {
+        name: nome,
+        category,
+        language: input.language ? String(input.language) : undefined,
+        body: input.body ? String(input.body) : undefined,
+        footer: input.footer ? String(input.footer) : undefined,
+        codeExpirationMinutes: typeof input.codeExpirationMinutes === 'number' ? input.codeExpirationMinutes : undefined,
+      });
+      return { success: true, enviadoParaAprovacao: true, resultado: result };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao enviar template para aprovação' };
+    }
   }
 
   if (name === 'consultar_leads') {
