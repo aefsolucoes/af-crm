@@ -15,12 +15,19 @@ function colorFromName(name: string) {
   return COLORS[Math.abs(hash) % COLORS.length];
 }
 
+// Remove "lone surrogates" (metade de um par de UTF-16 sem a outra metade —
+// costuma vir de emoji truncado no nome do perfil do WhatsApp) — sem isso,
+// encodeURIComponent lança "URI malformed" e derruba a página inteira.
+function stripLoneSurrogates(s: string): string {
+  return s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+}
+
 /** Gera um SVG inline como data URL — sem chamadas de rede */
 function makeAvatarSvg(name: string, size: 'sm' | 'md' | 'lg'): string {
   const px    = { sm: 24, md: 32, lg: 40 }[size];
   const fs    = { sm: 10, md: 13, lg: 16 }[size];
   const color = colorFromName(name);
-  const label = getInitials(name) || '?';
+  const label = stripLoneSurrogates(getInitials(name) || '?') || '?';
 
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${px}" height="${px}" viewBox="0 0 ${px} ${px}">`,
@@ -44,7 +51,14 @@ function makeAvatarSvg(name: string, size: 'sm' | 'md' | 'lg'): string {
     `</svg>`,
   ].join('');
 
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  // Mesmo com o filtro acima, nunca deixa um SVG malformado derrubar a
+  // página inteira — na dúvida, cai num círculo colorido sem iniciais.
+  try {
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  } catch {
+    const fallback = `<svg xmlns="http://www.w3.org/2000/svg" width="${px}" height="${px}" viewBox="0 0 ${px} ${px}"><circle cx="${px / 2}" cy="${px / 2}" r="${px / 2}" fill="${color}"/></svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(fallback)}`;
+  }
 }
 
 export function Avatar({ name, src, size = 'md', className }: AvatarProps) {
