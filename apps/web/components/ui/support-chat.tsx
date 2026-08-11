@@ -1,12 +1,21 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { MessageCircle, X, Send, Loader2, Plus, History, Trash2 } from 'lucide-react';
+import { MessageCircle, X, Send, Loader2, Plus, History, Trash2, Paperclip, FileText } from 'lucide-react';
 import api from '@/lib/api';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
+
+interface PendingAttachment {
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+}
+
+const SUPPORTED_ATTACH_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+const MAX_ATTACH_BYTES = 8 * 1024 * 1024; // 8 MB
 
 interface ConversationSummary {
   id: string;
@@ -39,8 +48,11 @@ export function SupportChatButton() {
   const [loading, setLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [attachment, setAttachment] = useState<PendingAttachment | null>(null);
+  const [attachError, setAttachError] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -70,6 +82,8 @@ export function SupportChatButton() {
     setConversationId(null);
     setShowHistory(false);
     setInput('');
+    setAttachment(null);
+    setAttachError('');
   }
 
   async function openConversation(id: string) {
@@ -91,24 +105,56 @@ export function SupportChatButton() {
     } catch { /* silencioso */ }
   }
 
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite escolher o mesmo arquivo de novo depois
+    if (!file) return;
+    setAttachError('');
+    if (!SUPPORTED_ATTACH_TYPES.includes(file.type)) {
+      setAttachError('Tipo não suportado. Envie imagem (JPG/PNG) ou PDF.');
+      return;
+    }
+    if (file.size > MAX_ATTACH_BYTES) {
+      setAttachError('Arquivo muito grande (máx. 8 MB).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const dataBase64 = result.split(',')[1] || '';
+      setAttachment({ fileName: file.name, mimeType: file.type, dataBase64 });
+    };
+    reader.onerror = () => setAttachError('Não consegui ler o arquivo. Tente de novo.');
+    reader.readAsDataURL(file);
+  }
+
   async function sendMessage() {
     const text = input.trim();
-    if (!text || loading) return;
+    if ((!text && !attachment) || loading) return;
 
-    const nextMessages = [...messages, { role: 'user' as const, content: text }];
+    const displayContent = attachment ? `📎 ${attachment.fileName}${text ? `\n${text}` : ''}` : text;
+    const nextMessages = [...messages, { role: 'user' as const, content: displayContent }];
+    const pendingAttachment = attachment;
     setMessages(nextMessages);
     setInput('');
+    setAttachment(null);
+    setAttachError('');
     setLoading(true);
 
     try {
-      const { data } = await api.post('/api/ai/support-chat', { messages: nextMessages, conversationId });
+      const { data } = await api.post('/api/ai/support-chat', {
+        messages: nextMessages,
+        conversationId,
+        ...(pendingAttachment ? { attachment: pendingAttachment } : {}),
+      });
       setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
       if (data.conversationId) {
         setConversationId(data.conversationId);
         loadConversations(); // atualiza o histórico (novo título/ordem)
       }
-    } catch {
-      setMessages((prev) => [...prev, { role: 'assistant', content: 'Não consegui responder agora. Tente novamente em instantes ou fale com seu gestor.' }]);
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || 'Não consegui responder agora. Tente novamente em instantes ou fale com seu gestor.';
+      setMessages((prev) => [...prev, { role: 'assistant', content: msg }]);
     } finally {
       setLoading(false);
     }
@@ -196,19 +242,44 @@ export function SupportChatButton() {
           </div>
 
           <div className="p-3 border-t border-af-border flex-shrink-0">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+            {attachment && (
+              <div className="flex items-center gap-1.5 mb-2 px-2.5 py-1.5 bg-af-light rounded-lg text-xs text-slate-700">
+                <FileText size={13} className="flex-shrink-0 text-af-navy" />
+                <span className="truncate flex-1">{attachment.fileName}</span>
+                <button onClick={() => setAttachment(null)} className="text-slate-400 hover:text-red-500 flex-shrink-0" title="Remover anexo">
+                  <X size={13} />
+                </button>
+              </div>
+            )}
+            {attachError && <p className="text-xs text-red-500 mb-1.5">{attachError}</p>}
             <div className="flex items-end gap-2">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading}
+                title="Anexar arquivo (imagem ou PDF)"
+                className="w-9 h-9 flex-shrink-0 flex items-center justify-center text-slate-500 hover:text-af-navy hover:bg-af-light rounded-xl transition-colors disabled:opacity-40"
+              >
+                <Paperclip size={16} />
+              </button>
               <textarea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
                 rows={1}
-                placeholder="Digite sua dúvida...  (Shift+Enter pula linha)"
+                placeholder={attachment ? 'O que você quer saber sobre o arquivo? (opcional)' : 'Digite sua dúvida...  (Shift+Enter pula linha)'}
                 className="flex-1 resize-none max-h-[120px] leading-snug border border-af-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-af-accent/40"
               />
               <button
                 onClick={sendMessage}
-                disabled={loading || !input.trim()}
+                disabled={loading || (!input.trim() && !attachment)}
                 className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-af-navy text-white rounded-xl disabled:opacity-40"
               >
                 <Send size={16} />

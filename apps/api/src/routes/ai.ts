@@ -98,6 +98,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - move_lead_to_stage: move um card JÁ EXISTENTE para outro funil/estágio. Use quando pedirem para mover/colocar um card em outro lugar (ex: "move o card do João para Remarketing"). Antes, use find_lead (leadId) e list_pipelines (stageId). Você CONSEGUE mover cards de funil e de estágio — nunca diga que não consegue.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
+- ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um arquivo (imagem ou PDF) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo do arquivo vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare ou extraia o que o colaborador pedir sobre o documento anexado. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
 - enviar_arquivo_whatsapp: envia um arquivo (PDF, foto etc) pelo WhatsApp ao cliente — você CONSEGUE, sim, encaminhar arquivos, não só texto; nunca diga que só sabe mandar mensagem de texto. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp", "reenviar o documento que ele mandou" etc. Duas origens possíveis do arquivo: (1) attachmentId — reenvia um anexo que o PRÓPRIO CLIENTE já mandou na conversa do WhatsApp; (2) nomeArquivo (+ nomePasta opcional, padrão o nome do lead) — busca um arquivo pelo nome dentro da pasta do cliente no Drive. Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista — NUNCA escolha um sozinho, mostre as opções e pergunte qual enviar (regra de ambiguidade abaixo). legenda é opcional (texto que acompanha o arquivo).
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
@@ -1054,14 +1055,35 @@ interface AnthropicContentBlock {
   id?: string;
   name?: string;
   input?: Record<string, any>;
+  source?: { type: 'base64'; media_type: string; data: string };
 }
 
+const SUPPORTED_CHAT_ATTACHMENTS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+const MAX_CHAT_ATTACHMENT_BYTES = 8 * 1024 * 1024; // 8 MB
+
 router.post('/support-chat', async (req: AuthRequest, res: Response) => {
-  const { messages, conversationId } = req.body as { messages?: ChatMessage[]; conversationId?: string };
+  const { messages, conversationId, attachment } = req.body as {
+    messages?: ChatMessage[];
+    conversationId?: string;
+    /** Arquivo anexado pelo colaborador diretamente nesta mensagem (botão de anexo do chat). */
+    attachment?: { fileName?: string; mimeType?: string; dataBase64?: string };
+  };
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     res.status(400).json({ error: 'messages é obrigatório e deve ser uma lista não vazia' });
     return;
+  }
+
+  if (attachment?.dataBase64) {
+    if (!attachment.mimeType || !SUPPORTED_CHAT_ATTACHMENTS.includes(attachment.mimeType)) {
+      res.status(400).json({ error: 'Tipo de arquivo não suportado. Envie uma imagem (JPG/PNG) ou PDF.' });
+      return;
+    }
+    const sizeBytes = Math.ceil((attachment.dataBase64.length * 3) / 4);
+    if (sizeBytes > MAX_CHAT_ATTACHMENT_BYTES) {
+      res.status(400).json({ error: 'Arquivo muito grande (máximo 8 MB).' });
+      return;
+    }
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -1101,6 +1123,26 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
 
     const convo: { role: string; content: string | AnthropicContentBlock[] }[] =
       messages.map((m) => ({ role: m.role, content: m.content }));
+
+    // Arquivo anexado nesta mensagem (botão de anexo do chat): entra como bloco
+    // de conteúdo na ÚLTIMA mensagem do colaborador, só para esta chamada à
+    // Anthropic — o que fica salvo no histórico da conversa continua sendo
+    // texto simples (ver fullMessages mais abaixo), então não pesa o banco.
+    if (attachment?.dataBase64 && attachment.mimeType) {
+      const lastIdx = convo.length - 1;
+      if (lastIdx >= 0 && convo[lastIdx].role === 'user') {
+        const textoAtual = typeof convo[lastIdx].content === 'string' ? (convo[lastIdx].content as string) : '';
+        const isPdf = attachment.mimeType === 'application/pdf';
+        const fileBlock: AnthropicContentBlock = {
+          type: isPdf ? 'document' : 'image',
+          source: { type: 'base64', media_type: attachment.mimeType, data: attachment.dataBase64 },
+        };
+        convo[lastIdx] = {
+          role: 'user',
+          content: [fileBlock, { type: 'text', text: textoAtual || 'Analise este documento.' }],
+        };
+      }
+    }
 
     let reply = 'Não consegui gerar uma resposta agora.';
 
