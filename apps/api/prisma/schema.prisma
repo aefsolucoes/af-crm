@@ -26,6 +26,7 @@ model Account {
   transactions     Transaction[]
   knowledgeFiles   KnowledgeFile[]
   assistantQuestions AssistantQuestion[]
+  messageTemplates   MessageTemplate[]
 }
 
 model FieldDefinition {
@@ -163,6 +164,27 @@ model AssistantQuestion {
   @@index([accountId, targetUserId, answered])
 }
 
+// Templates de mensagem ("Respostas rápidas") — compartilhados pela conta
+// inteira (visíveis pra qualquer colaborador e pro servidor). Opcionalmente
+// dispara sozinho quando uma mensagem RECEBIDA no WhatsApp começa com
+// triggerText (ex.: a saudação de um anúncio/site) — ver message.service.ts.
+model MessageTemplate {
+  id            String   @id @default(cuid())
+  accountId     String
+  account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name          String
+  category      String   @default("geral")
+  body          String
+  variables     String[]
+  triggerText   String?
+  triggerActive Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([accountId, triggerActive])
+}
+
 enum LeadStatus {
   OPEN
   WON
@@ -203,7 +225,7 @@ model Task {
   userId    String
   user      User     @relation(fields: [userId], references: [id])
   leadId    String?
-  lead      Lead?    @relation(fields: [leadId], references: [id])
+  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
 }
 
 model Note {
@@ -211,7 +233,7 @@ model Note {
   content   String
   type      NoteType @default(COMMENT)
   leadId    String
-  lead      Lead     @relation(fields: [leadId], references: [id])
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
   userId    String?
   user      User?    @relation(fields: [userId], references: [id])
   updatedAt DateTime @updatedAt
@@ -232,7 +254,7 @@ model Message {
   direction  Direction
   channel    Channel
   leadId     String
-  lead       Lead       @relation(fields: [leadId], references: [id])
+  lead       Lead       @relation(fields: [leadId], references: [id], onDelete: Cascade)
   whatsappNumberId String?
   whatsappNumber   WhatsAppNumber? @relation(fields: [whatsappNumberId], references: [id])
   // Usuário do CRM que enviou a mensagem (só para as enviadas pela Inbox).
