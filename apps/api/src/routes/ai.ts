@@ -734,6 +734,15 @@ async function executeAgentTool(
     return { success: true, total, somaValor, mostrando: amostra.length, leads: amostra };
   }
 
+  // Telefone pra MOSTRAR ao modelo/colaborador: nunca um @lid cru (identificador
+  // interno do WhatsApp, não telefone) — se whatsappPhone for isso, mostra o
+  // contact.phone de verdade, senão fica claro que não tem telefone cadastrado.
+  const displayPhone = (contact?: { phone?: string | null; whatsappPhone?: string | null } | null): string | null => {
+    const wp = contact?.whatsappPhone;
+    if (wp && !wp.includes('@')) return wp;
+    return contact?.phone || null;
+  };
+
   if (name === 'find_lead') {
     const nameQuery = String(input.name || '').trim();
     const phoneQuery = String(input.phone || '').trim();
@@ -765,7 +774,7 @@ async function executeAgentTool(
       return matches.map(l => ({
         id: l.id,
         name: l.name,
-        phone: l.contact?.whatsappPhone || l.contact?.phone || null,
+        phone: displayPhone(l.contact),
       }));
     }
 
