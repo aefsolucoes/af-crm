@@ -5,6 +5,7 @@ import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage } from '../services/message.service';
 import { downloadDriveFile } from '../services/google.service';
+import { getScopeDepartmentId } from '../services/department.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -20,16 +21,18 @@ const messageSchema = z.object({
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   const { leadId } = req.query;
+  const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
   if (leadId) {
     try {
-      const messages = await getMessages(leadId as string);
+      const messages = await getMessages(leadId as string, req.user!.accountId, scopeDepartmentId);
+      if (messages === null) { res.status(404).json({ error: 'Conversa não encontrada' }); return; }
       res.json(messages);
     } catch {
       res.status(500).json({ error: 'Erro ao buscar mensagens' });
     }
   } else {
     try {
-      const conversations = await getConversations(req.user!.accountId);
+      const conversations = await getConversations(req.user!.accountId, scopeDepartmentId);
       res.json(conversations);
     } catch {
       res.status(500).json({ error: 'Erro ao buscar conversas' });

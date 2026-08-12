@@ -1,11 +1,11 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Topbar } from '@/components/ui/topbar';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { Upload, FileSpreadsheet, ArrowRight, ArrowLeft, AlertTriangle, CheckCircle2, X, Users } from 'lucide-react';
+import { Upload, FileSpreadsheet, ArrowRight, ArrowLeft, AlertTriangle, CheckCircle2, X, Users, Building2 } from 'lucide-react';
 
 type Step = 'upload' | 'mapping' | 'review' | 'done';
 
@@ -57,6 +57,14 @@ export default function ImportarPage() {
   const [committing, setCommitting] = useState(false);
   const [result, setResult] = useState<{ created: number; skipped: number } | null>(null);
 
+  // Departamento de destino (opcional) — importante quando a conta tem mais
+  // de um setor (ex: importar uma leva de Consórcio separada de Financiamento).
+  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
+  const [departmentId, setDepartmentId] = useState('');
+  useEffect(() => {
+    api.get('/api/departments').then(({ data }) => setDepartments(data)).catch(() => {});
+  }, []);
+
   function resetAll() {
     setStep('upload');
     setFileName('');
@@ -65,6 +73,7 @@ export default function ImportarPage() {
     setMapping({ name: '', phone: '', cpf: '', email: '', valorCredito: '' });
     setReviewRows([]);
     setResult(null);
+    setDepartmentId('');
     if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
@@ -159,6 +168,7 @@ export default function ImportarPage() {
     try {
       const { data } = await api.post('/api/import/commit', {
         rows: reviewRows.map(({ idx, duplicateOf, ...rest }) => rest),
+        departmentId: departmentId || undefined,
       });
       setResult({ created: data.created, skipped: data.skipped });
       setStep('done');
@@ -273,6 +283,22 @@ export default function ImportarPage() {
                   <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-700">
                     <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
                     <span>Linhas com um possível cliente já cadastrado (mesmo telefone ou CPF) vêm marcadas como &quot;Pular&quot; por padrão. Desmarque para importar mesmo assim.</span>
+                  </div>
+                )}
+                {departments.length > 0 && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <Building2 size={14} className="text-slate-400 flex-shrink-0" />
+                    <label className="text-xs text-slate-500 flex-shrink-0">Importar para o setor:</label>
+                    <select
+                      value={departmentId}
+                      onChange={(e) => setDepartmentId(e.target.value)}
+                      className="text-xs border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent"
+                    >
+                      <option value="">Caixa de Entrada geral (sem setor)</option>
+                      {departments.map((d) => (
+                        <option key={d.id} value={d.id}>{d.name}</option>
+                      ))}
+                    </select>
                   </div>
                 )}
               </div>

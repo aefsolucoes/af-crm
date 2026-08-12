@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { PrismaClient } from '@prisma/client';
+import { getOrCreateInboxPipeline } from './department.service';
 
 const prisma = new PrismaClient();
 
@@ -548,17 +549,11 @@ async function isSelfChat(msg: any, sock: any): Promise<boolean> {
 }
 
 /** Funil de entrada + admin da conta (usado ao criar leads automaticamente). */
-async function resolveInboxTarget(accountId: string) {
-  const pipeline =
-    (await prisma.pipeline.findFirst({
-      where: { accountId, name: { contains: 'Caixa', mode: 'insensitive' } },
-      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
-    })) ||
-    (await prisma.pipeline.findFirst({
-      where: { accountId },
-      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
-    }));
-  const admin = await prisma.user.findFirst({ where: { accountId } });
+async function resolveInboxTarget(accountId: string, departmentId?: string | null) {
+  const pipeline = await getOrCreateInboxPipeline(accountId, departmentId ?? null);
+  const admin =
+    (departmentId && await prisma.user.findFirst({ where: { accountId, departmentId } })) ||
+    (await prisma.user.findFirst({ where: { accountId } }));
   return { pipeline, admin };
 }
 
@@ -590,7 +585,7 @@ async function getOrCreateSelfLead(accountId: string, numberId: string): Promise
     }
     return lead.id;
   }
-  const { pipeline, admin } = await resolveInboxTarget(accountId);
+  const { pipeline, admin } = await resolveInboxTarget(accountId, numberRec?.departmentId ?? null);
   if (!pipeline?.stages.length || !admin) return null;
   const lead = await prisma.lead.create({
     data: {
@@ -683,18 +678,18 @@ async function getOrCreateLeadForPhone(
     return lead.id;
   }
 
-  // Novos leads do WhatsApp entram na "Caixa de Entrada" (leads ainda não
-  // qualificados). Se esse funil não existir, cai no primeiro funil disponível.
-  const pipeline =
-    (await prisma.pipeline.findFirst({
-      where: { accountId, name: { contains: 'Caixa', mode: 'insensitive' } },
-      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
-    })) ||
-    (await prisma.pipeline.findFirst({
-      where: { accountId },
-      include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
-    }));
-  const admin = await prisma.user.findFirst({ where: { accountId } });
+  // Novos leads do WhatsApp entram na "Caixa de Entrada" DO SETOR desse
+  // número (cada número QR pode pertencer a um departamento diferente —
+  // ex: Financiamento Habitacional vs Consórcio). Número sem setor definido
+  // ainda cai na Caixa de Entrada "genérica" (compatibilidade).
+  const thisNumber = await prisma.whatsAppNumber.findUnique({ where: { id: numberId }, select: { departmentId: true } });
+  const targetDepartmentId = thisNumber?.departmentId ?? null;
+  const pipeline = await getOrCreateInboxPipeline(accountId, targetDepartmentId);
+  // Prefere um usuário do MESMO setor como responsável padrão do card; sem
+  // ninguém do setor ainda, cai em qualquer usuário da conta (como antes).
+  const admin =
+    (targetDepartmentId && await prisma.user.findFirst({ where: { accountId, departmentId: targetDepartmentId } })) ||
+    (await prisma.user.findFirst({ where: { accountId } }));
   if (!pipeline?.stages.length || !admin) return null;
 
   // telefone_1 só é preenchido quando temos número real; grupo/@lid ficam em branco.

@@ -17,7 +17,19 @@ function plainPhone(contact?: { phone?: string | null; whatsappPhone?: string | 
   return p && !p.includes('@') ? p : undefined;
 }
 
-export async function getMessages(leadId: string) {
+/**
+ * Mensagens de uma conversa. Confere que o lead é da conta e (se o usuário
+ * for de um setor específico) do MESMO setor — senão devolve null, como se
+ * a conversa não existisse pra quem está pedindo.
+ */
+export async function getMessages(leadId: string, accountId: string, scopeDepartmentId?: string | null) {
+  const lead = await prisma.lead.findFirst({
+    where: { id: leadId, accountId },
+    include: { pipeline: { select: { departmentId: true } } },
+  });
+  if (!lead) return null;
+  if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) return null;
+
   return prisma.message.findMany({
     where: { leadId },
     orderBy: { createdAt: 'asc' },
@@ -481,13 +493,16 @@ export async function markMessagesRead(leadId: string) {
   });
 }
 
-export async function getConversations(accountId: string) {
+export async function getConversations(accountId: string, scopeDepartmentId?: string | null) {
   const leads = await prisma.lead.findMany({
     where: {
       accountId,
       messages: { some: {} },
       // Esconde Status/Stories (status@broadcast) — não são conversas de verdade.
       NOT: { contact: { whatsappPhone: { endsWith: '@broadcast' } } },
+      // Mesmo critério do Funil: a conversa "pertence" ao setor do FUNIL do
+      // lead (que casa com o setor do número de WhatsApp, quando veio de lá).
+      ...(scopeDepartmentId ? { pipeline: { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } } : {}),
     },
     include: {
       contact: true,

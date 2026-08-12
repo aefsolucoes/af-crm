@@ -9,7 +9,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
 import api from '@/lib/api';
-import { Plus, Trash2, Edit2, Shield, ShieldCheck, ShieldAlert, Smartphone, Check, Lock } from 'lucide-react';
+import { Plus, Trash2, Edit2, Shield, ShieldCheck, ShieldAlert, Smartphone, Check, Lock, Building2 } from 'lucide-react';
 import { PERMISSION_KEYS, PERMISSION_LABELS, ROLE_DEFAULTS, effectivePermissions, PermissionMap } from '@/lib/permissions';
 
 type Role = 'ADMIN' | 'MANAGER' | 'AGENT';
@@ -20,12 +20,18 @@ interface UserRecord {
   email: string;
   role: Role;
   whatsAppNumberId: string | null;
+  departmentId: string | null;
   permissions: Record<string, boolean> | null;
 }
 
 interface WhatsNumber {
   id: string;
   label: string;
+}
+
+interface DepartmentOption {
+  id: string;
+  name: string;
 }
 
 const ROLE_META: Record<Role, { label: string; color: string; icon: React.ReactNode }> = {
@@ -35,7 +41,7 @@ const ROLE_META: Record<Role, { label: string; color: string; icon: React.ReactN
 };
 
 const EMPTY_FORM = {
-  name: '', email: '', password: '', role: 'AGENT' as Role, whatsAppNumberId: '',
+  name: '', email: '', password: '', role: 'AGENT' as Role, whatsAppNumberId: '', departmentId: '',
   permissions: { ...ROLE_DEFAULTS.AGENT } as PermissionMap,
 };
 
@@ -57,7 +63,12 @@ export default function UsuariosPage() {
     queryKey: ['whatsapp-qr-numbers'],
     queryFn: async () => (await api.get('/api/whatsapp-qr/numbers')).data as WhatsNumber[],
   });
+  const { data: departments = [] } = useQuery({
+    queryKey: ['departments'],
+    queryFn: async () => (await api.get('/api/departments')).data as DepartmentOption[],
+  });
   const numberLabel = (id: string | null) => numbers.find((n) => n.id === id)?.label;
+  const departmentName = (id: string | null) => departments.find((d) => d.id === id)?.name;
 
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
@@ -70,6 +81,7 @@ export default function UsuariosPage() {
         email: form.email,
         role: form.role,
         whatsAppNumberId: form.whatsAppNumberId || null,
+        departmentId: form.departmentId || null,
         // Admin sempre tem tudo (guardamos null = usa o padrão do papel).
         permissions: form.role === 'ADMIN' ? null : form.permissions,
         ...(form.password ? { password: form.password } : {}),
@@ -105,6 +117,7 @@ export default function UsuariosPage() {
     setForm({
       name: u.name, email: u.email, password: '', role: u.role,
       whatsAppNumberId: u.whatsAppNumberId || '',
+      departmentId: u.departmentId || '',
       permissions: effectivePermissions(u.role, u.permissions),
     });
     setShowModal(true);
@@ -181,19 +194,21 @@ export default function UsuariosPage() {
               <tr className="bg-af-light border-b border-af-border">
                 <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Usuário</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Função</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Setor</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">WhatsApp</th>
                 {canManage && <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Ações</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-af-border">
               {isLoading ? (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Carregando…</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">Carregando…</td></tr>
               ) : users.length === 0 ? (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Nenhum usuário ainda.</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">Nenhum usuário ainda.</td></tr>
               ) : (
                 users.map((u) => {
                   const rm = ROLE_META[u.role];
                   const label = numberLabel(u.whatsAppNumberId);
+                  const deptName = departmentName(u.departmentId);
                   return (
                     <tr key={u.id} className="hover:bg-af-light transition-colors">
                       <td className="px-4 py-3">
@@ -212,6 +227,17 @@ export default function UsuariosPage() {
                         <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full font-medium ${rm.color}`}>
                           {rm.icon} {rm.label}
                         </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {u.role === 'ADMIN' ? (
+                          <span className="text-xs text-slate-400">Todos</span>
+                        ) : deptName ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+                            <Building2 size={13} className="text-af-accent" /> {deptName}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-amber-500">Sem setor</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         {label ? (
@@ -284,6 +310,29 @@ export default function UsuariosPage() {
                   );
                 })}
               </div>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-700">Setor</label>
+              {form.role === 'ADMIN' ? (
+                <div className="flex items-center gap-2 text-xs text-slate-500 bg-af-light rounded-lg p-3">
+                  <Lock size={14} /> Administrador vê todos os setores — não precisa escolher.
+                </div>
+              ) : (
+                <>
+                  <select
+                    value={form.departmentId}
+                    onChange={(e) => setForm({ ...form, departmentId: e.target.value })}
+                    className="w-full border border-af-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-af-accent/30"
+                  >
+                    <option value="">Sem setor (vê tudo, por enquanto)</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-400 mt-1">Define o que ele enxerga: funil, Inbox/WhatsApp, tarefas e dashboard só do setor escolhido.</p>
+                </>
+              )}
             </div>
 
             <div className="flex flex-col gap-1">

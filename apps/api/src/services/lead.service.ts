@@ -2,7 +2,16 @@ import { PrismaClient, LeadStatus } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-export async function getLeads(accountId: string, pipelineId?: string, stageId?: string, archived = false, isAdmin = true) {
+export async function getLeads(
+  accountId: string,
+  pipelineId?: string,
+  stageId?: string,
+  archived = false,
+  isAdmin = true,
+  /** Setor do usuário logado (não-admin) — filtra pra só os leads cujo
+   *  FUNIL pertence a esse setor (mais os "órfãos", sem setor definido). */
+  scopeDepartmentId?: string | null,
+) {
   return prisma.lead.findMany({
     where: {
       accountId,
@@ -13,6 +22,7 @@ export async function getLeads(accountId: string, pipelineId?: string, stageId?:
       ...(pipelineId && { pipelineId }),
       ...(stageId && { stageId }),
       ...(isAdmin ? {} : { status: { not: LeadStatus.WON } }),
+      ...(scopeDepartmentId ? { pipeline: { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } } : {}),
     },
     include: {
       stage: true,

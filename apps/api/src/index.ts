@@ -25,6 +25,7 @@ import googleRoutes from './routes/google';
 import dashboardNoteRoutes from './routes/dashboard-notes';
 import importRoutes from './routes/import';
 import messageTemplateRoutes from './routes/message-templates';
+import departmentRoutes from './routes/departments';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
 import { generateRecurringTransactions } from './routes/finance';
@@ -71,6 +72,7 @@ app.use('/api/google', googleRoutes);
 app.use('/api/dashboard-notes', dashboardNoteRoutes);
 app.use('/api/import', importRoutes);
 app.use('/api/message-templates', messageTemplateRoutes);
+app.use('/api/departments', departmentRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
 

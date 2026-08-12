@@ -1,22 +1,31 @@
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { getScopeDepartmentId } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
 
+/** Filtro de pipeline por setor, pra usar dentro de `where: { pipeline: {...} }`.
+ *  Sem setor (admin) = sem filtro extra. */
+function pipelineDeptFilter(scopeDepartmentId: string | null): Prisma.PipelineWhereInput {
+  return scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {};
+}
+
 router.get('/summary', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
+    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
+    const deptFilter = pipelineDeptFilter(scopeDepartmentId);
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
     const [totalLeads, newLeads, wonLeads, allLeads] = await Promise.all([
-      prisma.lead.count({ where: { accountId } }),
-      prisma.lead.count({ where: { accountId, createdAt: { gte: startOfMonth } } }),
-      prisma.lead.findMany({ where: { accountId, status: 'WON', pipeline: { name: 'Concluído' } }, select: { value: true } }),
-      prisma.lead.findMany({ where: { accountId, pipeline: { name: 'Concluído' } }, select: { value: true, status: true, createdAt: true } }),
+      prisma.lead.count({ where: { accountId, pipeline: deptFilter } }),
+      prisma.lead.count({ where: { accountId, createdAt: { gte: startOfMonth }, pipeline: deptFilter } }),
+      prisma.lead.findMany({ where: { accountId, status: 'WON', pipeline: { name: 'Concluído', ...deptFilter } }, select: { value: true } }),
+      prisma.lead.findMany({ where: { accountId, pipeline: { name: 'Concluído', ...deptFilter } }, select: { value: true, status: true, createdAt: true } }),
     ]);
 
     const totalRevenue = wonLeads.reduce((sum, l) => sum + (l.value || 0), 0);
@@ -45,9 +54,11 @@ router.get('/summary', async (req: AuthRequest, res: Response) => {
 router.get('/conversion', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
+    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
+    const deptFilter = pipelineDeptFilter(scopeDepartmentId);
 
     const stages = await prisma.stage.findMany({
-      where: { pipeline: { accountId } },
+      where: { pipeline: { accountId, ...deptFilter } },
       include: { _count: { select: { leads: true } } },
       orderBy: { order: 'asc' },
     });
@@ -55,8 +66,8 @@ router.get('/conversion', async (req: AuthRequest, res: Response) => {
     const topUsers = await prisma.user.findMany({
       where: { accountId },
       include: {
-        leads: { where: { status: 'WON' }, select: { value: true } },
-        _count: { select: { leads: true } },
+        leads: { where: { status: 'WON', pipeline: deptFilter }, select: { value: true } },
+        _count: { select: { leads: { where: { pipeline: deptFilter } } } },
       },
     });
 
@@ -73,8 +84,8 @@ router.get('/conversion', async (req: AuthRequest, res: Response) => {
       const start = new Date(now.getTime() - i * 7 * 86400000);
       const end = new Date(now.getTime() - (i - 1) * 7 * 86400000);
       const [total, won] = await Promise.all([
-        prisma.lead.count({ where: { accountId, createdAt: { gte: start, lt: end } } }),
-        prisma.lead.count({ where: { accountId, status: 'WON', createdAt: { gte: start, lt: end } } }),
+        prisma.lead.count({ where: { accountId, createdAt: { gte: start, lt: end }, pipeline: deptFilter } }),
+        prisma.lead.count({ where: { accountId, status: 'WON', createdAt: { gte: start, lt: end }, pipeline: deptFilter } }),
       ]);
       weeklyData.push({
         week: `S${8 - i}`,
@@ -102,16 +113,18 @@ router.get('/fechados', async (req: AuthRequest, res: Response) => {
       ? new Date(req.query.to as string)
       : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-    // Encontra o funil "Concluído"
-    const concluido = await prisma.pipeline.findFirst({
-      where: { accountId, name: 'Concluído' },
+    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
+    // Encontra o(s) funil(is) "Concluído" — um por setor. Admin vê todos;
+    // colaborador só o do próprio setor.
+    const concluidos = await prisma.pipeline.findMany({
+      where: { accountId, name: 'Concluído', ...pipelineDeptFilter(scopeDepartmentId) },
     });
-    if (!concluido) {
+    if (!concluidos.length) {
       return res.json({ leads: [], total: 0, totalValue: 0, missingPipeline: true });
     }
 
     const leads = await prisma.lead.findMany({
-      where: { accountId, pipelineId: concluido.id },
+      where: { accountId, pipelineId: { in: concluidos.map((p) => p.id) } },
       include: {
         contact: true,
         user: { select: { id: true, name: true } },

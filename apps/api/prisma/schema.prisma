@@ -27,6 +27,29 @@ model Account {
   knowledgeFiles   KnowledgeFile[]
   assistantQuestions AssistantQuestion[]
   messageTemplates   MessageTemplate[]
+  departments        Department[]
+}
+
+// Linha de negócio (ex: "Financiamento Habitacional", "Consórcio"). Cada
+// colaborador não-admin enxerga só o que pertence ao SEU departamento —
+// funil, leads, inbox/WhatsApp, tarefas, dashboard. Admin sempre vê tudo
+// (departmentId não é levado em conta pra ele). Lista editável em
+// Configurações → Departamentos.
+model Department {
+  id        String   @id @default(cuid())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name      String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  users           User[]
+  pipelines       Pipeline[]
+  whatsappNumbers WhatsAppNumber[]
+  // whatsappConfigs (API Oficial multi-departamento) chega na Fase 2, junto
+  // com o campo WhatsAppConfig.departmentId.
+
+  @@index([accountId])
 }
 
 model FieldDefinition {
@@ -77,6 +100,12 @@ model User {
   // Permissões por usuário (as "caixinhas"): { chave: boolean }. Null = usa o
   // padrão do papel. Admin sempre tem tudo. Ver src/lib/permissions.ts.
   permissions Json?
+  // Setor/linha de negócio do colaborador (ex: Financiamento Habitacional,
+  // Consórcio) — define o que ele enxerga (funil, inbox, tarefas, dashboard).
+  // Null = sem setor definido ainda (por ora, enxerga tudo — evita travar
+  // quem ainda não foi configurado). Admin sempre vê tudo, tenha setor ou não.
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
   createdAt DateTime @default(now())
   assistantQuestionsAsked    AssistantQuestion[] @relation("AssistantQuestionAskedBy")
   assistantQuestionsReceived AssistantQuestion[] @relation("AssistantQuestionTarget")
@@ -95,6 +124,12 @@ model Pipeline {
   account   Account  @relation(fields: [accountId], references: [id])
   stages    Stage[]
   leads     Lead[]
+  // Setor dono deste funil — null = pipeline "antiga", visível pra todo
+  // mundo (compatibilidade); pipelines novas devem sempre ter um setor.
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  @@index([departmentId])
 }
 
 model Stage {
@@ -375,8 +410,13 @@ model WhatsAppNumber {
   leads     Lead[]
   messages  Message[]
   users     User[]
+  // Setor dono deste número — mensagens recebidas nele criam o lead já no
+  // funil "Caixa de Entrada" DESSE setor. Null = número "antigo"/compartilhado.
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
 
   @@index([accountId])
+  @@index([departmentId])
 }
 
 model AgentConfig {

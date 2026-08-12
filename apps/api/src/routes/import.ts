@@ -94,8 +94,16 @@ router.post('/commit', async (req: AuthRequest, res: Response) => {
     const rows = z.array(importRowSchema.extend({ skip: z.boolean().optional() })).min(1).max(5000).parse(req.body.rows);
     const accountId = req.user!.accountId;
     const userId = req.user!.id;
+    // Setor de destino (opcional) — importante quando a conta tem mais de um
+    // (ex: importar uma leva de clientes do Consórcio separada da de
+    // Financiamento). Sem escolha, cai na Caixa de Entrada "genérica".
+    const departmentId = req.body.departmentId ? String(req.body.departmentId) : null;
+    if (departmentId) {
+      const dept = await prisma.department.findFirst({ where: { id: departmentId, accountId } });
+      if (!dept) return res.status(400).json({ error: 'Departamento inválido' });
+    }
 
-    const pipeline = await getOrCreateWhatsAppPipeline(accountId);
+    const pipeline = await getOrCreateWhatsAppPipeline(accountId, departmentId);
     if (!pipeline.stages.length) {
       return res.status(500).json({ error: 'Não foi possível encontrar/criar um estágio de destino para os leads importados' });
     }

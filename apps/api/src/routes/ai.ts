@@ -12,6 +12,7 @@ import {
 } from '../services/google.service';
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
+import { getOrCreateInboxPipeline } from '../services/department.service';
 
 const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
 function sanitizePermsInput(input: unknown): Record<string, boolean> | null {
@@ -496,10 +497,14 @@ async function executeAgentTool(
   // Permissões efetivas do colaborador que está usando o assistente. Toda ação
   // sensível checa isto; ações irreversíveis exigem confirmação dupla (o modelo
   // pergunta duas vezes e só então passa confirmed:true — ver system prompt).
-  const me = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { role: true, permissions: true } }) : null;
+  const me = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { role: true, permissions: true, departmentId: true } }) : null;
   const perms = effectivePermissions(me?.role || 'AGENT', me?.permissions ?? null);
   const deny = (key: PermissionKey, acao: string) =>
     ({ success: false as const, error: `Você não tem permissão para ${acao}. (Falta o acesso "${key}".)` });
+  // Mesma regra de setor do resto do CRM: admin vê tudo; colaborador só o
+  // próprio setor (sem setor definido ainda = sem filtro, por compatibilidade).
+  const scopeDepartmentId = me?.role === 'ADMIN' ? null : (me?.departmentId ?? null);
+  const pipelineDeptScope = scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {};
 
   if (name === 'listar_campos_cadastro') {
     const fields = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }] });
@@ -761,7 +766,7 @@ async function executeAgentTool(
       // contact.phone — não dá pra empurrar esse filtro pro SQL com segurança
       // (os valores têm formatação inconsistente: com/sem parênteses e hífen).
       const leads = await prisma.lead.findMany({
-        where: { accountId, archived: false },
+        where: { accountId, archived: false, pipeline: pipelineDeptScope },
         include: { contact: true },
         take: 5000,
       });
@@ -779,7 +784,7 @@ async function executeAgentTool(
     }
 
     const leads = await prisma.lead.findMany({
-      where: { accountId, archived: false, name: { contains: nameQuery, mode: 'insensitive' } },
+      where: { accountId, archived: false, name: { contains: nameQuery, mode: 'insensitive' }, pipeline: pipelineDeptScope },
       include: { contact: true },
       take: 5,
     });
@@ -792,7 +797,7 @@ async function executeAgentTool(
 
   if (name === 'get_recent_messages') {
     const messages = await prisma.message.findMany({
-      where: { leadId: String(input.leadId), lead: { accountId } },
+      where: { leadId: String(input.leadId), lead: { accountId, pipeline: pipelineDeptScope } },
       orderBy: { createdAt: 'desc' },
       take: typeof input.limit === 'number' ? input.limit : 10,
     });
@@ -809,7 +814,7 @@ async function executeAgentTool(
 
   if (name === 'list_pipelines') {
     const pipelines = await prisma.pipeline.findMany({
-      where: { accountId },
+      where: { accountId, ...pipelineDeptScope },
       include: { stages: { orderBy: { order: 'asc' } } },
     });
     return pipelines.map(p => ({
@@ -823,14 +828,23 @@ async function executeAgentTool(
     if (!perms.funnel_manage) return deny('funnel_manage', 'mover cards no funil');
     const leadId = String(input.leadId || '');
     if (!leadId) return { success: false, error: 'leadId é obrigatório' };
-    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { pipeline: { select: { departmentId: true } } } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
+    if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) {
+      return { success: false, error: 'Esse lead é de outro departamento.' };
+    }
     const target = await resolveStageTarget(
       accountId,
       input.pipelineId ? String(input.pipelineId) : undefined,
       input.stageId ? String(input.stageId) : undefined,
     );
     if (!target) return { success: false, error: 'Funil/estágio de destino não encontrado. Use list_pipelines para obter o stageId.' };
+    if (scopeDepartmentId) {
+      const destPipelineCheck = await prisma.pipeline.findUnique({ where: { id: target.pipelineId }, select: { departmentId: true } });
+      if (destPipelineCheck?.departmentId && destPipelineCheck.departmentId !== scopeDepartmentId) {
+        return { success: false, error: 'Esse funil de destino é de outro departamento.' };
+      }
+    }
     const [destStage, destPipeline] = await Promise.all([
       prisma.stage.findUnique({ where: { id: target.stageId } }),
       prisma.pipeline.findUnique({ where: { id: target.pipelineId } }),
@@ -885,8 +899,11 @@ async function executeAgentTool(
 
   if (name === 'update_lead') {
     if (!perms.funnel_manage) return deny('funnel_manage', 'editar cards');
-    const lead = await prisma.lead.findFirst({ where: { id: String(input.leadId || ''), accountId } });
+    const lead = await prisma.lead.findFirst({ where: { id: String(input.leadId || ''), accountId }, include: { pipeline: { select: { departmentId: true } } } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
+    if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) {
+      return { success: false, error: 'Esse lead é de outro departamento.' };
+    }
     const data: Record<string, unknown> = {};
     if (input.name !== undefined) data.name = String(input.name).trim();
     if (typeof input.value === 'number') data.value = input.value;
@@ -1053,6 +1070,16 @@ async function executeAgentTool(
 
   if (name === 'send_whatsapp_message') {
     if (!perms.inbox_reply) return deny('inbox_reply', 'enviar mensagens');
+    if (scopeDepartmentId) {
+      const targetLead = await prisma.lead.findFirst({
+        where: { id: String(input.leadId), accountId },
+        include: { pipeline: { select: { departmentId: true } } },
+      });
+      if (!targetLead) return { success: false, error: 'Lead não encontrado' };
+      if (targetLead.pipeline.departmentId && targetLead.pipeline.departmentId !== scopeDepartmentId) {
+        return { success: false, error: 'Esse lead é de outro departamento.' };
+      }
+    }
     const result = await sendOutboundWhatsApp({
       accountId,
       leadId: String(input.leadId),
@@ -1069,7 +1096,8 @@ async function executeAgentTool(
     const phone = String(input.phone || '').trim();
     if (!phone) return { success: false, error: 'Número de telefone não informado' };
 
-    // Se pediram um funil/estágio específico, resolve e valida antes de criar o card.
+    // Se pediram um funil/estágio específico, resolve e valida antes de criar o card
+    // (e checa que é do PRÓPRIO setor, se o colaborador tiver um).
     let target: { pipelineId: string; stageId: string } | undefined;
     if (input.stageId || input.pipelineId) {
       const resolved = await resolveStageTarget(
@@ -1078,7 +1106,18 @@ async function executeAgentTool(
         input.stageId ? String(input.stageId) : undefined,
       );
       if (!resolved) return { success: false, error: 'Funil/estágio não encontrado. Use list_pipelines para obter o stageId correto.' };
+      if (scopeDepartmentId) {
+        const destPipelineCheck = await prisma.pipeline.findUnique({ where: { id: resolved.pipelineId }, select: { departmentId: true } });
+        if (destPipelineCheck?.departmentId && destPipelineCheck.departmentId !== scopeDepartmentId) {
+          return { success: false, error: 'Esse funil é de outro departamento.' };
+        }
+      }
       target = resolved;
+    } else if (scopeDepartmentId) {
+      // Sem funil/estágio pedido — cria (se precisar) na Caixa de Entrada do
+      // PRÓPRIO setor do colaborador, não num funil qualquer da conta.
+      const inbox = await getOrCreateInboxPipeline(accountId, scopeDepartmentId);
+      if (inbox.stages[0]) target = { pipelineId: inbox.id, stageId: inbox.stages[0].id };
     }
 
     const lead = await findOrCreateLeadByPhone(accountId, phone, input.name ? String(input.name) : undefined, target);

@@ -5,6 +5,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact } from '../services/lead.service';
+import { getScopeDepartmentId } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -52,10 +53,12 @@ function parseFieldNumber(raw: unknown): number {
 
 /** Funil "Concluído" — para onde vão os leads marcados como Ganho, um estágio
  *  por mês do ano (para saber quantos fecharam em cada mês). Cria sozinho na
- *  primeira vez que precisar, sem exigir configuração manual antes. */
-async function getOrCreateConcluidoPipeline(accountId: string) {
+ *  primeira vez que precisar, sem exigir configuração manual antes. Um
+ *  "Concluído" por departamento — os leads ganhos de cada setor ficam
+ *  separados, do mesmo jeito que o resto do funil. */
+async function getOrCreateConcluidoPipeline(accountId: string, departmentId?: string | null) {
   let pipeline = await prisma.pipeline.findFirst({
-    where: { accountId, name: 'Concluído' },
+    where: { accountId, name: 'Concluído', departmentId: departmentId ?? null },
     include: { stages: { orderBy: { order: 'asc' } } },
   });
   if (!pipeline) {
@@ -63,6 +66,7 @@ async function getOrCreateConcluidoPipeline(accountId: string) {
       data: {
         name: 'Concluído',
         accountId,
+        departmentId: departmentId ?? null,
         stages: { create: MONTH_NAMES_PT.map((name, i) => ({ name, order: i + 1, color: '#10b981' })) },
       },
       include: { stages: { orderBy: { order: 'asc' } } },
@@ -100,7 +104,8 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const isAdmin = req.user!.role === 'ADMIN';
     const archived = req.query.archived === 'true';
-    const leads = await getLeads(req.user!.accountId, req.query.pipelineId as string, req.query.stageId as string, archived, isAdmin);
+    const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
+    const leads = await getLeads(req.user!.accountId, req.query.pipelineId as string, req.query.stageId as string, archived, isAdmin, scopeDepartmentId);
     res.json(leads);
   } catch (err: unknown) {
     res.status(500).json({ error: 'Erro ao buscar leads' });
@@ -212,6 +217,13 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const lead = await getLeadById(req.params.id, req.user!.accountId);
     if (!lead) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
+    // Não-admin não abre card de OUTRO departamento mesmo sabendo o id de cor.
+    const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
+    const leadDeptId = (lead as any).pipeline?.departmentId as string | null | undefined;
+    if (scopeDepartmentId && leadDeptId && leadDeptId !== scopeDepartmentId) {
+      res.status(404).json({ error: 'Lead não encontrado' });
+      return;
+    }
     res.json(lead);
   } catch {
     res.status(500).json({ error: 'Erro ao buscar lead' });
@@ -235,6 +247,7 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
       include: {
         user: { select: { name: true } },
         stage: true,
+        pipeline: { select: { departmentId: true } },
       },
     });
 
@@ -254,7 +267,7 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
 
         // ── Auto-migração: lead marcado como Ganho → funil "Concluído" (mês atual) ──
         if (req.body.status === 'WON') {
-          const concluido = await getOrCreateConcluidoPipeline(req.user!.accountId);
+          const concluido = await getOrCreateConcluidoPipeline(req.user!.accountId, before?.pipeline?.departmentId ?? null);
           const mesAtual = currentMonthNamePT();
           const targetStage = concluido.stages.find((s) => s.name === mesAtual) || concluido.stages[0];
           if (targetStage) {

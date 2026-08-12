@@ -4,10 +4,10 @@ import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Upload, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Upload, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2 } from 'lucide-react';
 import { useThemeStore, BackgroundTheme } from '@/store/theme.store';
 
-type Tab = 'api' | 'qr' | 'sons' | 'ia' | 'aparencia' | 'agente' | 'drive';
+type Tab = 'api' | 'qr' | 'sons' | 'ia' | 'aparencia' | 'agente' | 'drive' | 'setores';
 
 interface WAConfig {
   phoneNumberId: string;
@@ -172,10 +172,16 @@ export default function ConfiguracoesPage() {
             <button onClick={() => setTab('drive')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${tab === 'drive' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700 hover:bg-white/60'}`}>
               <HardDrive size={16} /> Google Drive
             </button>
+            <button onClick={() => setTab('setores')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${tab === 'setores' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700 hover:bg-white/60'}`}>
+              <Building2 size={16} /> Departamentos
+            </button>
           </div>
 
           {/* QR Code Tab — múltiplos números */}
           {tab === 'qr' && <QRNumbersTab />}
+
+          {/* Departamentos Tab */}
+          {tab === 'setores' && <DepartmentsTab />}
 
           {/* API Oficial Tab */}
           {tab === 'api' && (
@@ -556,7 +562,10 @@ interface WANumber {
   label: string;
   phone: string | null;
   status: QRStatus;
+  departmentId: string | null;
 }
+
+interface DepartmentOption { id: string; name: string; }
 
 function QRNumbersTab() {
   const [numbers, setNumbers] = useState<WANumber[]>([]);
@@ -566,6 +575,7 @@ function QRNumbersTab() {
   const [qrByNumber, setQrByNumber] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState('');
+  const [departments, setDepartments] = useState<DepartmentOption[]>([]);
   const pollRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   async function loadNumbers() {
@@ -576,8 +586,16 @@ function QRNumbersTab() {
     finally { setLoading(false); }
   }
 
+  async function handleChangeDepartment(id: string, departmentId: string) {
+    setNumbers(prev => prev.map(n => n.id === id ? { ...n, departmentId: departmentId || null } : n));
+    try {
+      await api.patch(`/api/whatsapp-qr/numbers/${id}`, { departmentId: departmentId || null });
+    } catch { toast('Erro ao mudar o setor', 'error'); loadNumbers(); }
+  }
+
   useEffect(() => {
     loadNumbers();
+    api.get('/api/departments').then(({ data }) => setDepartments(data)).catch(() => {});
     const socket = getSocket();
     if (!socket.connected) socket.connect();
     // atualiza status geral a cada 20s
@@ -737,6 +755,21 @@ function QRNumbersTab() {
                   </span>
                 </div>
 
+                {departments.length > 0 && (
+                  <div className="flex items-center gap-2 px-5 py-2.5 border-b border-af-border bg-slate-50/60">
+                    <Building2 size={13} className="text-slate-400 flex-shrink-0" />
+                    <label className="text-xs text-slate-500 flex-shrink-0">Setor:</label>
+                    <select
+                      value={n.departmentId || ''}
+                      onChange={e => handleChangeDepartment(n.id, e.target.value)}
+                      className="flex-1 text-xs border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent"
+                    >
+                      <option value="">Sem setor (visível pra todo mundo)</option>
+                      {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                  </div>
+                )}
+
                 <div className="px-5 py-4">
                   {qr && (
                     <div className="flex flex-col items-center py-2 mb-3">
@@ -769,6 +802,134 @@ function QRNumbersTab() {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Aba Departamentos ───────────────────────────────────────────────────────
+// Setores/linhas de negócio (ex: Financiamento Habitacional, Consórcio) —
+// cada colaborador não-admin enxerga só o funil, inbox, tarefas e dashboard
+// do PRÓPRIO setor. Atribua o setor de cada colaborador em Usuários, e o
+// setor de cada número de WhatsApp aqui na aba QR Code.
+
+interface DepartmentRow { id: string; name: string; order: number; }
+
+function DepartmentsTab() {
+  const [departments, setDepartments] = useState<DepartmentRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newName, setNewName] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+
+  async function load() {
+    try {
+      const { data } = await api.get('/api/departments');
+      setDepartments(data);
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function handleAdd() {
+    const name = newName.trim();
+    if (!name) return;
+    setAdding(true);
+    try {
+      const { data } = await api.post('/api/departments', { name });
+      setDepartments(prev => [...prev, data]);
+      setNewName('');
+    } catch { toast('Erro ao criar departamento', 'error'); }
+    finally { setAdding(false); }
+  }
+
+  async function handleRename(id: string) {
+    const name = editName.trim();
+    if (!name) { setEditing(null); return; }
+    try {
+      await api.patch(`/api/departments/${id}`, { name });
+      setDepartments(prev => prev.map(d => d.id === id ? { ...d, name } : d));
+    } catch { toast('Erro ao renomear', 'error'); }
+    finally { setEditing(null); }
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm('Excluir este departamento?')) return;
+    try {
+      await api.delete(`/api/departments/${id}`);
+      setDepartments(prev => prev.filter(d => d.id !== id));
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao excluir departamento', 'error');
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+        <div className="flex items-start gap-2">
+          <Info size={15} className="text-amber-600 mt-0.5 flex-shrink-0" />
+          <div className="text-xs text-amber-700">
+            <p className="font-semibold mb-1">Setores / linhas de negócio</p>
+            <p>Cada colaborador enxerga só o funil, a Inbox, as tarefas e o dashboard do PRÓPRIO setor. Você (admin) sempre vê tudo. Atribua o setor de cada colaborador em Usuários, e o setor de cada número de WhatsApp na aba QR Code.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <input
+          value={newName}
+          onChange={e => setNewName(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+          placeholder="Nome do novo setor (ex: Cartão de Crédito)"
+          className="flex-1 px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+        />
+        <button
+          onClick={handleAdd}
+          disabled={adding || !newName.trim()}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-medium disabled:opacity-50"
+          style={{ backgroundColor: '#075e54' }}
+        >
+          <Plus size={15} /> Adicionar
+        </button>
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-slate-400 py-6 text-center">Carregando...</p>
+      ) : (
+        <div className="bg-white rounded-2xl border border-af-border shadow-sm divide-y divide-af-border overflow-hidden">
+          {departments.map(d => (
+            <div key={d.id} className="flex items-center gap-3 px-5 py-3">
+              <div className="w-8 h-8 rounded-lg bg-af-light flex items-center justify-center flex-shrink-0">
+                <Building2 size={15} className="text-af-mid" />
+              </div>
+              {editing === d.id ? (
+                <div className="flex-1 flex items-center gap-1.5">
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleRename(d.id); if (e.key === 'Escape') setEditing(null); }}
+                    className="flex-1 text-sm border border-af-border rounded px-2 py-1 focus:outline-none"
+                  />
+                  <button onClick={() => handleRename(d.id)} className="text-green-600 text-xs px-1">✓</button>
+                  <button onClick={() => setEditing(null)} className="text-slate-400 text-xs px-1"><XIcon size={13} /></button>
+                </div>
+              ) : (
+                <>
+                  <p className="flex-1 text-sm font-medium text-slate-800">{d.name}</p>
+                  <button onClick={() => { setEditing(d.id); setEditName(d.name); }} className="text-slate-300 hover:text-af-mid">
+                    <Pencil size={13} />
+                  </button>
+                  <button onClick={() => handleDelete(d.id)} className="text-slate-300 hover:text-red-500">
+                    <Trash2 size={13} />
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>

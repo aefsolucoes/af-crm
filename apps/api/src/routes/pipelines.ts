@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
+import { ensureDefaultDepartments, getScopeDepartmentId } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -11,6 +12,7 @@ router.use(authMiddleware);
 const pipelineSchema = z.object({
   name: z.string().min(1),
   stages: z.array(z.object({ name: z.string(), color: z.string().optional(), order: z.number() })).optional(),
+  departmentId: z.string().optional().nullable(),
 });
 
 const stageCreateSchema = z.object({
@@ -20,9 +22,18 @@ const stageCreateSchema = z.object({
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
+    const accountId = req.user!.accountId;
+    await ensureDefaultDepartments(accountId);
+    // Não-admin só enxerga os funis do PRÓPRIO setor (mais os "órfãos", sem
+    // setor definido — não deveria sobrar nenhum depois do bootstrap, mas
+    // não custa não esconder um funil por acidente). Admin vê tudo.
+    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
     const pipelines = await prisma.pipeline.findMany({
-      where: { accountId: req.user!.accountId },
-      include: { stages: { orderBy: { order: 'asc' } } },
+      where: {
+        accountId,
+        ...(scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {}),
+      },
+      include: { stages: { orderBy: { order: 'asc' } }, department: { select: { id: true, name: true } } },
     });
     res.json(pipelines);
   } catch {
@@ -32,11 +43,15 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 
 router.post('/', validate(pipelineSchema), async (req: AuthRequest, res: Response) => {
   try {
-    const { name, stages } = req.body;
+    const { name, stages, departmentId } = req.body;
+    // Não-admin cria sempre dentro do PRÓPRIO setor (não escolhe outro).
+    // Admin pode escolher (ou deixar sem setor).
+    const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
     const pipeline = await prisma.pipeline.create({
       data: {
         name,
         accountId: req.user!.accountId,
+        departmentId: scopeDepartmentId ?? (departmentId || null),
         stages: stages ? { create: stages } : undefined,
       },
       include: { stages: { orderBy: { order: 'asc' } } },
@@ -47,9 +62,24 @@ router.post('/', validate(pipelineSchema), async (req: AuthRequest, res: Respons
   }
 });
 
+/** Bloqueia mexer num pipeline de OUTRO setor (não-admin). Retorna true e já
+ *  responde 403/404 se não puder — o chamador só precisa dar `return`. */
+async function blockedByDepartment(req: AuthRequest, res: Response, pipelineId: string): Promise<boolean> {
+  const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
+  if (!scopeDepartmentId) return false; // admin ou sem setor definido — sem restrição
+  const pipeline = await prisma.pipeline.findFirst({ where: { id: pipelineId, accountId: req.user!.accountId } });
+  if (!pipeline) { res.status(404).json({ error: 'Pipeline não encontrado' }); return true; }
+  if (pipeline.departmentId && pipeline.departmentId !== scopeDepartmentId) {
+    res.status(403).json({ error: 'Esse funil é de outro departamento.' });
+    return true;
+  }
+  return false;
+}
+
 // PATCH /api/pipelines/:id — renomear pipeline
 router.patch('/:id', async (req: AuthRequest, res: Response) => {
   try {
+    if (await blockedByDepartment(req, res, req.params.id)) return;
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'Nome obrigatório' });
     const pipeline = await prisma.pipeline.updateMany({
@@ -80,6 +110,7 @@ router.post('/rename', async (req: AuthRequest, res: Response) => {
 // POST /api/pipelines/:id/stages — adiciona uma nova etapa ao final do pipeline
 router.post('/:id/stages', validate(stageCreateSchema), async (req: AuthRequest, res: Response) => {
   try {
+    if (await blockedByDepartment(req, res, req.params.id)) return;
     const pipeline = await prisma.pipeline.findFirst({
       where: { id: req.params.id, accountId: req.user!.accountId },
       include: { stages: true },
@@ -104,6 +135,7 @@ router.post('/:id/stages', validate(stageCreateSchema), async (req: AuthRequest,
 // DELETE /api/pipelines/:id
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
+    if (await blockedByDepartment(req, res, req.params.id)) return;
     const pipeline = await prisma.pipeline.findFirst({
       where: { id: req.params.id, accountId: req.user!.accountId },
       include: { _count: { select: { leads: true } } },

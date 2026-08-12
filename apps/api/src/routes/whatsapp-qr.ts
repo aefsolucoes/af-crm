@@ -35,6 +35,7 @@ router.get('/numbers', async (req: AuthRequest, res: Response) => {
     label: n.label,
     phone: n.phone,
     status: getQRStatus(n.id).status,
+    departmentId: n.departmentId,
   })));
 });
 
@@ -48,14 +49,27 @@ router.post('/numbers', async (req: AuthRequest, res: Response) => {
   res.status(201).json({ id: number.id, label: number.label, phone: null, status: 'disconnected' });
 });
 
-// PATCH /api/whatsapp-qr/numbers/:id — renomeia
+// PATCH /api/whatsapp-qr/numbers/:id — renomeia e/ou muda o setor
 router.patch('/numbers/:id', async (req: AuthRequest, res: Response) => {
-  const { label } = req.body as { label?: string };
-  if (!label || !label.trim()) return res.status(400).json({ error: 'Apelido (label) é obrigatório' });
+  const { label, departmentId } = req.body as { label?: string; departmentId?: string | null };
   const number = await prisma.whatsAppNumber.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
   if (!number) return res.status(404).json({ error: 'Número não encontrado' });
-  const updated = await prisma.whatsAppNumber.update({ where: { id: number.id }, data: { label: label.trim() } });
-  res.json({ id: updated.id, label: updated.label });
+
+  const data: Record<string, unknown> = {};
+  if (label !== undefined) {
+    if (!label.trim()) return res.status(400).json({ error: 'Apelido (label) é obrigatório' });
+    data.label = label.trim();
+  }
+  if (departmentId !== undefined) {
+    if (departmentId) {
+      const dept = await prisma.department.findFirst({ where: { id: departmentId, accountId: req.user!.accountId } });
+      if (!dept) return res.status(400).json({ error: 'Departamento inválido' });
+    }
+    data.departmentId = departmentId || null;
+  }
+
+  const updated = await prisma.whatsAppNumber.update({ where: { id: number.id }, data });
+  res.json({ id: updated.id, label: updated.label, departmentId: updated.departmentId });
 });
 
 // DELETE /api/whatsapp-qr/numbers/:id — desconecta e remove

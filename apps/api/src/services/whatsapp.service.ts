@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { getOrCreateInboxPipeline } from './department.service';
 
 const prisma = new PrismaClient();
 
@@ -241,12 +242,21 @@ export async function sendWhatsAppTemplateMessage(
   }
 }
 
-// Finds or creates the "Caixa de Entrada" pipeline for incoming WhatsApp leads
-export async function getOrCreateWhatsAppPipeline(accountId: string) {
+// Finds or creates the "Caixa de Entrada" pipeline for incoming WhatsApp leads.
+// Sem departmentId: mantém o comportamento antigo (casa por vários nomes
+// legados, pipeline "genérica"/compartilhada — conta que só tem uma linha de
+// negócio). Com departmentId: cai no funil "Caixa de Entrada" DAQUELE setor
+// (cria um novo se ainda não existir), separado dos outros setores.
+export async function getOrCreateWhatsAppPipeline(accountId: string, departmentId?: string | null) {
+  if (departmentId) {
+    return getOrCreateInboxPipeline(accountId, departmentId);
+  }
+
   // Try to find existing pipeline named "Caixa de Entrada" (or legacy names)
   let pipeline = await prisma.pipeline.findFirst({
     where: {
       accountId,
+      departmentId: null,
       OR: [
         { name: { contains: 'Caixa de Entrada', mode: 'insensitive' } },
         { name: { contains: 'WhatsApp',          mode: 'insensitive' } },
