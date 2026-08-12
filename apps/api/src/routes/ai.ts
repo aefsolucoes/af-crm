@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { sendOutboundWhatsApp, sendOutboundMedia, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
+import { sendOutboundWhatsApp, sendOutboundMedia, sendOutboundWhatsAppTemplate, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
 import { listMetaTemplates, createMetaTemplate, TemplateCategory } from '../services/whatsapp.service';
 import { searchKnowledge } from '../services/knowledge.service';
 import {
@@ -102,6 +102,8 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - move_lead_to_stage: move um card JÁ EXISTENTE para outro funil/estágio. Use quando pedirem para mover/colocar um card em outro lugar (ex: "move o card do João para Remarketing"). Antes, use find_lead (leadId) e list_pipelines (stageId). Você CONSEGUE mover cards de funil e de estágio — nunca diga que não consegue.
 - perguntar_colaborador / ver_minhas_perguntas_pendentes / responder_pergunta_pendente: sistema de "recado" entre colaboradores sobre dados de um card. Quando o colaborador pedir para "perguntar pra Fulano" algo sobre um ou mais leads (ex.: "pergunta pra Andreia o banco desses clientes sem instituição preenchida"), use perguntar_colaborador — informe o destinatário e uma pergunta por leadId (campo pode ser "nome", "valor" ou uma chave de listar_campos_cadastro). A pergunta NÃO é respondida na hora: ela fica pendente até o Fulano usar o chat DELE. Nunca prometa uma resposta imediata — diga algo como "deixei a pergunta pendente pra Andreia, ela vai ver na próxima vez que abrir o chat". Quando VOCÊ estiver conversando com alguém que tem pergunta(s) pendente(s) — isso é informado automaticamente no início desta conversa, se houver — traga a pergunta de forma natural (uma de cada vez se forem várias) e, assim que a pessoa responder, use responder_pergunta_pendente com o id certo para preencher o card sozinho. ver_minhas_perguntas_pendentes é só para o caso de o colaborador perguntar explicitamente se tem pendência.
 - listar_templates_whatsapp / criar_template_whatsapp: gerenciar templates de mensagem do WhatsApp (API Oficial/Meta) — necessários para mandar mensagem pra cliente fora da janela de 24h. listar_templates_whatsapp mostra os já criados (com status de aprovação). criar_template_whatsapp cria um novo e manda pra aprovação da Meta (categorias MARKETING, UTILITY ou AUTHENTICATION — explique a diferença se o colaborador não souber qual usar). CONFIRMAÇÃO OBRIGATÓRIA antes de enviar: a primeira chamada sem confirmed:true só valida e devolve um resumo — leia esse resumo (nome, categoria, corpo) para o colaborador e só chame de novo com confirmed:true depois que ele confirmar. A aprovação em si demora (minutos a dias) e não depende do CRM — avise disso.
+- listar_respostas_rapidas / criar_resposta_rapida / enviar_resposta_rapida: as "Respostas rápidas" (Templates → aba Respostas rápidas) são DIFERENTES dos templates da Meta — texto pronto reutilizável, SEM aprovação, disponível na hora pra equipe toda. listar mostra as que existem. criar_resposta_rapida cria uma nova (não precisa confirmar — só cria um texto, não envia a ninguém). enviar_resposta_rapida manda uma pra um cliente específico: {{nome}} já é preenchido sozinho, outras variáveis vêm em "variaveis" — se faltar alguma, PERGUNTE ao colaborador antes de enviar. CONFIRMAÇÃO OBRIGATÓRIA antes de enviar: primeira chamada sem confirmed:true só resolve e mostra o texto final — leia pro colaborador e só confirme depois que ele aprovar.
+- enviar_template_whatsapp_lead: envia um template JÁ APROVADO da Meta para um cliente específico — é o jeito de reabrir a conversa quando já passou a janela de 24h. Use listar_templates_whatsapp antes pra saber o nome técnico exato e quantas variáveis {{1}},{{2}}... o corpo pede. CONFIRMAÇÃO OBRIGATÓRIA antes de enviar, mesmo padrão dos outros envios.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um arquivo (imagem ou PDF) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo do arquivo vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare ou extraia o que o colaborador pedir sobre o documento anexado. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
@@ -233,6 +235,42 @@ const AGENT_TOOLS = [
       },
       required: ['name', 'category'],
     },
+  },
+  {
+    name: 'listar_respostas_rapidas',
+    description: 'Lista as "Respostas rápidas" (Templates → aba Respostas rápidas) — textos prontos salvos no CRM, SEM precisar de aprovação da Meta (diferente de listar_templates_whatsapp, que é só para os da API Oficial). Use para ver o que já existe antes de criar um novo ou de enviar um pra algum cliente.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'criar_resposta_rapida',
+    description: 'Cria uma nova "Resposta rápida" (Templates → aba Respostas rápidas) — texto pronto reutilizável, sem aprovação da Meta, disponível pra equipe toda imediatamente. Use {{variavel}} no corpo pra partes que mudam por cliente (ex.: {{nome}}). Não precisa de confirmação — só cria um texto, não envia nada a ninguém.',
+    input_schema: { type: 'object', properties: {
+      name: { type: 'string', description: 'Nome do template (ex.: "Boas-vindas Consórcio").' },
+      category: { type: 'string', enum: ['vendas', 'suporte', 'cobranca', 'boas_vindas', 'follow_up', 'geral'], description: 'Categoria (padrão "geral" se não informado).' },
+      body: { type: 'string', description: 'Texto do template. Use {{variavel}} para partes que mudam por cliente.' },
+    }, required: ['name', 'body'] },
+  },
+  {
+    name: 'enviar_resposta_rapida',
+    description: 'Envia uma "Resposta rápida" já existente para um cliente específico, pelo WhatsApp. {{nome}} é preenchido sozinho com o nome do lead; outras variáveis do template (se houver) devem vir em "variaveis". CONFIRMAÇÃO OBRIGATÓRIA: a primeira chamada (sem confirmed:true) não envia nada — só resolve o template, preenche as variáveis que der e devolve needsConfirmation com o texto final e o cliente. Se sobrar alguma variável sem preencher, PERGUNTE o valor ao colaborador antes de confirmar. Leia o resumo pro colaborador e só chame de novo com confirmed:true depois que ele confirmar.',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string', description: 'ID do lead/cliente (via find_lead).' },
+      templateName: { type: 'string', description: 'Nome (ou parte do nome) da Resposta rápida a enviar.' },
+      variaveis: { type: 'object', description: 'Valores para {{variavel}} do corpo, por chave (ex.: { "produto": "Consórcio Volkswagen" }). "nome" já é preenchido sozinho com o nome do lead, só passe se quiser sobrescrever.' },
+      confirmed: { type: 'boolean', description: 'Só true depois que o colaborador viu o texto final e confirmou o envio.' },
+    }, required: ['leadId', 'templateName'] },
+  },
+  {
+    name: 'enviar_template_whatsapp_lead',
+    description: 'Envia um template JÁ APROVADO pela Meta (via API Oficial) para um cliente específico — necessário pra reabrir a conversa quando já passaram mais de 24h desde a última mensagem dele. Use listar_templates_whatsapp antes pra confirmar o nome técnico e quantas variáveis {{1}}, {{2}}... o corpo tem. CONFIRMAÇÃO OBRIGATÓRIA: a primeira chamada (sem confirmed:true) não envia nada — só devolve needsConfirmation com um resumo. Leia pro colaborador e só chame de novo com confirmed:true depois que ele confirmar.',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string', description: 'ID do lead/cliente (via find_lead).' },
+      templateName: { type: 'string', description: 'Nome técnico exato do template aprovado (via listar_templates_whatsapp).' },
+      language: { type: 'string', description: 'Idioma do template (padrão "pt_BR").' },
+      bodyParams: { type: 'array', items: { type: 'string' }, description: 'Valores para {{1}}, {{2}}... do corpo do template, na ordem — vazio se o template não tiver variáveis.' },
+      previewText: { type: 'string', description: 'O texto do template já com as variáveis preenchidas, para mostrar na conversa (opcional, mas recomendado — monte a partir do corpo visto em listar_templates_whatsapp).' },
+      confirmed: { type: 'boolean', description: 'Só true depois que o colaborador viu o resumo e confirmou o envio.' },
+    }, required: ['leadId', 'templateName'] },
   },
   {
     name: 'find_lead',
@@ -651,6 +689,100 @@ async function executeAgentTool(
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao enviar template para aprovação' };
     }
+  }
+
+  if (name === 'listar_respostas_rapidas') {
+    const templates = await prisma.messageTemplate.findMany({ where: { accountId }, orderBy: { createdAt: 'asc' } });
+    return templates.map((t) => ({ id: t.id, nome: t.name, categoria: t.category, corpo: t.body, variaveis: t.variables }));
+  }
+
+  if (name === 'criar_resposta_rapida') {
+    if (!perms.templates) return deny('templates', 'criar respostas rápidas');
+    const nome = String(input.name || '').trim();
+    const body = String(input.body || '').trim();
+    if (!nome || !body) return { success: false, error: 'Informe name e body.' };
+    const variaveis = [...new Set((body.match(/\{\{([^}]+)\}\}/g) || []).map((m) => m.replace(/\{\{|\}\}/g, '').trim()))];
+    const template = await prisma.messageTemplate.create({
+      data: { accountId, name: nome, category: input.category ? String(input.category) : 'geral', body, variables: variaveis },
+    });
+    return { success: true, id: template.id, nome: template.name };
+  }
+
+  if (name === 'enviar_resposta_rapida') {
+    if (!perms.inbox_reply) return deny('inbox_reply', 'enviar mensagens');
+    const leadId = String(input.leadId || '').trim();
+    const templateName = String(input.templateName || '').trim();
+    if (!leadId || !templateName) return { success: false, error: 'Informe leadId e templateName.' };
+
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { pipeline: { select: { departmentId: true } } } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+    if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) {
+      return { success: false, error: 'Esse lead é de outro departamento.' };
+    }
+
+    const candidatos = await prisma.messageTemplate.findMany({ where: { accountId, name: { contains: templateName, mode: 'insensitive' } } });
+    if (candidatos.length === 0) return { success: false, error: `Nenhuma resposta rápida encontrada com "${templateName}". Use listar_respostas_rapidas para ver as que existem.` };
+    if (candidatos.length > 1) return { success: false, error: `Mais de uma resposta rápida bate com "${templateName}": ${candidatos.map((t) => t.name).join(', ')}. Pergunte ao colaborador qual é a certa.` };
+    const template = candidatos[0];
+
+    const variaveis: Record<string, string> = { nome: lead.name, ...(input.variaveis && typeof input.variaveis === 'object' ? input.variaveis : {}) };
+    const textoFinal = template.body.replace(/\{\{([^}]+)\}\}/g, (_m, key) => {
+      const v = variaveis[String(key).trim()];
+      return v !== undefined ? String(v) : `{{${key}}}`;
+    });
+    const faltando = [...new Set((textoFinal.match(/\{\{([^}]+)\}\}/g) || []).map((m) => m.replace(/\{\{|\}\}/g, '').trim()))];
+
+    if (input.confirmed !== true) {
+      return {
+        success: false,
+        needsConfirmation: true,
+        cliente: lead.name,
+        template: template.name,
+        textoFinal,
+        variaveisFaltando: faltando.length ? faltando : undefined,
+        error: faltando.length
+          ? `Faltam valores para: ${faltando.join(', ')}. Pergunte ao colaborador antes de enviar e chame de novo com "variaveis" preenchidas.`
+          : `Antes de enviar, leia para o colaborador o texto final: "${textoFinal}" — vai para ${lead.name}. Confirme e só então chame de novo com confirmed:true.`,
+      };
+    }
+    if (faltando.length) return { success: false, error: `Ainda faltam valores para: ${faltando.join(', ')}. Não pode enviar assim.` };
+
+    const result = await sendOutboundWhatsApp({ accountId, leadId, content: textoFinal, userId, io });
+    return result;
+  }
+
+  if (name === 'enviar_template_whatsapp_lead') {
+    if (!perms.inbox_reply) return deny('inbox_reply', 'enviar mensagens');
+    const leadId = String(input.leadId || '').trim();
+    const templateName = String(input.templateName || '').trim();
+    if (!leadId || !templateName) return { success: false, error: 'Informe leadId e templateName.' };
+
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { pipeline: { select: { departmentId: true } } } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+    if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) {
+      return { success: false, error: 'Esse lead é de outro departamento.' };
+    }
+
+    const bodyParams = Array.isArray(input.bodyParams) ? input.bodyParams.map((p: unknown) => String(p)) : [];
+    const previewText = input.previewText ? String(input.previewText) : `[Template: ${templateName}]`;
+
+    if (input.confirmed !== true) {
+      return {
+        success: false,
+        needsConfirmation: true,
+        cliente: lead.name,
+        template: templateName,
+        variaveis: bodyParams,
+        error: `Antes de enviar, confirme com o colaborador: template "${templateName}" para ${lead.name}${bodyParams.length ? `, com as variáveis: ${bodyParams.join(', ')}` : ''}. Só chame de novo com confirmed:true depois que ele confirmar.`,
+      };
+    }
+
+    const result = await sendOutboundWhatsAppTemplate({
+      accountId, leadId, templateName,
+      language: input.language ? String(input.language) : 'pt_BR',
+      bodyParams, previewText, userId, io,
+    });
+    return result;
   }
 
   if (name === 'consultar_leads') {
