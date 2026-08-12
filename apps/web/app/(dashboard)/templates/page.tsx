@@ -47,6 +47,7 @@ function WhatsAppTemplatesTab() {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(META_EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  const [deletingName, setDeletingName] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -65,6 +66,20 @@ function WhatsAppTemplatesTab() {
   useEffect(() => { load(); }, []);
 
   const isAuth = form.category === 'AUTHENTICATION';
+
+  async function handleDelete(name: string) {
+    if (!confirm(`Excluir o template "${name}"? Ele deixa de poder ser usado — a Meta some com o histórico de aprovação dele.`)) return;
+    setDeletingName(name);
+    try {
+      await api.delete(`/api/settings/whatsapp/templates/${encodeURIComponent(name)}`);
+      toast('Template excluído!');
+      setItems((prev) => (prev || []).filter((t) => t.name !== name));
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao excluir template', 'error');
+    } finally {
+      setDeletingName(null);
+    }
+  }
 
   async function handleSubmit() {
     if (!form.name.trim() || (!isAuth && !form.body.trim())) {
@@ -131,6 +146,15 @@ function WhatsAppTemplatesTab() {
                   {t.status === 'REJECTED' && t.rejected_reason && (
                     <p className="mt-2 text-xs text-red-500">Motivo: {t.rejected_reason}</p>
                   )}
+                </div>
+                <div className="px-4 py-2.5 border-t border-af-border flex justify-end">
+                  <button
+                    onClick={() => handleDelete(t.name)}
+                    disabled={deletingName === t.name}
+                    className="flex items-center gap-1.5 text-xs text-red-500 hover:text-red-600 hover:bg-red-50 px-2 py-1 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    <Trash2 size={12} /> {deletingName === t.name ? 'Excluindo...' : 'Excluir'}
+                  </button>
                 </div>
               </div>
             );

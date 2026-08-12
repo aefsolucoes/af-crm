@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { getWhatsAppConfig, saveWhatsAppConfig, listMetaTemplates, createMetaTemplate } from '../services/whatsapp.service';
+import { getWhatsAppConfig, saveWhatsAppConfig, listMetaTemplates, createMetaTemplate, deleteMetaTemplate } from '../services/whatsapp.service';
 
 /** Lê o departmentId de query/body — string vazia ou ausente vira undefined
  *  ("genérica ou a primeira que achar", mesmo comportamento de antes dos
@@ -289,6 +289,16 @@ router.post('/whatsapp/templates', validate(templateSchema), async (req: AuthReq
     res.status(201).json(result);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao enviar template para aprovação' });
+  }
+});
+
+// DELETE /api/settings/whatsapp/templates/:name — exclui um template já criado na Meta
+router.delete('/whatsapp/templates/:name', async (req: AuthRequest, res: Response) => {
+  try {
+    await deleteMetaTemplate(req.user!.accountId, req.params.name, readDeptQuery(req));
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao excluir template' });
   }
 });
 

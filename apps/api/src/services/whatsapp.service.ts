@@ -7,15 +7,16 @@ const prisma = new PrismaClient();
  * Config da API Oficial. Um WhatsAppConfig por DEPARTAMENTO agora (não mais
  * por conta) — cada setor pode ter seu próprio número (ex: Financiamento
  * Habitacional e Consórcio).
- * - departmentId informado (mesmo null): busca EXATA por esse setor.
- * - departmentId omitido: pega a config "genérica" (sem setor) se existir,
- *   senão a primeira que achar — cobre contas com um único número ainda.
+ * - departmentId informado (setor de verdade): tenta achar a config EXATA
+ *   desse setor; se esse setor ainda não tiver um número próprio (comum —
+ *   nem toda conta configura um número por setor), cai pra config
+ *   "genérica" ou a única que a conta tiver, em vez de simplesmente falhar.
+ * - departmentId ausente/null: direto pra "genérica ou a única".
  */
 export async function getWhatsAppConfig(accountId: string, departmentId?: string | null) {
-  if (departmentId !== undefined) {
-    // findFirst (não findUnique) de propósito: o índice único composto não
-    // aceita NULL na lookup do Prisma, mesmo a coluna sendo nullable.
-    return prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId } });
+  if (departmentId) {
+    const exact = await prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId } });
+    if (exact) return exact;
   }
   return (
     (await prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId: null } })) ||
@@ -31,11 +32,20 @@ export async function saveWhatsAppConfig(accountId: string, departmentId: string
 }) {
   // upsert() exigiria a chave composta accountId_departmentId, que o Prisma
   // não deixa usar com NULL — faz o "upsert" na mão via id.
-  const existing = await prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId } });
-  if (existing) {
-    return prisma.whatsAppConfig.update({ where: { id: existing.id }, data });
+  if (departmentId) {
+    const existing = await prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId } });
+    if (existing) return prisma.whatsAppConfig.update({ where: { id: existing.id }, data });
+    return prisma.whatsAppConfig.create({ data: { accountId, departmentId, ...data } });
   }
-  return prisma.whatsAppConfig.create({ data: { accountId, departmentId, ...data } });
+  // Sem setor escolhido no seletor: atualiza a config "genérica" se existir;
+  // senão, se a conta já tiver QUALQUER config (ex: migrada pra um setor na
+  // hora que os departamentos foram criados), atualiza essa mesma — evita
+  // criar uma config duplicada só porque salvou sem trocar o seletor de setor.
+  const generic = await prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId: null } });
+  if (generic) return prisma.whatsAppConfig.update({ where: { id: generic.id }, data });
+  const anyExisting = await prisma.whatsAppConfig.findFirst({ where: { accountId } });
+  if (anyExisting) return prisma.whatsAppConfig.update({ where: { id: anyExisting.id }, data });
+  return prisma.whatsAppConfig.create({ data: { accountId, departmentId: null, ...data } });
 }
 
 // ─── Templates do WhatsApp (Meta) ────────────────────────────────────────────
@@ -123,6 +133,26 @@ export async function createMetaTemplate(accountId: string, params: {
     throw new Error(`${msg} (código: ${code})`);
   }
   return j;
+}
+
+/** Exclui um template já criado (aprovado, rejeitado ou pendente) na Meta —
+ *  a Graph API apaga pelo NOME do template, não por id. Lança erro (Error)
+ *  com mensagem pronta para mostrar em caso de falha. */
+export async function deleteMetaTemplate(accountId: string, name: string, departmentId?: string | null): Promise<void> {
+  const config = await getWhatsAppConfig(accountId, departmentId);
+  if (!config?.accessToken) throw new Error('Configure o Access Token primeiro (aba API Oficial).');
+  if (!config.wabaId) throw new Error('Informe o WABA ID em "Ativar recebimento" primeiro.');
+
+  const r = await fetch(
+    `https://graph.facebook.com/v20.0/${config.wabaId}/message_templates?name=${encodeURIComponent(name)}`,
+    { method: 'DELETE', headers: { Authorization: `Bearer ${config.accessToken}` } },
+  );
+  const j = await r.json() as any;
+  if (!r.ok || j.error) {
+    const code = j.error?.code ?? r.status;
+    const msg = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
+    throw new Error(`${msg} (código: ${code})`);
+  }
 }
 
 /** Garante DDI 55 e o 9º dígito do celular brasileiro (ex: 556184549012 → 5561984549012). */
