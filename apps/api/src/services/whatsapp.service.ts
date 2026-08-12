@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
+import { generateAiAutoReply } from './ai-auto-reply.service';
 
 const prisma = new PrismaClient();
 
@@ -602,10 +603,14 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
       }
 
-      // Gatilho automático (Templates → "Disparar automaticamente") — só para
-      // texto de verdade, não mídia.
+      // Gatilho automático (Templates → "Disparar automaticamente") e
+      // assistente de IA (Inbox → botão de IA na conversa) — só para texto de
+      // verdade, não mídia. Template tem prioridade sobre a resposta de IA.
       if (msg.type === 'text' && text) {
-        await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
+        const templateDisparou = await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
+        if (!templateDisparou) {
+          await maybeAiAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
+        }
       }
     }
   } catch (err) {
@@ -616,29 +621,59 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
 /** Verifica se algum template com gatilho automático ativo bate com o início
  *  da mensagem recebida e, se achar, envia o corpo dele como resposta pela
  *  API Oficial. Implementado aqui (não em message.service) de propósito, pra
- *  não criar import circular. */
-async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null) {
+ *  não criar import circular. Retorna true se disparou. */
+async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<boolean> {
   try {
     const norm = incomingText.trim().toLowerCase();
-    if (!norm) return;
+    if (!norm) return false;
     const templates = await prisma.messageTemplate.findMany({ where: { accountId, triggerActive: true } });
     const match = templates.find((t: any) => t.triggerText && norm.startsWith(String(t.triggerText).trim().toLowerCase()));
-    if (!match) return;
+    if (!match) return false;
 
     const alreadySent = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: match.body } });
-    if (alreadySent) return;
+    if (alreadySent) return false;
 
     const result = await sendWhatsAppMessage(phone, match.body, accountId, departmentId);
     if (!result.success) {
       console.error(`[WhatsApp] Gatilho automático "${match.name}" falhou ao enviar:`, result.error);
-      return;
+      return false;
     }
     const sent = await prisma.message.create({
       data: { content: match.body, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT' },
     });
     if (io) io.to(`lead:${leadId}`).emit('new_message', sent);
     console.log(`[WhatsApp] Gatilho automático "${match.name}" disparado para lead ${leadId}`);
+    return true;
   } catch (err) {
     console.error('[WhatsApp] Erro no gatilho automático:', err);
+    return false;
+  }
+}
+
+/** Assistente de IA respondendo o cliente sozinho (Inbox → botão de IA na
+ *  conversa, Lead.aiAutoReplyActive) — só entra se o gatilho de template
+ *  acima não disparou pra essa mensagem. Toda resposta enviada vira uma
+ *  Note no card, pra equipe acompanhar/poder desligar se algo sair errado. */
+async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
+  try {
+    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
+    if (!lead?.aiAutoReplyActive) return;
+
+    const reply = await generateAiAutoReply(accountId, leadId, incomingText);
+    if (!reply) return;
+
+    const result = await sendWhatsAppMessage(phone, reply, accountId, departmentId);
+    if (!result.success) {
+      console.error('[WhatsApp] Resposta de IA falhou ao enviar:', result.error);
+      return;
+    }
+    const sent = await prisma.message.create({
+      data: { content: reply, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT' },
+    });
+    if (io) io.to(`lead:${leadId}`).emit('new_message', sent);
+    await prisma.note.create({ data: { leadId, content: `🤖 Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
+    console.log(`[WhatsApp] Resposta de IA enviada automaticamente para lead ${leadId}`);
+  } catch (err) {
+    console.error('[WhatsApp] Erro na resposta automática de IA:', err);
   }
 }

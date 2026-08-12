@@ -192,6 +192,7 @@ export interface Conversation {
   isGroup?: boolean;
   whatsappNumberId?: string | null;
   whatsappNumber?: { id: string; label: string; phone?: string | null } | null;
+  aiAutoReplyActive?: boolean;
 }
 
 export interface SalesBot {

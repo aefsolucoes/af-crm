@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
+import { generateAiAutoReply } from './ai-auto-reply.service';
 
 const prisma = new PrismaClient();
 
@@ -831,10 +832,15 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
     globalIO?.to(`lead:${leadId}`).emit('new_message', message);
     globalIO?.emit('new_conversation', { leadId });
 
-    // Gatilho automático (Templates → "Disparar automaticamente"): só para
-    // mensagem de cliente de verdade (não eco, não grupo, não self-chat).
+    // Gatilho automático (Templates → "Disparar automaticamente") e assistente
+    // de IA (Inbox → botão de IA na conversa): só para mensagem de cliente de
+    // verdade (não eco, não grupo, não self-chat). Template tem prioridade —
+    // se disparou, não manda a resposta de IA em cima da mesma mensagem.
     if (!fromMe && !isGroupMsg && !selfChat) {
-      await maybeAutoReplyQR(accountId, leadId, text, from, numberId);
+      const templateDisparou = await maybeAutoReplyQR(accountId, leadId, text, from, numberId);
+      if (!templateDisparou) {
+        await maybeAiAutoReplyQR(accountId, leadId, text, from, numberId);
+      }
     }
   } catch (err) {
     console.error('[Baileys] Erro ao processar mensagem:', err);
@@ -844,24 +850,25 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
 /** Verifica se algum template com gatilho automático ativo bate com o início
  *  da mensagem recebida e, se achar, envia o corpo dele como resposta pelo
  *  mesmo número (QR) que recebeu. Implementado aqui (não em message.service)
- *  de propósito, para não criar import circular neste arquivo crítico. */
-async function maybeAutoReplyQR(accountId: string, leadId: string, incomingText: string, phone: string, numberId: string) {
+ *  de propósito, para não criar import circular neste arquivo crítico.
+ *  Retorna true se disparou (pra não sobrepor com a resposta de IA). */
+async function maybeAutoReplyQR(accountId: string, leadId: string, incomingText: string, phone: string, numberId: string): Promise<boolean> {
   try {
     const norm = incomingText.trim().toLowerCase();
-    if (!norm) return;
+    if (!norm) return false;
     const templates = await prisma.messageTemplate.findMany({ where: { accountId, triggerActive: true } });
     const match = templates.find((t: any) => t.triggerText && norm.startsWith(String(t.triggerText).trim().toLowerCase()));
-    if (!match) return;
+    if (!match) return false;
 
     // Não repete se esse template já foi mandado pra esse lead (evita duplicar
     // com eventos repetidos do WhatsApp ou o cliente reenviando a saudação).
     const alreadySent = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: match.body } });
-    if (alreadySent) return;
+    if (alreadySent) return false;
 
     const outcome = await sendBaileysMessage(phone, match.body, numberId);
     if ('failed' in outcome) {
       console.error(`[Baileys] Gatilho automático "${match.name}" falhou ao enviar:`, outcome.failed);
-      return;
+      return false;
     }
     const sent = await prisma.message.create({
       data: {
@@ -871,8 +878,41 @@ async function maybeAutoReplyQR(accountId: string, leadId: string, incomingText:
     });
     globalIO?.to(`lead:${leadId}`).emit('new_message', sent);
     console.log(`[Baileys] Gatilho automático "${match.name}" disparado para lead ${leadId}`);
+    return true;
   } catch (err) {
     console.error('[Baileys] Erro no gatilho automático:', err);
+    return false;
+  }
+}
+
+/** Assistente de IA respondendo o cliente sozinho (Inbox → botão de IA na
+ *  conversa, Lead.aiAutoReplyActive) — só entra se o gatilho de template
+ *  acima não disparou pra essa mensagem. Toda resposta enviada vira uma
+ *  Note no card, pra equipe acompanhar/poder desligar se algo sair errado. */
+async function maybeAiAutoReplyQR(accountId: string, leadId: string, incomingText: string, phone: string, numberId: string): Promise<void> {
+  try {
+    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
+    if (!lead?.aiAutoReplyActive) return;
+
+    const reply = await generateAiAutoReply(accountId, leadId, incomingText);
+    if (!reply) return;
+
+    const outcome = await sendBaileysMessage(phone, reply, numberId);
+    if ('failed' in outcome) {
+      console.error('[Baileys] Resposta de IA falhou ao enviar:', outcome.failed);
+      return;
+    }
+    const sent = await prisma.message.create({
+      data: {
+        content: reply, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId,
+        whatsappNumberId: numberId, read: true, externalId: outcome.id, status: 'SENT',
+      },
+    });
+    globalIO?.to(`lead:${leadId}`).emit('new_message', sent);
+    await prisma.note.create({ data: { leadId, content: `🤖 Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
+    console.log(`[Baileys] Resposta de IA enviada automaticamente para lead ${leadId}`);
+  } catch (err) {
+    console.error('[Baileys] Erro na resposta automática de IA:', err);
   }
 }
 

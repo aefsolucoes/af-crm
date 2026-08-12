@@ -453,6 +453,22 @@ router.patch('/:id/archive', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Liga/desliga o assistente de IA respondendo esse cliente SOZINHO no
+// WhatsApp (sem revisão humana) — botão na Inbox. Ver ai-auto-reply.service.ts.
+router.patch('/:id/ai-auto-reply', async (req: AuthRequest, res: Response) => {
+  try {
+    const { active } = req.body as { active: boolean };
+    const lead = await prisma.lead.update({
+      where: { id: req.params.id },
+      data: { aiAutoReplyActive: active === true },
+      select: { id: true, aiAutoReplyActive: true },
+    });
+    res.json(lead);
+  } catch {
+    res.status(500).json({ error: 'Erro ao atualizar o assistente de IA' });
+  }
+});
+
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
     await deleteLead(req.params.id, req.user!.accountId);

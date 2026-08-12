@@ -170,6 +170,10 @@ model Lead {
   tags         String[]
   archived     Boolean    @default(false)
   isGroup      Boolean    @default(false)
+  // Assistente de IA responde o cliente SOZINHO nesta conversa (sem revisão
+  // humana antes de enviar) — ligado/desligado por um botão na Inbox. Usa a
+  // Base de Conhecimento; nunca inventa valor/prazo/promessa específica.
+  aiAutoReplyActive Boolean @default(false)
   tasks        Task[]
   notes        Note[]
   messages     Message[]

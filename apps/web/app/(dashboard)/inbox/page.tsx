@@ -144,6 +144,7 @@ function InboxPageInner() {
               leadName={selectedConv?.contact?.name || selectedConv?.name || displayName}
               messages={allMessages}
               notes={lead.notes}
+              aiAutoReplyActive={(lead as any).aiAutoReplyActive}
               onNewMessage={handleNewMessage}
               onClose={() => setSelectedId(null)}
             />

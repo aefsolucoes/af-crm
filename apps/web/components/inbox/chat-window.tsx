@@ -40,6 +40,8 @@ interface ChatWindowProps {
   leadName: string;
   messages: Message[];
   notes?: Note[];
+  /** true = a IA responde esse cliente SOZINHA no WhatsApp, sem revisão humana. */
+  aiAutoReplyActive?: boolean;
   onNewMessage: (msg: Message) => void;
   /** Fecha a conversa (ESC), como no WhatsApp. */
   onClose?: () => void;
@@ -105,7 +107,7 @@ function lastInboundChannel(messages: Message[]): { via: WhatsAppVia; numberId?:
   return null;
 }
 
-export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessage, onClose }: ChatWindowProps) {
+export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, onNewMessage, onClose }: ChatWindowProps) {
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
   const [via, setVia] = useState<WhatsAppVia | null>(null);
@@ -114,6 +116,27 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   // conversa — é o mesmo lead, só muda por qual número a mensagem sai.
   const [fromNumberId, setFromNumberId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+
+  // IA respondendo esse cliente sozinha (sem revisão humana) — liga/desliga
+  // por conversa. Espelha o prop, mas otimista pro botão reagir na hora.
+  const [aiActive, setAiActive] = useState(!!aiAutoReplyActive);
+  const [togglingAi, setTogglingAi] = useState(false);
+  useEffect(() => { setAiActive(!!aiAutoReplyActive); }, [leadId, aiAutoReplyActive]);
+
+  async function handleToggleAi() {
+    const next = !aiActive;
+    setTogglingAi(true);
+    setAiActive(next); // otimista
+    try {
+      await api.patch(`/api/leads/${leadId}/ai-auto-reply`, { active: next });
+      toast(next ? 'IA ativada — vai responder esse cliente sozinha a partir de agora.' : 'IA desativada nesta conversa.');
+    } catch {
+      setAiActive(!next); // desfaz
+      toast('Erro ao mudar o assistente de IA', 'error');
+    } finally {
+      setTogglingAi(false);
+    }
+  }
 
   // Disponibilidade dos canais de WhatsApp (números via QR Code e API oficial)
   const { data: qrNumbers } = useQuery({
@@ -466,6 +489,18 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
             {CHANNEL_ICONS[channel]} {CHANNEL_LABELS[channel]}
           </p>
         </div>
+        <button
+          onClick={handleToggleAi}
+          disabled={togglingAi}
+          title={aiActive ? 'IA está respondendo esse cliente sozinha — clique para desligar' : 'Ativar a IA para responder esse cliente sozinha'}
+          className={cn(
+            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0',
+            aiActive ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30' : 'bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15'
+          )}
+        >
+          <Sparkles size={13} />
+          {aiActive ? 'IA ativa' : 'Ativar IA'}
+        </button>
       </div>
 
       {/* Seletor: por qual WhatsApp enviar — lista única e discreta (cada número
