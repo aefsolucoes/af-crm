@@ -608,7 +608,7 @@ async function executeAgentTool(
   if (name === 'listar_templates_whatsapp') {
     if (!perms.templates) return deny('templates', 'ver os templates de WhatsApp');
     try {
-      const templates = await listMetaTemplates(accountId);
+      const templates = await listMetaTemplates(accountId, scopeDepartmentId);
       return { success: true, templates: templates.map((t: any) => ({ nome: t.name, categoria: t.category, idioma: t.language, status: t.status, motivoRejeicao: t.rejected_reason || null })) };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao buscar templates' };
@@ -646,7 +646,7 @@ async function executeAgentTool(
         body: input.body ? String(input.body) : undefined,
         footer: input.footer ? String(input.footer) : undefined,
         codeExpirationMinutes: typeof input.codeExpirationMinutes === 'number' ? input.codeExpirationMinutes : undefined,
-      });
+      }, scopeDepartmentId);
       return { success: true, enviadoParaAprovacao: true, resultado: result };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao enviar template para aprovação' };

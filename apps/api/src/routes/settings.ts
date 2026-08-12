@@ -5,6 +5,18 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { getWhatsAppConfig, saveWhatsAppConfig, listMetaTemplates, createMetaTemplate } from '../services/whatsapp.service';
 
+/** Lê o departmentId de query/body — string vazia ou ausente vira undefined
+ *  ("genérica ou a primeira que achar", mesmo comportamento de antes dos
+ *  departamentos existirem). */
+function readDeptQuery(req: AuthRequest): string | undefined {
+  const v = req.query.departmentId;
+  return typeof v === 'string' && v ? v : undefined;
+}
+function readDeptBody(req: AuthRequest): string | null {
+  const v = (req.body as { departmentId?: unknown })?.departmentId;
+  return typeof v === 'string' && v ? v : null;
+}
+
 const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
@@ -16,10 +28,11 @@ const whatsappSchema = z.object({
   active: z.boolean(),
 });
 
-// GET /api/settings/whatsapp
+// GET /api/settings/whatsapp?departmentId=xxx — sem departmentId, pega a
+// config "genérica" (ou a única que a conta tiver — contas com 1 setor só).
 router.get('/whatsapp', async (req: AuthRequest, res: Response) => {
   try {
-    const config = await getWhatsAppConfig(req.user!.accountId);
+    const config = await getWhatsAppConfig(req.user!.accountId, readDeptQuery(req));
     if (!config) return res.json(null);
 
     // Mask token for security
@@ -28,6 +41,7 @@ router.get('/whatsapp', async (req: AuthRequest, res: Response) => {
       accessToken: config.accessToken.slice(0, 8) + '••••••••••••••••',
       verifyToken: config.verifyToken,
       active: config.active,
+      departmentId: config.departmentId,
       webhookUrl: `${process.env.PUBLIC_API_URL || 'https://af-crm-production.up.railway.app'}/api/webhooks/whatsapp`,
     });
   } catch {
@@ -35,16 +49,23 @@ router.get('/whatsapp', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /api/settings/whatsapp
+// POST /api/settings/whatsapp — body.departmentId escolhe pra QUAL setor é
+// esse número (vazio/ausente = config "genérica", compatível com contas de
+// um setor só).
 router.post('/whatsapp', async (req: AuthRequest, res: Response) => {
   try {
     const { phoneNumberId, accessToken, verifyToken, active } = req.body;
+    const departmentId = readDeptBody(req);
 
     if (!phoneNumberId || !verifyToken || verifyToken.length < 6) {
       return res.status(400).json({ error: 'phoneNumberId e verifyToken são obrigatórios (min 6 chars)' });
     }
+    if (departmentId) {
+      const dept = await prisma.department.findFirst({ where: { id: departmentId, accountId: req.user!.accountId } });
+      if (!dept) return res.status(400).json({ error: 'Departamento inválido' });
+    }
 
-    const existing = await getWhatsAppConfig(req.user!.accountId);
+    const existing = await getWhatsAppConfig(req.user!.accountId, departmentId);
 
     // If accessToken contains mask chars (••), keep the existing token
     const finalToken = (accessToken && !accessToken.includes('•'))
@@ -55,7 +76,7 @@ router.post('/whatsapp', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'accessToken é obrigatório na primeira configuração' });
     }
 
-    const config = await saveWhatsAppConfig(req.user!.accountId, {
+    const config = await saveWhatsAppConfig(req.user!.accountId, departmentId, {
       phoneNumberId,
       accessToken: finalToken,
       verifyToken,
@@ -73,7 +94,7 @@ router.post('/whatsapp', async (req: AuthRequest, res: Response) => {
 // GET /api/settings/whatsapp/test — testa se o token + phoneNumberId estão corretos
 router.get('/whatsapp/test', async (req: AuthRequest, res: Response) => {
   try {
-    const config = await getWhatsAppConfig(req.user!.accountId);
+    const config = await getWhatsAppConfig(req.user!.accountId, readDeptQuery(req));
     if (!config) return res.status(400).json({ ok: false, error: 'WhatsApp não configurado' });
     if (!config.active) return res.status(400).json({ ok: false, error: 'WhatsApp inativo nas configurações' });
 
@@ -107,7 +128,7 @@ router.post('/whatsapp/register', async (req: AuthRequest, res: Response) => {
     if (!pin || !/^\d{6}$/.test(pin)) {
       return res.status(400).json({ ok: false, error: 'Informe o PIN de 6 dígitos (verificação em duas etapas).' });
     }
-    const config = await getWhatsAppConfig(req.user!.accountId);
+    const config = await getWhatsAppConfig(req.user!.accountId, readDeptBody(req));
     if (!config?.phoneNumberId || !config.accessToken) {
       return res.status(400).json({ ok: false, error: 'Configure o Phone Number ID e o Access Token primeiro (e salve).' });
     }
@@ -133,7 +154,7 @@ router.post('/whatsapp/register', async (req: AuthRequest, res: Response) => {
 router.post('/whatsapp/request-code', async (req: AuthRequest, res: Response) => {
   try {
     const method = (req.body?.method === 'VOICE' ? 'VOICE' : 'SMS');
-    const config = await getWhatsAppConfig(req.user!.accountId);
+    const config = await getWhatsAppConfig(req.user!.accountId, readDeptBody(req));
     if (!config?.phoneNumberId || !config.accessToken) {
       return res.status(400).json({ ok: false, error: 'Configure o Phone Number ID e o Access Token primeiro (e salve).' });
     }
@@ -164,7 +185,7 @@ router.post('/whatsapp/verify-code', async (req: AuthRequest, res: Response) => 
     if (!pin || !/^\d{6}$/.test(pin)) {
       return res.status(400).json({ ok: false, error: 'Informe um PIN novo de 6 dígitos.' });
     }
-    const config = await getWhatsAppConfig(req.user!.accountId);
+    const config = await getWhatsAppConfig(req.user!.accountId, readDeptBody(req));
     if (!config?.phoneNumberId || !config.accessToken) {
       return res.status(400).json({ ok: false, error: 'Configure o Phone Number ID e o Access Token primeiro (e salve).' });
     }
@@ -207,7 +228,8 @@ router.post('/whatsapp/subscribe-waba', async (req: AuthRequest, res: Response) 
     if (!wabaId || !/^\d{6,}$/.test(wabaId)) {
       return res.status(400).json({ ok: false, error: 'Informe o ID da conta do WhatsApp Business (WABA).' });
     }
-    const config = await getWhatsAppConfig(req.user!.accountId);
+    const departmentId = readDeptBody(req);
+    const config = await getWhatsAppConfig(req.user!.accountId, departmentId);
     if (!config?.accessToken) {
       return res.status(400).json({ ok: false, error: 'Salve o Access Token primeiro.' });
     }
@@ -222,8 +244,11 @@ router.post('/whatsapp/subscribe-waba', async (req: AuthRequest, res: Response) 
       return res.json({ ok: false, error: `${msg} (código: ${code})`, code });
     }
     // Salva o WABA ID — reaproveitado depois para listar/criar templates, sem
-    // precisar digitar de novo.
-    await prisma.whatsAppConfig.update({ where: { accountId: req.user!.accountId }, data: { wabaId } }).catch(() => {});
+    // precisar digitar de novo. update() por id (não pela chave composta —
+    // o Prisma não deixa usar essa lookup com departmentId NULL).
+    if (config.id) {
+      await prisma.whatsAppConfig.update({ where: { id: config.id }, data: { wabaId } }).catch(() => {});
+    }
     return res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: 'Falha ao inscrever o app na WABA' });
@@ -251,7 +276,7 @@ const templateSchema = z.object({
 // GET /api/settings/whatsapp/templates — lista os templates da conta (com status de aprovação)
 router.get('/whatsapp/templates', async (req: AuthRequest, res: Response) => {
   try {
-    res.json({ templates: await listMetaTemplates(req.user!.accountId) });
+    res.json({ templates: await listMetaTemplates(req.user!.accountId, readDeptQuery(req)) });
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao buscar templates' });
   }
@@ -260,7 +285,7 @@ router.get('/whatsapp/templates', async (req: AuthRequest, res: Response) => {
 // POST /api/settings/whatsapp/templates — envia um novo template para aprovação da Meta
 router.post('/whatsapp/templates', validate(templateSchema), async (req: AuthRequest, res: Response) => {
   try {
-    const result = await createMetaTemplate(req.user!.accountId, req.body);
+    const result = await createMetaTemplate(req.user!.accountId, req.body, readDeptBody(req));
     res.status(201).json(result);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao enviar template para aprovação' });

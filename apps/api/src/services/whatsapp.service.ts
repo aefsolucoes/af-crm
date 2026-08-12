@@ -3,21 +3,39 @@ import { getOrCreateInboxPipeline } from './department.service';
 
 const prisma = new PrismaClient();
 
-export async function getWhatsAppConfig(accountId: string) {
-  return prisma.whatsAppConfig.findUnique({ where: { accountId } });
+/**
+ * Config da API Oficial. Um WhatsAppConfig por DEPARTAMENTO agora (não mais
+ * por conta) — cada setor pode ter seu próprio número (ex: Financiamento
+ * Habitacional e Consórcio).
+ * - departmentId informado (mesmo null): busca EXATA por esse setor.
+ * - departmentId omitido: pega a config "genérica" (sem setor) se existir,
+ *   senão a primeira que achar — cobre contas com um único número ainda.
+ */
+export async function getWhatsAppConfig(accountId: string, departmentId?: string | null) {
+  if (departmentId !== undefined) {
+    // findFirst (não findUnique) de propósito: o índice único composto não
+    // aceita NULL na lookup do Prisma, mesmo a coluna sendo nullable.
+    return prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId } });
+  }
+  return (
+    (await prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId: null } })) ||
+    (await prisma.whatsAppConfig.findFirst({ where: { accountId } }))
+  );
 }
 
-export async function saveWhatsAppConfig(accountId: string, data: {
+export async function saveWhatsAppConfig(accountId: string, departmentId: string | null, data: {
   phoneNumberId: string;
   accessToken: string;
   verifyToken: string;
   active: boolean;
 }) {
-  return prisma.whatsAppConfig.upsert({
-    where: { accountId },
-    create: { accountId, ...data },
-    update: data,
-  });
+  // upsert() exigiria a chave composta accountId_departmentId, que o Prisma
+  // não deixa usar com NULL — faz o "upsert" na mão via id.
+  const existing = await prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId } });
+  if (existing) {
+    return prisma.whatsAppConfig.update({ where: { id: existing.id }, data });
+  }
+  return prisma.whatsAppConfig.create({ data: { accountId, departmentId, ...data } });
 }
 
 // ─── Templates do WhatsApp (Meta) ────────────────────────────────────────────
@@ -42,8 +60,8 @@ export type TemplateCategory = 'MARKETING' | 'UTILITY' | 'AUTHENTICATION';
 /** Lista os templates da conta na Meta, com status de aprovação. Lança erro
  *  (Error) com mensagem pronta para mostrar ao usuário/colaborador em caso de
  *  falha (WABA/token não configurado, erro da Graph API etc). */
-export async function listMetaTemplates(accountId: string): Promise<any[]> {
-  const config = await getWhatsAppConfig(accountId);
+export async function listMetaTemplates(accountId: string, departmentId?: string | null): Promise<any[]> {
+  const config = await getWhatsAppConfig(accountId, departmentId);
   if (!config?.accessToken) throw new Error('Configure o Access Token primeiro (aba API Oficial).');
   if (!config.wabaId) throw new Error('Informe o WABA ID em "Ativar recebimento" primeiro.');
 
@@ -70,8 +88,8 @@ export async function createMetaTemplate(accountId: string, params: {
   footer?: string;
   /** Só usado em AUTHENTICATION: minutos até o código expirar (padrão 10). */
   codeExpirationMinutes?: number;
-}): Promise<any> {
-  const config = await getWhatsAppConfig(accountId);
+}, departmentId?: string | null): Promise<any> {
+  const config = await getWhatsAppConfig(accountId, departmentId);
   if (!config?.accessToken) throw new Error('Configure o Access Token primeiro (aba API Oficial).');
   if (!config.wabaId) throw new Error('Informe o WABA ID em "Ativar recebimento" primeiro.');
 
@@ -139,9 +157,10 @@ function parseGraphError(json: { error?: { message: string; code: number } }, re
 export async function sendWhatsAppMessage(
   to: string,
   message: string,
-  accountId: string
+  accountId: string,
+  departmentId?: string | null
 ): Promise<{ success: boolean; externalId?: string; error?: string }> {
-  const config = await getWhatsAppConfig(accountId);
+  const config = await getWhatsAppConfig(accountId, departmentId);
   console.log(`[WA Send] accountId=${accountId} config exists=${!!config} active=${config?.active} phoneNumberId=${config?.phoneNumberId}`);
 
   if (!config) {
@@ -194,9 +213,10 @@ export async function sendWhatsAppTemplateMessage(
   templateName: string,
   language: string,
   bodyParams: string[],
-  accountId: string
+  accountId: string,
+  departmentId?: string | null
 ): Promise<{ success: boolean; externalId?: string; error?: string }> {
-  const config = await getWhatsAppConfig(accountId);
+  const config = await getWhatsAppConfig(accountId, departmentId);
   if (!config) {
     return { success: false, error: 'WhatsApp não configurado. Acesse Configurações → API Oficial e salve suas credenciais.' };
   }
@@ -405,9 +425,9 @@ async function downloadCloudApiMedia(mediaId: string, token: string): Promise<Bu
   }
 }
 
-export async function processIncomingWhatsApp(body: any, accountId: string, io: any) {
+export async function processIncomingWhatsApp(body: any, accountId: string, io: any, departmentId?: string | null) {
   try {
-    const config = await getWhatsAppConfig(accountId);
+    const config = await getWhatsAppConfig(accountId, departmentId);
     const entry = body?.entry?.[0];
     const changes = entry?.changes?.[0];
     const value = changes?.value;
@@ -481,12 +501,11 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         }
         leadId = existingLead.id;
       } else {
-        // Get dedicated WhatsApp pipeline
-        const pipeline = await getOrCreateWhatsAppPipeline(accountId);
-        const admin = await prisma.user.findFirst({
-          where: { accountId },
-          orderBy: { createdAt: 'asc' },
-        });
+        // Get dedicated WhatsApp pipeline (do setor deste número/config, se houver)
+        const pipeline = await getOrCreateWhatsAppPipeline(accountId, departmentId);
+        const admin =
+          (departmentId && await prisma.user.findFirst({ where: { accountId, departmentId }, orderBy: { createdAt: 'asc' } })) ||
+          (await prisma.user.findFirst({ where: { accountId }, orderBy: { createdAt: 'asc' } }));
 
         if (!pipeline.stages.length || !admin) {
           console.error('[WhatsApp] Pipeline sem estágios ou sem usuário admin');
@@ -556,7 +575,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       // Gatilho automático (Templates → "Disparar automaticamente") — só para
       // texto de verdade, não mídia.
       if (msg.type === 'text' && text) {
-        await maybeAutoReplyCloudApi(accountId, leadId, text, from, io);
+        await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
       }
     }
   } catch (err) {
@@ -568,7 +587,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
  *  da mensagem recebida e, se achar, envia o corpo dele como resposta pela
  *  API Oficial. Implementado aqui (não em message.service) de propósito, pra
  *  não criar import circular. */
-async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any) {
+async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null) {
   try {
     const norm = incomingText.trim().toLowerCase();
     if (!norm) return;
@@ -579,7 +598,7 @@ async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomin
     const alreadySent = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: match.body } });
     if (alreadySent) return;
 
-    const result = await sendWhatsAppMessage(phone, match.body, accountId);
+    const result = await sendWhatsAppMessage(phone, match.body, accountId, departmentId);
     if (!result.success) {
       console.error(`[WhatsApp] Gatilho automático "${match.name}" falhou ao enviar:`, result.error);
       return;

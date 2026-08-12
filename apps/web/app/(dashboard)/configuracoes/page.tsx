@@ -88,59 +88,6 @@ export default function ConfiguracoesPage() {
     () => (typeof window !== 'undefined' ? (localStorage.getItem('af_notification_sound') as SoundKey) || 'whatsapp' : 'whatsapp')
   );
 
-  // API config state
-  const [config, setConfig] = useState<WAConfig>({
-    phoneNumberId: '',
-    accessToken: '',
-    verifyToken: 'af_crm_verify',
-    active: false,
-    webhookUrl: '',
-  });
-  const [loadingConfig, setLoadingConfig] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [isNew, setIsNew] = useState(true);
-  // Ativação (registro) do número na Cloud API com o PIN de 2 etapas
-  const [regPin, setRegPin] = useState('');
-  const [regCode, setRegCode] = useState('');
-  const [sendingCode, setSendingCode] = useState(false);
-  const [registering, setRegistering] = useState(false);
-  const [wabaId, setWabaId] = useState('');
-  const [subscribing, setSubscribing] = useState(false);
-
-  // Load API config
-  useEffect(() => {
-    api.get('/api/settings/whatsapp').then(({ data }) => {
-      if (data) { setConfig(data); setIsNew(false); }
-    }).catch(() => {}).finally(() => setLoadingConfig(false));
-  }, []);
-
-  async function handleSaveAPI(e: React.FormEvent) {
-    e.preventDefault();
-    setSaving(true);
-    try {
-      await api.post('/api/settings/whatsapp', {
-        phoneNumberId: config.phoneNumberId,
-        accessToken: config.accessToken,
-        verifyToken: config.verifyToken,
-        active: config.active,
-      });
-      toast('Configurações salvas!');
-      setIsNew(false);
-      // Recarrega para mostrar a URL do Webhook
-      const { data } = await api.get('/api/settings/whatsapp');
-      if (data) setConfig(data);
-    } catch {
-      toast('Erro ao salvar configurações', 'error');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text);
-    toast('Copiado!');
-  }
-
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <Topbar title="Configurações" subtitle="Integrações e canais" />
@@ -184,268 +131,7 @@ export default function ConfiguracoesPage() {
           {tab === 'setores' && <DepartmentsTab />}
 
           {/* API Oficial Tab */}
-          {tab === 'api' && (
-            <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
-              <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border" style={{ backgroundColor: '#075e54' }}>
-                <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center text-2xl">📱</div>
-                <div>
-                  <h2 className="text-white font-bold text-base">WhatsApp Business API</h2>
-                  <p className="text-white/70 text-xs">Meta Cloud API (oficial)</p>
-                </div>
-                <div className="ml-auto">
-                  {config.active ? (
-                    <span className="flex items-center gap-1 bg-green-400/20 text-green-200 text-xs px-3 py-1 rounded-full">
-                      <CheckCircle2 size={12} /> Ativo
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 bg-white/10 text-white/60 text-xs px-3 py-1 rounded-full">
-                      <XCircle size={12} /> Inativo
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {loadingConfig ? (
-                <div className="flex items-center justify-center py-12">
-                  <div className="animate-spin w-8 h-8 border-4 border-af-accent border-t-transparent rounded-full" />
-                </div>
-              ) : (
-                <form onSubmit={handleSaveAPI} className="px-6 py-5 space-y-5">
-                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                    <div className="flex items-start gap-2">
-                      <Info size={15} className="text-blue-600 mt-0.5 flex-shrink-0" />
-                      <div className="text-xs text-blue-700 space-y-1">
-                        <p className="font-semibold">Requer aprovação da Meta e número verificado</p>
-                        <p>Use se você já tem uma conta aprovada no WhatsApp Business API. Ideal para envio de templates e alto volume de mensagens.</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-700 mb-1">
-                      ID do Número de Telefone <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={config.phoneNumberId}
-                      onChange={(e) => setConfig((c) => ({ ...c, phoneNumberId: e.target.value }))}
-                      placeholder="Ex: 659761813879938"
-                      required
-                      className="w-full px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-af-accent"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-700 mb-1">
-                      Token de Acesso <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="password"
-                      value={config.accessToken}
-                      onChange={(e) => setConfig((c) => ({ ...c, accessToken: e.target.value }))}
-                      placeholder={isNew ? 'Cole seu token aqui' : 'Token salvo (deixe em branco para manter)'}
-                      required={isNew}
-                      className="w-full px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-af-accent"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-700 mb-1">Token de Verificação do Webhook</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={config.verifyToken}
-                        onChange={(e) => setConfig((c) => ({ ...c, verifyToken: e.target.value }))}
-                        className="flex-1 px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-af-accent"
-                      />
-                      <button type="button" onClick={() => copyToClipboard(config.verifyToken)}
-                        className="px-3 py-2 border border-af-border rounded-xl hover:bg-af-light text-slate-500">
-                        <Copy size={14} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Webhook URL — always visible so user can copy before saving */}
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-700 mb-1">URL do Webhook</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={config.webhookUrl || 'https://af-crm-production.up.railway.app/api/webhooks/whatsapp'}
-                        readOnly
-                        className="flex-1 px-4 py-2.5 text-xs border border-af-border rounded-xl bg-slate-100 text-slate-600 font-mono"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => copyToClipboard(config.webhookUrl || 'https://af-crm-production.up.railway.app/api/webhooks/whatsapp')}
-                        className="px-3 py-2 border border-af-border rounded-xl hover:bg-af-light text-slate-500"
-                      >
-                        <Copy size={14} />
-                      </button>
-                    </div>
-                    <p className="text-xs text-slate-400 mt-1">Cole esta URL no painel da Meta → Webhook → campo <strong>messages</strong></p>
-                  </div>
-
-                  <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-af-border">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-700">Ativar integração</p>
-                      <p className="text-xs text-slate-400 mt-0.5">Enviar mensagens via API oficial da Meta</p>
-                    </div>
-                    <button type="button" onClick={() => setConfig((c) => ({ ...c, active: !c.active }))}
-                      className={`relative w-12 h-6 rounded-full transition-colors ${config.active ? 'bg-[#075e54]' : 'bg-slate-300'}`}>
-                      <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${config.active ? 'translate-x-7' : 'translate-x-1'}`} />
-                    </button>
-                  </div>
-
-                  <div className="flex gap-3 pt-2">
-                    <button type="submit" disabled={saving}
-                      className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-50"
-                      style={{ backgroundColor: '#075e54' }}>
-                      {saving ? 'Salvando...' : 'Salvar configurações'}
-                    </button>
-                    <button type="button"
-                      onClick={async () => {
-                        try {
-                          const { data } = await api.get('/api/settings/whatsapp/test');
-                          if (data.ok) {
-                            toast(`✅ Conexão OK — ${data.name} (${data.phoneNumber})`, 'success');
-                          } else {
-                            toast(`❌ ${data.error}`, 'error');
-                          }
-                        } catch {
-                          toast('Erro ao testar conexão', 'error');
-                        }
-                      }}
-                      className="px-4 py-3 rounded-xl border border-af-border text-slate-600 text-sm hover:bg-af-light whitespace-nowrap">
-                      Testar conexão
-                    </button>
-                    <a href="https://developers.facebook.com/apps" target="_blank" rel="noreferrer"
-                      className="flex items-center gap-1 px-4 py-3 rounded-xl border border-af-border text-slate-600 text-sm hover:bg-af-light">
-                      <ExternalLink size={14} /> Meta
-                    </a>
-                  </div>
-
-                  {/* Ativar (registrar) o número na Cloud API */}
-                  <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 space-y-3">
-                    <div>
-                      <p className="text-sm font-semibold text-amber-800">Ativar número (registrar na Cloud API)</p>
-                      <p className="text-xs text-amber-700 mt-0.5">Se o número estiver <strong>Offline</strong> na Meta. Salve o Phone Number ID e o Access Token acima antes. Se a Meta pedir reverificação, envie o código por SMS.</p>
-                    </div>
-
-                    {/* Passo 1: enviar código (quando a Meta pede reverificação) */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-amber-800 w-5 flex-shrink-0">1.</span>
-                      <button
-                        type="button"
-                        disabled={sendingCode}
-                        onClick={async () => {
-                          setSendingCode(true);
-                          try {
-                            const { data } = await api.post('/api/settings/whatsapp/request-code', { method: 'SMS' });
-                            if (data.ok) toast('📩 Código enviado por SMS para o número.', 'success');
-                            else toast(`❌ ${data.error}`, 'error');
-                          } catch {
-                            toast('Erro ao enviar o código', 'error');
-                          } finally {
-                            setSendingCode(false);
-                          }
-                        }}
-                        className="px-3 py-2 rounded-lg border border-amber-400 text-amber-800 text-sm font-medium hover:bg-amber-100 disabled:opacity-50 whitespace-nowrap"
-                      >
-                        {sendingCode ? 'Enviando...' : 'Enviar código (SMS)'}
-                      </button>
-                      <span className="text-xs text-amber-700">só se a Meta pedir reverificação (erro 133006)</span>
-                    </div>
-
-                    {/* Passo 2: código (opcional) + PIN novo + ativar */}
-                    <div className="flex items-start gap-2">
-                      <span className="text-xs font-semibold text-amber-800 w-5 flex-shrink-0 pt-2">2.</span>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={regCode}
-                        onChange={(e) => setRegCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
-                        placeholder="Código SMS (se pedido)"
-                        className="w-40 px-3 py-2 text-sm border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
-                      />
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        maxLength={6}
-                        value={regPin}
-                        onChange={(e) => setRegPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                        placeholder="PIN novo (6 dígitos)"
-                        className="flex-1 px-3 py-2 text-sm border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
-                      />
-                      <button
-                        type="button"
-                        disabled={registering || regPin.length !== 6}
-                        onClick={async () => {
-                          setRegistering(true);
-                          try {
-                            // Com código → verifica e ativa; sem código → só registra.
-                            const url = regCode ? '/api/settings/whatsapp/verify-code' : '/api/settings/whatsapp/register';
-                            const body = regCode ? { code: regCode, pin: regPin } : { pin: regPin };
-                            const { data } = await api.post(url, body);
-                            if (data.ok) {
-                              toast('✅ Número ativado! Agora teste a conexão.', 'success');
-                              setRegPin(''); setRegCode('');
-                            } else {
-                              toast(`❌ ${data.error}`, 'error');
-                            }
-                          } catch {
-                            toast('Erro ao ativar o número', 'error');
-                          } finally {
-                            setRegistering(false);
-                          }
-                        }}
-                        className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold hover:bg-amber-600 disabled:opacity-50 whitespace-nowrap"
-                      >
-                        {registering ? 'Ativando...' : 'Ativar número'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Ativar recebimento — inscreve o app na WABA (subscribed_apps) */}
-                  <div className="p-4 bg-blue-50 rounded-xl border border-blue-200 space-y-2">
-                    <div>
-                      <p className="text-sm font-semibold text-blue-800">Ativar recebimento (webhook)</p>
-                      <p className="text-xs text-blue-700 mt-0.5">Se você envia mas as mensagens não chegam na Inbox, inscreva o app na conta do WhatsApp Business. Cole o <strong>ID da conta do WhatsApp Business (WABA)</strong> — na Meta aparece como "Identificação da conta do WhatsApp Business".</p>
-                    </div>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={wabaId}
-                        onChange={(e) => setWabaId(e.target.value.replace(/\D/g, ''))}
-                        placeholder="ID da conta do WhatsApp Business (WABA)"
-                        className="flex-1 px-3 py-2 text-sm border border-blue-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-                      />
-                      <button
-                        type="button"
-                        disabled={subscribing || wabaId.length < 6}
-                        onClick={async () => {
-                          setSubscribing(true);
-                          try {
-                            const { data } = await api.post('/api/settings/whatsapp/subscribe-waba', { wabaId });
-                            if (data.ok) toast('✅ Recebimento ativado! Agora as mensagens chegam na Inbox.', 'success');
-                            else toast(`❌ ${data.error}`, 'error');
-                          } catch {
-                            toast('Erro ao ativar o recebimento', 'error');
-                          } finally {
-                            setSubscribing(false);
-                          }
-                        }}
-                        className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
-                      >
-                        {subscribing ? 'Ativando...' : 'Ativar recebimento'}
-                      </button>
-                    </div>
-                  </div>
-                </form>
-              )}
-            </div>
-          )}
+          {tab === 'api' && <ApiOficialTab />}
           {/* ── Sons Tab ── */}
           {tab === 'sons' && (
             <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
@@ -932,6 +618,363 @@ function DepartmentsTab() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Aba API Oficial ─────────────────────────────────────────────────────────
+// Um número da API Oficial por DEPARTAMENTO agora (ex: Financiamento
+// Habitacional e Consórcio podem ter cada um o seu). O seletor no topo troca
+// qual configuração está sendo vista/editada — cada chamada leva o
+// departmentId escolhido.
+
+interface WADepartmentOption { id: string; name: string; }
+
+function ApiOficialTab() {
+  const [departments, setDepartments] = useState<WADepartmentOption[]>([]);
+  const [apiDepartmentId, setApiDepartmentId] = useState(''); // '' = config "genérica"/única
+
+  const [config, setConfig] = useState<WAConfig>({
+    phoneNumberId: '',
+    accessToken: '',
+    verifyToken: 'af_crm_verify',
+    active: false,
+    webhookUrl: '',
+  });
+  const [loadingConfig, setLoadingConfig] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [isNew, setIsNew] = useState(true);
+  // Ativação (registro) do número na Cloud API com o PIN de 2 etapas
+  const [regPin, setRegPin] = useState('');
+  const [regCode, setRegCode] = useState('');
+  const [sendingCode, setSendingCode] = useState(false);
+  const [registering, setRegistering] = useState(false);
+  const [wabaId, setWabaId] = useState('');
+  const [subscribing, setSubscribing] = useState(false);
+
+  useEffect(() => {
+    api.get('/api/departments').then(({ data }) => setDepartments(data)).catch(() => {});
+  }, []);
+
+  function loadConfig(departmentId: string) {
+    setLoadingConfig(true);
+    const qs = departmentId ? `?departmentId=${departmentId}` : '';
+    api.get(`/api/settings/whatsapp${qs}`).then(({ data }) => {
+      if (data) { setConfig(data); setIsNew(false); }
+      else { setConfig({ phoneNumberId: '', accessToken: '', verifyToken: 'af_crm_verify', active: false, webhookUrl: '' }); setIsNew(true); }
+    }).catch(() => {}).finally(() => setLoadingConfig(false));
+  }
+
+  // Recarrega sempre que troca de setor.
+  useEffect(() => { loadConfig(apiDepartmentId); }, [apiDepartmentId]);
+
+  async function handleSaveAPI(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.post('/api/settings/whatsapp', {
+        phoneNumberId: config.phoneNumberId,
+        accessToken: config.accessToken,
+        verifyToken: config.verifyToken,
+        active: config.active,
+        departmentId: apiDepartmentId || undefined,
+      });
+      toast('Configurações salvas!');
+      setIsNew(false);
+      loadConfig(apiDepartmentId); // recarrega para mostrar a URL do Webhook
+    } catch {
+      toast('Erro ao salvar configurações', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text);
+    toast('Copiado!');
+  }
+
+  return (
+    <div className="space-y-3">
+      {departments.length > 0 && (
+        <div className="flex items-center gap-2 bg-white rounded-2xl border border-af-border shadow-sm px-4 py-3">
+          <Building2 size={15} className="text-slate-400 flex-shrink-0" />
+          <label className="text-sm text-slate-600 flex-shrink-0">Número da API Oficial de:</label>
+          <select
+            value={apiDepartmentId}
+            onChange={(e) => setApiDepartmentId(e.target.value)}
+            className="flex-1 text-sm border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent"
+          >
+            <option value="">Genérica (sem setor específico)</option>
+            {departments.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
+        <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border" style={{ backgroundColor: '#075e54' }}>
+          <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center text-2xl">📱</div>
+          <div>
+            <h2 className="text-white font-bold text-base">WhatsApp Business API</h2>
+            <p className="text-white/70 text-xs">Meta Cloud API (oficial)</p>
+          </div>
+          <div className="ml-auto">
+            {config.active ? (
+              <span className="flex items-center gap-1 bg-green-400/20 text-green-200 text-xs px-3 py-1 rounded-full">
+                <CheckCircle2 size={12} /> Ativo
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 bg-white/10 text-white/60 text-xs px-3 py-1 rounded-full">
+                <XCircle size={12} /> Inativo
+              </span>
+            )}
+          </div>
+        </div>
+
+        {loadingConfig ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="animate-spin w-8 h-8 border-4 border-af-accent border-t-transparent rounded-full" />
+          </div>
+        ) : (
+          <form onSubmit={handleSaveAPI} className="px-6 py-5 space-y-5">
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <div className="flex items-start gap-2">
+                <Info size={15} className="text-blue-600 mt-0.5 flex-shrink-0" />
+                <div className="text-xs text-blue-700 space-y-1">
+                  <p className="font-semibold">Requer aprovação da Meta e número verificado</p>
+                  <p>Use se você já tem uma conta aprovada no WhatsApp Business API. Ideal para envio de templates e alto volume de mensagens.</p>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">
+                ID do Número de Telefone <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={config.phoneNumberId}
+                onChange={(e) => setConfig((c) => ({ ...c, phoneNumberId: e.target.value }))}
+                placeholder="Ex: 659761813879938"
+                required
+                className="w-full px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-af-accent"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">
+                Token de Acesso <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="password"
+                value={config.accessToken}
+                onChange={(e) => setConfig((c) => ({ ...c, accessToken: e.target.value }))}
+                placeholder={isNew ? 'Cole seu token aqui' : 'Token salvo (deixe em branco para manter)'}
+                required={isNew}
+                className="w-full px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-af-accent"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Token de Verificação do Webhook</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={config.verifyToken}
+                  onChange={(e) => setConfig((c) => ({ ...c, verifyToken: e.target.value }))}
+                  className="flex-1 px-4 py-2.5 text-sm border border-af-border rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-af-accent"
+                />
+                <button type="button" onClick={() => copyToClipboard(config.verifyToken)}
+                  className="px-3 py-2 border border-af-border rounded-xl hover:bg-af-light text-slate-500">
+                  <Copy size={14} />
+                </button>
+              </div>
+            </div>
+
+            {/* Webhook URL — always visible so user can copy before saving */}
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">URL do Webhook</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={config.webhookUrl || 'https://af-crm-production.up.railway.app/api/webhooks/whatsapp'}
+                  readOnly
+                  className="flex-1 px-4 py-2.5 text-xs border border-af-border rounded-xl bg-slate-100 text-slate-600 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(config.webhookUrl || 'https://af-crm-production.up.railway.app/api/webhooks/whatsapp')}
+                  className="px-3 py-2 border border-af-border rounded-xl hover:bg-af-light text-slate-500"
+                >
+                  <Copy size={14} />
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Cole esta URL no painel da Meta → Webhook → campo <strong>messages</strong></p>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-af-border">
+              <div>
+                <p className="text-sm font-semibold text-slate-700">Ativar integração</p>
+                <p className="text-xs text-slate-400 mt-0.5">Enviar mensagens via API oficial da Meta</p>
+              </div>
+              <button type="button" onClick={() => setConfig((c) => ({ ...c, active: !c.active }))}
+                className={`relative w-12 h-6 rounded-full transition-colors ${config.active ? 'bg-[#075e54]' : 'bg-slate-300'}`}>
+                <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${config.active ? 'translate-x-7' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button type="submit" disabled={saving}
+                className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-50"
+                style={{ backgroundColor: '#075e54' }}>
+                {saving ? 'Salvando...' : 'Salvar configurações'}
+              </button>
+              <button type="button"
+                onClick={async () => {
+                  try {
+                    const qs = apiDepartmentId ? `?departmentId=${apiDepartmentId}` : '';
+                    const { data } = await api.get(`/api/settings/whatsapp/test${qs}`);
+                    if (data.ok) {
+                      toast(`✅ Conexão OK — ${data.name} (${data.phoneNumber})`, 'success');
+                    } else {
+                      toast(`❌ ${data.error}`, 'error');
+                    }
+                  } catch {
+                    toast('Erro ao testar conexão', 'error');
+                  }
+                }}
+                className="px-4 py-3 rounded-xl border border-af-border text-slate-600 text-sm hover:bg-af-light whitespace-nowrap">
+                Testar conexão
+              </button>
+              <a href="https://developers.facebook.com/apps" target="_blank" rel="noreferrer"
+                className="flex items-center gap-1 px-4 py-3 rounded-xl border border-af-border text-slate-600 text-sm hover:bg-af-light">
+                <ExternalLink size={14} /> Meta
+              </a>
+            </div>
+
+            {/* Ativar (registrar) o número na Cloud API */}
+            <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 space-y-3">
+              <div>
+                <p className="text-sm font-semibold text-amber-800">Ativar número (registrar na Cloud API)</p>
+                <p className="text-xs text-amber-700 mt-0.5">Se o número estiver <strong>Offline</strong> na Meta. Salve o Phone Number ID e o Access Token acima antes. Se a Meta pedir reverificação, envie o código por SMS.</p>
+              </div>
+
+              {/* Passo 1: enviar código (quando a Meta pede reverificação) */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-amber-800 w-5 flex-shrink-0">1.</span>
+                <button
+                  type="button"
+                  disabled={sendingCode}
+                  onClick={async () => {
+                    setSendingCode(true);
+                    try {
+                      const { data } = await api.post('/api/settings/whatsapp/request-code', { method: 'SMS', departmentId: apiDepartmentId || undefined });
+                      if (data.ok) toast('📩 Código enviado por SMS para o número.', 'success');
+                      else toast(`❌ ${data.error}`, 'error');
+                    } catch {
+                      toast('Erro ao enviar o código', 'error');
+                    } finally {
+                      setSendingCode(false);
+                    }
+                  }}
+                  className="px-3 py-2 rounded-lg border border-amber-400 text-amber-800 text-sm font-medium hover:bg-amber-100 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {sendingCode ? 'Enviando...' : 'Enviar código (SMS)'}
+                </button>
+                <span className="text-xs text-amber-700">só se a Meta pedir reverificação (erro 133006)</span>
+              </div>
+
+              {/* Passo 2: código (opcional) + PIN novo + ativar */}
+              <div className="flex items-start gap-2">
+                <span className="text-xs font-semibold text-amber-800 w-5 flex-shrink-0 pt-2">2.</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={regCode}
+                  onChange={(e) => setRegCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                  placeholder="Código SMS (se pedido)"
+                  className="w-40 px-3 py-2 text-sm border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                />
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={regPin}
+                  onChange={(e) => setRegPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="PIN novo (6 dígitos)"
+                  className="flex-1 px-3 py-2 text-sm border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                />
+                <button
+                  type="button"
+                  disabled={registering || regPin.length !== 6}
+                  onClick={async () => {
+                    setRegistering(true);
+                    try {
+                      // Com código → verifica e ativa; sem código → só registra.
+                      const url = regCode ? '/api/settings/whatsapp/verify-code' : '/api/settings/whatsapp/register';
+                      const body: Record<string, unknown> = regCode ? { code: regCode, pin: regPin } : { pin: regPin };
+                      if (apiDepartmentId) body.departmentId = apiDepartmentId;
+                      const { data } = await api.post(url, body);
+                      if (data.ok) {
+                        toast('✅ Número ativado! Agora teste a conexão.', 'success');
+                        setRegPin(''); setRegCode('');
+                      } else {
+                        toast(`❌ ${data.error}`, 'error');
+                      }
+                    } catch {
+                      toast('Erro ao ativar o número', 'error');
+                    } finally {
+                      setRegistering(false);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold hover:bg-amber-600 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {registering ? 'Ativando...' : 'Ativar número'}
+                </button>
+              </div>
+            </div>
+
+            {/* Ativar recebimento — inscreve o app na WABA (subscribed_apps) */}
+            <div className="p-4 bg-blue-50 rounded-xl border border-blue-200 space-y-2">
+              <div>
+                <p className="text-sm font-semibold text-blue-800">Ativar recebimento (webhook)</p>
+                <p className="text-xs text-blue-700 mt-0.5">Se você envia mas as mensagens não chegam na Inbox, inscreva o app na conta do WhatsApp Business. Cole o <strong>ID da conta do WhatsApp Business (WABA)</strong> — na Meta aparece como "Identificação da conta do WhatsApp Business".</p>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={wabaId}
+                  onChange={(e) => setWabaId(e.target.value.replace(/\D/g, ''))}
+                  placeholder="ID da conta do WhatsApp Business (WABA)"
+                  className="flex-1 px-3 py-2 text-sm border border-blue-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                />
+                <button
+                  type="button"
+                  disabled={subscribing || wabaId.length < 6}
+                  onClick={async () => {
+                    setSubscribing(true);
+                    try {
+                      const { data } = await api.post('/api/settings/whatsapp/subscribe-waba', { wabaId, departmentId: apiDepartmentId || undefined });
+                      if (data.ok) toast('✅ Recebimento ativado! Agora as mensagens chegam na Inbox.', 'success');
+                      else toast(`❌ ${data.error}`, 'error');
+                    } catch {
+                      toast('Erro ao ativar o recebimento', 'error');
+                    } finally {
+                      setSubscribing(false);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {subscribing ? 'Ativando...' : 'Ativar recebimento'}
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+      </div>
     </div>
   );
 }

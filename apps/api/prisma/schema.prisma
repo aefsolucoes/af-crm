@@ -17,7 +17,7 @@ model Account {
   contacts         Contact[]
   companies        Company[]
   salesBots        SalesBot[]
-  whatsappConfig   WhatsAppConfig?
+  whatsappConfigs  WhatsAppConfig[]
   metaLeadsConfig  MetaLeadsConfig?
   agentConfig      AgentConfig?
   whatsappNumbers  WhatsAppNumber[]
@@ -46,8 +46,7 @@ model Department {
   users           User[]
   pipelines       Pipeline[]
   whatsappNumbers WhatsAppNumber[]
-  // whatsappConfigs (API Oficial multi-departamento) chega na Fase 2, junto
-  // com o campo WhatsAppConfig.departmentId.
+  whatsappConfigs WhatsAppConfig[]
 
   @@index([accountId])
 }
@@ -334,17 +333,25 @@ enum MsgStatus {
   FAILED
 }
 
+// Um WhatsAppConfig por DEPARTAMENTO (não mais um por conta) — cada setor
+// pode ter seu próprio número na API Oficial da Meta (ex: Financiamento
+// Habitacional e Consórcio). departmentId null = config "antiga"/genérica,
+// de uma conta que ainda não tinha departamentos quando configurou.
 model WhatsAppConfig {
-  id            String   @id @default(cuid())
-  accountId     String   @unique
-  account       Account  @relation(fields: [accountId], references: [id])
+  id            String      @id @default(cuid())
+  accountId     String
+  account       Account     @relation(fields: [accountId], references: [id])
+  departmentId  String?
+  department    Department? @relation(fields: [departmentId], references: [id])
   phoneNumberId String
   accessToken   String
-  verifyToken   String   @default("af_crm_verify")
-  active        Boolean  @default(false)
+  verifyToken   String      @default("af_crm_verify")
+  active        Boolean     @default(false)
   wabaId        String?  // ID da conta do WhatsApp Business (WABA) — salvo em "Ativar recebimento", reaproveitado para templates
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([accountId, departmentId])
 }
 
 enum Direction {

@@ -207,7 +207,7 @@ export async function sendOutboundWhatsApp(params: {
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
-    include: { contact: true },
+    include: { contact: true, pipeline: { select: { departmentId: true } } },
   });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
 
@@ -298,7 +298,7 @@ export async function sendOutboundWhatsApp(params: {
     if (!cloudPhone) {
       return { success: false, error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card ou envie pelo QR Code.' };
     }
-    const result = await sendWhatsAppMessage(cloudPhone, content, accountId);
+    const result = await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId);
     if (result.success) {
       externalId = result.externalId;
     } else {
@@ -341,14 +341,14 @@ export async function sendOutboundWhatsAppTemplate(params: {
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string }> {
   const { accountId, leadId, templateName, language, bodyParams, previewText, userId, io } = params;
 
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true, pipeline: { select: { departmentId: true } } } });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
 
   // Template só vai pela API Oficial — precisa de telefone de verdade, não @lid.
   const phone = plainPhone(lead.contact);
   if (!phone) return { success: false, error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card.' };
 
-  const result = await sendWhatsAppTemplateMessage(phone, templateName, language, bodyParams, accountId);
+  const result = await sendWhatsAppTemplateMessage(phone, templateName, language, bodyParams, accountId, lead.pipeline.departmentId);
   if (!result.success) return { success: false, error: result.error || 'Falha ao enviar template' };
 
   const message = await createMessage({

@@ -12,23 +12,44 @@ const DEFAULT_DEPARTMENTS = ['Financiamento Habitacional', 'Consórcio'];
  * suposição segura, já que essa foi a única linha de negócio até agora.
  */
 export async function ensureDefaultDepartments(accountId: string) {
-  const existing = await prisma.department.findMany({ where: { accountId }, orderBy: { order: 'asc' } });
-  if (existing.length > 0) return existing;
+  let list = await prisma.department.findMany({ where: { accountId }, orderBy: { order: 'asc' } });
 
-  const created = [];
-  for (let i = 0; i < DEFAULT_DEPARTMENTS.length; i++) {
-    created.push(await prisma.department.create({ data: { accountId, name: DEFAULT_DEPARTMENTS[i], order: i } }));
+  if (list.length === 0) {
+    const created = [];
+    for (let i = 0; i < DEFAULT_DEPARTMENTS.length; i++) {
+      created.push(await prisma.department.create({ data: { accountId, name: DEFAULT_DEPARTMENTS[i], order: i } }));
+    }
+    list = created;
+
+    const financiamento = created.find((d) => d.name === 'Financiamento Habitacional');
+    if (financiamento) {
+      await prisma.pipeline.updateMany({
+        where: { accountId, departmentId: null },
+        data: { departmentId: financiamento.id },
+      });
+    }
   }
 
-  const financiamento = created.find((d) => d.name === 'Financiamento Habitacional');
-  if (financiamento) {
-    await prisma.pipeline.updateMany({
-      where: { accountId, departmentId: null },
-      data: { departmentId: financiamento.id },
-    });
-  }
+  // Separado do "cria os padrão" de cima de propósito: essa conta pode já
+  // ter os departamentos (de um deploy anterior) na hora em que o campo
+  // WhatsAppConfig.departmentId passou a existir — então roda toda vez,
+  // idempotente, até resolver.
+  await migrateLegacyWhatsAppConfig(accountId, list);
 
-  return created;
+  return list;
+}
+
+/** A config da API Oficial que já existia (sem setor) é, na prática, de
+ *  Financiamento Habitacional — mesma suposição usada pros pipelines (foi a
+ *  única linha de negócio até os departamentos existirem). Idempotente. */
+async function migrateLegacyWhatsAppConfig(accountId: string, departments: { id: string; name: string }[]) {
+  const financiamento = departments.find((d) => d.name === 'Financiamento Habitacional');
+  if (!financiamento) return;
+  const legacyConfig = await prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId: null } });
+  if (!legacyConfig) return;
+  const alreadyHasFinanciamento = await prisma.whatsAppConfig.findFirst({ where: { accountId, departmentId: financiamento.id } });
+  if (alreadyHasFinanciamento) return; // evita colidir com o índice único accountId+departmentId
+  await prisma.whatsAppConfig.update({ where: { id: legacyConfig.id }, data: { departmentId: financiamento.id } }).catch(() => {});
 }
 
 export async function listDepartments(accountId: string) {

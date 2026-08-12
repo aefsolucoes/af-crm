@@ -87,8 +87,9 @@ router.post('/whatsapp', async (req: Request, res: Response) => {
     // Processa status updates (delivered/read) — não precisa de config de conta
     await processWhatsAppStatus(body, io);
 
-    // Processa mensagens recebidas
-    await processIncomingWhatsApp(body, config.accountId, io);
+    // Processa mensagens recebidas — no MESMO setor do número que recebeu
+    // (cada departamento pode ter seu próprio número na API Oficial).
+    await processIncomingWhatsApp(body, config.accountId, io, config.departmentId);
   } catch (err) {
     console.error('[WhatsApp] Webhook POST error:', err);
   }
