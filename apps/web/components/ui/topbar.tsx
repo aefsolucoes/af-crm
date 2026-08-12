@@ -6,9 +6,11 @@ import { useAuthStore } from '@/store/auth.store';
 interface TopbarProps {
   title: string | React.ReactNode;
   subtitle?: string | React.ReactNode;
+  /** Botões extras no canto direito, antes do sino (ex: atalho de Aparência na Dashboard). */
+  actions?: React.ReactNode;
 }
 
-export function Topbar({ title, subtitle }: TopbarProps) {
+export function Topbar({ title, subtitle, actions }: TopbarProps) {
   const { user } = useAuthStore();
 
   return (
@@ -18,6 +20,7 @@ export function Topbar({ title, subtitle }: TopbarProps) {
         {subtitle && <p className="text-xs app-topbar-text-muted">{subtitle}</p>}
       </div>
       <div className="flex items-center gap-3">
+        {actions}
         <button className="relative app-topbar-text-muted hover:text-af-mid p-1.5 rounded-lg hover:bg-white/10 transition-colors">
           <Bell size={18} />
         </button>

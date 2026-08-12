@@ -92,10 +92,16 @@ model User {
   themeColor   String  @default("white")
   themeImage   String?
   themeOpacity Int     @default(85)
-  // Número de WhatsApp que o usuário opera — usado para dividir os clientes por
-  // usuário no Relatório Matinal.
+  // Número de WhatsApp (QR) que o usuário opera — usado para dividir os
+  // clientes por usuário no Relatório Matinal. Mutuamente exclusivo com
+  // operatesApiOficial (o seletor na tela é um só: QR específico OU API
+  // Oficial, nunca os dois).
   whatsAppNumberId String?
   whatsAppNumber   WhatsAppNumber? @relation(fields: [whatsAppNumberId], references: [id])
+  // true = o usuário opera pela API Oficial (não por um número QR
+  // específico) — o Relatório Matinal busca os clientes que falaram pela
+  // API dentro do SETOR dele, em vez de por whatsAppNumberId.
+  operatesApiOficial Boolean @default(false)
   // Permissões por usuário (as "caixinhas"): { chave: boolean }. Null = usa o
   // padrão do papel. Admin sempre tem tudo. Ver src/lib/permissions.ts.
   permissions Json?

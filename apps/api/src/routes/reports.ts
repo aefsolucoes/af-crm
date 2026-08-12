@@ -244,7 +244,8 @@ router.get('/morning', async (req: AuthRequest, res: Response) => {
       take: 50,
     });
 
-    // Clientes esperando resposta no número do usuário.
+    // Clientes esperando resposta: no número QR do usuário, OU (se ele opera
+    // pela API Oficial) nas conversas da API dentro do SETOR dele.
     let clients: Array<{ leadId: string; name: string; phone: string | null; lastMessage: string; at: Date | null }> = [];
     if (user.whatsAppNumberId) {
       const leads = await prisma.lead.findMany({
@@ -265,11 +266,35 @@ router.get('/morning', async (req: AuthRequest, res: Response) => {
           lastMessage: (l.messages[0]?.content || '').slice(0, 90),
           at: l.messages[0]?.createdAt || null,
         }));
+    } else if (user.operatesApiOficial) {
+      const leads = await prisma.lead.findMany({
+        where: {
+          accountId,
+          archived: false,
+          // Sem setor definido: vê todos os leads da API (compatibilidade).
+          ...(user.departmentId ? { pipeline: { OR: [{ departmentId: user.departmentId }, { departmentId: null }] } } : {}),
+        },
+        include: {
+          contact: { select: { name: true, whatsappPhone: true, phone: true } },
+          messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { direction: true, content: true, createdAt: true, externalId: true } },
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 200,
+      });
+      clients = leads
+        .filter((l) => l.messages[0]?.direction === 'INBOUND' && l.messages[0]?.externalId?.startsWith('wamid'))
+        .map((l) => ({
+          leadId: l.id,
+          name: l.name || l.contact?.name || 'Sem nome',
+          phone: l.contact?.whatsappPhone || l.contact?.phone || null,
+          lastMessage: (l.messages[0]?.content || '').slice(0, 90),
+          at: l.messages[0]?.createdAt || null,
+        }));
     }
 
     res.json({
       user: { name: user.name },
-      number: user.whatsAppNumber || null,
+      number: user.operatesApiOficial ? { id: 'API', label: 'API Oficial' } : (user.whatsAppNumber || null),
       tasks: tasksRaw.map((t) => ({
         id: t.id, title: t.title, dueAt: t.dueAt, overdue: t.dueAt < now,
         leadId: t.leadId, leadName: t.lead?.name || null,

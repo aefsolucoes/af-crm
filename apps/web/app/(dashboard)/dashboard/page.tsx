@@ -2,10 +2,12 @@
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { Topbar } from '@/components/ui/topbar';
+import { Modal } from '@/components/ui/modal';
+import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { ReportSummary, ReportConversion, Task, Conversation } from '@/types';
 import api from '@/lib/api';
 import { formatCurrency, formatDate, isOverdue, cn } from '@/lib/utils';
-import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download, AlertCircle, MessageCircle, Plus, Inbox, FileCheck } from 'lucide-react';
+import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download, AlertCircle, MessageCircle, Plus, Inbox, FileCheck, Palette } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MorningReport } from '@/components/dashboard/morning-report';
 import { NotesBoard } from '@/components/dashboard/notes-board';
@@ -112,9 +114,30 @@ export default function DashboardPage() {
 
   const isLoading = loadingSummary || loadingConversion;
 
+  // Atalho rápido de Aparência — mesma tela de Configurações, num modal.
+  const [showAppearance, setShowAppearance] = useState(false);
+
   return (
     <div className="flex flex-col h-full">
-      <Topbar title="Dashboard" subtitle="Visão geral e performance" />
+      <Topbar
+        title="Dashboard"
+        subtitle="Visão geral e performance"
+        actions={
+          <button
+            onClick={() => setShowAppearance(true)}
+            title="Aparência"
+            className="flex items-center gap-1.5 text-xs font-medium app-topbar-text-muted hover:text-af-mid px-2.5 py-1.5 rounded-lg hover:bg-white/10 transition-colors"
+          >
+            <Palette size={15} /> Aparência
+          </button>
+        }
+      />
+
+      {showAppearance && (
+        <Modal title="Aparência" onClose={() => setShowAppearance(false)}>
+          <AppearancePanel showHeader={false} />
+        </Modal>
+      )}
 
       <div className="flex-1 overflow-auto px-6 py-5 space-y-6 scrollbar-thin">
         {/* Relatório Matinal — o que o usuário tem pra hoje */}

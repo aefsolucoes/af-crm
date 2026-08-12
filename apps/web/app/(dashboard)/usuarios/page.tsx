@@ -20,6 +20,7 @@ interface UserRecord {
   email: string;
   role: Role;
   whatsAppNumberId: string | null;
+  operatesApiOficial: boolean;
   departmentId: string | null;
   permissions: Record<string, boolean> | null;
 }
@@ -67,7 +68,11 @@ export default function UsuariosPage() {
     queryKey: ['departments'],
     queryFn: async () => (await api.get('/api/departments')).data as DepartmentOption[],
   });
-  const numberLabel = (id: string | null) => numbers.find((n) => n.id === id)?.label;
+  // Rótulo do canal que o usuário opera — número QR ou "API Oficial".
+  const channelLabel = (u: UserRecord) => {
+    if (u.operatesApiOficial) return 'API Oficial';
+    return numbers.find((n) => n.id === u.whatsAppNumberId)?.label;
+  };
   const departmentName = (id: string | null) => departments.find((d) => d.id === id)?.name;
 
   const [showModal, setShowModal] = useState(false);
@@ -116,7 +121,7 @@ export default function UsuariosPage() {
     setEditingUser(u);
     setForm({
       name: u.name, email: u.email, password: '', role: u.role,
-      whatsAppNumberId: u.whatsAppNumberId || '',
+      whatsAppNumberId: u.operatesApiOficial ? 'API' : (u.whatsAppNumberId || ''),
       departmentId: u.departmentId || '',
       permissions: effectivePermissions(u.role, u.permissions),
     });
@@ -168,7 +173,7 @@ export default function UsuariosPage() {
           {[
             { label: 'Total', value: users.length, color: 'bg-af-light text-af-accent' },
             { label: 'Admins', value: users.filter((u) => u.role === 'ADMIN').length, color: 'bg-red-50 text-red-600' },
-            { label: 'Com WhatsApp vinculado', value: users.filter((u) => u.whatsAppNumberId).length, color: 'bg-green-50 text-green-700' },
+            { label: 'Com WhatsApp vinculado', value: users.filter((u) => u.whatsAppNumberId || u.operatesApiOficial).length, color: 'bg-green-50 text-green-700' },
           ].map((s) => (
             <div key={s.label} className={`rounded-xl p-4 ${s.color}`}>
               <p className="text-2xl font-bold">{s.value}</p>
@@ -207,7 +212,7 @@ export default function UsuariosPage() {
               ) : (
                 users.map((u) => {
                   const rm = ROLE_META[u.role];
-                  const label = numberLabel(u.whatsAppNumberId);
+                  const label = channelLabel(u);
                   const deptName = departmentName(u.departmentId);
                   return (
                     <tr key={u.id} className="hover:bg-af-light transition-colors">
@@ -343,11 +348,12 @@ export default function UsuariosPage() {
                 className="w-full border border-af-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-af-accent/30"
               >
                 <option value="">Nenhum (não recebe clientes no relatório matinal)</option>
+                <option value="API">API Oficial</option>
                 {numbers.map((n) => (
                   <option key={n.id} value={n.id}>{n.label}</option>
                 ))}
               </select>
-              <p className="text-xs text-slate-400 mt-1">Usado no Relatório Matinal para mostrar os clientes desse número para o usuário.</p>
+              <p className="text-xs text-slate-400 mt-1">Usado no Relatório Matinal para mostrar os clientes desse número (ou os que falaram pela API Oficial do setor dele) para o usuário.</p>
             </div>
 
             {/* Permissões (as caixinhas) */}

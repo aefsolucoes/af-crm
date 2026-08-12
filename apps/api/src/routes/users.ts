@@ -9,8 +9,16 @@ const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
 
-const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true, permissions: true, departmentId: true } as const;
+const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true, operatesApiOficial: true, permissions: true, departmentId: true } as const;
 const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
+
+/** O seletor "número que ele opera" no front é um select único (QR
+ *  específico, API Oficial, ou nenhum) — o valor especial "API" vira os
+ *  dois campos reais do banco: operatesApiOficial + whatsAppNumberId. */
+function resolveOperatorChannel(raw: string | null | undefined): { whatsAppNumberId: string | null; operatesApiOficial: boolean } {
+  if (raw === 'API') return { whatsAppNumberId: null, operatesApiOficial: true };
+  return { whatsAppNumberId: raw || null, operatesApiOficial: false };
+}
 
 // Normaliza o objeto de permissões recebido: mantém só as chaves conhecidas como
 // boolean. null = usuário sem permissões próprias (usa o padrão do papel).
@@ -65,8 +73,9 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     const existing = await prisma.user.findUnique({ where: { email: cleanEmail } });
     if (existing) return res.status(409).json({ error: 'Já existe um usuário com esse e-mail' });
 
-    if (whatsAppNumberId) {
-      const num = await prisma.whatsAppNumber.findFirst({ where: { id: whatsAppNumberId, accountId } });
+    const channel = resolveOperatorChannel(whatsAppNumberId);
+    if (channel.whatsAppNumberId) {
+      const num = await prisma.whatsAppNumber.findFirst({ where: { id: channel.whatsAppNumberId, accountId } });
       if (!num) return res.status(400).json({ error: 'Número de WhatsApp inválido' });
     }
     if (departmentId) {
@@ -82,7 +91,8 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         password: hashed,
         role: (VALID_ROLES.includes(role as Role) ? role : 'AGENT') as Role,
         accountId,
-        whatsAppNumberId: whatsAppNumberId || null,
+        whatsAppNumberId: channel.whatsAppNumberId,
+        operatesApiOficial: channel.operatesApiOficial,
         departmentId: departmentId || null,
         permissions: sanitizePermissions((req.body as { permissions?: unknown }).permissions) ?? undefined,
       },
@@ -135,11 +145,13 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
       data.role = role as Role;
     }
     if (whatsAppNumberId !== undefined) {
-      if (whatsAppNumberId) {
-        const num = await prisma.whatsAppNumber.findFirst({ where: { id: whatsAppNumberId, accountId } });
+      const channel = resolveOperatorChannel(whatsAppNumberId);
+      if (channel.whatsAppNumberId) {
+        const num = await prisma.whatsAppNumber.findFirst({ where: { id: channel.whatsAppNumberId, accountId } });
         if (!num) return res.status(400).json({ error: 'Número de WhatsApp inválido' });
       }
-      data.whatsAppNumberId = whatsAppNumberId || null;
+      data.whatsAppNumberId = channel.whatsAppNumberId;
+      data.operatesApiOficial = channel.operatesApiOficial;
     }
     if (departmentId !== undefined) {
       if (departmentId) {
