@@ -745,10 +745,16 @@ async function executeAgentTool(
       const digits = phoneQuery.replace(/\D/g, '');
       const core = digits.length > 8 ? digits.slice(-8) : digits;
       if (core.length < 4) return [];
+      // Teto bem acima do tamanho real da conta (era 500 — a conta já tem 600+
+      // leads ativos, e leads fora desse limite ficavam invisíveis pra busca
+      // por telefone, mesmo existindo de verdade). Sem where extra porque o
+      // telefone pode estar só num campo do cadastro (customFields), não em
+      // contact.phone — não dá pra empurrar esse filtro pro SQL com segurança
+      // (os valores têm formatação inconsistente: com/sem parênteses e hífen).
       const leads = await prisma.lead.findMany({
         where: { accountId, archived: false },
         include: { contact: true },
-        take: 500,
+        take: 5000,
       });
       const matches = leads.filter(l => {
         const cf = l.customFields && typeof l.customFields === 'object'
