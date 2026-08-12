@@ -90,6 +90,21 @@ function lastInboundApiMessage(messages: Message[]): Message | null {
   return latest;
 }
 
+/** Canal "natural" da conversa: por onde o CLIENTE fala com a gente — olhando
+ *  a ÚLTIMA mensagem RECEBIDA (não as que já enviamos, que podem estar
+ *  "erradas" se algum envio anterior caiu no canal errado). Evita que a caixa
+ *  de mensagem sugira o QR por padrão para um lead que só fala pela API
+ *  Oficial (ex: veio de um anúncio Clique-para-WhatsApp). */
+function lastInboundChannel(messages: Message[]): { via: WhatsAppVia; numberId?: string } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.direction !== 'INBOUND') continue;
+    if (m.externalId?.startsWith('wamid')) return { via: 'api' };
+    if (m.whatsappNumberId) return { via: 'qr', numberId: m.whatsappNumberId };
+  }
+  return null;
+}
+
 export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessage, onClose }: ChatWindowProps) {
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
@@ -113,8 +128,11 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
 
   const qrConnected = !!qrNumbers?.some(n => n.status === 'connected');
   const apiActive = !!apiConfig?.active;
-  // Canal efetivo: escolha manual, senão QR se conectado, senão API
-  const effectiveVia: WhatsAppVia = via ?? (qrConnected ? 'qr' : 'api');
+  // Canal por onde o cliente já fala com a gente nessa conversa (se houver).
+  const inboundChannel = lastInboundChannel(messages);
+  // Canal efetivo: escolha manual, senão o canal natural da conversa, senão
+  // QR se conectado, senão API.
+  const effectiveVia: WhatsAppVia = via ?? inboundChannel?.via ?? (qrConnected ? 'qr' : 'api');
 
   // Janela de 24h da API oficial: conta a partir da última mensagem que o
   // CLIENTE mandou por lá. Passado isso, só dá para responder com template.
@@ -129,9 +147,11 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], onNewMessag
   const numberLabels: Record<string, string> = Object.fromEntries((qrNumbers || []).map(n => [n.id, n.label]));
   // Número que a conversa já vinha usando (última mensagem com número definido).
   const lastRouted = [...messages].reverse().find(m => m.whatsappNumberId)?.whatsappNumberId ?? null;
-  // Número ativo para enviar: escolha do usuário, senão o da conversa (se conectado), senão o 1º conectado.
+  // Número ativo para enviar: escolha do usuário, senão o número por onde o
+  // cliente já falou (se ainda conectado), senão o da conversa, senão o 1º conectado.
   const activeNumberId =
     fromNumberId ??
+    (inboundChannel?.via === 'qr' && inboundChannel.numberId && connectedQr.some(n => n.id === inboundChannel.numberId) ? inboundChannel.numberId : null) ??
     (lastRouted && connectedQr.some(n => n.id === lastRouted) ? lastRouted : connectedQr[0]?.id) ??
     null;
 

@@ -181,7 +181,9 @@ export async function sendOutboundWhatsApp(params: {
   accountId: string;
   leadId: string;
   content: string;
-  /** Canal preferido: 'qr' (conexão via QR Code) ou 'api' (API oficial da Meta). Sem valor: QR se conectado, senão API. */
+  /** Canal preferido: 'qr' (conexão via QR Code) ou 'api' (API oficial da Meta).
+   *  Sem valor: usa o canal por onde o cliente já falou com a gente (última
+   *  mensagem recebida); sem histórico ainda, QR se conectado, senão API. */
   via?: 'qr' | 'api';
   /** Número (WhatsAppNumber.id) do qual enviar via QR. Se ausente, usa o número da conversa ou o primeiro conectado. */
   fromNumberId?: string;
@@ -204,20 +206,48 @@ export async function sendOutboundWhatsApp(params: {
   let usedNumberId: string | null = null;
 
   const connectedNumbers = getConnectedNumberIds(accountId);
-  const useQR = via === 'qr' ? true : via === 'api' ? false : (!!fromNumberId || connectedNumbers.length > 0);
+
+  // Quando ninguém escolheu o canal explicitamente (via/fromNumberId), decide
+  // pelo canal "natural" da conversa — de onde o CLIENTE fala com a gente —
+  // em vez de simplesmente preferir QR sempre que algum número estiver
+  // conectado. Isso evita responder pelo número/canal errado (ex: lead que
+  // chegou por um anúncio Clique-para-WhatsApp na API Oficial recebendo a
+  // resposta pelo QR pessoal). Olha a última mensagem RECEBIDA (não as que já
+  // enviamos — essas podem já estar "erradas" por causa desse mesmo bug em
+  // envios anteriores): se veio com id "wamid" é API Oficial; se veio com um
+  // whatsappNumberId é aquele número QR.
+  let inferredVia: 'qr' | 'api' | null = null;
+  let inferredNumberId: string | null = null;
+  if (via === undefined && !fromNumberId) {
+    const lastInbound = await prisma.message.findFirst({
+      where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (lastInbound?.externalId?.startsWith('wamid')) inferredVia = 'api';
+    else if (lastInbound?.whatsappNumberId) { inferredVia = 'qr'; inferredNumberId = lastInbound.whatsappNumberId; }
+  }
+
+  const useQR = via === 'qr' ? true
+    : via === 'api' ? false
+    : inferredVia === 'api' ? false
+    : inferredVia === 'qr' ? true
+    : (!!fromNumberId || connectedNumbers.length > 0);
 
   if (useQR) {
     // Se o colaborador escolheu um número específico (fromNumberId), envia por ele
-    // — desde que esteja conectado. Senão, sugere o último número usado nesta
-    // conversa (lead.whatsappNumberId) ou o primeiro conectado. Um cliente pode
-    // falar pelos dois números sem duplicar o card — cada mensagem guarda o SEU
-    // próprio número (para o "via {número}"), mas a conversa é uma só.
+    // — desde que esteja conectado. Senão, prefere o número por onde o cliente
+    // JÁ falou com a gente (inferredNumberId), depois o último usado nesta
+    // conversa (lead.whatsappNumberId), depois o primeiro conectado. Um cliente
+    // pode falar pelos dois números sem duplicar o card — cada mensagem guarda o
+    // SEU próprio número (para o "via {número}"), mas a conversa é uma só.
     let preferred: string | undefined;
     if (fromNumberId) {
       if (!connectedNumbers.includes(fromNumberId)) {
         return { success: false, error: 'O número de WhatsApp escolhido não está conectado. Verifique em Configurações → QR Code ou escolha outro.' };
       }
       preferred = fromNumberId;
+    } else if (inferredNumberId && connectedNumbers.includes(inferredNumberId)) {
+      preferred = inferredNumberId;
     } else if (lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)) {
       preferred = lead.whatsappNumberId;
     } else {
