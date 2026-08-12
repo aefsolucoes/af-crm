@@ -4,7 +4,7 @@ import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { sendOutboundWhatsApp, sendOutboundMedia, sendOutboundWhatsAppTemplate, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
 import { listMetaTemplates, createMetaTemplate, TemplateCategory } from '../services/whatsapp.service';
-import { searchKnowledge } from '../services/knowledge.service';
+import { searchKnowledge, learnFromWhatsAppConversations } from '../services/knowledge.service';
 import {
   organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
   createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink, findFilesInFolderTree,
@@ -104,6 +104,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - listar_templates_whatsapp / criar_template_whatsapp: gerenciar templates de mensagem do WhatsApp (API Oficial/Meta) — necessários para mandar mensagem pra cliente fora da janela de 24h. listar_templates_whatsapp mostra os já criados (com status de aprovação). criar_template_whatsapp cria um novo e manda pra aprovação da Meta (categorias MARKETING, UTILITY ou AUTHENTICATION — explique a diferença se o colaborador não souber qual usar). CONFIRMAÇÃO OBRIGATÓRIA antes de enviar: a primeira chamada sem confirmed:true só valida e devolve um resumo — leia esse resumo (nome, categoria, corpo) para o colaborador e só chame de novo com confirmed:true depois que ele confirmar. A aprovação em si demora (minutos a dias) e não depende do CRM — avise disso.
 - listar_respostas_rapidas / criar_resposta_rapida / enviar_resposta_rapida: as "Respostas rápidas" (Templates → aba Respostas rápidas) são DIFERENTES dos templates da Meta — texto pronto reutilizável, SEM aprovação, disponível na hora pra equipe toda. listar mostra as que existem. criar_resposta_rapida cria uma nova (não precisa confirmar — só cria um texto, não envia a ninguém). enviar_resposta_rapida manda uma pra um cliente específico: {{nome}} já é preenchido sozinho, outras variáveis vêm em "variaveis" — se faltar alguma, PERGUNTE ao colaborador antes de enviar. CONFIRMAÇÃO OBRIGATÓRIA antes de enviar: primeira chamada sem confirmed:true só resolve e mostra o texto final — leia pro colaborador e só confirme depois que ele aprovar.
 - enviar_template_whatsapp_lead: envia um template JÁ APROVADO da Meta para um cliente específico — é o jeito de reabrir a conversa quando já passou a janela de 24h. Use listar_templates_whatsapp antes pra saber o nome técnico exato e quantas variáveis {{1}},{{2}}... o corpo pede. CONFIRMAÇÃO OBRIGATÓRIA antes de enviar, mesmo padrão dos outros envios.
+- aprender_com_conversas_whatsapp: analisa uma amostra das conversas mais recentes e extrai padrões de atendimento (dúvidas comuns, como a equipe costuma responder, objeções) direto pra Base de Conhecimento — NUNCA guarda nome, telefone ou dado de cliente específico, só o padrão generalizado. Use quando o colaborador pedir pro assistente "aprender com as conversas" ou similar. Demora alguns segundos.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um arquivo (imagem ou PDF) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo do arquivo vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare ou extraia o que o colaborador pedir sobre o documento anexado. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
@@ -271,6 +272,11 @@ const AGENT_TOOLS = [
       previewText: { type: 'string', description: 'O texto do template já com as variáveis preenchidas, para mostrar na conversa (opcional, mas recomendado — monte a partir do corpo visto em listar_templates_whatsapp).' },
       confirmed: { type: 'boolean', description: 'Só true depois que o colaborador viu o resumo e confirmou o envio.' },
     }, required: ['leadId', 'templateName'] },
+  },
+  {
+    name: 'aprender_com_conversas_whatsapp',
+    description: 'Analisa uma amostra das conversas de WhatsApp mais recentes e extrai padrões de atendimento (dúvidas comuns e como a equipe costuma responder, objeções) direto para a Base de Conhecimento — NUNCA guarda nome, telefone ou qualquer dado que identifique um cliente específico, só o padrão generalizado. Use quando o colaborador pedir para o assistente "aprender com as conversas", "puxar experiência do WhatsApp pra base de conhecimento" etc. Demora alguns segundos (analisa várias conversas de uma vez). Precisa da pasta da Base de Conhecimento já configurada (Configurações → Agente IA).',
+    input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'find_lead',
@@ -783,6 +789,16 @@ async function executeAgentTool(
       bodyParams, previewText, userId, io,
     });
     return result;
+  }
+
+  if (name === 'aprender_com_conversas_whatsapp') {
+    if (!perms.settings) return deny('settings', 'gerenciar a Base de Conhecimento');
+    try {
+      const result = await learnFromWhatsAppConversations(accountId);
+      return { success: true, ...result };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao aprender com as conversas' };
+    }
   }
 
   if (name === 'consultar_leads') {

@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import pdf from 'pdf-parse';
 import mammoth from 'mammoth';
-import { listKnowledgeFiles, downloadDriveFile, ocrDriveFileToText } from './google.service';
+import { listKnowledgeFiles, downloadDriveFile, ocrDriveFileToText, uploadFile, trashDriveItem } from './google.service';
 import { embedDocuments, embedQuery, isVoyageConfigured } from './voyage.service';
 
 const prisma = new PrismaClient();
@@ -178,6 +178,84 @@ export async function syncKnowledgeBase(accountId: string): Promise<SyncResult> 
 
   invalidateKnowledgeCache(accountId);
   return { indexed, skipped, removed, failed, totalChunks };
+}
+
+// ─── Aprender com as conversas do WhatsApp ────────────────────────────────────
+// Analisa uma amostra de conversas recentes e pede pro Claude extrair PADRÕES
+// de atendimento (dúvidas comuns, como a equipe responde, objeções) — nunca
+// dado de cliente específico (nome, telefone, valor do caso etc). O resultado
+// vira um documento na própria pasta da Base de Conhecimento e é indexado
+// normalmente pelo syncKnowledgeBase, então passa a valer pras respostas do
+// assistente como qualquer outro material da base.
+
+export interface LearnResult {
+  leadsAnalisados: number;
+  documentoCriado: string;
+  chunksIndexados: number;
+}
+
+const LEARN_DOC_NAME = 'Padroes de Atendimento - WhatsApp (gerado pelo assistente).txt';
+
+export async function learnFromWhatsAppConversations(accountId: string): Promise<LearnResult> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY não configurada.');
+  if (!isVoyageConfigured()) throw new Error('VOYAGE_API_KEY não configurada — necessária pra indexar o resultado na Base de Conhecimento.');
+
+  const cfg = await prisma.agentConfig.findUnique({ where: { accountId } });
+  if (!cfg?.knowledgeFolderId) throw new Error('Nenhuma pasta de Base de Conhecimento configurada (Configurações → Agente IA).');
+
+  // Amostra: conversas reais mais recentemente ativas (sem grupo, com pelo
+  // menos uma troca de mensagens de verdade em cada lado).
+  const leads = await prisma.lead.findMany({
+    where: { accountId, archived: false, isGroup: false, messages: { some: {} } },
+    orderBy: { updatedAt: 'desc' },
+    take: 40,
+    select: { messages: { orderBy: { createdAt: 'asc' }, take: 20, select: { direction: true, content: true } } },
+  });
+  const comMensagens = leads.filter((l) => l.messages.length >= 2);
+  if (comMensagens.length === 0) throw new Error('Não encontrei conversas com mensagens suficientes para aprender.');
+
+  const transcript = comMensagens
+    .map((l, i) => `--- Conversa ${i + 1} ---\n` + l.messages.map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Equipe'}: ${m.content}`).join('\n'))
+    .join('\n\n')
+    .slice(0, 180000); // teto de segurança pro tamanho do prompt
+
+  const systemPrompt = `Você analisa conversas de WhatsApp entre uma equipe de atendimento (financiamento habitacional e consórcio) e clientes, para extrair PADRÕES ÚTEIS de atendimento — dúvidas comuns e como a equipe costuma responder bem, objeções e como são contornadas, informações que costumam ser pedidas.
+
+REGRA ABSOLUTA: o texto que você gerar NUNCA pode conter nome de cliente, telefone, CPF, endereço, valor específico de um caso, ou qualquer outro dado que identifique uma pessoa ou negociação específica. Generalize tudo — em vez de "João perguntou sobre a taxa do apartamento de R$ 350.000", escreva "Quando o cliente pergunta sobre a taxa de juros, a equipe costuma explicar...". Se não conseguir generalizar algum trecho com segurança, IGNORE esse trecho por completo.
+
+Organize a saída em markdown, com um título por tema (ex.: "## Dúvidas sobre taxas", "## Objeções sobre valor de entrada"), cada um com um resumo do padrão de pergunta e de como a equipe respondeu bem. Seja objetivo — isso vai virar material de consulta para o assistente de IA do CRM responder dúvidas parecidas no futuro. Responda só com o markdown, sem comentário antes ou depois.`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: `Aqui estão as conversas:\n\n${transcript}` }],
+    }),
+  });
+  if (!response.ok) throw new Error(`Erro ao analisar conversas: ${response.status} ${(await response.text()).slice(0, 300)}`);
+  const data = await response.json() as { content: { type: string; text?: string }[] };
+  const patterns = data.content?.find((b) => b.type === 'text')?.text?.trim();
+  if (!patterns) throw new Error('Não consegui extrair nenhum padrão das conversas.');
+
+  // Remove a versão anterior (se houver) pra não acumular duplicatas a cada execução.
+  const existingFiles = await listKnowledgeFiles(accountId, cfg.knowledgeFolderId);
+  const prev = existingFiles.find((f) => f.name === LEARN_DOC_NAME);
+  if (prev) await trashDriveItem(accountId, prev.id).catch(() => {});
+
+  await uploadFile(accountId, {
+    name: LEARN_DOC_NAME,
+    mimeType: 'text/plain',
+    data: Buffer.from(patterns, 'utf-8'),
+    parentId: cfg.knowledgeFolderId,
+  });
+
+  const syncResult = await syncKnowledgeBase(accountId);
+
+  return { leadsAnalisados: comMensagens.length, documentoCriado: LEARN_DOC_NAME, chunksIndexados: syncResult.totalChunks };
 }
 
 // ─── Busca (recupera os trechos mais relevantes para uma pergunta) ───────────
