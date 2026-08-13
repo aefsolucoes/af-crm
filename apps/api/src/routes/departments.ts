@@ -49,17 +49,28 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// PATCH /api/departments/:id — renomeia
+// PATCH /api/departments/:id — renomeia e/ou atualiza o escopo de produtos da IA
 router.patch('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const name = String(req.body?.name || '').trim();
-    if (!name) return res.status(400).json({ error: 'Nome é obrigatório' });
     const existing = await prisma.department.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
     if (!existing) return res.status(404).json({ error: 'Departamento não encontrado' });
-    const department = await prisma.department.update({ where: { id: existing.id }, data: { name } });
+
+    const data: { name?: string; aiScope?: string | null } = {};
+    if (req.body?.name !== undefined) {
+      const name = String(req.body.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'Nome é obrigatório' });
+      data.name = name;
+    }
+    if (req.body?.aiScope !== undefined) {
+      const aiScope = String(req.body.aiScope || '').trim();
+      data.aiScope = aiScope || null;
+    }
+    if (Object.keys(data).length === 0) return res.status(400).json({ error: 'Nada para atualizar' });
+
+    const department = await prisma.department.update({ where: { id: existing.id }, data });
     res.json(department);
   } catch {
-    res.status(500).json({ error: 'Erro ao renomear departamento' });
+    res.status(500).json({ error: 'Erro ao atualizar departamento' });
   }
 });
 

@@ -4,6 +4,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/ui/sidebar';
 import { ToastContainer } from '@/components/ui/toast';
 import { SupportChatButton } from '@/components/ui/support-chat';
+import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
 import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
@@ -124,14 +125,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       triggerSound();
     }
 
+    // ai_handoff — a IA que respondia um cliente sozinha se desligou porque
+    // ele pediu atendente (ou saiu do escopo do setor). Toca som E mostra
+    // toast, porque exige ação do colaborador (não é só uma pendência).
+    function onAiHandoff({ leadName }: { leadId: string; leadName?: string }) {
+      triggerSound();
+      toast(`A IA encerrou o atendimento de ${leadName || 'um cliente'} — o cliente pediu para falar com alguém. Confira a conversa na Inbox.`, 'warning');
+    }
+
     socket.on('new_notification', onNewNotification);
     socket.on('assistant_question', onAssistantQuestion);
+    socket.on('ai_handoff', onAiHandoff);
 
     return () => {
       socket.off('connect', joinAccount);
       socket.off('connect', joinUser);
       socket.off('new_notification', onNewNotification);
       socket.off('assistant_question', onAssistantQuestion);
+      socket.off('ai_handoff', onAiHandoff);
     };
   }, []);
 

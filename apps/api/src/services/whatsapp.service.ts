@@ -668,8 +668,9 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
     if (!lead?.aiAutoReplyActive) return;
 
-    const reply = await generateAiAutoReply(accountId, leadId, incomingText);
-    if (!reply) return;
+    const genResult = await generateAiAutoReply(accountId, leadId, incomingText);
+    if (!genResult) return;
+    const { reply, handoff } = genResult;
 
     const result = await sendWhatsAppMessage(phone, reply, accountId, departmentId);
     if (!result.success) {
@@ -680,9 +681,32 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
       data: { content: reply, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT' },
     });
     if (io) io.to(`lead:${leadId}`).emit('new_message', sent);
-    await prisma.note.create({ data: { leadId, content: `🤖 Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
+    await prisma.note.create({ data: { leadId, content: `Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
     console.log(`[WhatsApp] Resposta de IA enviada automaticamente para lead ${leadId}`);
+
+    if (handoff) await handleAiHandoffCloudApi(leadId, io);
   } catch (err) {
     console.error('[WhatsApp] Erro na resposta automática de IA:', err);
+  }
+}
+
+/** Cliente pediu atendimento humano (ou saiu do escopo do setor) — desliga a
+ *  IA nessa conversa sozinha e avisa o colaborador responsável (som + toast).
+ *  Duplicado de baileys.service.ts de propósito (não import), pra não criar
+ *  dependência circular nesse arquivo crítico. */
+async function handleAiHandoffCloudApi(leadId: string, io: any) {
+  try {
+    const lead = await prisma.lead.update({
+      where: { id: leadId },
+      data: { aiAutoReplyActive: false },
+      select: { id: true, name: true, userId: true },
+    });
+    await prisma.note.create({ data: { leadId, content: 'Atendimento automático encerrado — cliente pediu atendimento humano (ou pergunta fora do escopo deste chat). Repassado para a equipe.', type: 'COMMENT' } }).catch(() => {});
+    if (io) {
+      io.to(`lead:${leadId}`).emit('lead_ai_toggled', { leadId, active: false });
+      if (lead.userId) io.to(`user_${lead.userId}`).emit('ai_handoff', { leadId, leadName: lead.name });
+    }
+  } catch (err) {
+    console.error('[WhatsApp] Erro ao processar handoff da IA:', err);
   }
 }

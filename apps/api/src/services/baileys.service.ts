@@ -903,8 +903,9 @@ async function maybeAiAutoReplyQR(accountId: string, leadId: string, incomingTex
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
     if (!lead?.aiAutoReplyActive) return;
 
-    const reply = await generateAiAutoReply(accountId, leadId, incomingText);
-    if (!reply) return;
+    const result = await generateAiAutoReply(accountId, leadId, incomingText);
+    if (!result) return;
+    const { reply, handoff } = result;
 
     const outcome = await sendBaileysMessage(phone, reply, numberId);
     if ('failed' in outcome) {
@@ -918,10 +919,32 @@ async function maybeAiAutoReplyQR(accountId: string, leadId: string, incomingTex
       },
     });
     globalIO?.to(`lead:${leadId}`).emit('new_message', sent);
-    await prisma.note.create({ data: { leadId, content: `🤖 Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
+    await prisma.note.create({ data: { leadId, content: `Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
     console.log(`[Baileys] Resposta de IA enviada automaticamente para lead ${leadId}`);
+
+    if (handoff) await handleAiHandoff(leadId);
   } catch (err) {
     console.error('[Baileys] Erro na resposta automática de IA:', err);
+  }
+}
+
+/** Cliente pediu atendimento humano (ou saiu do escopo do setor) — desliga a
+ *  IA nessa conversa sozinha e avisa o colaborador responsável (som + toast),
+ *  igual ao aviso já usado pra "pergunta pendente" entre colaboradores.
+ *  Compartilhado com whatsapp.service.ts via duplicação (não import) de
+ *  propósito, pra não criar dependência circular nesse arquivo crítico. */
+async function handleAiHandoff(leadId: string) {
+  try {
+    const lead = await prisma.lead.update({
+      where: { id: leadId },
+      data: { aiAutoReplyActive: false },
+      select: { id: true, name: true, userId: true },
+    });
+    await prisma.note.create({ data: { leadId, content: 'Atendimento automático encerrado — cliente pediu atendimento humano (ou pergunta fora do escopo deste chat). Repassado para a equipe.', type: 'COMMENT' } }).catch(() => {});
+    globalIO?.to(`lead:${leadId}`).emit('lead_ai_toggled', { leadId, active: false });
+    if (lead.userId) globalIO?.to(`user_${lead.userId}`).emit('ai_handoff', { leadId, leadName: lead.name });
+  } catch (err) {
+    console.error('[Baileys] Erro ao processar handoff da IA:', err);
   }
 }
 

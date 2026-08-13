@@ -2,7 +2,13 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-const DEFAULT_DEPARTMENTS = ['Financiamento Habitacional', 'Consórcio'];
+// aiScope = produtos que a IA do WhatsApp (Lead.aiAutoReplyActive) deve
+// tratar como "dentro do assunto" neste setor — usado só como valor inicial
+// (o admin edita livremente depois em Configurações → Setores).
+const DEFAULT_DEPARTMENTS = [
+  { name: 'Financiamento Habitacional', aiScope: 'financiamento habitacional, home equity, financiamento para construção' },
+  { name: 'Consórcio', aiScope: 'consórcio de imóveis, consórcio de veículos e consórcio de bens em geral' },
+];
 
 /**
  * Garante que a conta tem pelo menos os departamentos padrão — roda sozinho,
@@ -17,7 +23,7 @@ export async function ensureDefaultDepartments(accountId: string) {
   if (list.length === 0) {
     const created = [];
     for (let i = 0; i < DEFAULT_DEPARTMENTS.length; i++) {
-      created.push(await prisma.department.create({ data: { accountId, name: DEFAULT_DEPARTMENTS[i], order: i } }));
+      created.push(await prisma.department.create({ data: { accountId, name: DEFAULT_DEPARTMENTS[i].name, aiScope: DEFAULT_DEPARTMENTS[i].aiScope, order: i } }));
     }
     list = created;
 
@@ -27,6 +33,16 @@ export async function ensureDefaultDepartments(accountId: string) {
         where: { accountId, departmentId: null },
         data: { departmentId: financiamento.id },
       });
+    }
+  } else {
+    // Contas que já tinham os setores padrão de antes do campo aiScope
+    // existir ficam sem esse texto — preenche uma vez, sem sobrescrever se o
+    // admin já tiver editado (aiScope != null).
+    for (const dep of list) {
+      if (dep.aiScope == null) {
+        const def = DEFAULT_DEPARTMENTS.find((d) => d.name === dep.name);
+        if (def) await prisma.department.update({ where: { id: dep.id }, data: { aiScope: def.aiScope } }).catch(() => {});
+      }
     }
   }
 

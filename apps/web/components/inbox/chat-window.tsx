@@ -284,10 +284,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       if (statusError !== undefined) setStatusErrorMap(prev => ({ ...prev, [id]: statusError }));
     });
 
+    // A própria IA se desliga quando o cliente pede atendente (handoff) — ou
+    // alguém liga/desliga em outra aba. Mantém o botão sincronizado sem poll.
+    socket.on('lead_ai_toggled', ({ leadId: id, active }: { leadId: string; active: boolean }) => {
+      if (id === leadId) setAiActive(active);
+    });
+
     return () => {
       socket.emit('leave_lead', leadId);
       socket.off('new_message');
       socket.off('message_status');
+      socket.off('lead_ai_toggled');
     };
   }, [leadId, onNewMessage]);
 

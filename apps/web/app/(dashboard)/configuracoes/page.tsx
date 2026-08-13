@@ -484,7 +484,7 @@ function QRNumbersTab() {
 // do PRÓPRIO setor. Atribua o setor de cada colaborador em Usuários, e o
 // setor de cada número de WhatsApp aqui na aba QR Code.
 
-interface DepartmentRow { id: string; name: string; order: number; }
+interface DepartmentRow { id: string; name: string; order: number; aiScope?: string | null; }
 
 function DepartmentsTab() {
   const [departments, setDepartments] = useState<DepartmentRow[]>([]);
@@ -493,6 +493,10 @@ function DepartmentsTab() {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  // Escopo de produtos que a IA do WhatsApp atende neste setor (edição inline)
+  const [editingScope, setEditingScope] = useState<string | null>(null);
+  const [editScopeText, setEditScopeText] = useState('');
+  const [savingScope, setSavingScope] = useState(false);
 
   async function load() {
     try {
@@ -536,6 +540,17 @@ function DepartmentsTab() {
     }
   }
 
+  async function handleSaveScope(id: string) {
+    setSavingScope(true);
+    try {
+      const { data } = await api.patch(`/api/departments/${id}`, { aiScope: editScopeText.trim() });
+      setDepartments(prev => prev.map(d => d.id === id ? { ...d, aiScope: data.aiScope } : d));
+      setEditingScope(null);
+      toast('Escopo da IA atualizado.');
+    } catch { toast('Erro ao salvar escopo da IA', 'error'); }
+    finally { setSavingScope(false); }
+  }
+
   return (
     <div className="space-y-4">
       <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
@@ -571,33 +586,64 @@ function DepartmentsTab() {
       ) : (
         <div className="bg-white rounded-2xl border border-af-border shadow-sm divide-y divide-af-border overflow-hidden">
           {departments.map(d => (
-            <div key={d.id} className="flex items-center gap-3 px-5 py-3">
-              <div className="w-8 h-8 rounded-lg bg-af-light flex items-center justify-center flex-shrink-0">
-                <Building2 size={15} className="text-af-mid" />
-              </div>
-              {editing === d.id ? (
-                <div className="flex-1 flex items-center gap-1.5">
-                  <input
-                    autoFocus
-                    value={editName}
-                    onChange={e => setEditName(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') handleRename(d.id); if (e.key === 'Escape') setEditing(null); }}
-                    className="flex-1 text-sm border border-af-border rounded px-2 py-1 focus:outline-none"
-                  />
-                  <button onClick={() => handleRename(d.id)} className="text-green-600 text-xs px-1">✓</button>
-                  <button onClick={() => setEditing(null)} className="text-slate-400 text-xs px-1"><XIcon size={13} /></button>
+            <div key={d.id} className="px-5 py-3">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-af-light flex items-center justify-center flex-shrink-0">
+                  <Building2 size={15} className="text-af-mid" />
                 </div>
-              ) : (
-                <>
-                  <p className="flex-1 text-sm font-medium text-slate-800">{d.name}</p>
-                  <button onClick={() => { setEditing(d.id); setEditName(d.name); }} className="text-slate-300 hover:text-af-mid">
-                    <Pencil size={13} />
+                {editing === d.id ? (
+                  <div className="flex-1 flex items-center gap-1.5">
+                    <input
+                      autoFocus
+                      value={editName}
+                      onChange={e => setEditName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleRename(d.id); if (e.key === 'Escape') setEditing(null); }}
+                      className="flex-1 text-sm border border-af-border rounded px-2 py-1 focus:outline-none"
+                    />
+                    <button onClick={() => handleRename(d.id)} className="text-green-600 text-xs px-1">✓</button>
+                    <button onClick={() => setEditing(null)} className="text-slate-400 text-xs px-1"><XIcon size={13} /></button>
+                  </div>
+                ) : (
+                  <>
+                    <p className="flex-1 text-sm font-medium text-slate-800">{d.name}</p>
+                    <button onClick={() => { setEditing(d.id); setEditName(d.name); }} className="text-slate-300 hover:text-af-mid">
+                      <Pencil size={13} />
+                    </button>
+                    <button onClick={() => handleDelete(d.id)} className="text-slate-300 hover:text-red-500">
+                      <Trash2 size={13} />
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Escopo de produtos que a IA do WhatsApp atende neste setor */}
+              <div className="pl-11 mt-1.5">
+                {editingScope === d.id ? (
+                  <div className="flex items-start gap-1.5">
+                    <textarea
+                      autoFocus
+                      value={editScopeText}
+                      onChange={e => setEditScopeText(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Escape') setEditingScope(null); }}
+                      placeholder="ex.: financiamento habitacional, home equity, financiamento para construção"
+                      rows={2}
+                      className="flex-1 text-xs border border-af-border rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-af-accent resize-none"
+                    />
+                    <button onClick={() => handleSaveScope(d.id)} disabled={savingScope} className="text-green-600 text-xs px-1 mt-1">✓</button>
+                    <button onClick={() => setEditingScope(null)} className="text-slate-400 text-xs px-1 mt-1"><XIcon size={13} /></button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setEditingScope(d.id); setEditScopeText(d.aiScope || ''); }}
+                    className="text-left text-xs text-slate-400 hover:text-af-mid flex items-start gap-1 group"
+                  >
+                    <Bot size={12} className="mt-0.5 flex-shrink-0" />
+                    <span className="group-hover:underline">
+                      {d.aiScope ? <><span className="text-slate-500">Produtos que a IA atende:</span> {d.aiScope}</> : 'Definir produtos que a IA atende neste setor…'}
+                    </span>
                   </button>
-                  <button onClick={() => handleDelete(d.id)} className="text-slate-300 hover:text-red-500">
-                    <Trash2 size={13} />
-                  </button>
-                </>
-              )}
+                )}
+              </div>
             </div>
           ))}
         </div>

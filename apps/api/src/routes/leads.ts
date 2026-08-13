@@ -463,6 +463,7 @@ router.patch('/:id/ai-auto-reply', async (req: AuthRequest, res: Response) => {
       data: { aiAutoReplyActive: active === true },
       select: { id: true, aiAutoReplyActive: true },
     });
+    req.app.get('io')?.to(`lead:${lead.id}`).emit('lead_ai_toggled', { leadId: lead.id, active: lead.aiAutoReplyActive });
     res.json(lead);
   } catch {
     res.status(500).json({ error: 'Erro ao atualizar o assistente de IA' });

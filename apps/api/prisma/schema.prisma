@@ -42,6 +42,12 @@ model Department {
   name      String
   order     Int      @default(0)
   createdAt DateTime @default(now())
+  // Produtos/linhas que a IA do WhatsApp (Lead.aiAutoReplyActive) atende
+  // dentro deste setor — texto livre, ex.: "financiamento habitacional, home
+  // equity, financiamento para construção". Fora disso ela não responde
+  // sozinha, só avisa que vai chamar alguém da equipe. Editável em
+  // Configurações → Setores.
+  aiScope   String?
 
   users            User[]
   pipelines        Pipeline[]
