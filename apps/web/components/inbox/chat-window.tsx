@@ -1,15 +1,16 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Search, X, AlertCircle } from 'lucide-react';
+import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Search, X, AlertCircle, User, MessageCircle, UserPlus } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { Avatar } from '@/components/ui/avatar';
 import { AttachmentView } from '@/components/inbox/message-attachment';
-import { MessageTemplate, CATEGORY_META, getTemplates, fillTemplate } from '@/lib/templates';
+import { MessageTemplate, CATEGORY_META, fillTemplate } from '@/lib/templates';
 
 // Cor estável por remetente em grupos (estilo WhatsApp: mesma pessoa, mesma cor).
 const SENDER_COLORS = ['#e542a3', '#00a884', '#ff7e00', '#6a5cff', '#0ea5e9', '#e0453e', '#7c9c00', '#b26bff'];
@@ -108,6 +109,7 @@ function lastInboundChannel(messages: Message[]): { via: WhatsAppVia; numberId?:
 }
 
 export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, onNewMessage, onClose }: ChatWindowProps) {
+  const router = useRouter();
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
   const [via, setVia] = useState<WhatsAppVia | null>(null);
@@ -116,6 +118,30 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // conversa — é o mesmo lead, só muda por qual número a mensagem sai.
   const [fromNumberId, setFromNumberId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+
+  // Contato compartilhado no WhatsApp (cartão/vCard) — "Conversar" abre a
+  // conversa desse número (cria o lead se ainda não existir); "Criar lead"
+  // faz o mesmo mas sem sair da conversa atual.
+  const [resolvingContact, setResolvingContact] = useState<string | null>(null); // id da mensagem em resolução
+  async function handleContactCardAction(msg: Message, action: 'talk' | 'create') {
+    if (!msg.sharedContactPhone || resolvingContact) return;
+    setResolvingContact(msg.id);
+    try {
+      const { data } = await api.post('/api/messages/contact-card/resolve', {
+        name: msg.sharedContactName,
+        phone: msg.sharedContactPhone,
+      });
+      if (action === 'talk') {
+        router.push(`/inbox?leadId=${data.leadId}`);
+      } else {
+        toast(data.created ? 'Lead criado!' : 'Esse contato já é um lead — nada foi duplicado.', 'success');
+      }
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao processar o contato', 'error');
+    } finally {
+      setResolvingContact(null);
+    }
+  }
 
   // IA respondendo esse cliente sozinha (sem revisão humana) — liga/desliga
   // por conversa. Espelha o prop, mas otimista pro botão reagir na hora.
@@ -184,6 +210,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [showAI, setShowAI] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [templatesLoadedOnce, setTemplatesLoadedOnce] = useState(false);
   const [metaTemplates, setMetaTemplates] = useState<MetaTemplate[] | null>(null);
   const [pendingMetaTemplate, setPendingMetaTemplate] = useState<MetaTemplate | null>(null);
   const [metaTemplateVars, setMetaTemplateVars] = useState<Record<number, string>>({});
@@ -363,10 +390,18 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   }
 
   function handleOpenTemplates() {
-    setTemplates(getTemplates());
     setShowTemplates(v => !v);
     setShowAI(false);
     setPendingMetaTemplate(null);
+    // Busca do banco (compartilhado pela equipe) — não do localStorage, que
+    // ficava desatualizado (não refletia exclusão/criação feita por ninguém,
+    // e às vezes até "ressuscitava" um template já excluído).
+    if (!templatesLoadedOnce) {
+      setTemplatesLoadedOnce(true);
+      api.get('/api/message-templates')
+        .then(({ data }) => setTemplates(data || []))
+        .catch(() => setTemplates([]));
+    }
     if (metaTemplates === null) {
       api.get('/api/settings/whatsapp/templates')
         .then(({ data }) => setMetaTemplates((data.templates || []).filter((t: MetaTemplate) => t.status === 'APPROVED')))
@@ -698,9 +733,45 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                         ))}
                       </div>
                     )}
+                    {/* Contato compartilhado no WhatsApp — card com ações rápidas */}
+                    {(msg.sharedContactName || msg.sharedContactPhone) && (
+                      <div className="min-w-[220px] mb-1">
+                        <div className="flex items-center gap-2.5 bg-black/15 rounded-xl p-2.5">
+                          <div className="w-9 h-9 rounded-full bg-[#2a3942] flex items-center justify-center flex-shrink-0">
+                            <User size={16} className="text-[#8696a0]" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-[#e9edef] truncate">{msg.sharedContactName || 'Contato sem nome'}</p>
+                            {msg.sharedContactPhone && <p className="text-xs text-[#8696a0]">{msg.sharedContactPhone}</p>}
+                          </div>
+                        </div>
+                        {msg.sharedContactPhone && (
+                          <div className="flex gap-1.5 mt-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleContactCardAction(msg, 'talk')}
+                              disabled={resolvingContact === msg.id}
+                              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-[#00a884] text-[#111b21] px-2.5 py-1.5 rounded-lg hover:bg-[#02c99b] transition-colors disabled:opacity-50"
+                            >
+                              {resolvingContact === msg.id ? <Loader2 size={12} className="animate-spin" /> : <MessageCircle size={12} />} Conversar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleContactCardAction(msg, 'create')}
+                              disabled={resolvingContact === msg.id}
+                              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-[#2a3942] text-[#e9edef] px-2.5 py-1.5 rounded-lg hover:bg-[#33434c] transition-colors disabled:opacity-50"
+                            >
+                              <UserPlus size={12} /> Criar lead
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {(() => {
-                      // Com anexo, o "📎 nome" já é mostrado pelo anexo; exibe só a legenda.
+                      // Com anexo/contato, o "📎/📇 nome" já é mostrado pelo card; exibe só a legenda.
                       const hasAtt = !!(msg.attachments && msg.attachments.length > 0);
+                      const hasContactCard = !!(msg.sharedContactName || msg.sharedContactPhone);
+                      if (hasContactCard) return null;
                       const text = hasAtt
                         ? (msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '')
                         : msg.content;

@@ -331,6 +331,11 @@ model Message {
   // relação de verdade — sobrevive mesmo se aquele lead for excluído depois).
   forwardedFromLeadId   String?
   forwardedFromLeadName String?
+  // Preenchido quando esta mensagem é um CONTATO compartilhado no WhatsApp
+  // (cartão de contato/vCard, não texto nem mídia) — dá pra "Conversar" ou
+  // "Criar lead" direto com esse número, sem digitar nada.
+  sharedContactName  String?
+  sharedContactPhone String?
 }
 
 // Documento/imagem recebido no WhatsApp (guardado até ir para o Drive)

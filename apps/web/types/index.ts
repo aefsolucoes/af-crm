@@ -175,6 +175,9 @@ export interface Message {
   /** Preenchido quando esta mensagem foi encaminhada de outra conversa. */
   forwardedFromLeadId?: string | null;
   forwardedFromLeadName?: string | null;
+  /** Preenchido quando esta mensagem é um contato compartilhado no WhatsApp. */
+  sharedContactName?: string | null;
+  sharedContactPhone?: string | null;
 }
 
 export interface WhatsAppNumber {

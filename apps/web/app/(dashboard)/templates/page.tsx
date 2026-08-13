@@ -10,7 +10,7 @@ import { useAuthStore } from '@/store/auth.store';
 import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck, Zap, Building2 } from 'lucide-react';
 import {
   MessageTemplate as LocalTemplate, TemplateCategory as Category, CATEGORY_META,
-  extractVariables, fillTemplate, getTemplates,
+  extractVariables, fillTemplate,
 } from '@/lib/templates';
 
 // Template salvo no banco (compartilhado pela conta) — mesma forma do local,
@@ -286,27 +286,20 @@ export default function TemplatesPage() {
   const [loadingTemplates, setLoadingTemplates] = useState(true);
   const [search, setSearch] = useState('');
 
-  // Carrega do banco (compartilhado pela conta) — e, na primeira vez que
-  // alguém abrir esta tela depois do lançamento desta função, migra sozinho
-  // pro banco o que ainda só existia no navegador de cada um (localStorage).
+  // Carrega do banco (compartilhado pela conta) — fonte única de verdade.
+  //
+  // Antes, toda vez que essa tela abria, comparava com o que tinha sobrado
+  // no localStorage do navegador (de uma migração única de quando essa tela
+  // ainda era só local) e reimportava o que "faltasse" no banco — só que o
+  // localStorage nunca sabe quando algo foi excluído DE PROPÓSITO, então um
+  // template apagado voltava sozinho no próximo carregamento. Removido: a
+  // migração já rodou pra quem usa o CRM (o banco é a fonte real desde
+  // então); o localStorage não é mais consultado aqui.
   async function loadTemplates() {
     setLoadingTemplates(true);
     try {
       const { data } = await api.get('/api/message-templates');
-      let list: Template[] = data;
-
-      try {
-        const local = getTemplates();
-        const existingNames = new Set(list.map((t) => t.name.trim().toLowerCase()));
-        const toImport = local.filter((t) => !existingNames.has(t.name.trim().toLowerCase()));
-        if (toImport.length > 0) {
-          await api.post('/api/message-templates/import', { templates: toImport });
-          const { data: refreshed } = await api.get('/api/message-templates');
-          list = refreshed;
-        }
-      } catch { /* segue com o que já tinha do banco — a migração não é crítica */ }
-
-      setTemplates(list);
+      setTemplates(data);
     } catch {
       toast('Erro ao carregar templates', 'error');
     } finally {

@@ -379,10 +379,13 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
         const selfChat = await isSelfChat(msg, sock);
         // Se o cliente estiver com "mensagens temporárias" ligado, desliga sozinho.
         maybeDisableDisappearing(sock, msg);
-        // Documento/imagem → captura o arquivo; senão trata como texto
+        // Documento/imagem → captura o arquivo; contato compartilhado → cria
+        // o card de contato; senão trata como texto.
         if (hasMedia(msg)) {
           await processIncomingMedia(msg, accountId, numberId, sock, selfChat).catch(err =>
             console.error('[Baileys] Erro ao capturar mídia:', err));
+        } else if (hasContactCard(msg)) {
+          await processIncomingContactCard(msg, accountId, numberId, sock, selfChat);
         } else {
           await processIncomingMessage(msg, accountId, numberId, sock, selfChat);
         }
@@ -980,6 +983,90 @@ function getMediaInfo(msg: any): { node: any; type: 'document' | 'image' | 'audi
     return { node: m.videoMessage, type: 'video', fileName: `video-${Date.now()}.${ext}`, mimeType };
   }
   return null;
+}
+
+/** true se a mensagem for um CONTATO compartilhado (cartão/vCard) — WhatsApp
+ *  manda como contactMessage (1 contato) ou contactsArrayMessage (vários). */
+function hasContactCard(msg: any): boolean {
+  const m = unwrapMessage(msg.message);
+  return !!(m.contactMessage || m.contactsArrayMessage?.contacts?.length);
+}
+
+/** Extrai nome + telefone de um bloco vCard 3.0 (formato que o WhatsApp usa
+ *  pra compartilhar contato). Pega o telefone do parâmetro "waid=" quando
+ *  disponível (já vem limpo, sem formatação) — senão, dos dígitos da linha TEL. */
+function parseVcard(vcard: string | undefined, fallbackName?: string): { name: string; phone: string | null } {
+  const name = (vcard?.match(/^FN:(.*)$/m)?.[1] || fallbackName || '').trim() || 'Contato sem nome';
+  const waid = vcard?.match(/waid=(\d+)/)?.[1];
+  const telLine = vcard?.match(/^TEL[^:]*:(.*)$/m)?.[1];
+  const telDigits = telLine?.replace(/\D/g, '');
+  const phone = waid || (telDigits && telDigits.length >= 8 ? telDigits : null);
+  return { name, phone: phone || null };
+}
+
+/** Extrai um contato (ou mais, se for contactsArrayMessage) da mensagem. */
+function getContactCardInfo(msg: any): { name: string; phone: string | null }[] {
+  const m = unwrapMessage(msg.message);
+  if (m.contactMessage) {
+    return [parseVcard(m.contactMessage.vcard, m.contactMessage.displayName)];
+  }
+  if (m.contactsArrayMessage?.contacts?.length) {
+    return m.contactsArrayMessage.contacts.map((c: any) => parseVcard(c.vcard, c.displayName));
+  }
+  return [];
+}
+
+/** Contato(s) compartilhado(s) no chat — cria uma mensagem por contato, com
+ *  nome/telefone extraídos do vCard, pra poder "Conversar" ou "Criar lead"
+ *  direto da Inbox (sem digitar nada). Mesma resolução de lead/conversa que
+ *  processIncomingMessage — o card fica na conversa ATUAL, não abre uma nova
+ *  pro número compartilhado (isso é o que os botões da mensagem fazem). */
+async function processIncomingContactCard(msg: any, accountId: string, numberId: string, sock: any, selfChat = false) {
+  try {
+    const fromMe = !!msg.key.fromMe;
+    const from = (msg.key.remoteJid as string)?.replace('@s.whatsapp.net', '') || '';
+    if (!from || from.endsWith('@broadcast')) return;
+
+    const contacts = getContactCardInfo(msg);
+    if (!contacts.length) return;
+
+    const leadId = selfChat
+      ? await getOrCreateSelfLead(accountId, numberId)
+      : await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock);
+    if (!leadId) return;
+
+    const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });
+    if (dup) return;
+
+    const isGroupMsg = (msg.key.remoteJid as string)?.endsWith('@g.us');
+    const senderName = (!fromMe && isGroupMsg) ? (msg.pushName || null) : null;
+
+    // Mais de um contato no mesmo cartão: cria uma mensagem por contato (o
+    // 1º usa o externalId real; os demais, um sufixo — senão colidem no
+    // índice único e só o 1º seria salvo).
+    for (let i = 0; i < contacts.length; i++) {
+      const c = contacts[i];
+      const message = await prisma.message.create({
+        data: {
+          content: `📇 Contato compartilhado: ${c.name}${c.phone ? ` — ${c.phone}` : ''}`,
+          direction: fromMe ? 'OUTBOUND' : 'INBOUND',
+          channel: 'WHATSAPP',
+          leadId,
+          whatsappNumberId: numberId,
+          senderName,
+          read: fromMe ? true : false,
+          externalId: i === 0 ? msg.key.id : `${msg.key.id}-${i}`,
+          status: fromMe ? 'SENT' : 'DELIVERED',
+          sharedContactName: c.name,
+          sharedContactPhone: c.phone,
+        },
+      });
+      globalIO?.to(`lead:${leadId}`).emit('new_message', message);
+    }
+    globalIO?.emit('new_conversation', { leadId });
+  } catch (err) {
+    console.error('[Baileys] Erro ao processar contato compartilhado:', err);
+  }
 }
 
 async function processIncomingMedia(msg: any, accountId: string, numberId: string, sock: any, selfChat = false) {

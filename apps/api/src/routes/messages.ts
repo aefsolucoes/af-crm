@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage } from '../services/message.service';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone } from '../services/message.service';
 import { downloadDriveFile } from '../services/google.service';
 import { getScopeDepartmentId } from '../services/department.service';
 
@@ -140,6 +140,23 @@ router.post('/:id/forward', async (req: AuthRequest, res: Response) => {
     res.status(201).json(result.message);
   } catch {
     res.status(500).json({ error: 'Erro ao encaminhar a mensagem' });
+  }
+});
+
+// Resolve um contato compartilhado no WhatsApp (nome + telefone extraídos do
+// cartão) pro botão "Conversar"/"Criar lead" na mensagem — acha o lead se já
+// existir (pelo telefone) ou cria um novo, sem precisar digitar nada.
+router.post('/contact-card/resolve', async (req: AuthRequest, res: Response) => {
+  const { name, phone } = req.body as { name?: string; phone?: string };
+  if (!phone?.trim()) return res.status(400).json({ error: 'phone é obrigatório' });
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para criar leads pela Inbox.' });
+    const result = await findOrCreateLeadByPhone(req.user!.accountId, phone, name);
+    if (!result) return res.status(400).json({ error: 'Não foi possível criar o lead (funil/usuário não configurado)' });
+    res.json(result);
+  } catch {
+    res.status(500).json({ error: 'Erro ao resolver o contato' });
   }
 });
 
