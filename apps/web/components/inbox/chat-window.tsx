@@ -298,10 +298,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     };
   }, [leadId, onNewMessage]);
 
+  // Fora da janela de 24h, a API Oficial rejeita texto livre — só um template
+  // aprovado reabre a conversa. Trava ANTES de tentar (a Meta ia recusar de
+  // qualquer jeito) e já manda direto pro seletor de template, em vez de só
+  // deixar a mensagem falhar silenciosamente lá na frente.
+  const windowClosedForApi = channel === 'WHATSAPP' && effectiveVia === 'api' && windowOpen === false;
+
   async function handleSend(e?: React.FormEvent) {
     e?.preventDefault();
     const text = content.trim();
     if (!text || sending) return;   // trava contra envio duplo
+    if (windowClosedForApi) {
+      toast('Janela de 24h fechada — use um template aprovado para reabrir a conversa.', 'error');
+      setShowTemplates(true);
+      return;
+    }
     setSending(true);
     setContent('');                 // feedback imediato: o campo esvazia na hora
     try {
@@ -833,6 +844,20 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         </div>
       )}
 
+      {/* Aviso: janela de 24h fechada na API Oficial — só template reabre */}
+      {windowClosedForApi && (
+        <div className="relative z-10 flex items-center justify-between gap-3 px-4 py-2 bg-amber-900/40 border-t border-amber-700/40">
+          <span className="text-xs text-amber-300">Janela de 24h fechada — a API Oficial só deixa reabrir com um template aprovado.</span>
+          <button
+            type="button"
+            onClick={() => setShowTemplates(true)}
+            className="flex-shrink-0 text-xs font-medium text-amber-200 bg-amber-700/40 hover:bg-amber-700/60 px-2.5 py-1 rounded-lg transition-colors"
+          >
+            Usar template
+          </button>
+        </div>
+      )}
+
       {/* Input bar */}
       <form
         onSubmit={handleSend}
@@ -864,7 +889,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           value={content}
           onChange={(e) => setContent(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Digite uma mensagem"
+          placeholder={windowClosedForApi ? 'Janela fechada — use um template acima' : 'Digite uma mensagem'}
           rows={1}
           spellCheck
           lang="pt-BR"
