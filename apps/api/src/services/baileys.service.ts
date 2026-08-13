@@ -856,7 +856,16 @@ async function maybeAutoReplyQR(accountId: string, leadId: string, incomingText:
   try {
     const norm = incomingText.trim().toLowerCase();
     if (!norm) return false;
-    const templates = await prisma.messageTemplate.findMany({ where: { accountId, triggerActive: true } });
+    // Só considera gatilhos do MESMO setor deste número (ou "compartilhados",
+    // sem setor) — evita um gatilho de outro departamento disparar aqui.
+    const thisNumber = await prisma.whatsAppNumber.findUnique({ where: { id: numberId }, select: { departmentId: true } });
+    const templates = await prisma.messageTemplate.findMany({
+      where: {
+        accountId,
+        triggerActive: true,
+        ...(thisNumber?.departmentId ? { OR: [{ departmentId: thisNumber.departmentId }, { departmentId: null }] } : {}),
+      },
+    });
     const match = templates.find((t: any) => t.triggerText && norm.startsWith(String(t.triggerText).trim().toLowerCase()));
     if (!match) return false;
 

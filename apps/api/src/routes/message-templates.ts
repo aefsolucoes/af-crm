@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { getScopeDepartmentId } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -11,11 +12,17 @@ function extractVariables(text: string): string[] {
   return [...new Set(matches.map((m) => m.replace(/\{\{|\}\}/g, '').trim()))];
 }
 
-// GET /api/message-templates — templates da conta (compartilhados por toda a equipe)
+// GET /api/message-templates — templates da conta. Admin vê todos; colaborador
+// só os do PRÓPRIO setor + os "compartilhados" (sem setor definido).
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
+    const accountId = req.user!.accountId;
+    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
     const templates = await prisma.messageTemplate.findMany({
-      where: { accountId: req.user!.accountId },
+      where: {
+        accountId,
+        ...(scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {}),
+      },
       orderBy: { createdAt: 'asc' },
     });
     res.json(templates);
@@ -24,23 +31,33 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /api/message-templates
+// POST /api/message-templates — colaborador com setor cria automaticamente
+// DENTRO do próprio setor; admin pode escolher (ou deixar "compartilhado").
 router.post('/', async (req: AuthRequest, res: Response) => {
   try {
-    const { name, category, body, triggerText, triggerActive } = req.body as {
-      name?: string; category?: string; body?: string; triggerText?: string; triggerActive?: boolean;
+    const accountId = req.user!.accountId;
+    const { name, category, body, triggerText, triggerActive, departmentId } = req.body as {
+      name?: string; category?: string; body?: string; triggerText?: string; triggerActive?: boolean; departmentId?: string | null;
     };
     if (!name?.trim() || !body?.trim()) return res.status(400).json({ error: 'name e body são obrigatórios' }) as any;
 
+    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
+    let finalDepartmentId = scopeDepartmentId ?? (departmentId || null);
+    if (finalDepartmentId) {
+      const dept = await prisma.department.findFirst({ where: { id: finalDepartmentId, accountId } });
+      if (!dept) return res.status(400).json({ error: 'Departamento inválido' }) as any;
+    }
+
     const template = await prisma.messageTemplate.create({
       data: {
-        accountId: req.user!.accountId,
+        accountId,
         name: name.trim(),
         category: category || 'geral',
         body,
         variables: extractVariables(body),
         triggerText: triggerText?.trim() || null,
         triggerActive: triggerActive === true,
+        departmentId: finalDepartmentId,
       },
     });
     res.status(201).json(template);
@@ -66,6 +83,8 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
 
     if (toCreate.length === 0) return res.json({ imported: 0 });
 
+    // Templates importados do navegador (localStorage) entram "compartilhados"
+    // — quem os tinha salvos não necessariamente tem setor definido ainda.
     await prisma.messageTemplate.createMany({
       data: toCreate.map((t) => ({
         accountId,
@@ -84,11 +103,17 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
 // PATCH /api/message-templates/:id
 router.patch('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const existing = await prisma.messageTemplate.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
+    const accountId = req.user!.accountId;
+    const existing = await prisma.messageTemplate.findFirst({ where: { id: req.params.id, accountId } });
     if (!existing) return res.status(404).json({ error: 'Template não encontrado' }) as any;
 
-    const { name, category, body, triggerText, triggerActive } = req.body as {
-      name?: string; category?: string; body?: string; triggerText?: string | null; triggerActive?: boolean;
+    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
+    if (scopeDepartmentId && existing.departmentId && existing.departmentId !== scopeDepartmentId) {
+      return res.status(403).json({ error: 'Esse template é de outro departamento.' }) as any;
+    }
+
+    const { name, category, body, triggerText, triggerActive, departmentId } = req.body as {
+      name?: string; category?: string; body?: string; triggerText?: string | null; triggerActive?: boolean; departmentId?: string | null;
     };
     const data: Record<string, unknown> = {};
     if (name !== undefined) data.name = name.trim();
@@ -96,6 +121,14 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     if (body !== undefined) { data.body = body; data.variables = extractVariables(body); }
     if (triggerText !== undefined) data.triggerText = triggerText?.trim() || null;
     if (triggerActive !== undefined) data.triggerActive = triggerActive === true;
+    // Só admin (sem scopeDepartmentId) pode mudar o setor do template.
+    if (departmentId !== undefined && !scopeDepartmentId) {
+      if (departmentId) {
+        const dept = await prisma.department.findFirst({ where: { id: departmentId, accountId } });
+        if (!dept) return res.status(400).json({ error: 'Departamento inválido' }) as any;
+      }
+      data.departmentId = departmentId || null;
+    }
 
     const template = await prisma.messageTemplate.update({ where: { id: existing.id }, data });
     res.json(template);
@@ -107,8 +140,15 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
 // DELETE /api/message-templates/:id
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const existing = await prisma.messageTemplate.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
+    const accountId = req.user!.accountId;
+    const existing = await prisma.messageTemplate.findFirst({ where: { id: req.params.id, accountId } });
     if (!existing) return res.status(404).json({ error: 'Template não encontrado' }) as any;
+
+    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
+    if (scopeDepartmentId && existing.departmentId && existing.departmentId !== scopeDepartmentId) {
+      return res.status(403).json({ error: 'Esse template é de outro departamento.' }) as any;
+    }
+
     await prisma.messageTemplate.delete({ where: { id: existing.id } });
     res.json({ success: true });
   } catch {

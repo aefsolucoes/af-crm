@@ -6,21 +6,25 @@ import { Input } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck, Zap } from 'lucide-react';
+import { useAuthStore } from '@/store/auth.store';
+import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck, Zap, Building2 } from 'lucide-react';
 import {
   MessageTemplate as LocalTemplate, TemplateCategory as Category, CATEGORY_META,
   extractVariables, fillTemplate, getTemplates,
 } from '@/lib/templates';
 
 // Template salvo no banco (compartilhado pela conta) — mesma forma do local,
-// mais os campos de gatilho automático.
+// mais os campos de gatilho automático e o setor dono.
 interface Template extends Omit<LocalTemplate, 'category'> {
   category: Category;
   triggerText?: string | null;
   triggerActive?: boolean;
+  departmentId?: string | null;
 }
 
-const EMPTY_FORM = { name: '', category: 'geral' as Category, body: '', triggerText: '', triggerActive: false };
+interface DepartmentOption { id: string; name: string; }
+
+const EMPTY_FORM = { name: '', category: 'geral' as Category, body: '', triggerText: '', triggerActive: false, departmentId: '' };
 
 // ── Templates do WhatsApp (Meta) — precisam de aprovação antes de usar ───────
 type MetaTemplateStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | string;
@@ -41,6 +45,13 @@ const META_STATUS_META: Record<string, { label: string; color: string; icon: typ
 const META_EMPTY_FORM = { name: '', category: 'UTILITY', language: 'pt_BR', body: '', footer: '', codeExpirationMinutes: '10' };
 
 function WhatsAppTemplatesTab() {
+  const me = useAuthStore((s) => s.user);
+  const isAdmin = me?.role === 'ADMIN';
+  const [departments, setDepartments] = useState<DepartmentOption[]>([]);
+  // Admin escolhe o setor (número da API) que quer ver; colaborador fica
+  // travado no próprio setor (mesmo comportamento do resto do CRM).
+  const [metaDepartmentId, setMetaDepartmentId] = useState(isAdmin ? '' : (me?.departmentId || ''));
+
   const [items, setItems] = useState<MetaTemplate[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
@@ -49,11 +60,16 @@ function WhatsAppTemplatesTab() {
   const [saving, setSaving] = useState(false);
   const [deletingName, setDeletingName] = useState<string | null>(null);
 
-  async function load() {
+  useEffect(() => {
+    if (isAdmin) api.get('/api/departments').then(({ data }) => setDepartments(data)).catch(() => {});
+  }, [isAdmin]);
+
+  async function load(departmentId: string) {
     setLoading(true);
     setErrorMsg('');
     try {
-      const { data } = await api.get('/api/settings/whatsapp/templates');
+      const qs = departmentId ? `?departmentId=${departmentId}` : '';
+      const { data } = await api.get(`/api/settings/whatsapp/templates${qs}`);
       setItems(data.templates || []);
     } catch (err: any) {
       setItems(null);
@@ -63,7 +79,7 @@ function WhatsAppTemplatesTab() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(metaDepartmentId); }, [metaDepartmentId]);
 
   const isAuth = form.category === 'AUTHENTICATION';
 
@@ -71,7 +87,8 @@ function WhatsAppTemplatesTab() {
     if (!confirm(`Excluir o template "${name}"? Ele deixa de poder ser usado — a Meta some com o histórico de aprovação dele.`)) return;
     setDeletingName(name);
     try {
-      await api.delete(`/api/settings/whatsapp/templates/${encodeURIComponent(name)}`);
+      const qs = metaDepartmentId ? `?departmentId=${metaDepartmentId}` : '';
+      await api.delete(`/api/settings/whatsapp/templates/${encodeURIComponent(name)}${qs}`);
       toast('Template excluído!');
       setItems((prev) => (prev || []).filter((t) => t.name !== name));
     } catch (err: any) {
@@ -91,11 +108,12 @@ function WhatsAppTemplatesTab() {
       await api.post('/api/settings/whatsapp/templates', {
         ...form,
         codeExpirationMinutes: isAuth ? (parseInt(form.codeExpirationMinutes, 10) || 10) : undefined,
+        departmentId: metaDepartmentId || undefined,
       });
       toast('Template enviado para aprovação da Meta!');
       setShowModal(false);
       setForm(META_EMPTY_FORM);
-      load();
+      load(metaDepartmentId);
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao enviar template', 'error');
     } finally {
@@ -105,7 +123,7 @@ function WhatsAppTemplatesTab() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4 gap-4">
         <p className="text-sm text-slate-500 max-w-xl">
           Templates precisam ser aprovados pela Meta antes de poder ser usados —
           é o único jeito de mandar mensagem pelo WhatsApp API depois de 24h sem
@@ -115,6 +133,21 @@ function WhatsAppTemplatesTab() {
           <Plus size={15} /> Novo template
         </Button>
       </div>
+
+      {isAdmin && departments.length > 0 && (
+        <div className="flex items-center gap-2 mb-6 bg-white rounded-xl border border-af-border px-4 py-2.5 max-w-md">
+          <Building2 size={14} className="text-slate-400 flex-shrink-0" />
+          <label className="text-xs text-slate-500 flex-shrink-0">Número (setor):</label>
+          <select
+            value={metaDepartmentId}
+            onChange={(e) => setMetaDepartmentId(e.target.value)}
+            className="flex-1 text-xs border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent"
+          >
+            <option value="">Genérico (sem setor específico)</option>
+            {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </div>
+      )}
 
       {loading && <p className="text-sm text-slate-400">Carregando...</p>}
 
@@ -242,6 +275,12 @@ function WhatsAppTemplatesTab() {
 }
 
 export default function TemplatesPage() {
+  const me = useAuthStore((s) => s.user);
+  const isAdmin = me?.role === 'ADMIN';
+  const [departments, setDepartments] = useState<DepartmentOption[]>([]);
+  useEffect(() => { api.get('/api/departments').then(({ data }) => setDepartments(data)).catch(() => {}); }, []);
+  const departmentName = (id: string | null | undefined) => departments.find((d) => d.id === id)?.name;
+
   const [tab, setTab] = useState<'local' | 'meta'>('local');
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(true);
@@ -294,14 +333,15 @@ export default function TemplatesPage() {
 
   function openNew() {
     setEditingTemplate(null);
-    setForm(EMPTY_FORM);
+    // Colaborador cria sempre dentro do próprio setor; admin escolhe (ou deixa "compartilhado").
+    setForm({ ...EMPTY_FORM, departmentId: isAdmin ? '' : (me?.departmentId || '') });
     setPreviewVars({});
     setShowModal(true);
   }
 
   function openEdit(t: Template) {
     setEditingTemplate(t);
-    setForm({ name: t.name, category: t.category, body: t.body, triggerText: t.triggerText || '', triggerActive: !!t.triggerActive });
+    setForm({ name: t.name, category: t.category, body: t.body, triggerText: t.triggerText || '', triggerActive: !!t.triggerActive, departmentId: t.departmentId || '' });
     setPreviewVars(Object.fromEntries(t.variables.map(v => [v, v])));
     setShowModal(true);
   }
@@ -419,6 +459,12 @@ export default function TemplatesPage() {
                     </span>
                   </div>
 
+                  {t.departmentId && (
+                    <span className="mt-2 inline-flex items-center gap-1 text-xs text-slate-500 bg-slate-100 rounded-full px-2 py-0.5">
+                      <Building2 size={10} /> {departmentName(t.departmentId) || 'Setor'}
+                    </span>
+                  )}
+
                   {t.triggerActive && t.triggerText && (
                     <div className="mt-2 flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
                       <Zap size={11} className="flex-shrink-0" />
@@ -482,6 +528,25 @@ export default function TemplatesPage() {
                   ))}
                 </select>
               </div>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-700">Setor</label>
+              {isAdmin ? (
+                <select
+                  value={form.departmentId}
+                  onChange={e => setForm({ ...form, departmentId: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+                >
+                  <option value="">Compartilhado (todo mundo vê)</option>
+                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
+              ) : (
+                <div className="flex items-center gap-2 text-xs text-slate-500 bg-af-light rounded-lg p-2.5">
+                  <Building2 size={13} className="flex-shrink-0" />
+                  {me?.departmentId ? `Este template fica no seu setor (${departmentName(me.departmentId) || '...'})` : 'Sem setor definido — fica compartilhado com todo mundo'}
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col gap-1">

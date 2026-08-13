@@ -698,7 +698,13 @@ async function executeAgentTool(
   }
 
   if (name === 'listar_respostas_rapidas') {
-    const templates = await prisma.messageTemplate.findMany({ where: { accountId }, orderBy: { createdAt: 'asc' } });
+    const templates = await prisma.messageTemplate.findMany({
+      where: {
+        accountId,
+        ...(scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {}),
+      },
+      orderBy: { createdAt: 'asc' },
+    });
     return templates.map((t) => ({ id: t.id, nome: t.name, categoria: t.category, corpo: t.body, variaveis: t.variables }));
   }
 
@@ -709,7 +715,7 @@ async function executeAgentTool(
     if (!nome || !body) return { success: false, error: 'Informe name e body.' };
     const variaveis = [...new Set((body.match(/\{\{([^}]+)\}\}/g) || []).map((m) => m.replace(/\{\{|\}\}/g, '').trim()))];
     const template = await prisma.messageTemplate.create({
-      data: { accountId, name: nome, category: input.category ? String(input.category) : 'geral', body, variables: variaveis },
+      data: { accountId, name: nome, category: input.category ? String(input.category) : 'geral', body, variables: variaveis, departmentId: scopeDepartmentId },
     });
     return { success: true, id: template.id, nome: template.name };
   }
@@ -726,7 +732,13 @@ async function executeAgentTool(
       return { success: false, error: 'Esse lead é de outro departamento.' };
     }
 
-    const candidatos = await prisma.messageTemplate.findMany({ where: { accountId, name: { contains: templateName, mode: 'insensitive' } } });
+    const candidatos = await prisma.messageTemplate.findMany({
+      where: {
+        accountId,
+        name: { contains: templateName, mode: 'insensitive' },
+        ...(scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {}),
+      },
+    });
     if (candidatos.length === 0) return { success: false, error: `Nenhuma resposta rápida encontrada com "${templateName}". Use listar_respostas_rapidas para ver as que existem.` };
     if (candidatos.length > 1) return { success: false, error: `Mais de uma resposta rápida bate com "${templateName}": ${candidatos.map((t) => t.name).join(', ')}. Pergunte ao colaborador qual é a certa.` };
     const template = candidatos[0];

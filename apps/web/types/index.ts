@@ -29,6 +29,8 @@ export interface User {
   // Permissões efetivas (as "caixinhas"). Pode faltar em sessões antigas — nesse
   // caso o front recalcula pelo papel via effectivePermissions().
   permissions?: Record<string, boolean>;
+  // Setor do colaborador — null/ausente = sem setor definido (vê tudo, por ora).
+  departmentId?: string | null;
 }
 
 export interface Account {

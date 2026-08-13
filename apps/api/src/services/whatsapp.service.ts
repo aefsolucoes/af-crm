@@ -626,7 +626,16 @@ async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomin
   try {
     const norm = incomingText.trim().toLowerCase();
     if (!norm) return false;
-    const templates = await prisma.messageTemplate.findMany({ where: { accountId, triggerActive: true } });
+    // Só considera gatilhos do MESMO setor do número que recebeu (ou
+    // "compartilhados", sem setor) — evita um gatilho de Consórcio disparar
+    // numa conversa de Financiamento, por exemplo.
+    const templates = await prisma.messageTemplate.findMany({
+      where: {
+        accountId,
+        triggerActive: true,
+        ...(departmentId ? { OR: [{ departmentId }, { departmentId: null }] } : {}),
+      },
+    });
     const match = templates.find((t: any) => t.triggerText && norm.startsWith(String(t.triggerText).trim().toLowerCase()));
     if (!match) return false;
 
