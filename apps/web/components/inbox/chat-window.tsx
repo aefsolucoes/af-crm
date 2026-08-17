@@ -786,13 +786,25 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                         {(msg as any).senderName}
                       </p>
                     )}
-                    {msg.attachments && msg.attachments.length > 0 && (
-                      <div className="flex flex-col gap-1.5 mb-1">
-                        {msg.attachments.map((att) => (
-                          <AttachmentView key={att.id} att={att} />
-                        ))}
-                      </div>
-                    )}
+                    {msg.attachments && msg.attachments.length > 0 && (() => {
+                      // Áudio/vídeo usam o player NATIVO do navegador, que já tem
+                      // seus próprios controles (volume, menu "⋮") colados na borda
+                      // inferior direita — bem onde fica o carimbo de hora/check da
+                      // mensagem. Sem esse respiro extra, um ficava em cima do
+                      // outro e o usuário confundia o ícone de volume com outra
+                      // coisa. Outros tipos (imagem, documento) já têm espaço de
+                      // sobra abaixo e não precisam disso.
+                      const needsBreathingRoom = msg.attachments!.some(
+                        (a) => a.mimeType.startsWith('audio/') || a.mimeType.startsWith('video/')
+                      );
+                      return (
+                        <div className={cn('flex flex-col gap-1.5 mb-1', needsBreathingRoom && 'mb-5')}>
+                          {msg.attachments!.map((att) => (
+                            <AttachmentView key={att.id} att={att} />
+                          ))}
+                        </div>
+                      );
+                    })()}
                     {/* Contato compartilhado no WhatsApp — card com ações rápidas */}
                     {(msg.sharedContactName || msg.sharedContactPhone) && (
                       <div className="min-w-[220px] mb-1">
