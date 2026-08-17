@@ -19,6 +19,21 @@ import { useAuthStore } from '@/store/auth.store';
 // Ordem fixa dos pipelines
 const PIPELINE_ORDER = ['Caixa de Entrada', 'Vendas', 'Em contratação', 'Follow Up'];
 
+// Lembra o último funil aberto (por navegador/usuário) pra não voltar sempre
+// pro "Caixa de Entrada" quando dá F5 na página.
+const SELECTED_PIPELINE_KEY = 'af-crm:funil:selectedPipelineId';
+function readStoredPipelineId(): string {
+  if (typeof window === 'undefined') return '';
+  try { return localStorage.getItem(SELECTED_PIPELINE_KEY) || ''; } catch { return ''; }
+}
+function storePipelineId(id: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (id) localStorage.setItem(SELECTED_PIPELINE_KEY, id);
+    else localStorage.removeItem(SELECTED_PIPELINE_KEY);
+  } catch { /* localStorage indisponível (modo privado etc.) — segue sem persistir */ }
+}
+
 async function fetchPipelines(): Promise<Pipeline[]> {
   const { data } = await api.get('/api/pipelines');
   return data;
@@ -47,7 +62,12 @@ export default function FunilPage() {
   const me = useAuthStore((s) => s.user);
   const isAdmin = me?.role === 'ADMIN';
   const [showArchived, setShowArchived] = useState(false);
-  const [selectedPipelineId, setSelectedPipelineId] = useState<string>('');
+  const [selectedPipelineId, setSelectedPipelineIdRaw] = useState<string>(readStoredPipelineId);
+  // Troca o funil selecionado E lembra a escolha (F5 volta pro mesmo funil).
+  function setSelectedPipelineId(id: string) {
+    setSelectedPipelineIdRaw(id);
+    storePipelineId(id);
+  }
   const [showNewPipeline, setShowNewPipeline] = useState(false);
   const [newPipelineName, setNewPipelineName] = useState('');
   const [showRenamePipeline, setShowRenamePipeline] = useState(false);
@@ -90,7 +110,12 @@ export default function FunilPage() {
   const pipeline = sortedPipelines.find(p => p.id === selectedPipelineId) || sortedPipelines[0];
 
   useEffect(() => {
-    if (sortedPipelines[0] && !selectedPipelineId) {
+    if (!sortedPipelines[0]) return;
+    // Sem nada selecionado (1ª visita) ou o funil lembrado não existe mais
+    // (foi excluído) — cai pro primeiro da lista. Fora isso, respeita o que
+    // já está selecionado (inclusive o que veio do localStorage no F5).
+    const stillExists = sortedPipelines.some(p => p.id === selectedPipelineId);
+    if (!selectedPipelineId || !stillExists) {
       setSelectedPipelineId(sortedPipelines[0].id);
     }
   }, [sortedPipelines]);
