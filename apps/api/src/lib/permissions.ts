@@ -15,6 +15,7 @@ export const PERMISSION_KEYS = [
   'finance',       // ver/gerenciar o financeiro
   'users',         // gerenciar a equipe (criar/editar/excluir, tirar acesso)
   'settings',      // acessar configurações (QR Code, campos, etc.)
+  'browser_agent', // usar o Agente de Navegador (IA controla o Chrome de verdade)
 ] as const;
 
 export type PermissionKey = typeof PERMISSION_KEYS[number];
@@ -27,7 +28,11 @@ function fill(value: boolean): PermissionMap {
 // Padrões por papel, usados quando o usuário não tem permissões próprias salvas.
 export const ROLE_DEFAULTS: Record<string, PermissionMap> = {
   ADMIN: fill(true),
-  MANAGER: { ...fill(true), settings: false },
+  // browser_agent fica de fora do "MANAGER tem quase tudo" de propósito — é
+  // automação com efeito real fora do CRM (clica/digita em sites de
+  // terceiros), risco diferente do resto. Só Admin por padrão; liberar pra
+  // um Manager específico é decisão manual em Usuários.
+  MANAGER: { ...fill(true), settings: false, browser_agent: false },
   AGENT: {
     ...fill(false),
     dashboard: true,

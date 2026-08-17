@@ -73,37 +73,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [user, pathname, router]);
 
-  // Conecta Socket.io na sala da conta e escuta mensagens
+  // Conecta Socket.io e escuta mensagens. As salas (account_.../user_...) já
+  // são decididas pelo SERVIDOR a partir do token de autenticação — não é
+  // mais o cliente quem diz "sou a conta X" (isso não podia mais ser
+  // confiado depois que o socket passou a receber comandos do Agente de
+  // Navegador; ver apps/api/src/websocket/index.ts).
   useEffect(() => {
     const socket = getSocket();
     if (!socket.connected) socket.connect();
-
-    // Entra na sala da conta para receber notificações globais
-    const accountId = typeof window !== 'undefined'
-      ? JSON.parse(localStorage.getItem('af_user') || '{}')?.accountId
-      : null;
-
-    function joinAccount() {
-      if (accountId) {
-        socket.emit('join_account', accountId);
-        console.log('[WS] Entrou na sala account_' + accountId);
-      }
-    }
-
-    // Sala pessoal — para notificações direcionadas só a este colaborador
-    // (ex.: pergunta pendente do assistente), sem tocar som pra conta inteira.
-    const userId = typeof window !== 'undefined'
-      ? JSON.parse(localStorage.getItem('af_user') || '{}')?.id
-      : null;
-
-    function joinUser() {
-      if (userId) socket.emit('join_user', userId);
-    }
-
-    // Entra imediatamente se já conectado, ou quando conectar
-    if (socket.connected) { joinAccount(); joinUser(); }
-    socket.on('connect', joinAccount);
-    socket.on('connect', joinUser);
 
     function triggerSound() {
       const now = Date.now();
@@ -138,8 +115,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     socket.on('ai_handoff', onAiHandoff);
 
     return () => {
-      socket.off('connect', joinAccount);
-      socket.off('connect', joinUser);
       socket.off('new_notification', onNewNotification);
       socket.off('assistant_question', onAssistantQuestion);
       socket.off('ai_handoff', onAiHandoff);
