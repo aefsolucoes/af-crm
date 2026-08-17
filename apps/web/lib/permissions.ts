@@ -14,6 +14,7 @@ export const PERMISSION_KEYS = [
   'finance',
   'users',
   'settings',
+  'browser_agent',
 ] as const;
 
 export type PermissionKey = typeof PERMISSION_KEYS[number];
@@ -32,6 +33,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, { label: string; hint: str
   finance:       { label: 'Financeiro', hint: 'Ver/gerenciar o financeiro' },
   users:         { label: 'Usuários', hint: 'Gerenciar a equipe' },
   settings:      { label: 'Configurações', hint: 'Acessar as configurações' },
+  browser_agent: { label: 'Agente de Navegador', hint: 'Usar a IA que controla o Chrome de verdade' },
 };
 
 function fill(value: boolean): PermissionMap {
@@ -40,7 +42,7 @@ function fill(value: boolean): PermissionMap {
 
 export const ROLE_DEFAULTS: Record<string, PermissionMap> = {
   ADMIN: fill(true),
-  MANAGER: { ...fill(true), settings: false },
+  MANAGER: { ...fill(true), settings: false, browser_agent: false },
   AGENT: {
     ...fill(false),
     dashboard: true,
