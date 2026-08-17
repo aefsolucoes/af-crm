@@ -109,7 +109,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um arquivo (imagem ou PDF) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo do arquivo vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare ou extraia o que o colaborador pedir sobre o documento anexado. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
 - conferir_cadastro_com_documentos: quando o colaborador já preencheu o cadastro de um cliente (digitando com base nos documentos dele) e pede para CONFERIR se não errou nada — ex.: "confere esse cadastro com a documentação do cliente", "vê se bati os dados certo" — use esta ferramenta. Diferente de ler_documento_identificacao (que preenche um cadastro vazio), esta AUDITA um cadastro já preenchido contra todos os documentos da pasta do cliente no Drive. Primeiro find_lead para achar o leadId. Ela retorna as divergências encontradas (ou confirma que está tudo batendo) — mostre cada divergência ao colaborador e só corrija o cadastro (update_lead) depois que ele confirmar qual valor está certo, nunca sozinho.
-- conferir_documento_anexado_com_pasta_drive: parecida com conferir_cadastro_com_documentos, mas o "lado A" da comparação NÃO é o cadastro no CRM — é um FORMULÁRIO/ARQUIVO que o colaborador anexou nesta conversa (botão de anexo). Use quando o pedido for algo como "confere esse formulário [anexado] com a documentação desse cliente no Drive" — não é o cadastro do card, é o arquivo que ele mandou na mensagem. Primeiro find_lead para achar de qual cliente é a pasta de referência no Drive. Se o colaborador ainda não tiver anexado nada, peça para anexar antes de chamar a ferramenta. Mostre as divergências encontradas, nunca corrija nada sozinho.
+- conferir_documento_com_pasta_drive: parecida com conferir_cadastro_com_documentos, mas o "lado A" da comparação NÃO é o cadastro no CRM — é um FORMULÁRIO/ARQUIVO específico, comparado contra os OUTROS documentos da pasta do cliente. Duas formas de indicar o formulário: o colaborador anexa na conversa (botão de anexo, não precisa de parâmetro), OU ele já está salvo na pasta do cliente no Drive (informe nomeArquivoReferencia com um trecho do nome — ex.: "ficha-cadastral", "formulário" — pode estar numa subpasta tipo "FORMULARIOS", a busca acha em qualquer nível). Use quando o pedido for algo como "confere esse formulário com a documentação desse cliente no Drive" (anexado) ou "confere o formulário que já está na pasta dele com o resto da documentação" (sem anexar nada, tudo já no Drive). Primeiro find_lead para achar de qual cliente é a pasta. Se o colaborador não anexou nada nem disse o nome do arquivo de referência, pergunte qual das duas formas ele quer. Mostre as divergências encontradas, nunca corrija nada sozinho.
 - enviar_arquivo_whatsapp: envia um arquivo (PDF, foto etc) pelo WhatsApp ao cliente — você CONSEGUE, sim, encaminhar arquivos, não só texto; nunca diga que só sabe mandar mensagem de texto. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp", "reenviar o documento que ele mandou" etc. Duas origens possíveis do arquivo: (1) attachmentId — reenvia um anexo que o PRÓPRIO CLIENTE já mandou na conversa do WhatsApp; (2) nomeArquivo (+ nomePasta opcional, padrão o nome do lead) — busca um arquivo pelo nome dentro da pasta do cliente no Drive. Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista — NUNCA escolha um sozinho, mostre as opções e pergunte qual enviar (regra de ambiguidade abaixo). CONFIRMAÇÃO ANTES DE ENVIAR (obrigatória, mesmo fora do caso de ambiguidade): a primeira chamada sem confirmed:true não envia nada — ela só resolve qual é o arquivo e devolve needsConfirmation. Ao receber isso, diga ao colaborador exatamente qual arquivo vai ser encaminhado e para qual cliente, e pergunte se ele quer incluir alguma mensagem (legenda) junto. Só chame a ferramenta de novo, com confirmed:true (e legenda, se ele pedir), depois que o colaborador responder.
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
@@ -389,11 +389,12 @@ const AGENT_TOOLS = [
     }, required: ['leadId'] },
   },
   {
-    name: 'conferir_documento_anexado_com_pasta_drive',
-    description: 'Confere um FORMULÁRIO/DOCUMENTO que o colaborador acabou de anexar NESTA CONVERSA (botão de anexo do chat) contra os documentos do cliente salvos na pasta dele no Drive — diferente de conferir_cadastro_com_documentos (que compara com o cadastro já salvo no CRM, não com um arquivo anexado). Use quando o colaborador pedir algo como "confere esse formulário com a documentação do cliente no Drive", "vê se os dados desse formulário batem com os documentos dele" e tiver anexado um arquivo na mensagem. Primeiro use find_lead para achar o leadId do cliente certo. Ela lê o arquivo anexado + todos os documentos (foto/PDF, inclusive em subpastas) da pasta do cliente no Drive, e retorna as divergências encontradas entre o formulário e os documentos (ou confirma que está tudo batendo). Se o colaborador pedir isso SEM ter anexado nada ainda, peça para ele anexar o arquivo primeiro. SEMPRE mostre as divergências encontradas ao colaborador — nunca corrija nada sozinho.',
+    name: 'conferir_documento_com_pasta_drive',
+    description: 'Confere um FORMULÁRIO/DOCUMENTO específico (ex.: ficha cadastral, formulário de proposta) contra os OUTROS documentos do cliente na pasta dele no Drive (CNH, comprovante de renda, de residência etc) — diferente de conferir_cadastro_com_documentos (que compara com o cadastro já salvo no CRM). O formulário de referência pode vir de DUAS formas: (1) o colaborador anexa o arquivo NESTA CONVERSA (botão de anexo do chat) — nesse caso não precisa informar nomeArquivoReferencia, ela usa o anexo sozinha; (2) o formulário já está DENTRO da pasta do cliente no Drive (ex.: "ficha-cadastral" ou "formulário", às vezes numa subpasta "FORMULARIOS") — informe nomeArquivoReferencia com um trecho do nome, sem precisar anexar nada de novo. Primeiro use find_lead para achar o leadId; se for usar nomeArquivoReferencia e não souber o nome exato, pode listar a pasta antes (listar_pasta_drive). Se achar mais de um arquivo parecido com nomeArquivoReferencia, ela retorna as opções — não escolha sozinho, pergunte ao colaborador. Se o colaborador pedir a conferência sem ter anexado nada E sem indicar nomeArquivoReferencia, pergunte qual das duas formas ele quer usar. Retorna as divergências encontradas entre o formulário e os demais documentos (ou confirma que está tudo batendo). SEMPRE mostre as divergências ao colaborador — nunca corrija nada sozinho.',
     input_schema: { type: 'object', properties: {
       leadId: { type: 'string', description: 'ID do lead/cliente cuja pasta no Drive será usada como referência (via find_lead)' },
       nomePasta: { type: 'string', description: 'Nome da pasta do cliente no Drive, se diferente do nome do lead (opcional).' },
+      nomeArquivoReferencia: { type: 'string', description: 'Trecho do nome do formulário/ficha JÁ SALVO na pasta do cliente no Drive, para usar como referência em vez de um anexo do chat (opcional — use isto OU deixe o colaborador anexar o arquivo na conversa).' },
     }, required: ['leadId'] },
   },
   {
@@ -567,13 +568,14 @@ const DRIVE_DOC_NAME_HEUR = /cnh|rg|identidade|habilita|holerite|contracheque|co
  * Acha a pasta do cliente no Drive e baixa até um orçamento de arquivos
  * (foto/PDF, inclusive em subpastas) pra conferência com documentação —
  * compartilhado entre conferir_cadastro_com_documentos e
- * conferir_documento_anexado_com_pasta_drive, que só diferem em CONTRA O QUE
- * comparam esses documentos (o cadastro no CRM vs. um arquivo anexado no chat).
+ * conferir_documento_com_pasta_drive, que só diferem em CONTRA O QUE
+ * comparam esses documentos (o cadastro no CRM vs. um formulário específico).
  */
 async function resolveClientDriveDocuments(
   accountId: string,
   leadName: string,
-  nomePastaInput?: string
+  nomePastaInput?: string,
+  excludeFileId?: string
 ): Promise<
   | { ok: true; docs: { name: string; mimeType: string; buffer: Buffer }[]; deixadosDeFora: string[] }
   | { ok: false; error: string }
@@ -584,7 +586,7 @@ async function resolveClientDriveDocuments(
 
   let allFiles: { id: string; name: string; mimeType: string; path: string; size: number }[] = [];
   try {
-    allFiles = (await listAllFilesInFolderTree(accountId, folder.folderId)).filter((f) => DRIVE_DOC_TYPES.includes(f.mimeType));
+    allFiles = (await listAllFilesInFolderTree(accountId, folder.folderId)).filter((f) => DRIVE_DOC_TYPES.includes(f.mimeType) && f.id !== excludeFileId);
   } catch (err: any) {
     return { ok: false, error: `Falha ao listar a pasta do Drive: ${err?.message || 'erro desconhecido'}` };
   }
@@ -1626,19 +1628,58 @@ async function executeAgentTool(
     }
   }
 
-  if (name === 'conferir_documento_anexado_com_pasta_drive') {
+  if (name === 'conferir_documento_com_pasta_drive') {
     const leadId = String(input.leadId || '');
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
 
-    if (!attachment?.dataBase64 || !attachment.mimeType) {
-      return { success: false, error: 'Não tem nenhum arquivo anexado nesta conversa. Peça ao colaborador para anexar o formulário/documento (botão de anexo do chat) e chame de novo esta ferramenta.' };
-    }
-    if (!DRIVE_DOC_TYPES.includes(attachment.mimeType)) {
-      return { success: false, error: `Tipo de arquivo anexado não suportado (${attachment.mimeType}).` };
+    const nomePastaInput = input.nomePasta ? String(input.nomePasta) : undefined;
+    const nomeArquivoReferencia = String(input.nomeArquivoReferencia || '').trim();
+
+    // Resolve o documento de REFERÊNCIA (o "formulário"): ou veio anexado no
+    // chat, ou já está salvo na própria pasta do cliente no Drive.
+    let refMimeType = '';
+    let refBase64 = '';
+    let refLabel = '';
+    let excludeFileId: string | undefined;
+
+    if (attachment?.dataBase64 && attachment.mimeType) {
+      if (!DRIVE_DOC_TYPES.includes(attachment.mimeType)) {
+        return { success: false, error: `Tipo de arquivo anexado não suportado (${attachment.mimeType}).` };
+      }
+      refMimeType = attachment.mimeType;
+      refBase64 = attachment.dataBase64;
+      refLabel = 'anexado pelo colaborador nesta conversa';
+    } else if (nomeArquivoReferencia) {
+      const folder = await findFolderByNameUnderRoot(accountId, nomePastaInput || lead.name);
+      if (!folder) return { success: false, error: `Não encontrei a pasta "${nomePastaInput || lead.name}" no Drive. Confirme o nome da pasta do cliente com o colaborador.` };
+
+      let candidatos: { id: string; name: string; mimeType: string; path: string }[] = [];
+      try {
+        candidatos = (await findFilesInFolderTree(accountId, folder.folderId, nomeArquivoReferencia)).filter((f) => DRIVE_DOC_TYPES.includes(f.mimeType));
+      } catch (err: any) {
+        return { success: false, error: `Falha ao buscar o arquivo na pasta do Drive: ${err?.message || 'erro desconhecido'}` };
+      }
+      if (candidatos.length === 0) return { success: false, error: `Não achei nenhum arquivo com "${nomeArquivoReferencia}" no nome, na pasta do cliente no Drive.` };
+      if (candidatos.length > 1) {
+        return { success: false, needsDisambiguation: true, opcoes: candidatos.map((c) => ({ nome: c.name, pasta: c.path })), error: `Achei mais de um arquivo parecido com "${nomeArquivoReferencia}" — pergunte ao colaborador qual é o formulário certo e chame de novo com um nome mais específico.` };
+      }
+      const escolhido = candidatos[0];
+      let buffer: Buffer;
+      try {
+        buffer = await downloadDriveFile(accountId, escolhido.id, escolhido.mimeType);
+      } catch (err: any) {
+        return { success: false, error: `Falha ao baixar "${escolhido.name}" do Drive: ${err?.message || 'erro desconhecido'}` };
+      }
+      refMimeType = escolhido.mimeType;
+      refBase64 = buffer.toString('base64');
+      refLabel = `arquivo "${escolhido.name}" já salvo na pasta do cliente no Drive${escolhido.path ? ` (em ${escolhido.path})` : ''}`;
+      excludeFileId = escolhido.id;
+    } else {
+      return { success: false, error: 'Não tem nenhum arquivo anexado nesta conversa, e nenhum nomeArquivoReferencia foi informado. Pergunte ao colaborador: ele quer anexar o formulário na conversa, ou já tem o formulário salvo na pasta do cliente no Drive (nesse caso, qual o nome do arquivo)?' };
     }
 
-    const resolved = await resolveClientDriveDocuments(accountId, lead.name, input.nomePasta ? String(input.nomePasta) : undefined);
+    const resolved = await resolveClientDriveDocuments(accountId, lead.name, nomePastaInput, excludeFileId);
     if (!resolved.ok) return { success: false, error: resolved.error };
     const { docs, deixadosDeFora } = resolved;
 
@@ -1646,10 +1687,10 @@ async function executeAgentTool(
     if (!apiKey) return { success: false, error: 'ANTHROPIC_API_KEY não configurada' };
 
     const content: Record<string, unknown>[] = [
-      { type: 'text', text: 'FORMULÁRIO/CADASTRO PREENCHIDO A CONFERIR (anexado pelo colaborador nesta conversa):' },
-      attachment.mimeType === 'application/pdf'
-        ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: attachment.dataBase64 } }
-        : { type: 'image', source: { type: 'base64', media_type: attachment.mimeType, data: attachment.dataBase64 } },
+      { type: 'text', text: `FORMULÁRIO/CADASTRO PREENCHIDO A CONFERIR (${refLabel}):` },
+      refMimeType === 'application/pdf'
+        ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: refBase64 } }
+        : { type: 'image', source: { type: 'base64', media_type: refMimeType, data: refBase64 } },
     ];
     for (const d of docs) {
       content.push({ type: 'text', text: `Documento de referência do cliente (Drive): ${d.name}` });
