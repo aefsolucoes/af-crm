@@ -559,10 +559,17 @@ const AGENT_TOOLS = [
 ];
 
 const DRIVE_DOC_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
-// Nome contém termos comuns de documento de identificação/comprovante — usado
-// só pra priorizar QUAIS documentos baixar primeiro dentro do orçamento de
-// tamanho abaixo, nunca pra filtrar (documento sem nome "óbvio" ainda entra).
-const DRIVE_DOC_NAME_HEUR = /cnh|rg|identidade|habilita|holerite|contracheque|comprovante|renda|resid[êe]ncia|endere[çc]o|certid[ãa]o|contrato|cpf|itbi|matr[íi]cula|iptu/i;
+// Nome contém termos comuns de documento — usado só pra priorizar QUAIS
+// documentos baixar primeiro dentro do orçamento abaixo, nunca pra filtrar
+// (documento sem nome "óbvio" ainda entra, só fica por último). Documento de
+// IDENTIDADE (CNH/RG) vem numa camada própria, ACIMA dos demais — é sempre a
+// referência mais confiável pra bater nome/CPF/nascimento, e sem essa
+// prioridade um cliente com vários contracheques/comprovantes na pasta podia
+// empurrar a própria CNH pra fora do orçamento (achado num caso real: a foto
+// da CNH, maior que os PDFs de holerite, ficava de fora e a conferência
+// passava batido justo o documento que tinha o erro).
+const DRIVE_DOC_NAME_HEUR_IDENTIDADE = /cnh|\brg\b|identidade|habilita/i;
+const DRIVE_DOC_NAME_HEUR_OUTROS = /holerite|contracheque|comprovante|renda|resid[êe]ncia|endere[çc]o|certid[ãa]o|contrato|cpf|itbi|matr[íi]cula|iptu/i;
 
 /**
  * Acha a pasta do cliente no Drive e baixa até um orçamento de arquivos
@@ -592,16 +599,18 @@ async function resolveClientDriveDocuments(
   }
   if (allFiles.length === 0) return { ok: false, error: `Não achei nenhum documento (foto/PDF) na pasta "${nomePasta}".` };
 
-  // Prioriza documentos "de identificação/comprovante" pelo nome, e entre
-  // eles os menores primeiro — cabe mais coisa no orçamento de tamanho.
+  // Prioriza: 1º documento de identidade (CNH/RG), 2º outros "óbvios"
+  // (comprovante/contracheque/certidão etc), 3º o resto — e dentro de cada
+  // camada, os menores primeiro (cabe mais no orçamento de tamanho).
+  const tier = (name: string) => (DRIVE_DOC_NAME_HEUR_IDENTIDADE.test(name) ? 0 : DRIVE_DOC_NAME_HEUR_OUTROS.test(name) ? 1 : 2);
   allFiles.sort((a, b) => {
-    const ah = DRIVE_DOC_NAME_HEUR.test(a.name) ? 0 : 1;
-    const bh = DRIVE_DOC_NAME_HEUR.test(b.name) ? 0 : 1;
-    if (ah !== bh) return ah - bh;
+    const at = tier(a.name);
+    const bt = tier(b.name);
+    if (at !== bt) return at - bt;
     return a.size - b.size;
   });
 
-  const MAX_DOCS = 6;
+  const MAX_DOCS = 8;
   const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
   const chosen: typeof allFiles = [];
   const deixadosDeFora: string[] = [];
