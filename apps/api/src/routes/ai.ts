@@ -113,6 +113,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - enviar_arquivo_whatsapp: envia um arquivo (PDF, foto etc) pelo WhatsApp ao cliente — você CONSEGUE, sim, encaminhar arquivos, não só texto; nunca diga que só sabe mandar mensagem de texto. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp", "reenviar o documento que ele mandou" etc. Duas origens possíveis do arquivo: (1) attachmentId — reenvia um anexo que o PRÓPRIO CLIENTE já mandou na conversa do WhatsApp; (2) nomeArquivo (+ nomePasta opcional, padrão o nome do lead) — busca um arquivo pelo nome dentro da pasta do cliente no Drive. Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista — NUNCA escolha um sozinho, mostre as opções e pergunte qual enviar (regra de ambiguidade abaixo). CONFIRMAÇÃO ANTES DE ENVIAR (obrigatória, mesmo fora do caso de ambiguidade): a primeira chamada sem confirmed:true não envia nada — ela só resolve qual é o arquivo e devolve needsConfirmation. Ao receber isso, diga ao colaborador exatamente qual arquivo vai ser encaminhado e para qual cliente, e pergunte se ele quer incluir alguma mensagem (legenda) junto. Só chame a ferramenta de novo, com confirmed:true (e legenda, se ele pedir), depois que o colaborador responder.
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
+- preencher_link_drive_em_lote: quando o colaborador pedir para preencher/atualizar o campo "Pasta no Drive" (o link) de TODOS os leads de um funil de uma vez — ex.: "preenche o campo drive de todos os clientes do funil contratação com o link de cada um" — use esta ferramenta, NÃO tente fazer lead por lead na mão (é lento e pode estourar o limite de passos numa lista grande). Informe funilNome. Ela mesma resolve e preenche os que achou com certeza, e te devolve a lista dos que ficaram de fora (sem pasta encontrada ou ambíguos) para você resolver com o colaborador.
 - create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
 - adicionar_nota_lead: registra um comentário/observação em texto livre no histórico de um ou mais cards (aparece no timeline do lead) — use quando o colaborador pedir para "anotar", "registrar" ou "jogar essa informação nos cards" algo que é status/observação, não um campo estruturado (para dado estruturado, use update_lead com fields). Aceita várias notas de vários leads numa chamada só — se o colaborador mandar uma lista com vários clientes de uma vez, resolva TODOS os leadIds primeiro (find_lead/consultar_leads) e chame adicionar_nota_lead UMA vez com todas as notas juntas, em vez de uma chamada por cliente.
 - criar_tarefa_lead: cria uma tarefa vinculada a um card específico (aparece na aba Tarefas e no Dashboard do responsável). Use quando o colaborador pedir para "criar uma tarefa", "lembrar de ligar/cobrar/enviar algo", "agendar um follow-up" etc para um cliente. Use find_lead antes para o leadId. Se não disser a data, use hoje; se não disser a hora, use um horário razoável.
@@ -457,6 +458,13 @@ const AGENT_TOOLS = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'preencher_link_drive_em_lote',
+    description: 'Preenche o campo "Pasta no Drive" (link) no cadastro de VÁRIOS leads de uma vez, para os leads de um funil inteiro — use quando o colaborador pedir algo como "preenche o campo do drive de todos os clientes do funil contratação", "coloca o link da pasta de cada lead desse funil" etc. Informe funilNome (ex.: "contratação" — não precisa ser o nome exato, casa por trecho). Ela busca, numa única varredura, a pasta de cada lead do funil no Drive: se achar exatamente uma, preenche o link sozinha (SEM precisar de confirmação — é só preencher um campo, não uma ação destrutiva); leads que já tinham o campo preenchido são pulados (não sobrescreve); leads sem pasta encontrada ou com mais de uma pasta parecida (ambíguo) ficam de fora, listados no resultado, para o colaborador resolver manualmente. Tem um teto de leads por chamada — se o funil for maior, ela avisa quantos ficaram de fora (truncado) e pode ser chamada de novo.',
+    input_schema: { type: 'object', properties: {
+      funilNome: { type: 'string', description: 'Nome (ou trecho do nome) do funil, ex.: "contratação".' },
+    }, required: ['funilNome'] },
+  },
+  {
     name: 'create_lead',
     description: 'Cria um novo card/lead no funil. Use quando pedirem para "criar um card/cliente". Exige permissão de gerenciar o funil.',
     input_schema: { type: 'object', properties: {
@@ -637,6 +645,14 @@ async function executeAgentTool(
   const scopeDepartmentId = me?.role === 'ADMIN' ? null : (me?.departmentId ?? null);
   const pipelineDeptScope = scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {};
 
+  // Rede de segurança: se QUALQUER ferramenta abaixo lançar uma exceção não
+  // tratada (ex.: API do Drive fora do ar, erro de rede), isso derrubava a
+  // resposta inteira do assistente com "Erro interno ao processar IA" — pior
+  // ainda num pedido em lote (várias ferramentas de uma vez), onde UM lead
+  // com problema travava todos os outros. Agora vira um resultado de erro
+  // normal, que o modelo consegue ler e contornar (avisar o colaborador,
+  // pular esse item e seguir com os demais).
+  try {
   if (name === 'listar_campos_cadastro') {
     const fields = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }] });
     return fields.map((f) => ({ chave: f.key, nome: f.name, aba: f.tab, tipo: f.type }));
@@ -1914,7 +1930,82 @@ async function executeAgentTool(
     };
   }
 
+  if (name === 'preencher_link_drive_em_lote') {
+    const normalize = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    const funilNome = String(input.funilNome || '').trim();
+    if (!funilNome) return { success: false, error: 'Informe funilNome.' };
+
+    const pipelines = await prisma.pipeline.findMany({ where: { accountId, ...pipelineDeptScope }, include: { stages: true } });
+    const pipeline = pipelines.find((p) => normalize(p.name).includes(normalize(funilNome)));
+    if (!pipeline) return { success: false, error: `Nenhum funil encontrado com "${funilNome}".` };
+
+    const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+    if (!conn?.rootFolderId) return { success: false, error: 'Pasta-raiz dos clientes não definida no Drive. Configure em Configurações → Google Drive.' };
+
+    const stageIds = pipeline.stages.map((s) => s.id);
+    const LIMITE = 80; // evita estourar tempo/rate-limit do Drive numa conta com muitos leads nesse funil
+    const leads = await prisma.lead.findMany({
+      where: { accountId, archived: false, pipelineId: pipeline.id, stageId: { in: stageIds } },
+      take: LIMITE,
+    });
+    if (leads.length === 0) return { success: false, error: `Nenhum lead ativo no funil "${pipeline.name}".` };
+
+    // Já preenchidos — pula sem sobrescrever (o colaborador pode ter colocado
+    // um link diferente de propósito).
+    const semLink = leads.filter((l) => {
+      const cf = (l.customFields || {}) as Record<string, unknown>;
+      const v = cf[DRIVE_LINK_FIELD_KEY];
+      return !v || String(v).trim() === '';
+    });
+    const jaTinham = leads.length - semLink.length;
+    if (semLink.length === 0) {
+      return { success: true, funil: pipeline.name, totalLeads: leads.length, jaTinhamLink: jaTinham, preenchidos: 0, mensagem: 'Todos os leads desse funil já tinham o campo preenchido.' };
+    }
+
+    // UMA varredura paralela da árvore do Drive procurando o nome de todos de
+    // uma vez — mesma técnica do auditar_pastas_contratacao, bem mais rápido
+    // do que uma busca por lead.
+    const found = await findFoldersByNamesInTree(accountId, conn.rootFolderId, semLink.map((l) => l.name));
+
+    let preenchidos = 0;
+    const naoEncontrados: string[] = [];
+    const ambiguos: { nome: string; locais: string[] }[] = [];
+    await ensureDriveLinkField(accountId);
+
+    for (const lead of semLink) {
+      const matches = found.get(lead.name.trim().toLowerCase()) || [];
+      if (matches.length === 0) {
+        naoEncontrados.push(lead.name);
+      } else if (matches.length > 1) {
+        ambiguos.push({ nome: lead.name, locais: matches.map((m) => m.path) });
+      } else {
+        try {
+          const cf = (lead.customFields || {}) as Record<string, unknown>;
+          await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, [DRIVE_LINK_FIELD_KEY]: folderLink(matches[0].id) } } });
+          preenchidos++;
+        } catch (err) {
+          naoEncontrados.push(lead.name); // falhou ao salvar — trata como pendente, não trava o lote
+        }
+      }
+    }
+
+    return {
+      success: true,
+      funil: pipeline.name,
+      totalLeads: leads.length,
+      jaTinhamLink: jaTinham,
+      preenchidos,
+      naoEncontrados,
+      ambiguos,
+      truncado: leads.length === LIMITE,
+    };
+  }
+
   return { error: `Ferramenta desconhecida: ${name}` };
+  } catch (err: any) {
+    console.error(`[AI] Erro inesperado na ferramenta ${name}:`, err);
+    return { success: false, error: `Erro inesperado ao executar ${name}: ${err?.message || 'erro desconhecido'}` };
+  }
 }
 
 interface AnthropicContentBlock {
@@ -2065,11 +2156,21 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
 
       if (data.stop_reason === 'tool_use') {
         const toolUseBlocks = data.content.filter(b => b.type === 'tool_use');
-        const toolResults = await Promise.all(toolUseBlocks.map(async (block) => ({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: JSON.stringify(await executeAgentTool(block.name!, block.input || {}, accountId, io, req.user!.id, attachment)),
-        })));
+        // Cada chamada isolada num try/catch próprio — sem isso, UMA ferramenta
+        // que lançasse uma exceção (mesmo com a rede de segurança dentro de
+        // executeAgentTool, por garantia dupla) derrubava a resposta inteira
+        // com "Erro interno ao processar IA", mesmo num lote com dezenas de
+        // outras chamadas que teriam dado certo.
+        const toolResults = await Promise.all(toolUseBlocks.map(async (block) => {
+          let result: unknown;
+          try {
+            result = await executeAgentTool(block.name!, block.input || {}, accountId, io, req.user!.id, attachment);
+          } catch (err: any) {
+            console.error(`[AI] Erro inesperado na ferramenta ${block.name}:`, err);
+            result = { success: false, error: `Erro inesperado ao executar ${block.name}: ${err?.message || 'erro desconhecido'}` };
+          }
+          return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) };
+        }));
 
         convo.push({ role: 'assistant', content: data.content });
         convo.push({ role: 'user', content: toolResults });
