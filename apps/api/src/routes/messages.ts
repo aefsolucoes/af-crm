@@ -17,6 +17,12 @@ const messageSchema = z.object({
   leadId: z.string(),
   via: z.enum(['qr', 'api']).optional(),
   fromNumberId: z.string().optional(),
+  // Resposta com citação (como no WhatsApp) — id/remetente/conteúdo da
+  // mensagem original, escolhida pelo usuário na Inbox.
+  replyToExternalId: z.string().optional(),
+  replyToFromMe: z.boolean().optional(),
+  replyToContent: z.string().optional(),
+  replyToSender: z.string().optional(),
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -189,6 +195,10 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
         via: req.body.via,
         fromNumberId: req.body.fromNumberId,
         userId: req.user!.id,
+        replyToExternalId: req.body.replyToExternalId,
+        replyToFromMe: req.body.replyToFromMe,
+        replyToContent: req.body.replyToContent,
+        replyToSender: req.body.replyToSender,
         io,
       });
       if (!result.success) {

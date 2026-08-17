@@ -1194,7 +1194,12 @@ export type BaileysSendOutcome =
   | { id: string }
   | { failed: 'not_connected' | 'no_whatsapp' | 'error' };
 
-export async function sendBaileysMessage(to: string, text: string, numberId: string): Promise<BaileysSendOutcome> {
+export async function sendBaileysMessage(
+  to: string,
+  text: string,
+  numberId: string,
+  quoted?: { externalId: string; fromMe: boolean }
+): Promise<BaileysSendOutcome> {
   const conn = connections.get(numberId);
   if (!conn?.sock || conn.status !== 'connected') return { failed: 'not_connected' };
   try {
@@ -1220,7 +1225,14 @@ export async function sendBaileysMessage(to: string, text: string, numberId: str
       }
     }
 
-    const sent = await conn.sock.sendMessage(jid, { text });
+    // Citação (resposta com trecho da mensagem original, como no WhatsApp):
+    // um stub mínimo já basta — o Baileys não precisa do conteúdo completo da
+    // mensagem original para renderizar a citação, só da chave dela.
+    const quotedMsg = quoted
+      ? { key: { remoteJid: jid, id: quoted.externalId, fromMe: quoted.fromMe }, message: {} }
+      : undefined;
+
+    const sent = await conn.sock.sendMessage(jid, { text }, quotedMsg ? { quoted: quotedMsg } : undefined);
     const id = sent?.key?.id || null;
     if (!id) return { failed: 'error' };
     selfSentIds.add(id);

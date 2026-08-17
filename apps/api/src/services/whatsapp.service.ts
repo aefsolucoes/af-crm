@@ -189,7 +189,8 @@ export async function sendWhatsAppMessage(
   to: string,
   message: string,
   accountId: string,
-  departmentId?: string | null
+  departmentId?: string | null,
+  replyToWamid?: string | null
 ): Promise<{ success: boolean; externalId?: string; error?: string }> {
   const config = await getWhatsAppConfig(accountId, departmentId);
   console.log(`[WA Send] accountId=${accountId} config exists=${!!config} active=${config?.active} phoneNumberId=${config?.phoneNumberId}`);
@@ -217,6 +218,9 @@ export async function sendWhatsAppMessage(
         to: phone,
         type: 'text',
         text: { body: message },
+        // Citação: a Meta só aceita responder a uma mensagem que também tenha
+        // vindo/ido por este mesmo canal (id no formato "wamid...").
+        ...(replyToWamid?.startsWith('wamid') ? { context: { message_id: replyToWamid } } : {}),
       }),
     });
 

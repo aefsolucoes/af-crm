@@ -178,6 +178,10 @@ export interface Message {
   /** Preenchido quando esta mensagem é um contato compartilhado no WhatsApp. */
   sharedContactName?: string | null;
   sharedContactPhone?: string | null;
+  /** Preenchido quando esta mensagem é uma resposta com citação a outra. */
+  replyToExternalId?: string | null;
+  replyToContent?: string | null;
+  replyToSender?: string | null;
 }
 
 export interface WhatsAppNumber {

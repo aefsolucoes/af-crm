@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Search, X, AlertCircle, User, MessageCircle, UserPlus } from 'lucide-react';
+import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -80,6 +80,23 @@ function fillMetaTemplate(text: string, vars: Record<number, string>): string {
 }
 
 const JANELA_24H_MS = 24 * 60 * 60 * 1000;
+
+/** Trecho curto pra mostrar como citação (barra de resposta / bolha citada) —
+ *  mesma lógica que já separa "legenda" de anexo, com fallback pra anexo/contato. */
+function messagePreviewText(msg: Message): string {
+  if (msg.sharedContactName || msg.sharedContactPhone) return `👤 ${msg.sharedContactName || msg.sharedContactPhone}`;
+  if (msg.attachments && msg.attachments.length > 0) {
+    const caption = msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '';
+    return caption || `📎 ${msg.attachments[0].fileName}`;
+  }
+  return msg.content;
+}
+
+/** Nome de quem mandou, pra mostrar na citação (igual ao rótulo "via ... · quem enviou"). */
+function messageSenderName(msg: Message, leadName: string): string {
+  if (msg.direction === 'OUTBOUND') return (msg as any).sentBy?.name || 'Você';
+  return (msg as any).senderName || leadName;
+}
 
 /** Última mensagem RECEBIDA pelo canal da API oficial (id começa com "wamid") —
  *  é ela que abre/reabre a janela de 24h de atendimento gratuito da Meta. */
@@ -244,6 +261,25 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     }
   }
 
+  // ── Responder com citação a uma mensagem específica (como no WhatsApp) ───
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  function openReply(msg: Message) {
+    setReplyingTo(msg);
+    inputRef.current?.focus();
+  }
+  /** Clica na citação dentro de uma bolha → pula pra mensagem original, se
+   *  ela ainda estiver carregada nesta conversa (destaque rápido). */
+  function scrollToQuoted(externalId?: string | null) {
+    if (!externalId) return;
+    const original = messages.find((m) => m.externalId === externalId);
+    if (!original) return;
+    const el = document.getElementById(`msg-${original.id}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('ring-2', 'ring-[#00a884]');
+    setTimeout(() => el.classList.remove('ring-2', 'ring-[#00a884]'), 1200);
+  }
+
   const forwardMatches = (forwardLeads || [])
     .filter((l) => l.id !== leadId)
     .filter((l) => {
@@ -340,8 +376,10 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       setShowTemplates(true);
       return;
     }
+    const quotedMsg = replyingTo;     // guarda pra restaurar se o envio falhar
     setSending(true);
     setContent('');                 // feedback imediato: o campo esvazia na hora
+    setReplyingTo(null);
     try {
       const { data } = await api.post('/api/messages', {
         content: text,
@@ -351,10 +389,19 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         ...(channel === 'WHATSAPP'
           ? { via: effectiveVia, ...(effectiveVia === 'qr' && activeNumberId ? { fromNumberId: activeNumberId } : {}) }
           : {}),
+        ...(quotedMsg
+          ? {
+              replyToExternalId: quotedMsg.externalId || undefined,
+              replyToFromMe: quotedMsg.direction === 'OUTBOUND',
+              replyToContent: messagePreviewText(quotedMsg),
+              replyToSender: messageSenderName(quotedMsg, leadName),
+            }
+          : {}),
       });
       onNewMessage(data);
     } catch (err: any) {
       setContent(text);             // falhou: devolve o texto para tentar de novo
+      setReplyingTo(quotedMsg);      // e a citação também
       const msg = err?.response?.data?.error || err?.message || 'Erro ao enviar mensagem';
       toast(msg, 'error');
     } finally {
@@ -676,17 +723,19 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               return (
                 <div key={msg.id} className={cn('group flex items-center gap-1 mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
                   {isOut && (
-                    <button
-                      onClick={() => openForward(msg)}
-                      title="Encaminhar"
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[#8696a0] hover:text-[#e9edef] flex-shrink-0"
-                    >
-                      <Forward size={14} />
-                    </button>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                      <button onClick={() => openReply(msg)} title="Responder" className="text-[#8696a0] hover:text-[#e9edef]">
+                        <Reply size={14} />
+                      </button>
+                      <button onClick={() => openForward(msg)} title="Encaminhar" className="text-[#8696a0] hover:text-[#e9edef]">
+                        <Forward size={14} />
+                      </button>
+                    </div>
                   )}
                   <div
+                    id={`msg-${msg.id}`}
                     className={cn(
-                      'relative max-w-xs lg:max-w-md px-3 py-2 shadow-sm',
+                      'relative max-w-xs lg:max-w-md px-3 py-2 shadow-sm transition-shadow',
                       isOut
                         ? 'rounded-tl-2xl rounded-tr-2xl rounded-bl-2xl text-[#e9edef]'
                         : 'rounded-tl-2xl rounded-tr-2xl rounded-br-2xl text-[#e9edef]',
@@ -699,6 +748,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                       <p className="text-[10px] italic text-[#e9edef]/55 mb-0.5 flex items-center gap-1">
                         <Forward size={10} /> Encaminhada de {msg.forwardedFromLeadName}
                       </p>
+                    )}
+                    {/* Citação: resposta a uma mensagem específica desta conversa */}
+                    {msg.replyToContent && (
+                      <button
+                        type="button"
+                        onClick={() => scrollToQuoted(msg.replyToExternalId)}
+                        className="block w-full text-left mb-1 pl-2 py-1 border-l-2 border-[#00a884]/70 bg-black/15 rounded-r-md hover:bg-black/25 transition-colors"
+                      >
+                        <p className="text-[11px] font-medium text-[#00a884]">{msg.replyToSender || 'Mensagem'}</p>
+                        <p className="text-xs text-[#e9edef]/70 truncate">{msg.replyToContent}</p>
+                      </button>
                     )}
                     {isOut && (() => {
                       // "via {apelido do número} · {quem enviou}". Mensagens da API
@@ -784,13 +844,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                     </div>
                   </div>
                   {!isOut && (
-                    <button
-                      onClick={() => openForward(msg)}
-                      title="Encaminhar"
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[#8696a0] hover:text-[#e9edef] flex-shrink-0"
-                    >
-                      <Forward size={14} />
-                    </button>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                      <button onClick={() => openForward(msg)} title="Encaminhar" className="text-[#8696a0] hover:text-[#e9edef]">
+                        <Forward size={14} />
+                      </button>
+                      <button onClick={() => openReply(msg)} title="Responder" className="text-[#8696a0] hover:text-[#e9edef]">
+                        <Reply size={14} />
+                      </button>
+                    </div>
                   )}
                 </div>
               );
@@ -925,6 +986,22 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             className="flex-shrink-0 text-xs font-medium text-amber-200 bg-amber-700/40 hover:bg-amber-700/60 px-2.5 py-1 rounded-lg transition-colors"
           >
             Usar template
+          </button>
+        </div>
+      )}
+
+      {/* Faixa de "respondendo a..." — como no WhatsApp, some ao enviar/cancelar */}
+      {replyingTo && (
+        <div className="relative z-10 flex items-center justify-between gap-2 px-4 py-2 bg-[#202c33] border-t border-[#222e35]">
+          <div className="flex items-center gap-2 min-w-0 pl-2 border-l-2 border-[#00a884]">
+            <Reply size={14} className="flex-shrink-0 text-[#00a884]" />
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-[#00a884]">{messageSenderName(replyingTo, leadName)}</p>
+              <p className="text-xs text-[#8696a0] truncate">{messagePreviewText(replyingTo)}</p>
+            </div>
+          </div>
+          <button type="button" onClick={() => setReplyingTo(null)} title="Cancelar resposta" className="flex-shrink-0 text-[#8696a0] hover:text-[#e9edef]">
+            <X size={16} />
           </button>
         </div>
       )}

@@ -336,6 +336,13 @@ model Message {
   // "Criar lead" direto com esse número, sem digitar nada.
   sharedContactName  String?
   sharedContactPhone String?
+  // Preenchido quando esta mensagem é uma RESPOSTA com citação a outra
+  // mensagem da mesma conversa (como no WhatsApp) — guarda o conteúdo da
+  // mensagem original "congelado" no momento do envio, não é uma relação de
+  // verdade (sobrevive mesmo se a mensagem original for excluída depois).
+  replyToExternalId String?
+  replyToContent    String?
+  replyToSender     String?
 }
 
 // Documento/imagem recebido no WhatsApp (guardado até ir para o Drive)

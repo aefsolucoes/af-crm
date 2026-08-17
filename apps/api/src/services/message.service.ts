@@ -52,6 +52,9 @@ export async function createMessage(data: {
   sentByUserId?: string;
   externalId?: string;
   status?: string;
+  replyToExternalId?: string;
+  replyToContent?: string;
+  replyToSender?: string;
 }) {
   return prisma.message.create({
     data: data as any,
@@ -201,9 +204,15 @@ export async function sendOutboundWhatsApp(params: {
   fromNumberId?: string;
   /** Usuário do CRM que está enviando (para carimbar "enviado por" na mensagem). */
   userId?: string;
+  /** Resposta com citação (como no WhatsApp): id/remetente/conteúdo da mensagem
+   *  original, "congelados" no momento do envio — não é uma relação de verdade. */
+  replyToExternalId?: string;
+  replyToFromMe?: boolean;
+  replyToContent?: string;
+  replyToSender?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string }> {
-  const { accountId, leadId, content, via, fromNumberId, userId, io } = params;
+  const { accountId, leadId, content, via, fromNumberId, userId, replyToExternalId, replyToFromMe, replyToContent, replyToSender, io } = params;
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -274,7 +283,13 @@ export async function sendOutboundWhatsApp(params: {
     // deduplicar o eco fromMe que o Baileys emite em messages.upsert.
     // Se o envio falhar, NÃO gravamos a mensagem nem reportamos sucesso —
     // senão o agente/inbox diria "enviada" para algo que não saiu.
-    const outcome = await sendBaileysMessage(phone, content, preferred);
+    // Citação só faz sentido quando a mensagem original também veio/foi pelo
+    // Baileys (id "wamid" é da API Oficial — o Baileys não sabe citar isso).
+    const quoted =
+      replyToExternalId && !replyToExternalId.startsWith('wamid')
+        ? { externalId: replyToExternalId, fromMe: !!replyToFromMe }
+        : undefined;
+    const outcome = await sendBaileysMessage(phone, content, preferred, quoted);
     if ('failed' in outcome) {
       const error =
         outcome.failed === 'no_whatsapp'
@@ -298,7 +313,7 @@ export async function sendOutboundWhatsApp(params: {
     if (!cloudPhone) {
       return { success: false, error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card ou envie pelo QR Code.' };
     }
-    const result = await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId);
+    const result = await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId, replyToExternalId);
     if (result.success) {
       externalId = result.externalId;
     } else {
@@ -315,6 +330,9 @@ export async function sendOutboundWhatsApp(params: {
     sentByUserId: userId,
     externalId,
     status: 'SENT',
+    replyToExternalId: replyToExternalId || undefined,
+    replyToContent: replyToContent || undefined,
+    replyToSender: replyToSender || undefined,
   });
 
   if (io) {
