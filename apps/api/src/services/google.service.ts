@@ -627,6 +627,42 @@ export async function findFilesInFolderTree(
   return results;
 }
 
+/** Lista TODOS os arquivos (sem filtro de nome) dentro de uma pasta e de todas
+ *  as suas sub-pastas, com o tamanho em bytes de cada um — usado para conferir
+ *  o cadastro de um cliente contra tudo que tem na pasta dele no Drive, sem
+ *  saber de antemão como os documentos foram nomeados/organizados. */
+export async function listAllFilesInFolderTree(
+  accountId: string,
+  rootFolderId: string,
+  maxDepth = 3
+): Promise<{ id: string; name: string; mimeType: string; path: string; size: number }[]> {
+  const drive = await getDrive(accountId);
+  const results: { id: string; name: string; mimeType: string; path: string; size: number }[] = [];
+
+  async function walk(folderId: string, path: string, depth: number): Promise<void> {
+    if (depth > maxDepth) return;
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: 'files(id, name, mimeType, size)',
+      pageSize: 200,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    const files = res.data.files || [];
+    for (const f of files) {
+      const isFolder = f.mimeType === 'application/vnd.google-apps.folder';
+      if (isFolder) {
+        await walk(f.id!, path ? `${path} > ${f.name}` : f.name!, depth + 1);
+      } else {
+        results.push({ id: f.id!, name: f.name!, mimeType: f.mimeType!, path, size: Number(f.size) || 0 });
+      }
+    }
+  }
+
+  await walk(rootFolderId, '', 0);
+  return results;
+}
+
 /** Busca VÁRIAS pastas (não arquivos) por nome EXATO em toda a árvore a partir
  *  de um folder raiz, numa ÚNICA varredura (com os irmãos de cada nível
  *  buscados em paralelo) — usado para auditar se as pastas de vários clientes

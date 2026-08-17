@@ -8,7 +8,7 @@ import { searchKnowledge, learnFromWhatsAppConversations } from '../services/kno
 import {
   organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
   createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink, findFilesInFolderTree,
-  listFolders, findFoldersByNamesInTree,
+  listFolders, findFoldersByNamesInTree, listAllFilesInFolderTree,
 } from '../services/google.service';
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
@@ -108,6 +108,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um arquivo (imagem ou PDF) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo do arquivo vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare ou extraia o que o colaborador pedir sobre o documento anexado. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
+- conferir_cadastro_com_documentos: quando o colaborador já preencheu o cadastro de um cliente (digitando com base nos documentos dele) e pede para CONFERIR se não errou nada — ex.: "confere esse cadastro com a documentação do cliente", "vê se bati os dados certo" — use esta ferramenta. Diferente de ler_documento_identificacao (que preenche um cadastro vazio), esta AUDITA um cadastro já preenchido contra todos os documentos da pasta do cliente no Drive. Primeiro find_lead para achar o leadId. Ela retorna as divergências encontradas (ou confirma que está tudo batendo) — mostre cada divergência ao colaborador e só corrija o cadastro (update_lead) depois que ele confirmar qual valor está certo, nunca sozinho.
 - enviar_arquivo_whatsapp: envia um arquivo (PDF, foto etc) pelo WhatsApp ao cliente — você CONSEGUE, sim, encaminhar arquivos, não só texto; nunca diga que só sabe mandar mensagem de texto. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp", "reenviar o documento que ele mandou" etc. Duas origens possíveis do arquivo: (1) attachmentId — reenvia um anexo que o PRÓPRIO CLIENTE já mandou na conversa do WhatsApp; (2) nomeArquivo (+ nomePasta opcional, padrão o nome do lead) — busca um arquivo pelo nome dentro da pasta do cliente no Drive. Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista — NUNCA escolha um sozinho, mostre as opções e pergunte qual enviar (regra de ambiguidade abaixo). CONFIRMAÇÃO ANTES DE ENVIAR (obrigatória, mesmo fora do caso de ambiguidade): a primeira chamada sem confirmed:true não envia nada — ela só resolve qual é o arquivo e devolve needsConfirmation. Ao receber isso, diga ao colaborador exatamente qual arquivo vai ser encaminhado e para qual cliente, e pergunte se ele quer incluir alguma mensagem (legenda) junto. Só chame a ferramenta de novo, com confirmed:true (e legenda, se ele pedir), depois que o colaborador responder.
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
@@ -375,6 +376,14 @@ const AGENT_TOOLS = [
       nomePasta: { type: 'string', description: 'Nome da pasta do cliente no Drive, se diferente do nome do lead (opcional).' },
       nomeArquivo: { type: 'string', description: 'Trecho do nome do arquivo a ler dentro da pasta do cliente, se o colaborador apontou um específico (opcional).' },
       attachmentId: { type: 'string', description: 'ID de um anexo específico da conversa do WhatsApp a ler (opcional — usado só se o colaborador apontar um anexo da conversa, não da pasta do Drive).' },
+    }, required: ['leadId'] },
+  },
+  {
+    name: 'conferir_cadastro_com_documentos',
+    description: 'Confere se os dados JÁ PREENCHIDOS no cadastro do lead (nome, valor e campos personalizados) batem com os documentos do cliente salvos na pasta dele no Drive — usado para AUDITAR um cadastro que já foi digitado, não para preencher um vazio (isso é o ler_documento_identificacao). Use quando o colaborador pedir para "conferir esse cadastro com a documentação", "ver se não errei nenhum dado", "revisar o cadastro com os documentos do cliente" etc. Primeiro use find_lead para achar o leadId. Ela lê TODOS os documentos (foto/PDF) da pasta do cliente no Drive — inclusive em subpastas — junto com os valores atuais do cadastro, e retorna uma lista de divergências encontradas (campo, o que está no cadastro, o que está no documento, e em qual arquivo), ou confirma que não achou nenhuma. Pode não conseguir ler todos os documentos se a pasta tiver muitos arquivos grandes (ela avisa quais ficaram de fora). SEMPRE mostre as divergências encontradas ao colaborador um a um — NUNCA corrija o cadastro sozinho; só use update_lead depois que ele confirmar qual valor está certo.',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string', description: 'ID do lead (via find_lead)' },
+      nomePasta: { type: 'string', description: 'Nome da pasta do cliente no Drive, se diferente do nome do lead (opcional).' },
     }, required: ['leadId'] },
   },
   {
@@ -1451,6 +1460,117 @@ async function executeAgentTool(
       };
     } catch (err: any) {
       return { success: false, error: `Falha ao processar o documento: ${err?.message || 'erro desconhecido'}` };
+    }
+  }
+
+  if (name === 'conferir_cadastro_com_documentos') {
+    const leadId = String(input.leadId || '');
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+
+    const nomePasta = String(input.nomePasta || lead.name || '').trim();
+    const folder = nomePasta ? await findFolderByNameUnderRoot(accountId, nomePasta) : null;
+    if (!folder) return { success: false, error: `Não encontrei a pasta "${nomePasta}" no Drive. Confirme o nome da pasta do cliente com o colaborador.` };
+
+    const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+    let allFiles: { id: string; name: string; mimeType: string; path: string; size: number }[] = [];
+    try {
+      allFiles = (await listAllFilesInFolderTree(accountId, folder.folderId)).filter((f) => SUPPORTED.includes(f.mimeType));
+    } catch (err: any) {
+      return { success: false, error: `Falha ao listar a pasta do Drive: ${err?.message || 'erro desconhecido'}` };
+    }
+    if (allFiles.length === 0) return { success: false, error: `Não achei nenhum documento (foto/PDF) na pasta "${nomePasta}".` };
+
+    // Prioriza documentos "de identificação/comprovante" pelo nome, e entre
+    // eles os menores primeiro — cabe mais coisa no orçamento de tamanho.
+    const HEUR = /cnh|rg|identidade|habilita|holerite|contracheque|comprovante|renda|resid[êe]ncia|endere[çc]o|certid[ãa]o|contrato|cpf|itbi|matr[íi]cula|iptu/i;
+    allFiles.sort((a, b) => {
+      const ah = HEUR.test(a.name) ? 0 : 1;
+      const bh = HEUR.test(b.name) ? 0 : 1;
+      if (ah !== bh) return ah - bh;
+      return a.size - b.size;
+    });
+
+    const MAX_DOCS = 6;
+    const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
+    const chosen: typeof allFiles = [];
+    const deixadosDeFora: string[] = [];
+    let total = 0;
+    for (const f of allFiles) {
+      if (chosen.length >= MAX_DOCS || total + f.size > MAX_TOTAL_BYTES) { deixadosDeFora.push(f.name); continue; }
+      chosen.push(f);
+      total += f.size;
+    }
+    if (chosen.length === 0) return { success: false, error: 'Os documentos dessa pasta são grandes demais para analisar de uma vez — peça ao colaborador para apontar um arquivo específico.' };
+
+    const docs: { name: string; mimeType: string; buffer: Buffer }[] = [];
+    for (const f of chosen) {
+      try {
+        const buffer = await downloadDriveFile(accountId, f.id, f.mimeType);
+        docs.push({ name: f.name, mimeType: f.mimeType, buffer });
+      } catch {
+        deixadosDeFora.push(f.name);
+      }
+    }
+    if (docs.length === 0) return { success: false, error: 'Não consegui baixar nenhum documento dessa pasta.' };
+
+    // Monta o "cadastro atual" a partir do nome/valor do lead + campos personalizados preenchidos.
+    const fieldDefs = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }] });
+    const cf = (lead.customFields || {}) as Record<string, unknown>;
+    const linhasCadastro: string[] = [`Nome do lead/cliente: ${lead.name || '(vazio)'}`];
+    if (lead.value != null) linhasCadastro.push(`Valor: ${lead.value}`);
+    for (const fd of fieldDefs) {
+      const v = cf[fd.key];
+      if (v !== undefined && v !== null && String(v).trim() !== '') linhasCadastro.push(`${fd.name} (${fd.key}): ${v}`);
+    }
+    if (linhasCadastro.length <= 1) return { success: false, error: 'Esse cadastro não tem campos preenchidos para conferir.' };
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return { success: false, error: 'ANTHROPIC_API_KEY não configurada' };
+
+    const content: Record<string, unknown>[] = [];
+    for (const d of docs) {
+      content.push({ type: 'text', text: `Documento: ${d.name}` });
+      content.push(
+        d.mimeType === 'application/pdf'
+          ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: d.buffer.toString('base64') } }
+          : { type: 'image', source: { type: 'base64', media_type: d.mimeType, data: d.buffer.toString('base64') } }
+      );
+    }
+    content.push({
+      type: 'text',
+      text: `Dados atualmente registrados no cadastro deste cliente:\n${linhasCadastro.join('\n')}\n\nCompare cada dado do cadastro acima com o que aparece nos documentos. Aponte SOMENTE divergências claras e que você tenha certeza (ex.: nome escrito diferente, CPF com dígito trocado, valor diferente do documento). NÃO aponte um campo do cadastro se ele não aparecer em nenhum documento — nesse caso simplesmente não dá pra conferir esse campo, ignore-o.`,
+    });
+
+    try {
+      const visionRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-5',
+          max_tokens: 1500,
+          system: 'Você audita cadastros de clientes de uma financeira comparando os dados já digitados com os documentos oficiais dela (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorCadastro": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — nunca aponte algo que não esteja claramente legível no documento, e nunca inclua um campo que não apareça em nenhum documento. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir.',
+          messages: [{ role: 'user', content }],
+        }),
+      });
+      if (!visionRes.ok) {
+        const errText = await visionRes.text();
+        return { success: false, error: `Erro ao conferir os documentos: ${visionRes.status} ${errText.slice(0, 200)}` };
+      }
+      const visionData = await visionRes.json() as { content: { type: string; text?: string }[] };
+      const raw = visionData.content?.find((b) => b.type === 'text')?.text || '{}';
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+
+      return {
+        success: true,
+        documentosAnalisados: docs.map((d) => d.name),
+        documentosDeixadosDeFora: deixadosDeFora.length ? deixadosDeFora : undefined,
+        divergencias: Array.isArray(parsed.divergencias) ? parsed.divergencias : [],
+        resumo: parsed.resumo || null,
+      };
+    } catch (err: any) {
+      return { success: false, error: `Falha ao processar os documentos: ${err?.message || 'erro desconhecido'}` };
     }
   }
 
