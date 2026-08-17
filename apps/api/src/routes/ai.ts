@@ -382,7 +382,7 @@ const AGENT_TOOLS = [
   },
   {
     name: 'conferir_cadastro_com_documentos',
-    description: 'Confere se os dados JÁ PREENCHIDOS no cadastro do lead (nome, valor e campos personalizados) batem com os documentos do cliente salvos na pasta dele no Drive — usado para AUDITAR um cadastro que já foi digitado, não para preencher um vazio (isso é o ler_documento_identificacao). Use quando o colaborador pedir para "conferir esse cadastro com a documentação", "ver se não errei nenhum dado", "revisar o cadastro com os documentos do cliente" etc. Primeiro use find_lead para achar o leadId. Ela lê TODOS os documentos (foto/PDF) da pasta do cliente no Drive — inclusive em subpastas — junto com os valores atuais do cadastro, e retorna uma lista de divergências encontradas (campo, o que está no cadastro, o que está no documento, e em qual arquivo), ou confirma que não achou nenhuma. Pode não conseguir ler todos os documentos se a pasta tiver muitos arquivos grandes (ela avisa quais ficaram de fora). SEMPRE mostre as divergências encontradas ao colaborador um a um — NUNCA corrija o cadastro sozinho; só use update_lead depois que ele confirmar qual valor está certo.',
+    description: 'Confere se os dados JÁ PREENCHIDOS no cadastro do lead (nome, valor e campos personalizados) batem com os documentos do cliente salvos na pasta dele no Drive — usado para AUDITAR um cadastro que já foi digitado, não para preencher um vazio (isso é o ler_documento_identificacao). Use quando o colaborador pedir para "conferir esse cadastro com a documentação", "ver se não errei nenhum dado", "revisar o cadastro com os documentos do cliente" etc. Primeiro use find_lead para achar o leadId. REGRA FIXA: ela procura os documentos de referência dentro da subpasta "COMPRADOR" da pasta do cliente (onde a equipe guarda a documentação de conferência); se essa subpasta não existir, procura na pasta do cliente inteira. Ignora qualquer coisa dentro de uma subpasta chamada "DESNECESSARIOS". Retorna uma lista de divergências encontradas (campo, o que está no cadastro, o que está no documento, e em qual arquivo), ou confirma que não achou nenhuma. Pode não conseguir ler todos os documentos se a pasta tiver muitos arquivos grandes (ela avisa quais ficaram de fora). SEMPRE mostre as divergências encontradas ao colaborador um a um — NUNCA corrija o cadastro sozinho; só use update_lead depois que ele confirmar qual valor está certo.',
     input_schema: { type: 'object', properties: {
       leadId: { type: 'string', description: 'ID do lead (via find_lead)' },
       nomePasta: { type: 'string', description: 'Nome da pasta do cliente no Drive, se diferente do nome do lead (opcional).' },
@@ -390,7 +390,7 @@ const AGENT_TOOLS = [
   },
   {
     name: 'conferir_documento_com_pasta_drive',
-    description: 'Confere um FORMULÁRIO/DOCUMENTO específico (ex.: ficha cadastral, formulário de proposta) contra os OUTROS documentos do cliente na pasta dele no Drive (CNH, comprovante de renda, de residência etc) — diferente de conferir_cadastro_com_documentos (que compara com o cadastro já salvo no CRM). O formulário de referência pode vir de DUAS formas: (1) o colaborador anexa o arquivo NESTA CONVERSA (botão de anexo do chat) — nesse caso não precisa informar nomeArquivoReferencia, ela usa o anexo sozinha; (2) o formulário já está DENTRO da pasta do cliente no Drive (ex.: "ficha-cadastral" ou "formulário", às vezes numa subpasta "FORMULARIOS") — informe nomeArquivoReferencia com um trecho do nome, sem precisar anexar nada de novo. Primeiro use find_lead para achar o leadId; se for usar nomeArquivoReferencia e não souber o nome exato, pode listar a pasta antes (listar_pasta_drive). Se achar mais de um arquivo parecido com nomeArquivoReferencia, ela retorna as opções — não escolha sozinho, pergunte ao colaborador. Se o colaborador pedir a conferência sem ter anexado nada E sem indicar nomeArquivoReferencia, pergunte qual das duas formas ele quer usar. Retorna as divergências encontradas entre o formulário e os demais documentos (ou confirma que está tudo batendo). SEMPRE mostre as divergências ao colaborador — nunca corrija nada sozinho.',
+    description: 'Confere um FORMULÁRIO/DOCUMENTO específico (ex.: ficha cadastral, formulário de proposta) contra os OUTROS documentos do cliente na pasta dele no Drive (CNH, comprovante de renda, de residência etc) — diferente de conferir_cadastro_com_documentos (que compara com o cadastro já salvo no CRM). O formulário de referência pode vir de DUAS formas: (1) o colaborador anexa o arquivo NESTA CONVERSA (botão de anexo do chat) — nesse caso não precisa informar nomeArquivoReferencia, ela usa o anexo sozinha; (2) o formulário já está DENTRO da pasta do cliente no Drive (ex.: "ficha-cadastral" ou "formulário", às vezes numa subpasta "FORMULARIOS") — informe nomeArquivoReferencia com um trecho do nome, sem precisar anexar nada de novo. Primeiro use find_lead para achar o leadId; se for usar nomeArquivoReferencia e não souber o nome exato, pode listar a pasta antes (listar_pasta_drive). Se achar mais de um arquivo parecido com nomeArquivoReferencia, ela retorna as opções — não escolha sozinho, pergunte ao colaborador. Se o colaborador pedir a conferência sem ter anexado nada E sem indicar nomeArquivoReferencia, pergunte qual das duas formas ele quer usar. REGRA FIXA: os OUTROS documentos (o material de referência pra comparar) vêm da subpasta "COMPRADOR" da pasta do cliente, quando existir (senão, da pasta do cliente inteira) — ignora qualquer coisa dentro de uma subpasta "DESNECESSARIOS". Retorna as divergências encontradas entre o formulário e os demais documentos (ou confirma que está tudo batendo). SEMPRE mostre as divergências ao colaborador — nunca corrija nada sozinho.',
     input_schema: { type: 'object', properties: {
       leadId: { type: 'string', description: 'ID do lead/cliente cuja pasta no Drive será usada como referência (via find_lead)' },
       nomePasta: { type: 'string', description: 'Nome da pasta do cliente no Drive, se diferente do nome do lead (opcional).' },
@@ -591,13 +591,29 @@ async function resolveClientDriveDocuments(
   const folder = nomePasta ? await findFolderByNameUnderRoot(accountId, nomePasta) : null;
   if (!folder) return { ok: false, error: `Não encontrei a pasta "${nomePasta}" no Drive. Confirme o nome da pasta do cliente com o colaborador.` };
 
+  // REGRA FIXA: a documentação de conferência do cliente fica dentro da
+  // subpasta "COMPRADOR" (quando existir) — não na pasta do cliente toda,
+  // que também tem coisa como FORMULARIOS (o próprio formulário a conferir,
+  // não material de referência). Se não existir essa subpasta, cai pra pasta
+  // do cliente inteira (compatibilidade com clientes organizados diferente).
+  const normalize = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  let scanRootId = folder.folderId;
+  try {
+    const subfolders = await listFolders(accountId, folder.folderId);
+    const compradorFolder = subfolders.find((f) => normalize(f.name) === 'comprador');
+    if (compradorFolder) scanRootId = compradorFolder.id;
+  } catch { /* segue com a pasta do cliente inteira */ }
+
   let allFiles: { id: string; name: string; mimeType: string; path: string; size: number }[] = [];
   try {
-    allFiles = (await listAllFilesInFolderTree(accountId, folder.folderId)).filter((f) => DRIVE_DOC_TYPES.includes(f.mimeType) && f.id !== excludeFileId);
+    allFiles = (await listAllFilesInFolderTree(accountId, scanRootId))
+      // "DESNECESSARIOS" é usado pela equipe pra guardar documento
+      // duplicado/velho que não deve entrar na conferência.
+      .filter((f) => DRIVE_DOC_TYPES.includes(f.mimeType) && f.id !== excludeFileId && !normalize(f.path).includes('desnecess'));
   } catch (err: any) {
     return { ok: false, error: `Falha ao listar a pasta do Drive: ${err?.message || 'erro desconhecido'}` };
   }
-  if (allFiles.length === 0) return { ok: false, error: `Não achei nenhum documento (foto/PDF) na pasta "${nomePasta}".` };
+  if (allFiles.length === 0) return { ok: false, error: `Não achei nenhum documento (foto/PDF) na pasta "${nomePasta}"${scanRootId !== folder.folderId ? ' (subpasta COMPRADOR)' : ''}.` };
 
   // Prioriza: 1º documento de identidade (CNH/RG), 2º outros "óbvios"
   // (comprovante/contracheque/certidão etc), 3º o resto — e dentro de cada
