@@ -1,5 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { getExtensionSocketId } from '../websocket';
+import { searchKnowledge } from './knowledge.service';
+import { resolveClientDriveDocuments, extractKeyFieldsFromDocs } from '../routes/ai';
 
 const prisma = new PrismaClient();
 
@@ -21,16 +23,27 @@ interface AnthropicContentBlock {
 
 const VIEWPORT = { width: 1280, height: 800 };
 
-const BROWSER_AGENT_SYSTEM_PROMPT = `Você é o Agente de Navegador do AF CRM — controla um navegador Chrome REAL (a tela e o mouse/teclado de verdade do colaborador) para executar tarefas em sites externos ao CRM, a partir de um pedido em linguagem natural.
+/** Monta o system prompt do agente, com o MANUAL relevante da Base de
+ *  Conhecimento (se houver algum cadastrado — ver Configurações → Base de
+ *  Conhecimento) encaixado antes das regras de segurança. É o mesmo
+ *  searchKnowledge já usado pelo assistente interno e pela IA do WhatsApp —
+ *  um manual (PDF/Doc) explicando login/navegação de um site específico
+ *  (ex.: "como emitir certidão no ONR", "como consultar dados no sistema X")
+ *  vira contexto automático pro agente seguir o passo a passo certo, em vez
+ *  de tentar adivinhar navegando às cegas. */
+function buildBrowserAgentSystemPrompt(manualTexto: string): string {
+  return `Você é o Agente de Navegador do AF CRM — controla um navegador Chrome REAL (a tela e o mouse/teclado de verdade do colaborador) para executar tarefas em sites externos ao CRM, a partir de um pedido em linguagem natural.
 
 Como funciona: a cada passo você recebe uma SCREENSHOT real da aba ativa (${VIEWPORT.width}x${VIEWPORT.height} pixels — as coordenadas x,y que você usar em browser_click/browser_type são relativas a essa imagem) e decide a PRÓXIMA ação usando as ferramentas disponíveis. Depois de cada ação, você recebe uma nova screenshot mostrando o resultado.
 
+${manualTexto ? `--- MANUAL DE REFERÊNCIA (da Base de Conhecimento, relevante pra essa tarefa) ---\n${manualTexto}\n\nSiga esse manual como guia principal de COMO navegar/agir neste site (onde clicar, ordem dos passos) — mas ainda decida cada ação olhando a screenshot de verdade, o site pode ter mudado desde que o manual foi escrito.\n` : ''}
 Regras fixas de segurança (ainda sem exceção nesta versão):
 - NUNCA digite senha, CPF+senha, código de certificado digital, dados de cartão/pagamento, nem tente resolver um CAPTCHA. Se a tarefa exigir qualquer um desses passos, PARE e explique em texto (sem chamar mais nenhuma ferramenta) o que falta um humano fazer manualmente — não tente contornar.
 - Não confirme/finalize nenhuma ação que pareça irreversível (enviar, comprar, assinar, emitir um documento oficial) sem deixar claro no seu relatório final que aquele passo específico ainda precisa de confirmação humana — nesta versão você ainda não tem um mecanismo de aprovação ao vivo, então é mais seguro parar um passo antes do ponto de não-volta e reportar.
 - Vá com calma: olhe a screenshot com atenção antes de clicar, prefira poucos passos deliberados a muitos passos apressados.
 
 Quando terminar a tarefa (ou quando precisar parar por algum dos motivos acima), responda em TEXTO simples (sem chamar mais ferramentas) resumindo o que foi feito e o que falta, se algo faltar.`;
+}
 
 const BROWSER_AGENT_TOOLS = [
   {
@@ -207,6 +220,40 @@ export async function runAgentLoop(taskId: string, accountId: string, userId: st
   await prisma.agentTask.update({ where: { id: taskId }, data: { status: 'RUNNING' } });
   io.to(`user_${userId}`).emit('agent_task_status', { taskId, status: 'RUNNING' });
 
+  // Contexto extra pro agente, montado UMA vez antes do loop (não muda passo
+  // a passo): 1) manual relevante da Base de Conhecimento (como navegar no
+  // site — login, onde clicar); 2) se a tarefa é de um lead específico, os
+  // dados desse cliente (nome, CPF, endereço, renda etc, extraídos dos
+  // documentos dele no Drive — mesma extração usada por preencher_
+  // formulario_editavel) — assim "preenche a PFI do Sebastião" já chega pro
+  // agente sabendo tanto COMO navegar quanto O QUE digitar.
+  let manualTexto = '';
+  try {
+    const kbHits = await searchKnowledge(accountId, task.instruction, 5);
+    if (kbHits.length) {
+      manualTexto += kbHits.map((h, i) => `[${i + 1}] ${h.content}`).join('\n\n');
+    }
+  } catch (err) {
+    console.error('[Agente de Navegador] Busca na Base de Conhecimento falhou:', err);
+  }
+  if (task.leadId) {
+    try {
+      const lead = await prisma.lead.findFirst({ where: { id: task.leadId, accountId } });
+      if (lead) {
+        const resolved = await resolveClientDriveDocuments(accountId, lead.name);
+        if (resolved.ok) {
+          const transcricao = await extractKeyFieldsFromDocs(apiKey, resolved.docs);
+          if (transcricao) {
+            manualTexto += `${manualTexto ? '\n\n' : ''}--- DADOS DO CLIENTE "${lead.name}" (extraídos dos documentos dele no Drive) ---\n${transcricao}`;
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Agente de Navegador] Falha ao carregar dados do cliente:', err);
+    }
+  }
+  const systemPrompt = buildBrowserAgentSystemPrompt(manualTexto);
+
   const convo: { role: string; content: any }[] = [{ role: 'user', content: task.instruction }];
   let seq = 0;
   let finalText = 'A tarefa não terminou dentro do limite de passos — peça de novo dividindo em partes menores.';
@@ -226,7 +273,7 @@ export async function runAgentLoop(taskId: string, accountId: string, userId: st
         body: JSON.stringify({
           model: 'claude-sonnet-5',
           max_tokens: 1024,
-          system: BROWSER_AGENT_SYSTEM_PROMPT,
+          system: systemPrompt,
           tools: BROWSER_AGENT_TOOLS,
           messages: convo,
         }),

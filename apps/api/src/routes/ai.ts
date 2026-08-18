@@ -589,7 +589,7 @@ const DRIVE_DOC_NAME_HEUR_OUTROS = /holerite|contracheque|comprovante|renda|resi
  * conferir_documento_com_pasta_drive, que só diferem em CONTRA O QUE
  * comparam esses documentos (o cadastro no CRM vs. um formulário específico).
  */
-async function resolveClientDriveDocuments(
+export async function resolveClientDriveDocuments(
   accountId: string,
   leadName: string,
   nomePastaInput?: string,
@@ -700,7 +700,7 @@ async function extractKeyFieldsFromOneDoc(apiKey: string, doc: { name: string; m
  * leitura com comparação. Ler cada documento sozinho e só DEPOIS comparar os
  * textos resolve os dois problemas de uma vez.
  */
-async function extractKeyFieldsFromDocs(apiKey: string, docs: { name: string; mimeType: string; buffer: Buffer }[]): Promise<string | null> {
+export async function extractKeyFieldsFromDocs(apiKey: string, docs: { name: string; mimeType: string; buffer: Buffer }[]): Promise<string | null> {
   const results = await Promise.all(docs.map((d) => extractKeyFieldsFromOneDoc(apiKey, d).catch(() => null)));
   const ok = results.filter((r): r is string => !!r);
   return ok.length ? ok.join('\n\n') : null;
