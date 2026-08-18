@@ -1897,35 +1897,51 @@ async function executeAgentTool(
 
     // 5) Pede o mapeamento campo → valor (manda o PDF em branco também, pra
     // o modelo enxergar o RÓTULO visual de cada campo — o nome técnico
-    // sozinho, tipo "Text14", quase nunca é autoexplicativo).
+    // sozinho, tipo "Text14", quase nunca é autoexplicativo). Formulários
+    // desse tipo (proposta de financiamento) chegam a ter 100+ campos —
+    // pedir o mapeamento de TODOS numa chamada só (achado num caso real)
+    // sobrecarrega o modelo e ele volta sem preencher quase nada, mesmo
+    // tendo o dado disponível. Divide em lotes menores, em paralelo — mesma
+    // lição da conferência de documentos: menos coisa por chamada, mais
+    // confiável.
+    const MAP_BATCH_SIZE = 20;
+    const fieldBatches: (typeof fieldInfo)[] = [];
+    for (let i = 0; i < fieldInfo.length; i += MAP_BATCH_SIZE) fieldBatches.push(fieldInfo.slice(i, i + MAP_BATCH_SIZE));
+
+    const MAP_SYSTEM_PROMPT = 'Você preenche formulários de financeira em PDF com os dados de um cliente. Vai receber o PDF em branco (pra ver o RÓTULO visual de cada campo), a lista técnica de um LOTE de campos (nome interno, tipo, e opções quando houver) e os dados do cliente extraídos dos documentos dele. Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"campos": {"<nome técnico do campo>": "<valor a preencher>"}}, só com os campos DESTE LOTE. Preencha SÓ os campos que tem certeza do valor certo, olhando o rótulo visual de cada campo no PDF — NUNCA invente ou "chute" um valor pra um campo sem correspondência clara nos dados do cliente; nesse caso simplesmente não inclua esse campo no JSON (não deixe de incluir os que você TEM certeza só por cautela). Para campo tipo "checkbox", use "true" ou "false". Para campo tipo "lista" ou "opcoes", use EXATAMENTE uma das opções informadas para aquele campo (nunca um valor fora da lista).';
+
     let mapping: Record<string, unknown> = {};
     try {
-      const mapRes = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-5',
-          max_tokens: 2000,
-          system: 'Você preenche formulários de financeira em PDF com os dados de um cliente. Vai receber o PDF em branco (pra ver o RÓTULO visual de cada campo), a lista técnica dos campos (nome interno, tipo, e opções quando houver) e os dados do cliente extraídos dos documentos dele. Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"campos": {"<nome técnico do campo>": "<valor a preencher>"}}. Preencha SÓ os campos que tem certeza do valor certo, olhando o rótulo visual de cada campo no PDF — NUNCA invente ou "chute" um valor pra um campo sem correspondência clara nos dados do cliente; nesse caso simplesmente não inclua esse campo no JSON. Para campo tipo "checkbox", use "true" ou "false". Para campo tipo "lista" ou "opcoes", use EXATAMENTE uma das opções informadas para aquele campo (nunca um valor fora da lista).',
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'text', text: 'FORMULÁRIO EM BRANCO (para ver os rótulos visuais dos campos):' },
-              { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: templateBuffer.toString('base64') } },
-              { type: 'text', text: `CAMPOS TÉCNICOS DO FORMULÁRIO:\n${JSON.stringify(fieldInfo)}\n\nDADOS DO CLIENTE (extraídos dos documentos dele):\n${transcricaoDocs}\n\nMonte o mapeamento campo → valor.` },
-            ],
-          }],
-        }),
-      });
-      if (!mapRes.ok) {
-        const errText = await mapRes.text();
-        return { success: false, error: `Erro ao mapear os campos do formulário: ${mapRes.status} ${errText.slice(0, 200)}` };
-      }
-      const mapData = await mapRes.json() as { content: { type: string; text?: string }[] };
-      const raw = mapData.content?.find((b) => b.type === 'text')?.text || '{}';
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
-      mapping = parsed?.campos && typeof parsed.campos === 'object' ? parsed.campos : {};
+      const batchResults = await Promise.all(fieldBatches.map(async (batch) => {
+        try {
+          const mapRes = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+            body: JSON.stringify({
+              model: 'claude-sonnet-5',
+              max_tokens: 1500,
+              system: MAP_SYSTEM_PROMPT,
+              messages: [{
+                role: 'user',
+                content: [
+                  { type: 'text', text: 'FORMULÁRIO EM BRANCO (para ver os rótulos visuais dos campos):' },
+                  { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: templateBuffer.toString('base64') } },
+                  { type: 'text', text: `LOTE DE CAMPOS TÉCNICOS A MAPEAR:\n${JSON.stringify(batch)}\n\nDADOS DO CLIENTE (extraídos dos documentos dele):\n${transcricaoDocs}\n\nMonte o mapeamento campo → valor SÓ para os campos deste lote.` },
+                ],
+              }],
+            }),
+          });
+          if (!mapRes.ok) return {};
+          const mapData = await mapRes.json() as { content: { type: string; text?: string }[] };
+          const raw = mapData.content?.find((b) => b.type === 'text')?.text || '{}';
+          const jsonMatch = raw.match(/\{[\s\S]*\}/);
+          const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+          return parsed?.campos && typeof parsed.campos === 'object' ? parsed.campos : {};
+        } catch {
+          return {};
+        }
+      }));
+      mapping = Object.assign({}, ...batchResults);
     } catch (err: any) {
       return { success: false, error: `Falha ao mapear os dados pro formulário: ${err?.message || 'erro desconhecido'}` };
     }
