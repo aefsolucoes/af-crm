@@ -1821,20 +1821,35 @@ async function executeAgentTool(
     const materiaisFolder = await findFolderByNameUnderRoot(accountId, '4. MATERIAIS DE APOIO');
     if (!materiaisFolder) return { success: false, error: 'Não encontrei a pasta "4. MATERIAIS DE APOIO" no Drive (onde ficam os modelos de formulário).' };
 
-    // 2) Acha o modelo: primeiro tenta como PASTA (ex.: "FORMULARIOS BANCOS/BRB"),
-    // que é como estão organizados hoje — todo PDF dentro dessa pasta vira candidato.
-    // Se não achar pasta com esse nome, cai pra buscar por NOME DE ARQUIVO na árvore inteira.
+    // 2) Restringe a busca às pastas de MODELO conhecidas (FORMULARIOS BANCOS
+    // e MODELOS DE FORMULARIO), nunca a "4. MATERIAIS DE APOIO" inteira — essa
+    // pasta também tem outras coisas (ex.: uma pasta "BANCOS" de material de
+    // estudo, sem relação com modelo de formulário) que geravam ambiguidade
+    // falsa (duas pastas "BRB" — uma de modelo de verdade, outra não).
+    const TEMPLATE_ROOT_NAMES = ['FORMULARIOS BANCOS', 'MODELOS DE FORMULARIO'];
     let templateCandidates: { id: string; name: string; mimeType: string; path: string }[] = [];
     try {
-      const foundFolders = await findFoldersByNamesInTree(accountId, materiaisFolder.folderId, [nomeFormulario]);
-      const folderMatches = foundFolders.get(nomeFormulario.trim().toLowerCase()) || [];
+      const materiaisSubfolders = await listFolders(accountId, materiaisFolder.folderId);
+      const templateRoots = materiaisSubfolders.filter((f) => TEMPLATE_ROOT_NAMES.some((n) => n.toLowerCase() === f.name.trim().toLowerCase()));
+      const rootsToSearch = templateRoots.length > 0 ? templateRoots : [{ id: materiaisFolder.folderId, name: '4. MATERIAIS DE APOIO' }]; // fallback se a conta não tiver essas subpastas
+
+      let folderMatches: { id: string; path: string }[] = [];
+      for (const root of rootsToSearch) {
+        const found = await findFoldersByNamesInTree(accountId, root.id, [nomeFormulario]);
+        folderMatches = folderMatches.concat((found.get(nomeFormulario.trim().toLowerCase()) || []).map((m) => ({ id: m.id, path: `${root.name} > ${m.path}` })));
+      }
+
       if (folderMatches.length === 1) {
         const contents = await listFolderContents(accountId, folderMatches[0].id);
         templateCandidates = contents.filter((f) => !f.isFolder && f.mimeType === 'application/pdf').map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, path: folderMatches[0].path }));
       } else if (folderMatches.length > 1) {
         return { success: false, needsDisambiguation: true, opcoes: folderMatches.map((m) => ({ pasta: m.path })), error: `Achei mais de uma pasta de formulário parecida com "${nomeFormulario}" — pergunte ao colaborador qual é a certa.` };
       } else {
-        templateCandidates = (await findFilesInFolderTree(accountId, materiaisFolder.folderId, nomeFormulario)).filter((f) => f.mimeType === 'application/pdf');
+        // Nenhuma PASTA com esse nome — cai pra buscar por NOME DE ARQUIVO
+        // dentro das mesmas pastas-raiz de modelo (nunca a árvore toda).
+        for (const root of rootsToSearch) {
+          templateCandidates = templateCandidates.concat((await findFilesInFolderTree(accountId, root.id, nomeFormulario)).filter((f) => f.mimeType === 'application/pdf'));
+        }
       }
     } catch (err: any) {
       return { success: false, error: `Falha ao buscar o modelo de formulário no Drive: ${err?.message || 'erro desconhecido'}` };
