@@ -16,26 +16,18 @@ import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
 
-// Ordem fixa dos pipelines
+// Ordem fixa dos pipelines dentro de cada setor
 const PIPELINE_ORDER = ['Caixa de Entrada', 'Vendas', 'Em contratação', 'Follow Up'];
 
-// Lembra o último funil aberto (por navegador/usuário) pra não voltar sempre
-// pro "Caixa de Entrada" quando dá F5 na página.
-const SELECTED_PIPELINE_KEY = 'af-crm:funil:selectedPipelineId';
-function readStoredPipelineId(): string {
-  if (typeof window === 'undefined') return '';
-  try { return localStorage.getItem(SELECTED_PIPELINE_KEY) || ''; } catch { return ''; }
-}
-function storePipelineId(id: string) {
-  if (typeof window === 'undefined') return;
-  try {
-    if (id) localStorage.setItem(SELECTED_PIPELINE_KEY, id);
-    else localStorage.removeItem(SELECTED_PIPELINE_KEY);
-  } catch { /* localStorage indisponível (modo privado etc.) — segue sem persistir */ }
-}
+interface DepartmentOption { id: string; name: string; }
 
 async function fetchPipelines(): Promise<Pipeline[]> {
   const { data } = await api.get('/api/pipelines');
+  return data;
+}
+
+async function fetchDepartments(): Promise<DepartmentOption[]> {
+  const { data } = await api.get('/api/departments');
   return data;
 }
 
@@ -54,7 +46,19 @@ async function fetchContacts(): Promise<Contact[]> {
   return data;
 }
 
-export default function FunilPage() {
+interface FunilViewProps {
+  /** Nome exato do Department (ex.: "Financiamento Habitacional") — filtra
+   *  quais pipelines aparecem aqui. Cada setor tem sua própria tela agora,
+   *  em vez de um único "Funil de Vendas" misturando tudo. */
+  departmentName: string;
+  /** Título mostrado no topo (ex.: "Funil de Vendas Habitação"). */
+  title: string;
+  /** Sufixo pra chave do localStorage — cada setor lembra seu próprio último
+   *  funil selecionado, sem um sobrescrever o do outro. */
+  storageKeySuffix: string;
+}
+
+export function FunilView({ departmentName, title, storageKeySuffix }: FunilViewProps) {
   const { leads: storeLeads, setLeads, moveLeadOptimistic } = usePipelineStore();
   const [openAddLead, setOpenAddLead] = useState(false);
   const [openDuplicates, setOpenDuplicates] = useState(false);
@@ -62,6 +66,20 @@ export default function FunilPage() {
   const me = useAuthStore((s) => s.user);
   const isAdmin = me?.role === 'ADMIN';
   const [showArchived, setShowArchived] = useState(false);
+
+  const selectedPipelineKey = `af-crm:funil:${storageKeySuffix}:selectedPipelineId`;
+  function readStoredPipelineId(): string {
+    if (typeof window === 'undefined') return '';
+    try { return localStorage.getItem(selectedPipelineKey) || ''; } catch { return ''; }
+  }
+  function storePipelineId(id: string) {
+    if (typeof window === 'undefined') return;
+    try {
+      if (id) localStorage.setItem(selectedPipelineKey, id);
+      else localStorage.removeItem(selectedPipelineKey);
+    } catch { /* localStorage indisponível (modo privado etc.) — segue sem persistir */ }
+  }
+
   const [selectedPipelineId, setSelectedPipelineIdRaw] = useState<string>(readStoredPipelineId);
   // Troca o funil selecionado E lembra a escolha (F5 volta pro mesmo funil).
   function setSelectedPipelineId(id: string) {
@@ -89,15 +107,23 @@ export default function FunilPage() {
     return () => { socket.off('new_notification', onNewNotification); };
   }, [queryClient]);
 
-  const { data: pipelines, isLoading: loadingPipelines } = useQuery({
+  const { data: allPipelines, isLoading: loadingPipelines } = useQuery({
     queryKey: ['pipelines'],
     queryFn: fetchPipelines,
   });
 
+  const { data: departments } = useQuery({ queryKey: ['departments'], queryFn: fetchDepartments });
+  const department = (departments || []).find((d) => d.name === departmentName);
+
+  // Só os pipelines DESTE setor — é o que separa as duas telas de verdade.
+  const departmentPipelines = useMemo(
+    () => (allPipelines || []).filter((p) => p.department?.name === departmentName),
+    [allPipelines, departmentName]
+  );
+
   // Pipelines ordenados: Caixa de Entrada → Vendas → Em contratação → Follow Up
   const sortedPipelines = useMemo(() => {
-    if (!pipelines) return [];
-    return [...pipelines].sort((a, b) => {
+    return [...departmentPipelines].sort((a, b) => {
       const ai = PIPELINE_ORDER.indexOf(a.name);
       const bi = PIPELINE_ORDER.indexOf(b.name);
       if (ai === -1 && bi === -1) return 0;
@@ -105,15 +131,15 @@ export default function FunilPage() {
       if (bi === -1) return -1;
       return ai - bi;
     });
-  }, [pipelines]);
+  }, [departmentPipelines]);
 
   const pipeline = sortedPipelines.find(p => p.id === selectedPipelineId) || sortedPipelines[0];
 
   useEffect(() => {
     if (!sortedPipelines[0]) return;
     // Sem nada selecionado (1ª visita) ou o funil lembrado não existe mais
-    // (foi excluído) — cai pro primeiro da lista. Fora isso, respeita o que
-    // já está selecionado (inclusive o que veio do localStorage no F5).
+    // (foi excluído, ou é de outro setor) — cai pro primeiro da lista deste
+    // setor. Fora isso, respeita o que já está selecionado.
     const stillExists = sortedPipelines.some(p => p.id === selectedPipelineId);
     if (!selectedPipelineId || !stillExists) {
       setSelectedPipelineId(sortedPipelines[0].id);
@@ -127,7 +153,7 @@ export default function FunilPage() {
     enabled: !!selectedPipelineId && !search.trim(),
   });
 
-  // Todos os leads (para busca cross-pipeline)
+  // Todos os leads (para busca cross-pipeline) — só os DESTE setor.
   const { data: allRawLeads, refetch: refetchAll } = useQuery({
     queryKey: ['leads-all'],
     queryFn: fetchAllLeads,
@@ -141,10 +167,15 @@ export default function FunilPage() {
     if (rawLeads) setLeads(rawLeads);
   }, [rawLeads, setLeads]);
 
-  // Leads para exibição: se pesquisando usa todos os funis, senão usa pipeline atual
-  // Aplica updates otimísticos do store por cima dos dados do servidor
+  const departmentPipelineIds = useMemo(() => new Set(sortedPipelines.map((p) => p.id)), [sortedPipelines]);
+
+  // Leads para exibição: se pesquisando usa todos os funis DESTE SETOR, senão
+  // usa pipeline atual. Aplica updates otimísticos do store por cima dos
+  // dados do servidor.
   const displayLeads = useMemo(() => {
-    const baseLeads = search.trim() ? (allRawLeads || []) : (rawLeads || []);
+    const baseLeads = search.trim()
+      ? (allRawLeads || []).filter((l) => departmentPipelineIds.has(l.pipelineId))
+      : (rawLeads || []);
 
     if (!search.trim() && storeLeads.length > 0) {
       // Aplica updates otimísticos (drag-and-drop) sem perder novos leads do servidor
@@ -175,7 +206,7 @@ export default function FunilPage() {
     }
 
     return baseLeads;
-  }, [rawLeads, allRawLeads, storeLeads, search]);
+  }, [rawLeads, allRawLeads, storeLeads, search, departmentPipelineIds]);
 
   // Usuários únicos extraídos dos leads
   const users: User[] = useMemo(() =>
@@ -195,7 +226,11 @@ export default function FunilPage() {
     if (!name) return;
     setSavingPipeline(true);
     try {
-      const { data } = await api.post('/api/pipelines', { name });
+      // Manda o departmentId deste setor — pra um Admin (que escolhe o setor
+      // livremente), sem isso o funil novo nasceria "órfão" e não apareceria
+      // em NENHUMA das duas telas. Pra colaborador comum, o backend ignora
+      // isso e usa o setor dele mesmo de qualquer jeito.
+      const { data } = await api.post('/api/pipelines', { name, departmentId: department?.id });
       await queryClient.invalidateQueries({ queryKey: ['pipelines'] });
       setSelectedPipelineId(data.id);
       setNewPipelineName('');
@@ -239,7 +274,7 @@ export default function FunilPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Topbar title="Funil de Vendas" subtitle={search.trim() ? 'Todos os funis' : pipeline?.name} />
+      <Topbar title={title} subtitle={search.trim() ? `Todos os funis de ${departmentName}` : pipeline?.name} />
 
       <div className="flex items-center justify-between px-6 py-3 app-topbar-surface border-b gap-4">
         <div className="flex items-center gap-3 flex-1">
@@ -282,7 +317,7 @@ export default function FunilPage() {
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               type="text"
-              placeholder="Buscar em todos os funis..."
+              placeholder={`Buscar nos funis de ${departmentName}...`}
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full pl-8 pr-8 py-1.5 text-sm border border-af-border rounded-lg bg-af-light text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent placeholder:text-slate-400"
@@ -298,7 +333,7 @@ export default function FunilPage() {
           </div>
           {search && (
             <span className="text-xs text-slate-500 flex-shrink-0">
-              {displayLeads.length} resultado{displayLeads.length !== 1 ? 's' : ''} em todos os funis
+              {displayLeads.length} resultado{displayLeads.length !== 1 ? 's' : ''} em {departmentName}
             </span>
           )}
         </div>
@@ -352,7 +387,7 @@ export default function FunilPage() {
           />
         ) : (
           <div className="flex items-center justify-center h-full text-slate-400 text-sm">
-            Nenhum pipeline encontrado
+            Nenhum pipeline encontrado em {departmentName}
           </div>
         )}
       </div>

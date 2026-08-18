@@ -160,11 +160,11 @@ export default function DashboardPage() {
               </Link>
             </>
           )}
-          <Link href="/funil" className="bg-af-navy rounded-xl p-5 shadow-sm flex flex-col items-center justify-center gap-1.5 text-white hover:bg-af-blue transition-colors">
+          <Link href="/funil-habitacao" className="bg-af-navy rounded-xl p-5 shadow-sm flex flex-col items-center justify-center gap-1.5 text-white hover:bg-af-blue transition-colors">
             <Inbox size={20} />
             <span className="text-xs font-semibold">Ver Funil</span>
           </Link>
-          <Link href="/funil" className="bg-af-mid rounded-xl p-5 shadow-sm flex flex-col items-center justify-center gap-1.5 text-white hover:bg-af-accent transition-colors">
+          <Link href="/funil-habitacao" className="bg-af-mid rounded-xl p-5 shadow-sm flex flex-col items-center justify-center gap-1.5 text-white hover:bg-af-accent transition-colors">
             <Plus size={20} />
             <span className="text-xs font-semibold">Novo Lead</span>
           </Link>

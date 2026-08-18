@@ -67,6 +67,7 @@ export interface Pipeline {
   id: string;
   name: string;
   stages: Stage[];
+  department?: { id: string; name: string } | null;
 }
 
 export interface Lead {

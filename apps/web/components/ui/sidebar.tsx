@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
-  LayoutDashboard, Kanban, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
+  LayoutDashboard, Kanban, Home, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
   FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, MousePointerClick,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
@@ -15,7 +15,8 @@ import { effectivePermissions, PermissionKey } from '@/lib/permissions';
 
 const NAV: { href: string; label: string; icon: typeof BarChart3; perm: PermissionKey }[] = [
   { href: '/dashboard', label: 'Dashboard', icon: BarChart3, perm: 'dashboard' },
-  { href: '/funil', label: 'Funil de Vendas', icon: Kanban, perm: 'funnel_view' },
+  { href: '/funil-habitacao', label: 'Funil de Vendas Habitação', icon: Home, perm: 'funnel_view' },
+  { href: '/funil-consorcio', label: 'Funil de Vendas Consórcio', icon: Kanban, perm: 'funnel_view' },
   { href: '/inbox', label: 'Inbox', icon: MessageSquare, perm: 'inbox_view' },
   { href: '/tarefas', label: 'Tarefas', icon: CheckSquare, perm: 'tasks' },
   { href: '/salesbot', label: 'SalesBot', icon: Bot, perm: 'salesbot' },
