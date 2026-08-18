@@ -6,12 +6,28 @@
 const CDP_VERSION = '1.3';
 const attachedTabs = new Set<number>();
 
+// Sem isso, um chrome.debugger.attach/sendCommand que nunca chama o callback
+// (ex.: aba que não aceita debugger) trava o comando pra sempre — o único
+// sintoma lá fora era "Extensão não respondeu a tempo" sem dizer POR QUE.
+// Com o timeout aqui dentro, a extensão mesma detecta e devolve um erro
+// específico bem mais rápido que os 15s do lado do servidor.
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timeout (${ms}ms) em: ${label}`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
 function sendCommand<T = unknown>(
   tabId: number,
   method: string,
   params?: Record<string, unknown>
 ): Promise<T> {
-  return new Promise((resolve, reject) => {
+  console.log(`[Agente de Navegador] CDP ${method}`, params ?? '');
+  const p = new Promise<T>((resolve, reject) => {
     chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
@@ -20,11 +36,16 @@ function sendCommand<T = unknown>(
       resolve(result as T);
     });
   });
+  return withTimeout(p, 8000, `sendCommand ${method}`);
 }
 
 async function ensureAttached(tabId: number): Promise<void> {
-  if (attachedTabs.has(tabId)) return;
-  await new Promise<void>((resolve, reject) => {
+  if (attachedTabs.has(tabId)) {
+    console.log(`[Agente de Navegador] debugger já anexado na aba ${tabId}`);
+    return;
+  }
+  console.log(`[Agente de Navegador] anexando debugger na aba ${tabId}...`);
+  const p = new Promise<void>((resolve, reject) => {
     chrome.debugger.attach({ tabId }, CDP_VERSION, () => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
@@ -33,17 +54,21 @@ async function ensureAttached(tabId: number): Promise<void> {
       resolve();
     });
   });
+  await withTimeout(p, 8000, 'chrome.debugger.attach');
   attachedTabs.add(tabId);
+  console.log(`[Agente de Navegador] debugger anexado na aba ${tabId}`);
 }
 
 // Se o usuário fechar a faixa amarela manualmente (ou fechar a aba), o Chrome
 // desanexa sozinho — atualiza o registro pra não achar que ainda está anexado.
-chrome.debugger.onDetach.addListener((source) => {
+chrome.debugger.onDetach.addListener((source, reason) => {
+  console.log(`[Agente de Navegador] debugger desanexado da aba ${source.tabId}: ${reason}`);
   if (source.tabId != null) attachedTabs.delete(source.tabId);
 });
 
 export async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  console.log('[Agente de Navegador] aba ativa:', tab ? `#${tab.id} ${tab.url}` : 'NENHUMA');
   return tab;
 }
 

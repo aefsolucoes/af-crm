@@ -17,9 +17,10 @@ type AgentCommand =
   | { type: 'type'; text: string };
 
 async function executeCommand(cmd: AgentCommand): Promise<Record<string, unknown>> {
-  const tab = await getActiveTab();
-  if (!tab?.id) return { error: 'Nenhuma aba ativa encontrada' };
+  console.log('[Agente de Navegador] comando recebido:', cmd);
   try {
+    const tab = await getActiveTab();
+    if (!tab?.id) return { error: 'Nenhuma aba ativa encontrada' };
     if (cmd.type === 'screenshot') {
       const data = await screenshot(tab.id);
       return { ok: true, screenshot: data };
@@ -36,6 +37,7 @@ async function executeCommand(cmd: AgentCommand): Promise<Record<string, unknown
     }
     return { error: `Comando desconhecido: ${(cmd as { type: string }).type}` };
   } catch (err) {
+    console.error('[Agente de Navegador] erro executando comando:', err);
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -85,8 +87,18 @@ async function connectSocket() {
   });
 
   socket.on('agent_command', async (payload: AgentCommand, ack: (result: unknown) => void) => {
-    const result = await executeCommand(payload);
-    ack(result);
+    // Rede de segurança: executeCommand já tem seu próprio try/catch, mas
+    // isso aqui garante que o ack() SEMPRE é chamado — sem isso, qualquer
+    // erro inesperado (fora do que já é tratado) deixaria o servidor esperando
+    // os 15s inteiros pra só então desistir, sem nenhuma pista do motivo.
+    try {
+      const result = await executeCommand(payload);
+      console.log('[Agente de Navegador] respondendo:', result);
+      ack(result);
+    } catch (err) {
+      console.error('[Agente de Navegador] erro inesperado no handler:', err);
+      ack({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 }
 
