@@ -141,6 +141,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
+// "Despertador": o Chrome suspende o service worker depois de ~30s sem
+// atividade — se isso acontecer bem na hora que o access token (1h) precisa
+// renovar, ninguém "acorda" pra fazer isso, e a conexão fica morta até
+// alguém abrir o popup manualmente. chrome.alarms É um dos poucos eventos
+// garantidos a acordar o worker de novo mesmo suspenso (ao contrário de um
+// setInterval comum, que morre junto com o worker). A cada disparo, só
+// reconecta se REALMENTE estiver desconectado — não interrompe uma tarefa em
+// andamento.
+const KEEPALIVE_ALARM = 'agent-keepalive';
+chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== KEEPALIVE_ALARM) return;
+  if (socket?.connected) return;
+  console.log('[Agente de Navegador] keep-alive: desconectado, tentando reconectar...');
+  connectSocket();
+});
+
 // Reconecta sozinho quando o Chrome reinicia o service worker (MV3 derruba o
 // worker depois de ~30s ocioso; ao acordar de novo por um evento, refaz a
 // conexão se já havia login salvo).

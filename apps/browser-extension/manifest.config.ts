@@ -19,6 +19,10 @@ export default defineManifest({
     'debugger', // Chrome DevTools Protocol — screenshot, clique, digitação na aba real
     'tabs', // saber qual é a aba ativa
     'storage', // guardar o token de login (chrome.storage.local)
+    // Acorda o service worker periodicamente mesmo sem nenhum evento (o
+    // Chrome suspende o worker depois de ~30s ocioso) — sem isso, o token de
+    // 1h expirava e ninguém "acordava" pra renovar e reconectar o socket.
+    'alarms',
   ],
   // Precisa poder conversar com a API em qualquer ambiente (produção, local).
   host_permissions: [
