@@ -52,6 +52,12 @@ async function connectSocket() {
 
   socket = io(API_URL, {
     autoConnect: true,
+    // Service worker (MV3) não tem XMLHttpRequest — só fetch/WebSocket. O
+    // transporte padrão do socket.io-client tenta "polling" primeiro (usa
+    // XHR por baixo) e só depois sobe pra WebSocket; sem XHR, isso falha
+    // direto com "xhr poll error" e nunca chega a tentar WebSocket. Forçando
+    // websocket como único transporte, pula o polling inteiro.
+    transports: ['websocket'],
     // Função (não objeto): reavalia o token guardado a cada tentativa de
     // conexão — importante porque o access token expira em 1h e é renovado
     // à parte (ver 'connect_error' abaixo).
