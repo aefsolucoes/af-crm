@@ -67,8 +67,19 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 });
 
 export async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  console.log('[Agente de Navegador] aba ativa:', tab ? `#${tab.id} ${tab.url}` : 'NENHUMA');
+  // { currentWindow: true } não funciona bem chamado de dentro do service
+  // worker: ele não "pertence" a nenhuma janela (diferente de um popup ou
+  // content script), então o Chrome não sabe resolver "a janela atual" —
+  // na prática, às vezes não acha nenhuma aba. Pedindo explicitamente a
+  // última janela NORMAL em foco (exclui DevTools, popups da própria
+  // extensão etc.) e buscando a aba ativa dentro dela funciona de verdade.
+  const window = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
+  if (!window?.id) {
+    console.log('[Agente de Navegador] nenhuma janela normal encontrada');
+    return undefined;
+  }
+  const [tab] = await chrome.tabs.query({ active: true, windowId: window.id });
+  console.log('[Agente de Navegador] aba ativa:', tab ? `#${tab.id} ${tab.url}` : 'NENHUMA', `(janela ${window.id})`);
   return tab;
 }
 
