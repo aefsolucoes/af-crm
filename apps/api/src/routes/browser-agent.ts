@@ -75,7 +75,7 @@ router.post('/tasks', async (req: AuthRequest, res: Response) => {
     return;
   }
   if (!getExtensionSocketId(req.user!.id)) {
-    res.status(409).json({ error: 'Extensão do Agente de Navegador não está conectada. Abra o Chrome com a extensão carregada e logada, numa aba comum.' });
+    res.status(409).json({ error: 'Extensão do Agente de Navegador não está conectada. Abra o Chrome com a extensão carregada e logada.' });
     return;
   }
   const task = await prisma.agentTask.create({

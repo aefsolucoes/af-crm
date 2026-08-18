@@ -82,20 +82,33 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   if (source.tabId != null) attachedTabs.delete(source.tabId);
 });
 
-export async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
-  // { currentWindow: true } não funciona bem chamado de dentro do service
-  // worker: ele não "pertence" a nenhuma janela (diferente de um popup ou
-  // content script), então o Chrome não sabe resolver "a janela atual" —
-  // na prática, às vezes não acha nenhuma aba. Pedindo explicitamente a
-  // última janela NORMAL em foco (exclui DevTools, popups da própria
-  // extensão etc.) e buscando a aba ativa dentro dela funciona de verdade.
-  const window = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
-  if (!window?.id) {
-    console.log('[Agente de Navegador] nenhuma janela normal encontrada');
-    return undefined;
+const AGENT_TAB_KEY = 'agentTabId';
+
+// Aba PRÓPRIA do agente — nunca a "aba ativa no momento". Antes disso usava
+// chrome.tabs.query({active:true}), que pegava QUALQUER aba que o usuário
+// estivesse olhando — na prática, quase sempre a própria aba do CRM (onde a
+// pessoa está acompanhando a tarefa), fazendo o agente "sequestrar" a tela do
+// CRM e navegar ela pra fora. Agora ele cria (ou reaproveita) uma aba dele
+// mesmo, aberta em SEGUNDO PLANO (active:false) — não tira o foco de onde o
+// usuário está. Guardado em chrome.storage.session (não uma variável comum)
+// pra sobreviver se o service worker for suspenso/reiniciado no meio da tarefa.
+export async function getOrCreateAgentTab(): Promise<chrome.tabs.Tab> {
+  const stored = await chrome.storage.session.get(AGENT_TAB_KEY);
+  const existingId = stored[AGENT_TAB_KEY] as number | undefined;
+  if (existingId) {
+    try {
+      const tab = await chrome.tabs.get(existingId);
+      if (tab?.id) {
+        console.log(`[Agente de Navegador] reaproveitando aba própria #${tab.id}`);
+        return tab;
+      }
+    } catch {
+      console.log('[Agente de Navegador] aba própria anterior não existe mais, criando uma nova');
+    }
   }
-  const [tab] = await chrome.tabs.query({ active: true, windowId: window.id });
-  console.log('[Agente de Navegador] aba ativa:', tab ? `#${tab.id} ${tab.url}` : 'NENHUMA', `(janela ${window.id})`);
+  const tab = await chrome.tabs.create({ url: 'about:blank', active: false });
+  await chrome.storage.session.set({ [AGENT_TAB_KEY]: tab.id });
+  console.log(`[Agente de Navegador] aba própria criada: #${tab.id}`);
   return tab;
 }
 

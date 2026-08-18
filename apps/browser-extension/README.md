@@ -23,8 +23,11 @@ botão de recarregar (↻) do card da extensão em `chrome://extensions`.
 
 ## Testar manualmente (sem IA)
 
-Com a extensão logada e uma aba qualquer ativa, comande pela API (usando seu
-próprio token do CRM, `Authorization: Bearer <access token>`):
+Com a extensão logada, comande pela API (usando seu próprio token do CRM,
+`Authorization: Bearer <access token>`). O agente abre/reaproveita uma **aba
+própria em segundo plano** — não usa a aba que você estiver olhando (evita
+"sequestrar" a tela do CRM ou de qualquer outra coisa que esteja em foco).
+Troque pra essa aba se quiser acompanhar visualmente.
 
 ```bash
 curl -X POST https://af-crm-production.up.railway.app/api/browser-agent/test/screenshot \

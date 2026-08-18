@@ -113,7 +113,7 @@ async function relayBrowserCommand(
 ): Promise<{ ok?: boolean; error?: string; screenshot?: string }> {
   const socketId = getExtensionSocketId(userId);
   if (!socketId) {
-    return { error: 'Extensão do Agente de Navegador não está conectada. Abra o Chrome com a extensão carregada e logada, numa aba comum (não chrome://).' };
+    return { error: 'Extensão do Agente de Navegador não está conectada. Abra o Chrome com a extensão carregada e logada.' };
   }
   try {
     // io.to(...).timeout(...).emitWithAck(...) — mesmo padrão das rotas de

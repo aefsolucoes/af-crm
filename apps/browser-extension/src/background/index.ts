@@ -1,13 +1,15 @@
 // Service worker (MV3) — o "corpo" da extensão. Conecta no mesmo socket.io do
 // CRM (apps/api/src/websocket/index.ts), se identifica como clientType:
-// 'extension', e executa os comandos que a API relaya (agent_command) na aba
-// ativa via CDP (apps/browser-extension/src/lib/cdp.ts). A partir da Fase 1,
-// quem decide os comandos é o Claude (loop em apps/api/src/services/
-// browser-agent.service.ts) — aqui continua sendo só o cano de execução.
+// 'extension', e executa os comandos que a API relaya (agent_command) numa
+// aba PRÓPRIA do agente via CDP (apps/browser-extension/src/lib/cdp.ts) — não
+// na aba que o usuário estiver olhando (ex.: o CRM), pra não "sequestrar" a
+// tela dele. A partir da Fase 1, quem decide os comandos é o Claude (loop em
+// apps/api/src/services/browser-agent.service.ts) — aqui continua sendo só o
+// cano de execução.
 import { io, Socket } from 'socket.io-client';
 import { API_URL } from '../lib/config';
 import { getStoredAuth, refreshAccessToken } from '../lib/api';
-import { getActiveTab, screenshot, click, typeText, navigate, scroll, pressKey } from '../lib/cdp';
+import { getOrCreateAgentTab, screenshot, click, typeText, navigate, scroll, pressKey } from '../lib/cdp';
 
 let socket: Socket | null = null;
 
@@ -23,8 +25,8 @@ type AgentCommand =
 async function executeCommand(cmd: AgentCommand): Promise<Record<string, unknown>> {
   console.log('[Agente de Navegador] comando recebido:', cmd);
   try {
-    const tab = await getActiveTab();
-    if (!tab?.id) return { error: 'Nenhuma aba ativa encontrada' };
+    const tab = await getOrCreateAgentTab();
+    if (!tab?.id) return { error: 'Não consegui abrir/reaproveitar a aba do agente' };
     if (cmd.type === 'screenshot') {
       const data = await screenshot(tab.id);
       return { ok: true, screenshot: data };
