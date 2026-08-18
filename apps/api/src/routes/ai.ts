@@ -401,7 +401,7 @@ const AGENT_TOOLS = [
   },
   {
     name: 'preencher_formulario_editavel',
-    description: 'Preenche automaticamente um formulário-modelo em PDF (editável, com campos preenchíveis) com os dados de um cliente, e salva a cópia preenchida na pasta dele no Drive — ex.: "preenche o formulário BRB do Sebastião Daniel". Use quando o colaborador pedir para "preencher o formulário [banco/tipo]" de um cliente. Primeiro use find_lead para achar o leadId. Passos: (1) busca o formulário-modelo em branco dentro de "4. MATERIAIS DE APOIO" > "FORMULARIOS BANCOS" (ou "MODELOS DE FORMULARIO"), pelo nome informado em nomeFormulario (ex.: "BRB", "CAIXA") — se achar mais de um modelo parecido, retorna as opções, não escolha sozinho; (2) lê os documentos do cliente na pasta dele no Drive (mesma REGRA FIXA da subpasta COMPRADOR do conferir_documento_com_pasta_drive); (3) preenche os campos do PDF com os dados encontrados — só os campos que tem certeza, nunca inventa; (4) salva a cópia preenchida DENTRO da pasta do cliente, com o nome "<nomeFormulario> <nome do cliente>.pdf". Se o modelo encontrado não tiver campos preenchíveis (PDF sem AcroForm — comum em digitalizações/scans), ela avisa que não dá pra preencher automaticamente. Retorna o link do arquivo gerado e a lista de campos que NÃO deu pra preencher (o colaborador precisa completar esses na mão). SEMPRE avise o colaborador pra revisar o formulário preenchido antes de usar/enviar — o preenchimento é automático e pode errar.',
+    description: 'Preenche automaticamente um formulário-modelo em PDF (editável, com campos preenchíveis) com os dados de um cliente, e salva a cópia preenchida na pasta dele no Drive — ex.: "preenche o formulário BRB do Sebastião Daniel". Use quando o colaborador pedir para "preencher o formulário [banco/tipo]" de um cliente. Primeiro use find_lead para achar o leadId. Passos: (1) busca o formulário-modelo em branco dentro de "4. MATERIAIS DE APOIO" > "FORMULARIOS BANCOS" (ou "MODELOS DE FORMULARIO"), pelo nome informado em nomeFormulario (ex.: "BRB", "CAIXA") — se achar mais de um modelo parecido, retorna as opções, não escolha sozinho; (2) lê os documentos do cliente na pasta dele no Drive (mesma REGRA FIXA da subpasta COMPRADOR do conferir_documento_com_pasta_drive); (3) preenche os campos do PDF com os dados encontrados — só os campos que tem certeza, nunca inventa; (4) salva a cópia preenchida dentro da subpasta "FORMULARIOS" da pasta do cliente (cria essa subpasta se não existir), com o nome "<nomeFormulario> <nome do cliente>.pdf". Se o modelo encontrado não tiver campos preenchíveis (PDF sem AcroForm — comum em digitalizações/scans), ela avisa que não dá pra preencher automaticamente. Retorna o link do arquivo gerado e a lista de campos que NÃO deu pra preencher (o colaborador precisa completar esses na mão). SEMPRE avise o colaborador pra revisar o formulário preenchido antes de usar/enviar — o preenchimento é automático e pode errar.',
     input_schema: { type: 'object', properties: {
       leadId: { type: 'string', description: 'ID do lead/cliente (via find_lead) — de onde vêm os documentos e onde a cópia preenchida é salva.' },
       nomeFormulario: { type: 'string', description: 'Nome (ou trecho) do formulário-modelo a usar, ex.: "BRB", "CAIXA". Também vira parte do nome do arquivo final.' },
@@ -1940,20 +1940,23 @@ async function executeAgentTool(
       }
     }
 
-    // 7) Salva a cópia preenchida DENTRO da pasta do cliente.
+    // 7) Salva a cópia preenchida DENTRO da subpasta "FORMULARIOS" do cliente
+    // (cria a subpasta se ainda não existir — REGRA FIXA).
     const clientFolder = await findFolderByNameUnderRoot(accountId, nomePastaInput || lead.name);
     if (!clientFolder) return { success: false, error: `Preenchi o formulário mas não encontrei a pasta do cliente "${lead.name}" no Drive pra salvar a cópia.` };
 
     try {
+      const formulariosFolder = await createFolder(accountId, 'FORMULARIOS', clientFolder.folderId);
       const filledBytes = await pdfDoc.save();
       const nomeArquivoFinal = `${nomeFormulario} ${lead.name}.pdf`;
-      const uploaded = await uploadFile(accountId, { name: nomeArquivoFinal, mimeType: 'application/pdf', data: Buffer.from(filledBytes), parentId: clientFolder.folderId });
+      const uploaded = await uploadFile(accountId, { name: nomeArquivoFinal, mimeType: 'application/pdf', data: Buffer.from(filledBytes), parentId: formulariosFolder.id });
 
       return {
         success: true,
         formularioUsado: template.name,
         arquivoGerado: uploaded.name,
-        link: uploaded.webViewLink || folderLink(clientFolder.folderId),
+        pastaDestino: `${lead.name} > FORMULARIOS`,
+        link: uploaded.webViewLink || folderLink(formulariosFolder.id),
         camposPreenchidos: preenchidos.length,
         totalCampos: fields.length,
         camposNaoPreenchidos: naoPreenchidos.length ? naoPreenchidos : undefined,
