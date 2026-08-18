@@ -652,39 +652,47 @@ async function resolveClientDriveDocuments(
   return { ok: true, docs, deixadosDeFora };
 }
 
-/**
- * 1º passo da conferência de documentos: transcreve os campos-chave de CADA
- * documento, isolado, em vez de já pedir a comparação junto com a leitura.
- * Achado num caso real: pedir "leia N documentos E já aponte divergências"
- * numa chamada só fazia o modelo errar comparações de número longo (CNH,
- * CPF) que ele acertava sozinho quando lia só aquele documento (usado por
- * ler_documento_identificacao) — separar leitura de comparação resolve isso,
- * porque a 2ª chamada compara TEXTO com TEXTO (bem mais confiável que
- * comparar texto com o que está "espalhado" em várias imagens ao mesmo tempo).
- */
-async function extractKeyFieldsFromDocs(apiKey: string, docs: { name: string; mimeType: string; buffer: Buffer }[]): Promise<string | null> {
-  const content: Record<string, unknown>[] = [];
-  for (const d of docs) {
-    content.push({ type: 'text', text: `Documento: ${d.name}` });
-    content.push(
-      d.mimeType === 'application/pdf'
-        ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: d.buffer.toString('base64') } }
-        : { type: 'image', source: { type: 'base64', media_type: d.mimeType, data: d.buffer.toString('base64') } }
-    );
-  }
-  content.push({
-    type: 'text',
-    text: 'Para CADA documento acima, transcreva LITERALMENTE (dígito por dígito, sem arredondar nem resumir) os campos que aparecerem claramente nele: nome completo, CPF, número do documento de identidade (CNH/RG), data de nascimento, endereço completo (logradouro, número, complemento, bairro, cidade, UF, CEP), telefone, renda bruta, renda líquida, valor do imóvel, e outros valores em R$ relevantes. Preste atenção REDOBRADA em cada dígito de números longos (CPF, número de documento, CEP, telefone, valores) — releia se precisar, não aproxime. Se um campo não aparecer com clareza no documento, simplesmente não o liste (nunca invente). Responda em texto simples organizado por documento (nome do arquivo como título de cada bloco), SEM JSON e sem comentário extra.',
-  });
+const EXTRACT_FIELDS_PROMPT = 'Transcreva LITERALMENTE (dígito por dígito, sem arredondar nem resumir) os campos que aparecerem claramente neste documento: nome completo, CPF, número do documento de identidade (CNH/RG), data de nascimento, endereço completo (logradouro, número, complemento, bairro, cidade, UF, CEP), telefone, renda bruta, renda líquida, valor do imóvel, e outros valores em R$ relevantes. Preste atenção REDOBRADA em cada dígito de números longos (CPF, número de documento, CEP, telefone, valores) — releia se precisar, não aproxime, não confunda um dígito com outro parecido. Se um campo não aparecer com clareza, simplesmente não o liste (nunca invente). Responda em texto simples, SEM JSON e sem comentário extra.';
+
+/** Transcreve UM documento isolado — mesma tarefa (e mesma confiabilidade)
+ *  do ler_documento_identificacao, só que com mais campos. */
+async function extractKeyFieldsFromOneDoc(apiKey: string, doc: { name: string; mimeType: string; buffer: Buffer }): Promise<string | null> {
+  const contentBlock = doc.mimeType === 'application/pdf'
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: doc.buffer.toString('base64') } }
+    : { type: 'image', source: { type: 'base64', media_type: doc.mimeType, data: doc.buffer.toString('base64') } };
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 2000, messages: [{ role: 'user', content }] }),
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 700,
+      messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: EXTRACT_FIELDS_PROMPT }] }],
+    }),
   });
   if (!res.ok) return null;
   const data = await res.json() as { content: { type: string; text?: string }[] };
-  return data.content?.find((b) => b.type === 'text')?.text || null;
+  const text = data.content?.find((b) => b.type === 'text')?.text;
+  return text ? `Documento: ${doc.name}\n${text}` : null;
+}
+
+/**
+ * 1º passo da conferência de documentos: transcreve os campos-chave de CADA
+ * documento, UM DE CADA VEZ (em paralelo), em vez de já pedir a comparação
+ * junto com a leitura — e também em vez de ler vários documentos numa
+ * chamada só. Achado num caso real: tanto "ler N documentos E já apontar
+ * divergências" quanto "ler N documentos numa chamada só, mesmo sem
+ * comparar ainda" fazia o modelo errar/deixar passar um número longo (CNH)
+ * que ele acertava sozinho quando via só aquele documento isolado (mesma
+ * tarefa do ler_documento_identificacao) — a "diluição de atenção" entre
+ * várias imagens/PDFs na mesma chamada é o problema real, não só misturar
+ * leitura com comparação. Ler cada documento sozinho e só DEPOIS comparar os
+ * textos resolve os dois problemas de uma vez.
+ */
+async function extractKeyFieldsFromDocs(apiKey: string, docs: { name: string; mimeType: string; buffer: Buffer }[]): Promise<string | null> {
+  const results = await Promise.all(docs.map((d) => extractKeyFieldsFromOneDoc(apiKey, d).catch(() => null)));
+  const ok = results.filter((r): r is string => !!r);
+  return ok.length ? ok.join('\n\n') : null;
 }
 
 async function executeAgentTool(
