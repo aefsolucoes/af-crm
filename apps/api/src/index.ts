@@ -41,6 +41,12 @@ app.use(cors({
     if (origin.endsWith('.netlify.app')) return cb(null, true);
     if (origin.endsWith('.pages.dev')) return cb(null, true);
     if (origin.endsWith('.aefsolucoesfinanceiras.com.br')) return cb(null, true);
+    // Extensão do Agente de Navegador (apps/browser-extension) — o id muda
+    // por instalação (carregada "sem compactação"), então não dá pra
+    // whitelistar um id fixo; quem garante a segurança aqui é o JWT de cada
+    // rota, não a origem. Sem isso, o login da extensão falhava com CORS e
+    // o navegador devolvia a página de erro em HTML em vez do JSON esperado.
+    if (origin.startsWith('chrome-extension://')) return cb(null, true);
     if (allowedOrigins.length === 0 || allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
     cb(new Error('Not allowed by CORS'));
   },
@@ -169,6 +175,16 @@ app.get('/privacidade', (_, res) => {
 </div>
 </body>
 </html>`);
+});
+
+// Handler de erro genérico — SEM isso, um erro não tratado (ex.: CORS
+// rejeitando a origem) caía no handler padrão do Express, que devolve uma
+// página HTML em vez de JSON. Todo cliente aqui (web, extensão) espera JSON;
+// uma resposta HTML só quebra silenciosamente com "Unexpected token '<'".
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[Erro não tratado]', err.message);
+  if (res.headersSent) return;
+  res.status(500).json({ error: err.message || 'Erro interno' });
 });
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
