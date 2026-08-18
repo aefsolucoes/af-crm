@@ -15,7 +15,9 @@ interface PendingAttachment {
 }
 
 const SUPPORTED_ATTACH_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
-const MAX_ATTACH_BYTES = 8 * 1024 * 1024; // 8 MB
+const MAX_ATTACH_BYTES = 8 * 1024 * 1024; // 8 MB por arquivo
+const MAX_ATTACHMENTS = 6; // ex.: formulário + CNH + comprovantes, tudo de uma vez
+const MAX_ATTACH_TOTAL_BYTES = 20 * 1024 * 1024; // 20 MB somando todos os anexos da mensagem
 
 interface ConversationSummary {
   id: string;
@@ -48,7 +50,7 @@ export function SupportChatButton() {
   const [loading, setLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [attachment, setAttachment] = useState<PendingAttachment | null>(null);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -82,7 +84,7 @@ export function SupportChatButton() {
     setConversationId(null);
     setShowHistory(false);
     setInput('');
-    setAttachment(null);
+    setAttachments([]);
     setAttachError('');
   }
 
@@ -105,39 +107,73 @@ export function SupportChatButton() {
     } catch { /* silencioso */ }
   }
 
-  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+  function readFileAsBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+      reader.onerror = () => reject(new Error('read error'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
     e.target.value = ''; // permite escolher o mesmo arquivo de novo depois
-    if (!file) return;
+    if (files.length === 0) return;
     setAttachError('');
-    if (!SUPPORTED_ATTACH_TYPES.includes(file.type)) {
-      setAttachError('Tipo não suportado. Envie imagem (JPG/PNG) ou PDF.');
-      return;
+
+    const accepted: File[] = [];
+    let totalSoFar = attachments.reduce((s, a) => s + Math.ceil((a.dataBase64.length * 3) / 4), 0);
+    for (const file of files) {
+      if (attachments.length + accepted.length >= MAX_ATTACHMENTS) {
+        setAttachError(`Máximo de ${MAX_ATTACHMENTS} arquivos por mensagem — os demais não foram adicionados.`);
+        break;
+      }
+      if (!SUPPORTED_ATTACH_TYPES.includes(file.type)) {
+        setAttachError(`"${file.name}": tipo não suportado (envie imagem JPG/PNG ou PDF).`);
+        continue;
+      }
+      if (file.size > MAX_ATTACH_BYTES) {
+        setAttachError(`"${file.name}": arquivo muito grande (máx. 8 MB por arquivo).`);
+        continue;
+      }
+      if (totalSoFar + file.size > MAX_ATTACH_TOTAL_BYTES) {
+        setAttachError('Limite de 20 MB no total entre os anexos da mensagem — pare aqui e envie o restante numa próxima mensagem.');
+        break;
+      }
+      totalSoFar += file.size;
+      accepted.push(file);
     }
-    if (file.size > MAX_ATTACH_BYTES) {
-      setAttachError('Arquivo muito grande (máx. 8 MB).');
-      return;
+    if (accepted.length === 0) return;
+
+    try {
+      const read = await Promise.all(accepted.map(async (file) => ({
+        fileName: file.name,
+        mimeType: file.type,
+        dataBase64: await readFileAsBase64(file),
+      })));
+      setAttachments((prev) => [...prev, ...read]);
+    } catch {
+      setAttachError('Não consegui ler um dos arquivos. Tente de novo.');
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      const dataBase64 = result.split(',')[1] || '';
-      setAttachment({ fileName: file.name, mimeType: file.type, dataBase64 });
-    };
-    reader.onerror = () => setAttachError('Não consegui ler o arquivo. Tente de novo.');
-    reader.readAsDataURL(file);
+  }
+
+  function removeAttachment(index: number) {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function sendMessage() {
     const text = input.trim();
-    if ((!text && !attachment) || loading) return;
+    if ((!text && attachments.length === 0) || loading) return;
 
-    const displayContent = attachment ? `📎 ${attachment.fileName}${text ? `\n${text}` : ''}` : text;
+    const displayContent = attachments.length
+      ? `${attachments.map((a) => `📎 ${a.fileName}`).join('\n')}${text ? `\n${text}` : ''}`
+      : text;
     const nextMessages = [...messages, { role: 'user' as const, content: displayContent }];
-    const pendingAttachment = attachment;
+    const pendingAttachments = attachments;
     setMessages(nextMessages);
     setInput('');
-    setAttachment(null);
+    setAttachments([]);
     setAttachError('');
     setLoading(true);
 
@@ -145,7 +181,7 @@ export function SupportChatButton() {
       const { data } = await api.post('/api/ai/support-chat', {
         messages: nextMessages,
         conversationId,
-        ...(pendingAttachment ? { attachment: pendingAttachment } : {}),
+        ...(pendingAttachments.length ? { attachments: pendingAttachments } : {}),
       });
       setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
       if (data.conversationId) {
@@ -245,25 +281,30 @@ export function SupportChatButton() {
             <input
               ref={fileInputRef}
               type="file"
+              multiple
               accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
               onChange={handleFileSelect}
               className="hidden"
             />
-            {attachment && (
-              <div className="flex items-center gap-1.5 mb-2 px-2.5 py-1.5 bg-af-light rounded-lg text-xs text-slate-700">
-                <FileText size={13} className="flex-shrink-0 text-af-navy" />
-                <span className="truncate flex-1">{attachment.fileName}</span>
-                <button onClick={() => setAttachment(null)} className="text-slate-400 hover:text-red-500 flex-shrink-0" title="Remover anexo">
-                  <X size={13} />
-                </button>
+            {attachments.length > 0 && (
+              <div className="flex flex-col gap-1 mb-2">
+                {attachments.map((a, i) => (
+                  <div key={`${a.fileName}-${i}`} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-af-light rounded-lg text-xs text-slate-700">
+                    <FileText size={13} className="flex-shrink-0 text-af-navy" />
+                    <span className="truncate flex-1">{a.fileName}</span>
+                    <button onClick={() => removeAttachment(i)} className="text-slate-400 hover:text-red-500 flex-shrink-0" title="Remover anexo">
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
             {attachError && <p className="text-xs text-red-500 mb-1.5">{attachError}</p>}
             <div className="flex items-end gap-2">
               <button
                 onClick={() => fileInputRef.current?.click()}
-                disabled={loading}
-                title="Anexar arquivo (imagem ou PDF)"
+                disabled={loading || attachments.length >= MAX_ATTACHMENTS}
+                title={attachments.length >= MAX_ATTACHMENTS ? `Máximo de ${MAX_ATTACHMENTS} arquivos por mensagem` : 'Anexar arquivo(s) — imagem ou PDF'}
                 className="w-9 h-9 flex-shrink-0 flex items-center justify-center text-slate-500 hover:text-af-navy hover:bg-af-light rounded-xl transition-colors disabled:opacity-40"
               >
                 <Paperclip size={16} />
@@ -274,12 +315,12 @@ export function SupportChatButton() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
                 rows={1}
-                placeholder={attachment ? 'O que você quer saber sobre o arquivo? (opcional)' : 'Digite sua dúvida...  (Shift+Enter pula linha)'}
+                placeholder={attachments.length ? 'O que você quer saber sobre o(s) arquivo(s)? (opcional)' : 'Digite sua dúvida...  (Shift+Enter pula linha)'}
                 className="flex-1 resize-none max-h-[120px] leading-snug border border-af-border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-af-accent/40"
               />
               <button
                 onClick={sendMessage}
-                disabled={loading || (!input.trim() && !attachment)}
+                disabled={loading || (!input.trim() && attachments.length === 0)}
                 className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-af-navy text-white rounded-xl disabled:opacity-40"
               >
                 <Send size={16} />

@@ -107,7 +107,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - aprender_com_conversas_whatsapp: analisa uma amostra das conversas mais recentes e extrai padrões de atendimento (dúvidas comuns, como a equipe costuma responder, objeções) direto pra Base de Conhecimento — NUNCA guarda nome, telefone ou dado de cliente específico, só o padrão generalizado. Use quando o colaborador pedir pro assistente "aprender com as conversas" ou similar. Demora alguns segundos.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento, o número do documento (se for CNH/RG) e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
-- ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um arquivo (imagem ou PDF) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo do arquivo vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare ou extraia o que o colaborador pedir sobre o documento anexado. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
+- ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um ou VÁRIOS arquivos de uma vez (imagem ou PDF, até 6 por mensagem) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo de todos os arquivos vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare (inclusive um documento contra os outros que vieram junto, ex.: um formulário contra a CNH/comprovantes anexados na mesma mensagem) ou extraia o que o colaborador pedir. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
 - conferir_cadastro_com_documentos: quando o colaborador já preencheu o cadastro de um cliente (digitando com base nos documentos dele) e pede para CONFERIR se não errou nada — ex.: "confere esse cadastro com a documentação do cliente", "vê se bati os dados certo" — use esta ferramenta. Diferente de ler_documento_identificacao (que preenche um cadastro vazio), esta AUDITA um cadastro já preenchido contra todos os documentos da pasta do cliente no Drive. Primeiro find_lead para achar o leadId. Ela retorna as divergências encontradas (ou confirma que está tudo batendo) — mostre cada divergência ao colaborador e só corrija o cadastro (update_lead) depois que ele confirmar qual valor está certo, nunca sozinho.
 - conferir_documento_com_pasta_drive: parecida com conferir_cadastro_com_documentos, mas o "lado A" da comparação NÃO é o cadastro no CRM — é um FORMULÁRIO/ARQUIVO específico, comparado contra os OUTROS documentos da pasta do cliente. Duas formas de indicar o formulário: o colaborador anexa na conversa (botão de anexo, não precisa de parâmetro), OU ele já está salvo na pasta do cliente no Drive (informe nomeArquivoReferencia com um trecho do nome — ex.: "ficha-cadastral", "formulário" — pode estar numa subpasta tipo "FORMULARIOS", a busca acha em qualquer nível). Use quando o pedido for algo como "confere esse formulário com a documentação desse cliente no Drive" (anexado) ou "confere o formulário que já está na pasta dele com o resto da documentação" (sem anexar nada, tudo já no Drive). Primeiro find_lead para achar de qual cliente é a pasta. Se o colaborador não anexou nada nem disse o nome do arquivo de referência, pergunte qual das duas formas ele quer. Mostre as divergências encontradas, nunca corrija nada sozinho.
 - enviar_arquivo_whatsapp: envia um arquivo (PDF, foto etc) pelo WhatsApp ao cliente — você CONSEGUE, sim, encaminhar arquivos, não só texto; nunca diga que só sabe mandar mensagem de texto. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp", "reenviar o documento que ele mandou" etc. Duas origens possíveis do arquivo: (1) attachmentId — reenvia um anexo que o PRÓPRIO CLIENTE já mandou na conversa do WhatsApp; (2) nomeArquivo (+ nomePasta opcional, padrão o nome do lead) — busca um arquivo pelo nome dentro da pasta do cliente no Drive. Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista — NUNCA escolha um sozinho, mostre as opções e pergunte qual enviar (regra de ambiguidade abaixo). CONFIRMAÇÃO ANTES DE ENVIAR (obrigatória, mesmo fora do caso de ambiguidade): a primeira chamada sem confirmed:true não envia nada — ela só resolve qual é o arquivo e devolve needsConfirmation. Ao receber isso, diga ao colaborador exatamente qual arquivo vai ser encaminhado e para qual cliente, e pergunte se ele quer incluir alguma mensagem (legenda) junto. Só chame a ferramenta de novo, com confirmed:true (e legenda, se ele pedir), depois que o colaborador responder.
@@ -2085,14 +2085,20 @@ interface AnthropicContentBlock {
 }
 
 const SUPPORTED_CHAT_ATTACHMENTS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
-const MAX_CHAT_ATTACHMENT_BYTES = 8 * 1024 * 1024; // 8 MB
+const MAX_CHAT_ATTACHMENT_BYTES = 8 * 1024 * 1024; // 8 MB por arquivo
+const MAX_CHAT_ATTACHMENTS = 6; // ex.: formulário + CNH + comprovantes, tudo de uma vez
+const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 20 * 1024 * 1024; // 20 MB somando todos os anexos da mensagem
+
+type ChatAttachment = { fileName?: string; mimeType?: string; dataBase64?: string };
 
 router.post('/support-chat', async (req: AuthRequest, res: Response) => {
-  const { messages, conversationId, attachment } = req.body as {
+  const { messages, conversationId, attachment, attachments: attachmentsInput } = req.body as {
     messages?: ChatMessage[];
     conversationId?: string;
-    /** Arquivo anexado pelo colaborador diretamente nesta mensagem (botão de anexo do chat). */
-    attachment?: { fileName?: string; mimeType?: string; dataBase64?: string };
+    /** Anexo único (formato antigo — mantido por compatibilidade). */
+    attachment?: ChatAttachment;
+    /** Arquivo(s) anexados pelo colaborador diretamente nesta mensagem (botão de anexo do chat) — pode mandar vários de uma vez (ex.: formulário + CNH + comprovantes). */
+    attachments?: ChatAttachment[];
   };
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -2100,16 +2106,29 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  if (attachment?.dataBase64) {
-    if (!attachment.mimeType || !SUPPORTED_CHAT_ATTACHMENTS.includes(attachment.mimeType)) {
-      res.status(400).json({ error: 'Tipo de arquivo não suportado. Envie uma imagem (JPG/PNG) ou PDF.' });
+  const attachments: ChatAttachment[] = (Array.isArray(attachmentsInput) ? attachmentsInput : attachment ? [attachment] : [])
+    .filter((a): a is ChatAttachment & { dataBase64: string } => !!a?.dataBase64);
+
+  if (attachments.length > MAX_CHAT_ATTACHMENTS) {
+    res.status(400).json({ error: `Máximo de ${MAX_CHAT_ATTACHMENTS} arquivos por mensagem.` });
+    return;
+  }
+  let totalAttachBytes = 0;
+  for (const a of attachments) {
+    if (!a.mimeType || !SUPPORTED_CHAT_ATTACHMENTS.includes(a.mimeType)) {
+      res.status(400).json({ error: `Tipo de arquivo não suportado${a.fileName ? ` (${a.fileName})` : ''}. Envie imagem (JPG/PNG) ou PDF.` });
       return;
     }
-    const sizeBytes = Math.ceil((attachment.dataBase64.length * 3) / 4);
+    const sizeBytes = Math.ceil((a.dataBase64!.length * 3) / 4);
     if (sizeBytes > MAX_CHAT_ATTACHMENT_BYTES) {
-      res.status(400).json({ error: 'Arquivo muito grande (máximo 8 MB).' });
+      res.status(400).json({ error: `Arquivo muito grande${a.fileName ? ` (${a.fileName})` : ''} — máximo 8 MB por arquivo.` });
       return;
     }
+    totalAttachBytes += sizeBytes;
+  }
+  if (totalAttachBytes > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
+    res.status(400).json({ error: 'Total dos anexos passou de 20 MB nesta mensagem — envie o restante numa próxima mensagem.' });
+    return;
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -2169,22 +2188,23 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
     const convo: { role: string; content: string | AnthropicContentBlock[] }[] =
       messages.map((m) => ({ role: m.role, content: m.content }));
 
-    // Arquivo anexado nesta mensagem (botão de anexo do chat): entra como bloco
-    // de conteúdo na ÚLTIMA mensagem do colaborador, só para esta chamada à
-    // Anthropic — o que fica salvo no histórico da conversa continua sendo
-    // texto simples (ver fullMessages mais abaixo), então não pesa o banco.
-    if (attachment?.dataBase64 && attachment.mimeType) {
+    // Arquivo(s) anexados nesta mensagem (botão de anexo do chat): entram como
+    // blocos de conteúdo na ÚLTIMA mensagem do colaborador, só para esta
+    // chamada à Anthropic — o que fica salvo no histórico da conversa
+    // continua sendo texto simples (ver fullMessages mais abaixo), então não
+    // pesa o banco. Pode ser mais de um arquivo (ex.: formulário + CNH +
+    // comprovantes de uma vez) — todos entram juntos, o modelo compara livre.
+    if (attachments.length > 0) {
       const lastIdx = convo.length - 1;
       if (lastIdx >= 0 && convo[lastIdx].role === 'user') {
         const textoAtual = typeof convo[lastIdx].content === 'string' ? (convo[lastIdx].content as string) : '';
-        const isPdf = attachment.mimeType === 'application/pdf';
-        const fileBlock: AnthropicContentBlock = {
-          type: isPdf ? 'document' : 'image',
-          source: { type: 'base64', media_type: attachment.mimeType, data: attachment.dataBase64 },
-        };
+        const fileBlocks: AnthropicContentBlock[] = attachments.map((a) => ({
+          type: a.mimeType === 'application/pdf' ? 'document' : 'image',
+          source: { type: 'base64', media_type: a.mimeType!, data: a.dataBase64! },
+        }));
         convo[lastIdx] = {
           role: 'user',
-          content: [fileBlock, { type: 'text', text: textoAtual || 'Analise este documento.' }],
+          content: [...fileBlocks, { type: 'text', text: textoAtual || 'Analise este(s) documento(s).' }],
         };
       }
     }
@@ -2231,7 +2251,7 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
         const toolResults = await Promise.all(toolUseBlocks.map(async (block) => {
           let result: unknown;
           try {
-            result = await executeAgentTool(block.name!, block.input || {}, accountId, io, req.user!.id, attachment);
+            result = await executeAgentTool(block.name!, block.input || {}, accountId, io, req.user!.id, attachments[0]);
           } catch (err: any) {
             console.error(`[AI] Erro inesperado na ferramenta ${block.name}:`, err);
             result = { success: false, error: `Erro inesperado ao executar ${block.name}: ${err?.message || 'erro desconhecido'}` };
