@@ -8,8 +8,9 @@ import { searchKnowledge, learnFromWhatsAppConversations } from '../services/kno
 import {
   organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
   createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink, findFilesInFolderTree,
-  listFolders, findFoldersByNamesInTree, listAllFilesInFolderTree,
+  listFolders, findFoldersByNamesInTree, listAllFilesInFolderTree, uploadFile,
 } from '../services/google.service';
+import { PDFDocument, PDFTextField, PDFCheckBox, PDFDropdown, PDFRadioGroup } from 'pdf-lib';
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
 import { getOrCreateInboxPipeline } from '../services/department.service';
@@ -110,6 +111,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um ou VÁRIOS arquivos de uma vez (imagem ou PDF, até 6 por mensagem) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo de todos os arquivos vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare (inclusive um documento contra os outros que vieram junto, ex.: um formulário contra a CNH/comprovantes anexados na mesma mensagem) ou extraia o que o colaborador pedir. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
 - conferir_cadastro_com_documentos: quando o colaborador já preencheu o cadastro de um cliente (digitando com base nos documentos dele) e pede para CONFERIR se não errou nada — ex.: "confere esse cadastro com a documentação do cliente", "vê se bati os dados certo" — use esta ferramenta. Diferente de ler_documento_identificacao (que preenche um cadastro vazio), esta AUDITA um cadastro já preenchido contra todos os documentos da pasta do cliente no Drive. Primeiro find_lead para achar o leadId. Ela retorna as divergências encontradas (ou confirma que está tudo batendo) — mostre cada divergência ao colaborador e só corrija o cadastro (update_lead) depois que ele confirmar qual valor está certo, nunca sozinho.
 - conferir_documento_com_pasta_drive: parecida com conferir_cadastro_com_documentos, mas o "lado A" da comparação NÃO é o cadastro no CRM — é um FORMULÁRIO/ARQUIVO específico, comparado contra os OUTROS documentos da pasta do cliente. Duas formas de indicar o formulário: o colaborador anexa na conversa (botão de anexo, não precisa de parâmetro), OU ele já está salvo na pasta do cliente no Drive (informe nomeArquivoReferencia com um trecho do nome — ex.: "ficha-cadastral", "formulário" — pode estar numa subpasta tipo "FORMULARIOS", a busca acha em qualquer nível). Use quando o pedido for algo como "confere esse formulário com a documentação desse cliente no Drive" (anexado) ou "confere o formulário que já está na pasta dele com o resto da documentação" (sem anexar nada, tudo já no Drive). Primeiro find_lead para achar de qual cliente é a pasta. Se o colaborador não anexou nada nem disse o nome do arquivo de referência, pergunte qual das duas formas ele quer. Mostre as divergências encontradas, nunca corrija nada sozinho.
+- preencher_formulario_editavel: diferente de conferir_*, aqui não é pra AUDITAR, é pra PREENCHER um formulário em branco com os dados do cliente. Use quando o colaborador pedir "preenche o formulário [BRB/CAIXA/etc] do [cliente]". Primeiro find_lead. Informe nomeFormulario (nome do banco/tipo — ex.: "BRB") — ela mesma acha o modelo em branco em "4. MATERIAIS DE APOIO" > "FORMULARIOS BANCOS" (ou "MODELOS DE FORMULARIO"), lê os documentos do cliente, preenche o que tiver certeza e salva a cópia preenchida na pasta do cliente. SEMPRE avise o colaborador que é preenchimento automático e ele precisa REVISAR o arquivo antes de usar/enviar — e mostre a lista de campos que ficaram em branco, se houver.
 - enviar_arquivo_whatsapp: envia um arquivo (PDF, foto etc) pelo WhatsApp ao cliente — você CONSEGUE, sim, encaminhar arquivos, não só texto; nunca diga que só sabe mandar mensagem de texto. Use quando o colaborador pedir para "mandar esse PDF para o cliente", "encaminhar esse arquivo pelo WhatsApp", "reenviar o documento que ele mandou" etc. Duas origens possíveis do arquivo: (1) attachmentId — reenvia um anexo que o PRÓPRIO CLIENTE já mandou na conversa do WhatsApp; (2) nomeArquivo (+ nomePasta opcional, padrão o nome do lead) — busca um arquivo pelo nome dentro da pasta do cliente no Drive. Se a busca por nomeArquivo encontrar mais de um arquivo parecido, ela retorna a lista — NUNCA escolha um sozinho, mostre as opções e pergunte qual enviar (regra de ambiguidade abaixo). CONFIRMAÇÃO ANTES DE ENVIAR (obrigatória, mesmo fora do caso de ambiguidade): a primeira chamada sem confirmed:true não envia nada — ela só resolve qual é o arquivo e devolve needsConfirmation. Ao receber isso, diga ao colaborador exatamente qual arquivo vai ser encaminhado e para qual cliente, e pergunte se ele quer incluir alguma mensagem (legenda) junto. Só chame a ferramenta de novo, com confirmed:true (e legenda, se ele pedir), depois que o colaborador responder.
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
@@ -396,6 +398,15 @@ const AGENT_TOOLS = [
       nomePasta: { type: 'string', description: 'Nome da pasta do cliente no Drive, se diferente do nome do lead (opcional).' },
       nomeArquivoReferencia: { type: 'string', description: 'Trecho do nome do formulário/ficha JÁ SALVO na pasta do cliente no Drive, para usar como referência em vez de um anexo do chat (opcional — use isto OU deixe o colaborador anexar o arquivo na conversa).' },
     }, required: ['leadId'] },
+  },
+  {
+    name: 'preencher_formulario_editavel',
+    description: 'Preenche automaticamente um formulário-modelo em PDF (editável, com campos preenchíveis) com os dados de um cliente, e salva a cópia preenchida na pasta dele no Drive — ex.: "preenche o formulário BRB do Sebastião Daniel". Use quando o colaborador pedir para "preencher o formulário [banco/tipo]" de um cliente. Primeiro use find_lead para achar o leadId. Passos: (1) busca o formulário-modelo em branco dentro de "4. MATERIAIS DE APOIO" > "FORMULARIOS BANCOS" (ou "MODELOS DE FORMULARIO"), pelo nome informado em nomeFormulario (ex.: "BRB", "CAIXA") — se achar mais de um modelo parecido, retorna as opções, não escolha sozinho; (2) lê os documentos do cliente na pasta dele no Drive (mesma REGRA FIXA da subpasta COMPRADOR do conferir_documento_com_pasta_drive); (3) preenche os campos do PDF com os dados encontrados — só os campos que tem certeza, nunca inventa; (4) salva a cópia preenchida DENTRO da pasta do cliente, com o nome "<nomeFormulario> <nome do cliente>.pdf". Se o modelo encontrado não tiver campos preenchíveis (PDF sem AcroForm — comum em digitalizações/scans), ela avisa que não dá pra preencher automaticamente. Retorna o link do arquivo gerado e a lista de campos que NÃO deu pra preencher (o colaborador precisa completar esses na mão). SEMPRE avise o colaborador pra revisar o formulário preenchido antes de usar/enviar — o preenchimento é automático e pode errar.',
+    input_schema: { type: 'object', properties: {
+      leadId: { type: 'string', description: 'ID do lead/cliente (via find_lead) — de onde vêm os documentos e onde a cópia preenchida é salva.' },
+      nomeFormulario: { type: 'string', description: 'Nome (ou trecho) do formulário-modelo a usar, ex.: "BRB", "CAIXA". Também vira parte do nome do arquivo final.' },
+      nomePasta: { type: 'string', description: 'Nome da pasta do cliente no Drive, se diferente do nome do lead (opcional).' },
+    }, required: ['leadId', 'nomeFormulario'] },
   },
   {
     name: 'enviar_arquivo_whatsapp',
@@ -1794,6 +1805,163 @@ async function executeAgentTool(
       };
     } catch (err: any) {
       return { success: false, error: `Falha ao processar os documentos: ${err?.message || 'erro desconhecido'}` };
+    }
+  }
+
+  if (name === 'preencher_formulario_editavel') {
+    const leadId = String(input.leadId || '');
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
+    if (!lead) return { success: false, error: 'Lead não encontrado' };
+
+    const nomeFormulario = String(input.nomeFormulario || '').trim();
+    if (!nomeFormulario) return { success: false, error: 'Informe nomeFormulario (ex.: "BRB").' };
+    const nomePastaInput = input.nomePasta ? String(input.nomePasta) : undefined;
+
+    // 1) Acha "4. MATERIAIS DE APOIO" (onde ficam os modelos de formulário).
+    const materiaisFolder = await findFolderByNameUnderRoot(accountId, '4. MATERIAIS DE APOIO');
+    if (!materiaisFolder) return { success: false, error: 'Não encontrei a pasta "4. MATERIAIS DE APOIO" no Drive (onde ficam os modelos de formulário).' };
+
+    // 2) Acha o modelo: primeiro tenta como PASTA (ex.: "FORMULARIOS BANCOS/BRB"),
+    // que é como estão organizados hoje — todo PDF dentro dessa pasta vira candidato.
+    // Se não achar pasta com esse nome, cai pra buscar por NOME DE ARQUIVO na árvore inteira.
+    let templateCandidates: { id: string; name: string; mimeType: string; path: string }[] = [];
+    try {
+      const foundFolders = await findFoldersByNamesInTree(accountId, materiaisFolder.folderId, [nomeFormulario]);
+      const folderMatches = foundFolders.get(nomeFormulario.trim().toLowerCase()) || [];
+      if (folderMatches.length === 1) {
+        const contents = await listFolderContents(accountId, folderMatches[0].id);
+        templateCandidates = contents.filter((f) => !f.isFolder && f.mimeType === 'application/pdf').map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, path: folderMatches[0].path }));
+      } else if (folderMatches.length > 1) {
+        return { success: false, needsDisambiguation: true, opcoes: folderMatches.map((m) => ({ pasta: m.path })), error: `Achei mais de uma pasta de formulário parecida com "${nomeFormulario}" — pergunte ao colaborador qual é a certa.` };
+      } else {
+        templateCandidates = (await findFilesInFolderTree(accountId, materiaisFolder.folderId, nomeFormulario)).filter((f) => f.mimeType === 'application/pdf');
+      }
+    } catch (err: any) {
+      return { success: false, error: `Falha ao buscar o modelo de formulário no Drive: ${err?.message || 'erro desconhecido'}` };
+    }
+    if (templateCandidates.length === 0) return { success: false, error: `Não achei nenhum formulário-modelo com "${nomeFormulario}" no nome, dentro de "4. MATERIAIS DE APOIO".` };
+    if (templateCandidates.length > 1) {
+      return { success: false, needsDisambiguation: true, opcoes: templateCandidates.map((f) => ({ nome: f.name, pasta: f.path })), error: `Achei mais de um modelo parecido com "${nomeFormulario}" — pergunte ao colaborador qual usar.` };
+    }
+    const template = templateCandidates[0];
+
+    // 3) Baixa o modelo e confere se tem campos preenchíveis (AcroForm).
+    let templateBuffer: Buffer;
+    try {
+      templateBuffer = await downloadDriveFile(accountId, template.id, template.mimeType);
+    } catch (err: any) {
+      return { success: false, error: `Falha ao baixar o modelo "${template.name}": ${err?.message || 'erro desconhecido'}` };
+    }
+    let pdfDoc: PDFDocument;
+    try {
+      pdfDoc = await PDFDocument.load(templateBuffer);
+    } catch (err: any) {
+      return { success: false, error: `Não consegui abrir "${template.name}" como PDF: ${err?.message || 'erro desconhecido'}` };
+    }
+    const form = pdfDoc.getForm();
+    const fields = form.getFields();
+    if (fields.length === 0) {
+      return { success: false, error: `"${template.name}" não tem campos preenchíveis (não é um PDF de formulário editável) — não dá pra preencher automaticamente esse modelo.` };
+    }
+    const fieldInfo = fields.map((f) => ({
+      nome: f.getName(),
+      tipo: f instanceof PDFTextField ? 'texto' : f instanceof PDFCheckBox ? 'checkbox' : f instanceof PDFDropdown ? 'lista' : f instanceof PDFRadioGroup ? 'opcoes' : 'outro',
+      opcoes: (f instanceof PDFDropdown || f instanceof PDFRadioGroup) ? f.getOptions() : undefined,
+    }));
+
+    // 4) Lê os documentos do cliente (mesma REGRA FIXA de resolveClientDriveDocuments).
+    const resolved = await resolveClientDriveDocuments(accountId, lead.name, nomePastaInput);
+    if (!resolved.ok) return { success: false, error: resolved.error };
+    const { docs, deixadosDeFora } = resolved;
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return { success: false, error: 'ANTHROPIC_API_KEY não configurada' };
+
+    const transcricaoDocs = await extractKeyFieldsFromDocs(apiKey, docs);
+    if (!transcricaoDocs) return { success: false, error: 'Erro ao ler os documentos do cliente no Drive.' };
+
+    // 5) Pede o mapeamento campo → valor (manda o PDF em branco também, pra
+    // o modelo enxergar o RÓTULO visual de cada campo — o nome técnico
+    // sozinho, tipo "Text14", quase nunca é autoexplicativo).
+    let mapping: Record<string, unknown> = {};
+    try {
+      const mapRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-5',
+          max_tokens: 2000,
+          system: 'Você preenche formulários de financeira em PDF com os dados de um cliente. Vai receber o PDF em branco (pra ver o RÓTULO visual de cada campo), a lista técnica dos campos (nome interno, tipo, e opções quando houver) e os dados do cliente extraídos dos documentos dele. Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"campos": {"<nome técnico do campo>": "<valor a preencher>"}}. Preencha SÓ os campos que tem certeza do valor certo, olhando o rótulo visual de cada campo no PDF — NUNCA invente ou "chute" um valor pra um campo sem correspondência clara nos dados do cliente; nesse caso simplesmente não inclua esse campo no JSON. Para campo tipo "checkbox", use "true" ou "false". Para campo tipo "lista" ou "opcoes", use EXATAMENTE uma das opções informadas para aquele campo (nunca um valor fora da lista).',
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: 'FORMULÁRIO EM BRANCO (para ver os rótulos visuais dos campos):' },
+              { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: templateBuffer.toString('base64') } },
+              { type: 'text', text: `CAMPOS TÉCNICOS DO FORMULÁRIO:\n${JSON.stringify(fieldInfo)}\n\nDADOS DO CLIENTE (extraídos dos documentos dele):\n${transcricaoDocs}\n\nMonte o mapeamento campo → valor.` },
+            ],
+          }],
+        }),
+      });
+      if (!mapRes.ok) {
+        const errText = await mapRes.text();
+        return { success: false, error: `Erro ao mapear os campos do formulário: ${mapRes.status} ${errText.slice(0, 200)}` };
+      }
+      const mapData = await mapRes.json() as { content: { type: string; text?: string }[] };
+      const raw = mapData.content?.find((b) => b.type === 'text')?.text || '{}';
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+      mapping = parsed?.campos && typeof parsed.campos === 'object' ? parsed.campos : {};
+    } catch (err: any) {
+      return { success: false, error: `Falha ao mapear os dados pro formulário: ${err?.message || 'erro desconhecido'}` };
+    }
+
+    // 6) Preenche o PDF de verdade.
+    const preenchidos: string[] = [];
+    const naoPreenchidos: string[] = [];
+    for (const f of fields) {
+      const nomeCampo = f.getName();
+      const valor = mapping[nomeCampo];
+      if (valor === undefined || valor === null || String(valor).trim() === '') { naoPreenchidos.push(nomeCampo); continue; }
+      try {
+        if (f instanceof PDFTextField) {
+          f.setText(String(valor));
+          preenchidos.push(nomeCampo);
+        } else if (f instanceof PDFCheckBox) {
+          if (String(valor).toLowerCase() === 'true') f.check(); else f.uncheck();
+          preenchidos.push(nomeCampo);
+        } else if (f instanceof PDFDropdown || f instanceof PDFRadioGroup) {
+          const opts = f.getOptions();
+          if (opts.includes(String(valor))) { f.select(String(valor)); preenchidos.push(nomeCampo); } else naoPreenchidos.push(nomeCampo);
+        } else {
+          naoPreenchidos.push(nomeCampo);
+        }
+      } catch {
+        naoPreenchidos.push(nomeCampo);
+      }
+    }
+
+    // 7) Salva a cópia preenchida DENTRO da pasta do cliente.
+    const clientFolder = await findFolderByNameUnderRoot(accountId, nomePastaInput || lead.name);
+    if (!clientFolder) return { success: false, error: `Preenchi o formulário mas não encontrei a pasta do cliente "${lead.name}" no Drive pra salvar a cópia.` };
+
+    try {
+      const filledBytes = await pdfDoc.save();
+      const nomeArquivoFinal = `${nomeFormulario} ${lead.name}.pdf`;
+      const uploaded = await uploadFile(accountId, { name: nomeArquivoFinal, mimeType: 'application/pdf', data: Buffer.from(filledBytes), parentId: clientFolder.folderId });
+
+      return {
+        success: true,
+        formularioUsado: template.name,
+        arquivoGerado: uploaded.name,
+        link: uploaded.webViewLink || folderLink(clientFolder.folderId),
+        camposPreenchidos: preenchidos.length,
+        totalCampos: fields.length,
+        camposNaoPreenchidos: naoPreenchidos.length ? naoPreenchidos : undefined,
+        documentosDeixadosDeFora: deixadosDeFora.length ? deixadosDeFora : undefined,
+        aviso: 'Preenchimento automático — SEMPRE revise o formulário antes de usar/enviar, algum campo pode ter ficado errado ou em branco.',
+      };
+    } catch (err: any) {
+      return { success: false, error: `Preenchi o formulário mas falhei ao salvar no Drive: ${err?.message || 'erro desconhecido'}` };
     }
   }
 
