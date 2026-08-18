@@ -1,20 +1,24 @@
 // Service worker (MV3) — o "corpo" da extensão. Conecta no mesmo socket.io do
 // CRM (apps/api/src/websocket/index.ts), se identifica como clientType:
 // 'extension', e executa os comandos que a API relaya (agent_command) na aba
-// ativa via CDP (apps/browser-extension/src/lib/cdp.ts). Fase 0: comandos são
-// disparados manualmente pela API (rotas de teste) — nenhuma decisão de IA
-// ainda passa por aqui, só o cano de execução.
+// ativa via CDP (apps/browser-extension/src/lib/cdp.ts). A partir da Fase 1,
+// quem decide os comandos é o Claude (loop em apps/api/src/services/
+// browser-agent.service.ts) — aqui continua sendo só o cano de execução.
 import { io, Socket } from 'socket.io-client';
 import { API_URL } from '../lib/config';
 import { getStoredAuth, refreshAccessToken } from '../lib/api';
-import { getActiveTab, screenshot, click, typeText } from '../lib/cdp';
+import { getActiveTab, screenshot, click, typeText, navigate, scroll, pressKey } from '../lib/cdp';
 
 let socket: Socket | null = null;
 
 type AgentCommand =
   | { type: 'screenshot' }
   | { type: 'click'; x: number; y: number }
-  | { type: 'type'; text: string };
+  | { type: 'type'; text: string }
+  | { type: 'navigate'; url: string }
+  | { type: 'scroll'; direction: 'up' | 'down' | 'left' | 'right'; amount: number }
+  | { type: 'key'; key: string }
+  | { type: 'wait'; seconds: number };
 
 async function executeCommand(cmd: AgentCommand): Promise<Record<string, unknown>> {
   console.log('[Agente de Navegador] comando recebido:', cmd);
@@ -32,6 +36,26 @@ async function executeCommand(cmd: AgentCommand): Promise<Record<string, unknown
     }
     if (cmd.type === 'type') {
       await typeText(tab.id, cmd.text);
+      const data = await screenshot(tab.id);
+      return { ok: true, screenshot: data };
+    }
+    if (cmd.type === 'navigate') {
+      await navigate(tab.id, cmd.url);
+      const data = await screenshot(tab.id);
+      return { ok: true, screenshot: data };
+    }
+    if (cmd.type === 'scroll') {
+      await scroll(tab.id, cmd.direction, cmd.amount);
+      const data = await screenshot(tab.id);
+      return { ok: true, screenshot: data };
+    }
+    if (cmd.type === 'key') {
+      await pressKey(tab.id, cmd.key);
+      const data = await screenshot(tab.id);
+      return { ok: true, screenshot: data };
+    }
+    if (cmd.type === 'wait') {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(cmd.seconds, 10) * 1000));
       const data = await screenshot(tab.id);
       return { ok: true, screenshot: data };
     }

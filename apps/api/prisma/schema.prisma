@@ -603,3 +603,56 @@ model DashboardNote {
   @@index([accountId, scope])
   @@index([userId])
 }
+
+enum AgentTaskStatus {
+  PENDING              // criada, ainda não começou a rodar
+  RUNNING              // loop de decisão em andamento
+  AWAITING_APPROVAL    // esperando aprovar/recusar uma ação sensível (Fase 2)
+  AWAITING_HUMAN_TAKEOVER // esperando o humano fazer algo manualmente (Fase 2)
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// Uma tarefa do Agente de Navegador — "emita a certidão X no ONR". Sem
+// @relation com User/Account/Lead de propósito (mesmo padrão leve já usado em
+// DashboardNote/AssistantConversation) — é registro de execução, não dado de
+// negócio que precise de integridade referencial forte.
+model AgentTask {
+  id            String          @id @default(cuid())
+  accountId     String
+  userId        String          // quem pediu — também quem aprova/recusa/cancela
+  leadId        String?         // opcional: pra qual cliente é essa tarefa
+  instruction   String          @db.Text
+  status        AgentTaskStatus @default(PENDING)
+  // Histórico bruto no formato da API da Anthropic — permite depurar/retomar
+  // a conversa exata que gerou cada ação. Podado a cada turno (só mantém as
+  // últimas screenshots) pra não estourar o banco nem o custo de tokens.
+  conversation  Json            @default("[]")
+  pendingAction Json?           // ação sensível aguardando decisão (Fase 2)
+  resultSummary String?         @db.Text
+  errorMessage  String?         @db.Text
+  stepCount     Int             @default(0)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  completedAt   DateTime?
+
+  @@index([accountId, userId])
+  @@index([status])
+}
+
+// Log de auditoria por passo — "por que ele clicou ali". Não guarda a
+// screenshot em si (ficaria gigante rápido); só o que a IA decidiu e o
+// resultado (ok/erro), nunca a imagem.
+model AgentActionLog {
+  id               String   @id @default(cuid())
+  taskId           String
+  seq              Int
+  tool             String   // browser_click, browser_navigate, browser_type...
+  input            Json     // argumentos que a IA passou (x, y, text, url, motivo...)
+  output           Json?    // resultado (sem a screenshot — só ok/erro/mensagem)
+  requiredApproval Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@index([taskId, seq])
+}

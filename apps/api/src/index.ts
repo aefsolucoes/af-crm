@@ -27,6 +27,7 @@ import importRoutes from './routes/import';
 import messageTemplateRoutes from './routes/message-templates';
 import departmentRoutes from './routes/departments';
 import browserAgentRoutes from './routes/browser-agent';
+import { failOrphanedRunningTasks } from './services/browser-agent.service';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
 import { generateRecurringTransactions } from './routes/finance';
@@ -200,6 +201,9 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 API AF CRM rodando em http://localhost:${PORT}`);
   // Restore WhatsApp QR sessions after restart
   restoreActiveSessions().catch(console.error);
+  // Tarefas do Agente de Navegador que ficaram "rodando" quando o processo
+  // anterior caiu/reiniciou nunca mais terminam sozinhas — marca como falha.
+  failOrphanedRunningTasks().catch(console.error);
 
   // Válvula de segurança do disco: arquiva no Drive só os anexos com 30+ dias,
   // numa pasta técnica separada — nunca mexe na organização manual do usuário.

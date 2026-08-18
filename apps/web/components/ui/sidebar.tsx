@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, MousePointerClick,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -24,6 +24,7 @@ const NAV: { href: string; label: string; icon: typeof BarChart3; perm: Permissi
   { href: '/usuarios', label: 'Usuários', icon: UserCog, perm: 'users' },
   { href: '/financeiro', label: 'Financeiro', icon: Wallet, perm: 'finance' },
   { href: '/importar', label: 'Importar', icon: Upload, perm: 'funnel_manage' },
+  { href: '/agente-navegador', label: 'Agente de Navegador', icon: MousePointerClick, perm: 'browser_agent' },
   { href: '/configuracoes', label: 'Configurações', icon: Settings, perm: 'settings' },
 ];
 
