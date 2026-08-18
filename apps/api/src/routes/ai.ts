@@ -652,13 +652,48 @@ async function resolveClientDriveDocuments(
   return { ok: true, docs, deixadosDeFora };
 }
 
+/**
+ * 1º passo da conferência de documentos: transcreve os campos-chave de CADA
+ * documento, isolado, em vez de já pedir a comparação junto com a leitura.
+ * Achado num caso real: pedir "leia N documentos E já aponte divergências"
+ * numa chamada só fazia o modelo errar comparações de número longo (CNH,
+ * CPF) que ele acertava sozinho quando lia só aquele documento (usado por
+ * ler_documento_identificacao) — separar leitura de comparação resolve isso,
+ * porque a 2ª chamada compara TEXTO com TEXTO (bem mais confiável que
+ * comparar texto com o que está "espalhado" em várias imagens ao mesmo tempo).
+ */
+async function extractKeyFieldsFromDocs(apiKey: string, docs: { name: string; mimeType: string; buffer: Buffer }[]): Promise<string | null> {
+  const content: Record<string, unknown>[] = [];
+  for (const d of docs) {
+    content.push({ type: 'text', text: `Documento: ${d.name}` });
+    content.push(
+      d.mimeType === 'application/pdf'
+        ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: d.buffer.toString('base64') } }
+        : { type: 'image', source: { type: 'base64', media_type: d.mimeType, data: d.buffer.toString('base64') } }
+    );
+  }
+  content.push({
+    type: 'text',
+    text: 'Para CADA documento acima, transcreva LITERALMENTE (dígito por dígito, sem arredondar nem resumir) os campos que aparecerem claramente nele: nome completo, CPF, número do documento de identidade (CNH/RG), data de nascimento, endereço completo (logradouro, número, complemento, bairro, cidade, UF, CEP), telefone, renda bruta, renda líquida, valor do imóvel, e outros valores em R$ relevantes. Preste atenção REDOBRADA em cada dígito de números longos (CPF, número de documento, CEP, telefone, valores) — releia se precisar, não aproxime. Se um campo não aparecer com clareza no documento, simplesmente não o liste (nunca invente). Responda em texto simples organizado por documento (nome do arquivo como título de cada bloco), SEM JSON e sem comentário extra.',
+  });
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 2000, messages: [{ role: 'user', content }] }),
+  });
+  if (!res.ok) return null;
+  const data = await res.json() as { content: { type: string; text?: string }[] };
+  return data.content?.find((b) => b.type === 'text')?.text || null;
+}
+
 async function executeAgentTool(
   name: string,
   input: Record<string, any>,
   accountId: string,
   io: any,
   userId?: string,
-  attachment?: { mimeType?: string; dataBase64?: string } | null
+  attachment?: { fileName?: string; mimeType?: string; dataBase64?: string } | null
 ): Promise<unknown> {
   // Permissões efetivas do colaborador que está usando o assistente. Toda ação
   // sensível checa isto; ações irreversíveis exigem confirmação dupla (o modelo
@@ -1608,29 +1643,24 @@ async function executeAgentTool(
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return { success: false, error: 'ANTHROPIC_API_KEY não configurada' };
 
-    const content: Record<string, unknown>[] = [];
-    for (const d of docs) {
-      content.push({ type: 'text', text: `Documento: ${d.name}` });
-      content.push(
-        d.mimeType === 'application/pdf'
-          ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: d.buffer.toString('base64') } }
-          : { type: 'image', source: { type: 'base64', media_type: d.mimeType, data: d.buffer.toString('base64') } }
-      );
-    }
-    content.push({
-      type: 'text',
-      text: `Dados atualmente registrados no cadastro deste cliente:\n${linhasCadastro.join('\n')}\n\nCompare cada dado do cadastro acima com o que aparece nos documentos. Aponte SOMENTE divergências claras e que você tenha certeza (ex.: nome escrito diferente, CPF com dígito trocado, valor diferente do documento). NÃO aponte um campo do cadastro se ele não aparecer em nenhum documento — nesse caso simplesmente não dá pra conferir esse campo, ignore-o.`,
-    });
-
     try {
+      // 1º passo: transcreve os documentos isolados (mais confiável do que
+      // já pedir a comparação junto com a leitura — ver comentário na função).
+      const transcricao = await extractKeyFieldsFromDocs(apiKey, docs);
+      if (!transcricao) return { success: false, error: 'Erro ao ler os documentos do Drive.' };
+
+      // 2º passo: compara TEXTO com TEXTO (o cadastro vs. a transcrição acima).
       const visionRes = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
           model: 'claude-sonnet-5',
           max_tokens: 1500,
-          system: 'Você audita cadastros de clientes de uma financeira comparando os dados já digitados com os documentos oficiais dela (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorCadastro": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — nunca aponte algo que não esteja claramente legível no documento, e nunca inclua um campo que não apareça em nenhum documento. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir.',
-          messages: [{ role: 'user', content }],
+          system: 'Você audita cadastros de clientes de uma financeira comparando os dados já digitados com os documentos oficiais dela (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorCadastro": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — releia número por número antes de decidir (CPF, número de documento, CEP, telefone, valores) e não aponte algo que não esteja claramente na transcrição, e nunca inclua um campo que não apareça em nenhum documento. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir.',
+          messages: [{
+            role: 'user',
+            content: `Dados atualmente registrados no cadastro deste cliente:\n${linhasCadastro.join('\n')}\n\nDados extraídos dos documentos de referência (transcrição literal, dígito por dígito):\n${transcricao}\n\nCompare cada dado do cadastro acima com a transcrição. Aponte SOMENTE divergências claras e que você tenha certeza (ex.: nome escrito diferente, CPF ou número de documento com dígito trocado, valor diferente). NÃO aponte um campo do cadastro se ele não aparecer na transcrição — nesse caso simplesmente não dá pra conferir esse campo, ignore-o.`,
+          }],
         }),
       });
       if (!visionRes.ok) {
@@ -1665,7 +1695,8 @@ async function executeAgentTool(
     // Resolve o documento de REFERÊNCIA (o "formulário"): ou veio anexado no
     // chat, ou já está salvo na própria pasta do cliente no Drive.
     let refMimeType = '';
-    let refBase64 = '';
+    let refBuffer: Buffer | null = null;
+    let refFileName = 'formulário anexado';
     let refLabel = '';
     let excludeFileId: string | undefined;
 
@@ -1674,7 +1705,8 @@ async function executeAgentTool(
         return { success: false, error: `Tipo de arquivo anexado não suportado (${attachment.mimeType}).` };
       }
       refMimeType = attachment.mimeType;
-      refBase64 = attachment.dataBase64;
+      refBuffer = Buffer.from(attachment.dataBase64, 'base64');
+      refFileName = attachment.fileName || refFileName;
       refLabel = 'anexado pelo colaborador nesta conversa';
     } else if (nomeArquivoReferencia) {
       const folder = await findFolderByNameUnderRoot(accountId, nomePastaInput || lead.name);
@@ -1691,14 +1723,13 @@ async function executeAgentTool(
         return { success: false, needsDisambiguation: true, opcoes: candidatos.map((c) => ({ nome: c.name, pasta: c.path })), error: `Achei mais de um arquivo parecido com "${nomeArquivoReferencia}" — pergunte ao colaborador qual é o formulário certo e chame de novo com um nome mais específico.` };
       }
       const escolhido = candidatos[0];
-      let buffer: Buffer;
       try {
-        buffer = await downloadDriveFile(accountId, escolhido.id, escolhido.mimeType);
+        refBuffer = await downloadDriveFile(accountId, escolhido.id, escolhido.mimeType);
       } catch (err: any) {
         return { success: false, error: `Falha ao baixar "${escolhido.name}" do Drive: ${err?.message || 'erro desconhecido'}` };
       }
       refMimeType = escolhido.mimeType;
-      refBase64 = buffer.toString('base64');
+      refFileName = escolhido.name;
       refLabel = `arquivo "${escolhido.name}" já salvo na pasta do cliente no Drive${escolhido.path ? ` (em ${escolhido.path})` : ''}`;
       excludeFileId = escolhido.id;
     } else {
@@ -1711,35 +1742,30 @@ async function executeAgentTool(
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return { success: false, error: 'ANTHROPIC_API_KEY não configurada' };
-
-    const content: Record<string, unknown>[] = [
-      { type: 'text', text: `FORMULÁRIO/CADASTRO PREENCHIDO A CONFERIR (${refLabel}):` },
-      refMimeType === 'application/pdf'
-        ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: refBase64 } }
-        : { type: 'image', source: { type: 'base64', media_type: refMimeType, data: refBase64 } },
-    ];
-    for (const d of docs) {
-      content.push({ type: 'text', text: `Documento de referência do cliente (Drive): ${d.name}` });
-      content.push(
-        d.mimeType === 'application/pdf'
-          ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: d.buffer.toString('base64') } }
-          : { type: 'image', source: { type: 'base64', media_type: d.mimeType, data: d.buffer.toString('base64') } }
-      );
-    }
-    content.push({
-      type: 'text',
-      text: 'Compare os dados preenchidos no FORMULÁRIO acima com o que aparece nos documentos de referência do cliente (Drive), listados depois dele. Aponte SOMENTE divergências claras e que você tenha certeza (ex.: nome escrito diferente, CPF com dígito trocado, valor/data diferente do documento). NÃO aponte um campo do formulário se ele não aparecer em nenhum documento de referência — nesse caso simplesmente não dá pra conferir esse campo, ignore-o.',
-    });
+    if (!refBuffer) return { success: false, error: 'Falha interna ao resolver o formulário de referência.' };
 
     try {
+      // 1º passo: transcreve o formulário e os documentos de referência
+      // SEPARADOS um do outro (mais confiável do que já pedir a comparação
+      // junto com a leitura — ver comentário na função).
+      const [transcricaoFormulario, transcricaoDocs] = await Promise.all([
+        extractKeyFieldsFromDocs(apiKey, [{ name: refFileName, mimeType: refMimeType, buffer: refBuffer }]),
+        extractKeyFieldsFromDocs(apiKey, docs),
+      ]);
+      if (!transcricaoFormulario || !transcricaoDocs) return { success: false, error: 'Erro ao ler o formulário ou os documentos do Drive.' };
+
+      // 2º passo: compara TEXTO com TEXTO (as duas transcrições acima).
       const visionRes = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
           model: 'claude-sonnet-5',
           max_tokens: 1500,
-          system: 'Você audita formulários/cadastros de clientes de uma financeira comparando um formulário preenchido com os documentos oficiais do cliente (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorFormulario": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — nunca aponte algo que não esteja claramente legível no documento, e nunca inclua um campo do formulário que não apareça em nenhum documento de referência. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir.',
-          messages: [{ role: 'user', content }],
+          system: 'Você audita formulários/cadastros de clientes de uma financeira comparando um formulário preenchido com os documentos oficiais do cliente (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorFormulario": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — releia número por número antes de decidir (CPF, número de documento, CEP, telefone, valores) e não aponte algo que não esteja claramente nas transcrições, e nunca inclua um campo do formulário que não apareça em nenhuma transcrição de documento de referência. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir.',
+          messages: [{
+            role: 'user',
+            content: `FORMULÁRIO A CONFERIR (${refLabel}) — dados transcritos:\n${transcricaoFormulario}\n\nDOCUMENTOS DE REFERÊNCIA DO CLIENTE (Drive) — dados transcritos:\n${transcricaoDocs}\n\nCompare os dados do formulário com os documentos de referência. Aponte SOMENTE divergências claras e que você tenha certeza (ex.: nome escrito diferente, CPF ou número de documento com dígito trocado, valor/data diferente). NÃO aponte um campo do formulário se ele não aparecer em nenhuma transcrição de documento de referência — nesse caso simplesmente não dá pra conferir esse campo, ignore-o.`,
+          }],
         }),
       });
       if (!visionRes.ok) {
