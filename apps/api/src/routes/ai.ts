@@ -13,7 +13,7 @@ import {
 import { PDFDocument, PDFTextField, PDFCheckBox, PDFDropdown, PDFRadioGroup } from 'pdf-lib';
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
-import { getOrCreateInboxPipeline } from '../services/department.service';
+import { getOrCreateInboxPipeline, getScopeDepartmentIds, resolveCreateDepartmentId } from '../services/department.service';
 
 const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
 function sanitizePermsInput(input: unknown): Record<string, boolean> | null {
@@ -717,17 +717,21 @@ async function executeAgentTool(
   // Permissões efetivas do colaborador que está usando o assistente. Toda ação
   // sensível checa isto; ações irreversíveis exigem confirmação dupla (o modelo
   // pergunta duas vezes e só então passa confirmed:true — ver system prompt).
-  const me = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { role: true, permissions: true, departmentIds: true } }) : null;
+  const me = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { role: true, permissions: true } }) : null;
   const perms = effectivePermissions(me?.role || 'AGENT', me?.permissions ?? null);
   const deny = (key: PermissionKey, acao: string) =>
     ({ success: false as const, error: `Você não tem permissão para ${acao}. (Falta o acesso "${key}".)` });
-  // Mesma regra de setor do resto do CRM: admin vê tudo; colaborador só o
-  // próprio setor (sem setor definido ainda = sem filtro, por compatibilidade).
-  // TODO(multi-setor): só considera o primeiro setor — este arquivo ainda
-  // reimplementa a regra manualmente em vez de usar getScopeDepartmentIds;
-  // migração completa fica pra etapa própria (arquivo grande e autocontido).
-  const scopeDepartmentId = me?.role === 'ADMIN' ? null : (me?.departmentIds[0] ?? null);
-  const pipelineDeptScope = scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {};
+  // Mesma regra de setor do resto do CRM: admin vê tudo; colaborador só o(s)
+  // próprio(s) setor(es) (sem setor definido ainda = sem filtro, por
+  // compatibilidade). Função centralizada agora — antes reimplementava a
+  // regra na mão aqui, considerando só um único setor.
+  const scopeDepartmentIds = userId ? await getScopeDepartmentIds(accountId, userId, me?.role || 'AGENT') : [];
+  // Filtro pronto pra usar direto em `where: { pipeline: {...} }` — usado
+  // pelas ferramentas de listagem (list_pipelines, find_lead, get_recent_
+  // messages etc.). Array vazio = sem restrição (admin ou sem setor ainda).
+  const pipelineDeptScope = scopeDepartmentIds.length
+    ? { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] }
+    : {};
 
   // Rede de segurança: se QUALQUER ferramenta abaixo lançar uma exceção não
   // tratada (ex.: API do Drive fora do ar, erro de rede), isso derrubava a
@@ -839,7 +843,10 @@ async function executeAgentTool(
   if (name === 'listar_templates_whatsapp') {
     if (!perms.templates) return deny('templates', 'ver os templates de WhatsApp');
     try {
-      const templates = await listMetaTemplates(accountId, scopeDepartmentId);
+      // listMetaTemplates ainda é de um setor só — usa o primeiro do usuário
+      // (ninguém com 2+ setores hoje; suficiente até essa função também
+      // aceitar lista).
+      const templates = await listMetaTemplates(accountId, scopeDepartmentIds[0] ?? null);
       return { success: true, templates: templates.map((t: any) => ({ nome: t.name, categoria: t.category, idioma: t.language, status: t.status, motivoRejeicao: t.rejected_reason || null })) };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao buscar templates' };
@@ -877,7 +884,7 @@ async function executeAgentTool(
         body: input.body ? String(input.body) : undefined,
         footer: input.footer ? String(input.footer) : undefined,
         codeExpirationMinutes: typeof input.codeExpirationMinutes === 'number' ? input.codeExpirationMinutes : undefined,
-      }, scopeDepartmentId);
+      }, scopeDepartmentIds[0] ?? null); // createMetaTemplate ainda é de um setor só
       return { success: true, enviadoParaAprovacao: true, resultado: result };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao enviar template para aprovação' };
@@ -888,7 +895,7 @@ async function executeAgentTool(
     const templates = await prisma.messageTemplate.findMany({
       where: {
         accountId,
-        ...(scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {}),
+        ...(scopeDepartmentIds.length ? { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } : {}),
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -900,9 +907,11 @@ async function executeAgentTool(
     const nome = String(input.name || '').trim();
     const body = String(input.body || '').trim();
     if (!nome || !body) return { success: false, error: 'Informe name e body.' };
+    const resolvedDept = resolveCreateDepartmentId(scopeDepartmentIds, typeof input.departmentId === 'string' ? input.departmentId : null);
+    if (!resolvedDept.ok) return { success: false, error: resolvedDept.error };
     const variaveis = [...new Set((body.match(/\{\{([^}]+)\}\}/g) || []).map((m) => m.replace(/\{\{|\}\}/g, '').trim()))];
     const template = await prisma.messageTemplate.create({
-      data: { accountId, name: nome, category: input.category ? String(input.category) : 'geral', body, variables: variaveis, departmentId: scopeDepartmentId },
+      data: { accountId, name: nome, category: input.category ? String(input.category) : 'geral', body, variables: variaveis, departmentId: resolvedDept.departmentId },
     });
     return { success: true, id: template.id, nome: template.name };
   }
@@ -915,7 +924,7 @@ async function executeAgentTool(
 
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { pipeline: { select: { departmentId: true } } } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
-    if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) {
+    if (scopeDepartmentIds.length && lead.pipeline.departmentId && !scopeDepartmentIds.includes(lead.pipeline.departmentId)) {
       return { success: false, error: 'Esse lead é de outro departamento.' };
     }
 
@@ -923,7 +932,7 @@ async function executeAgentTool(
       where: {
         accountId,
         name: { contains: templateName, mode: 'insensitive' },
-        ...(scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {}),
+        ...(scopeDepartmentIds.length ? { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } : {}),
       },
     });
     if (candidatos.length === 0) return { success: false, error: `Nenhuma resposta rápida encontrada com "${templateName}". Use listar_respostas_rapidas para ver as que existem.` };
@@ -964,7 +973,7 @@ async function executeAgentTool(
 
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { pipeline: { select: { departmentId: true } } } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
-    if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) {
+    if (scopeDepartmentIds.length && lead.pipeline.departmentId && !scopeDepartmentIds.includes(lead.pipeline.departmentId)) {
       return { success: false, error: 'Esse lead é de outro departamento.' };
     }
 
@@ -1177,7 +1186,7 @@ async function executeAgentTool(
     if (!leadId) return { success: false, error: 'leadId é obrigatório' };
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { pipeline: { select: { departmentId: true } } } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
-    if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) {
+    if (scopeDepartmentIds.length && lead.pipeline.departmentId && !scopeDepartmentIds.includes(lead.pipeline.departmentId)) {
       return { success: false, error: 'Esse lead é de outro departamento.' };
     }
     const target = await resolveStageTarget(
@@ -1186,9 +1195,9 @@ async function executeAgentTool(
       input.stageId ? String(input.stageId) : undefined,
     );
     if (!target) return { success: false, error: 'Funil/estágio de destino não encontrado. Use list_pipelines para obter o stageId.' };
-    if (scopeDepartmentId) {
+    if (scopeDepartmentIds.length) {
       const destPipelineCheck = await prisma.pipeline.findUnique({ where: { id: target.pipelineId }, select: { departmentId: true } });
-      if (destPipelineCheck?.departmentId && destPipelineCheck.departmentId !== scopeDepartmentId) {
+      if (destPipelineCheck?.departmentId && !scopeDepartmentIds.includes(destPipelineCheck.departmentId)) {
         return { success: false, error: 'Esse funil de destino é de outro departamento.' };
       }
     }
@@ -1248,7 +1257,7 @@ async function executeAgentTool(
     if (!perms.funnel_manage) return deny('funnel_manage', 'editar cards');
     const lead = await prisma.lead.findFirst({ where: { id: String(input.leadId || ''), accountId }, include: { pipeline: { select: { departmentId: true } } } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
-    if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) {
+    if (scopeDepartmentIds.length && lead.pipeline.departmentId && !scopeDepartmentIds.includes(lead.pipeline.departmentId)) {
       return { success: false, error: 'Esse lead é de outro departamento.' };
     }
     const data: Record<string, unknown> = {};
@@ -1417,13 +1426,13 @@ async function executeAgentTool(
 
   if (name === 'send_whatsapp_message') {
     if (!perms.inbox_reply) return deny('inbox_reply', 'enviar mensagens');
-    if (scopeDepartmentId) {
+    if (scopeDepartmentIds.length) {
       const targetLead = await prisma.lead.findFirst({
         where: { id: String(input.leadId), accountId },
         include: { pipeline: { select: { departmentId: true } } },
       });
       if (!targetLead) return { success: false, error: 'Lead não encontrado' };
-      if (targetLead.pipeline.departmentId && targetLead.pipeline.departmentId !== scopeDepartmentId) {
+      if (targetLead.pipeline.departmentId && !scopeDepartmentIds.includes(targetLead.pipeline.departmentId)) {
         return { success: false, error: 'Esse lead é de outro departamento.' };
       }
     }
@@ -1453,17 +1462,18 @@ async function executeAgentTool(
         input.stageId ? String(input.stageId) : undefined,
       );
       if (!resolved) return { success: false, error: 'Funil/estágio não encontrado. Use list_pipelines para obter o stageId correto.' };
-      if (scopeDepartmentId) {
+      if (scopeDepartmentIds.length) {
         const destPipelineCheck = await prisma.pipeline.findUnique({ where: { id: resolved.pipelineId }, select: { departmentId: true } });
-        if (destPipelineCheck?.departmentId && destPipelineCheck.departmentId !== scopeDepartmentId) {
+        if (destPipelineCheck?.departmentId && !scopeDepartmentIds.includes(destPipelineCheck.departmentId)) {
           return { success: false, error: 'Esse funil é de outro departamento.' };
         }
       }
       target = resolved;
-    } else if (scopeDepartmentId) {
-      // Sem funil/estágio pedido — cria (se precisar) na Caixa de Entrada do
-      // PRÓPRIO setor do colaborador, não num funil qualquer da conta.
-      const inbox = await getOrCreateInboxPipeline(accountId, scopeDepartmentId);
+    } else if (scopeDepartmentIds.length) {
+      // Sem funil/estágio pedido — cria (se precisar) na Caixa de Entrada de
+      // um dos setores do colaborador (o 1º — getOrCreateInboxPipeline ainda
+      // é de um setor só), não num funil qualquer da conta.
+      const inbox = await getOrCreateInboxPipeline(accountId, scopeDepartmentIds[0]);
       if (inbox.stages[0]) target = { pipelineId: inbox.id, stageId: inbox.stages[0].id };
     }
 
