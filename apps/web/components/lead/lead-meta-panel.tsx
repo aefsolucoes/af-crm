@@ -1,5 +1,5 @@
 'use client';
-import { LeadDetail, Pipeline, Stage, User } from '@/types';
+import { LeadDetail, Stage, User } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { Shuffle } from 'lucide-react';
 import api from '@/lib/api';
@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { StageGateModal } from '@/components/kanban/stage-gate-modal';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
+import { MovePipelineModal } from './move-pipeline-modal';
 
 interface LeadMetaPanelProps {
   lead: LeadDetail;
@@ -22,41 +23,12 @@ export function LeadMetaPanel({ lead, onRefresh }: LeadMetaPanelProps) {
   const [gateMissing, setGateMissing] = useState<ValidationField[]>([]);
   const [gateStageName, setGateStageName] = useState('');
   const [pendingStageId, setPendingStageId] = useState<string | null>(null);
-  const [changingPipeline, setChangingPipeline] = useState(false);
   const [showPipelineModal, setShowPipelineModal] = useState(false);
-  const [selectedPipelineId, setSelectedPipelineId] = useState('');
-  const [selectedStageId, setSelectedStageId] = useState('');
 
   const { data: users = [] } = useQuery<User[]>({
     queryKey: ['users'],
     queryFn: async () => { const { data } = await api.get('/api/users'); return data; },
   });
-
-  const { data: pipelines = [] } = useQuery<Pipeline[]>({
-    queryKey: ['pipelines'],
-    queryFn: async () => { const { data } = await api.get('/api/pipelines'); return data; },
-  });
-
-  const selectedPipeline = pipelines.find(p => p.id === selectedPipelineId);
-
-  async function handlePipelineMove() {
-    if (!selectedPipelineId) return;
-    setChangingPipeline(true);
-    try {
-      await api.patch(`/api/leads/${lead.id}/pipeline`, {
-        pipelineId: selectedPipelineId,
-        stageId: selectedStageId || undefined,
-      });
-      const p = pipelines.find(p => p.id === selectedPipelineId);
-      toast(`Lead movido para "${p?.name}"!`);
-      setShowPipelineModal(false);
-      onRefresh();
-    } catch {
-      toast('Erro ao mover lead', 'error');
-    } finally {
-      setChangingPipeline(false);
-    }
-  }
 
   async function handleUserChange(userId: string) {
     if (!userId || userId === lead.userId) return;
@@ -136,7 +108,7 @@ export function LeadMetaPanel({ lead, onRefresh }: LeadMetaPanelProps) {
               {lead.pipeline.name}
             </span>
             <button
-              onClick={() => { setSelectedPipelineId(''); setSelectedStageId(''); setShowPipelineModal(true); }}
+              onClick={() => setShowPipelineModal(true)}
               className="flex-shrink-0 p-1.5 border border-af-border rounded-lg text-slate-400 hover:text-af-mid hover:bg-af-light transition-colors"
               title="Mover para outro funil"
             >
@@ -160,63 +132,13 @@ export function LeadMetaPanel({ lead, onRefresh }: LeadMetaPanelProps) {
         </div>
       </div>
 
-      {/* Modal — mover para outro funil */}
       {showPipelineModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowPipelineModal(false)}>
-          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <Shuffle size={16} className="text-af-mid" /> Mover para outro funil
-            </h3>
-
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1 block">Funil de destino</label>
-                <select
-                  value={selectedPipelineId}
-                  onChange={e => { setSelectedPipelineId(e.target.value); setSelectedStageId(''); }}
-                  className="w-full px-3 py-2 text-sm border border-af-border rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-af-accent"
-                >
-                  <option value="">Selecione o funil</option>
-                  {pipelines.filter(p => p.id !== lead.pipelineId).map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              {selectedPipeline && (
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Estágio de entrada</label>
-                  <select
-                    value={selectedStageId}
-                    onChange={e => setSelectedStageId(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-af-border rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-af-accent"
-                  >
-                    <option value="">Primeiro estágio (padrão)</option>
-                    {selectedPipeline.stages.map((s: Stage) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-
-            <div className="flex gap-2 mt-5">
-              <button
-                onClick={() => setShowPipelineModal(false)}
-                className="flex-1 py-2 text-sm border border-af-border rounded-xl text-slate-600 hover:bg-slate-50"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handlePipelineMove}
-                disabled={!selectedPipelineId || changingPipeline}
-                className="flex-1 py-2 text-sm bg-af-mid text-white rounded-xl font-semibold hover:bg-af-dark disabled:opacity-50 transition-colors"
-              >
-                {changingPipeline ? 'Movendo...' : 'Mover lead'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <MovePipelineModal
+          leadId={lead.id}
+          currentPipelineId={lead.pipelineId}
+          onClose={() => setShowPipelineModal(false)}
+          onMoved={() => { setShowPipelineModal(false); onRefresh(); }}
+        />
       )}
     </>
   );

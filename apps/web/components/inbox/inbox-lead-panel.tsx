@@ -1,14 +1,14 @@
 'use client';
 import { useState } from 'react';
-import { LeadDetail, Stage, Pipeline } from '@/types';
+import { LeadDetail, Stage } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
+import { MovePipelineModal } from '@/components/lead/move-pipeline-modal';
 import { StageGateModal } from '@/components/kanban/stage-gate-modal';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { ExternalLink, Shuffle, ListChecks, LayoutList, PanelRightClose } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
 import { LeadTasks } from '@/components/lead/lead-tasks';
 import { LeadDetailModal } from '@/components/kanban/lead-detail-modal';
 
@@ -27,19 +27,8 @@ export function InboxLeadPanel({ lead, onRefresh, onHide }: InboxLeadPanelProps)
   const [gateMissing, setGateMissing]     = useState<ValidationField[]>([]);
   const [gateStageName, setGateStageName] = useState('');
   const [pendingStageId, setPendingStageId] = useState<string | null>(null);
-  // Pipeline change
   const [showPipelineModal, setShowPipelineModal] = useState(false);
-  const [selectedPipelineId, setSelectedPipelineId] = useState('');
-  const [selectedStageId, setSelectedStageId] = useState('');
-  const [changingPipeline, setChangingPipeline] = useState(false);
-  const [changingFunil, setChangingFunil] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
-
-  const { data: pipelines = [] } = useQuery<Pipeline[]>({
-    queryKey: ['pipelines'],
-    queryFn: async () => { const { data } = await api.get('/api/pipelines'); return data; },
-  });
-  const selectedPipeline = pipelines.find(p => p.id === selectedPipelineId);
 
   const cf = ((lead.customFields || {}) as Record<string, string>);
   const p1 = cf.participante_1 || lead.contact?.name || lead.name;
@@ -56,42 +45,6 @@ export function InboxLeadPanel({ lead, onRefresh, onHide }: InboxLeadPanelProps)
       toast('Erro ao atualizar etapa', 'error');
     } finally {
       setChangingStage(false);
-    }
-  }
-
-  async function handlePipelineMove() {
-    if (!selectedPipelineId) return;
-    setChangingPipeline(true);
-    try {
-      await api.patch(`/api/leads/${lead.id}/pipeline`, {
-        pipelineId: selectedPipelineId,
-        stageId: selectedStageId || undefined,
-      });
-      const p = pipelines.find(p => p.id === selectedPipelineId);
-      toast(`Lead movido para "${p?.name}"!`);
-      setShowPipelineModal(false);
-      setSelectedPipelineId('');
-      setSelectedStageId('');
-      onRefresh();
-    } catch {
-      toast('Erro ao mover lead', 'error');
-    } finally {
-      setChangingPipeline(false);
-    }
-  }
-
-  async function handleFunilChange(pipelineId: string) {
-    if (!pipelineId || pipelineId === lead.pipelineId) return;
-    setChangingFunil(true);
-    try {
-      await api.patch(`/api/leads/${lead.id}/pipeline`, { pipelineId });
-      const p = pipelines.find(p => p.id === pipelineId);
-      toast(`Movido para o funil "${p?.name}"!`);
-      onRefresh();
-    } catch {
-      toast('Erro ao mudar de funil', 'error');
-    } finally {
-      setChangingFunil(false);
     }
   }
 
@@ -128,60 +81,14 @@ export function InboxLeadPanel({ lead, onRefresh, onHide }: InboxLeadPanelProps)
       {/* ── Modal: Detalhe do cartão (mesmo do Funil) ── */}
       <LeadDetailModal leadId={detailOpen ? lead.id : null} onClose={() => setDetailOpen(false)} />
 
-      {/* ── Modal: Mover para outro funil ── */}
+      {/* ── Modal: Mover para outro funil (compartilhado com o Funil/Kanban) ── */}
       {showPipelineModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowPipelineModal(false)}>
-          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <Shuffle size={16} className="text-af-mid" /> Mover para outro funil
-            </h3>
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1 block">Funil de destino</label>
-                <select
-                  value={selectedPipelineId}
-                  onChange={e => { setSelectedPipelineId(e.target.value); setSelectedStageId(''); }}
-                  className="w-full px-3 py-2 text-sm border border-af-border rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-af-accent"
-                >
-                  <option value="">Selecione o funil</option>
-                  {pipelines.filter(p => p.id !== lead.pipelineId).map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-              </div>
-              {selectedPipeline && (
-                <div>
-                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Estágio de entrada</label>
-                  <select
-                    value={selectedStageId}
-                    onChange={e => setSelectedStageId(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-af-border rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-af-accent"
-                  >
-                    <option value="">Primeiro estágio (padrão)</option>
-                    {selectedPipeline.stages.map((s: Stage) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-            <div className="flex gap-2 mt-5">
-              <button
-                onClick={() => setShowPipelineModal(false)}
-                className="flex-1 py-2 text-sm border border-af-border rounded-xl text-slate-600 hover:bg-slate-50"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handlePipelineMove}
-                disabled={!selectedPipelineId || changingPipeline}
-                className="flex-1 py-2 text-sm bg-af-mid text-white rounded-xl font-semibold hover:bg-af-dark disabled:opacity-50 transition-colors"
-              >
-                {changingPipeline ? 'Movendo...' : 'Mover lead'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <MovePipelineModal
+          leadId={lead.id}
+          currentPipelineId={lead.pipelineId}
+          onClose={() => setShowPipelineModal(false)}
+          onMoved={() => { setShowPipelineModal(false); onRefresh(); }}
+        />
       )}
 
       <div className="w-96 flex-shrink-0 border-l border-af-border app-column-surface flex flex-col overflow-hidden">
@@ -197,7 +104,7 @@ export function InboxLeadPanel({ lead, onRefresh, onHide }: InboxLeadPanelProps)
             </span>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => { setSelectedPipelineId(''); setSelectedStageId(''); setShowPipelineModal(true); }}
+                onClick={() => setShowPipelineModal(true)}
                 className="flex items-center gap-1 text-xs text-slate-400 hover:text-af-mid transition-colors"
                 title="Mover para outro funil"
               >
@@ -269,20 +176,19 @@ export function InboxLeadPanel({ lead, onRefresh, onHide }: InboxLeadPanelProps)
         {/* ── Painel: Dados ── */}
         {activePanel === 'dados' && (
           <>
-            {/* Barra de fluxo — Funil + Estágio */}
+            {/* Barra de fluxo — Funil (leva pro modal, evita duas listas
+                diferentes pra mesma ação) + Estágio */}
             <div className="px-3 py-2.5 border-b border-af-border flex-shrink-0 space-y-2">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex-shrink-0 w-14">Funil</span>
-                <select
-                  value={lead.pipelineId}
-                  disabled={changingFunil}
-                  onChange={e => handleFunilChange(e.target.value)}
-                  className="flex-1 min-w-0 text-xs font-semibold text-slate-700 rounded-lg px-2.5 py-1.5 border border-af-border bg-white focus:outline-none focus:ring-2 focus:ring-af-accent cursor-pointer disabled:opacity-70"
+                <button
+                  onClick={() => setShowPipelineModal(true)}
+                  className="flex-1 min-w-0 flex items-center justify-between gap-1 text-xs font-semibold text-slate-700 rounded-lg px-2.5 py-1.5 border border-af-border bg-white hover:border-af-mid transition-colors text-left"
+                  title="Mover para outro funil"
                 >
-                  {pipelines.map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
+                  <span className="truncate">{lead.pipeline.name}</span>
+                  <Shuffle size={12} className="flex-shrink-0 text-slate-400" />
+                </button>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex-shrink-0 w-14">Estágio</span>
