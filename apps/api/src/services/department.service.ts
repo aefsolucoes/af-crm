@@ -107,13 +107,53 @@ export async function getOrCreateInboxPipeline(accountId: string, departmentId?:
 }
 
 /**
- * Departamento efetivo do usuário logado, para filtrar o que ele enxerga.
- * ADMIN sempre retorna null (= sem filtro, vê tudo). Não-admin sem
- * departamento definido também retorna null por ora (compatibilidade — não
- * trava quem ainda não foi configurado em Usuários).
+ * Setores efetivos do usuário logado, para filtrar o que ele enxerga.
+ * ADMIN sempre retorna [] (= sem filtro, vê tudo). Não-admin sem nenhum
+ * setor definido também retorna [] por ora (compatibilidade — não trava
+ * quem ainda não foi configurado em Usuários). Array vazio == antigo
+ * `null`: em todo lugar que consome isso, `scopeDepartmentIds.length` faz
+ * o papel do antigo `if (scopeDepartmentId)`.
+ */
+export async function getScopeDepartmentIds(accountId: string, userId: string, role: string): Promise<string[]> {
+  if (role === 'ADMIN') return [];
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { departmentIds: true } });
+  return user?.departmentIds ?? [];
+}
+
+/**
+ * @deprecated Ponte temporária pros ~30 pontos do backend que ainda
+ * comparam um único id (`=== scopeDepartmentId`) — sendo migrados aos
+ * poucos pra `getScopeDepartmentIds` (etapas seguintes deste mesmo
+ * trabalho). Devolve o primeiro setor do usuário só — exato pra quem tem
+ * 0 ou 1 (todo mundo, nesta etapa, já que ainda não existe UI/API pra
+ * marcar mais de um), correto o suficiente como fallback pra quem tiver
+ * mais depois, até a migração dessas rotas terminar. Remover quando o
+ * último caller for migrado.
  */
 export async function getScopeDepartmentId(accountId: string, userId: string, role: string): Promise<string | null> {
-  if (role === 'ADMIN') return null;
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { departmentId: true } });
-  return user?.departmentId ?? null;
+  const ids = await getScopeDepartmentIds(accountId, userId, role);
+  return ids[0] ?? null;
+}
+
+/**
+ * Decide em qual setor um registro novo (pipeline, template) deve nascer,
+ * dado os setores do usuário logado e o `departmentId` que ele pediu no
+ * corpo da requisição (só relevante pra admin/multi-setor — link direto).
+ * - 0 setores (admin, ou colaborador sem setor definido): usa o que veio
+ *   do body, ou null (compatibilidade — cria "órfão", visível em todo canto).
+ * - 1 setor: sempre esse, ignora o que veio do body (igual ao comportamento
+ *   de antes — não dava pra um colaborador de setor único criar em outro).
+ * - 2+ setores: exige `requestedDepartmentId` explícito E que esteja entre
+ *   os setores do próprio usuário — não dá pra "adivinhar" qual dos dois.
+ */
+export function resolveCreateDepartmentId(
+  scopeDepartmentIds: string[],
+  requestedDepartmentId?: string | null
+): { ok: true; departmentId: string | null } | { ok: false; error: string } {
+  if (scopeDepartmentIds.length === 0) return { ok: true, departmentId: requestedDepartmentId || null };
+  if (scopeDepartmentIds.length === 1) return { ok: true, departmentId: scopeDepartmentIds[0] };
+  if (!requestedDepartmentId || !scopeDepartmentIds.includes(requestedDepartmentId)) {
+    return { ok: false, error: 'Você tem mais de um setor — escolha em qual deles isso deve entrar.' };
+  }
+  return { ok: true, departmentId: requestedDepartmentId };
 }

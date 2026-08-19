@@ -80,10 +80,13 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     const accountId = req.user!.accountId;
     const existing = await prisma.department.findFirst({
       where: { id: req.params.id, accountId },
-      include: { _count: { select: { users: true, pipelines: true, whatsappNumbers: true } } },
+      include: { _count: { select: { pipelines: true, whatsappNumbers: true } } },
     });
     if (!existing) return res.status(404).json({ error: 'Departamento não encontrado' });
-    const { users, pipelines, whatsappNumbers } = existing._count;
+    // users não é mais uma relação formal (departmentIds é array) — conta à
+    // parte com o filtro "has" do Prisma pra array.
+    const users = await prisma.user.count({ where: { accountId, departmentIds: { has: existing.id } } });
+    const { pipelines, whatsappNumbers } = existing._count;
     if (users > 0 || pipelines > 0 || whatsappNumbers > 0) {
       return res.status(400).json({
         error: `Não dá pra excluir: tem ${users} colaborador(es), ${pipelines} funil(is) e ${whatsappNumbers} número(s) de WhatsApp vinculados. Mova-os para outro departamento antes.`,

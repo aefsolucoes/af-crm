@@ -621,7 +621,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         // Get dedicated WhatsApp pipeline (do setor deste número/config, se houver)
         const pipeline = await getOrCreateWhatsAppPipeline(accountId, departmentId);
         const admin =
-          (departmentId && await prisma.user.findFirst({ where: { accountId, departmentId }, orderBy: { createdAt: 'asc' } })) ||
+          (departmentId && await prisma.user.findFirst({ where: { accountId, departmentIds: { has: departmentId } }, orderBy: { createdAt: 'asc' } })) ||
           (await prisma.user.findFirst({ where: { accountId }, orderBy: { createdAt: 'asc' } }));
 
         if (!pipeline.stages.length || !admin) {

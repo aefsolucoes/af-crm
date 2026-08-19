@@ -30,7 +30,7 @@ function issueTokens(user: User) {
       id: user.id, name: user.name, email: user.email, role: user.role, accountId: user.accountId,
       themeColor: user.themeColor, themeImage: user.themeImage, themeOpacity: user.themeOpacity,
       permissions: effectivePermissions(user.role, user.permissions),
-      departmentId: user.departmentId,
+      departmentIds: user.departmentIds,
     },
   };
 }

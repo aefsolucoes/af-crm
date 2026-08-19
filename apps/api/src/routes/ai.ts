@@ -717,13 +717,16 @@ async function executeAgentTool(
   // Permissões efetivas do colaborador que está usando o assistente. Toda ação
   // sensível checa isto; ações irreversíveis exigem confirmação dupla (o modelo
   // pergunta duas vezes e só então passa confirmed:true — ver system prompt).
-  const me = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { role: true, permissions: true, departmentId: true } }) : null;
+  const me = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { role: true, permissions: true, departmentIds: true } }) : null;
   const perms = effectivePermissions(me?.role || 'AGENT', me?.permissions ?? null);
   const deny = (key: PermissionKey, acao: string) =>
     ({ success: false as const, error: `Você não tem permissão para ${acao}. (Falta o acesso "${key}".)` });
   // Mesma regra de setor do resto do CRM: admin vê tudo; colaborador só o
   // próprio setor (sem setor definido ainda = sem filtro, por compatibilidade).
-  const scopeDepartmentId = me?.role === 'ADMIN' ? null : (me?.departmentId ?? null);
+  // TODO(multi-setor): só considera o primeiro setor — este arquivo ainda
+  // reimplementa a regra manualmente em vez de usar getScopeDepartmentIds;
+  // migração completa fica pra etapa própria (arquivo grande e autocontido).
+  const scopeDepartmentId = me?.role === 'ADMIN' ? null : (me?.departmentIds[0] ?? null);
   const pipelineDeptScope = scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {};
 
   // Rede de segurança: se QUALQUER ferramenta abaixo lançar uma exceção não

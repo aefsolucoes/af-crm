@@ -272,7 +272,10 @@ router.get('/morning', async (req: AuthRequest, res: Response) => {
           accountId,
           archived: false,
           // Sem setor definido: vê todos os leads da API (compatibilidade).
-          ...(user.departmentId ? { pipeline: { OR: [{ departmentId: user.departmentId }, { departmentId: null }] } } : {}),
+          // TODO(multi-setor): só considera o primeiro setor do usuário —
+          // tratamento completo de departmentIds[] fica pra quando esta
+          // rota for migrada junto com o resto de reports.ts.
+          ...(user.departmentIds[0] ? { pipeline: { OR: [{ departmentId: user.departmentIds[0] }, { departmentId: null }] } } : {}),
         },
         include: {
           contact: { select: { name: true, whatsappPhone: true, phone: true } },

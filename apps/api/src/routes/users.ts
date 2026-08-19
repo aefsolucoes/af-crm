@@ -9,8 +9,21 @@ const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
 
-const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true, operatesApiOficial: true, permissions: true, departmentId: true } as const;
+const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true, operatesApiOficial: true, permissions: true, departmentIds: true } as const;
 const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
+
+/** Confere que todos os ids mandados são setores de verdade DESSA conta —
+ *  filtra silenciosamente ids inválidos/duplicados em vez de rejeitar o
+ *  pedido inteiro (evita travar o form por um id órfão que o front nem
+ *  deveria ter mandado). Retorna a lista já limpa. */
+async function sanitizeDepartmentIds(raw: unknown, accountId: string): Promise<string[]> {
+  if (!Array.isArray(raw)) return [];
+  const ids = Array.from(new Set(raw.filter((v): v is string => typeof v === 'string' && v.length > 0)));
+  if (!ids.length) return [];
+  const valid = await prisma.department.findMany({ where: { id: { in: ids }, accountId }, select: { id: true } });
+  const validIds = new Set(valid.map((d) => d.id));
+  return ids.filter((id) => validIds.has(id));
+}
 
 /** O seletor "número que ele opera" no front é um select único (QR
  *  específico, API Oficial, ou nenhum) — o valor especial "API" vira os
@@ -58,8 +71,8 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: 'Você não tem permissão para gerenciar usuários' });
     }
     const accountId = req.user!.accountId;
-    const { name, email, password, role, whatsAppNumberId, departmentId } = req.body as {
-      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null; departmentId?: string | null;
+    const { name, email, password, role, whatsAppNumberId, departmentIds } = req.body as {
+      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null; departmentIds?: unknown;
     };
 
     const cleanName = (name || '').trim();
@@ -78,10 +91,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       const num = await prisma.whatsAppNumber.findFirst({ where: { id: channel.whatsAppNumberId, accountId } });
       if (!num) return res.status(400).json({ error: 'Número de WhatsApp inválido' });
     }
-    if (departmentId) {
-      const dept = await prisma.department.findFirst({ where: { id: departmentId, accountId } });
-      if (!dept) return res.status(400).json({ error: 'Departamento inválido' });
-    }
+    const cleanDepartmentIds = await sanitizeDepartmentIds(departmentIds, accountId);
 
     const hashed = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
@@ -93,7 +103,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         accountId,
         whatsAppNumberId: channel.whatsAppNumberId,
         operatesApiOficial: channel.operatesApiOficial,
-        departmentId: departmentId || null,
+        departmentIds: cleanDepartmentIds,
         permissions: sanitizePermissions((req.body as { permissions?: unknown }).permissions) ?? undefined,
       },
       select: USER_SELECT,
@@ -114,8 +124,8 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     const target = await prisma.user.findFirst({ where: { id: req.params.id, accountId } });
     if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
 
-    const { name, email, password, role, whatsAppNumberId, departmentId } = req.body as {
-      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null; departmentId?: string | null;
+    const { name, email, password, role, whatsAppNumberId, departmentIds } = req.body as {
+      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null; departmentIds?: unknown;
     };
     const data: Record<string, unknown> = {};
 
@@ -153,12 +163,8 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
       data.whatsAppNumberId = channel.whatsAppNumberId;
       data.operatesApiOficial = channel.operatesApiOficial;
     }
-    if (departmentId !== undefined) {
-      if (departmentId) {
-        const dept = await prisma.department.findFirst({ where: { id: departmentId, accountId } });
-        if (!dept) return res.status(400).json({ error: 'Departamento inválido' });
-      }
-      data.departmentId = departmentId || null;
+    if (departmentIds !== undefined) {
+      data.departmentIds = await sanitizeDepartmentIds(departmentIds, accountId);
     }
     if ('permissions' in (req.body as object)) {
       data.permissions = sanitizePermissions((req.body as { permissions?: unknown }).permissions);

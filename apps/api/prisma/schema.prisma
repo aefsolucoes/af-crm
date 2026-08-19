@@ -49,7 +49,6 @@ model Department {
   // Configurações → Setores.
   aiScope   String?
 
-  users            User[]
   pipelines        Pipeline[]
   whatsappNumbers  WhatsAppNumber[]
   whatsappConfigs  WhatsAppConfig[]
@@ -112,12 +111,14 @@ model User {
   // Permissões por usuário (as "caixinhas"): { chave: boolean }. Null = usa o
   // padrão do papel. Admin sempre tem tudo. Ver src/lib/permissions.ts.
   permissions                Json?
-  // Setor/linha de negócio do colaborador (ex: Financiamento Habitacional,
+  // Setores/linhas de negócio do colaborador (ex: Financiamento Habitacional,
   // Consórcio) — define o que ele enxerga (funil, inbox, tarefas, dashboard).
-  // Null = sem setor definido ainda (por ora, enxerga tudo — evita travar
-  // quem ainda não foi configurado). Admin sempre vê tudo, tenha setor ou não.
-  departmentId               String?
-  department                 Department?         @relation(fields: [departmentId], references: [id])
+  // Pode pertencer a mais de um. Array vazio = sem setor definido ainda (por
+  // ora, enxerga tudo — evita travar quem ainda não foi configurado). Admin
+  // sempre vê tudo, tenha setor ou não. Sem relação formal (Department[])
+  // de propósito — mesmo padrão de Lead.tags/FieldDefinition.options, não
+  // precisa de metadado por vínculo (ver department.service.ts).
+  departmentIds              String[]            @default([])
   createdAt                  DateTime            @default(now())
   assistantQuestionsAsked    AssistantQuestion[] @relation("AssistantQuestionAskedBy")
   assistantQuestionsReceived AssistantQuestion[] @relation("AssistantQuestionTarget")

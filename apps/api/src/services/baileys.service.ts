@@ -578,7 +578,7 @@ async function isSelfChat(msg: any, sock: any): Promise<boolean> {
 async function resolveInboxTarget(accountId: string, departmentId?: string | null) {
   const pipeline = await getOrCreateInboxPipeline(accountId, departmentId ?? null);
   const admin =
-    (departmentId && await prisma.user.findFirst({ where: { accountId, departmentId } })) ||
+    (departmentId && await prisma.user.findFirst({ where: { accountId, departmentIds: { has: departmentId } } })) ||
     (await prisma.user.findFirst({ where: { accountId } }));
   return { pipeline, admin };
 }
@@ -714,7 +714,7 @@ async function getOrCreateLeadForPhone(
   // Prefere um usuário do MESMO setor como responsável padrão do card; sem
   // ninguém do setor ainda, cai em qualquer usuário da conta (como antes).
   const admin =
-    (targetDepartmentId && await prisma.user.findFirst({ where: { accountId, departmentId: targetDepartmentId } })) ||
+    (targetDepartmentId && await prisma.user.findFirst({ where: { accountId, departmentIds: { has: targetDepartmentId } } })) ||
     (await prisma.user.findFirst({ where: { accountId } }));
   if (!pipeline?.stages.length || !admin) return null;
 
