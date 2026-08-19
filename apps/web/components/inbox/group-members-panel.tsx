@@ -2,7 +2,7 @@
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { Avatar } from '@/components/ui/avatar';
-import { Users, ShieldCheck } from 'lucide-react';
+import { Users, ShieldCheck, PanelRightClose } from 'lucide-react';
 
 interface Member { phone: string; name: string | null; isAdmin: boolean; }
 interface GroupMembers { subject: string; count: number; members: Member[]; }
@@ -18,7 +18,7 @@ function fmtPhone(d: string): string {
   return `+${d}`;
 }
 
-export function GroupMembersPanel({ leadId, groupName }: { leadId: string; groupName: string }) {
+export function GroupMembersPanel({ leadId, groupName, onHide }: { leadId: string; groupName: string; onHide?: () => void }) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['group-members', leadId],
     queryFn: async () => (await api.get(`/api/whatsapp-qr/group/${leadId}/members`)).data as GroupMembers,
@@ -28,9 +28,20 @@ export function GroupMembersPanel({ leadId, groupName }: { leadId: string; group
   return (
     <div className="w-80 flex-shrink-0 border-l border-[#222e35] bg-[#111b21] flex flex-col h-full">
       <div className="px-4 py-4 border-b border-[#222e35]">
-        <div className="flex items-center gap-2 text-[#00a884] mb-1">
-          <Users size={16} />
-          <span className="text-xs font-semibold uppercase tracking-wide">Grupo</span>
+        <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center gap-2 text-[#00a884]">
+            <Users size={16} />
+            <span className="text-xs font-semibold uppercase tracking-wide">Grupo</span>
+          </div>
+          {onHide && (
+            <button
+              onClick={onHide}
+              className="text-[#8696a0] hover:text-[#e9edef] transition-colors"
+              title="Esconder integrantes"
+            >
+              <PanelRightClose size={14} />
+            </button>
+          )}
         </div>
         <p className="text-sm font-semibold text-[#e9edef] leading-tight break-words">{data?.subject || groupName}</p>
         {data && <p className="text-xs text-[#8696a0] mt-0.5">{data.count} integrante{data.count !== 1 ? 's' : ''}</p>}

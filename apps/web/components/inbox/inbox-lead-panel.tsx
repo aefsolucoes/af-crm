@@ -7,7 +7,7 @@ import { StageGateModal } from '@/components/kanban/stage-gate-modal';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
-import { ExternalLink, Shuffle, ListChecks, LayoutList } from 'lucide-react';
+import { ExternalLink, Shuffle, ListChecks, LayoutList, PanelRightClose } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { LeadTasks } from '@/components/lead/lead-tasks';
 import { LeadDetailModal } from '@/components/kanban/lead-detail-modal';
@@ -15,9 +15,12 @@ import { LeadDetailModal } from '@/components/kanban/lead-detail-modal';
 interface InboxLeadPanelProps {
   lead: LeadDetail;
   onRefresh: () => void;
+  /** Esconde o painel (some com a coluna toda) — pra quem quer mais espaço
+   *  pra conversa. Volta por um botão que fica na borda (ver InboxPageInner). */
+  onHide?: () => void;
 }
 
-export function InboxLeadPanel({ lead, onRefresh }: InboxLeadPanelProps) {
+export function InboxLeadPanel({ lead, onRefresh, onHide }: InboxLeadPanelProps) {
   const [activePanel, setActivePanel] = useState<'dados' | 'atividades'>('dados');
   const [changingStage, setChangingStage] = useState(false);
   const [gateOpen, setGateOpen]           = useState(false);
@@ -207,6 +210,15 @@ export function InboxLeadPanel({ lead, onRefresh }: InboxLeadPanelProps) {
               >
                 Ver lead <ExternalLink size={12} />
               </button>
+              {onHide && (
+                <button
+                  onClick={onHide}
+                  className="text-slate-400 hover:text-slate-600 transition-colors"
+                  title="Esconder dados do cliente"
+                >
+                  <PanelRightClose size={14} />
+                </button>
+              )}
             </div>
           </div>
 

@@ -10,6 +10,19 @@ import { GroupMembersPanel } from '@/components/inbox/group-members-panel';
 import { Conversation, Message, LeadDetail } from '@/types';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
+import { PanelRightOpen } from 'lucide-react';
+
+// Lembra se o painel de dados do cliente/grupo deve ficar escondido — pra
+// quem prefere mais espaço pra conversa e não quer reesconder toda vez.
+const HIDE_LEAD_PANEL_KEY = 'af-crm:inbox:hideLeadPanel';
+function readHideLeadPanel(): boolean {
+  if (typeof window === 'undefined') return false;
+  try { return localStorage.getItem(HIDE_LEAD_PANEL_KEY) === '1'; } catch { return false; }
+}
+function storeHideLeadPanel(hidden: boolean) {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(HIDE_LEAD_PANEL_KEY, hidden ? '1' : '0'); } catch { /* modo privado etc. */ }
+}
 
 async function fetchConversations(): Promise<Conversation[]> {
   const { data } = await api.get('/api/messages');
@@ -39,7 +52,13 @@ function InboxPageInner() {
   const leadIdParam = searchParams.get('leadId');
   const [selectedId, setSelectedId] = useState<string | null>(leadIdParam);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
+  const [hideLeadPanel, setHideLeadPanel] = useState(readHideLeadPanel);
   const queryClient = useQueryClient();
+
+  function toggleLeadPanel(hidden: boolean) {
+    setHideLeadPanel(hidden);
+    storeHideLeadPanel(hidden);
+  }
 
   // Abre a conversa direto via ?leadId= (ex: vindo de um card do Funil)
   useEffect(() => {
@@ -148,10 +167,18 @@ function InboxPageInner() {
               onNewMessage={handleNewMessage}
               onClose={() => setSelectedId(null)}
             />
-            {(lead as any).isGroup ? (
-              <GroupMembersPanel leadId={selectedId} groupName={displayName} />
+            {hideLeadPanel ? (
+              <button
+                onClick={() => toggleLeadPanel(false)}
+                title="Mostrar dados do cliente"
+                className="flex-shrink-0 w-6 border-l border-af-border app-column-surface flex items-center justify-center hover:bg-af-light/60 transition-colors"
+              >
+                <PanelRightOpen size={14} className="text-slate-400" />
+              </button>
+            ) : (lead as any).isGroup ? (
+              <GroupMembersPanel leadId={selectedId} groupName={displayName} onHide={() => toggleLeadPanel(true)} />
             ) : (
-              <InboxLeadPanel lead={lead} onRefresh={handleRefresh} />
+              <InboxLeadPanel lead={lead} onRefresh={handleRefresh} onHide={() => toggleLeadPanel(true)} />
             )}
           </>
         ) : (
