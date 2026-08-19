@@ -338,9 +338,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingFile, setUploadingFile] = useState(false);
 
+  // Ao ABRIR uma conversa, pula direto pro final sem animação — com
+  // 'smooth' sempre, uma conversa longa começava lá no topo e ia "descendo"
+  // visivelmente até a última mensagem, o que parecia lento e chamava
+  // atenção à toa. Só uma mensagem NOVA chegando (mesma conversa já aberta)
+  // deve rolar suave; trocar de conversa é um salto instantâneo.
+  const lastLeadIdRef = useRef<string | null>(null);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    const isNewConversation = lastLeadIdRef.current !== leadId;
+    lastLeadIdRef.current = leadId;
+    bottomRef.current?.scrollIntoView({ behavior: isNewConversation ? 'auto' : 'smooth' });
+  }, [messages, leadId]);
 
   // Cresce a caixa de mensagem conforme o texto (até um limite), como no WhatsApp.
   useEffect(() => {
