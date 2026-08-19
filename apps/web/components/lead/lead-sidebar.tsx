@@ -170,6 +170,9 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
   const [editingField, setEditingField] = useState<FieldDefinition | null>(null);
   const [editField, setEditField] = useState({ name: '', type: 'TEXT', options: '' });
   const [saving, setSaving] = useState(false);
+  // true/false = checado de verdade (precisa de um QR conectado no momento);
+  // null = ainda não checou ou indeterminado (não é erro).
+  const [waStatus, setWaStatus] = useState<boolean | null>(null);
   const [tags, setTags] = useState<string[]>(lead.tags);
   const [tagInput, setTagInput] = useState('');
 
@@ -184,6 +187,18 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
       setCustomValues((lead.customFields as Record<string, FieldValue>) || {});
     }
   });
+
+  // Checa se o telefone já cadastrado tem WhatsApp — só ao trocar de lead
+  // (não fica repetindo a cada render; o usuário pode reabrir a conversa
+  // pra atualizar). null enquanto não sabe — não é erro.
+  useEffect(() => {
+    setWaStatus(null);
+    let cancelled = false;
+    api.get(`/api/leads/${lead.id}/whatsapp-status`)
+      .then(({ data }) => { if (!cancelled) setWaStatus(data.hasWhatsApp); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [lead.id]);
 
   const saveTags = async (newTags: string[]) => {
     setTags(newTags);
@@ -241,7 +256,8 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
     setCustomValues(newValues);
     setEditingKey(null);
     try {
-      await api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newValues });
+      const { data } = await api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newValues });
+      if (key === 'telefone_1' && 'hasWhatsApp' in data) setWaStatus(data.hasWhatsApp);
 
       // Sincroniza: valor do crédito → valor da venda
       if (key === 'valor_credito') {
@@ -453,7 +469,18 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
 
             return visibleFields.map(({ key, label, type, options }) => (
               <div key={key} className="group flex items-center justify-between py-2 border-b border-slate-100 gap-2">
-                <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight">{label}</span>
+                <span className="text-xs text-slate-500 flex-shrink-0 w-36 leading-tight flex items-center gap-1.5">
+                  {label}
+                  {key === 'telefone_1' && customValues.telefone_1 && (
+                    <span
+                      className={cn(
+                        'inline-block w-1.5 h-1.5 rounded-full flex-shrink-0',
+                        waStatus === true ? 'bg-green-500' : waStatus === false ? 'bg-red-400' : 'bg-slate-300'
+                      )}
+                      title={waStatus === true ? 'Tem WhatsApp' : waStatus === false ? 'Não tem WhatsApp' : 'Sem QR conectado pra checar agora'}
+                    />
+                  )}
+                </span>
                 <div className="flex items-center gap-1 flex-1 justify-end min-w-0">
                   {editingKey === key ? (
                     type === 'select' ? (

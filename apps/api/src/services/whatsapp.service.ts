@@ -162,7 +162,15 @@ export async function deleteMetaTemplate(accountId: string, name: string, depart
 }
 
 /** Garante DDI 55 e o 9º dígito do celular brasileiro (ex: 556184549012 → 5561984549012). */
-function normalizeBrazilianWhatsAppPhone(to: string): string {
+/** Normaliza um telefone BR pra E.164 (com DDI 55) — inclui o 9º dígito
+ *  quando falta (número móvel sem ele, ex.: "6182667819" → "556198266
+ *  7819"): DDD + 8 dígitos locais começando em 6-9 é celular sem o 9º
+ *  dígito (fixo começa em 2-5, não leva 9). Exportada porque tanto o envio
+ *  quanto o cadastro de telefone (routes/leads.ts) precisam da MESMA regra
+ *  — sem isso, o mesmo número gravado com/sem o 9 vira dois contatos
+ *  diferentes pro sistema (já aconteceu: telefone_1 salvo sem essa
+ *  normalização criou um Contact duplicado). */
+export function normalizeBrazilianWhatsAppPhone(to: string): string {
   let phone = to.replace(/\D/g, '');
 
   if (phone.length === 10 || phone.length === 11) {

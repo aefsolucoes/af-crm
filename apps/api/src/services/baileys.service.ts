@@ -76,6 +76,23 @@ function getAnyConnectedSock(accountId: string): any {
   return null;
 }
 
+/** Confere se um telefone tem WhatsApp de verdade, usando onWhatsApp() de
+ *  qualquer número QR conectado da conta (mesma checagem que sendBaileysMessage
+ *  já faz antes de enviar). null = indeterminado — sem QR conectado no
+ *  momento não dá pra checar (a API Oficial da Meta não expõe essa consulta). */
+export async function checkHasWhatsApp(accountId: string, phone: string): Promise<boolean | null> {
+  const sock = getAnyConnectedSock(accountId);
+  if (!sock) return null;
+  try {
+    const jid = toWhatsAppJid(phone.replace(/\D/g, ''));
+    const [hit] = (await sock.onWhatsApp(jid)) || [];
+    return !!hit?.exists;
+  } catch (err) {
+    console.error('[Baileys] checkHasWhatsApp falhou:', err);
+    return null;
+  }
+}
+
 /**
  * Atualiza o nome dos leads de grupo com o assunto real do grupo.
  * Percorre os contatos com JID @g.us e usa groupMetadata do número conectado.

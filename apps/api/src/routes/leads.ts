@@ -6,6 +6,8 @@ import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact } from '../services/lead.service';
 import { getScopeDepartmentId } from '../services/department.service';
+import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
+import { checkHasWhatsApp } from '../services/baileys.service';
 
 /** Formata um telefone BR (com DDI 55) pra exibição — mesma regra usada em
  *  baileys.service.ts, duplicada aqui de propósito (função pura pequena,
@@ -656,25 +658,36 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
 
     // O "Telefone" do card (telefone_1) é só um campo de exibição — quem
     // manda de verdade pela API Oficial olha Contact.phone, que pode ficar
-    // vazio pra sempre num lead que só chegou via @lid (Baileys). Sem essa
-    // sincronia, o colaborador via um número certinho no card e o envio
-    // falhava com "sem telefone de verdade cadastrado", sem jeito óbvio de
-    // corrigir pela tela. Só sincroniza se ainda não tiver um Contact.phone
-    // de verdade — nunca sobrescreve um número real já confirmado.
+    // vazio pra sempre num lead que só chegou via @lid (Baileys), ou o lead
+    // nem ter um Contact vinculado (mais grave, já aconteceu com lead de
+    // fluxo manual/importação). Preenche/cria os dois casos aqui — o campo
+    // Telefone do card É onde se cadastra o telefone de verdade, não só
+    // exibição. Nunca sobrescreve um Contact.phone real já confirmado.
     const tel1 = customFields?.telefone_1;
-    if (typeof tel1 === 'string' && lead.contactId) {
+    let hasWhatsApp: boolean | null = null;
+    if (typeof tel1 === 'string') {
       const digits = tel1.replace(/\D/g, '');
       if (digits.length >= 10) {
-        const e164 = digits.length <= 11 && !digits.startsWith('55') ? `55${digits}` : digits;
-        const contact = await prisma.contact.findUnique({ where: { id: lead.contactId }, select: { phone: true } });
-        if (!contact?.phone?.trim()) {
-          await prisma.contact.update({ where: { id: lead.contactId }, data: { phone: `+${e164}` } }).catch(() => {});
+        // Mesma normalização do envio (inclui o 9º dígito quando falta) —
+        // sem isso, o mesmo número gravado sem o 9 aqui e com o 9 em outro
+        // lugar vira contato duplicado pro sistema (já aconteceu).
+        const e164 = normalizeBrazilianWhatsAppPhone(digits);
+        if (lead.contactId) {
+          const contact = await prisma.contact.findUnique({ where: { id: lead.contactId }, select: { phone: true } });
+          if (!contact?.phone?.trim()) {
+            await prisma.contact.update({ where: { id: lead.contactId }, data: { phone: `+${e164}` } }).catch(() => {});
+          }
+        } else {
+          const contact = await prisma.contact.create({ data: { accountId: lead.accountId, name: lead.name, phone: `+${e164}` } });
+          await prisma.lead.update({ where: { id: lead.id }, data: { contactId: contact.id } }).catch(() => {});
         }
+        hasWhatsApp = await checkHasWhatsApp(req.user!.accountId, e164);
       }
     }
 
-    res.json(lead);
-  } catch {
+    res.json({ ...lead, hasWhatsApp });
+  } catch (err) {
+    console.error('[Leads] Erro ao salvar campos:', err);
     res.status(500).json({ error: 'Erro ao salvar campos' });
   }
 });
@@ -691,8 +704,8 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
 router.patch('/:id/phone', async (req: AuthRequest, res: Response) => {
   try {
     const { phone } = req.body as { phone?: string };
-    const digits = String(phone || '').replace(/\D/g, '');
-    if (digits.length < 10) {
+    const rawDigits = String(phone || '').replace(/\D/g, '');
+    if (rawDigits.length < 10) {
       res.status(400).json({ error: 'Telefone inválido — informe DDD + número' });
       return;
     }
@@ -701,20 +714,51 @@ router.patch('/:id/phone', async (req: AuthRequest, res: Response) => {
       res.status(404).json({ error: 'Lead não encontrado' });
       return;
     }
-    if (!lead.contactId) {
-      res.status(400).json({ error: 'Esse lead não tem um contato vinculado' });
-      return;
-    }
-    const e164 = digits.length <= 11 && !digits.startsWith('55') ? `55${digits}` : digits;
+    // Mesma normalização usada no envio (inclui o 9º dígito quando falta) —
+    // sem isso, o mesmo número gravado de formas diferentes vira contato
+    // duplicado (já aconteceu).
+    const e164 = normalizeBrazilianWhatsAppPhone(rawDigits);
     const telDisplay = formatPhoneDisplay(e164);
     const cf = { ...((lead.customFields as any) || {}), telefone_1: telDisplay };
-    const [updatedLead] = await prisma.$transaction([
-      prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf } }),
-      prisma.contact.update({ where: { id: lead.contactId }, data: { phone: `+${e164}` } }),
-    ]);
-    res.json(updatedLead);
-  } catch {
+
+    let updatedLead;
+    if (lead.contactId) {
+      [updatedLead] = await prisma.$transaction([
+        prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf } }),
+        prisma.contact.update({ where: { id: lead.contactId }, data: { phone: `+${e164}` } }),
+      ]);
+    } else {
+      // Lead sem contato vinculado nenhum (mais grave que "sem telefone" —
+      // já aconteceu com lead vindo de fluxo manual/importação): cria o
+      // Contact na hora em vez de travar pedindo pra arrumar por fora.
+      const contact = await prisma.contact.create({ data: { accountId: lead.accountId, name: lead.name, phone: `+${e164}` } });
+      updatedLead = await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf, contactId: contact.id } });
+    }
+
+    // Confere se o número tem WhatsApp de verdade (só dá pra saber com algum
+    // QR conectado — null = indeterminado, não é erro).
+    const hasWhatsApp = await checkHasWhatsApp(req.user!.accountId, e164);
+    res.json({ ...updatedLead, hasWhatsApp });
+  } catch (err) {
+    console.error('[Leads] Erro ao salvar telefone:', err);
     res.status(500).json({ error: 'Erro ao salvar o telefone' });
+  }
+});
+
+// GET /api/leads/:id/whatsapp-status — checa se o telefone JÁ cadastrado no
+// contato tem WhatsApp de verdade (mesma checagem de /phone, sob demanda —
+// pro indicador no card sem precisar reenviar o telefone).
+router.get('/:id/whatsapp-status', async (req: AuthRequest, res: Response) => {
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, include: { contact: true } });
+    if (!lead) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
+    const phone = lead.contact?.phone;
+    if (!phone || phone.includes('@')) { res.json({ hasWhatsApp: null }); return; }
+    const hasWhatsApp = await checkHasWhatsApp(req.user!.accountId, phone);
+    res.json({ hasWhatsApp });
+  } catch (err) {
+    console.error('[Leads] Erro ao checar WhatsApp:', err);
+    res.status(500).json({ error: 'Erro ao checar WhatsApp' });
   }
 });
 

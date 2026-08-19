@@ -246,11 +246,19 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     if (!phoneFixValue.trim() || savingPhoneFix) return;
     setSavingPhoneFix(true);
     try {
-      await api.patch(`/api/leads/${leadId}/phone`, { phone: phoneFixValue });
+      const { data } = await api.patch(`/api/leads/${leadId}/phone`, { phone: phoneFixValue });
       const kind = phoneFixKind;
       setPhoneFixKind(null);
       setPhoneFixValue('');
-      toast('Telefone salvo — reenviando...');
+      // hasWhatsApp: true/false = checado de verdade (precisa de um QR
+      // conectado); null = indeterminado, não é erro — só não dá pra saber agora.
+      if (data?.hasWhatsApp === false) {
+        toast('Telefone salvo — mas esse número não parece ter WhatsApp. Confira antes de reenviar.', 'error');
+      } else if (data?.hasWhatsApp === true) {
+        toast('Telefone salvo (tem WhatsApp) — reenviando...');
+      } else {
+        toast('Telefone salvo — reenviando...');
+      }
       if (kind === 'text') handleSend();
       else if (kind === 'template') handleSendMetaTemplate();
     } catch (err: any) {
