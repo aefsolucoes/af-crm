@@ -19,16 +19,16 @@ function plainPhone(contact?: { phone?: string | null; whatsappPhone?: string | 
 
 /**
  * Mensagens de uma conversa. Confere que o lead é da conta e (se o usuário
- * for de um setor específico) do MESMO setor — senão devolve null, como se
- * a conversa não existisse pra quem está pedindo.
+ * for de setor(es) específico(s)) de algum deles — senão devolve null, como
+ * se a conversa não existisse pra quem está pedindo.
  */
-export async function getMessages(leadId: string, accountId: string, scopeDepartmentId?: string | null) {
+export async function getMessages(leadId: string, accountId: string, scopeDepartmentIds: string[] = []) {
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
     include: { pipeline: { select: { departmentId: true } } },
   });
   if (!lead) return null;
-  if (scopeDepartmentId && lead.pipeline.departmentId && lead.pipeline.departmentId !== scopeDepartmentId) return null;
+  if (scopeDepartmentIds.length && lead.pipeline.departmentId && !scopeDepartmentIds.includes(lead.pipeline.departmentId)) return null;
 
   return prisma.message.findMany({
     where: { leadId },
@@ -532,7 +532,7 @@ export async function markMessagesRead(leadId: string) {
   });
 }
 
-export async function getConversations(accountId: string, scopeDepartmentId?: string | null) {
+export async function getConversations(accountId: string, scopeDepartmentIds: string[] = []) {
   const leads = await prisma.lead.findMany({
     where: {
       accountId,
@@ -550,7 +550,7 @@ export async function getConversations(accountId: string, scopeDepartmentId?: st
       ],
       // Mesmo critério do Funil: a conversa "pertence" ao setor do FUNIL do
       // lead (que casa com o setor do número de WhatsApp, quando veio de lá).
-      ...(scopeDepartmentId ? { pipeline: { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } } : {}),
+      ...(scopeDepartmentIds.length ? { pipeline: { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } } : {}),
     },
     include: {
       contact: true,

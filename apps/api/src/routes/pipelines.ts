@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { ensureDefaultDepartments, getScopeDepartmentId } from '../services/department.service';
+import { ensureDefaultDepartments, getScopeDepartmentIds, resolveCreateDepartmentId } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -24,14 +24,15 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
     await ensureDefaultDepartments(accountId);
-    // Não-admin só enxerga os funis do PRÓPRIO setor (mais os "órfãos", sem
-    // setor definido — não deveria sobrar nenhum depois do bootstrap, mas
-    // não custa não esconder um funil por acidente). Admin vê tudo.
-    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
+    // Não-admin só enxerga os funis do(s) PRÓPRIO(S) setor(es) (mais os
+    // "órfãos", sem setor definido — não deveria sobrar nenhum depois do
+    // bootstrap, mas não custa não esconder um funil por acidente). Admin
+    // vê tudo.
+    const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
     const pipelines = await prisma.pipeline.findMany({
       where: {
         accountId,
-        ...(scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {}),
+        ...(scopeDepartmentIds.length ? { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } : {}),
       },
       include: { stages: { orderBy: { order: 'asc' } }, department: { select: { id: true, name: true } } },
     });
@@ -44,14 +45,17 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 router.post('/', validate(pipelineSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { name, stages, departmentId } = req.body;
-    // Não-admin cria sempre dentro do PRÓPRIO setor (não escolhe outro).
-    // Admin pode escolher (ou deixar sem setor).
-    const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
+    // Não-admin com 1 setor só cria dentro dele; com 2+ precisa escolher
+    // explicitamente (não dá pra adivinhar); admin pode escolher (ou
+    // deixar sem setor).
+    const scopeDepartmentIds = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+    const resolved = resolveCreateDepartmentId(scopeDepartmentIds, departmentId);
+    if (!resolved.ok) return res.status(400).json({ error: resolved.error });
     const pipeline = await prisma.pipeline.create({
       data: {
         name,
         accountId: req.user!.accountId,
-        departmentId: scopeDepartmentId ?? (departmentId || null),
+        departmentId: resolved.departmentId,
         stages: stages ? { create: stages } : undefined,
       },
       include: { stages: { orderBy: { order: 'asc' } } },
@@ -65,11 +69,11 @@ router.post('/', validate(pipelineSchema), async (req: AuthRequest, res: Respons
 /** Bloqueia mexer num pipeline de OUTRO setor (não-admin). Retorna true e já
  *  responde 403/404 se não puder — o chamador só precisa dar `return`. */
 async function blockedByDepartment(req: AuthRequest, res: Response, pipelineId: string): Promise<boolean> {
-  const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
-  if (!scopeDepartmentId) return false; // admin ou sem setor definido — sem restrição
+  const scopeDepartmentIds = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+  if (!scopeDepartmentIds.length) return false; // admin ou sem setor definido — sem restrição
   const pipeline = await prisma.pipeline.findFirst({ where: { id: pipelineId, accountId: req.user!.accountId } });
   if (!pipeline) { res.status(404).json({ error: 'Pipeline não encontrado' }); return true; }
-  if (pipeline.departmentId && pipeline.departmentId !== scopeDepartmentId) {
+  if (pipeline.departmentId && !scopeDepartmentIds.includes(pipeline.departmentId)) {
     res.status(403).json({ error: 'Esse funil é de outro departamento.' });
     return true;
   }

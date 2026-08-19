@@ -1,23 +1,23 @@
 import { Router, Response } from 'express';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { getScopeDepartmentId } from '../services/department.service';
+import { getScopeDepartmentIds } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
 
-/** Filtro de pipeline por setor, pra usar dentro de `where: { pipeline: {...} }`.
- *  Sem setor (admin) = sem filtro extra. */
-function pipelineDeptFilter(scopeDepartmentId: string | null): Prisma.PipelineWhereInput {
-  return scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {};
+/** Filtro de pipeline por setor(es), pra usar dentro de `where: { pipeline: {...} }`.
+ *  Sem setor (admin, ou array vazio) = sem filtro extra. */
+function pipelineDeptFilter(scopeDepartmentIds: string[]): Prisma.PipelineWhereInput {
+  return scopeDepartmentIds.length ? { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } : {};
 }
 
 router.get('/summary', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
-    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
-    const deptFilter = pipelineDeptFilter(scopeDepartmentId);
+    const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
+    const deptFilter = pipelineDeptFilter(scopeDepartmentIds);
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -54,8 +54,8 @@ router.get('/summary', async (req: AuthRequest, res: Response) => {
 router.get('/conversion', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
-    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
-    const deptFilter = pipelineDeptFilter(scopeDepartmentId);
+    const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
+    const deptFilter = pipelineDeptFilter(scopeDepartmentIds);
 
     const stages = await prisma.stage.findMany({
       where: { pipeline: { accountId, ...deptFilter } },
@@ -113,11 +113,11 @@ router.get('/fechados', async (req: AuthRequest, res: Response) => {
       ? new Date(req.query.to as string)
       : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
+    const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
     // Encontra o(s) funil(is) "Concluído" — um por setor. Admin vê todos;
     // colaborador só o do próprio setor.
     const concluidos = await prisma.pipeline.findMany({
-      where: { accountId, name: 'Concluído', ...pipelineDeptFilter(scopeDepartmentId) },
+      where: { accountId, name: 'Concluído', ...pipelineDeptFilter(scopeDepartmentIds) },
     });
     if (!concluidos.length) {
       return res.json({ leads: [], total: 0, totalValue: 0, missingPipeline: true });
@@ -267,15 +267,16 @@ router.get('/morning', async (req: AuthRequest, res: Response) => {
           at: l.messages[0]?.createdAt || null,
         }));
     } else if (user.operatesApiOficial) {
+      // Antes daqui não checava role === 'ADMIN' (só o resto do arquivo
+      // fazia) — um admin com setor(es) preenchido(s) ficava incorretamente
+      // restrito. getScopeDepartmentIds já resolve isso certo (ADMIN = []).
+      const scopeDepartmentIds = await getScopeDepartmentIds(accountId, userId, req.user!.role);
       const leads = await prisma.lead.findMany({
         where: {
           accountId,
           archived: false,
           // Sem setor definido: vê todos os leads da API (compatibilidade).
-          // TODO(multi-setor): só considera o primeiro setor do usuário —
-          // tratamento completo de departmentIds[] fica pra quando esta
-          // rota for migrada junto com o resto de reports.ts.
-          ...(user.departmentIds[0] ? { pipeline: { OR: [{ departmentId: user.departmentIds[0] }, { departmentId: null }] } } : {}),
+          pipeline: pipelineDeptFilter(scopeDepartmentIds),
         },
         include: {
           contact: { select: { name: true, whatsappPhone: true, phone: true } },

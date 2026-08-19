@@ -8,9 +8,10 @@ export async function getLeads(
   stageId?: string,
   archived = false,
   isAdmin = true,
-  /** Setor do usuário logado (não-admin) — filtra pra só os leads cujo
-   *  FUNIL pertence a esse setor (mais os "órfãos", sem setor definido). */
-  scopeDepartmentId?: string | null,
+  /** Setor(es) do usuário logado (não-admin) — filtra pra só os leads cujo
+   *  FUNIL pertence a algum deles (mais os "órfãos", sem setor definido).
+   *  Array vazio = sem restrição (admin, ou colaborador sem setor ainda). */
+  scopeDepartmentIds: string[] = [],
 ) {
   return prisma.lead.findMany({
     where: {
@@ -22,7 +23,7 @@ export async function getLeads(
       ...(pipelineId && { pipelineId }),
       ...(stageId && { stageId }),
       ...(isAdmin ? {} : { status: { not: LeadStatus.WON } }),
-      ...(scopeDepartmentId ? { pipeline: { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } } : {}),
+      ...(scopeDepartmentIds.length ? { pipeline: { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } } : {}),
     },
     include: {
       stage: true,

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { getScopeDepartmentId } from '../services/department.service';
+import { getScopeDepartmentIds } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -25,18 +25,18 @@ const updateTaskSchema = z.object({
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const { leadId, userId } = req.query;
-    const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
+    const scopeDepartmentIds = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
     const tasks = await prisma.task.findMany({
       where: {
         user: { accountId: req.user!.accountId },
         ...(leadId && { leadId: leadId as string }),
         ...(userId && { userId: userId as string }),
-        // Tarefa presa a um lead de OUTRO setor fica de fora; tarefa sem
-        // lead (lembrete pessoal) continua aparecendo normalmente.
-        ...(scopeDepartmentId ? {
+        // Tarefa presa a um lead de fora de todos os setores do usuário fica
+        // de fora; tarefa sem lead (lembrete pessoal) continua aparecendo.
+        ...(scopeDepartmentIds.length ? {
           OR: [
             { leadId: null },
-            { lead: { pipeline: { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } } },
+            { lead: { pipeline: { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } } },
           ],
         } : {}),
       },

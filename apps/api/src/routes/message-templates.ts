@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { getScopeDepartmentId } from '../services/department.service';
+import { getScopeDepartmentIds, resolveCreateDepartmentId } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -17,11 +17,11 @@ function extractVariables(text: string): string[] {
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
-    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
+    const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
     const templates = await prisma.messageTemplate.findMany({
       where: {
         accountId,
-        ...(scopeDepartmentId ? { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } : {}),
+        ...(scopeDepartmentIds.length ? { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } : {}),
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -41,8 +41,10 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     };
     if (!name?.trim() || !body?.trim()) return res.status(400).json({ error: 'name e body são obrigatórios' }) as any;
 
-    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
-    let finalDepartmentId = scopeDepartmentId ?? (departmentId || null);
+    const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
+    const resolved = resolveCreateDepartmentId(scopeDepartmentIds, departmentId);
+    if (!resolved.ok) return res.status(400).json({ error: resolved.error }) as any;
+    const finalDepartmentId = resolved.departmentId;
     if (finalDepartmentId) {
       const dept = await prisma.department.findFirst({ where: { id: finalDepartmentId, accountId } });
       if (!dept) return res.status(400).json({ error: 'Departamento inválido' }) as any;
@@ -107,8 +109,8 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     const existing = await prisma.messageTemplate.findFirst({ where: { id: req.params.id, accountId } });
     if (!existing) return res.status(404).json({ error: 'Template não encontrado' }) as any;
 
-    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
-    if (scopeDepartmentId && existing.departmentId && existing.departmentId !== scopeDepartmentId) {
+    const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
+    if (scopeDepartmentIds.length && existing.departmentId && !scopeDepartmentIds.includes(existing.departmentId)) {
       return res.status(403).json({ error: 'Esse template é de outro departamento.' }) as any;
     }
 
@@ -121,8 +123,8 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     if (body !== undefined) { data.body = body; data.variables = extractVariables(body); }
     if (triggerText !== undefined) data.triggerText = triggerText?.trim() || null;
     if (triggerActive !== undefined) data.triggerActive = triggerActive === true;
-    // Só admin (sem scopeDepartmentId) pode mudar o setor do template.
-    if (departmentId !== undefined && !scopeDepartmentId) {
+    // Só admin (sem setor nenhum) pode mudar o setor do template.
+    if (departmentId !== undefined && !scopeDepartmentIds.length) {
       if (departmentId) {
         const dept = await prisma.department.findFirst({ where: { id: departmentId, accountId } });
         if (!dept) return res.status(400).json({ error: 'Departamento inválido' }) as any;
@@ -144,8 +146,8 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     const existing = await prisma.messageTemplate.findFirst({ where: { id: req.params.id, accountId } });
     if (!existing) return res.status(404).json({ error: 'Template não encontrado' }) as any;
 
-    const scopeDepartmentId = await getScopeDepartmentId(accountId, req.user!.id, req.user!.role);
-    if (scopeDepartmentId && existing.departmentId && existing.departmentId !== scopeDepartmentId) {
+    const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
+    if (scopeDepartmentIds.length && existing.departmentId && !scopeDepartmentIds.includes(existing.departmentId)) {
       return res.status(403).json({ error: 'Esse template é de outro departamento.' }) as any;
     }
 

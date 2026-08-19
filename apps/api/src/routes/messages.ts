@@ -5,7 +5,7 @@ import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone } from '../services/message.service';
 import { downloadDriveFile } from '../services/google.service';
-import { getScopeDepartmentId } from '../services/department.service';
+import { getScopeDepartmentIds } from '../services/department.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -27,10 +27,10 @@ const messageSchema = z.object({
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   const { leadId } = req.query;
-  const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
+  const scopeDepartmentIds = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
   if (leadId) {
     try {
-      const messages = await getMessages(leadId as string, req.user!.accountId, scopeDepartmentId);
+      const messages = await getMessages(leadId as string, req.user!.accountId, scopeDepartmentIds);
       if (messages === null) { res.status(404).json({ error: 'Conversa não encontrada' }); return; }
       res.json(messages);
     } catch {
@@ -38,7 +38,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     }
   } else {
     try {
-      const conversations = await getConversations(req.user!.accountId, scopeDepartmentId);
+      const conversations = await getConversations(req.user!.accountId, scopeDepartmentIds);
       res.json(conversations);
     } catch {
       res.status(500).json({ error: 'Erro ao buscar conversas' });

@@ -5,7 +5,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact } from '../services/lead.service';
-import { getScopeDepartmentId } from '../services/department.service';
+import { getScopeDepartmentIds } from '../services/department.service';
 import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { checkHasWhatsApp } from '../services/baileys.service';
 
@@ -116,8 +116,8 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const isAdmin = req.user!.role === 'ADMIN';
     const archived = req.query.archived === 'true';
-    const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
-    const leads = await getLeads(req.user!.accountId, req.query.pipelineId as string, req.query.stageId as string, archived, isAdmin, scopeDepartmentId);
+    const scopeDepartmentIds = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+    const leads = await getLeads(req.user!.accountId, req.query.pipelineId as string, req.query.stageId as string, archived, isAdmin, scopeDepartmentIds);
     res.json(leads);
   } catch (err: unknown) {
     res.status(500).json({ error: 'Erro ao buscar leads' });
@@ -230,9 +230,9 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
     const lead = await getLeadById(req.params.id, req.user!.accountId);
     if (!lead) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
     // Não-admin não abre card de OUTRO departamento mesmo sabendo o id de cor.
-    const scopeDepartmentId = await getScopeDepartmentId(req.user!.accountId, req.user!.id, req.user!.role);
+    const scopeDepartmentIds = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
     const leadDeptId = (lead as any).pipeline?.departmentId as string | null | undefined;
-    if (scopeDepartmentId && leadDeptId && leadDeptId !== scopeDepartmentId) {
+    if (scopeDepartmentIds.length && leadDeptId && !scopeDepartmentIds.includes(leadDeptId)) {
       res.status(404).json({ error: 'Lead não encontrado' });
       return;
     }
