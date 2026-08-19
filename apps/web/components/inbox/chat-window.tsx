@@ -238,24 +238,41 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [forwardLeads, setForwardLeads] = useState<{ id: string; name: string; contact?: { name?: string; phone?: string; whatsappPhone?: string } }[] | null>(null);
   const [forwardSearch, setForwardSearch] = useState('');
   const [forwardBusy, setForwardBusy] = useState(false);
+  // Igual ao WhatsApp: marca quantas conversas quiser (checkbox) e só manda
+  // quando confirmar — em vez de encaminhar na hora ao clicar numa só.
+  const [forwardSelected, setForwardSelected] = useState<Set<string>>(new Set());
 
   function openForward(msg: Message) {
     setForwardingMessage(msg);
     setForwardSearch('');
+    setForwardSelected(new Set());
     if (forwardLeads === null) {
       api.get('/api/leads').then(({ data }) => setForwardLeads(data)).catch(() => setForwardLeads([]));
     }
   }
 
-  async function handleConfirmForward(toLeadId: string) {
-    if (!forwardingMessage) return;
+  function toggleForwardSelect(leadId: string) {
+    setForwardSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(leadId)) next.delete(leadId);
+      else next.add(leadId);
+      return next;
+    });
+  }
+
+  async function handleConfirmForward() {
+    if (!forwardingMessage || forwardSelected.size === 0) return;
     setForwardBusy(true);
     try {
-      await api.post(`/api/messages/${forwardingMessage.id}/forward`, { toLeadId });
-      toast('Mensagem encaminhada!');
-      setForwardingMessage(null);
-    } catch (err: any) {
-      toast(err?.response?.data?.error || 'Erro ao encaminhar a mensagem', 'error');
+      const targets = Array.from(forwardSelected);
+      const results = await Promise.allSettled(
+        targets.map((toLeadId) => api.post(`/api/messages/${forwardingMessage.id}/forward`, { toLeadId }))
+      );
+      const ok = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.length - ok;
+      if (ok > 0) toast(ok === 1 ? 'Mensagem encaminhada!' : `Mensagem encaminhada para ${ok} conversas!`);
+      if (failed > 0) toast(`Não consegui encaminhar pra ${failed} conversa${failed > 1 ? 's' : ''}.`, 'error');
+      if (failed === 0) setForwardingMessage(null);
     } finally {
       setForwardBusy(false);
     }
@@ -1131,20 +1148,39 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                 <p className="px-2 py-3 text-xs text-[#8696a0]">Carregando conversas...</p>
               ) : forwardMatches.length === 0 ? (
                 <p className="px-2 py-3 text-xs text-[#8696a0]">Nenhuma conversa encontrada</p>
-              ) : forwardMatches.map((l) => (
-                <button
-                  key={l.id}
-                  onClick={() => handleConfirmForward(l.id)}
-                  disabled={forwardBusy}
-                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#2a3942] transition-colors flex items-center gap-2 disabled:opacity-50"
-                >
-                  <Avatar name={l.contact?.name || l.name} size="sm" />
-                  <span className="text-sm text-[#e9edef] truncate">{l.contact?.name || l.name}</span>
-                </button>
-              ))}
+              ) : forwardMatches.map((l) => {
+                const selected = forwardSelected.has(l.id);
+                return (
+                  <button
+                    key={l.id}
+                    onClick={() => toggleForwardSelect(l.id)}
+                    disabled={forwardBusy}
+                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#2a3942] transition-colors flex items-center gap-2.5 disabled:opacity-50"
+                  >
+                    <Avatar name={l.contact?.name || l.name} size="sm" />
+                    <span className="text-sm text-[#e9edef] truncate flex-1">{l.contact?.name || l.name}</span>
+                    <span
+                      className={cn(
+                        'w-5 h-5 rounded-full border flex items-center justify-center flex-shrink-0 transition-colors',
+                        selected ? 'bg-[#00a884] border-[#00a884]' : 'border-[#8696a0]'
+                      )}
+                    >
+                      {selected && <Check size={12} className="text-[#111b21]" />}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
-            <div className="px-4 py-2.5 border-t border-[#222e35] flex justify-end">
+            <div className="px-4 py-2.5 border-t border-[#222e35] flex items-center justify-between">
               <button onClick={() => setForwardingMessage(null)} className="text-xs text-[#8696a0] hover:text-[#e9edef]">Cancelar</button>
+              <button
+                onClick={handleConfirmForward}
+                disabled={forwardBusy || forwardSelected.size === 0}
+                className="flex items-center gap-1.5 text-xs font-medium bg-[#00a884] text-[#111b21] px-3 py-1.5 rounded-lg hover:bg-[#02c99b] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {forwardBusy ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                Encaminhar{forwardSelected.size > 0 ? ` (${forwardSelected.size})` : ''}
+              </button>
             </div>
           </div>
         </div>
