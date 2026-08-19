@@ -644,6 +644,25 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
       io?.to(`account_${req.user!.accountId}`).emit('new_conversation', { leadId: lead.id });
     }
 
+    // O "Telefone" do card (telefone_1) é só um campo de exibição — quem
+    // manda de verdade pela API Oficial olha Contact.phone, que pode ficar
+    // vazio pra sempre num lead que só chegou via @lid (Baileys). Sem essa
+    // sincronia, o colaborador via um número certinho no card e o envio
+    // falhava com "sem telefone de verdade cadastrado", sem jeito óbvio de
+    // corrigir pela tela. Só sincroniza se ainda não tiver um Contact.phone
+    // de verdade — nunca sobrescreve um número real já confirmado.
+    const tel1 = customFields?.telefone_1;
+    if (typeof tel1 === 'string' && lead.contactId) {
+      const digits = tel1.replace(/\D/g, '');
+      if (digits.length >= 10) {
+        const e164 = digits.length <= 11 && !digits.startsWith('55') ? `55${digits}` : digits;
+        const contact = await prisma.contact.findUnique({ where: { id: lead.contactId }, select: { phone: true } });
+        if (!contact?.phone?.trim()) {
+          await prisma.contact.update({ where: { id: lead.contactId }, data: { phone: `+${e164}` } }).catch(() => {});
+        }
+      }
+    }
+
     res.json(lead);
   } catch {
     res.status(500).json({ error: 'Erro ao salvar campos' });
