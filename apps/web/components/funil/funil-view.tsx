@@ -115,9 +115,13 @@ export function FunilView({ departmentName, title, storageKeySuffix }: FunilView
   const { data: departments } = useQuery({ queryKey: ['departments'], queryFn: fetchDepartments });
   const department = (departments || []).find((d) => d.name === departmentName);
 
-  // Só os pipelines DESTE setor — é o que separa as duas telas de verdade.
+  // Pipelines deste setor — mais os "órfãos" (sem departamento definido).
+  // Mesmo critério que o backend já usa pra decidir o que um colaborador sem
+  // setor vê (services/department.service.ts: OR departmentId=X OU null) —
+  // sem incluir os órfãos aqui, um pipeline sem setor sumia das DUAS telas
+  // novas (nem Habitação nem Consórcio o enxergava mais).
   const departmentPipelines = useMemo(
-    () => (allPipelines || []).filter((p) => p.department?.name === departmentName),
+    () => (allPipelines || []).filter((p) => p.department?.name === departmentName || !p.department),
     [allPipelines, departmentName]
   );
 
