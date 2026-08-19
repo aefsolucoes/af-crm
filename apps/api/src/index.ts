@@ -27,6 +27,7 @@ import importRoutes from './routes/import';
 import messageTemplateRoutes from './routes/message-templates';
 import departmentRoutes from './routes/departments';
 import browserAgentRoutes from './routes/browser-agent';
+import salesBotRoutes from './routes/salesbot';
 import { failOrphanedRunningTasks } from './services/browser-agent.service';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
@@ -82,6 +83,7 @@ app.use('/api/import', importRoutes);
 app.use('/api/message-templates', messageTemplateRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/browser-agent', browserAgentRoutes);
+app.use('/api/salesbot', salesBotRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
 

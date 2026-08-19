@@ -8,23 +8,23 @@ datasource db {
 }
 
 model Account {
-  id               String            @id @default(cuid())
-  name             String
-  createdAt        DateTime          @default(now())
-  users            User[]
-  pipelines        Pipeline[]
-  leads            Lead[]
-  contacts         Contact[]
-  companies        Company[]
-  salesBots        SalesBot[]
-  whatsappConfigs  WhatsAppConfig[]
-  metaLeadsConfig  MetaLeadsConfig?
-  agentConfig      AgentConfig?
-  whatsappNumbers  WhatsAppNumber[]
-  googleConnection GoogleConnection?
-  fieldDefinitions FieldDefinition[]
-  transactions     Transaction[]
-  knowledgeFiles   KnowledgeFile[]
+  id                 String              @id @default(cuid())
+  name               String
+  createdAt          DateTime            @default(now())
+  users              User[]
+  pipelines          Pipeline[]
+  leads              Lead[]
+  contacts           Contact[]
+  companies          Company[]
+  salesBots          SalesBot[]
+  whatsappConfigs    WhatsAppConfig[]
+  metaLeadsConfig    MetaLeadsConfig?
+  agentConfig        AgentConfig?
+  whatsappNumbers    WhatsAppNumber[]
+  googleConnection   GoogleConnection?
+  fieldDefinitions   FieldDefinition[]
+  transactions       Transaction[]
+  knowledgeFiles     KnowledgeFile[]
   assistantQuestions AssistantQuestion[]
   messageTemplates   MessageTemplate[]
   departments        Department[]
@@ -84,41 +84,41 @@ enum FieldType {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  name      String
-  email     String   @unique
-  password  String
-  role      Role     @default(AGENT)
-  accountId String
-  account   Account  @relation(fields: [accountId], references: [id])
-  leads     Lead[]
-  tasks     Task[]
-  notes     Note[]
-  transactions Transaction[]
-  messagesSent Message[]
-  themeColor   String  @default("white")
-  themeImage   String?
-  themeOpacity Int     @default(85)
+  id                         String              @id @default(cuid())
+  name                       String
+  email                      String              @unique
+  password                   String
+  role                       Role                @default(AGENT)
+  accountId                  String
+  account                    Account             @relation(fields: [accountId], references: [id])
+  leads                      Lead[]
+  tasks                      Task[]
+  notes                      Note[]
+  transactions               Transaction[]
+  messagesSent               Message[]
+  themeColor                 String              @default("white")
+  themeImage                 String?
+  themeOpacity               Int                 @default(85)
   // Número de WhatsApp (QR) que o usuário opera — usado para dividir os
   // clientes por usuário no Relatório Matinal. Mutuamente exclusivo com
   // operatesApiOficial (o seletor na tela é um só: QR específico OU API
   // Oficial, nunca os dois).
-  whatsAppNumberId String?
-  whatsAppNumber   WhatsAppNumber? @relation(fields: [whatsAppNumberId], references: [id])
+  whatsAppNumberId           String?
+  whatsAppNumber             WhatsAppNumber?     @relation(fields: [whatsAppNumberId], references: [id])
   // true = o usuário opera pela API Oficial (não por um número QR
   // específico) — o Relatório Matinal busca os clientes que falaram pela
   // API dentro do SETOR dele, em vez de por whatsAppNumberId.
-  operatesApiOficial Boolean @default(false)
+  operatesApiOficial         Boolean             @default(false)
   // Permissões por usuário (as "caixinhas"): { chave: boolean }. Null = usa o
   // padrão do papel. Admin sempre tem tudo. Ver src/lib/permissions.ts.
-  permissions Json?
+  permissions                Json?
   // Setor/linha de negócio do colaborador (ex: Financiamento Habitacional,
   // Consórcio) — define o que ele enxerga (funil, inbox, tarefas, dashboard).
   // Null = sem setor definido ainda (por ora, enxerga tudo — evita travar
   // quem ainda não foi configurado). Admin sempre vê tudo, tenha setor ou não.
-  departmentId String?
-  department   Department? @relation(fields: [departmentId], references: [id])
-  createdAt DateTime @default(now())
+  departmentId               String?
+  department                 Department?         @relation(fields: [departmentId], references: [id])
+  createdAt                  DateTime            @default(now())
   assistantQuestionsAsked    AssistantQuestion[] @relation("AssistantQuestionAskedBy")
   assistantQuestionsReceived AssistantQuestion[] @relation("AssistantQuestionTarget")
 }
@@ -130,12 +130,12 @@ enum Role {
 }
 
 model Pipeline {
-  id        String   @id @default(cuid())
-  name      String
-  accountId String
-  account   Account  @relation(fields: [accountId], references: [id])
-  stages    Stage[]
-  leads     Lead[]
+  id           String      @id @default(cuid())
+  name         String
+  accountId    String
+  account      Account     @relation(fields: [accountId], references: [id])
+  stages       Stage[]
+  leads        Lead[]
   // Setor dono deste funil — null = pipeline "antiga", visível pra todo
   // mundo (compatibilidade); pipelines novas devem sempre ter um setor.
   departmentId String?
@@ -155,38 +155,38 @@ model Stage {
 }
 
 model Lead {
-  id           String     @id @default(cuid())
-  name         String
-  value        Float?
-  status       LeadStatus @default(OPEN)
-  pipelineId   String
-  pipeline     Pipeline   @relation(fields: [pipelineId], references: [id])
-  stageId      String
-  stage        Stage      @relation(fields: [stageId], references: [id])
-  userId       String
-  user         User       @relation(fields: [userId], references: [id])
-  contactId    String?
-  contact      Contact?   @relation(fields: [contactId], references: [id])
-  companyId    String?
-  company      Company?   @relation(fields: [companyId], references: [id])
-  accountId    String
-  account      Account    @relation(fields: [accountId], references: [id])
-  whatsappNumberId String?
-  whatsappNumber   WhatsAppNumber? @relation(fields: [whatsappNumberId], references: [id])
-  customFields Json?
-  tags         String[]
-  archived     Boolean    @default(false)
-  isGroup      Boolean    @default(false)
+  id                 String              @id @default(cuid())
+  name               String
+  value              Float?
+  status             LeadStatus          @default(OPEN)
+  pipelineId         String
+  pipeline           Pipeline            @relation(fields: [pipelineId], references: [id])
+  stageId            String
+  stage              Stage               @relation(fields: [stageId], references: [id])
+  userId             String
+  user               User                @relation(fields: [userId], references: [id])
+  contactId          String?
+  contact            Contact?            @relation(fields: [contactId], references: [id])
+  companyId          String?
+  company            Company?            @relation(fields: [companyId], references: [id])
+  accountId          String
+  account            Account             @relation(fields: [accountId], references: [id])
+  whatsappNumberId   String?
+  whatsappNumber     WhatsAppNumber?     @relation(fields: [whatsappNumberId], references: [id])
+  customFields       Json?
+  tags               String[]
+  archived           Boolean             @default(false)
+  isGroup            Boolean             @default(false)
   // Assistente de IA responde o cliente SOZINHO nesta conversa (sem revisão
   // humana antes de enviar) — ligado/desligado por um botão na Inbox. Usa a
   // Base de Conhecimento; nunca inventa valor/prazo/promessa específica.
-  aiAutoReplyActive Boolean @default(false)
-  tasks        Task[]
-  notes        Note[]
-  messages     Message[]
+  aiAutoReplyActive  Boolean             @default(false)
+  tasks              Task[]
+  notes              Note[]
+  messages           Message[]
   assistantQuestions AssistantQuestion[]
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 }
 
 // Pergunta que um colaborador pede para o assistente fazer a OUTRO colaborador,
@@ -194,22 +194,22 @@ model Lead {
 // cliente"). Fica pendente até o destinatário responder no próprio chat dele
 // com o assistente — a resposta preenche o campo do card automaticamente.
 model AssistantQuestion {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   accountId     String
-  account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   askedByUserId String
-  askedBy       User     @relation("AssistantQuestionAskedBy", fields: [askedByUserId], references: [id])
+  askedBy       User      @relation("AssistantQuestionAskedBy", fields: [askedByUserId], references: [id])
   targetUserId  String
-  targetUser    User     @relation("AssistantQuestionTarget", fields: [targetUserId], references: [id])
+  targetUser    User      @relation("AssistantQuestionTarget", fields: [targetUserId], references: [id])
   leadId        String
-  lead          Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  lead          Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
   // Chave do campo a preencher: "nome"/"valor" (campos nativos do card) ou
   // qualquer chave de FieldDefinition (customFields).
   campo         String
   pergunta      String
   resposta      String?
-  answered      Boolean  @default(false)
-  createdAt     DateTime @default(now())
+  answered      Boolean   @default(false)
+  createdAt     DateTime  @default(now())
   answeredAt    DateTime?
 
   @@index([accountId, targetUserId, answered])
@@ -253,7 +253,7 @@ model Contact {
   email         String?
   phone         String?
   whatsappPhone String?
-  avatar        String?  // URL da foto de perfil (WhatsApp ou outro)
+  avatar        String? // URL da foto de perfil (WhatsApp ou outro)
   accountId     String
   account       Account  @relation(fields: [accountId], references: [id])
   companyId     String?
@@ -274,14 +274,14 @@ model Company {
 }
 
 model Task {
-  id        String   @id @default(cuid())
-  title     String
-  dueAt     DateTime
-  done      Boolean  @default(false)
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  leadId    String?
-  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  id     String   @id @default(cuid())
+  title  String
+  dueAt  DateTime
+  done   Boolean  @default(false)
+  userId String
+  user   User     @relation(fields: [userId], references: [id])
+  leadId String?
+  lead   Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
 }
 
 model Note {
@@ -305,27 +305,27 @@ enum NoteType {
 }
 
 model Message {
-  id         String     @id @default(cuid())
-  content    String
-  direction  Direction
-  channel    Channel
-  leadId     String
-  lead       Lead       @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  whatsappNumberId String?
-  whatsappNumber   WhatsAppNumber? @relation(fields: [whatsappNumberId], references: [id])
+  id                    String              @id @default(cuid())
+  content               String
+  direction             Direction
+  channel               Channel
+  leadId                String
+  lead                  Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  whatsappNumberId      String?
+  whatsappNumber        WhatsAppNumber?     @relation(fields: [whatsappNumberId], references: [id])
   // Usuário do CRM que enviou a mensagem (só para as enviadas pela Inbox).
-  sentByUserId String?
-  sentBy       User?      @relation(fields: [sentByUserId], references: [id])
+  sentByUserId          String?
+  sentBy                User?               @relation(fields: [sentByUserId], references: [id])
   // Nome de quem enviou, quando é grupo (o participante que mandou a mensagem).
-  senderName   String?
-  read       Boolean    @default(false)
-  externalId String?
-  status     MsgStatus  @default(SENT)
+  senderName            String?
+  read                  Boolean             @default(false)
+  externalId            String?
+  status                MsgStatus           @default(SENT)
   // Motivo do erro quando status = FAILED (vem do webhook de status da Meta,
   // API Oficial) — sem isso, uma falha de envio ficava sem explicação nenhuma.
-  statusError String?
-  attachments MessageAttachment[]
-  createdAt  DateTime   @default(now())
+  statusError           String?
+  attachments           MessageAttachment[]
+  createdAt             DateTime            @default(now())
   // Preenchido quando esta mensagem foi ENCAMINHADA de outra conversa. Guarda
   // o nome do lead de origem "congelado" no momento do envio (não é uma
   // relação de verdade — sobrevive mesmo se aquele lead for excluído depois).
@@ -334,15 +334,15 @@ model Message {
   // Preenchido quando esta mensagem é um CONTATO compartilhado no WhatsApp
   // (cartão de contato/vCard, não texto nem mídia) — dá pra "Conversar" ou
   // "Criar lead" direto com esse número, sem digitar nada.
-  sharedContactName  String?
-  sharedContactPhone String?
+  sharedContactName     String?
+  sharedContactPhone    String?
   // Preenchido quando esta mensagem é uma RESPOSTA com citação a outra
   // mensagem da mesma conversa (como no WhatsApp) — guarda o conteúdo da
   // mensagem original "congelado" no momento do envio, não é uma relação de
   // verdade (sobrevive mesmo se a mensagem original for excluída depois).
-  replyToExternalId String?
-  replyToContent    String?
-  replyToSender     String?
+  replyToExternalId     String?
+  replyToContent        String?
+  replyToSender         String?
 }
 
 // Documento/imagem recebido no WhatsApp (guardado até ir para o Drive)
@@ -353,8 +353,8 @@ model MessageAttachment {
   leadId      String
   fileName    String
   mimeType    String
-  data        Bytes?   // bytes do arquivo; limpo após subir ao Drive
-  driveFileId String?  // preenchido quando enviado ao Drive
+  data        Bytes? // bytes do arquivo; limpo após subir ao Drive
+  driveFileId String? // preenchido quando enviado ao Drive
   createdAt   DateTime @default(now())
 
   @@index([leadId])
@@ -381,7 +381,7 @@ model WhatsAppConfig {
   accessToken   String
   verifyToken   String      @default("af_crm_verify")
   active        Boolean     @default(false)
-  wabaId        String?  // ID da conta do WhatsApp Business (WABA) — salvo em "Ativar recebimento", reaproveitado para templates
+  wabaId        String? // ID da conta do WhatsApp Business (WABA) — salvo em "Ativar recebimento", reaproveitado para templates
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
@@ -425,32 +425,32 @@ model BaileysSession {
 
 // Conexão com o Google Drive (OAuth) por conta
 model GoogleConnection {
-  id            String   @id @default(cuid())
-  accountId     String   @unique
-  account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  email         String?  // e-mail da conta Google conectada
-  refreshToken  String   @db.Text
-  accessToken   String?  @db.Text
-  expiresAt     DateTime?
-  rootFolderId  String?  // pasta-raiz onde ficam as pastas dos clientes
+  id             String    @id @default(cuid())
+  accountId      String    @unique
+  account        Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  email          String? // e-mail da conta Google conectada
+  refreshToken   String    @db.Text
+  accessToken    String?   @db.Text
+  expiresAt      DateTime?
+  rootFolderId   String? // pasta-raiz onde ficam as pastas dos clientes
   rootFolderName String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 }
 
 // Cada número de WhatsApp conectado via QR Code (multi-sessão por conta)
 model WhatsAppNumber {
-  id        String    @id @default(cuid())
-  accountId String
-  account   Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  label     String    // apelido definido pelo usuário (ex: "Vendas", "Suporte")
-  phone     String?   // número real, preenchido quando conecta
-  session   Json?     // credenciais Baileys desta sessão
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  leads     Lead[]
-  messages  Message[]
-  users     User[]
+  id           String      @id @default(cuid())
+  accountId    String
+  account      Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  label        String // apelido definido pelo usuário (ex: "Vendas", "Suporte")
+  phone        String? // número real, preenchido quando conecta
+  session      Json? // credenciais Baileys desta sessão
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  leads        Lead[]
+  messages     Message[]
+  users        User[]
   // Setor dono deste número — mensagens recebidas nele criam o lead já no
   // funil "Caixa de Entrada" DESSE setor. Null = número "antigo"/compartilhado.
   departmentId String?
@@ -509,13 +509,66 @@ model KnowledgeChunk {
   @@index([fileId])
 }
 
+// flow guarda { trigger: { keywords: string[] }, steps: BotStep[] } — ver
+// apps/web/components/salesbot/node-types.tsx pro formato exato de BotStep.
 model SalesBot {
-  id        String  @id @default(cuid())
-  name      String
-  active    Boolean @default(false)
-  flow      Json
-  accountId String
-  account   Account @relation(fields: [accountId], references: [id])
+  id          String        @id @default(cuid())
+  name        String
+  description String?
+  active      Boolean       @default(false)
+  flow        Json
+  accountId   String
+  account     Account       @relation(fields: [accountId], references: [id])
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  runs        SalesBotRun[]
+
+  @@index([accountId])
+}
+
+enum SalesBotRunStatus {
+  RUNNING
+  WAITING_REPLY
+  WAITING_TIME
+  COMPLETED
+  STOPPED
+  ERROR
+}
+
+// Uma execução do fluxo de um SalesBot contra um lead específico. currentStepId
+// aponta pro passo a executar/retomar; resumeAt tem sentido duplo conforme o
+// status: em WAITING_TIME é quando retomar sozinho (poll periódico), em
+// WAITING_REPLY é o prazo pra desistir se o lead não responder.
+model SalesBotRun {
+  id            String            @id @default(cuid())
+  accountId     String
+  salesBotId    String
+  salesBot      SalesBot          @relation(fields: [salesBotId], references: [id])
+  leadId        String
+  status        SalesBotRunStatus @default(RUNNING)
+  currentStepId String?
+  resumeAt      DateTime?
+  stopReason    String?
+  startedAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  logs          SalesBotRunLog[]
+
+  @@index([leadId])
+  @@index([status, resumeAt])
+}
+
+// Auditoria passo a passo de uma execução — mesmo padrão de AgentActionLog
+// (Agente de Navegador), pra dar visibilidade real do que o bot fez.
+model SalesBotRunLog {
+  id        String      @id @default(cuid())
+  runId     String
+  run       SalesBotRun @relation(fields: [runId], references: [id])
+  stepId    String?
+  stepType  String?
+  detail    Json?
+  createdAt DateTime    @default(now())
+
+  @@index([runId])
 }
 
 enum TransactionType {
@@ -525,22 +578,22 @@ enum TransactionType {
 }
 
 model Transaction {
-  id          String          @id @default(cuid())
-  description String
-  amount      Float
-  type        TransactionType
-  date        DateTime
-  accountId   String
-  account     Account         @relation(fields: [accountId], references: [id])
-  userId      String?
-  user        User?           @relation(fields: [userId], references: [id])
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
+  id                String          @id @default(cuid())
+  description       String
+  amount            Float
+  type              TransactionType
+  date              DateTime
+  accountId         String
+  account           Account         @relation(fields: [accountId], references: [id])
+  userId            String?
+  user              User?           @relation(fields: [userId], references: [id])
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
   // Lançamento fixo (repete todo mês sozinho). true só no "molde" original;
   // as ocorrências geradas automaticamente apontam pra ele via recurringParentId.
-  isRecurring       Boolean  @default(false)
-  recurringDay      Int?     // dia do mês em que repete (1-31)
-  recurringParentId String?  // preenchido nas ocorrências geradas — aponta pro molde
+  isRecurring       Boolean         @default(false)
+  recurringDay      Int? // dia do mês em que repete (1-31)
+  recurringParentId String? // preenchido nas ocorrências geradas — aponta pro molde
 }
 
 enum CommissionSuggestionStatus {
@@ -555,14 +608,14 @@ enum CommissionSuggestionStatus {
 // leadId/accountId como campos simples (sem @relation), no mesmo padrão já
 // usado em MessageAttachment.leadId, para não alterar os modelos Lead/Account.
 model CommissionSuggestion {
-  id              String                      @id @default(cuid())
+  id              String                     @id @default(cuid())
   accountId       String
   leadId          String
-  baseAmount      Float                       // valor do crédito usado como base do cálculo
-  suggestedAmount Float                       // baseAmount * 1% — o valor sugerido (editável ao confirmar)
-  status          CommissionSuggestionStatus  @default(PENDING)
-  transactionId   String?                     // preenchido quando confirmada
-  createdAt       DateTime                    @default(now())
+  baseAmount      Float // valor do crédito usado como base do cálculo
+  suggestedAmount Float // baseAmount * 1% — o valor sugerido (editável ao confirmar)
+  status          CommissionSuggestionStatus @default(PENDING)
+  transactionId   String? // preenchido quando confirmada
+  createdAt       DateTime                   @default(now())
   resolvedAt      DateTime?
 
   @@index([accountId, status])
@@ -584,7 +637,7 @@ model AssistantConversation {
 
 enum DashboardNoteScope {
   PRIVATE // só quem escreveu vê
-  TEAM    // mural — todos os colaboradores da conta veem
+  TEAM // mural — todos os colaboradores da conta veem
 }
 
 // Bloco de anotações do Dashboard ("o que tenho pra hoje"). PRIVATE é só do
@@ -605,9 +658,9 @@ model DashboardNote {
 }
 
 enum AgentTaskStatus {
-  PENDING              // criada, ainda não começou a rodar
-  RUNNING              // loop de decisão em andamento
-  AWAITING_APPROVAL    // esperando aprovar/recusar uma ação sensível (Fase 2)
+  PENDING // criada, ainda não começou a rodar
+  RUNNING // loop de decisão em andamento
+  AWAITING_APPROVAL // esperando aprovar/recusar uma ação sensível (Fase 2)
   AWAITING_HUMAN_TAKEOVER // esperando o humano fazer algo manualmente (Fase 2)
   COMPLETED
   FAILED
@@ -621,15 +674,15 @@ enum AgentTaskStatus {
 model AgentTask {
   id            String          @id @default(cuid())
   accountId     String
-  userId        String          // quem pediu — também quem aprova/recusa/cancela
-  leadId        String?         // opcional: pra qual cliente é essa tarefa
+  userId        String // quem pediu — também quem aprova/recusa/cancela
+  leadId        String? // opcional: pra qual cliente é essa tarefa
   instruction   String          @db.Text
   status        AgentTaskStatus @default(PENDING)
   // Histórico bruto no formato da API da Anthropic — permite depurar/retomar
   // a conversa exata que gerou cada ação. Podado a cada turno (só mantém as
   // últimas screenshots) pra não estourar o banco nem o custo de tokens.
   conversation  Json            @default("[]")
-  pendingAction Json?           // ação sensível aguardando decisão (Fase 2)
+  pendingAction Json? // ação sensível aguardando decisão (Fase 2)
   resultSummary String?         @db.Text
   errorMessage  String?         @db.Text
   stepCount     Int             @default(0)
@@ -648,9 +701,9 @@ model AgentActionLog {
   id               String   @id @default(cuid())
   taskId           String
   seq              Int
-  tool             String   // browser_click, browser_navigate, browser_type...
-  input            Json     // argumentos que a IA passou (x, y, text, url, motivo...)
-  output           Json?    // resultado (sem a screenshot — só ok/erro/mensagem)
+  tool             String // browser_click, browser_navigate, browser_type...
+  input            Json // argumentos que a IA passou (x, y, text, url, motivo...)
+  output           Json? // resultado (sem a screenshot — só ok/erro/mensagem)
   requiredApproval Boolean  @default(false)
   createdAt        DateTime @default(now())
 
