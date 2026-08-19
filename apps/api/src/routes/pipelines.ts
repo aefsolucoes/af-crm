@@ -132,6 +132,28 @@ router.post('/:id/stages', validate(stageCreateSchema), async (req: AuthRequest,
   }
 });
 
+// PATCH /api/pipelines/:id/stages/:stageId — renomeia e/ou muda a cor de uma
+// etapa já existente (não existia nenhum jeito de editar depois de criada —
+// toda etapa nova nascia cinza, sem como corrigir pela tela).
+router.patch('/:id/stages/:stageId', async (req: AuthRequest, res: Response) => {
+  try {
+    if (await blockedByDepartment(req, res, req.params.id)) return;
+    const stage = await prisma.stage.findFirst({ where: { id: req.params.stageId, pipelineId: req.params.id } });
+    if (!stage) return res.status(404).json({ error: 'Etapa não encontrada' });
+
+    const { name, color } = req.body as { name?: string; color?: string };
+    const data: Record<string, unknown> = {};
+    if (typeof name === 'string' && name.trim()) data.name = name.trim();
+    if (typeof color === 'string' && color.trim()) data.color = color.trim();
+    if (!Object.keys(data).length) return res.status(400).json({ error: 'Nada para atualizar' });
+
+    const updated = await prisma.stage.update({ where: { id: stage.id }, data });
+    res.json(updated);
+  } catch {
+    res.status(500).json({ error: 'Erro ao atualizar etapa' });
+  }
+});
+
 // DELETE /api/pipelines/:id
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {

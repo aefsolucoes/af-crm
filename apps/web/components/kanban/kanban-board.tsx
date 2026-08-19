@@ -10,6 +10,8 @@ import { KanbanColumn } from './kanban-column';
 import { LeadModal } from './lead-modal';
 import { LeadDetailModal } from './lead-detail-modal';
 import { StageGateModal } from './stage-gate-modal';
+import { ColorSwatches } from './color-swatches';
+import { randomStageColor } from './stage-colors';
 import { usePipelineStore } from '@/store/pipeline.store';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 import api from '@/lib/api';
@@ -31,6 +33,7 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
   const queryClient = useQueryClient();
   const [addingStage, setAddingStage] = useState(false);
   const [newStageName, setNewStageName] = useState('');
+  const [newStageColor, setNewStageColor] = useState(randomStageColor());
   const [savingStage, setSavingStage] = useState(false);
 
   async function handleCreateStage() {
@@ -38,9 +41,10 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
     if (!name) return;
     setSavingStage(true);
     try {
-      await api.post(`/api/pipelines/${pipeline.id}/stages`, { name });
+      await api.post(`/api/pipelines/${pipeline.id}/stages`, { name, color: newStageColor });
       queryClient.invalidateQueries({ queryKey: ['pipelines'] });
       setNewStageName('');
+      setNewStageColor(randomStageColor());
       setAddingStage(false);
       toast(`Etapa "${name}" criada!`);
     } catch {
@@ -139,31 +143,35 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
           {/* Adicionar etapa */}
           <div className="flex flex-col w-72 flex-shrink-0">
             {addingStage ? (
-              <div className="app-column-surface rounded-xl shadow-md p-2 flex items-center gap-1">
-                <input
-                  autoFocus
-                  value={newStageName}
-                  onChange={(e) => setNewStageName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleCreateStage();
-                    if (e.key === 'Escape') { setAddingStage(false); setNewStageName(''); }
-                  }}
-                  placeholder="Nome da etapa"
-                  className="flex-1 min-w-0 text-sm px-2 py-1.5 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent"
-                />
-                <button
-                  onClick={handleCreateStage}
-                  disabled={savingStage || !newStageName.trim()}
-                  className="text-green-600 hover:text-green-700 disabled:opacity-40 flex-shrink-0"
-                >
-                  <Check size={18} />
-                </button>
-                <button
-                  onClick={() => { setAddingStage(false); setNewStageName(''); }}
-                  className="text-slate-400 hover:text-slate-600 flex-shrink-0"
-                >
-                  <X size={18} />
-                </button>
+              <div className="app-column-surface rounded-xl shadow-md p-2 space-y-2">
+                <div className="flex items-center gap-1">
+                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: newStageColor }} />
+                  <input
+                    autoFocus
+                    value={newStageName}
+                    onChange={(e) => setNewStageName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleCreateStage();
+                      if (e.key === 'Escape') { setAddingStage(false); setNewStageName(''); }
+                    }}
+                    placeholder="Nome da etapa"
+                    className="flex-1 min-w-0 text-sm px-2 py-1.5 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent"
+                  />
+                  <button
+                    onClick={handleCreateStage}
+                    disabled={savingStage || !newStageName.trim()}
+                    className="text-green-600 hover:text-green-700 disabled:opacity-40 flex-shrink-0"
+                  >
+                    <Check size={18} />
+                  </button>
+                  <button
+                    onClick={() => { setAddingStage(false); setNewStageName(''); }}
+                    className="text-slate-400 hover:text-slate-600 flex-shrink-0"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <ColorSwatches value={newStageColor} onChange={setNewStageColor} className="px-1" />
               </div>
             ) : (
               <button
