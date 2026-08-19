@@ -517,7 +517,16 @@ export async function getConversations(accountId: string, scopeDepartmentId?: st
       accountId,
       messages: { some: {} },
       // Esconde Status/Stories (status@broadcast) — não são conversas de verdade.
-      NOT: { contact: { whatsappPhone: { endsWith: '@broadcast' } } },
+      // Escrito como OR positivo (em vez de NOT+endsWith) de propósito: NOT sobre
+      // um campo opcional (whatsappPhone) quando o valor é NULL vira NULL em SQL
+      // de 3 valores (nem true nem false), e o Postgres EXCLUI a linha do WHERE —
+      // isso sumia da lista qualquer lead cujo contato não tivesse whatsappPhone
+      // preenchido (ex.: contato criado manualmente, só com telefone comum).
+      OR: [
+        { contactId: null },
+        { contact: { whatsappPhone: null } },
+        { contact: { NOT: { whatsappPhone: { endsWith: '@broadcast' } } } },
+      ],
       // Mesmo critério do Funil: a conversa "pertence" ao setor do FUNIL do
       // lead (que casa com o setor do número de WhatsApp, quando veio de lá).
       ...(scopeDepartmentId ? { pipeline: { OR: [{ departmentId: scopeDepartmentId }, { departmentId: null }] } } : {}),
