@@ -48,21 +48,23 @@ export function Sidebar() {
   const { data: departments } = useQuery({
     queryKey: ['departments'],
     queryFn: async () => { const { data } = await api.get('/api/departments'); return data as { id: string; name: string }[]; },
-    enabled: !!user && user.role !== 'ADMIN' && !!user.departmentId,
+    enabled: !!user && user.role !== 'ADMIN' && !!user.departmentIds?.length,
   });
-  const myDepartmentName = (departments || []).find((d) => d.id === user?.departmentId)?.name;
+  const myDepartmentNames = (departments || [])
+    .filter((d) => (user?.departmentIds || []).includes(d.id))
+    .map((d) => d.name);
 
   // Mostra no menu só o que o usuário tem permissão de acessar — e, pros
-  // itens de funil por setor, só o do PRÓPRIO setor (Admin ou quem não tem
-  // setor definido continua vendo os dois, igual sempre viu tudo em outras
+  // itens de funil por setor, só os dos PRÓPRIOS setores (Admin ou quem não
+  // tem setor definido continua vendo todos, igual sempre viu tudo em outras
   // áreas escopadas por departamento).
   const perms = effectivePermissions(user?.role || 'AGENT', user?.permissions ?? null);
   const isAdmin = user?.role === 'ADMIN';
   const nav = NAV.filter((item) => {
     if (!perms[item.perm]) return false;
     if (!item.departmentName) return true;
-    if (isAdmin || !user?.departmentId) return true;
-    return myDepartmentName === item.departmentName;
+    if (isAdmin || !user?.departmentIds?.length) return true;
+    return myDepartmentNames.includes(item.departmentName);
   });
 
   useEffect(() => {

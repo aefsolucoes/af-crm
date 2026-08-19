@@ -21,7 +21,7 @@ interface UserRecord {
   role: Role;
   whatsAppNumberId: string | null;
   operatesApiOficial: boolean;
-  departmentId: string | null;
+  departmentIds: string[];
   permissions: Record<string, boolean> | null;
 }
 
@@ -42,7 +42,7 @@ const ROLE_META: Record<Role, { label: string; color: string; icon: React.ReactN
 };
 
 const EMPTY_FORM = {
-  name: '', email: '', password: '', role: 'AGENT' as Role, whatsAppNumberId: '', departmentId: '',
+  name: '', email: '', password: '', role: 'AGENT' as Role, whatsAppNumberId: '', departmentIds: [] as string[],
   permissions: { ...ROLE_DEFAULTS.AGENT } as PermissionMap,
 };
 
@@ -74,6 +74,7 @@ export default function UsuariosPage() {
     return numbers.find((n) => n.id === u.whatsAppNumberId)?.label;
   };
   const departmentName = (id: string | null) => departments.find((d) => d.id === id)?.name;
+  const departmentNames = (ids: string[]) => ids.map((id) => departmentName(id)).filter(Boolean).join(', ');
 
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
@@ -86,7 +87,7 @@ export default function UsuariosPage() {
         email: form.email,
         role: form.role,
         whatsAppNumberId: form.whatsAppNumberId || null,
-        departmentId: form.departmentId || null,
+        departmentIds: form.departmentIds,
         // Admin sempre tem tudo (guardamos null = usa o padrão do papel).
         permissions: form.role === 'ADMIN' ? null : form.permissions,
         ...(form.password ? { password: form.password } : {}),
@@ -122,7 +123,7 @@ export default function UsuariosPage() {
     setForm({
       name: u.name, email: u.email, password: '', role: u.role,
       whatsAppNumberId: u.operatesApiOficial ? 'API' : (u.whatsAppNumberId || ''),
-      departmentId: u.departmentId || '',
+      departmentIds: u.departmentIds || [],
       permissions: effectivePermissions(u.role, u.permissions),
     });
     setShowModal(true);
@@ -135,6 +136,15 @@ export default function UsuariosPage() {
 
   function togglePerm(key: string) {
     setForm((f) => ({ ...f, permissions: { ...f.permissions, [key]: !f.permissions[key as keyof PermissionMap] } as PermissionMap }));
+  }
+
+  function toggleDepartment(id: string) {
+    setForm((f) => ({
+      ...f,
+      departmentIds: f.departmentIds.includes(id)
+        ? f.departmentIds.filter((d) => d !== id)
+        : [...f.departmentIds, id],
+    }));
   }
 
   function handleSave() {
@@ -213,7 +223,7 @@ export default function UsuariosPage() {
                 users.map((u) => {
                   const rm = ROLE_META[u.role];
                   const label = channelLabel(u);
-                  const deptName = departmentName(u.departmentId);
+                  const deptNames = departmentNames(u.departmentIds || []);
                   return (
                     <tr key={u.id} className="hover:bg-af-light transition-colors">
                       <td className="px-4 py-3">
@@ -236,9 +246,9 @@ export default function UsuariosPage() {
                       <td className="px-4 py-3">
                         {u.role === 'ADMIN' ? (
                           <span className="text-xs text-slate-400">Todos</span>
-                        ) : deptName ? (
+                        ) : deptNames ? (
                           <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
-                            <Building2 size={13} className="text-af-accent" /> {deptName}
+                            <Building2 size={13} className="text-af-accent" /> {deptNames}
                           </span>
                         ) : (
                           <span className="text-xs text-amber-500">Sem setor</span>
@@ -325,17 +335,26 @@ export default function UsuariosPage() {
                 </div>
               ) : (
                 <>
-                  <select
-                    value={form.departmentId}
-                    onChange={(e) => setForm({ ...form, departmentId: e.target.value })}
-                    className="w-full border border-af-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-af-accent/30"
-                  >
-                    <option value="">Sem setor (vê tudo, por enquanto)</option>
-                    {departments.map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-slate-400 mt-1">Define o que ele enxerga: funil, Inbox/WhatsApp, tarefas e dashboard só do setor escolhido.</p>
+                  <div className="flex flex-wrap gap-2">
+                    {departments.map((d) => {
+                      const selected = form.departmentIds.includes(d.id);
+                      return (
+                        <button
+                          key={d.id}
+                          type="button"
+                          onClick={() => toggleDepartment(d.id)}
+                          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 text-xs font-medium transition-colors ${selected ? 'border-af-accent bg-af-light text-af-accent' : 'border-af-border hover:border-af-mid text-slate-600'}`}
+                        >
+                          <Building2 size={13} />
+                          {d.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {form.departmentIds.length === 0 && (
+                    <p className="text-xs text-amber-500 mt-1">Sem setor selecionado — vê tudo, por enquanto.</p>
+                  )}
+                  <p className="text-xs text-slate-400 mt-1">Define o que ele enxerga: funil, Inbox/WhatsApp, tarefas e dashboard dos setores escolhidos. Pode marcar mais de um.</p>
                 </>
               )}
             </div>

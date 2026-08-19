@@ -49,8 +49,9 @@ function WhatsAppTemplatesTab() {
   const isAdmin = me?.role === 'ADMIN';
   const [departments, setDepartments] = useState<DepartmentOption[]>([]);
   // Admin escolhe o setor (número da API) que quer ver; colaborador fica
-  // travado no próprio setor (mesmo comportamento do resto do CRM).
-  const [metaDepartmentId, setMetaDepartmentId] = useState(isAdmin ? '' : (me?.departmentId || ''));
+  // travado no PRIMEIRO próprio setor (mesmo comportamento do resto do CRM
+  // pros lugares que ainda não pedem escolha explícita entre 2+ setores).
+  const [metaDepartmentId, setMetaDepartmentId] = useState(isAdmin ? '' : (me?.departmentIds?.[0] || ''));
 
   const [items, setItems] = useState<MetaTemplate[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -326,8 +327,8 @@ export default function TemplatesPage() {
 
   function openNew() {
     setEditingTemplate(null);
-    // Colaborador cria sempre dentro do próprio setor; admin escolhe (ou deixa "compartilhado").
-    setForm({ ...EMPTY_FORM, departmentId: isAdmin ? '' : (me?.departmentId || '') });
+    // Colaborador cria dentro do 1º próprio setor; admin escolhe (ou deixa "compartilhado").
+    setForm({ ...EMPTY_FORM, departmentId: isAdmin ? '' : (me?.departmentIds?.[0] || '') });
     setPreviewVars({});
     setShowModal(true);
   }
@@ -537,7 +538,7 @@ export default function TemplatesPage() {
               ) : (
                 <div className="flex items-center gap-2 text-xs text-slate-500 bg-af-light rounded-lg p-2.5">
                   <Building2 size={13} className="flex-shrink-0" />
-                  {me?.departmentId ? `Este template fica no seu setor (${departmentName(me.departmentId) || '...'})` : 'Sem setor definido — fica compartilhado com todo mundo'}
+                  {me?.departmentIds?.[0] ? `Este template fica no seu setor (${departmentName(me.departmentIds[0]) || '...'})` : 'Sem setor definido — fica compartilhado com todo mundo'}
                 </div>
               )}
             </div>
