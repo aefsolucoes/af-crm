@@ -29,6 +29,7 @@ import departmentRoutes from './routes/departments';
 import browserAgentRoutes from './routes/browser-agent';
 import salesBotRoutes from './routes/salesbot';
 import { failOrphanedRunningTasks } from './services/browser-agent.service';
+import { pollSalesBotRuns } from './services/salesbot.service';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
 import { generateRecurringTransactions } from './routes/finance';
@@ -220,4 +221,17 @@ httpServer.listen(PORT, () => {
       generateRecurringTransactions().catch((err) => console.error('[Financeiro] Lançamentos fixos:', err?.message));
     }, SIX_HOURS);
   }, 10 * 60 * 1000);
+
+  // SalesBot: retoma runs pausadas por TEMPO cujo prazo já chegou, e desiste
+  // de runs esperando RESPOSTA cujo prazo de desistência venceu. Cadência
+  // curta (não usa o bloco de 6h acima, que é pra financeiro/Drive) — vive
+  // no Postgres, então um restart do processo só atrasa até o próximo poll,
+  // nunca perde a run.
+  const SALESBOT_POLL_MS = 2 * 60 * 1000;
+  setTimeout(() => {
+    pollSalesBotRuns(io).catch((err) => console.error('[SalesBot] Poll (boot):', err?.message));
+    setInterval(() => {
+      pollSalesBotRuns(io).catch((err) => console.error('[SalesBot] Poll:', err?.message));
+    }, SALESBOT_POLL_MS);
+  }, 60 * 1000);
 });

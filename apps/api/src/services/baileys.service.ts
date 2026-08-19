@@ -5,6 +5,11 @@ import * as os from 'os';
 import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
+// maybeSalesBotStep: require() tardio no ponto de uso (não aqui em cima) —
+// salesbot.service.ts importa message.service.ts, que importa ESTE arquivo;
+// um import estático nos dois sentidos criaria dependência circular. Mesmo
+// motivo pelo qual maybeAutoReplyQR/maybeAiAutoReplyQR ficam duplicados
+// aqui em vez de compartilhados com whatsapp.service.ts.
 
 const prisma = new PrismaClient();
 
@@ -840,9 +845,16 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
     // verdade (não eco, não grupo, não self-chat). Template tem prioridade —
     // se disparou, não manda a resposta de IA em cima da mesma mensagem.
     if (!fromMe && !isGroupMsg && !selfChat) {
-      const templateDisparou = await maybeAutoReplyQR(accountId, leadId, text, from, numberId);
-      if (!templateDisparou) {
-        await maybeAiAutoReplyQR(accountId, leadId, text, from, numberId);
+      // SalesBot tem prioridade sobre template/IA — mesma regra de
+      // exclusividade que já existe entre os outros dois (só um responde
+      // por mensagem).
+      const { maybeSalesBotStep } = require('./salesbot.service') as typeof import('./salesbot.service');
+      const botHandled = await maybeSalesBotStep(accountId, leadId, text, globalIO);
+      if (!botHandled) {
+        const templateDisparou = await maybeAutoReplyQR(accountId, leadId, text, from, numberId);
+        if (!templateDisparou) {
+          await maybeAiAutoReplyQR(accountId, leadId, text, from, numberId);
+        }
       }
     }
   } catch (err) {

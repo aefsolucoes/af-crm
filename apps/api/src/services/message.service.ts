@@ -1,5 +1,5 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
-import { sendWhatsAppMessage, sendWhatsAppTemplateMessage } from './whatsapp.service';
+import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage } from './whatsapp.service';
 import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds } from './baileys.service';
 import { downloadDriveFile } from './google.service';
 
@@ -210,9 +210,14 @@ export async function sendOutboundWhatsApp(params: {
   replyToFromMe?: boolean;
   replyToContent?: string;
   replyToSender?: string;
+  /** Botões de resposta rápida (ex.: ["Sim","Não"], máx. 3) — usado pelo
+   *  SalesBot. Só funciona de verdade na API Oficial; no QR/Baileys vira uma
+   *  lista numerada anexada ao texto (o WhatsApp descontinuou botões nativos
+   *  por lá, sem alternativa confiável). */
+  buttons?: string[];
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string; code?: string }> {
-  const { accountId, leadId, content, via, fromNumberId, userId, replyToExternalId, replyToFromMe, replyToContent, replyToSender, io } = params;
+  const { accountId, leadId, content, via, fromNumberId, userId, replyToExternalId, replyToFromMe, replyToContent, replyToSender, buttons, io } = params;
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -225,6 +230,11 @@ export async function sendOutboundWhatsApp(params: {
 
   let externalId: string | undefined;
   let usedNumberId: string | null = null;
+  // O que fica gravado na Inbox como o texto da mensagem — igual a `content`,
+  // exceto quando há botões: no QR (sem botão clicável de verdade) a lista
+  // numerada enviada É o texto; na API Oficial os botões são um elemento à
+  // parte, então anexamos só como registro legível do que foi oferecido.
+  let savedContent = content;
 
   const connectedNumbers = getConnectedNumberIds(accountId);
 
@@ -289,7 +299,12 @@ export async function sendOutboundWhatsApp(params: {
       replyToExternalId && !replyToExternalId.startsWith('wamid')
         ? { externalId: replyToExternalId, fromMe: !!replyToFromMe }
         : undefined;
-    const outcome = await sendBaileysMessage(phone, content, preferred, quoted);
+    // QR/Baileys não tem botão clicável confiável — degrada pra lista
+    // numerada no próprio texto (cliente responde digitando "1"/"Sim" etc.).
+    if (buttons?.length) {
+      savedContent = `${content}\n\n${buttons.map((b, i) => `${i + 1}. ${b}`).join('\n')}`;
+    }
+    const outcome = await sendBaileysMessage(phone, savedContent, preferred, quoted);
     if ('failed' in outcome) {
       const error =
         outcome.failed === 'no_whatsapp'
@@ -313,16 +328,22 @@ export async function sendOutboundWhatsApp(params: {
     if (!cloudPhone) {
       return { success: false, code: 'NO_REAL_PHONE', error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card ou envie pelo QR Code.' };
     }
-    const result = await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId, replyToExternalId);
+    const result = buttons?.length
+      ? await sendWhatsAppButtonsMessage(cloudPhone, content, buttons, accountId, lead.pipeline.departmentId)
+      : await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId, replyToExternalId);
     if (result.success) {
       externalId = result.externalId;
+      // Botões de verdade (clicáveis) são um elemento à parte na API Oficial
+      // — aqui só registramos por escrito o que foi oferecido, pro histórico
+      // da Inbox mostrar as opções.
+      if (buttons?.length) savedContent = `${content}\n\n${buttons.map((b) => `[${b}]`).join('  ')}`;
     } else {
       return { success: false, error: result.error || 'Falha ao enviar mensagem WhatsApp' };
     }
   }
 
   const message = await createMessage({
-    content,
+    content: savedContent,
     direction: 'OUTBOUND',
     channel: 'WHATSAPP',
     leadId,

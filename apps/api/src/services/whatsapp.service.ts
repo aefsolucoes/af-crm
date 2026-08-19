@@ -1,6 +1,11 @@
 import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
+// maybeSalesBotStep: require() tardio (dentro da função, não aqui em cima) —
+// salesbot.service.ts importa de volta este arquivo (pra mandar mensagem),
+// um import estático nos dois sentidos criaria dependência circular. Mesmo
+// motivo documentado em baileys.service.ts pra manter os fluxos QR/API
+// separados em vez de compartilhar um helper comum.
 
 const prisma = new PrismaClient();
 
@@ -241,6 +246,69 @@ export async function sendWhatsAppMessage(
   }
 }
 
+/** Envia uma mensagem com até 3 botões de resposta rápida (interactive reply
+ *  buttons) — usado pelo SalesBot (ex.: "Sim"/"Não" clicáveis). Diferente de
+ *  template, NÃO precisa aprovação da Meta (é uma mensagem de texto comum
+ *  com botões), mas só existe na API Oficial — não tem equivalente confiável
+ *  no canal QR/Baileys (o WhatsApp descontinuou botões nativos por lá; quem
+ *  chama por esse canal usa uma lista numerada no texto em vez disto). */
+export async function sendWhatsAppButtonsMessage(
+  to: string,
+  body: string,
+  buttons: string[],
+  accountId: string,
+  departmentId?: string | null
+): Promise<{ success: boolean; externalId?: string; error?: string }> {
+  const config = await getWhatsAppConfig(accountId, departmentId);
+  if (!config) return { success: false, error: 'WhatsApp não configurado. Acesse Configurações → API Oficial e salve suas credenciais.' };
+  if (!config.active) return { success: false, error: 'WhatsApp inativo. Acesse Configurações → API Oficial e ative a integração.' };
+
+  const phone = normalizeBrazilianWhatsAppPhone(to);
+  const url = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
+  // Meta permite no máximo 3 botões e 20 caracteres por título.
+  const trimmedButtons = buttons.slice(0, 3);
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: phone,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: body },
+          action: {
+            buttons: trimmedButtons.map((label, i) => ({
+              type: 'reply',
+              reply: { id: `salesbot_btn_${i}`, title: label.slice(0, 20) },
+            })),
+          },
+        },
+      }),
+    });
+
+    const json = await res.json() as {
+      messages?: { id: string }[];
+      error?: { message: string; code: number };
+    };
+
+    if (!res.ok || json.error) {
+      console.error(`[WhatsApp] Send buttons error para "${phone}":`, json.error);
+      return { success: false, error: parseGraphError(json, res, phone) };
+    }
+
+    return { success: true, externalId: json.messages?.[0]?.id };
+  } catch (err) {
+    console.error('[WhatsApp] Fetch error (buttons):', err);
+    return { success: false, error: 'Falha na conexão com a API do WhatsApp' };
+  }
+}
+
 /** Envia uma mensagem de TEMPLATE (aprovado pela Meta) — único jeito de reabrir
  *  conversa fora da janela de 24h de atendimento gratuito. */
 export async function sendWhatsAppTemplateMessage(
@@ -471,14 +539,20 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
 
     for (const msg of value.messages) {
       const mediaInfo = getCloudApiMediaInfo(msg);
-      // Processa texto OU mídia suportada (imagem/áudio/vídeo/documento/sticker).
-      // Ignora location, contacts, reaction, etc.
-      if (msg.type !== 'text' && !mediaInfo) continue;
+      // Clique em botão de resposta rápida (ex.: Sim/Não do SalesBot) — antes
+      // disto, uma resposta assim era descartada inteira (nem virava Message),
+      // por não ser nem "text" nem mídia suportada.
+      const buttonReplyTitle: string | undefined = msg.type === 'interactive'
+        ? (msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title)
+        : undefined;
+      // Processa texto, clique em botão, OU mídia suportada (imagem/áudio/
+      // vídeo/documento/sticker). Ignora location, contacts, reaction, etc.
+      if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo) continue;
 
       const from = msg.from as string; // e.g. "5561999990001"
       const text = mediaInfo
         ? `📎 ${mediaInfo.fileName}${mediaInfo.caption ? ` — ${mediaInfo.caption}` : ''}`
-        : (msg.text?.body as string) || '';
+        : buttonReplyTitle || (msg.text?.body as string) || '';
       const externalId = msg.id as string;
       const profileName = value.contacts?.[0]?.profile?.name || `+${from}`;
       const formattedPhone = formatPhoneDisplay(from);
@@ -610,10 +684,18 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       // Gatilho automático (Templates → "Disparar automaticamente") e
       // assistente de IA (Inbox → botão de IA na conversa) — só para texto de
       // verdade, não mídia. Template tem prioridade sobre a resposta de IA.
-      if (msg.type === 'text' && text) {
-        const templateDisparou = await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
-        if (!templateDisparou) {
-          await maybeAiAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
+      if ((msg.type === 'text' || buttonReplyTitle) && text) {
+        // SalesBot tem prioridade — se uma resposta continua um fluxo em
+        // andamento (ou dispara um novo por palavra-chave), template/IA não
+        // entram em cima da mesma mensagem (mesma regra de exclusividade que
+        // já existe entre template e IA logo abaixo).
+        const { maybeSalesBotStep } = require('./salesbot.service') as typeof import('./salesbot.service');
+        const botHandled = await maybeSalesBotStep(accountId, leadId, text, io);
+        if (!botHandled) {
+          const templateDisparou = await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
+          if (!templateDisparou) {
+            await maybeAiAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
+          }
         }
       }
     }
