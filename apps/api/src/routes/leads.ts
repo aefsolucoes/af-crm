@@ -7,6 +7,16 @@ import { validate } from '../middleware/validate';
 import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact } from '../services/lead.service';
 import { getScopeDepartmentId } from '../services/department.service';
 
+/** Formata um telefone BR (com DDI 55) pra exibição — mesma regra usada em
+ *  baileys.service.ts, duplicada aqui de propósito (função pura pequena,
+ *  não vale importar de um serviço de canal pra uma rota de leads). */
+function formatPhoneDisplay(e164Digits: string): string {
+  const d = e164Digits.startsWith('55') ? e164Digits.slice(2) : e164Digits;
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `+${e164Digits}`;
+}
+
 const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
@@ -666,6 +676,45 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
     res.json(lead);
   } catch {
     res.status(500).json({ error: 'Erro ao salvar campos' });
+  }
+});
+
+// PATCH /api/leads/:id/phone — recuperação rápida do erro "sem telefone de
+// verdade cadastrado" (contato só tem @lid — API Oficial não consegue
+// enviar). Usada pelo botão inline que aparece na Inbox quando um envio
+// falha por isso: em vez de mandar o colaborador caçar o campo certo na
+// aba Dados, resolve na hora e o envio é retentado em seguida. Diferente
+// do PATCH /:id/custom-fields (que só sincroniza se Contact.phone ainda
+// estiver vazio), aqui é uma correção explícita do usuário — sempre
+// sobrescreve. Lê o customFields atual e faz merge (nunca substitui
+// tudo), pra não apagar os outros campos do card.
+router.patch('/:id/phone', async (req: AuthRequest, res: Response) => {
+  try {
+    const { phone } = req.body as { phone?: string };
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (digits.length < 10) {
+      res.status(400).json({ error: 'Telefone inválido — informe DDD + número' });
+      return;
+    }
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
+    if (!lead) {
+      res.status(404).json({ error: 'Lead não encontrado' });
+      return;
+    }
+    if (!lead.contactId) {
+      res.status(400).json({ error: 'Esse lead não tem um contato vinculado' });
+      return;
+    }
+    const e164 = digits.length <= 11 && !digits.startsWith('55') ? `55${digits}` : digits;
+    const telDisplay = formatPhoneDisplay(e164);
+    const cf = { ...((lead.customFields as any) || {}), telefone_1: telDisplay };
+    const [updatedLead] = await prisma.$transaction([
+      prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf } }),
+      prisma.contact.update({ where: { id: lead.contactId }, data: { phone: `+${e164}` } }),
+    ]);
+    res.json(updatedLead);
+  } catch {
+    res.status(500).json({ error: 'Erro ao salvar o telefone' });
   }
 });
 

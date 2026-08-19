@@ -123,7 +123,7 @@ router.post('/send-template', async (req: AuthRequest, res: Response) => {
       accountId: req.user!.accountId, leadId, templateName, language: language || 'pt_BR',
       bodyParams: Array.isArray(bodyParams) ? bodyParams.map(String) : [], previewText, userId: req.user!.id, io,
     });
-    if (!result.success) return res.status(400).json({ error: result.error });
+    if (!result.success) return res.status(400).json({ error: result.error, code: (result as any).code });
     res.status(201).json(result.message);
   } catch {
     res.status(500).json({ error: 'Erro ao enviar o template' });
@@ -202,7 +202,7 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
         io,
       });
       if (!result.success) {
-        return res.status(400).json({ error: result.error });
+        return res.status(400).json({ error: result.error, code: (result as any).code });
       }
       return res.status(201).json(result.message);
     }

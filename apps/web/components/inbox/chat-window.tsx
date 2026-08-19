@@ -233,6 +233,33 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [metaTemplateVars, setMetaTemplateVars] = useState<Record<number, string>>({});
   const [sendingTemplate, setSendingTemplate] = useState(false);
 
+  // ── Recuperação do erro "contato só tem @lid, sem telefone de verdade" ──
+  // Em vez de um toast sem saída (o colaborador tinha que ir caçar sozinho
+  // onde cadastrar o telefone), oferece o campo na hora e reenvia sozinho
+  // assim que salvar. 'text' = retentar handleSend, 'template' = retentar
+  // handleSendMetaTemplate (o pendingMetaTemplate continua intacto no erro).
+  const [phoneFixKind, setPhoneFixKind] = useState<'text' | 'template' | null>(null);
+  const [phoneFixValue, setPhoneFixValue] = useState('');
+  const [savingPhoneFix, setSavingPhoneFix] = useState(false);
+
+  async function handleSavePhoneFix() {
+    if (!phoneFixValue.trim() || savingPhoneFix) return;
+    setSavingPhoneFix(true);
+    try {
+      await api.patch(`/api/leads/${leadId}/phone`, { phone: phoneFixValue });
+      const kind = phoneFixKind;
+      setPhoneFixKind(null);
+      setPhoneFixValue('');
+      toast('Telefone salvo — reenviando...');
+      if (kind === 'text') handleSend();
+      else if (kind === 'template') handleSendMetaTemplate();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao salvar o telefone', 'error');
+    } finally {
+      setSavingPhoneFix(false);
+    }
+  }
+
   // ── Encaminhar mensagem para outra conversa ──────────────────────────────
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [forwardLeads, setForwardLeads] = useState<{ id: string; name: string; contact?: { name?: string; phone?: string; whatsappPhone?: string } }[] | null>(null);
@@ -428,6 +455,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       setContent(text);             // falhou: devolve o texto para tentar de novo
       setReplyingTo(quotedMsg);      // e a citação também
       const msg = err?.response?.data?.error || err?.message || 'Erro ao enviar mensagem';
+      if (err?.response?.data?.code === 'NO_REAL_PHONE') setPhoneFixKind('text');
       toast(msg, 'error');
     } finally {
       setSending(false);
@@ -517,6 +545,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       setShowTemplates(false);
       toast('Template enviado!');
     } catch (err: any) {
+      if (err?.response?.data?.code === 'NO_REAL_PHONE') setPhoneFixKind('template');
       toast(err?.response?.data?.error || 'Erro ao enviar o template', 'error');
     } finally {
       setSendingTemplate(false);
@@ -1010,6 +1039,41 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               {label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* Aviso: envio falhou por falta de telefone real (contato só tem @lid) —
+          cadastra na hora e reenvia sozinho, sem mandar caçar o campo certo. */}
+      {phoneFixKind && (
+        <div className="relative z-10 flex items-center gap-2 px-4 py-2 bg-amber-900/40 border-t border-amber-700/40">
+          <AlertCircle size={14} className="flex-shrink-0 text-amber-300" />
+          <span className="text-xs text-amber-300 flex-shrink-0">Sem telefone de verdade cadastrado — informe pra enviar:</span>
+          <input
+            type="tel"
+            value={phoneFixValue}
+            onChange={(e) => setPhoneFixValue(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSavePhoneFix(); } }}
+            placeholder="(61) 99999-9999"
+            autoFocus
+            className="min-w-0 flex-1 bg-[#2a3942] text-xs text-[#e9edef] placeholder-[#8696a0] rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-amber-500"
+          />
+          <button
+            type="button"
+            disabled={!phoneFixValue.trim() || savingPhoneFix}
+            onClick={handleSavePhoneFix}
+            className="flex-shrink-0 text-xs font-medium text-amber-200 bg-amber-700/40 hover:bg-amber-700/60 disabled:opacity-50 disabled:cursor-not-allowed px-2.5 py-1.5 rounded-lg transition-colors flex items-center gap-1"
+          >
+            {savingPhoneFix ? <Loader2 size={12} className="animate-spin" /> : null}
+            Salvar e enviar
+          </button>
+          <button
+            type="button"
+            onClick={() => { setPhoneFixKind(null); setPhoneFixValue(''); }}
+            title="Cancelar"
+            className="flex-shrink-0 text-amber-300/70 hover:text-amber-200"
+          >
+            <X size={14} />
+          </button>
         </div>
       )}
 

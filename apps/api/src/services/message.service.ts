@@ -211,7 +211,7 @@ export async function sendOutboundWhatsApp(params: {
   replyToContent?: string;
   replyToSender?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
-}): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string }> {
+}): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string; code?: string }> {
   const { accountId, leadId, content, via, fromNumberId, userId, replyToExternalId, replyToFromMe, replyToContent, replyToSender, io } = params;
 
   const lead = await prisma.lead.findFirst({
@@ -311,7 +311,7 @@ export async function sendOutboundWhatsApp(params: {
     // @lid (válido só pro QR/Baileys), então resolve de novo aqui.
     const cloudPhone = plainPhone(lead.contact);
     if (!cloudPhone) {
-      return { success: false, error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card ou envie pelo QR Code.' };
+      return { success: false, code: 'NO_REAL_PHONE', error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card ou envie pelo QR Code.' };
     }
     const result = await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId, replyToExternalId);
     if (result.success) {
@@ -356,7 +356,7 @@ export async function sendOutboundWhatsAppTemplate(params: {
   previewText: string;
   userId?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
-}): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string }> {
+}): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string; code?: string }> {
   const { accountId, leadId, templateName, language, bodyParams, previewText, userId, io } = params;
 
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true, pipeline: { select: { departmentId: true } } } });
@@ -364,7 +364,7 @@ export async function sendOutboundWhatsAppTemplate(params: {
 
   // Template só vai pela API Oficial — precisa de telefone de verdade, não @lid.
   const phone = plainPhone(lead.contact);
-  if (!phone) return { success: false, error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card.' };
+  if (!phone) return { success: false, code: 'NO_REAL_PHONE', error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card.' };
 
   const result = await sendWhatsAppTemplateMessage(phone, templateName, language, bodyParams, accountId, lead.pipeline.departmentId);
   if (!result.success) return { success: false, error: result.error || 'Falha ao enviar template' };
