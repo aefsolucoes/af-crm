@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, Home, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, MousePointerClick,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, MousePointerClick, Landmark,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -24,6 +24,7 @@ const NAV: NavItem[] = [
   // getScopeDepartmentId no backend).
   { href: '/funil-habitacao', label: 'Funil de Vendas Habitação', icon: Home, perm: 'funnel_view', departmentName: 'Financiamento Habitacional' },
   { href: '/funil-consorcio', label: 'Funil de Vendas Consórcio', icon: Kanban, perm: 'funnel_view', departmentName: 'Consórcio' },
+  { href: '/funil-home-equity', label: 'Funil de Vendas Home Equity', icon: Landmark, perm: 'funnel_view', departmentName: 'Home Equity' },
   { href: '/inbox', label: 'Inbox', icon: MessageSquare, perm: 'inbox_view' },
   { href: '/tarefas', label: 'Tarefas', icon: CheckSquare, perm: 'tasks' },
   { href: '/salesbot', label: 'SalesBot', icon: Bot, perm: 'salesbot' },
