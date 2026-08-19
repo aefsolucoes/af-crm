@@ -2,6 +2,7 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, Home, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
@@ -12,11 +13,17 @@ import { useSidebarStore } from '@/store/sidebar.store';
 import { useRouter } from 'next/navigation';
 import { Avatar } from './avatar';
 import { effectivePermissions, PermissionKey } from '@/lib/permissions';
+import api from '@/lib/api';
 
-const NAV: { href: string; label: string; icon: typeof BarChart3; perm: PermissionKey }[] = [
+interface NavItem { href: string; label: string; icon: typeof BarChart3; perm: PermissionKey; departmentName?: string; }
+
+const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: BarChart3, perm: 'dashboard' },
-  { href: '/funil-habitacao', label: 'Funil de Vendas Habitação', icon: Home, perm: 'funnel_view' },
-  { href: '/funil-consorcio', label: 'Funil de Vendas Consórcio', icon: Kanban, perm: 'funnel_view' },
+  // departmentName: só aparece pra quem é daquele setor (ou Admin, ou quem
+  // não tem setor definido — mesmo critério de "sem restrição" já usado em
+  // getScopeDepartmentId no backend).
+  { href: '/funil-habitacao', label: 'Funil de Vendas Habitação', icon: Home, perm: 'funnel_view', departmentName: 'Financiamento Habitacional' },
+  { href: '/funil-consorcio', label: 'Funil de Vendas Consórcio', icon: Kanban, perm: 'funnel_view', departmentName: 'Consórcio' },
   { href: '/inbox', label: 'Inbox', icon: MessageSquare, perm: 'inbox_view' },
   { href: '/tarefas', label: 'Tarefas', icon: CheckSquare, perm: 'tasks' },
   { href: '/salesbot', label: 'SalesBot', icon: Bot, perm: 'salesbot' },
@@ -35,9 +42,27 @@ export function Sidebar() {
   const { collapsed, toggle, init } = useSidebarStore();
   const router = useRouter();
 
-  // Mostra no menu só o que o usuário tem permissão de acessar.
+  // Pra decidir qual "Funil de Vendas <Setor>" mostrar — só busca se tiver
+  // usuário logado com setor definido (Admin/sem setor não precisa, já vê tudo).
+  const { data: departments } = useQuery({
+    queryKey: ['departments'],
+    queryFn: async () => { const { data } = await api.get('/api/departments'); return data as { id: string; name: string }[]; },
+    enabled: !!user && user.role !== 'ADMIN' && !!user.departmentId,
+  });
+  const myDepartmentName = (departments || []).find((d) => d.id === user?.departmentId)?.name;
+
+  // Mostra no menu só o que o usuário tem permissão de acessar — e, pros
+  // itens de funil por setor, só o do PRÓPRIO setor (Admin ou quem não tem
+  // setor definido continua vendo os dois, igual sempre viu tudo em outras
+  // áreas escopadas por departamento).
   const perms = effectivePermissions(user?.role || 'AGENT', user?.permissions ?? null);
-  const nav = NAV.filter((item) => perms[item.perm]);
+  const isAdmin = user?.role === 'ADMIN';
+  const nav = NAV.filter((item) => {
+    if (!perms[item.perm]) return false;
+    if (!item.departmentName) return true;
+    if (isAdmin || !user?.departmentId) return true;
+    return myDepartmentName === item.departmentName;
+  });
 
   useEffect(() => {
     init();
