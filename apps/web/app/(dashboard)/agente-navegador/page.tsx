@@ -6,14 +6,21 @@ import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
-import { MousePointerClick, Send, Loader2, X, Clock, CheckCircle2, XCircle, StopCircle } from 'lucide-react';
+import { LeadPicker } from '@/components/agente-navegador/lead-picker';
+import { MousePointerClick, Send, Loader2, X, Clock, CheckCircle2, XCircle, StopCircle, ThumbsUp, ThumbsDown, MessageCircleQuestion } from 'lucide-react';
 
-type AgentTaskStatus = 'PENDING' | 'RUNNING' | 'AWAITING_APPROVAL' | 'AWAITING_HUMAN_TAKEOVER' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+type AgentTaskStatus = 'PENDING' | 'RUNNING' | 'AWAITING_APPROVAL' | 'AWAITING_ANSWER' | 'AWAITING_HUMAN_TAKEOVER' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+
+interface PendingAction {
+  kind: 'question' | 'approval';
+  message: string;
+}
 
 interface AgentTask {
   id: string;
   instruction: string;
   status: AgentTaskStatus;
+  pendingAction?: PendingAction | null;
   resultSummary?: string | null;
   errorMessage?: string | null;
   stepCount: number;
@@ -42,6 +49,7 @@ const STATUS_META: Record<AgentTaskStatus, { label: string; color: string; icon:
   PENDING: { label: 'Iniciando…', color: 'text-slate-400', icon: Clock },
   RUNNING: { label: 'Executando…', color: 'text-amber-400', icon: Loader2 },
   AWAITING_APPROVAL: { label: 'Aguardando aprovação', color: 'text-amber-400', icon: Clock },
+  AWAITING_ANSWER: { label: 'Aguardando resposta', color: 'text-amber-400', icon: Clock },
   AWAITING_HUMAN_TAKEOVER: { label: 'Aguardando você', color: 'text-amber-400', icon: Clock },
   COMPLETED: { label: 'Concluída', color: 'text-emerald-400', icon: CheckCircle2 },
   FAILED: { label: 'Falhou', color: 'text-red-400', icon: XCircle },
@@ -61,17 +69,22 @@ async function fetchTaskDetail(id: string): Promise<AgentTask & { logs: AgentAct
 export default function AgenteNavegadorPage() {
   const queryClient = useQueryClient();
   const [instruction, setInstruction] = useState('');
+  const [leadId, setLeadId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [status, setStatus] = useState<AgentTaskStatus | null>(null);
   const [result, setResult] = useState<{ summary?: string | null; error?: string | null } | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [answerText, setAnswerText] = useState('');
+  const [responding, setResponding] = useState(false);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   const { data: tasks } = useQuery({ queryKey: ['browser-agent-tasks'], queryFn: fetchTasks, refetchInterval: 15000 });
 
   const activeTask = (tasks || []).find((t) => t.id === activeTaskId);
   const isRunning = status === 'PENDING' || status === 'RUNNING';
+  const isPaused = status === 'AWAITING_APPROVAL' || status === 'AWAITING_ANSWER';
   const currentScreenshot = [...steps].reverse().find((s) => s.screenshot)?.screenshot;
 
   useEffect(() => {
@@ -88,9 +101,11 @@ export default function AgenteNavegadorPage() {
       setSteps((prev) => [...prev, payload]);
     }
 
-    function onStatus(payload: { taskId: string; status: AgentTaskStatus; resultSummary?: string; errorMessage?: string }) {
+    function onStatus(payload: { taskId: string; status: AgentTaskStatus; resultSummary?: string; errorMessage?: string; pendingAction?: PendingAction }) {
       if (payload.taskId !== activeTaskId) return;
       setStatus(payload.status);
+      setPendingAction(payload.pendingAction || null);
+      if (payload.status === 'RUNNING') setAnswerText('');
       if (payload.resultSummary || payload.errorMessage) {
         setResult({ summary: payload.resultSummary, error: payload.errorMessage });
       }
@@ -113,17 +128,33 @@ export default function AgenteNavegadorPage() {
     if (!text || starting) return;
     setStarting(true);
     try {
-      const { data } = await api.post('/api/browser-agent/tasks', { instruction: text });
+      const { data } = await api.post('/api/browser-agent/tasks', { instruction: text, leadId: leadId || undefined });
       setActiveTaskId(data.id);
       setStatus(data.status);
       setResult(null);
       setSteps([]);
+      setPendingAction(null);
       setInstruction('');
       queryClient.invalidateQueries({ queryKey: ['browser-agent-tasks'] });
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao iniciar a tarefa', 'error');
     } finally {
       setStarting(false);
+    }
+  }
+
+  async function handleRespond(response: { approve: boolean } | { answer: string }) {
+    if (!activeTaskId || responding) return;
+    setResponding(true);
+    try {
+      await api.post(`/api/browser-agent/tasks/${activeTaskId}/respond`, response);
+      setPendingAction(null);
+      setStatus('RUNNING');
+      setAnswerText('');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao enviar a resposta', 'error');
+    } finally {
+      setResponding(false);
     }
   }
 
@@ -140,6 +171,7 @@ export default function AgenteNavegadorPage() {
     setActiveTaskId(task.id);
     setStatus(task.status);
     setResult({ summary: task.resultSummary, error: task.errorMessage });
+    setPendingAction(task.pendingAction || null);
     setSteps([]);
     try {
       const detail = await fetchTaskDetail(task.id);
@@ -167,17 +199,18 @@ export default function AgenteNavegadorPage() {
         {/* Coluna principal: instrução, transcript, screenshot */}
         <div className="flex-1 flex flex-col overflow-hidden px-6 py-4 gap-4">
           <form onSubmit={handleStart} className="flex gap-2">
+            <LeadPicker value={leadId} onChange={setLeadId} disabled={isRunning || isPaused} />
             <input
               type="text"
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
               placeholder='Ex.: "abra o google.com e pesquise gatos"'
-              disabled={isRunning}
+              disabled={isRunning || isPaused}
               className="flex-1 px-4 py-2.5 text-sm border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent disabled:opacity-50"
             />
             <button
               type="submit"
-              disabled={starting || isRunning || !instruction.trim()}
+              disabled={starting || isRunning || isPaused || !instruction.trim()}
               className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-af-mid text-white text-sm font-medium hover:bg-af-dark disabled:opacity-50"
             >
               {starting ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
@@ -206,7 +239,7 @@ export default function AgenteNavegadorPage() {
                       </span>
                     )}
                   </div>
-                  {isRunning && (
+                  {(isRunning || isPaused) && (
                     <button onClick={handleCancel} className="flex items-center gap-1 text-xs text-red-500 hover:text-red-600 font-medium">
                       <X size={13} /> Cancelar
                     </button>
@@ -227,6 +260,56 @@ export default function AgenteNavegadorPage() {
                   {(result?.summary || result?.error) && (
                     <div className={cn('text-xs px-3 py-2 rounded-lg font-medium', result.error ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700')}>
                       {result.error || result.summary}
+                    </div>
+                  )}
+                  {isPaused && pendingAction && (
+                    <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2.5">
+                      <p className="flex items-start gap-1.5 text-xs font-medium text-amber-800">
+                        <MessageCircleQuestion size={14} className="flex-shrink-0 mt-0.5" />
+                        {pendingAction.message}
+                      </p>
+                      {pendingAction.kind === 'approval' ? (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleRespond({ approve: true })}
+                            disabled={responding}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50"
+                          >
+                            <ThumbsUp size={13} /> Aprovar
+                          </button>
+                          <button
+                            onClick={() => handleRespond({ approve: false })}
+                            disabled={responding}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-red-300 text-red-600 text-xs font-medium hover:bg-red-50 disabled:opacity-50"
+                          >
+                            <ThumbsDown size={13} /> Recusar
+                          </button>
+                        </div>
+                      ) : (
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            if (answerText.trim()) handleRespond({ answer: answerText.trim() });
+                          }}
+                          className="flex gap-2"
+                        >
+                          <input
+                            autoFocus
+                            value={answerText}
+                            onChange={(e) => setAnswerText(e.target.value)}
+                            placeholder="Digite a resposta…"
+                            disabled={responding}
+                            className="flex-1 px-3 py-1.5 text-xs border border-amber-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent disabled:opacity-50"
+                          />
+                          <button
+                            type="submit"
+                            disabled={responding || !answerText.trim()}
+                            className="px-3 py-1.5 rounded-lg bg-af-mid text-white text-xs font-medium hover:bg-af-dark disabled:opacity-50"
+                          >
+                            Responder
+                          </button>
+                        </form>
+                      )}
                     </div>
                   )}
                   <div ref={transcriptEndRef} />
@@ -284,6 +367,7 @@ function toolLabel(tool: string, input: Record<string, unknown>): string {
     case 'browser_scroll': return `Rolar pra ${input.direction}`;
     case 'browser_wait': return `Esperar ${input.seconds}s`;
     case 'browser_screenshot': return 'Olhar a tela';
+    case 'ask_human': return input.kind === 'approval' ? `Pediu aprovação: "${input.message}"` : `Perguntou: "${input.message}"`;
     default: return tool;
   }
 }

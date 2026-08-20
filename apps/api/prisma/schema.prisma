@@ -661,8 +661,9 @@ model DashboardNote {
 enum AgentTaskStatus {
   PENDING // criada, ainda não começou a rodar
   RUNNING // loop de decisão em andamento
-  AWAITING_APPROVAL // esperando aprovar/recusar uma ação sensível (Fase 2)
-  AWAITING_HUMAN_TAKEOVER // esperando o humano fazer algo manualmente (Fase 2)
+  AWAITING_APPROVAL // esperando aprovar/recusar uma ação sensível (ask_human kind=approval)
+  AWAITING_ANSWER // esperando o operador responder uma pergunta (ask_human kind=question)
+  AWAITING_HUMAN_TAKEOVER // esperando o humano fazer algo manualmente (ainda não usado — sem take-over de aba)
   COMPLETED
   FAILED
   CANCELLED

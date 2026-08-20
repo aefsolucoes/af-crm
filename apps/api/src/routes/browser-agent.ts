@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { getExtensionSocketId } from '../websocket';
-import { runAgentLoop } from '../services/browser-agent.service';
+import { runAgentLoop, applyHumanResponse, continueAgentLoop } from '../services/browser-agent.service';
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -74,6 +74,13 @@ router.post('/tasks', async (req: AuthRequest, res: Response) => {
     res.status(400).json({ error: 'instruction é obrigatório' });
     return;
   }
+  if (leadId) {
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId } });
+    if (!lead) {
+      res.status(400).json({ error: 'Lead não encontrado.' });
+      return;
+    }
+  }
   if (!getExtensionSocketId(req.user!.id)) {
     res.status(409).json({ error: 'Extensão do Agente de Navegador não está conectada. Abra o Chrome com a extensão carregada e logada.' });
     return;
@@ -136,6 +143,26 @@ router.post('/tasks/:id/cancel', async (req: AuthRequest, res: Response) => {
   const io = req.app.get('io');
   io.to(`user_${task.userId}`).emit('agent_task_status', { taskId: task.id, status: 'CANCELLED' });
   res.json(updated);
+});
+
+// Responde uma tarefa pausada em AWAITING_APPROVAL ({approve: boolean}) ou
+// AWAITING_ANSWER ({answer: string}) — completa o turno pendente e retoma o
+// loop em background, mesmo padrão fire-and-forget do POST /tasks acima.
+router.post('/tasks/:id/respond', async (req: AuthRequest, res: Response) => {
+  const io = req.app.get('io');
+  const body = req.body as { approve?: boolean; answer?: string };
+  const response = typeof body.approve === 'boolean' ? { approve: body.approve } : { answer: String(body.answer ?? '') };
+
+  const result = await applyHumanResponse(req.params.id, req.user!.accountId, response, io);
+  if (!result.ok) {
+    res.status(result.status).json({ error: result.error });
+    return;
+  }
+  res.json(result.task);
+
+  continueAgentLoop(req.params.id, req.user!.accountId, io).catch((err) => {
+    console.error('[Agente de Navegador] Retomada do loop caiu com erro não tratado:', err);
+  });
 });
 
 export default router;

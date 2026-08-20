@@ -37,12 +37,16 @@ function buildBrowserAgentSystemPrompt(manualTexto: string): string {
 Como funciona: a cada passo você recebe uma SCREENSHOT real da aba ativa (${VIEWPORT.width}x${VIEWPORT.height} pixels — as coordenadas x,y que você usar em browser_click/browser_type são relativas a essa imagem) e decide a PRÓXIMA ação usando as ferramentas disponíveis. Depois de cada ação, você recebe uma nova screenshot mostrando o resultado.
 
 ${manualTexto ? `--- MANUAL DE REFERÊNCIA (da Base de Conhecimento, relevante pra essa tarefa) ---\n${manualTexto}\n\nSiga esse manual como guia principal de COMO navegar/agir neste site (onde clicar, ordem dos passos) — mas ainda decida cada ação olhando a screenshot de verdade, o site pode ter mudado desde que o manual foi escrito.\n` : ''}
-Regras fixas de segurança (ainda sem exceção nesta versão):
-- NUNCA digite senha, CPF+senha, código de certificado digital, dados de cartão/pagamento, nem tente resolver um CAPTCHA. Se a tarefa exigir qualquer um desses passos, PARE e explique em texto (sem chamar mais nenhuma ferramenta) o que falta um humano fazer manualmente — não tente contornar.
-- Não confirme/finalize nenhuma ação que pareça irreversível (enviar, comprar, assinar, emitir um documento oficial) sem deixar claro no seu relatório final que aquele passo específico ainda precisa de confirmação humana — nesta versão você ainda não tem um mecanismo de aprovação ao vivo, então é mais seguro parar um passo antes do ponto de não-volta e reportar.
+Você pode PAUSAR a tarefa e falar com o operador (o colaborador que pediu essa tarefa) usando a ferramenta ask_human — ele responde ao vivo e você continua de onde parou:
+- kind="question": use sempre que precisar de um dado que não tem certeza (CPF, valor de um campo do formulário, qual opção escolher numa tela ambígua) e não achou nos documentos do cliente nem na tela. NUNCA invente ou chute um valor — pergunte.
+- kind="approval": use ANTES de confirmar/finalizar qualquer ação que pareça irreversível (enviar, comprar, assinar, emitir um documento oficial, submeter um formulário definitivo) — explique exatamente o que está prestes a fazer e espere a aprovação antes de clicar nesse botão.
+- Chame ask_human SOZINHA no turno (sem combinar com outra ferramenta) e pare — a resposta do operador chega no próximo turno, como se fosse o resultado dessa ferramenta.
+
+Regras fixas de segurança (sem exceção):
+- NUNCA digite senha, CPF+senha, código de certificado digital, dados de cartão/pagamento, nem tente resolver um CAPTCHA. Se a tarefa exigir qualquer um desses passos, PARE e explique em texto (sem chamar mais nenhuma ferramenta, nem ask_human — ainda não existe como o operador assumir o controle da aba ao vivo) o que falta um humano fazer manualmente — não tente contornar.
 - Vá com calma: olhe a screenshot com atenção antes de clicar, prefira poucos passos deliberados a muitos passos apressados.
 
-Quando terminar a tarefa (ou quando precisar parar por algum dos motivos acima), responda em TEXTO simples (sem chamar mais ferramentas) resumindo o que foi feito e o que falta, se algo faltar.`;
+Quando terminar a tarefa (ou quando precisar parar por causa da regra de senha/CAPTCHA acima), responda em TEXTO simples (sem chamar mais ferramentas) resumindo o que foi feito e o que falta, se algo faltar.`;
 }
 
 const BROWSER_AGENT_TOOLS = [
@@ -114,6 +118,19 @@ const BROWSER_AGENT_TOOLS = [
     name: 'browser_screenshot',
     description: 'Só olha a tela de novo, sem fazer nenhuma ação (ex.: depois de um browser_wait).',
     input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'ask_human',
+    description:
+      'Pausa a tarefa e pergunta ao operador antes de continuar. Use kind="question" quando precisar de uma informação que não tem certeza (dado do cliente, valor de campo, qual opção escolher). Use kind="approval" quando estiver prestes a confirmar uma ação irreversível (enviar, comprar, assinar, emitir, submeter) e precisar de aprovação explícita antes de clicar. Chame sozinha, sem combinar com outra ferramenta no mesmo turno — você recebe a resposta do operador no próximo turno.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['question', 'approval'] },
+        message: { type: 'string', description: 'A pergunta ou o que está prestes a fazer, em português claro e direto pro operador entender e responder rápido.' },
+      },
+      required: ['kind', 'message'],
+    },
   },
 ] as const;
 
@@ -202,31 +219,18 @@ function pruneOldScreenshots(convo: { role: string; content: any }[], keepLast =
 
 const MAX_STEPS = 40;
 
-/** Roda o loop de decisão de uma tarefa até o fim (texto final sem tool_use,
- *  limite de passos, cancelamento, ou erro) — dispara em background a partir
- *  da rota POST /tasks, sem manter a requisição HTTP aberta (cada passo
- *  envolve uma ida-e-volta real até o Chrome do usuário, que pode levar
- *  segundos — inviável segurar isso numa única requisição). */
-export async function runAgentLoop(taskId: string, accountId: string, userId: string, io: IO): Promise<void> {
-  const task = await prisma.agentTask.findUnique({ where: { id: taskId } });
-  if (!task) return;
+type Task = NonNullable<Awaited<ReturnType<typeof prisma.agentTask.findUnique>>>;
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    await finishTask(taskId, userId, io, 'FAILED', undefined, 'ANTHROPIC_API_KEY não configurada no servidor.');
-    return;
-  }
-
-  await prisma.agentTask.update({ where: { id: taskId }, data: { status: 'RUNNING' } });
-  io.to(`user_${userId}`).emit('agent_task_status', { taskId, status: 'RUNNING' });
-
-  // Contexto extra pro agente, montado UMA vez antes do loop (não muda passo
-  // a passo): 1) manual relevante da Base de Conhecimento (como navegar no
-  // site — login, onde clicar); 2) se a tarefa é de um lead específico, os
-  // dados desse cliente (nome, CPF, endereço, renda etc, extraídos dos
-  // documentos dele no Drive — mesma extração usada por preencher_
-  // formulario_editavel) — assim "preenche a PFI do Sebastião" já chega pro
-  // agente sabendo tanto COMO navegar quanto O QUE digitar.
+/** Contexto extra pro agente, montado UMA vez antes do loop (não muda passo
+ *  a passo): 1) manual relevante da Base de Conhecimento (como navegar no
+ *  site — login, onde clicar); 2) se a tarefa é de um lead específico, os
+ *  dados desse cliente (nome, CPF, endereço, renda etc, extraídos dos
+ *  documentos dele no Drive — mesma extração usada por preencher_
+ *  formulario_editavel) — assim "preenche a PFI do Sebastião" já chega pro
+ *  agente sabendo tanto COMO navegar quanto O QUE digitar. Reaproveitado
+ *  tanto no início da tarefa quanto em cada retomada depois de uma pausa
+ *  (ask_human) — é uma busca barata, não vale a pena persistir. */
+async function buildSystemPromptForTask(task: Task, accountId: string, apiKey: string): Promise<string> {
   let manualTexto = '';
   try {
     const kbHits = await searchKnowledge(accountId, task.instruction, 5);
@@ -252,10 +256,35 @@ export async function runAgentLoop(taskId: string, accountId: string, userId: st
       console.error('[Agente de Navegador] Falha ao carregar dados do cliente:', err);
     }
   }
-  const systemPrompt = buildBrowserAgentSystemPrompt(manualTexto);
+  return buildBrowserAgentSystemPrompt(manualTexto);
+}
 
-  const convo: { role: string; content: any }[] = [{ role: 'user', content: task.instruction }];
-  let seq = 0;
+interface PendingAction {
+  toolUseId: string;
+  kind: 'question' | 'approval';
+  message: string;
+  logId: string;
+  otherResults: AnthropicContentBlock[];
+}
+
+/** Corpo do loop de decisão em si — chamado tanto do início de uma tarefa
+ *  (runAgentLoop) quanto de uma retomada depois de uma pausa (ask_human,
+ *  via continueAgentLoop). `startSeq` continua a numeração de
+ *  AgentActionLog/stepCount de onde parou (nunca zera, mesmo numa retomada,
+ *  senão duplicaria `seq` no log e na key do React). MAX_STEPS vale por
+ *  "perna" de execução (do início ou de cada retomada) — não é orçamento
+ *  vitalício da tarefa, simplificação deliberada: toda pausa é gated por um
+ *  humano, não tem risco de loop infinito. */
+async function executeLoop(
+  taskId: string,
+  userId: string,
+  io: IO,
+  systemPrompt: string,
+  convo: { role: string; content: any }[],
+  startSeq: number
+): Promise<void> {
+  const apiKey = process.env.ANTHROPIC_API_KEY!;
+  let seq = startSeq;
   let finalText = 'A tarefa não terminou dentro do limite de passos — peça de novo dividindo em partes menores.';
 
   try {
@@ -290,9 +319,11 @@ export async function runAgentLoop(taskId: string, accountId: string, userId: st
 
       if (data.stop_reason === 'tool_use') {
         const toolUseBlocks = data.content.filter((b) => b.type === 'tool_use');
+        const askHumanBlock = toolUseBlocks.find((b) => b.name === 'ask_human');
+        const otherBlocks = toolUseBlocks.filter((b) => b.name !== 'ask_human');
         const toolResults: AnthropicContentBlock[] = [];
 
-        for (const block of toolUseBlocks) {
+        for (const block of otherBlocks) {
           seq += 1;
           const { blocks, ok, summary } = await executeBrowserTool(io, userId, block.name!, block.input || {});
           toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: blocks });
@@ -314,6 +345,38 @@ export async function runAgentLoop(taskId: string, accountId: string, userId: st
         }
 
         convo.push({ role: 'assistant', content: data.content });
+
+        if (askHumanBlock) {
+          // Pausa: o turno do assistant já entrou no convo, mas o tool_result
+          // do ask_human ainda falta — só entra quando o operador responder
+          // (applyHumanResponse). Guarda os resultados das OUTRAS ferramentas
+          // do mesmo turno (se o modelo combinou, mesmo sendo instruído a não
+          // combinar) em pendingAction.otherResults pra completar o turno certo
+          // na retomada.
+          seq += 1;
+          const kind: 'question' | 'approval' = askHumanBlock.input?.kind === 'approval' ? 'approval' : 'question';
+          const message = String(askHumanBlock.input?.message || 'O agente precisa da sua ajuda pra continuar.');
+          const log = await prisma.agentActionLog.create({
+            data: { taskId, seq, tool: 'ask_human', input: { kind, message }, requiredApproval: kind === 'approval' },
+          });
+          const pendingAction: PendingAction = { toolUseId: askHumanBlock.id!, kind, message, logId: log.id, otherResults: toolResults };
+          await prisma.agentTask.update({
+            where: { id: taskId },
+            data: {
+              stepCount: seq,
+              status: kind === 'approval' ? 'AWAITING_APPROVAL' : 'AWAITING_ANSWER',
+              pendingAction: pendingAction as any,
+              conversation: convo as any,
+            },
+          });
+          io.to(`user_${userId}`).emit('agent_task_status', {
+            taskId,
+            status: kind === 'approval' ? 'AWAITING_APPROVAL' : 'AWAITING_ANSWER',
+            pendingAction: { kind, message },
+          });
+          return;
+        }
+
         convo.push({ role: 'user', content: toolResults });
         pruneOldScreenshots(convo);
         await prisma.agentTask.update({ where: { id: taskId }, data: { conversation: convo as any } });
@@ -329,6 +392,100 @@ export async function runAgentLoop(taskId: string, accountId: string, userId: st
     console.error('[Agente de Navegador] Erro no loop:', err);
     await finishTask(taskId, userId, io, 'FAILED', undefined, err?.message || 'Erro inesperado no loop.');
   }
+}
+
+/** Inicia o loop de decisão de uma tarefa nova do zero — dispara em
+ *  background a partir da rota POST /tasks, sem manter a requisição HTTP
+ *  aberta (cada passo envolve uma ida-e-volta real até o Chrome do usuário,
+ *  que pode levar segundos — inviável segurar isso numa única requisição). */
+export async function runAgentLoop(taskId: string, accountId: string, userId: string, io: IO): Promise<void> {
+  const task = await prisma.agentTask.findUnique({ where: { id: taskId } });
+  if (!task) return;
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    await finishTask(taskId, userId, io, 'FAILED', undefined, 'ANTHROPIC_API_KEY não configurada no servidor.');
+    return;
+  }
+
+  await prisma.agentTask.update({ where: { id: taskId }, data: { status: 'RUNNING' } });
+  io.to(`user_${userId}`).emit('agent_task_status', { taskId, status: 'RUNNING' });
+
+  const systemPrompt = await buildSystemPromptForTask(task, accountId, apiKey);
+  const convo: { role: string; content: any }[] = [{ role: 'user', content: task.instruction }];
+  await executeLoop(taskId, userId, io, systemPrompt, convo, 0);
+}
+
+/** Aplica a resposta do operador (aprovar/recusar ou responder uma pergunta)
+ *  a uma tarefa pausada em AWAITING_APPROVAL/AWAITING_ANSWER — completa o
+ *  turno pendente e devolve a tarefa pra RUNNING. Não roda o loop em si (ver
+ *  continueAgentLoop) — só a parte síncrona/rápida, pra rota poder responder
+ *  200 na hora, igual o POST /tasks já faz hoje. Escopado só por accountId
+ *  (não por userId de quem está respondendo) — mesmo critério já usado pela
+ *  rota /cancel existente, qualquer um com a permissão browser_agent na
+ *  conta pode agir sobre a tarefa. */
+export async function applyHumanResponse(
+  taskId: string,
+  accountId: string,
+  response: { approve: boolean } | { answer: string },
+  io: IO
+): Promise<{ ok: true; task: Task } | { ok: false; error: string; status: number }> {
+  const task = await prisma.agentTask.findFirst({ where: { id: taskId, accountId } });
+  if (!task) return { ok: false, error: 'Tarefa não encontrada', status: 404 };
+  if (task.status !== 'AWAITING_APPROVAL' && task.status !== 'AWAITING_ANSWER') {
+    return { ok: false, error: 'Essa tarefa não está esperando resposta agora.', status: 409 };
+  }
+  const pending = task.pendingAction as unknown as PendingAction | null;
+  if (!pending) return { ok: false, error: 'Tarefa sem ação pendente registrada.', status: 409 };
+
+  let resultText: string;
+  let logOutput: Record<string, unknown>;
+  if (pending.kind === 'approval') {
+    if (!('approve' in response)) return { ok: false, error: 'Essa tarefa espera aprovação (approve: true/false).', status: 400 };
+    resultText = response.approve
+      ? 'Aprovado pelo operador. Pode prosseguir.'
+      : 'Recusado pelo operador. NÃO tente executar essa ação de novo — finalize a tarefa explicando em texto o que ficou pendente.';
+    logOutput = { ok: response.approve, summary: response.approve ? 'Aprovado pelo operador.' : 'Recusado pelo operador.', approved: response.approve };
+  } else {
+    if (!('answer' in response) || !response.answer.trim()) return { ok: false, error: 'Essa tarefa espera uma resposta em texto (answer).', status: 400 };
+    resultText = response.answer.trim();
+    logOutput = { ok: true, summary: `Resposta: "${resultText}"`, answer: resultText };
+  }
+
+  const toolResults: AnthropicContentBlock[] = [
+    ...(pending.otherResults || []),
+    { type: 'tool_result', tool_use_id: pending.toolUseId, content: [{ type: 'text', text: resultText }] },
+  ];
+  const convo = ((task.conversation as any[]) || []).slice();
+  convo.push({ role: 'user', content: toolResults });
+  pruneOldScreenshots(convo);
+
+  await prisma.agentActionLog.update({ where: { id: pending.logId }, data: { output: logOutput as any } });
+  const updated = await prisma.agentTask.update({
+    where: { id: taskId },
+    data: { status: 'RUNNING', pendingAction: null as any, conversation: convo as any },
+  });
+  io.to(`user_${task.userId}`).emit('agent_task_status', { taskId, status: 'RUNNING' });
+
+  return { ok: true, task: updated };
+}
+
+/** Retoma o loop de uma tarefa depois de applyHumanResponse ter completado o
+ *  turno pendente — recarrega a conversa persistida e o stepCount do banco
+ *  (não recebe nada em memória: o processo pode até ter reiniciado entre a
+ *  pausa e a resposta) e recalcula o system prompt (mesma busca de Base de
+ *  Conhecimento + dados do cliente do início, é barato). */
+export async function continueAgentLoop(taskId: string, accountId: string, io: IO): Promise<void> {
+  const task = await prisma.agentTask.findUnique({ where: { id: taskId } });
+  if (!task) return;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    await finishTask(taskId, task.userId, io, 'FAILED', undefined, 'ANTHROPIC_API_KEY não configurada no servidor.');
+    return;
+  }
+  const systemPrompt = await buildSystemPromptForTask(task, accountId, apiKey);
+  const convo = ((task.conversation as any[]) || []).slice();
+  await executeLoop(taskId, task.userId, io, systemPrompt, convo, task.stepCount);
 }
 
 async function finishTask(
@@ -348,8 +505,11 @@ async function finishTask(
 
 /** Ao subir o processo, tarefas que ficaram "RUNNING" (o servidor reiniciou
  *  no meio) nunca mais vão terminar sozinhas — o loop delas morreu junto com
- *  o processo anterior. Marca como FAILED em vez de deixar penduradas pra
- *  sempre como "rodando". Retomar de verdade fica fora do escopo da Fase 1. */
+ *  o processo anterior, no meio de uma ação sem estado bem definido pra
+ *  retomar. Marca como FAILED em vez de deixar penduradas pra sempre como
+ *  "rodando". Diferente de AWAITING_APPROVAL/AWAITING_ANSWER (essas ficam
+ *  penduradas de propósito — a conversa persistida sabe exatamente o que
+ *  falta, continueAgentLoop retoma normalmente mesmo depois de um restart). */
 export async function failOrphanedRunningTasks(): Promise<void> {
   const { count } = await prisma.agentTask.updateMany({
     where: { status: 'RUNNING' },
