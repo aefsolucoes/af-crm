@@ -92,14 +92,26 @@ export async function verifyLoginCodeService(email: string, code: string) {
   return issueTokens(user);
 }
 
-export function refreshService(token: string) {
+/** Antes, reassinava o access token novo com o MESMO payload (role,
+ *  accountId) do refresh token antigo — sem olhar o banco. Como o refresh
+ *  token dura 7 dias, qualquer mudança de papel/setor/conta de um usuário já
+ *  logado só "pegava" depois de até 7 dias (achado real: usuário promovido a
+ *  ADMIN continuou sendo tratado como MANAGER escopado no setor antigo até
+ *  relogar). Agora busca o usuário no banco a cada refresh — o token de
+ *  acesso emitido reflete o estado atual, e como ele dura só 1h, qualquer
+ *  mudança "pega" no máximo na próxima hora, sem precisar relogar. */
+export async function refreshService(token: string) {
   const payload = jwt.verify(token, process.env.JWT_REFRESH_SECRET!) as {
     id: string;
     accountId: string;
     role: string;
   };
+  const user = await prisma.user.findUnique({ where: { id: payload.id } });
+  if (!user || user.accountId !== payload.accountId) {
+    throw new Error('Usuário não encontrado ou removido');
+  }
   const accessToken = jwt.sign(
-    { id: payload.id, accountId: payload.accountId, role: payload.role },
+    { id: user.id, accountId: user.accountId, role: user.role },
     process.env.JWT_SECRET!,
     { expiresIn: '1h' }
   );
