@@ -8,7 +8,7 @@ import { searchKnowledge, learnFromWhatsAppConversations } from '../services/kno
 import {
   organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
   createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink, findFilesInFolderTree,
-  listFolders, findFoldersByNamesInTree, listAllFilesInFolderTree, uploadFile,
+  listFolders, findFoldersByNamesInTree, listAllFilesInFolderTree, uploadFile, extractFolderId,
 } from '../services/google.service';
 import { PDFDocument, PDFTextField, PDFCheckBox, PDFDropdown, PDFRadioGroup } from 'pdf-lib';
 import { deleteLead } from '../services/lead.service';
@@ -138,7 +138,16 @@ interface ChatMessage {
 // Chave fixa do campo "Pasta no Drive" (tipo LINK) no cadastro do lead. O
 // assistente cria essa FieldDefinition sozinho na primeira vez que precisa
 // salvar um link de pasta — não exige nenhuma configuração manual antes.
-const DRIVE_LINK_FIELD_KEY = 'link_pasta_drive';
+export const DRIVE_LINK_FIELD_KEY = 'link_pasta_drive';
+
+/** Lê o link salvo em customFields[DRIVE_LINK_FIELD_KEY] ("Pasta no Drive"
+ *  no cadastro do lead), se houver — usado por resolveClientDriveDocuments/
+ *  resolveClientImovelDocuments pra pular a busca por nome. */
+export function driveLinkFromCustomFields(customFields: unknown): string | null {
+  const cf = (customFields || {}) as Record<string, unknown>;
+  const v = cf[DRIVE_LINK_FIELD_KEY];
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
 
 async function ensureDriveLinkField(accountId: string): Promise<void> {
   const existing = await prisma.fieldDefinition.findFirst({ where: { accountId, key: DRIVE_LINK_FIELD_KEY } });
@@ -593,13 +602,22 @@ export async function resolveClientDriveDocuments(
   accountId: string,
   leadName: string,
   nomePastaInput?: string,
-  excludeFileId?: string
+  excludeFileId?: string,
+  driveLinkOverride?: string | null
 ): Promise<
   | { ok: true; docs: { name: string; mimeType: string; buffer: Buffer }[]; deixadosDeFora: string[] }
   | { ok: false; error: string }
 > {
   const nomePasta = String(nomePastaInput || leadName || '').trim();
-  const folder = nomePasta ? await findFolderByNameUnderRoot(accountId, nomePasta) : null;
+  // Prioriza o link salvo no campo "Pasta no Drive" do lead (customFields,
+  // DRIVE_LINK_FIELD_KEY) — bem mais confiável que buscar por nome, que
+  // falha quando o nome do lead no CRM não bate exatamente com o nome da
+  // pasta no Drive (ex.: lead "Fulano / Beltrana" cadastrado a dois, pasta
+  // só "Fulano"). Sem o link salvo, cai pro comportamento de sempre.
+  const overrideId = driveLinkOverride ? extractFolderId(driveLinkOverride) : null;
+  const folder = overrideId
+    ? { folderId: overrideId, path: nomePasta }
+    : nomePasta ? await findFolderByNameUnderRoot(accountId, nomePasta) : null;
   if (!folder) return { ok: false, error: `Não encontrei a pasta "${nomePasta}" no Drive. Confirme o nome da pasta do cliente com o colaborador.` };
 
   // REGRA FIXA: a documentação de conferência do cliente fica dentro da
@@ -718,13 +736,18 @@ export async function extractKeyFieldsFromDocs(apiKey: string, docs: { name: str
 export async function resolveClientImovelDocuments(
   accountId: string,
   leadName: string,
-  nomePastaInput?: string
+  nomePastaInput?: string,
+  driveLinkOverride?: string | null
 ): Promise<
   | { ok: true; docs: { name: string; mimeType: string; buffer: Buffer }[] }
   | { ok: false; error: string }
 > {
   const nomePasta = String(nomePastaInput || leadName || '').trim();
-  const folder = nomePasta ? await findFolderByNameUnderRoot(accountId, nomePasta) : null;
+  // Mesma prioridade de resolveClientDriveDocuments: link salvo > busca por nome.
+  const overrideId = driveLinkOverride ? extractFolderId(driveLinkOverride) : null;
+  const folder = overrideId
+    ? { folderId: overrideId, path: nomePasta }
+    : nomePasta ? await findFolderByNameUnderRoot(accountId, nomePasta) : null;
   if (!folder) return { ok: false, error: `Não encontrei a pasta "${nomePasta}" no Drive.` };
 
   const normalize = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
@@ -1719,7 +1742,7 @@ async function executeAgentTool(
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
 
-    const resolved = await resolveClientDriveDocuments(accountId, lead.name, input.nomePasta ? String(input.nomePasta) : undefined);
+    const resolved = await resolveClientDriveDocuments(accountId, lead.name, input.nomePasta ? String(input.nomePasta) : undefined, undefined, driveLinkFromCustomFields(lead.customFields));
     if (!resolved.ok) return { success: false, error: resolved.error };
     const { docs, deixadosDeFora } = resolved;
 
@@ -1830,7 +1853,7 @@ async function executeAgentTool(
       return { success: false, error: 'Não tem nenhum arquivo anexado nesta conversa, e nenhum nomeArquivoReferencia foi informado. Pergunte ao colaborador: ele quer anexar o formulário na conversa, ou já tem o formulário salvo na pasta do cliente no Drive (nesse caso, qual o nome do arquivo)?' };
     }
 
-    const resolved = await resolveClientDriveDocuments(accountId, lead.name, nomePastaInput, excludeFileId);
+    const resolved = await resolveClientDriveDocuments(accountId, lead.name, nomePastaInput, excludeFileId, driveLinkFromCustomFields(lead.customFields));
     if (!resolved.ok) return { success: false, error: resolved.error };
     const { docs, deixadosDeFora } = resolved;
 
@@ -1960,7 +1983,7 @@ async function executeAgentTool(
     }));
 
     // 4) Lê os documentos do cliente (mesma REGRA FIXA de resolveClientDriveDocuments).
-    const resolved = await resolveClientDriveDocuments(accountId, lead.name, nomePastaInput);
+    const resolved = await resolveClientDriveDocuments(accountId, lead.name, nomePastaInput, undefined, driveLinkFromCustomFields(lead.customFields));
     if (!resolved.ok) return { success: false, error: resolved.error };
     const { docs, deixadosDeFora } = resolved;
 

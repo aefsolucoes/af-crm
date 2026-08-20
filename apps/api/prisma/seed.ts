@@ -169,7 +169,11 @@ async function main() {
     { tab: 'Principal', name: 'Renda 2', key: 'renda_2', type: 'NUMBER' as const, options: [], order: 9 },
     { tab: 'Principal', name: 'E-mail 2', key: 'email_2', type: 'EMAIL' as const, options: [], order: 10 },
     { tab: 'Principal', name: 'Tipo de vínculo 2', key: 'vinculo_2', type: 'TEXT' as const, options: [], order: 11 },
-    { tab: 'Principal', name: 'Pasta Drive', key: 'pasta_drive', type: 'LINK' as const, options: [], order: 12 },
+    // "Pasta Drive" (key pasta_drive) removido — duplicava "Pasta no Drive"
+    // (key link_pasta_drive), o campo que o assistente/agente de verdade
+    // lê e escreve (ver DRIVE_LINK_FIELD_KEY em routes/ai.ts). Consolidado
+    // via migration 20260820... (mescla valores existentes e apaga a
+    // FieldDefinition duplicada nas contas que já tinham as duas).
     { tab: 'Financiamento', name: 'CPF regular?', key: 'cpf_regular', type: 'TEXT' as const, options: [], order: 0 },
     { tab: 'Financiamento', name: 'Compra do Imóvel', key: 'compra_imovel', type: 'TEXT' as const, options: [], order: 1 },
     { tab: 'Financiamento', name: 'Finalidade', key: 'finalidade', type: 'TEXT' as const, options: [], order: 2 },

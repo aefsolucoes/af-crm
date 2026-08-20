@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { getExtensionSocketId } from '../websocket';
 import { searchKnowledge } from './knowledge.service';
-import { resolveClientDriveDocuments, extractKeyFieldsFromDocs, resolveClientImovelDocuments, extractImovelFieldsFromDocs } from '../routes/ai';
+import { resolveClientDriveDocuments, extractKeyFieldsFromDocs, resolveClientImovelDocuments, extractImovelFieldsFromDocs, driveLinkFromCustomFields } from '../routes/ai';
 
 const prisma = new PrismaClient();
 
@@ -244,7 +244,11 @@ async function buildSystemPromptForTask(task: Task, accountId: string, apiKey: s
     try {
       const lead = await prisma.lead.findFirst({ where: { id: task.leadId, accountId } });
       if (lead) {
-        const resolved = await resolveClientDriveDocuments(accountId, lead.name);
+        // Link direto salvo no campo "Pasta no Drive" do lead, se houver —
+        // pula a busca por nome (frágil quando o nome do lead no CRM não
+        // bate com o nome da pasta no Drive, ex.: lead com nome de casal).
+        const driveLink = driveLinkFromCustomFields(lead.customFields);
+        const resolved = await resolveClientDriveDocuments(accountId, lead.name, undefined, undefined, driveLink);
         if (resolved.ok) {
           const transcricao = await extractKeyFieldsFromDocs(apiKey, resolved.docs);
           if (transcricao) {
@@ -256,7 +260,7 @@ async function buildSystemPromptForTask(task: Task, accountId: string, apiKey: s
         // não entra no scan acima (que prioriza a subpasta "COMPRADOR").
         // Falha aqui é normal/silenciosa (nem todo cliente tem essa
         // subpasta ainda) — o agente cai pra perguntar via ask_human.
-        const resolvedImovel = await resolveClientImovelDocuments(accountId, lead.name);
+        const resolvedImovel = await resolveClientImovelDocuments(accountId, lead.name, undefined, driveLink);
         if (resolvedImovel.ok) {
           const transcricaoImovel = await extractImovelFieldsFromDocs(apiKey, resolvedImovel.docs);
           if (transcricaoImovel) {
