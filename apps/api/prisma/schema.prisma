@@ -711,3 +711,24 @@ model AgentActionLog {
 
   @@index([taskId, seq])
 }
+
+// Guia/"memória" de como navegar num site — gerado a partir de uma AgentTask
+// concluída (generatePlaybookFromTask) ou escrito à mão. Injetado no system
+// prompt de tarefas novas (ver buildSystemPromptForTask), igual um manual da
+// Base de Conhecimento, mas dedicado ao Agente de Navegador e editável numa
+// tela própria. Sem @relation de propósito — mesmo padrão leve de AgentTask/
+// AgentActionLog, é conhecimento, não dado de negócio com integridade
+// referencial forte.
+model AgentPlaybook {
+  id           String   @id @default(cuid())
+  accountId    String
+  domain       String // ex.: "ridigital.org.br" — extraído do 1º browser_navigate, editável depois
+  title        String // ex.: "Emitir certidão de ônus"
+  steps        String   @db.Text // o guia em texto, gerado pela IA, 100% editável
+  active       Boolean  @default(true) // só os ativos entram no prompt de tarefas novas
+  sourceTaskId String? // de qual AgentTask foi gerado — só auditoria/rastreio
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([accountId])
+}

@@ -7,7 +7,8 @@ import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
 import { LeadPicker } from '@/components/agente-navegador/lead-picker';
-import { MousePointerClick, Send, Loader2, X, Clock, CheckCircle2, XCircle, StopCircle, ThumbsUp, ThumbsDown, MessageCircleQuestion } from 'lucide-react';
+import { PlaybooksTab } from '@/components/agente-navegador/playbooks-tab';
+import { MousePointerClick, Send, Loader2, X, Clock, CheckCircle2, XCircle, StopCircle, ThumbsUp, ThumbsDown, MessageCircleQuestion, ListChecks, BookOpen, BookmarkPlus } from 'lucide-react';
 
 type AgentTaskStatus = 'PENDING' | 'RUNNING' | 'AWAITING_APPROVAL' | 'AWAITING_ANSWER' | 'AWAITING_HUMAN_TAKEOVER' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
@@ -68,6 +69,8 @@ async function fetchTaskDetail(id: string): Promise<AgentTask & { logs: AgentAct
 
 export default function AgenteNavegadorPage() {
   const queryClient = useQueryClient();
+  const [pageTab, setPageTab] = useState<'tarefas' | 'guias'>('tarefas');
+  const [savingPlaybook, setSavingPlaybook] = useState(false);
   const [instruction, setInstruction] = useState('');
   const [leadId, setLeadId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -167,6 +170,21 @@ export default function AgenteNavegadorPage() {
     }
   }
 
+  async function handleSavePlaybook() {
+    if (!activeTaskId || savingPlaybook) return;
+    setSavingPlaybook(true);
+    try {
+      const { data } = await api.post(`/api/browser-agent/tasks/${activeTaskId}/save-playbook`);
+      toast(`Guia "${data.title}" salvo! Revise na aba Guias.`);
+      queryClient.invalidateQueries({ queryKey: ['browser-agent-playbooks'] });
+      setPageTab('guias');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao gerar o guia', 'error');
+    } finally {
+      setSavingPlaybook(false);
+    }
+  }
+
   async function openTask(task: AgentTask) {
     setActiveTaskId(task.id);
     setStatus(task.status);
@@ -195,6 +213,30 @@ export default function AgenteNavegadorPage() {
     <div className="flex flex-col h-full">
       <Topbar title="Agente de Navegador" subtitle="A IA controla o Chrome de verdade — vê a tela, clica, digita" />
 
+      <div className="flex items-center gap-1 px-6 pt-3 border-b border-af-border">
+        <button
+          onClick={() => setPageTab('tarefas')}
+          className={cn(
+            'flex items-center gap-1.5 px-3 py-2 rounded-t-lg text-sm font-medium border-b-2 -mb-px transition-colors',
+            pageTab === 'tarefas' ? 'border-af-accent text-af-accent' : 'border-transparent text-slate-500 hover:text-slate-700'
+          )}
+        >
+          <ListChecks size={15} /> Tarefas
+        </button>
+        <button
+          onClick={() => setPageTab('guias')}
+          className={cn(
+            'flex items-center gap-1.5 px-3 py-2 rounded-t-lg text-sm font-medium border-b-2 -mb-px transition-colors',
+            pageTab === 'guias' ? 'border-af-accent text-af-accent' : 'border-transparent text-slate-500 hover:text-slate-700'
+          )}
+        >
+          <BookOpen size={15} /> Guias
+        </button>
+      </div>
+
+      {pageTab === 'guias' && <PlaybooksTab />}
+
+      {pageTab === 'tarefas' && (
       <div className="flex-1 overflow-hidden flex">
         {/* Coluna principal: instrução, transcript, screenshot */}
         <div className="flex-1 flex flex-col overflow-hidden px-6 py-4 gap-4">
@@ -261,6 +303,16 @@ export default function AgenteNavegadorPage() {
                     <div className={cn('text-xs px-3 py-2 rounded-lg font-medium', result.error ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700')}>
                       {result.error || result.summary}
                     </div>
+                  )}
+                  {status === 'COMPLETED' && (
+                    <button
+                      onClick={handleSavePlaybook}
+                      disabled={savingPlaybook}
+                      className="flex items-center gap-1.5 text-xs font-medium text-af-accent hover:text-af-dark disabled:opacity-50"
+                    >
+                      {savingPlaybook ? <Loader2 size={13} className="animate-spin" /> : <BookmarkPlus size={13} />}
+                      Guardar como guia
+                    </button>
                   )}
                   {isPaused && pendingAction && (
                     <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2.5">
@@ -354,6 +406,7 @@ export default function AgenteNavegadorPage() {
           {(tasks || []).length === 0 && <p className="text-xs text-slate-400 px-1">Nenhuma tarefa ainda.</p>}
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -240,6 +240,20 @@ async function buildSystemPromptForTask(task: Task, accountId: string, apiKey: s
   } catch (err) {
     console.error('[Agente de Navegador] Busca na Base de Conhecimento falhou:', err);
   }
+  // Guias aprendidos de tarefas anteriores (AgentPlaybook) — sem filtro de
+  // relevância de propósito: na prática só existe um punhado de domínios
+  // (sites de cartório/consulta), incluir todos os ativos é simples e barato
+  // (é texto curto, não documento inteiro). Editável em /agente-navegador →
+  // aba Guias.
+  try {
+    const playbooks = await prisma.agentPlaybook.findMany({ where: { accountId, active: true }, orderBy: { updatedAt: 'desc' } });
+    if (playbooks.length) {
+      const guiasTexto = playbooks.map((p) => `--- GUIA APRENDIDO: "${p.title}" (${p.domain}) ---\n${p.steps}`).join('\n\n');
+      manualTexto += `${manualTexto ? '\n\n' : ''}${guiasTexto}`;
+    }
+  } catch (err) {
+    console.error('[Agente de Navegador] Busca de guias (AgentPlaybook) falhou:', err);
+  }
   if (task.leadId) {
     try {
       const lead = await prisma.lead.findFirst({ where: { id: task.leadId, accountId } });
@@ -502,6 +516,71 @@ export async function continueAgentLoop(taskId: string, accountId: string, io: I
   const systemPrompt = await buildSystemPromptForTask(task, accountId, apiKey);
   const convo = ((task.conversation as any[]) || []).slice();
   await executeLoop(taskId, task.userId, io, systemPrompt, convo, task.stepCount);
+}
+
+const PLAYBOOK_SYSTEM_PROMPT = `Você vai transformar o registro passo a passo de uma tarefa do Agente de Navegador (que deu certo) num GUIA reutilizável pra tarefas parecidas no futuro, no mesmo site.
+
+Regras pra escrever o guia:
+- Descreva cada ação pela INTENÇÃO ("clique no botão Pesquisar", "selecione o estado do imóvel no dropdown"), NUNCA por coordenada de pixel (x,y) — a tela pode renderizar diferente da próxima vez, coordenada não serve de nada fora daquela screenshot exata.
+- Qualquer dado que foi digitado e veio do CLIENTE (nome, CPF, matrícula, endereço, valor) — generalize como "digite o/a [campo] do cliente", NUNCA repita o valor literal que foi usado (isso é dado de uma pessoa específica, não serve pra outro cliente e não deve ficar salvo aqui).
+- Marque EXPLICITAMENTE os pontos que variam de cliente pra cliente ou de caso pra caso (ex.: "o cartório e a matrícula mudam a cada imóvel — confira nos dados do imóvel antes de escolher/digitar, não é sempre o mesmo"). Isso é o mais importante do guia: separar o que é sempre igual (navegação, ordem das telas) do que muda (dados e escolhas específicas do caso).
+- Se em algum ponto a tarefa pausou pra perguntar algo ao operador (ask_human) e ele respondeu, documente isso como um ponto de atenção pro futuro (ex.: "nessa etapa pode ser necessário confirmar X com o operador, caso não esteja nos documentos do cliente").
+- Seja direto e objetivo, numerado passo a passo. Não inclua nada sobre a extensão do Chrome, screenshots, ou detalhes técnicos do Agente de Navegador em si — só o que importa pra navegar o SITE.
+
+Responda com um JSON só, sem markdown por fora, no formato:
+{"title": "título curto do que essa tarefa faz (ex.: 'Emitir certidão de ônus')", "steps": "o guia numerado, em texto"}`;
+
+/** Gera um AgentPlaybook a partir de uma tarefa concluída — UMA chamada à
+ *  Anthropic, usando só o AgentActionLog (tool + input, incluindo a
+ *  `description` que browser_click já pede pro modelo escrever a cada
+ *  clique) — não precisa reprocessar screenshot nenhuma. Não persiste nada
+ *  sozinha — devolve os campos pra rota decidir o resto (ver POST
+ *  /tasks/:id/save-playbook). */
+export async function generatePlaybookFromTask(
+  apiKey: string,
+  task: Task,
+  logs: { seq: number; tool: string; input: any; output: any }[]
+): Promise<{ domain: string; title: string; steps: string }> {
+  const navLog = logs.find((l) => l.tool === 'browser_navigate' && l.input?.url);
+  let domain = 'desconhecido';
+  try {
+    if (navLog?.input?.url) domain = new URL(String(navLog.input.url)).hostname;
+  } catch { /* mantém "desconhecido" se a URL vier estranha */ }
+
+  const transcript = logs
+    .map((l) => {
+      if (l.tool === 'browser_navigate') return `${l.seq}. Navegar para ${l.input?.url}`;
+      if (l.tool === 'browser_click') return `${l.seq}. Clicar${l.input?.description ? ` — ${l.input.description}` : ` em (${l.input?.x}, ${l.input?.y})`}`;
+      if (l.tool === 'browser_type') return `${l.seq}. Digitar: "${l.input?.text}"`;
+      if (l.tool === 'browser_key') return `${l.seq}. Pressionar tecla ${l.input?.key}`;
+      if (l.tool === 'browser_scroll') return `${l.seq}. Rolar pra ${l.input?.direction}`;
+      if (l.tool === 'ask_human') {
+        const resposta = l.output?.answer ?? (l.output?.approved !== undefined ? (l.output.approved ? 'aprovado' : 'recusado') : '?');
+        return `${l.seq}. [PAUSOU PRA PERGUNTAR] "${l.input?.message}" — operador respondeu: "${resposta}"`;
+      }
+      return null;
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 1500,
+      system: PLAYBOOK_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: `Instrução original da tarefa: "${task.instruction}"\n\nRegistro passo a passo (site: ${domain}):\n${transcript}` }],
+    }),
+  });
+  if (!response.ok) throw new Error(`Erro da IA ao gerar o guia (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  const data = (await response.json()) as { content: { type: string; text?: string }[] };
+  const text = data.content?.find((b) => b.type === 'text')?.text?.trim() || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('A IA não devolveu o guia no formato esperado.');
+  const parsed = JSON.parse(jsonMatch[0]) as { title?: string; steps?: string };
+  if (!parsed.steps) throw new Error('A IA não gerou nenhum passo a passo.');
+  return { domain, title: parsed.title || task.instruction.slice(0, 80), steps: parsed.steps };
 }
 
 async function finishTask(

@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { getExtensionSocketId } from '../websocket';
-import { runAgentLoop, applyHumanResponse, continueAgentLoop } from '../services/browser-agent.service';
+import { runAgentLoop, applyHumanResponse, continueAgentLoop, generatePlaybookFromTask } from '../services/browser-agent.service';
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -163,6 +163,92 @@ router.post('/tasks/:id/respond', async (req: AuthRequest, res: Response) => {
   continueAgentLoop(req.params.id, req.user!.accountId, io).catch((err) => {
     console.error('[Agente de Navegador] Retomada do loop caiu com erro não tratado:', err);
   });
+});
+
+// Gera um AgentPlaybook a partir de uma tarefa CONCLUÍDA — uma chamada à IA
+// (ver generatePlaybookFromTask), síncrona (não é rápido tipo /respond, mas
+// também não é uma tarefa longa como o loop principal — só 1 chamada).
+router.post('/tasks/:id/save-playbook', async (req: AuthRequest, res: Response) => {
+  const task = await prisma.agentTask.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
+  if (!task) {
+    res.status(404).json({ error: 'Tarefa não encontrada' });
+    return;
+  }
+  if (task.status !== 'COMPLETED') {
+    res.status(409).json({ error: 'Só dá pra guardar como guia uma tarefa CONCLUÍDA.' });
+    return;
+  }
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: 'ANTHROPIC_API_KEY não configurada no servidor.' });
+    return;
+  }
+  const logs = await prisma.agentActionLog.findMany({ where: { taskId: task.id }, orderBy: { seq: 'asc' } });
+  if (logs.length === 0) {
+    res.status(400).json({ error: 'Essa tarefa não tem nenhum passo registrado.' });
+    return;
+  }
+  try {
+    const { domain, title, steps } = await generatePlaybookFromTask(apiKey, task, logs);
+    const playbook = await prisma.agentPlaybook.create({
+      data: { accountId: req.user!.accountId, domain, title, steps, sourceTaskId: task.id },
+    });
+    res.status(201).json(playbook);
+  } catch (err: any) {
+    console.error('[Agente de Navegador] Falha ao gerar guia:', err);
+    res.status(500).json({ error: err?.message || 'Erro ao gerar o guia.' });
+  }
+});
+
+// ── Guias (AgentPlaybook) — CRUD simples pra tela de revisão/edição ─────────
+
+router.get('/playbooks', async (req: AuthRequest, res: Response) => {
+  const playbooks = await prisma.agentPlaybook.findMany({
+    where: { accountId: req.user!.accountId },
+    orderBy: { updatedAt: 'desc' },
+  });
+  res.json(playbooks);
+});
+
+router.post('/playbooks', async (req: AuthRequest, res: Response) => {
+  const { domain, title, steps } = req.body as { domain?: string; title?: string; steps?: string };
+  if (!domain?.trim() || !title?.trim() || !steps?.trim()) {
+    res.status(400).json({ error: 'domain, title e steps são obrigatórios' });
+    return;
+  }
+  const playbook = await prisma.agentPlaybook.create({
+    data: { accountId: req.user!.accountId, domain: domain.trim(), title: title.trim(), steps: steps.trim() },
+  });
+  res.status(201).json(playbook);
+});
+
+router.patch('/playbooks/:id', async (req: AuthRequest, res: Response) => {
+  const existing = await prisma.agentPlaybook.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
+  if (!existing) {
+    res.status(404).json({ error: 'Guia não encontrado' });
+    return;
+  }
+  const { domain, title, steps, active } = req.body as { domain?: string; title?: string; steps?: string; active?: boolean };
+  const playbook = await prisma.agentPlaybook.update({
+    where: { id: existing.id },
+    data: {
+      ...(domain !== undefined ? { domain: String(domain).trim() } : {}),
+      ...(title !== undefined ? { title: String(title).trim() } : {}),
+      ...(steps !== undefined ? { steps: String(steps).trim() } : {}),
+      ...(active !== undefined ? { active: !!active } : {}),
+    },
+  });
+  res.json(playbook);
+});
+
+router.delete('/playbooks/:id', async (req: AuthRequest, res: Response) => {
+  const existing = await prisma.agentPlaybook.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
+  if (!existing) {
+    res.status(404).json({ error: 'Guia não encontrado' });
+    return;
+  }
+  await prisma.agentPlaybook.delete({ where: { id: existing.id } });
+  res.json({ ok: true });
 });
 
 export default router;
