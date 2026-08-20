@@ -5,6 +5,7 @@ import * as os from 'os';
 import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
+import { normalizeClientName } from '../lib/text';
 // maybeSalesBotStep: require() tardio no ponto de uso (não aqui em cima) —
 // salesbot.service.ts importa message.service.ts, que importa ESTE arquivo;
 // um import estático nos dois sentidos criaria dependência circular. Mesmo
@@ -657,8 +658,10 @@ async function getOrCreateLeadForPhone(
   // Nome de exibição: para grupo, SÓ o assunto do grupo (nunca o nome de um
   // participante); se não der para buscar, um nome neutro (o botão "Atualizar
   // nomes dos grupos" corrige depois). Para 1:1, o pushName do contato.
-  let displayName = pushName || (realPhone ? `+${realPhone}` : from);
+  let displayName = normalizeClientName(pushName || (realPhone ? `+${realPhone}` : from));
   if (isGroup) {
+    // Grupo: mantém o assunto do jeito que está no WhatsApp, sem forçar
+    // maiúscula — não é "nome de cliente", é o título que o grupo já tem.
     displayName = await getGroupSubject(sock, from) || 'Grupo do WhatsApp';
   }
 

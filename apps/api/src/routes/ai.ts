@@ -14,6 +14,7 @@ import { PDFDocument, PDFTextField, PDFCheckBox, PDFDropdown, PDFRadioGroup } fr
 import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
 import { getOrCreateInboxPipeline, getScopeDepartmentIds, resolveCreateDepartmentId } from '../services/department.service';
+import { normalizeClientName } from '../lib/text';
 
 const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
 function sanitizePermsInput(input: unknown): Record<string, boolean> | null {
@@ -908,7 +909,7 @@ async function executeAgentTool(
 
     const data: Record<string, unknown> = {};
     if (pergunta.campo === 'nome') {
-      data.name = resposta;
+      data.name = normalizeClientName(resposta);
     } else if (pergunta.campo === 'valor') {
       const cleaned = resposta.replace(/[^\d,.-]/g, '');
       const num = cleaned.includes(',') && cleaned.includes('.')
@@ -1317,7 +1318,7 @@ async function executeAgentTool(
   // ── Cards (leads): criar, editar, arquivar, excluir ────────────────────────
   if (name === 'create_lead') {
     if (!perms.funnel_manage) return deny('funnel_manage', 'criar cards');
-    const nome = String(input.name || '').trim();
+    const nome = normalizeClientName(String(input.name || ''));
     if (!nome) return { success: false, error: 'Informe o nome do cliente/card' };
     let target = (input.stageId || input.pipelineId)
       ? await resolveStageTarget(accountId, input.pipelineId ? String(input.pipelineId) : undefined, input.stageId ? String(input.stageId) : undefined)
@@ -1352,7 +1353,7 @@ async function executeAgentTool(
       return { success: false, error: 'Esse lead é de outro departamento.' };
     }
     const data: Record<string, unknown> = {};
-    if (input.name !== undefined) data.name = String(input.name).trim();
+    if (input.name !== undefined) data.name = normalizeClientName(String(input.name));
     if (typeof input.value === 'number') data.value = input.value;
     if (input.fields && typeof input.fields === 'object') {
       const cf = (lead.customFields as Record<string, unknown>) || {};

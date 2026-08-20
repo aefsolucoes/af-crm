@@ -2,6 +2,7 @@ import { PrismaClient, Direction, Channel } from '@prisma/client';
 import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage } from './whatsapp.service';
 import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds } from './baileys.service';
 import { downloadDriveFile } from './google.service';
+import { normalizeClientName } from '../lib/text';
 
 const prisma = new PrismaClient();
 
@@ -123,7 +124,7 @@ export async function findOrCreateLeadByPhone(
     include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
   });
 
-  const displayName = name?.trim() || formatPhoneDisplay(phone);
+  const displayName = normalizeClientName(name?.trim() || formatPhoneDisplay(phone));
 
   if (!contact) {
     contact = await prisma.contact.create({

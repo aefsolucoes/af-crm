@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
+import { normalizeClientName } from '../lib/text';
 // maybeSalesBotStep: require() tardio (dentro da função, não aqui em cima) —
 // salesbot.service.ts importa de volta este arquivo (pra mandar mensagem),
 // um import estático nos dois sentidos criaria dependência circular. Mesmo
@@ -562,7 +563,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         ? `📎 ${mediaInfo.fileName}${mediaInfo.caption ? ` — ${mediaInfo.caption}` : ''}`
         : buttonReplyTitle || (msg.text?.body as string) || '';
       const externalId = msg.id as string;
-      const profileName = value.contacts?.[0]?.profile?.name || `+${from}`;
+      const profileName = normalizeClientName(value.contacts?.[0]?.profile?.name || `+${from}`);
       const formattedPhone = formatPhoneDisplay(from);
 
       console.log(`[WhatsApp] Incoming from=${from} name="${profileName}"`);

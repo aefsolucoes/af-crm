@@ -1,4 +1,5 @@
 import { PrismaClient, LeadStatus } from '@prisma/client';
+import { normalizeClientName } from '../lib/text';
 
 const prisma = new PrismaClient();
 
@@ -68,7 +69,7 @@ export async function createLead(data: {
 }) {
   const { customFields, ...rest } = data;
   return prisma.lead.create({
-    data: { ...rest, ...(customFields ? { customFields: customFields as any } : {}) },
+    data: { ...rest, name: normalizeClientName(rest.name), ...(customFields ? { customFields: customFields as any } : {}) },
     include: { stage: true, user: { select: { id: true, name: true } } },
   });
 }
@@ -84,7 +85,10 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
   customFields: Record<string, unknown>;
   isGroup: boolean;
 }>) {
-  return prisma.lead.update({ where: { id }, data: data as any });
+  return prisma.lead.update({
+    where: { id },
+    data: { ...data, ...(data.name !== undefined ? { name: normalizeClientName(data.name) } : {}) } as any,
+  });
 }
 
 export async function updateLeadStage(id: string, accountId: string, stageId: string) {

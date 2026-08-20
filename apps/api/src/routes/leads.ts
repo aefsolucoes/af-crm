@@ -8,6 +8,7 @@ import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteL
 import { getScopeDepartmentIds } from '../services/department.service';
 import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { checkHasWhatsApp } from '../services/baileys.service';
+import { normalizeClientName } from '../lib/text';
 
 /** Formata um telefone BR (com DDI 55) pra exibição — mesma regra usada em
  *  baileys.service.ts, duplicada aqui de propósito (função pura pequena,
@@ -651,7 +652,7 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
     // renomeia o contato (e atualiza a lista de conversas ao vivo).
     const p1 = customFields?.participante_1;
     if (typeof p1 === 'string' && p1.trim() && lead.contactId) {
-      await prisma.contact.update({ where: { id: lead.contactId }, data: { name: p1.trim() } }).catch(() => {});
+      await prisma.contact.update({ where: { id: lead.contactId }, data: { name: normalizeClientName(p1) } }).catch(() => {});
       const io = req.app.get('io');
       io?.to(`account_${req.user!.accountId}`).emit('new_conversation', { leadId: lead.id });
     }
@@ -678,7 +679,7 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
             await prisma.contact.update({ where: { id: lead.contactId }, data: { phone: `+${e164}` } }).catch(() => {});
           }
         } else {
-          const contact = await prisma.contact.create({ data: { accountId: lead.accountId, name: lead.name, phone: `+${e164}` } });
+          const contact = await prisma.contact.create({ data: { accountId: lead.accountId, name: normalizeClientName(lead.name), phone: `+${e164}` } });
           await prisma.lead.update({ where: { id: lead.id }, data: { contactId: contact.id } }).catch(() => {});
         }
         hasWhatsApp = await checkHasWhatsApp(req.user!.accountId, e164);

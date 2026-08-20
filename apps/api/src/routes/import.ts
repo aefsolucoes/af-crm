@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { getOrCreateWhatsAppPipeline } from '../services/whatsapp.service';
+import { normalizeClientName } from '../lib/text';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -115,16 +116,17 @@ router.post('/commit', async (req: AuthRequest, res: Response) => {
     for (const row of rows) {
       if (row.skip) { skipped++; continue; }
 
+      const nome = normalizeClientName(row.name);
       const contact = await prisma.contact.create({
         data: {
-          name: row.name.trim(),
+          name: nome,
           phone: row.phone?.trim() || null,
           email: row.email?.trim() || null,
           accountId,
         },
       });
 
-      const customFields: Record<string, string> = { participante_1: row.name.trim() };
+      const customFields: Record<string, string> = { participante_1: nome };
       if (row.phone) customFields.telefone_1 = row.phone.trim();
       if (row.cpf) customFields.cpf_1 = row.cpf.trim();
       if (row.email) customFields.email_1 = row.email.trim();
@@ -132,7 +134,7 @@ router.post('/commit', async (req: AuthRequest, res: Response) => {
 
       await prisma.lead.create({
         data: {
-          name: row.name.trim(),
+          name: nome,
           accountId,
           pipelineId: pipeline.id,
           stageId,

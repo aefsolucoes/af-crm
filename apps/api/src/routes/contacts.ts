@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
+import { normalizeClientName } from '../lib/text';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -31,7 +32,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 router.post('/', validate(contactSchema), async (req: AuthRequest, res: Response) => {
   try {
     const contact = await prisma.contact.create({
-      data: { ...req.body, accountId: req.user!.accountId },
+      data: { ...req.body, name: normalizeClientName(req.body.name), accountId: req.user!.accountId },
       include: { company: true },
     });
     res.status(201).json(contact);
