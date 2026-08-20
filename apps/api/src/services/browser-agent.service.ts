@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { getExtensionSocketId } from '../websocket';
 import { searchKnowledge } from './knowledge.service';
-import { resolveClientDriveDocuments, extractKeyFieldsFromDocs } from '../routes/ai';
+import { resolveClientDriveDocuments, extractKeyFieldsFromDocs, resolveClientImovelDocuments, extractImovelFieldsFromDocs } from '../routes/ai';
 
 const prisma = new PrismaClient();
 
@@ -38,7 +38,7 @@ Como funciona: a cada passo você recebe uma SCREENSHOT real da aba ativa (${VIE
 
 ${manualTexto ? `--- MANUAL DE REFERÊNCIA (da Base de Conhecimento, relevante pra essa tarefa) ---\n${manualTexto}\n\nSiga esse manual como guia principal de COMO navegar/agir neste site (onde clicar, ordem dos passos) — mas ainda decida cada ação olhando a screenshot de verdade, o site pode ter mudado desde que o manual foi escrito.\n` : ''}
 Você pode PAUSAR a tarefa e falar com o operador (o colaborador que pediu essa tarefa) usando a ferramenta ask_human — ele responde ao vivo e você continua de onde parou:
-- kind="question": use sempre que precisar de um dado que não tem certeza (CPF, valor de um campo do formulário, qual opção escolher numa tela ambígua) e não achou nos documentos do cliente nem na tela. NUNCA invente ou chute um valor — pergunte.
+- kind="question": use sempre que precisar de um dado que não tem certeza (CPF, valor de um campo do formulário, qual opção escolher numa tela ambígua) e não achou nos documentos do cliente/imóvel injetados acima nem na tela — RELEIA esse contexto antes de perguntar, o dado pode já estar ali (ex.: cartório, estado e matrícula de um imóvel costumam vir na seção "DADOS DO IMÓVEL DO CLIENTE", quando existir). NUNCA invente ou chute um valor — pergunte.
 - kind="approval": use ANTES de confirmar/finalizar qualquer ação que pareça irreversível (enviar, comprar, assinar, emitir um documento oficial, submeter um formulário definitivo) — explique exatamente o que está prestes a fazer e espere a aprovação antes de clicar nesse botão.
 - Chame ask_human SOZINHA no turno (sem combinar com outra ferramenta) e pare — a resposta do operador chega no próximo turno, como se fosse o resultado dessa ferramenta.
 
@@ -249,6 +249,18 @@ async function buildSystemPromptForTask(task: Task, accountId: string, apiKey: s
           const transcricao = await extractKeyFieldsFromDocs(apiKey, resolved.docs);
           if (transcricao) {
             manualTexto += `${manualTexto ? '\n\n' : ''}--- DADOS DO CLIENTE "${lead.name}" (extraídos dos documentos dele no Drive) ---\n${transcricao}`;
+          }
+        }
+        // Documentação do IMÓVEL do cliente (certidão de ônus, matrícula,
+        // IPTU) fica numa subpasta "Imóvel" separada — convenção da equipe,
+        // não entra no scan acima (que prioriza a subpasta "COMPRADOR").
+        // Falha aqui é normal/silenciosa (nem todo cliente tem essa
+        // subpasta ainda) — o agente cai pra perguntar via ask_human.
+        const resolvedImovel = await resolveClientImovelDocuments(accountId, lead.name);
+        if (resolvedImovel.ok) {
+          const transcricaoImovel = await extractImovelFieldsFromDocs(apiKey, resolvedImovel.docs);
+          if (transcricaoImovel) {
+            manualTexto += `${manualTexto ? '\n\n' : ''}--- DADOS DO IMÓVEL DO CLIENTE "${lead.name}" (extraídos da subpasta "Imóvel" no Drive) ---\n${transcricaoImovel}`;
           }
         }
       }

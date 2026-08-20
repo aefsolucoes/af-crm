@@ -666,8 +666,11 @@ export async function resolveClientDriveDocuments(
 const EXTRACT_FIELDS_PROMPT = 'Transcreva LITERALMENTE (dígito por dígito, sem arredondar nem resumir) os campos que aparecerem claramente neste documento: nome completo, CPF, número do documento de identidade (CNH/RG), data de nascimento, endereço completo (logradouro, número, complemento, bairro, cidade, UF, CEP), telefone, renda bruta, renda líquida, valor do imóvel, e outros valores em R$ relevantes. Preste atenção REDOBRADA em cada dígito de números longos (CPF, número de documento, CEP, telefone, valores) — releia se precisar, não aproxime, não confunda um dígito com outro parecido. Se um campo não aparecer com clareza, simplesmente não o liste (nunca invente). Responda em texto simples, SEM JSON e sem comentário extra.';
 
 /** Transcreve UM documento isolado — mesma tarefa (e mesma confiabilidade)
- *  do ler_documento_identificacao, só que com mais campos. */
-async function extractKeyFieldsFromOneDoc(apiKey: string, doc: { name: string; mimeType: string; buffer: Buffer }): Promise<string | null> {
+ *  do ler_documento_identificacao, só que com mais campos. `prompt` é
+ *  parametrizável pra reaproveitar a mesma leitura-documento-por-documento
+ *  com outro foco (ex.: extractImovelFieldsFromDocs, abaixo) sem duplicar a
+ *  chamada à Anthropic. */
+async function extractKeyFieldsFromOneDoc(apiKey: string, doc: { name: string; mimeType: string; buffer: Buffer }, prompt: string = EXTRACT_FIELDS_PROMPT): Promise<string | null> {
   const contentBlock = doc.mimeType === 'application/pdf'
     ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: doc.buffer.toString('base64') } }
     : { type: 'image', source: { type: 'base64', media_type: doc.mimeType, data: doc.buffer.toString('base64') } };
@@ -678,7 +681,7 @@ async function extractKeyFieldsFromOneDoc(apiKey: string, doc: { name: string; m
     body: JSON.stringify({
       model: 'claude-sonnet-5',
       max_tokens: 700,
-      messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: EXTRACT_FIELDS_PROMPT }] }],
+      messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: prompt }] }],
     }),
   });
   if (!res.ok) return null;
@@ -702,6 +705,65 @@ async function extractKeyFieldsFromOneDoc(apiKey: string, doc: { name: string; m
  */
 export async function extractKeyFieldsFromDocs(apiKey: string, docs: { name: string; mimeType: string; buffer: Buffer }[]): Promise<string | null> {
   const results = await Promise.all(docs.map((d) => extractKeyFieldsFromOneDoc(apiKey, d).catch(() => null)));
+  const ok = results.filter((r): r is string => !!r);
+  return ok.length ? ok.join('\n\n') : null;
+}
+
+/** Acha a subpasta "Imóvel" dentro da pasta do cliente — convenção da
+ *  equipe pra guardar documentação do IMÓVEL em si (certidão de ônus,
+ *  matrícula, IPTU), separada da subpasta "COMPRADOR" (documentação
+ *  PESSOAL do comprador). Por isso não dá pra reaproveitar
+ *  resolveClientDriveDocuments: quando ele acha "COMPRADOR", escaneia SÓ
+ *  ali dentro, ignorando qualquer coisa fora dela — inclusive "Imóvel". */
+export async function resolveClientImovelDocuments(
+  accountId: string,
+  leadName: string,
+  nomePastaInput?: string
+): Promise<
+  | { ok: true; docs: { name: string; mimeType: string; buffer: Buffer }[] }
+  | { ok: false; error: string }
+> {
+  const nomePasta = String(nomePastaInput || leadName || '').trim();
+  const folder = nomePasta ? await findFolderByNameUnderRoot(accountId, nomePasta) : null;
+  if (!folder) return { ok: false, error: `Não encontrei a pasta "${nomePasta}" no Drive.` };
+
+  const normalize = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  let subfolders: { id: string; name: string }[] = [];
+  try {
+    subfolders = await listFolders(accountId, folder.folderId);
+  } catch {
+    return { ok: false, error: 'Falha ao listar as subpastas do cliente no Drive.' };
+  }
+  const imovelFolder = subfolders.find((f) => normalize(f.name).includes('imovel'));
+  if (!imovelFolder) return { ok: false, error: `A pasta "${nomePasta}" não tem uma subpasta "Imóvel".` };
+
+  let allFiles: { id: string; name: string; mimeType: string; size: number }[] = [];
+  try {
+    allFiles = (await listAllFilesInFolderTree(accountId, imovelFolder.id)).filter((f) => DRIVE_DOC_TYPES.includes(f.mimeType));
+  } catch (err: any) {
+    return { ok: false, error: `Falha ao listar a subpasta "Imóvel" no Drive: ${err?.message || 'erro desconhecido'}` };
+  }
+  if (allFiles.length === 0) return { ok: false, error: 'A subpasta "Imóvel" não tem nenhum documento (foto/PDF).' };
+
+  const MAX_DOCS = 5;
+  const docs: { name: string; mimeType: string; buffer: Buffer }[] = [];
+  for (const f of allFiles.slice(0, MAX_DOCS)) {
+    try {
+      const buffer = await downloadDriveFile(accountId, f.id, f.mimeType);
+      docs.push({ name: f.name, mimeType: f.mimeType, buffer });
+    } catch { /* segue sem esse arquivo */ }
+  }
+  if (docs.length === 0) return { ok: false, error: 'Não consegui baixar nenhum documento da subpasta "Imóvel".' };
+  return { ok: true, docs };
+}
+
+const EXTRACT_IMOVEL_FIELDS_PROMPT = 'Transcreva LITERALMENTE os dados do IMÓVEL que aparecerem claramente neste documento (certidão de ônus, matrícula, IPTU etc.): Cartório de Registro de Imóveis (nome/ofício/circunscrição), Estado/UF do imóvel, número da matrícula, endereço completo do imóvel, e o nome do(s) proprietário(s) atual(is) se aparecer. Preste atenção REDOBRADA em cada dígito do número da matrícula — releia se precisar, não aproxime nem confunda um dígito com outro parecido. Se um campo não aparecer com clareza, simplesmente não o liste (nunca invente). Responda em texto simples, SEM JSON e sem comentário extra.';
+
+/** Mesmo padrão de extractKeyFieldsFromDocs (um documento por vez, em
+ *  paralelo), só que com foco nos dados do IMÓVEL em vez de dados pessoais
+ *  do cliente — ver resolveClientImovelDocuments. */
+export async function extractImovelFieldsFromDocs(apiKey: string, docs: { name: string; mimeType: string; buffer: Buffer }[]): Promise<string | null> {
+  const results = await Promise.all(docs.map((d) => extractKeyFieldsFromOneDoc(apiKey, d, EXTRACT_IMOVEL_FIELDS_PROMPT).catch(() => null)));
   const ok = results.filter((r): r is string => !!r);
   return ok.length ? ok.join('\n\n') : null;
 }
