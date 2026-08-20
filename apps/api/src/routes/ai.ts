@@ -116,6 +116,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - listar_pasta_drive / criar_pasta_drive / renomear_item_drive / mover_item_drive / excluir_item_drive: acesso completo ao Google Drive das pastas de clientes. listar_pasta_drive mostra o que tem numa pasta (do cliente, via leadId, ou qualquer uma pelo nome/ID). criar_pasta_drive cria uma pasta nova em qualquer lugar. renomear_item_drive renomeia arquivo/pasta — para "renomear a pasta do cliente para o nome completo em caixa alta" sem que o colaborador dite o texto exato, use leadId (sem itemId) e novoNome como o nome do lead em MAIÚSCULAS. mover_item_drive move um item para dentro de outra pasta. excluir_item_drive apaga (manda pra lixeira) um arquivo/pasta — é AÇÃO IRREVERSÍVEL, segue a regra de confirmação dupla abaixo.
 - auditar_pastas_contratacao: compara os leads do funil "Em contratação" com as pastas deles no Drive e aponta quais estão fora de "1. LEADS ATIVOS" (em outra pasta, ou sem pasta nenhuma). Use quando o colaborador pedir para "conferir/organizar as pastas de contratação", "ver se as pastas dos leads ativos estão certas" etc. — ver a REGRA FIXA abaixo.
 - preencher_link_drive_em_lote: quando o colaborador pedir para preencher/atualizar o campo "Pasta no Drive" (o link) de TODOS os leads de um funil de uma vez — ex.: "preenche o campo drive de todos os clientes do funil contratação com o link de cada um" — use esta ferramenta, NÃO tente fazer lead por lead na mão (é lento e pode estourar o limite de passos numa lista grande). Informe funilNome. Ela mesma resolve e preenche os que achou com certeza, e te devolve a lista dos que ficaram de fora (sem pasta encontrada ou ambíguos) para você resolver com o colaborador.
+- renomear_pastas_contratacao_em_lote: quando o colaborador pedir pra renomear/ajustar o nome das pastas do funil "Em contratação" de acordo com o card (ex.: "muda o nome das pastas do drive de acordo com o card de cada cliente") — sem parâmetro nenhum, resolve TODOS os leads do funil numa chamada só (NÃO peça pra fazer um por um, essa ferramenta já faz o lote inteiro). Renomeia sozinha, sem confirmação, só quando acha exatamente uma pasta candidata pra aquele lead; o resto fica listado pro colaborador decidir.
 - create_lead / update_lead / archive_lead / delete_lead: criar, editar, arquivar e EXCLUIR cards do funil.
 - adicionar_nota_lead: registra um comentário/observação em texto livre no histórico de um ou mais cards (aparece no timeline do lead) — use quando o colaborador pedir para "anotar", "registrar" ou "jogar essa informação nos cards" algo que é status/observação, não um campo estruturado (para dado estruturado, use update_lead com fields). Aceita várias notas de vários leads numa chamada só — se o colaborador mandar uma lista com vários clientes de uma vez, resolva TODOS os leadIds primeiro (find_lead/consultar_leads) e chame adicionar_nota_lead UMA vez com todas as notas juntas, em vez de uma chamada por cliente.
 - criar_tarefa_lead: cria uma tarefa vinculada a um card específico (aparece na aba Tarefas e no Dashboard do responsável). Use quando o colaborador pedir para "criar uma tarefa", "lembrar de ligar/cobrar/enviar algo", "agendar um follow-up" etc para um cliente. Use find_lead antes para o leadId. Se não disser a data, use hoje; se não disser a hora, use um horário razoável.
@@ -484,6 +485,11 @@ const AGENT_TOOLS = [
     input_schema: { type: 'object', properties: {
       funilNome: { type: 'string', description: 'Nome (ou trecho do nome) do funil, ex.: "contratação".' },
     }, required: ['funilNome'] },
+  },
+  {
+    name: 'renomear_pastas_contratacao_em_lote',
+    description: 'Renomeia, de uma vez, as pastas dos leads do funil "Em contratação" (dentro de "1. LEADS ATIVOS") para ficarem EXATAMENTE com o nome do card no CRM — usado quando as pastas têm sufixo/variação (ex.: pasta "FULANO DE TAL -BRB" enquanto o card é "FULANO DE TAL"). Use quando o colaborador pedir "muda o nome das pastas do drive de acordo com o card de cada cliente" ou parecido, depois de já ter visto (via auditar_pastas_contratacao ou pelo próprio nome com sufixo) que as pastas existem mas com nome diferente. NÃO peça pra fazer um por um — ela resolve todos numa chamada só. Para cada lead do funil: se a pasta já tem o nome exato, pula (não mexe); se achar exatamente UMA pasta cujo nome COMEÇA com o nome do lead (cobre sufixo tipo "-BRB", "- ITAU" etc), renomeia direto pro nome exato do lead — sem precisar de confirmação (é só renomear, reversível, não apaga nada); se não achar nenhuma ou achar mais de uma parecida, deixa de fora e lista no resultado pro colaborador resolver manualmente. Retorna o que foi renomeado, o que já estava certo, e o que ficou pendente.',
+    input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'create_lead',
@@ -2396,6 +2402,68 @@ async function executeAgentTool(
       totalLeads: leads.length,
       jaTinhamLink: jaTinham,
       preenchidos,
+      naoEncontrados,
+      ambiguos,
+      truncado: leads.length === LIMITE,
+    };
+  }
+
+  if (name === 'renomear_pastas_contratacao_em_lote') {
+    const normalize = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+
+    const pipelines = await prisma.pipeline.findMany({ where: { accountId }, include: { stages: true } });
+    const pipeline = pipelines.find((p) => normalize(p.name).includes('contratacao'));
+    if (!pipeline) return { success: false, error: 'Não encontrei o funil "Em contratação".' };
+
+    const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+    if (!conn?.rootFolderId) return { success: false, error: 'Pasta-raiz dos clientes não definida no Drive. Configure em Configurações → Google Drive.' };
+
+    const rootSubfolders = await listFolders(accountId, conn.rootFolderId);
+    const leadsAtivosFolder = rootSubfolders.find((f) => normalize(f.name).includes('leads ativos'));
+    if (!leadsAtivosFolder) return { success: false, error: 'Não encontrei a pasta "LEADS ATIVOS" na raiz do Drive.' };
+
+    const stageIds = pipeline.stages.map((s) => s.id);
+    const LIMITE = 80; // mesmo teto de segurança dos outros lotes desse funil
+    const leads = await prisma.lead.findMany({
+      where: { accountId, archived: false, pipelineId: pipeline.id, stageId: { in: stageIds } },
+      take: LIMITE,
+    });
+    if (leads.length === 0) return { success: false, error: `Nenhum lead ativo no funil "${pipeline.name}".` };
+
+    const leadsAtivosContents = (await listFolderContents(accountId, leadsAtivosFolder.id)).filter((f) => f.isFolder);
+
+    const renomeados: { de: string; para: string }[] = [];
+    const jaCorretos: string[] = [];
+    const naoEncontrados: string[] = [];
+    const ambiguos: { nome: string; opcoes: string[] }[] = [];
+
+    for (const lead of leads) {
+      const nomeAlvo = lead.name.trim();
+      const nomeAlvoNorm = normalize(nomeAlvo);
+      const exato = leadsAtivosContents.find((f) => normalize(f.name) === nomeAlvoNorm);
+      if (exato) { jaCorretos.push(nomeAlvo); continue; }
+
+      // Candidatas: pasta cujo nome COMEÇA com o nome do lead — cobre o caso
+      // real (sufixo de banco, ex.: "FULANO -BRB", "FULANO - ITAU").
+      const candidatas = leadsAtivosContents.filter((f) => normalize(f.name).startsWith(nomeAlvoNorm));
+      if (candidatas.length === 0) { naoEncontrados.push(nomeAlvo); continue; }
+      if (candidatas.length > 1) { ambiguos.push({ nome: nomeAlvo, opcoes: candidatas.map((c) => c.name) }); continue; }
+
+      try {
+        await renameFile(accountId, candidatas[0].id, nomeAlvo);
+        renomeados.push({ de: candidatas[0].name, para: nomeAlvo });
+      } catch {
+        naoEncontrados.push(nomeAlvo); // falhou ao renomear — trata como pendente, não trava o lote
+      }
+    }
+
+    return {
+      success: true,
+      funil: pipeline.name,
+      pastaAlvo: leadsAtivosFolder.name,
+      totalLeads: leads.length,
+      renomeados,
+      jaCorretos,
       naoEncontrados,
       ambiguos,
       truncado: leads.length === LIMITE,
