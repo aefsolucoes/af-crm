@@ -394,6 +394,14 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
           continue;
         }
 
+        // Cliente apagou (revoke) uma mensagem que ele mesmo mandou.
+        const revoke = getRevokeInfo(msg);
+        if (revoke) {
+          await applyMessageRevoke(revoke.targetId).catch(err =>
+            console.error('[Baileys] Erro ao processar apagar (revoke) recebido:', err));
+          continue;
+        }
+
         // Mensagens do próprio número (fromMe): se saíram do CRM, ignoramos o
         // eco (já estão no banco). Se saíram do celular, entram como OUTBOUND
         // para espelhar a conversa completa.
@@ -411,6 +419,25 @@ export async function startQRConnection(numberId: string, accountId: string): Pr
           await processIncomingContactCard(msg, accountId, numberId, sock, selfChat);
         } else {
           await processIncomingMessage(msg, accountId, numberId, sock, selfChat);
+        }
+      }
+    });
+
+    // Reação (emoji) recebida numa mensagem — do cliente, ou eco de uma
+    // reação minha mandada de outro aparelho. `reaction.key` é a mensagem
+    // ALVO (a que recebeu a reação); a chave externa do evento identifica
+    // quem reagiu (fromMe). Best-effort: se a lib mudar o formato, só essa
+    // funcionalidade específica para de funcionar, o resto do fluxo segue.
+    sock.ev.on('messages.reaction', async (events: any[]) => {
+      for (const ev of events) {
+        try {
+          const targetId = ev.reaction?.key?.id || ev.key?.id;
+          if (!targetId) continue;
+          const emoji = ev.reaction?.text || '';
+          const fromMe = ev.reaction?.key?.fromMe ?? ev.key?.fromMe ?? false;
+          await applyMessageReaction(targetId, emoji, fromMe);
+        } catch (err) {
+          console.error('[Baileys] Erro ao processar reação recebida:', err);
         }
       }
     });
@@ -532,6 +559,18 @@ function getEditInfo(msg: any): { targetId: string; newText: string } | null {
   if (proto && proto.editedMessage && proto.key?.id) {
     const newText = extractText({ message: proto.editedMessage });
     return { targetId: proto.key.id, newText };
+  }
+  return null;
+}
+
+/** Mesmo padrão de getEditInfo, mas pra quando o CLIENTE apaga (revoke) uma
+ *  mensagem que ele mesmo mandou — chega como protocolMessage tipo REVOKE
+ *  (0), sem editedMessage (isso já é tratado por getEditInfo, roda antes no
+ *  loop de messages.upsert). */
+function getRevokeInfo(msg: any): { targetId: string } | null {
+  const proto = msg.message?.protocolMessage;
+  if (proto && proto.type === 0 && proto.key?.id && !proto.editedMessage) {
+    return { targetId: proto.key.id };
   }
   return null;
 }
@@ -796,6 +835,30 @@ async function applyMessageEdit(targetId: string, newText: string) {
   const updated = await prisma.message.update({ where: { id: existing.id }, data: { content: newText } });
   globalIO?.to(`lead:${existing.leadId}`).emit('message_edited', { id: existing.id, content: newText });
   globalIO?.to(`lead:${existing.leadId}`).emit('new_message', updated);
+}
+
+/** Cliente apagou (revoke) uma mensagem que ele mesmo mandou — espelha como
+ *  "apagar local" no CRM também (mesmo campo/evento que POST /:id/delete usa
+ *  pro nosso próprio apagar, ver routes/messages.ts). */
+async function applyMessageRevoke(targetId: string) {
+  const existing = await prisma.message.findFirst({ where: { externalId: targetId }, select: { id: true, leadId: true, deleted: true } });
+  if (!existing || existing.deleted) return;
+  await prisma.message.update({ where: { id: existing.id }, data: { deleted: true, deletedAt: new Date() } });
+  globalIO?.to(`lead:${existing.leadId}`).emit('message_deleted', { id: existing.id });
+}
+
+/** Reação recebida (do cliente, ou eco de uma reação minha mandada de outro
+ *  aparelho) — acrescenta/substitui a entrada do reator no array de
+ *  reactions da mensagem alvo. `fromMe` indica quem reagiu, não quem mandou
+ *  a mensagem original. text vazio = reator removeu a própria reação. */
+async function applyMessageReaction(targetId: string, emoji: string, fromMe: boolean) {
+  const existing = await prisma.message.findFirst({ where: { externalId: targetId }, select: { id: true, leadId: true, reactions: true } });
+  if (!existing) return;
+  const current = (Array.isArray(existing.reactions) ? existing.reactions : []) as { emoji: string; fromMe: boolean; at: string }[];
+  const withoutReactor = current.filter((r) => r.fromMe !== fromMe);
+  const next = emoji ? [...withoutReactor, { emoji, fromMe, at: new Date().toISOString() }] : withoutReactor;
+  await prisma.message.update({ where: { id: existing.id }, data: { reactions: next as any } });
+  globalIO?.to(`lead:${existing.leadId}`).emit('message_reaction', { id: existing.id, reactions: next });
 }
 
 /**
@@ -1306,6 +1369,46 @@ export async function sendBaileysMedia(
   } catch (err) {
     console.error('[Baileys] Erro ao enviar mídia:', err);
     return null;
+  }
+}
+
+/** Resultado de uma ação (apagar/reagir) — mais simples que BaileysSendOutcome
+ *  porque não devolve id nenhum, só sucesso/erro. */
+export type BaileysActionOutcome = { ok: true } | { ok: false; error: string };
+
+/**
+ * "Apagar pra todos" de verdade (revoke) — só funciona pra mensagem que EU
+ * mandei (fromMe: true); o WhatsApp não deixa apagar mensagem de quem
+ * recebeu, nem pelo app oficial. Melhor esforço: quem chama decide se o
+ * apagar local do CRM segue mesmo se isso falhar.
+ */
+export async function sendBaileysDelete(to: string, externalId: string, fromMe: boolean, numberId: string): Promise<BaileysActionOutcome> {
+  const conn = connections.get(numberId);
+  if (!conn?.sock || conn.status !== 'connected') return { ok: false, error: 'not_connected' };
+  try {
+    const jid = toWhatsAppJid(to);
+    const key = { remoteJid: jid, id: externalId, fromMe };
+    await conn.sock.sendMessage(jid, { delete: key });
+    return { ok: true };
+  } catch (err: any) {
+    console.error('[Baileys] Erro ao apagar (revoke):', err);
+    return { ok: false, error: err?.message || 'error' };
+  }
+}
+
+/** Reage com um emoji a uma mensagem (minha ou do contato) — text: '' remove
+ *  a reação. Mesma reconstrução de key do sendBaileysDelete acima. */
+export async function sendBaileysReaction(to: string, externalId: string, fromMe: boolean, emoji: string, numberId: string): Promise<BaileysActionOutcome> {
+  const conn = connections.get(numberId);
+  if (!conn?.sock || conn.status !== 'connected') return { ok: false, error: 'not_connected' };
+  try {
+    const jid = toWhatsAppJid(to);
+    const key = { remoteJid: jid, id: externalId, fromMe };
+    await conn.sock.sendMessage(jid, { react: { text: emoji, key } });
+    return { ok: true };
+  } catch (err: any) {
+    console.error('[Baileys] Erro ao reagir:', err);
+    return { ok: false, error: err?.message || 'error' };
   }
 }
 

@@ -1,0 +1,8 @@
+-- AlterTable
+ALTER TABLE "Message"
+  ADD COLUMN "deleted" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN "deletedAt" TIMESTAMP(3),
+  ADD COLUMN "reactions" JSONB,
+  ADD COLUMN "pinned" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN "pinnedAt" TIMESTAMP(3),
+  ADD COLUMN "starred" BOOLEAN NOT NULL DEFAULT false;

@@ -344,6 +344,21 @@ model Message {
   replyToExternalId     String?
   replyToContent        String?
   replyToSender         String?
+  // Apagar (menu estilo WhatsApp): SEMPRE um "apagar pra mim" local (esconde
+  // o conteúdo no CRM) — além disso, quando é minha (OUTBOUND) e foi mandada
+  // pelo QR (Baileys), a rota tenta também um "apagar pra todos" de verdade
+  // via revoke. Ver POST /api/messages/:id/delete.
+  deleted               Boolean             @default(false)
+  deletedAt             DateTime?
+  // Reações (emoji) — array de {emoji, fromMe, senderName?, at}. Cabe grupo
+  // (vários reagindo) e 1:1. Sincroniza de verdade com o WhatsApp nos dois
+  // sentidos (ver POST /:id/react e os listeners de recebimento).
+  reactions             Json?
+  // Fixar/Favoritar — só local, o WhatsApp de verdade também não sincroniza
+  // isso via API (é um estado do cliente/app, não da conversa em si).
+  pinned                Boolean             @default(false)
+  pinnedAt              DateTime?
+  starred               Boolean             @default(false)
 }
 
 // Documento/imagem recebido no WhatsApp (guardado até ir para o Drive)

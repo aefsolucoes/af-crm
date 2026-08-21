@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone } from '../services/message.service';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone, deleteMessage, reactToMessage, setMessagePinned, setMessageStarred } from '../services/message.service';
 import { downloadDriveFile } from '../services/google.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 
@@ -146,6 +146,63 @@ router.post('/:id/forward', async (req: AuthRequest, res: Response) => {
     res.status(201).json(result.message);
   } catch {
     res.status(500).json({ error: 'Erro ao encaminhar a mensagem' });
+  }
+});
+
+// Menu de mensagem estilo WhatsApp: apagar/reagir/fixar/favoritar — mesmo
+// gate de permissão das outras ações de escrever na conversa.
+router.post('/:id/delete', async (req: AuthRequest, res: Response) => {
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para apagar mensagens.' });
+    const io = req.app.get('io');
+    const result = await deleteMessage({ accountId: req.user!.accountId, messageId: req.params.id, io });
+    if (!result.success) return res.status(400).json({ error: result.error });
+    res.json(result.message);
+  } catch {
+    res.status(500).json({ error: 'Erro ao apagar a mensagem' });
+  }
+});
+
+router.post('/:id/react', async (req: AuthRequest, res: Response) => {
+  const { emoji } = req.body as { emoji?: string };
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para reagir a mensagens.' });
+    const io = req.app.get('io');
+    const result = await reactToMessage({ accountId: req.user!.accountId, messageId: req.params.id, emoji: String(emoji || ''), io });
+    if (!result.success) return res.status(400).json({ error: result.error });
+    res.json(result.message);
+  } catch {
+    res.status(500).json({ error: 'Erro ao reagir à mensagem' });
+  }
+});
+
+router.post('/:id/pin', async (req: AuthRequest, res: Response) => {
+  const { pinned } = req.body as { pinned?: boolean };
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para fixar mensagens.' });
+    const io = req.app.get('io');
+    const result = await setMessagePinned({ accountId: req.user!.accountId, messageId: req.params.id, pinned: !!pinned, io });
+    if (!result.success) return res.status(400).json({ error: result.error });
+    res.json(result.message);
+  } catch {
+    res.status(500).json({ error: 'Erro ao fixar a mensagem' });
+  }
+});
+
+router.post('/:id/star', async (req: AuthRequest, res: Response) => {
+  const { starred } = req.body as { starred?: boolean };
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para favoritar mensagens.' });
+    const io = req.app.get('io');
+    const result = await setMessageStarred({ accountId: req.user!.accountId, messageId: req.params.id, starred: !!starred, io });
+    if (!result.success) return res.status(400).json({ error: result.error });
+    res.json(result.message);
+  } catch {
+    res.status(500).json({ error: 'Erro ao favoritar a mensagem' });
   }
 });
 

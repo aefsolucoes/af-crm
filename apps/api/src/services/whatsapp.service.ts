@@ -255,6 +255,47 @@ export async function sendWhatsAppMessage(
   }
 }
 
+/** Reage com um emoji a uma mensagem (nossa ou do cliente) — `emoji: ''`
+ *  remove a reação. Só reage, não manda mensagem nova nenhuma. `wamid` é o
+ *  id (com prefixo "wamid.") da mensagem alvo, sempre no formato que a Meta
+ *  usa nesse canal. */
+export async function sendWhatsAppReaction(
+  to: string,
+  wamid: string,
+  emoji: string,
+  accountId: string,
+  departmentId?: string | null
+): Promise<{ success: boolean; error?: string }> {
+  const config = await getWhatsAppConfig(accountId, departmentId);
+  if (!config) return { success: false, error: 'WhatsApp não configurado.' };
+  if (!config.active) return { success: false, error: 'WhatsApp inativo.' };
+
+  const phone = normalizeBrazilianWhatsAppPhone(to);
+  const url = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: phone,
+        type: 'reaction',
+        reaction: { message_id: wamid, emoji },
+      }),
+    });
+    const json = await res.json() as { error?: { message: string; code: number } };
+    if (!res.ok || json.error) {
+      console.error(`[WhatsApp] Erro ao reagir para "${phone}":`, json.error);
+      return { success: false, error: parseGraphError(json, res, phone) };
+    }
+    return { success: true };
+  } catch (err) {
+    console.error('[WhatsApp] Fetch error (reação):', err);
+    return { success: false, error: 'Falha na conexão com a API do WhatsApp' };
+  }
+}
+
 /** Envia uma mensagem com até 3 botões de resposta rápida (interactive reply
  *  buttons) — usado pelo SalesBot (ex.: "Sim"/"Não" clicáveis). Diferente de
  *  template, NÃO precisa aprovação da Meta (é uma mensagem de texto comum
@@ -554,8 +595,35 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       const buttonReplyTitle: string | undefined = msg.type === 'interactive'
         ? (msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title)
         : undefined;
+
+      // Reação (emoji) do cliente numa mensagem existente — não vira Message
+      // nova, só atualiza a mensagem alvo. Precisa vir ANTES do filtro de
+      // descarte abaixo (reaction não é texto/botão/mídia, cairia fora sem isso).
+      if (msg.type === 'reaction') {
+        const targetWamid = msg.reaction?.message_id as string | undefined;
+        const emoji = (msg.reaction?.emoji as string | undefined) || '';
+        if (targetWamid) {
+          try {
+            const existing = await prisma.message.findFirst({
+              where: { externalId: targetWamid, lead: { accountId } },
+              select: { id: true, leadId: true, reactions: true },
+            });
+            if (existing) {
+              const current = (Array.isArray(existing.reactions) ? existing.reactions : []) as { emoji: string; fromMe: boolean; at: string }[];
+              const withoutReactor = current.filter((r) => r.fromMe); // reação do cliente: sempre fromMe:false
+              const next = emoji ? [...withoutReactor, { emoji, fromMe: false, at: new Date().toISOString() }] : withoutReactor;
+              await prisma.message.update({ where: { id: existing.id }, data: { reactions: next as any } });
+              io.to(`lead:${existing.leadId}`).emit('message_reaction', { id: existing.id, reactions: next });
+            }
+          } catch (err) {
+            console.error('[WhatsApp] Erro ao processar reação recebida:', err);
+          }
+        }
+        continue;
+      }
+
       // Processa texto, clique em botão, OU mídia suportada (imagem/áudio/
-      // vídeo/documento/sticker). Ignora location, contacts, reaction, etc.
+      // vídeo/documento/sticker). Ignora location, contacts, etc.
       if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo) continue;
 
       const from = msg.from as string; // e.g. "5561999990001"

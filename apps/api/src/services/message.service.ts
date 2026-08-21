@@ -1,6 +1,6 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
-import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage } from './whatsapp.service';
-import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds } from './baileys.service';
+import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage, sendWhatsAppReaction } from './whatsapp.service';
+import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds, sendBaileysDelete, sendBaileysReaction } from './baileys.service';
 import { downloadDriveFile } from './google.service';
 import { normalizeClientName } from '../lib/text';
 
@@ -524,6 +524,87 @@ export async function forwardMessage(params: {
   // no ato — só a etiqueta "Encaminhada de X" aparece ao reabrir/recarregar.
 
   return { success: true, message: patched };
+}
+
+type MessageActionIO = { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
+type MessageActionResult = { success: true; message: any } | { success: false; error: string };
+
+/** "Apagar pra mim" (local, sempre) — e, melhor esforço, "apagar pra todos"
+ *  de verdade quando é minha (OUTBOUND) e foi mandada pelo QR (Baileys). API
+ *  Oficial e mensagens recebidas só apagam local (o WhatsApp de verdade
+ *  também não deixa forçar apagar do celular de quem recebeu). */
+export async function deleteMessage(params: { accountId: string; messageId: string; io?: MessageActionIO }): Promise<MessageActionResult> {
+  const { accountId, messageId, io } = params;
+  const msg = await prisma.message.findUnique({
+    where: { id: messageId },
+    include: { lead: { select: { id: true, accountId: true, contact: true } } },
+  });
+  if (!msg || msg.lead.accountId !== accountId) return { success: false, error: 'Mensagem não encontrada' };
+  if (msg.deleted) return { success: true, message: msg };
+
+  if (msg.direction === 'OUTBOUND' && msg.whatsappNumberId && msg.externalId && !msg.externalId.startsWith('wamid')) {
+    const phone = msg.lead.contact?.whatsappPhone || msg.lead.contact?.phone;
+    if (phone) {
+      const outcome = await sendBaileysDelete(phone, msg.externalId, true, msg.whatsappNumberId);
+      if (!outcome.ok) console.warn(`[Messages] "Apagar pra todos" falhou, seguindo só com o apagar local: ${outcome.error}`);
+    }
+  }
+
+  const updated = await prisma.message.update({ where: { id: messageId }, data: { deleted: true, deletedAt: new Date() } });
+  if (io) io.to(`lead:${msg.leadId}`).emit('message_deleted', { id: messageId });
+  return { success: true, message: updated };
+}
+
+/** Reage (ou remove a própria reação, emoji='') a uma mensagem — minha ou do
+ *  cliente, dos dois canais. Sempre grava local; a chamada de verdade pro
+ *  WhatsApp é melhor esforço (não falha a operação toda se a API recusar). */
+export async function reactToMessage(params: { accountId: string; messageId: string; emoji: string; io?: MessageActionIO }): Promise<MessageActionResult> {
+  const { accountId, messageId, emoji, io } = params;
+  const msg = await prisma.message.findUnique({
+    where: { id: messageId },
+    include: { lead: { select: { id: true, accountId: true, contact: true, pipeline: { select: { departmentId: true } } } } },
+  });
+  if (!msg || msg.lead.accountId !== accountId) return { success: false, error: 'Mensagem não encontrada' };
+  if (!msg.externalId) return { success: false, error: 'Essa mensagem não pode receber reação.' };
+
+  const phone = msg.lead.contact?.whatsappPhone || msg.lead.contact?.phone;
+  const isApiOficial = msg.externalId.startsWith('wamid');
+  if (phone) {
+    if (isApiOficial) {
+      const outcome = await sendWhatsAppReaction(phone, msg.externalId, emoji, accountId, msg.lead.pipeline?.departmentId ?? null);
+      if (!outcome.success) console.warn(`[Messages] Reagir via API Oficial falhou: ${outcome.error}`);
+    } else if (msg.whatsappNumberId) {
+      const outcome = await sendBaileysReaction(phone, msg.externalId, msg.direction === 'OUTBOUND', emoji, msg.whatsappNumberId);
+      if (!outcome.ok) console.warn(`[Messages] Reagir via Baileys falhou: ${outcome.error}`);
+    }
+  }
+
+  const current = (Array.isArray(msg.reactions) ? msg.reactions : []) as { emoji: string; fromMe: boolean; at: string }[];
+  const withoutMine = current.filter((r) => !r.fromMe);
+  const next = emoji ? [...withoutMine, { emoji, fromMe: true, at: new Date().toISOString() }] : withoutMine;
+  const updated = await prisma.message.update({ where: { id: messageId }, data: { reactions: next as any } });
+  if (io) io.to(`lead:${msg.leadId}`).emit('message_reaction', { id: messageId, reactions: next });
+  return { success: true, message: updated };
+}
+
+/** Fixar/Favoritar — só local, o WhatsApp de verdade também não sincroniza
+ *  isso via API (é estado do app/cliente, não da conversa em si). */
+export async function setMessagePinned(params: { accountId: string; messageId: string; pinned: boolean; io?: MessageActionIO }): Promise<MessageActionResult> {
+  const { accountId, messageId, pinned, io } = params;
+  const msg = await prisma.message.findUnique({ where: { id: messageId }, include: { lead: { select: { accountId: true } } } });
+  if (!msg || msg.lead.accountId !== accountId) return { success: false, error: 'Mensagem não encontrada' };
+  const updated = await prisma.message.update({ where: { id: messageId }, data: { pinned, pinnedAt: pinned ? new Date() : null } });
+  if (io) io.to(`lead:${msg.leadId}`).emit('message_pinned', { id: messageId, pinned });
+  return { success: true, message: updated };
+}
+
+export async function setMessageStarred(params: { accountId: string; messageId: string; starred: boolean; io?: MessageActionIO }): Promise<MessageActionResult> {
+  const { accountId, messageId, starred, io } = params;
+  const msg = await prisma.message.findUnique({ where: { id: messageId }, include: { lead: { select: { accountId: true } } } });
+  if (!msg || msg.lead.accountId !== accountId) return { success: false, error: 'Mensagem não encontrada' };
+  const updated = await prisma.message.update({ where: { id: messageId }, data: { starred } });
+  if (io) io.to(`lead:${msg.leadId}`).emit('message_starred', { id: messageId, starred });
+  return { success: true, message: updated };
 }
 
 export async function markMessagesRead(leadId: string) {
