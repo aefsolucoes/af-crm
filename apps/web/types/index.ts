@@ -184,6 +184,12 @@ export interface Message {
   replyToExternalId?: string | null;
   replyToContent?: string | null;
   replyToSender?: string | null;
+  /** Menu de mensagem estilo WhatsApp — apagar/reagir/fixar/favoritar. */
+  deleted?: boolean;
+  reactions?: { emoji: string; fromMe: boolean; at: string }[] | null;
+  pinned?: boolean;
+  pinnedAt?: string | null;
+  starred?: boolean;
 }
 
 export interface WhatsAppNumber {

@@ -4,13 +4,14 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus } from 'lucide-react';
+import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { Avatar } from '@/components/ui/avatar';
 import { AttachmentView } from '@/components/inbox/message-attachment';
 import { MessageTemplate, CATEGORY_META, fillTemplate } from '@/lib/templates';
+import { MessageMenu } from '@/components/inbox/message-menu';
 
 // Cor estável por remetente em grupos (estilo WhatsApp: mesma pessoa, mesma cor).
 const SENDER_COLORS = ['#e542a3', '#00a884', '#ff7e00', '#6a5cff', '#0ea5e9', '#e0453e', '#7c9c00', '#b26bff'];
@@ -368,6 +369,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // Mapa de status atualizado via socket: messageId → status
   const [statusMap, setStatusMap] = useState<Record<string, string>>({});
   const [statusErrorMap, setStatusErrorMap] = useState<Record<string, string | null>>({});
+  // Menu de mensagem estilo WhatsApp — mesmo padrão de mapa por id que o
+  // status já usa, atualizado tanto pela própria ação (resposta da API)
+  // quanto por eventos de socket (outra aba, ou o cliente reagindo/apagando
+  // do lado dele).
+  const [deletedMap, setDeletedMap] = useState<Record<string, boolean>>({});
+  const [reactionsMap, setReactionsMap] = useState<Record<string, { emoji: string; fromMe: boolean; at: string }[]>>({});
+  const [pinnedMap, setPinnedMap] = useState<Record<string, boolean>>({});
+  const [starredMap, setStarredMap] = useState<Record<string, boolean>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -413,11 +422,30 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       if (id === leadId) setAiActive(active);
     });
 
+    // Menu de mensagem estilo WhatsApp — apagar/reagir/fixar/favoritar,
+    // vindo da própria ação (outra aba) ou do cliente (reação/apagar dele).
+    socket.on('message_deleted', ({ id }: { id: string }) => {
+      setDeletedMap(prev => ({ ...prev, [id]: true }));
+    });
+    socket.on('message_reaction', ({ id, reactions }: { id: string; reactions: { emoji: string; fromMe: boolean; at: string }[] }) => {
+      setReactionsMap(prev => ({ ...prev, [id]: reactions }));
+    });
+    socket.on('message_pinned', ({ id, pinned }: { id: string; pinned: boolean }) => {
+      setPinnedMap(prev => ({ ...prev, [id]: pinned }));
+    });
+    socket.on('message_starred', ({ id, starred }: { id: string; starred: boolean }) => {
+      setStarredMap(prev => ({ ...prev, [id]: starred }));
+    });
+
     return () => {
       socket.emit('leave_lead', leadId);
       socket.off('new_message');
       socket.off('message_status');
       socket.off('lead_ai_toggled');
+      socket.off('message_deleted');
+      socket.off('message_reaction');
+      socket.off('message_pinned');
+      socket.off('message_starred');
     };
   }, [leadId, onNewMessage]);
 
@@ -726,6 +754,28 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         )}
       </div>
 
+      {/* Fixadas — faixa fixa no topo, fora do scroll das mensagens (igual o WhatsApp) */}
+      {(() => {
+        const pinnedMessages = messages
+          .filter((m) => pinnedMap[m.id] ?? m.pinned)
+          .sort((a, b) => new Date(a.pinnedAt || 0).getTime() - new Date(b.pinnedAt || 0).getTime());
+        if (pinnedMessages.length === 0) return null;
+        return (
+          <div className="relative z-10 bg-[#182229] border-t border-b border-[#222e35] max-h-24 overflow-y-auto scrollbar-thin">
+            {pinnedMessages.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => scrollToQuoted(m.externalId)}
+                className="w-full flex items-center gap-2 px-4 py-1.5 text-left hover:bg-[#202c33] transition-colors"
+              >
+                <Pin size={11} className="text-[#00a884] flex-shrink-0" />
+                <span className="text-xs text-[#e9edef]/80 truncate">{m.content || '📎 Anexo'}</span>
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* Timeline unificado: mensagens + eventos de fluxo */}
       <div className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
         {grouped.map(({ date, items }) => (
@@ -781,17 +831,26 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               const prevIsMsg = prevItem?.kind === 'message';
               const showTail = !prevIsMsg || (prevItem.data as Message).direction !== msg.direction;
               const liveStatus = statusMap[msg.id] || (msg as any).status;
+              const liveDeleted = deletedMap[msg.id] ?? msg.deleted;
+              const liveReactions = reactionsMap[msg.id] ?? msg.reactions ?? [];
+              const livePinned = pinnedMap[msg.id] ?? msg.pinned;
+              const liveStarred = starredMap[msg.id] ?? msg.starred;
+              const menuProps = {
+                message: { ...msg, pinned: livePinned, starred: liveStarred },
+                isOut,
+                onReply: () => openReply(msg),
+                onForward: () => openForward(msg),
+                onDeleted: (id: string) => setDeletedMap(prev => ({ ...prev, [id]: true })),
+                onReaction: (id: string, reactions: { emoji: string; fromMe: boolean; at: string }[]) => setReactionsMap(prev => ({ ...prev, [id]: reactions })),
+                onPinned: (id: string, pinned: boolean) => setPinnedMap(prev => ({ ...prev, [id]: pinned })),
+                onStarred: (id: string, starred: boolean) => setStarredMap(prev => ({ ...prev, [id]: starred })),
+              };
 
               return (
                 <div key={msg.id} className={cn('group flex items-center gap-1 mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
-                  {isOut && (
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                      <button onClick={() => openReply(msg)} title="Responder" className="text-[#8696a0] hover:text-[#e9edef]">
-                        <Reply size={14} />
-                      </button>
-                      <button onClick={() => openForward(msg)} title="Encaminhar" className="text-[#8696a0] hover:text-[#e9edef]">
-                        <Forward size={14} />
-                      </button>
+                  {isOut && !liveDeleted && (
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                      <MessageMenu {...menuProps} />
                     </div>
                   )}
                   <div
@@ -806,125 +865,134 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                     )}
                     style={{ backgroundColor: isOut ? '#005c4b' : '#202c33' }}
                   >
-                    {msg.forwardedFromLeadName && (
-                      <p className="text-[10px] italic text-[#e9edef]/55 mb-0.5 flex items-center gap-1">
-                        <Forward size={10} /> Encaminhada de {msg.forwardedFromLeadName}
-                      </p>
-                    )}
-                    {/* Citação: resposta a uma mensagem específica desta conversa */}
-                    {msg.replyToContent && (
-                      <button
-                        type="button"
-                        onClick={() => scrollToQuoted(msg.replyToExternalId)}
-                        className="block w-full text-left mb-1 pl-2 py-1 border-l-2 border-[#00a884]/70 bg-black/15 rounded-r-md hover:bg-black/25 transition-colors"
-                      >
-                        <p className="text-[11px] font-medium text-[#00a884]">{msg.replyToSender || 'Mensagem'}</p>
-                        <p className="text-xs text-[#e9edef]/70 truncate">{msg.replyToContent}</p>
-                      </button>
-                    )}
-                    {isOut && (() => {
-                      // "via {apelido do número} · {quem enviou}". Mensagens da API
-                      // Oficial (id começa com "wamid") não têm whatsappNumberId — não
-                      // dá pra cair no "último número QR usado" (isso rotulava errado,
-                      // como se tivesse saído pelo QR). O apelido só cai no "último
-                      // número" quando a MESMA mensagem realmente não tem essa info.
-                      const isApiMsg = typeof msg.externalId === 'string' && msg.externalId.startsWith('wamid');
-                      const numLabel = msg.whatsappNumberId
-                        ? numberLabels[msg.whatsappNumberId]
-                        : isApiMsg
-                        ? 'API Oficial'
-                        : numberLabels[lastRouted || ''];
-                      const sender = (msg as any).sentBy?.name as string | undefined;
-                      if (!numLabel && !sender) return null;
-                      return (
-                        <p className="text-[10px] font-medium text-[#e9edef]/55 mb-0.5">
-                          {[numLabel && `via ${numLabel}`, sender].filter(Boolean).join(' · ')}
-                        </p>
-                      );
-                    })()}
-                    {/* Em grupo: nome de quem enviou, acima da mensagem (estilo WhatsApp). */}
-                    {!isOut && (msg as any).senderName && (
-                      <p className="text-[11px] font-semibold mb-0.5" style={{ color: groupSenderColor((msg as any).senderName) }}>
-                        {(msg as any).senderName}
-                      </p>
-                    )}
-                    {msg.attachments && msg.attachments.length > 0 && (() => {
-                      // Áudio/vídeo usam o player NATIVO do navegador, que já tem
-                      // seus próprios controles (volume, menu "⋮") colados na borda
-                      // inferior direita — bem onde fica o carimbo de hora/check da
-                      // mensagem. Sem esse respiro extra, um ficava em cima do
-                      // outro e o usuário confundia o ícone de volume com outra
-                      // coisa. Outros tipos (imagem, documento) já têm espaço de
-                      // sobra abaixo e não precisam disso.
-                      const needsBreathingRoom = msg.attachments!.some(
-                        (a) => a.mimeType.startsWith('audio/') || a.mimeType.startsWith('video/')
-                      );
-                      return (
-                        <div className={cn('flex flex-col gap-1.5 mb-1', needsBreathingRoom && 'mb-5')}>
-                          {msg.attachments!.map((att) => (
-                            <AttachmentView key={att.id} att={att} />
-                          ))}
-                        </div>
-                      );
-                    })()}
-                    {/* Contato compartilhado no WhatsApp — card com ações rápidas */}
-                    {(msg.sharedContactName || msg.sharedContactPhone) && (
-                      <div className="min-w-[220px] mb-1">
-                        <div className="flex items-center gap-2.5 bg-black/15 rounded-xl p-2.5">
-                          <div className="w-9 h-9 rounded-full bg-[#2a3942] flex items-center justify-center flex-shrink-0">
-                            <User size={16} className="text-[#8696a0]" />
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-[#e9edef] truncate">{msg.sharedContactName || 'Contato sem nome'}</p>
-                            {msg.sharedContactPhone && <p className="text-xs text-[#8696a0]">{msg.sharedContactPhone}</p>}
-                          </div>
-                        </div>
-                        {msg.sharedContactPhone && (
-                          <div className="flex gap-1.5 mt-1.5">
-                            <button
-                              type="button"
-                              onClick={() => handleContactCardAction(msg, 'talk')}
-                              disabled={resolvingContact === msg.id}
-                              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-[#00a884] text-[#111b21] px-2.5 py-1.5 rounded-lg hover:bg-[#02c99b] transition-colors disabled:opacity-50"
-                            >
-                              {resolvingContact === msg.id ? <Loader2 size={12} className="animate-spin" /> : <MessageCircle size={12} />} Conversar
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleContactCardAction(msg, 'create')}
-                              disabled={resolvingContact === msg.id}
-                              className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-[#2a3942] text-[#e9edef] px-2.5 py-1.5 rounded-lg hover:bg-[#33434c] transition-colors disabled:opacity-50"
-                            >
-                              <UserPlus size={12} /> Criar lead
-                            </button>
+                    {liveDeleted ? (
+                      <p className="text-sm italic text-[#e9edef]/50 pr-12">🚫 Mensagem apagada</p>
+                    ) : (
+                      <>
+                        {msg.forwardedFromLeadName && (
+                          <p className="text-[10px] italic text-[#e9edef]/55 mb-0.5 flex items-center gap-1">
+                            <Forward size={10} /> Encaminhada de {msg.forwardedFromLeadName}
+                          </p>
+                        )}
+                        {/* Citação: resposta a uma mensagem específica desta conversa */}
+                        {msg.replyToContent && (
+                          <button
+                            type="button"
+                            onClick={() => scrollToQuoted(msg.replyToExternalId)}
+                            className="block w-full text-left mb-1 pl-2 py-1 border-l-2 border-[#00a884]/70 bg-black/15 rounded-r-md hover:bg-black/25 transition-colors"
+                          >
+                            <p className="text-[11px] font-medium text-[#00a884]">{msg.replyToSender || 'Mensagem'}</p>
+                            <p className="text-xs text-[#e9edef]/70 truncate">{msg.replyToContent}</p>
+                          </button>
+                        )}
+                        {isOut && (() => {
+                          // "via {apelido do número} · {quem enviou}". Mensagens da API
+                          // Oficial (id começa com "wamid") não têm whatsappNumberId — não
+                          // dá pra cair no "último número QR usado" (isso rotulava errado,
+                          // como se tivesse saído pelo QR). O apelido só cai no "último
+                          // número" quando a MESMA mensagem realmente não tem essa info.
+                          const isApiMsg = typeof msg.externalId === 'string' && msg.externalId.startsWith('wamid');
+                          const numLabel = msg.whatsappNumberId
+                            ? numberLabels[msg.whatsappNumberId]
+                            : isApiMsg
+                            ? 'API Oficial'
+                            : numberLabels[lastRouted || ''];
+                          const sender = (msg as any).sentBy?.name as string | undefined;
+                          if (!numLabel && !sender) return null;
+                          return (
+                            <p className="text-[10px] font-medium text-[#e9edef]/55 mb-0.5">
+                              {[numLabel && `via ${numLabel}`, sender].filter(Boolean).join(' · ')}
+                            </p>
+                          );
+                        })()}
+                        {/* Em grupo: nome de quem enviou, acima da mensagem (estilo WhatsApp). */}
+                        {!isOut && (msg as any).senderName && (
+                          <p className="text-[11px] font-semibold mb-0.5" style={{ color: groupSenderColor((msg as any).senderName) }}>
+                            {(msg as any).senderName}
+                          </p>
+                        )}
+                        {msg.attachments && msg.attachments.length > 0 && (() => {
+                          // Áudio/vídeo usam o player NATIVO do navegador, que já tem
+                          // seus próprios controles (volume, menu "⋮") colados na borda
+                          // inferior direita — bem onde fica o carimbo de hora/check da
+                          // mensagem. Sem esse respiro extra, um ficava em cima do
+                          // outro e o usuário confundia o ícone de volume com outra
+                          // coisa. Outros tipos (imagem, documento) já têm espaço de
+                          // sobra abaixo e não precisam disso.
+                          const needsBreathingRoom = msg.attachments!.some(
+                            (a) => a.mimeType.startsWith('audio/') || a.mimeType.startsWith('video/')
+                          );
+                          return (
+                            <div className={cn('flex flex-col gap-1.5 mb-1', needsBreathingRoom && 'mb-5')}>
+                              {msg.attachments!.map((att) => (
+                                <AttachmentView key={att.id} att={att} />
+                              ))}
+                            </div>
+                          );
+                        })()}
+                        {/* Contato compartilhado no WhatsApp — card com ações rápidas */}
+                        {(msg.sharedContactName || msg.sharedContactPhone) && (
+                          <div className="min-w-[220px] mb-1">
+                            <div className="flex items-center gap-2.5 bg-black/15 rounded-xl p-2.5">
+                              <div className="w-9 h-9 rounded-full bg-[#2a3942] flex items-center justify-center flex-shrink-0">
+                                <User size={16} className="text-[#8696a0]" />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-[#e9edef] truncate">{msg.sharedContactName || 'Contato sem nome'}</p>
+                                {msg.sharedContactPhone && <p className="text-xs text-[#8696a0]">{msg.sharedContactPhone}</p>}
+                              </div>
+                            </div>
+                            {msg.sharedContactPhone && (
+                              <div className="flex gap-1.5 mt-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleContactCardAction(msg, 'talk')}
+                                  disabled={resolvingContact === msg.id}
+                                  className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-[#00a884] text-[#111b21] px-2.5 py-1.5 rounded-lg hover:bg-[#02c99b] transition-colors disabled:opacity-50"
+                                >
+                                  {resolvingContact === msg.id ? <Loader2 size={12} className="animate-spin" /> : <MessageCircle size={12} />} Conversar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleContactCardAction(msg, 'create')}
+                                  disabled={resolvingContact === msg.id}
+                                  className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-[#2a3942] text-[#e9edef] px-2.5 py-1.5 rounded-lg hover:bg-[#33434c] transition-colors disabled:opacity-50"
+                                >
+                                  <UserPlus size={12} /> Criar lead
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )}
+                        {(() => {
+                          // Com anexo/contato, o "📎/📇 nome" já é mostrado pelo card; exibe só a legenda.
+                          const hasAtt = !!(msg.attachments && msg.attachments.length > 0);
+                          const hasContactCard = !!(msg.sharedContactName || msg.sharedContactPhone);
+                          if (hasContactCard) return null;
+                          const text = hasAtt
+                            ? (msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '')
+                            : msg.content;
+                          if (!text) return null;
+                          return <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{text}</p>;
+                        })()}
+                      </>
+                    )}
+                    {liveReactions.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {liveReactions.map((r, idx) => (
+                          <span key={idx} className="text-xs bg-black/25 rounded-full px-1.5 py-0.5">{r.emoji}</span>
+                        ))}
                       </div>
                     )}
-                    {(() => {
-                      // Com anexo/contato, o "📎/📇 nome" já é mostrado pelo card; exibe só a legenda.
-                      const hasAtt = !!(msg.attachments && msg.attachments.length > 0);
-                      const hasContactCard = !!(msg.sharedContactName || msg.sharedContactPhone);
-                      if (hasContactCard) return null;
-                      const text = hasAtt
-                        ? (msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '')
-                        : msg.content;
-                      if (!text) return null;
-                      return <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{text}</p>;
-                    })()}
                     <div className="absolute bottom-2 right-3 flex items-center gap-1">
+                      {liveStarred && <Star size={10} className="text-[#ffc107] fill-current" />}
                       <span className="text-[10px] text-[#e9edef]/50">{time}</span>
                       {isOut && <StatusTick status={liveStatus} error={statusErrorMap[msg.id] ?? (msg as any).statusError} />}
                     </div>
                   </div>
-                  {!isOut && (
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                      <button onClick={() => openForward(msg)} title="Encaminhar" className="text-[#8696a0] hover:text-[#e9edef]">
-                        <Forward size={14} />
-                      </button>
-                      <button onClick={() => openReply(msg)} title="Responder" className="text-[#8696a0] hover:text-[#e9edef]">
-                        <Reply size={14} />
-                      </button>
+                  {!isOut && !liveDeleted && (
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                      <MessageMenu {...menuProps} />
                     </div>
                   )}
                 </div>
