@@ -1,8 +1,64 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { MessageAttachment } from '@/types';
 import api from '@/lib/api';
-import { FileText, Download, Loader2, ImageOff, Cloud, Play, Pause } from 'lucide-react';
+import { FileText, Download, Loader2, ImageOff, Cloud, Play, Pause, X } from 'lucide-react';
+
+/** Preview em tela cheia, dentro da própria conversa — no lugar de abrir o
+ *  anexo em outra aba do navegador (`target="_blank"`), igual o WhatsApp de
+ *  verdade faz (a imagem/documento abre num visualizador por cima da
+ *  conversa, sem sair do app). Renderizado via portal pra escapar do
+ *  overflow/scroll da bolha e do timeline de mensagens. */
+function AttachmentPreviewModal({
+  url, fileName, isPdf, onClose, onDownload,
+}: { url: string; fileName: string; isPdf: boolean; onClose: () => void; onDownload: () => void }) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4" onClick={onClose}>
+      <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-3">
+        <span className="text-sm text-white/80 truncate pr-4">{fileName}</span>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onDownload(); }}
+            title="Baixar"
+            className="w-9 h-9 rounded-full flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+          >
+            <Download size={20} />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Fechar"
+            className="w-9 h-9 rounded-full flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+          >
+            <X size={22} />
+          </button>
+        </div>
+      </div>
+      <div onClick={(e) => e.stopPropagation()} className="max-w-[92vw] max-h-[85vh] mt-8">
+        {isPdf ? (
+          <iframe src={url} title={fileName} className="w-[85vw] h-[80vh] bg-white rounded-lg shadow-2xl" />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={url} alt={fileName} className="max-w-[92vw] max-h-[85vh] object-contain rounded-lg shadow-2xl" />
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 function formatAudioTime(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return '0:00';
@@ -118,6 +174,7 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
   // a miniatura falhar em renderizar (PDF corrompido, protegido por senha etc).
   const [pdfThumb, setPdfThumb] = useState<string | null>(null);
   const [pdfThumbFailed, setPdfThumbFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   // Imagem/áudio/vídeo/PDF carregam automaticamente (viram player/miniatura);
   // outros documentos só ao clicar em baixar.
@@ -150,18 +207,26 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
     return () => { revoked = true; if (objUrl) URL.revokeObjectURL(objUrl); };
   }, [att.id, isImage, isAudio, isVideo, isPdf]);
 
+  // Não muda `state` — usado dentro do preview em tela cheia (não pode
+  // colapsar a imagem/modal aberta pra um spinner só porque o download
+  // demorou um instante). O botão de baixar do documento genérico (sem
+  // preview) usa a versão de baixo, que troca `state` de propósito.
+  async function downloadSilently() {
+    const res = await api.get(`/api/messages/attachment/${att.id}`, { responseType: 'blob' });
+    const objUrl = URL.createObjectURL(res.data);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = att.fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  }
+
   async function download() {
     setState('loading');
     try {
-      const res = await api.get(`/api/messages/attachment/${att.id}`, { responseType: 'blob' });
-      const objUrl = URL.createObjectURL(res.data);
-      const a = document.createElement('a');
-      a.href = objUrl;
-      a.download = att.fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(objUrl);
+      await downloadSilently();
       setState('idle');
     } catch (err: any) {
       setState(err?.response?.status === 410 ? 'drive' : 'error');
@@ -179,10 +244,15 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
       return <div className="flex items-center gap-1.5 text-xs text-slate-400 py-1"><ImageOff size={13} /> Não foi possível carregar a imagem</div>;
     }
     return (
-      <a href={url} target="_blank" rel="noreferrer" className="block">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt={att.fileName} className="rounded-lg max-w-full max-h-64 object-cover" />
-      </a>
+      <>
+        <button type="button" onClick={() => setPreviewOpen(true)} className="block">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url} alt={att.fileName} className="rounded-lg max-w-full max-h-64 object-cover" />
+        </button>
+        {previewOpen && (
+          <AttachmentPreviewModal url={url} fileName={att.fileName} isPdf={false} onClose={() => setPreviewOpen(false)} onDownload={downloadSilently} />
+        )}
+      </>
     );
   }
 
@@ -228,19 +298,23 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
     }
     if (pdfThumb) {
       return (
-        <a
-          href={url ?? undefined}
-          target="_blank"
-          rel="noreferrer"
-          className="block w-40 rounded-lg overflow-hidden border border-black/10 bg-white shadow-sm hover:shadow-md transition-shadow"
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={pdfThumb} alt={att.fileName} className="w-full h-auto block border-b border-black/5" />
-          <div className="flex items-center gap-1.5 px-2 py-1.5">
-            <FileText size={12} className="text-red-500 flex-shrink-0" />
-            <span className="text-[11px] text-slate-700 truncate flex-1">{att.fileName}</span>
-          </div>
-        </a>
+        <>
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(true)}
+            className="block w-40 rounded-lg overflow-hidden border border-black/10 bg-white shadow-sm hover:shadow-md transition-shadow text-left"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={pdfThumb} alt={att.fileName} className="w-full h-auto block border-b border-black/5" />
+            <div className="flex items-center gap-1.5 px-2 py-1.5">
+              <FileText size={12} className="text-red-500 flex-shrink-0" />
+              <span className="text-[11px] text-slate-700 truncate flex-1">{att.fileName}</span>
+            </div>
+          </button>
+          {previewOpen && url && (
+            <AttachmentPreviewModal url={url} fileName={att.fileName} isPdf onClose={() => setPreviewOpen(false)} onDownload={downloadSilently} />
+          )}
+        </>
       );
     }
     // pdfThumbFailed && sem thumb: mesmo botão genérico de baixar de baixo.

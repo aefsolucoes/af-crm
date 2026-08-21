@@ -4,7 +4,7 @@ import { Message } from '@/types';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
-import { MoreVertical, Reply, Forward, Copy, Pin, PinOff, Star, Trash2, Loader2 } from 'lucide-react';
+import { MoreVertical, Reply, Forward, Copy, Pin, PinOff, Star, Trash2, Loader2, Download } from 'lucide-react';
 
 const QUICK_EMOJI = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
@@ -111,6 +111,33 @@ export function MessageMenu({ message, isOut, onReply, onForward, onDeleted, onR
     close();
   }
 
+  // Baixa todos os anexos da mensagem (quase sempre 1) — mesmo endpoint que
+  // o preview em tela cheia usa, só que disparado daqui, sem precisar abrir
+  // a imagem/documento primeiro.
+  async function handleDownload() {
+    if (!message.attachments || message.attachments.length === 0) return;
+    setBusy(true);
+    try {
+      for (const att of message.attachments) {
+        const res = await api.get(`/api/messages/attachment/${att.id}`, { responseType: 'blob' });
+        const objUrl = URL.createObjectURL(res.data);
+        const a = document.createElement('a');
+        a.href = objUrl;
+        a.download = att.fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(objUrl);
+      }
+      close();
+    } catch (err: any) {
+      const isDrive = err?.response?.status === 410;
+      toast(isDrive ? 'Arquivo salvo no Google Drive — não é possível baixar por aqui' : (err?.response?.data?.error || 'Erro ao baixar'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div ref={ref} className="relative">
       <button
@@ -156,6 +183,13 @@ export function MessageMenu({ message, isOut, onReply, onForward, onDeleted, onR
             <>
               <MenuItem icon={<Reply size={14} />} label="Responder" onClick={() => { onReply(); close(); }} />
               <MenuItem icon={<Forward size={14} />} label="Encaminhar" onClick={() => { onForward(); close(); }} />
+              {message.attachments && message.attachments.length > 0 && (
+                <MenuItem
+                  icon={busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  label="Baixar"
+                  onClick={handleDownload}
+                />
+              )}
               <MenuItem icon={<Copy size={14} />} label="Copiar" onClick={handleCopy} />
               <MenuItem
                 icon={message.pinned ? <PinOff size={14} /> : <Pin size={14} />}
