@@ -2218,7 +2218,7 @@ async function executeAgentTool(
       return {
         success: true,
         pasta: folderLabel || undefined,
-        itens: items.map((i) => ({ id: i.id, nome: i.name, tipo: i.isFolder ? 'pasta' : 'arquivo', link: i.link })),
+        itens: items.map((i) => ({ id: i.id, nome: i.name, tipo: i.isFolder ? 'pasta' : 'arquivo', mimeType: i.isFolder ? undefined : i.mimeType, link: i.link })),
       };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao listar a pasta' };
