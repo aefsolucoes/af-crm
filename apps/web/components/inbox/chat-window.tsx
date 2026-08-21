@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2 } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2 } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -12,6 +12,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { AttachmentView } from '@/components/inbox/message-attachment';
 import { MessageTemplate, CATEGORY_META, fillTemplate } from '@/lib/templates';
 import { MessageMenu } from '@/components/inbox/message-menu';
+import { EmojiPickerButton } from '@/components/inbox/emoji-picker';
 
 // Cor estável por remetente em grupos (estilo WhatsApp: mesma pessoa, mesma cor).
 const SENDER_COLORS = ['#e542a3', '#00a884', '#ff7e00', '#6a5cff', '#0ea5e9', '#e0453e', '#7c9c00', '#b26bff'];
@@ -397,11 +398,35 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // visivelmente até a última mensagem, o que parecia lento e chamava
   // atenção à toa. Só uma mensagem NOVA chegando (mesma conversa já aberta)
   // deve rolar suave; trocar de conversa é um salto instantâneo.
+  //
+  // Só força a rolagem se o usuário já estava perto do final (ou é conversa
+  // nova/mensagem que EU acabei de mandar) — igual o WhatsApp de verdade,
+  // que não te puxa pra baixo se você rolou pra cima pra ler o histórico.
+  // Reforça a correção de cima (memoizar `messages` no Inbox): mesmo que
+  // outro re-render passe uma referência nova por engano, não vai mais
+  // arrancar a rolagem de quem está lendo mensagens antigas.
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const lastLeadIdRef = useRef<string | null>(null);
+  const lastMessageCountRef = useRef(0);
   useEffect(() => {
     const isNewConversation = lastLeadIdRef.current !== leadId;
     lastLeadIdRef.current = leadId;
-    bottomRef.current?.scrollIntoView({ behavior: isNewConversation ? 'auto' : 'smooth' });
+
+    const container = scrollContainerRef.current;
+    const grew = messages.length > lastMessageCountRef.current;
+    lastMessageCountRef.current = messages.length;
+    const lastMsg = messages[messages.length - 1];
+    const justSentByMe = grew && lastMsg?.direction === 'OUTBOUND';
+
+    let nearBottom = true;
+    if (container && !isNewConversation) {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      nearBottom = scrollHeight - (scrollTop + clientHeight) < 150;
+    }
+
+    if (isNewConversation || justSentByMe || nearBottom) {
+      bottomRef.current?.scrollIntoView({ behavior: isNewConversation ? 'auto' : 'smooth' });
+    }
   }, [messages, leadId]);
 
   // Cresce a caixa de mensagem conforme o texto (até um limite), como no WhatsApp.
@@ -536,6 +561,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     } finally {
       setUploadingFile(false);
     }
+  }
+
+  // Insere o emoji na posição do cursor (não só no final) e mantém o foco
+  // na caixa de texto, pra continuar digitando/escolhendo mais emoji.
+  function handleEmojiSelect(emoji: string) {
+    const el = inputRef.current;
+    if (!el) { setContent((c) => c + emoji); return; }
+    const start = el.selectionStart ?? content.length;
+    const end = el.selectionEnd ?? content.length;
+    setContent(content.slice(0, start) + emoji + content.slice(end));
+    requestAnimationFrame(() => {
+      el.focus();
+      const pos = start + emoji.length;
+      el.setSelectionRange(pos, pos);
+    });
   }
 
   function handleOpenTemplates() {
@@ -798,7 +838,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       })()}
 
       {/* Timeline unificado: mensagens + eventos de fluxo */}
-      <div className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
+      <div ref={scrollContainerRef} className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
         {grouped.map(({ date, items }) => (
           <div key={date}>
             {/* Separador de data */}
@@ -1209,12 +1249,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         onSubmit={handleSend}
         className="relative z-10 flex items-end gap-2 px-3 py-3 bg-[#202c33]"
       >
-        <button
-          type="button"
-          className="flex-shrink-0 p-2 text-[#8696a0] hover:text-[#e9edef]"
-        >
-          <Smile size={22} />
-        </button>
+        <EmojiPickerButton onSelect={handleEmojiSelect} />
         <input
           ref={fileInputRef}
           type="file"

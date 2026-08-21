@@ -1,5 +1,5 @@
 'use client';
-import { useState, useCallback, useEffect, Suspense } from 'react';
+import { useState, useCallback, useEffect, useMemo, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
@@ -130,7 +130,16 @@ function InboxPageInner() {
     queryClient.invalidateQueries({ queryKey: ['conversations'] });
   }, [refetchLead, queryClient]);
 
-  const allMessages = [...(messages || []), ...localMessages.filter((m) => !messages?.find((x) => x.id === m.id))];
+  // Memoizado: sem isso, virava um array NOVO em toda renderização do Inbox
+  // (poll de 30s de `conversations`, socket de outras conversas etc.) — o
+  // efeito de auto-scroll do ChatWindow reage a QUALQUER troca de referência
+  // de `messages`, então a conversa era puxada de volta pro final mesmo sem
+  // nenhuma mensagem nova, no meio de o usuário rolar pra cima pra ler o
+  // histórico. Agora só muda de referência quando o conteúdo realmente muda.
+  const allMessages = useMemo(
+    () => [...(messages || []), ...localMessages.filter((m) => !messages?.find((x) => x.id === m.id))],
+    [messages, localMessages]
+  );
 
   const selectedConv = conversations?.find((c) => c.id === selectedId);
   const cf = ((lead as any)?.customFields || {}) as Record<string, string>;
