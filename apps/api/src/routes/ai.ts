@@ -690,6 +690,29 @@ export async function resolveClientDriveDocuments(
 
 const EXTRACT_FIELDS_PROMPT = 'Transcreva LITERALMENTE (dígito por dígito, sem arredondar nem resumir) os campos que aparecerem claramente neste documento: nome completo, CPF, número do documento de identidade (CNH/RG), data de nascimento, endereço completo (logradouro, número, complemento, bairro, cidade, UF, CEP), telefone, renda bruta, renda líquida, valor do imóvel, e outros valores em R$ relevantes. Preste atenção REDOBRADA em cada dígito de números longos (CPF, número de documento, CEP, telefone, valores) — releia se precisar, não aproxime, não confunda um dígito com outro parecido. Se um campo não aparecer com clareza, simplesmente não o liste (nunca invente). Responda em texto simples, SEM JSON e sem comentário extra.';
 
+/** Roda `fn` para cada item de `items`, no máximo `limit` de uma vez (em vez
+ *  de um Promise.all sem limite) — achado num caso real: uma pasta com 10+
+ *  documentos disparava 9+ chamadas simultâneas à Anthropic (cada uma com um
+ *  PDF/imagem em base64), e o servidor (recursos limitados no Railway) não
+ *  aguentava a carga de rede/memória a tempo — a requisição toda caía com
+ *  502 "Application failed to respond" antes de qualquer resposta, mesmo
+ *  com a rede de segurança de try/catch (a falha era de infraestrutura, não
+ *  uma exceção JS pra capturar). Limitar a paralelismo baixo (mais chamadas
+ *  em sequência, menos ao mesmo tempo) troca um pouco de velocidade por
+ *  terminar de verdade. */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 /** Transcreve UM documento isolado — mesma tarefa (e mesma confiabilidade)
  *  do ler_documento_identificacao, só que com mais campos. `prompt` é
  *  parametrizável pra reaproveitar a mesma leitura-documento-por-documento
@@ -729,7 +752,7 @@ async function extractKeyFieldsFromOneDoc(apiKey: string, doc: { name: string; m
  * textos resolve os dois problemas de uma vez.
  */
 export async function extractKeyFieldsFromDocs(apiKey: string, docs: { name: string; mimeType: string; buffer: Buffer }[]): Promise<string | null> {
-  const results = await Promise.all(docs.map((d) => extractKeyFieldsFromOneDoc(apiKey, d).catch(() => null)));
+  const results = await mapWithConcurrency(docs, 4, (d) => extractKeyFieldsFromOneDoc(apiKey, d).catch(() => null));
   const ok = results.filter((r): r is string => !!r);
   return ok.length ? ok.join('\n\n') : null;
 }
@@ -793,7 +816,7 @@ const EXTRACT_IMOVEL_FIELDS_PROMPT = 'Transcreva LITERALMENTE os dados do IMÓVE
  *  paralelo), só que com foco nos dados do IMÓVEL em vez de dados pessoais
  *  do cliente — ver resolveClientImovelDocuments. */
 export async function extractImovelFieldsFromDocs(apiKey: string, docs: { name: string; mimeType: string; buffer: Buffer }[]): Promise<string | null> {
-  const results = await Promise.all(docs.map((d) => extractKeyFieldsFromOneDoc(apiKey, d, EXTRACT_IMOVEL_FIELDS_PROMPT).catch(() => null)));
+  const results = await mapWithConcurrency(docs, 4, (d) => extractKeyFieldsFromOneDoc(apiKey, d, EXTRACT_IMOVEL_FIELDS_PROMPT).catch(() => null));
   const ok = results.filter((r): r is string => !!r);
   return ok.length ? ok.join('\n\n') : null;
 }
@@ -2017,7 +2040,7 @@ async function executeAgentTool(
 
     let mapping: Record<string, unknown> = {};
     try {
-      const batchResults = await Promise.all(fieldBatches.map(async (batch) => {
+      const batchResults = await mapWithConcurrency(fieldBatches, 4, async (batch) => {
         try {
           const mapRes = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -2045,7 +2068,7 @@ async function executeAgentTool(
         } catch {
           return {};
         }
-      }));
+      });
       mapping = Object.assign({}, ...batchResults);
     } catch (err: any) {
       return { success: false, error: `Falha ao mapear os dados pro formulário: ${err?.message || 'erro desconhecido'}` };
