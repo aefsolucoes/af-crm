@@ -686,7 +686,25 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
       }
     }
 
-    res.json({ ...lead, hasWhatsApp });
+    // "Valor da venda" (aba Principal, é o Lead.value de verdade — aparece
+    // no topo do card e alimenta os relatórios) precisa ficar em sincronia
+    // com "Valor do crédito" (aba Financiamento, um campo customizado
+    // comum). O widget da aba Principal já grava os dois juntos quando
+    // editado por ALI — mas editando "Valor do crédito" direto na aba
+    // Financiamento (o formulário genérico de campos), só esse PATCH aqui
+    // rodava, sem nunca atualizar Lead.value — o card ficava com "0"/vazio
+    // mesmo com o crédito preenchido. Sincroniza aqui, na escrita, pra
+    // valer não importa qual tela mandou o campo.
+    let updatedLead = lead;
+    const creditoRaw = customFields?.valor_credito;
+    if (creditoRaw !== undefined && creditoRaw !== null && String(creditoRaw).trim() !== '') {
+      const creditoNum = Number(creditoRaw);
+      if (!Number.isNaN(creditoNum) && creditoNum !== lead.value) {
+        updatedLead = await prisma.lead.update({ where: { id: lead.id }, data: { value: creditoNum } });
+      }
+    }
+
+    res.json({ ...updatedLead, hasWhatsApp });
   } catch (err) {
     console.error('[Leads] Erro ao salvar campos:', err);
     res.status(500).json({ error: 'Erro ao salvar campos' });
