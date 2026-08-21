@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin } from 'lucide-react';
+import { Send, Paperclip, Smile, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2 } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -166,6 +166,16 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [aiActive, setAiActive] = useState(!!aiAutoReplyActive);
   const [togglingAi, setTogglingAi] = useState(false);
   useEffect(() => { setAiActive(!!aiAutoReplyActive); }, [leadId, aiAutoReplyActive]);
+
+  // Link direto pra essa conversa (?leadId=... já é lido pela própria tela
+  // da Inbox — apps/web/app/(dashboard)/inbox/page.tsx — e abre direto
+  // nela). Quem receber o link precisa estar logado no CRM.
+  function handleCopyLink() {
+    const url = `${window.location.origin}/inbox?leadId=${leadId}`;
+    navigator.clipboard.writeText(url)
+      .then(() => toast('Link copiado! Quem abrir (logado no CRM) cai direto nessa conversa.'))
+      .catch(() => toast('Não consegui copiar o link', 'error'));
+  }
 
   async function handleToggleAi() {
     const next = !aiActive;
@@ -679,6 +689,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             {CHANNEL_ICONS[channel]} {CHANNEL_LABELS[channel]}
           </p>
         </div>
+        <button
+          onClick={handleCopyLink}
+          title="Copiar link direto pra essa conversa — quem abrir (logado no CRM) cai direto aqui"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
+        >
+          <Link2 size={13} />
+          Copiar link
+        </button>
         <button
           onClick={handleToggleAi}
           disabled={togglingAi}
