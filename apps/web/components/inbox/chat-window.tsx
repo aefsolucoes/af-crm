@@ -526,6 +526,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         fileName: file.name,
         mimeType: file.type || 'application/octet-stream',
         dataBase64,
+        ...(channel === 'WHATSAPP'
+          ? { via: effectiveVia, ...(effectiveVia === 'qr' && activeNumberId ? { fromNumberId: activeNumberId } : {}) }
+          : {}),
       });
       onNewMessage(data);
     } catch (err: any) {

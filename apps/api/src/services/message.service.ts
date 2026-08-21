@@ -1,5 +1,5 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
-import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage, sendWhatsAppReaction } from './whatsapp.service';
+import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage, sendWhatsAppReaction, sendWhatsAppMedia } from './whatsapp.service';
 import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds, sendBaileysDelete, sendBaileysReaction } from './baileys.service';
 import { downloadDriveFile } from './google.service';
 import { normalizeClientName } from '../lib/text';
@@ -409,7 +409,13 @@ export async function sendOutboundWhatsAppTemplate(params: {
   return { success: true, message };
 }
 
-/** Envia um documento/imagem pelo WhatsApp (QR) e salva na conversa com o anexo. */
+/** Envia um documento/imagem/vídeo/áudio pelo WhatsApp e salva na conversa
+ *  com o anexo — respeita o canal escolhido (QR ou API Oficial), MESMA
+ *  decisão de canal de sendOutboundWhatsApp (via/fromNumberId explícito, ou
+ *  infere pelo canal da última mensagem RECEBIDA). Antes, mídia só saía
+ *  pelo QR — nunca teve caminho pela API Oficial, mesmo com ela selecionada
+ *  na conversa (achado real, reportado pelo usuário: texto ia certinho "via
+ *  API Oficial", anexo saía "via <número QR>"). */
 export async function sendOutboundMedia(params: {
   accountId: string;
   leadId: string;
@@ -417,35 +423,87 @@ export async function sendOutboundMedia(params: {
   fileName: string;
   mimeType: string;
   caption?: string;
+  via?: 'qr' | 'api';
+  fromNumberId?: string;
   /** Usuário do CRM que está enviando (para carimbar "enviado por"). */
   userId?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
-}): Promise<{ success: true; message: any } | { success: false; error: string }> {
-  const { accountId, leadId, buffer, fileName, mimeType, caption, userId, io } = params;
+}): Promise<{ success: true; message: any } | { success: false; error: string; code?: string }> {
+  const { accountId, leadId, buffer, fileName, mimeType, caption, via, fromNumberId, userId, io } = params;
 
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true } });
+  const lead = await prisma.lead.findFirst({
+    where: { id: leadId, accountId },
+    include: { contact: true, pipeline: { select: { departmentId: true } } },
+  });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
   const phone = lead.contact?.whatsappPhone || lead.contact?.phone;
   if (!phone) return { success: false, error: 'Contato sem número cadastrado' };
 
+  let externalId: string | undefined;
+  let usedNumberId: string | null = null;
   const connectedNumbers = getConnectedNumberIds(accountId);
-  const preferred = lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)
-    ? lead.whatsappNumberId
-    : connectedNumbers[0];
-  if (!preferred) return { success: false, error: 'Nenhum WhatsApp conectado via QR Code.' };
 
-  const sentId = await sendBaileysMedia(phone, buffer, fileName, mimeType, caption || '', preferred);
-  if (!sentId) return { success: false, error: 'Falha ao enviar o arquivo pelo WhatsApp.' };
+  // Mesma inferência de sendOutboundWhatsApp: sem canal explícito, olha por
+  // onde o cliente falou por ÚLTIMO com a gente (não o que já enviamos —
+  // pode já estar "errado" por causa desse mesmo bug em envios anteriores).
+  let inferredVia: 'qr' | 'api' | null = null;
+  let inferredNumberId: string | null = null;
+  if (via === undefined && !fromNumberId) {
+    const lastInbound = await prisma.message.findFirst({
+      where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (lastInbound?.externalId?.startsWith('wamid')) inferredVia = 'api';
+    else if (lastInbound?.whatsappNumberId) { inferredVia = 'qr'; inferredNumberId = lastInbound.whatsappNumberId; }
+  }
 
-  if (!lead.whatsappNumberId) {
-    await prisma.lead.update({ where: { id: leadId }, data: { whatsappNumberId: preferred } }).catch(() => {});
+  const useQR = via === 'qr' ? true
+    : via === 'api' ? false
+    : inferredVia === 'api' ? false
+    : inferredVia === 'qr' ? true
+    : (!!fromNumberId || connectedNumbers.length > 0);
+
+  if (useQR) {
+    let preferred: string | undefined;
+    if (fromNumberId) {
+      if (!connectedNumbers.includes(fromNumberId)) {
+        return { success: false, error: 'O número de WhatsApp escolhido não está conectado. Verifique em Configurações → QR Code ou escolha outro.' };
+      }
+      preferred = fromNumberId;
+    } else if (inferredNumberId && connectedNumbers.includes(inferredNumberId)) {
+      preferred = inferredNumberId;
+    } else if (lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)) {
+      preferred = lead.whatsappNumberId;
+    } else {
+      preferred = connectedNumbers[0];
+    }
+    if (!preferred) {
+      return { success: false, error: 'Nenhum WhatsApp conectado via QR Code. Conecte em Configurações → QR Code ou envie pela API oficial.' };
+    }
+
+    const sentId = await sendBaileysMedia(phone, buffer, fileName, mimeType, caption || '', preferred);
+    if (!sentId) return { success: false, error: 'Falha ao enviar o arquivo pelo WhatsApp.' };
+    externalId = sentId;
+    usedNumberId = preferred;
+
+    if (lead.whatsappNumberId !== preferred) {
+      await prisma.lead.update({ where: { id: leadId }, data: { whatsappNumberId: preferred } }).catch(() => {});
+    }
+  } else {
+    const cloudPhone = plainPhone(lead.contact);
+    if (!cloudPhone) {
+      return { success: false, code: 'NO_REAL_PHONE', error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card ou envie pelo QR Code.' };
+    }
+    const result = await sendWhatsAppMedia(cloudPhone, buffer, fileName, mimeType, caption || '', accountId, lead.pipeline.departmentId);
+    if (!result.success) return { success: false, error: result.error || 'Falha ao enviar o arquivo pelo WhatsApp.' };
+    externalId = result.externalId;
   }
 
   const content = `📎 ${fileName}${caption ? ` — ${caption}` : ''}`;
   const message = await prisma.message.create({
     data: {
       content, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId,
-      whatsappNumberId: preferred, sentByUserId: userId ?? null, read: true, externalId: sentId, status: 'SENT',
+      whatsappNumberId: usedNumberId, sentByUserId: userId ?? null, read: true, externalId, status: 'SENT',
       attachments: { create: { leadId, fileName, mimeType, data: buffer } },
     },
     include: {

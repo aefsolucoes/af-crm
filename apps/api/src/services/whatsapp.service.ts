@@ -255,6 +255,70 @@ export async function sendWhatsAppMessage(
   }
 }
 
+/** Envia um arquivo (imagem/vídeo/áudio/documento) pela API Oficial — a
+ *  Graph API exige 2 passos: 1) sobe o binário pro endpoint de mídia
+ *  (devolve um media_id), 2) manda a mensagem referenciando esse id. Antes
+ *  desta função, envio de mídia SÓ existia pelo QR (Baileys) — mensagem de
+ *  texto já respeitava o canal escolhido (QR ou API Oficial) há tempos, mas
+ *  um anexo saía sempre pelo QR mesmo com "API Oficial" selecionado na
+ *  conversa (achado real, reportado pelo usuário). */
+export async function sendWhatsAppMedia(
+  to: string,
+  buffer: Buffer,
+  fileName: string,
+  mimeType: string,
+  caption: string,
+  accountId: string,
+  departmentId?: string | null
+): Promise<{ success: boolean; externalId?: string; error?: string }> {
+  const config = await getWhatsAppConfig(accountId, departmentId);
+  if (!config) return { success: false, error: 'WhatsApp não configurado. Acesse Configurações → API Oficial e salve suas credenciais.' };
+  if (!config.active) return { success: false, error: 'WhatsApp inativo. Acesse Configurações → API Oficial e ative a integração.' };
+
+  const phone = normalizeBrazilianWhatsAppPhone(to);
+  const mediaType = mimeType.startsWith('image/') ? 'image'
+    : mimeType.startsWith('video/') ? 'video'
+    : mimeType.startsWith('audio/') ? 'audio'
+    : 'document';
+
+  try {
+    // 1) upload do binário — endpoint separado, devolve só um media_id.
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('file', new Blob([buffer], { type: mimeType }), fileName);
+    const uploadRes = await fetch(`https://graph.facebook.com/v19.0/${config.phoneNumberId}/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.accessToken}` },
+      body: form as any,
+    });
+    const uploadJson = await uploadRes.json() as { id?: string; error?: { message: string; code: number } };
+    if (!uploadRes.ok || uploadJson.error || !uploadJson.id) {
+      console.error(`[WhatsApp] Erro no upload de mídia para "${phone}":`, uploadJson.error);
+      return { success: false, error: parseGraphError(uploadJson, uploadRes, phone) };
+    }
+
+    // 2) manda a mensagem de verdade, referenciando o media_id do passo 1.
+    const mediaObj: Record<string, unknown> = { id: uploadJson.id };
+    if (mediaType === 'document') mediaObj.filename = fileName;
+    if (caption && mediaType !== 'audio') mediaObj.caption = caption; // áudio não aceita legenda na API
+
+    const sendRes = await fetch(`https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', to: phone, type: mediaType, [mediaType]: mediaObj }),
+    });
+    const sendJson = await sendRes.json() as { messages?: { id: string }[]; error?: { message: string; code: number } };
+    if (!sendRes.ok || sendJson.error) {
+      console.error(`[WhatsApp] Erro ao mandar mídia para "${phone}":`, sendJson.error);
+      return { success: false, error: parseGraphError(sendJson, sendRes, phone) };
+    }
+    return { success: true, externalId: sendJson.messages?.[0]?.id };
+  } catch (err) {
+    console.error('[WhatsApp] Fetch error (mídia):', err);
+    return { success: false, error: 'Falha na conexão com a API do WhatsApp' };
+  }
+}
+
 /** Reage com um emoji a uma mensagem (nossa ou do cliente) — `emoji: ''`
  *  remove a reação. Só reage, não manda mensagem nova nenhuma. `wamid` é o
  *  id (com prefixo "wamid.") da mensagem alvo, sempre no formato que a Meta
