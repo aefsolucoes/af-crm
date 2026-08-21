@@ -1,8 +1,85 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MessageAttachment } from '@/types';
 import api from '@/lib/api';
-import { FileText, Download, Loader2, ImageOff, Cloud } from 'lucide-react';
+import { FileText, Download, Loader2, ImageOff, Cloud, Play, Pause } from 'lucide-react';
+
+function formatAudioTime(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 0) return '0:00';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/** Player mínimo — só play/pausa, barra de progresso e tempo — no lugar do
+ *  `<audio controls>` nativo do navegador, que trazia junto controle de
+ *  volume, menu de velocidade (1x/1,5x/2x) e "baixar" (visível em alguns
+ *  navegadores/SOs), nada disso existe na bolha de áudio de verdade do
+ *  WhatsApp. Clique na barra pula pra posição; sem arrastar por enquanto. */
+function AudioPlayer({ url }: { url: string }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onTime = () => setCurrentTime(audio.currentTime);
+    const onLoaded = () => setDuration(audio.duration || 0);
+    const onEnd = () => { setPlaying(false); setCurrentTime(0); };
+    audio.addEventListener('timeupdate', onTime);
+    audio.addEventListener('loadedmetadata', onLoaded);
+    audio.addEventListener('ended', onEnd);
+    return () => {
+      audio.removeEventListener('timeupdate', onTime);
+      audio.removeEventListener('loadedmetadata', onLoaded);
+      audio.removeEventListener('ended', onEnd);
+    };
+  }, []);
+
+  function toggle() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) audio.pause();
+    else audio.play().catch(() => {});
+    setPlaying(!playing);
+  }
+
+  function seek(e: React.MouseEvent<HTMLDivElement>) {
+    const audio = audioRef.current;
+    if (!audio || !duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    audio.currentTime = ratio * duration;
+    setCurrentTime(audio.currentTime);
+  }
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const showElapsed = playing || currentTime > 0;
+
+  return (
+    <div className="flex items-center gap-2.5" style={{ minWidth: 220 }}>
+      <audio ref={audioRef} src={url} preload="metadata" className="hidden" />
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors hover:brightness-110"
+        style={{ backgroundColor: 'rgba(255,255,255,0.12)' }}
+      >
+        {playing
+          ? <Pause size={14} className="text-[#e9edef]" fill="currentColor" />
+          : <Play size={14} className="text-[#e9edef] ml-0.5" fill="currentColor" />}
+      </button>
+      <div className="flex-1 min-w-0 flex flex-col gap-1">
+        <div onClick={seek} className="relative h-1 rounded-full cursor-pointer" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}>
+          <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${progress}%`, backgroundColor: '#00a884' }} />
+        </div>
+        <span className="text-[11px] text-[#e9edef]/60">{formatAudioTime(showElapsed ? currentTime : duration)}</span>
+      </div>
+    </div>
+  );
+}
 
 // Miniatura da 1ª página do PDF, gerada no navegador (evita depender de
 // renderização com canvas nativo no backend — mais frágil de manter no
@@ -119,7 +196,7 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
     if (state === 'error' || !url) {
       return <div className="flex items-center gap-1.5 text-xs text-slate-400 py-1"><ImageOff size={13} /> Não foi possível carregar o áudio</div>;
     }
-    return <audio controls src={url} className="max-w-full h-10" style={{ minWidth: 220 }} />;
+    return <AudioPlayer url={url} />;
   }
 
   if (isVideo) {

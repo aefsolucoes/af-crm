@@ -973,15 +973,15 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                           </p>
                         )}
                         {msg.attachments && msg.attachments.length > 0 && (() => {
-                          // Áudio/vídeo usam o player NATIVO do navegador, que já tem
-                          // seus próprios controles (volume, menu "⋮") colados na borda
+                          // Vídeo usa o player NATIVO do navegador, que já tem seus
+                          // próprios controles (volume, menu "⋮") colados na borda
                           // inferior direita — bem onde fica o carimbo de hora/check da
                           // mensagem. Sem esse respiro extra, um ficava em cima do
                           // outro e o usuário confundia o ícone de volume com outra
-                          // coisa. Outros tipos (imagem, documento) já têm espaço de
-                          // sobra abaixo e não precisam disso.
+                          // coisa. Áudio agora usa um player próprio, mínimo (sem
+                          // controle nativo nenhum), não precisa mais desse respiro.
                           const needsBreathingRoom = msg.attachments!.some(
-                            (a) => a.mimeType.startsWith('audio/') || a.mimeType.startsWith('video/')
+                            (a) => a.mimeType.startsWith('video/')
                           );
                           return (
                             <div className={cn('flex flex-col gap-1.5 mb-1', needsBreathingRoom && 'mb-5')}>
