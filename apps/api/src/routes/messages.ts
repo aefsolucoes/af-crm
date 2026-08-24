@@ -6,6 +6,7 @@ import { validate } from '../middleware/validate';
 import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone, deleteMessage, reactToMessage, setMessagePinned, setMessageStarred } from '../services/message.service';
 import { downloadDriveFile } from '../services/google.service';
 import { getScopeDepartmentIds } from '../services/department.service';
+import { runAutomations } from '../services/automation.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -219,6 +220,9 @@ router.post('/contact-card/resolve', async (req: AuthRequest, res: Response) => 
     const result = await findOrCreateLeadByPhone(req.user!.accountId, phone, name);
     if (!result) return res.status(400).json({ error: 'Não foi possível criar o lead (funil/usuário não configurado)' });
     res.json(result);
+    if (result.created) {
+      runAutomations({ accountId: req.user!.accountId, trigger: 'NEW_LEAD', leadId: result.leadId, io: (req as any).app.get('io') }).catch(() => {});
+    }
   } catch {
     res.status(500).json({ error: 'Erro ao resolver o contato' });
   }

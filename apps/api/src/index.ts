@@ -28,8 +28,10 @@ import messageTemplateRoutes from './routes/message-templates';
 import departmentRoutes from './routes/departments';
 import browserAgentRoutes from './routes/browser-agent';
 import salesBotRoutes from './routes/salesbot';
+import automationRoutes from './routes/automations';
 import { failOrphanedRunningTasks } from './services/browser-agent.service';
 import { pollSalesBotRuns } from './services/salesbot.service';
+import { checkInactivityAutomations } from './services/automation.service';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
 import { generateRecurringTransactions } from './routes/finance';
@@ -85,6 +87,7 @@ app.use('/api/message-templates', messageTemplateRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/browser-agent', browserAgentRoutes);
 app.use('/api/salesbot', salesBotRoutes);
+app.use('/api/automations', automationRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
 
@@ -234,4 +237,15 @@ httpServer.listen(PORT, () => {
       pollSalesBotRuns(io).catch((err) => console.error('[SalesBot] Poll:', err?.message));
     }, SALESBOT_POLL_MS);
   }, 60 * 1000);
+
+  // Automações — gatilho de inatividade (é granularidade de dias, não faz
+  // sentido pollar rápido como o SalesBot acima). Escalonado 90s após o
+  // boot pra não competir com a restauração de sessões/poll do SalesBot.
+  const AUTOMATION_INACTIVITY_POLL_MS = 15 * 60 * 1000;
+  setTimeout(() => {
+    checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade (boot):', err?.message));
+    setInterval(() => {
+      checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade:', err?.message));
+    }, AUTOMATION_INACTIVITY_POLL_MS);
+  }, 90 * 1000);
 });

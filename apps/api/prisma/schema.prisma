@@ -28,6 +28,7 @@ model Account {
   assistantQuestions AssistantQuestion[]
   messageTemplates   MessageTemplate[]
   departments        Department[]
+  automationRules    AutomationRule[]
 }
 
 // Linha de negócio (ex: "Financiamento Habitacional", "Consórcio"). Cada
@@ -585,6 +586,54 @@ model SalesBotRunLog {
   createdAt DateTime    @default(now())
 
   @@index([runId])
+}
+
+enum AutomationTrigger {
+  NEW_LEAD
+  STAGE_CHANGE
+  TAG_ADDED
+  INACTIVITY
+  MESSAGE_RECEIVED
+}
+
+// Regra "quando X, faça Y" configurada pelo usuário em Automações. `actions`
+// guarda o array de ações a executar em sequência (mesmo espírito livre de
+// SalesBot.flow — tipado em código, não no schema, pra não pedir migration
+// a cada ação nova).
+model AutomationRule {
+  id            String            @id @default(cuid())
+  accountId     String
+  account       Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name          String
+  active        Boolean           @default(true)
+  trigger       AutomationTrigger
+  // STAGE_CHANGE → {stageId}, TAG_ADDED → {tag}, INACTIVITY → {days}.
+  // NEW_LEAD/MESSAGE_RECEIVED não usam (null = dispara sempre).
+  triggerConfig Json?
+  actions       Json
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  logs          AutomationLog[]
+
+  @@index([accountId])
+  @@index([accountId, trigger, active])
+}
+
+// Uma linha por DISPARO da regra (não por ação individual dentro dela).
+// leadId é campo solto, sem @relation — mesmo padrão leve de
+// CommissionSuggestion.leadId/AgentTask.leadId, pra não mexer no model Lead.
+model AutomationLog {
+  id            String         @id @default(cuid())
+  ruleId        String
+  rule          AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  leadId        String
+  success       Boolean
+  error         String?
+  actionsResult Json?
+  createdAt     DateTime       @default(now())
+
+  @@index([ruleId])
+  @@index([leadId])
 }
 
 enum TransactionType {

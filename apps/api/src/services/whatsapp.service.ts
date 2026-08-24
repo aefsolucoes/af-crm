@@ -2,11 +2,12 @@ import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
 import { normalizeClientName } from '../lib/text';
-// maybeSalesBotStep: require() tardio (dentro da função, não aqui em cima) —
-// salesbot.service.ts importa de volta este arquivo (pra mandar mensagem),
-// um import estático nos dois sentidos criaria dependência circular. Mesmo
-// motivo documentado em baileys.service.ts pra manter os fluxos QR/API
-// separados em vez de compartilhar um helper comum.
+// maybeSalesBotStep/runAutomations/maybeMessageReceivedAutomations: require()
+// tardio (dentro da função, não aqui em cima) — salesbot.service.ts e
+// automation.service.ts importam de volta este arquivo (pra mandar
+// mensagem), um import estático nos dois sentidos criaria dependência
+// circular. Mesmo motivo documentado em baileys.service.ts pra manter os
+// fluxos QR/API separados em vez de compartilhar um helper comum.
 
 const prisma = new PrismaClient();
 
@@ -781,6 +782,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         });
         leadId = lead.id;
         console.log(`[WhatsApp] Lead criado: ${lead.id} — ${profileName} (${formattedPhone})`);
+        const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
+        runAutomations({ accountId, trigger: 'NEW_LEAD', leadId: lead.id, io }).catch(() => {});
       }
 
       // ── Avoid duplicate messages ────────────────────────────────────────
@@ -835,7 +838,11 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         if (!botHandled) {
           const templateDisparou = await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
           if (!templateDisparou) {
-            await maybeAiAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
+            const { maybeMessageReceivedAutomations } = require('./automation.service') as typeof import('./automation.service');
+            const automationHandled = await maybeMessageReceivedAutomations(accountId, leadId, text, io);
+            if (!automationHandled) {
+              await maybeAiAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
+            }
           }
         }
       }

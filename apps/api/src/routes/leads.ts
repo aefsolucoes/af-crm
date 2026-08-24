@@ -9,6 +9,7 @@ import { getScopeDepartmentIds } from '../services/department.service';
 import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { checkHasWhatsApp } from '../services/baileys.service';
 import { normalizeClientName } from '../lib/text';
+import { runAutomations } from '../services/automation.service';
 
 /** Formata um telefone BR (com DDI 55) pra exibição — mesma regra usada em
  *  baileys.service.ts, duplicada aqui de propósito (função pura pequena,
@@ -247,6 +248,7 @@ router.post('/', validate(createLeadSchema), async (req: AuthRequest, res: Respo
   try {
     const lead = await createLead({ ...req.body, accountId: req.user!.accountId });
     res.status(201).json(lead);
+    runAutomations({ accountId: req.user!.accountId, trigger: 'NEW_LEAD', leadId: lead.id, io: (req as any).app.get('io') }).catch(() => {});
   } catch {
     res.status(500).json({ error: 'Erro ao criar lead' });
   }
@@ -333,6 +335,19 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
         await auditNote(req.params.id, req.user!.id,
           `Responsável alterado de "${before?.user?.name || '—'}" para "${newUser?.name || '—'}" por ${userName}`);
       }
+
+      // Gatilho de automação "tag adicionada" — não existe endpoint atômico
+      // de "adicionar 1 tag" (o PUT recebe o array inteiro), então detecta
+      // por diff. `tags` é opcional no schema — sem esse guard, um PUT que
+      // não mexe em tags compararia com `undefined` e disparava à toa.
+      if (req.body.tags !== undefined) {
+        const beforeTags = new Set(before?.tags || []);
+        const addedTags = (lead.tags || []).filter((t) => !beforeTags.has(t));
+        const io = (req as any).app.get('io');
+        for (const tag of addedTags) {
+          runAutomations({ accountId: req.user!.accountId, trigger: 'TAG_ADDED', leadId: req.params.id, io, context: { addedTag: tag } }).catch(() => {});
+        }
+      }
     } catch { /* silencioso */ }
   } catch {
     res.status(500).json({ error: 'Erro ao atualizar lead' });
@@ -361,6 +376,7 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
         await auditNote(req.params.id, req.user!.id,
           `Estágio: "${before?.stage?.name || '—'}" → "${newStage?.name || '—'}" — por ${userName}`,
           'STAGE_CHANGE');
+        runAutomations({ accountId: req.user!.accountId, trigger: 'STAGE_CHANGE', leadId: req.params.id, io: (req as any).app.get('io'), context: { newStageId: req.body.stageId } }).catch(() => {});
       }
 
       // ── Auto-migração: se movido para "Fechado" no pipeline "Vendas" ────────
@@ -437,6 +453,7 @@ router.patch('/:id/pipeline', async (req: AuthRequest, res: Response) => {
       await auditNote(req.params.id, req.user!.id,
         `Movido do funil "${before?.pipeline?.name || '—'}" para "${newPipeline?.name || '—'}" (${newStage?.name || '—'}) por ${userName}`,
         'STAGE_CHANGE');
+      runAutomations({ accountId: req.user!.accountId, trigger: 'STAGE_CHANGE', leadId: req.params.id, io: (req as any).app.get('io'), context: { newStageId: targetStageId } }).catch(() => {});
     } catch { /* silencioso */ }
   } catch {
     res.status(500).json({ error: 'Erro ao mover lead para outro pipeline' });

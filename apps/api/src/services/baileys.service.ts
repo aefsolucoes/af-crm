@@ -6,11 +6,12 @@ import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
 import { normalizeClientName } from '../lib/text';
-// maybeSalesBotStep: require() tardio no ponto de uso (não aqui em cima) —
-// salesbot.service.ts importa message.service.ts, que importa ESTE arquivo;
-// um import estático nos dois sentidos criaria dependência circular. Mesmo
-// motivo pelo qual maybeAutoReplyQR/maybeAiAutoReplyQR ficam duplicados
-// aqui em vez de compartilhados com whatsapp.service.ts.
+// maybeSalesBotStep/runAutomations/maybeMessageReceivedAutomations: require()
+// tardio no ponto de uso (não aqui em cima) — salesbot.service.ts e
+// automation.service.ts importam message.service.ts, que importa ESTE
+// arquivo; um import estático nos dois sentidos criaria dependência
+// circular. Mesmo motivo pelo qual maybeAutoReplyQR/maybeAiAutoReplyQR ficam
+// duplicados aqui em vez de compartilhados com whatsapp.service.ts.
 
 const prisma = new PrismaClient();
 
@@ -779,6 +780,11 @@ async function getOrCreateLeadForPhone(
       customFields: custom,
     },
   });
+  // Grupo não é um "lead" de venda de verdade — não dispara automação.
+  if (!isGroup) {
+    const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
+    runAutomations({ accountId, trigger: 'NEW_LEAD', leadId: newLead.id, io: globalIO }).catch(() => {});
+  }
   return newLead.id;
 }
 
@@ -936,7 +942,13 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
       if (!botHandled) {
         const templateDisparou = await maybeAutoReplyQR(accountId, leadId, text, from, numberId);
         if (!templateDisparou) {
-          await maybeAiAutoReplyQR(accountId, leadId, text, from, numberId);
+          // Automações de "mensagem recebida" entram na mesma exclusividade
+          // — só a IA responde por cima se nenhuma automação já respondeu.
+          const { maybeMessageReceivedAutomations } = require('./automation.service') as typeof import('./automation.service');
+          const automationHandled = await maybeMessageReceivedAutomations(accountId, leadId, text, globalIO);
+          if (!automationHandled) {
+            await maybeAiAutoReplyQR(accountId, leadId, text, from, numberId);
+          }
         }
       }
     }

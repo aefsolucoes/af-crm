@@ -429,6 +429,30 @@ export async function maybeSalesBotStep(accountId: string, leadId: string, text:
   }
 }
 
+/** Inicia um SalesBot num lead específico "de fora" (usado pela ação
+ *  `start_salesbot` do motor de Automações) — função NOVA, deliberadamente
+ *  sem tocar em `maybeSalesBotStep` (já em produção, testado por
+ *  palavra-chave). Respeita a mesma exclusividade: não inicia se o lead já
+ *  tem uma run em andamento. */
+export async function startSalesBotRun(accountId: string, leadId: string, botId: string, io: unknown): Promise<{ started: boolean; reason?: string }> {
+  const activeRun = await prisma.salesBotRun.findFirst({
+    where: { leadId, status: { in: ['RUNNING', 'WAITING_REPLY', 'WAITING_TIME'] } },
+  });
+  if (activeRun) return { started: false, reason: 'Lead já tem uma execução de SalesBot em andamento' };
+
+  const bot = await prisma.salesBot.findFirst({ where: { id: botId, accountId, active: true } });
+  if (!bot) return { started: false, reason: 'SalesBot não encontrado ou inativo' };
+
+  const flow = bot.flow as unknown as SalesBotFlow;
+  if (!flow?.steps?.length) return { started: false, reason: 'SalesBot sem passos configurados' };
+
+  const run = await prisma.salesBotRun.create({
+    data: { accountId, salesBotId: bot.id, leadId, status: 'RUNNING', currentStepId: flow.steps[0].id },
+  });
+  await executeStepsFrom(run, bot, flow.steps[0].id, io, '');
+  return { started: true };
+}
+
 /** Poll periódico (setInterval em index.ts) — retoma runs WAITING_TIME cujo
  *  prazo já chegou, e desiste de runs WAITING_REPLY cujo prazo de resposta
  *  venceu sem o lead responder. Vive no Postgres (não em memória/fila), então

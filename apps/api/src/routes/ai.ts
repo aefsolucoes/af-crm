@@ -15,6 +15,7 @@ import { deleteLead } from '../services/lead.service';
 import { effectivePermissions, PERMISSION_KEYS, PermissionKey } from '../lib/permissions';
 import { getOrCreateInboxPipeline, getScopeDepartmentIds, resolveCreateDepartmentId } from '../services/department.service';
 import { normalizeClientName } from '../lib/text';
+import { runAutomations } from '../services/automation.service';
 
 const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
 function sanitizePermsInput(input: unknown): Record<string, boolean> | null {
@@ -1594,6 +1595,9 @@ async function executeAgentTool(
 
     const lead = await findOrCreateLeadByPhone(accountId, phone, input.name ? String(input.name) : undefined, target);
     if (!lead) return { success: false, error: 'Não foi possível criar o lead (funil/usuário não configurado)' };
+    if (lead.created) {
+      runAutomations({ accountId, trigger: 'NEW_LEAD', leadId: lead.leadId, io }).catch(() => {});
+    }
     const result = await sendOutboundWhatsApp({
       accountId,
       leadId: lead.leadId,
