@@ -60,9 +60,9 @@ export function MorningReport() {
           : `Hoje você tem ${data.tasks.length} tarefa(s) e ${data.clients.length} cliente(s) esperando resposta.`}
       </p>
 
-      <div className="grid md:grid-cols-2 gap-4 mt-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
         {/* Tarefas */}
-        <div className="bg-white/10 rounded-xl p-3.5">
+        <div className="bg-white/10 rounded-xl p-3.5 min-w-0">
           <div className="flex items-center gap-2 text-sm font-semibold mb-2"><CheckSquare size={15} /> Suas tarefas</div>
           {data.tasks.length === 0 ? (
             <p className="text-xs text-white/60">Nenhuma tarefa pra hoje. 👏</p>
@@ -82,7 +82,7 @@ export function MorningReport() {
         </div>
 
         {/* Clientes esperando resposta */}
-        <div className="bg-white/10 rounded-xl p-3.5">
+        <div className="bg-white/10 rounded-xl p-3.5 min-w-0">
           <div className="flex items-center gap-2 text-sm font-semibold mb-2">
             <MessageCircle size={15} /> Clientes esperando resposta {data.number ? <span className="text-white/50 font-normal">· {data.number.label}</span> : null}
           </div>
