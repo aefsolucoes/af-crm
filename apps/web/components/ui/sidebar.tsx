@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, Home, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, MousePointerClick, Landmark,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, MousePointerClick, Landmark, X,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -40,7 +40,7 @@ const NAV: NavItem[] = [
 export function Sidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
-  const { collapsed, toggle, init } = useSidebarStore();
+  const { collapsed, toggle, init, mobileOpen, closeMobile } = useSidebarStore();
   const router = useRouter();
 
   // Pra decidir qual "Funil de Vendas <Setor>" mostrar — só busca se tiver
@@ -71,13 +71,36 @@ export function Sidebar() {
     init();
   }, [init]);
 
+  // Fecha o drawer mobile ao navegar (link clicado ou navegação
+  // programática) — cobre os dois casos sem precisar de onClick manual em
+  // cada item do menu.
+  useEffect(() => {
+    closeMobile();
+  }, [pathname, closeMobile]);
+
+  // Trava o scroll do body e fecha no Escape enquanto o drawer está aberto —
+  // mesmo padrão do Modal (components/ui/modal.tsx).
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeMobile(); };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [mobileOpen, closeMobile]);
+
   function handleLogout() {
     logout();
     router.push('/login');
   }
 
   return (
-    <aside className={cn('flex-shrink-0 app-sidebar-surface flex flex-col h-full transition-all duration-200', collapsed ? 'w-16' : 'w-60')}>
+    <>
+    {/* Desktop — rail fixo, some do fluxo abaixo do breakpoint md (drawer assume). */}
+    <aside className={cn('hidden md:flex flex-shrink-0 app-sidebar-surface flex-col h-full transition-all duration-200', collapsed ? 'w-16' : 'w-60')}>
       {/* Logo */}
       <div className={cn('py-5 border-b border-af-blue flex items-center', collapsed ? 'px-3 justify-center' : 'px-5 justify-between gap-3')}>
         <div className={cn('flex items-center gap-3 min-w-0', collapsed && 'gap-0')}>
@@ -161,5 +184,65 @@ export function Sidebar() {
         </div>
       )}
     </aside>
+
+    {/* Mobile — drawer off-canvas, mesmo padrão visual do Modal (backdrop +
+        Escape fecha), some acima do breakpoint md. Sempre expandido (rótulos
+        visíveis) — não tem sentido colapsar um drawer que já fecha sozinho. */}
+    {mobileOpen && (
+      <div className="md:hidden fixed inset-0 z-50 flex">
+        <div className="absolute inset-0 bg-black/50" onClick={closeMobile} />
+        <aside className="relative w-72 max-w-[85vw] app-sidebar-surface flex flex-col h-full shadow-2xl">
+          <div className="py-5 px-5 border-b border-af-blue flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 bg-af-mid rounded-lg flex items-center justify-center flex-shrink-0">
+                <LayoutDashboard size={16} className="text-white" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-white font-bold text-sm leading-tight truncate">AF CRM</p>
+                <p className="text-slate-400 text-xs truncate">A&F Soluções</p>
+              </div>
+            </div>
+            <button onClick={closeMobile} className="text-slate-400 hover:text-white transition-colors flex-shrink-0" title="Fechar">
+              <X size={20} />
+            </button>
+          </div>
+
+          <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
+            {nav.map(({ href, label, icon: Icon }) => {
+              const active = pathname.startsWith(href);
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  className={cn(
+                    'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                    active ? 'bg-af-mid text-white' : 'text-slate-300 hover:bg-af-blue hover:text-white'
+                  )}
+                >
+                  <Icon size={17} className="flex-shrink-0" />
+                  {label}
+                </Link>
+              );
+            })}
+          </nav>
+
+          {user && (
+            <div className="py-4 px-3 border-t border-af-blue">
+              <div className="flex items-center gap-3 px-2">
+                <Avatar name={user.name} size="sm" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-xs font-medium truncate">{user.name}</p>
+                  <p className="text-slate-400 text-xs truncate">{user.email}</p>
+                </div>
+                <button onClick={handleLogout} className="text-slate-400 hover:text-red-400 transition-colors" title="Sair">
+                  <LogOut size={15} />
+                </button>
+              </div>
+            </div>
+          )}
+        </aside>
+      </div>
+    )}
+    </>
   );
 }
