@@ -4,3 +4,11 @@
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+
+# Service Worker precisa sempre revalidar (evita CDN servir versão velha por
+# muito tempo, além da revalidação de 24h que o navegador já faz por spec).
+/sw.js
+  Cache-Control: no-cache
+
+/manifest.json
+  Cache-Control: public, max-age=3600

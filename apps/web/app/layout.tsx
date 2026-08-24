@@ -18,11 +18,29 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     initAuth();
   }, [initAuth]);
 
+  // Registra o Service Worker (public/sw.js) só em produção — em dev o
+  // `next dev` já recarrega tudo sozinho, um SW só atrapalharia com cache
+  // de HMR. Instalabilidade do PWA depende disso estar registrado.
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch((err) => console.warn('[PWA] Falha ao registrar o Service Worker:', err));
+    }
+  }, []);
+
   return (
     <html lang="pt-BR" suppressHydrationWarning>
       <head>
         <title>AF CRM — A&F Soluções Financeiras</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="theme-color" content="#0d2545" />
+        {/* iOS Safari não usa manifest.json pra instalabilidade — usa essas
+            meta tags + apple-touch-icon isoladamente. */}
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta name="apple-mobile-web-app-title" content="AF CRM" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+        <link rel="icon" href="/icons/icon-192.png" type="image/png" />
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body>
