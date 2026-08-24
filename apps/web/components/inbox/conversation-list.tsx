@@ -163,6 +163,13 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
               role="button"
               tabIndex={0}
               onClick={() => onSelect(conv.id)}
+              // No Safari/iOS, um elemento com estilo de :hover (esse tem
+              // hover:bg-* e um botão que só aparece com group-hover) gasta
+              // o primeiro toque simulando o hover — só o segundo dispara o
+              // clique de verdade. Um onTouchStart (mesmo vazio) avisa o
+              // WebKit que o toque já está sendo tratado direto, sem passar
+              // pela simulação de hover — resolve com um único toque.
+              onTouchStart={() => {}}
               className={cn(
                 'group w-full flex items-start gap-3 px-4 py-3 border-b border-[#222e35] text-left transition-colors cursor-pointer',
                 selectedId === conv.id ? 'bg-[#2a3942]' : 'hover:bg-[#202c33]'
