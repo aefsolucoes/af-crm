@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2 } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -46,8 +46,11 @@ interface ChatWindowProps {
   /** true = a IA responde esse cliente SOZINHA no WhatsApp, sem revisão humana. */
   aiAutoReplyActive?: boolean;
   onNewMessage: (msg: Message) => void;
-  /** Fecha a conversa (ESC), como no WhatsApp. */
+  /** Fecha a conversa (ESC), como no WhatsApp. No mobile também é o botão de voltar pra lista. */
   onClose?: () => void;
+  /** Abre o painel de dados do lead/grupo como overlay — só existe no mobile
+   *  (no desktop o painel já fica sempre visível ao lado, sem precisar abrir). */
+  onOpenInfo?: () => void;
 }
 
 type AIMode = 'grammar' | 'professional' | 'friendly' | 'fun';
@@ -127,7 +130,7 @@ function lastInboundChannel(messages: Message[]): { via: WhatsAppVia; numberId?:
   return null;
 }
 
-export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, onNewMessage, onClose }: ChatWindowProps) {
+export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, onNewMessage, onClose, onOpenInfo }: ChatWindowProps) {
   const router = useRouter();
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
@@ -725,6 +728,15 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
       {/* Header — WhatsApp dark */}
       <div className="relative z-10 flex items-center gap-3 px-4 py-3 text-[#e9edef] shadow-md" style={{ backgroundColor: '#202c33' }}>
+        {/* Voltar pra lista de conversas — só existe no mobile (desktop mostra
+            a lista sempre ao lado, não precisa de botão pra voltar). */}
+        <button
+          onClick={() => onClose?.()}
+          title="Voltar pra lista de conversas"
+          className="md:hidden flex-shrink-0 -ml-1 text-[#8696a0] hover:text-[#e9edef] transition-colors"
+        >
+          <ChevronLeft size={22} />
+        </button>
         <Avatar name={leadName} size="md" />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold truncate">{leadName}</p>
@@ -732,10 +744,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             {CHANNEL_ICONS[channel]} {CHANNEL_LABELS[channel]}
           </p>
         </div>
+        {/* Dados do lead/grupo — no mobile o painel não fica ao lado (não
+            cabe), abre como overlay ao tocar aqui. */}
+        {onOpenInfo && (
+          <button
+            onClick={onOpenInfo}
+            title="Ver dados do cliente"
+            className="md:hidden flex-shrink-0 text-[#8696a0] hover:text-[#e9edef] p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+          >
+            <Info size={18} />
+          </button>
+        )}
         <button
           onClick={handleCopyLink}
           title="Copiar link direto pra essa conversa — quem abrir (logado no CRM) cai direto aqui"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
+          className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
         >
           <Link2 size={13} />
           Copiar link
@@ -750,7 +773,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           )}
         >
           <Sparkles size={13} />
-          {aiActive ? 'IA ativa' : 'Ativar IA'}
+          <span className="hidden md:inline">{aiActive ? 'IA ativa' : 'Ativar IA'}</span>
         </button>
       </div>
 

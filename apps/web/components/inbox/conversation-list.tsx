@@ -76,7 +76,7 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
     );
 
   return (
-    <div className="flex flex-col h-full border-r border-[#222e35] bg-[#111b21] w-80 flex-shrink-0">
+    <div className="flex flex-col h-full border-r border-[#222e35] bg-[#111b21] w-full md:w-80 flex-shrink-0">
       {/* Busca por nome ou número */}
       <div className="px-3 pt-3">
         <div className="relative">

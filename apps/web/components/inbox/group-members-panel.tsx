@@ -1,6 +1,7 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
+import { cn } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
 import { Users, ShieldCheck, PanelRightClose } from 'lucide-react';
 
@@ -18,7 +19,7 @@ function fmtPhone(d: string): string {
   return `+${d}`;
 }
 
-export function GroupMembersPanel({ leadId, groupName, onHide }: { leadId: string; groupName: string; onHide?: () => void }) {
+export function GroupMembersPanel({ leadId, groupName, onHide, className }: { leadId: string; groupName: string; onHide?: () => void; className?: string }) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['group-members', leadId],
     queryFn: async () => (await api.get(`/api/whatsapp-qr/group/${leadId}/members`)).data as GroupMembers,
@@ -26,7 +27,7 @@ export function GroupMembersPanel({ leadId, groupName, onHide }: { leadId: strin
   });
 
   return (
-    <div className="w-80 flex-shrink-0 border-l border-[#222e35] bg-[#111b21] flex flex-col h-full">
+    <div className={cn('w-80 flex-shrink-0 border-l border-[#222e35] bg-[#111b21] flex flex-col h-full', className)}>
       <div className="px-4 py-4 border-b border-[#222e35]">
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-2 text-[#00a884]">

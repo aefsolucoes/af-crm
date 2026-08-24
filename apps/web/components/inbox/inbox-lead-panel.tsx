@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { LeadDetail, Stage } from '@/types';
+import { cn } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
 import { MovePipelineModal } from '@/components/lead/move-pipeline-modal';
@@ -18,9 +19,12 @@ interface InboxLeadPanelProps {
   /** Esconde o painel (some com a coluna toda) — pra quem quer mais espaço
    *  pra conversa. Volta por um botão que fica na borda (ver InboxPageInner). */
   onHide?: () => void;
+  /** Override de classe do container raiz — usado no mobile pra virar um
+   *  overlay full-screen em vez da coluna fixa de 384px do desktop. */
+  className?: string;
 }
 
-export function InboxLeadPanel({ lead, onRefresh, onHide }: InboxLeadPanelProps) {
+export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLeadPanelProps) {
   const [activePanel, setActivePanel] = useState<'dados' | 'atividades'>('dados');
   const [changingStage, setChangingStage] = useState(false);
   const [gateOpen, setGateOpen]           = useState(false);
@@ -91,7 +95,7 @@ export function InboxLeadPanel({ lead, onRefresh, onHide }: InboxLeadPanelProps)
         />
       )}
 
-      <div className="w-96 flex-shrink-0 border-l border-af-border app-column-surface flex flex-col overflow-hidden">
+      <div className={cn('w-96 flex-shrink-0 border-l border-af-border app-column-surface flex flex-col overflow-hidden', className)}>
 
         {/* ── Header do lead ── */}
         <div className="px-4 pt-4 pb-3 border-b border-af-border bg-af-light/30 flex-shrink-0">

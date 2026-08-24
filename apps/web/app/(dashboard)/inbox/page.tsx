@@ -11,6 +11,7 @@ import { Conversation, Message, LeadDetail } from '@/types';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { PanelRightOpen } from 'lucide-react';
+import { useIsMobile } from '@/hooks/use-media-query';
 
 // Lembra se o painel de dados do cliente/grupo deve ficar escondido — pra
 // quem prefere mais espaço pra conversa e não quer reesconder toda vez.
@@ -53,6 +54,11 @@ function InboxPageInner() {
   const [selectedId, setSelectedId] = useState<string | null>(leadIdParam);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [hideLeadPanel, setHideLeadPanel] = useState(readHideLeadPanel);
+  // No mobile as 3 colunas (lista/chat/painel) não cabem lado a lado — mostra
+  // um painel por vez. Lista some ao abrir uma conversa (ChatWindow ganha um
+  // botão de voltar); o painel de dados vira um overlay sob demanda.
+  const isMobile = useIsMobile();
+  const [showMobileInfo, setShowMobileInfo] = useState(false);
   const queryClient = useQueryClient();
 
   function toggleLeadPanel(hidden: boolean) {
@@ -145,27 +151,35 @@ function InboxPageInner() {
   const cf = ((lead as any)?.customFields || {}) as Record<string, string>;
   const displayName = cf.participante_1 || lead?.contact?.name || lead?.name || '';
 
+  // No mobile: lista cheia quando nada selecionado, chat cheio quando
+  // selecionado (nunca os dois ao mesmo tempo — não cabe). No desktop os
+  // dois sempre convivem lado a lado, como sempre foi.
+  const showList = !isMobile || !selectedId;
+  const showChatArea = !isMobile || !!selectedId;
+
   return (
     <div className="flex flex-col h-full">
       <Topbar title="Inbox" subtitle="Mensagens unificadas" />
-      <div className="flex flex-1 overflow-hidden">
-        <ConversationList
-          conversations={conversations || []}
-          selectedId={selectedId || undefined}
-          onSelect={(id) => { setSelectedId(id); setLocalMessages([]); }}
-          onToggleGroup={async (id, isGroup) => {
-            await api.put(`/api/leads/${id}`, { isGroup });
-            queryClient.invalidateQueries({ queryKey: ['conversations'] });
-          }}
-          onRefreshGroupNames={async () => {
-            await api.post('/api/whatsapp-qr/refresh-groups');
-            queryClient.invalidateQueries({ queryKey: ['conversations'] });
-          }}
-          whatsappNumbers={whatsappNumbers || []}
-          loading={loadingConvs}
-        />
+      <div className="flex flex-1 overflow-hidden relative">
+        {showList && (
+          <ConversationList
+            conversations={conversations || []}
+            selectedId={selectedId || undefined}
+            onSelect={(id) => { setSelectedId(id); setLocalMessages([]); setShowMobileInfo(false); }}
+            onToggleGroup={async (id, isGroup) => {
+              await api.put(`/api/leads/${id}`, { isGroup });
+              queryClient.invalidateQueries({ queryKey: ['conversations'] });
+            }}
+            onRefreshGroupNames={async () => {
+              await api.post('/api/whatsapp-qr/refresh-groups');
+              queryClient.invalidateQueries({ queryKey: ['conversations'] });
+            }}
+            whatsappNumbers={whatsappNumbers || []}
+            loading={loadingConvs}
+          />
+        )}
 
-        {selectedId && lead ? (
+        {showChatArea && (selectedId && lead ? (
           <>
             <ChatWindow
               leadId={selectedId}
@@ -174,20 +188,34 @@ function InboxPageInner() {
               notes={lead.notes}
               aiAutoReplyActive={(lead as any).aiAutoReplyActive}
               onNewMessage={handleNewMessage}
-              onClose={() => setSelectedId(null)}
+              onClose={() => { setSelectedId(null); setShowMobileInfo(false); }}
+              onOpenInfo={() => setShowMobileInfo(true)}
             />
-            {hideLeadPanel ? (
-              <button
-                onClick={() => toggleLeadPanel(false)}
-                title="Mostrar dados do cliente"
-                className="flex-shrink-0 w-6 border-l border-af-border app-column-surface flex items-center justify-center hover:bg-af-light/60 transition-colors"
-              >
-                <PanelRightOpen size={14} className="text-slate-400" />
-              </button>
-            ) : (lead as any).isGroup ? (
-              <GroupMembersPanel leadId={selectedId} groupName={displayName} onHide={() => toggleLeadPanel(true)} />
-            ) : (
-              <InboxLeadPanel lead={lead} onRefresh={handleRefresh} onHide={() => toggleLeadPanel(true)} />
+            {/* Painel de dados: desktop mostra sempre ao lado; mobile só como
+                overlay sob demanda (botão "i" no cabeçalho do chat). */}
+            {!isMobile && (
+              hideLeadPanel ? (
+                <button
+                  onClick={() => toggleLeadPanel(false)}
+                  title="Mostrar dados do cliente"
+                  className="flex-shrink-0 w-6 border-l border-af-border app-column-surface flex items-center justify-center hover:bg-af-light/60 transition-colors"
+                >
+                  <PanelRightOpen size={14} className="text-slate-400" />
+                </button>
+              ) : (lead as any).isGroup ? (
+                <GroupMembersPanel leadId={selectedId} groupName={displayName} onHide={() => toggleLeadPanel(true)} />
+              ) : (
+                <InboxLeadPanel lead={lead} onRefresh={handleRefresh} onHide={() => toggleLeadPanel(true)} />
+              )
+            )}
+            {isMobile && showMobileInfo && (
+              <div className="fixed inset-0 z-50 flex flex-col md:hidden">
+                {(lead as any).isGroup ? (
+                  <GroupMembersPanel leadId={selectedId} groupName={displayName} onHide={() => setShowMobileInfo(false)} className="w-full" />
+                ) : (
+                  <InboxLeadPanel lead={lead} onRefresh={handleRefresh} onHide={() => setShowMobileInfo(false)} className="w-full" />
+                )}
+              </div>
             )}
           </>
         ) : (
@@ -198,7 +226,7 @@ function InboxPageInner() {
               <p className="text-xs mt-1">para visualizar as mensagens</p>
             </div>
           </div>
-        )}
+        ))}
       </div>
     </div>
   );
