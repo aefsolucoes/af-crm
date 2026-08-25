@@ -91,9 +91,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       }
     }
 
-    // new_notification — evento exclusivo para som/badge (não duplica mensagem no chat)
-    function onNewNotification() {
-      triggerSound();
+    // new_notification — evento exclusivo para som/badge (não duplica mensagem
+    // no chat). Dispara pra mensagem recebida E enviada (o backend não
+    // distingue) — só toca som pra quem CHEGA (INBOUND); usuário reportou que
+    // tocava até quando ele mesmo mandava uma mensagem.
+    function onNewNotification({ message }: { leadId: string; message?: { direction?: string } }) {
+      if (message?.direction === 'INBOUND') triggerSound();
     }
 
     // assistant_question — outro colaborador pediu para o assistente perguntar
