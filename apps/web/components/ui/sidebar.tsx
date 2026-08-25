@@ -117,7 +117,7 @@ export function Sidebar() {
         {!collapsed && (
           <button
             onClick={toggle}
-            className="text-slate-400 hover:text-white transition-colors flex-shrink-0"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors flex-shrink-0"
             title="Esconder painel"
           >
             <PanelLeftClose size={18} />
@@ -128,7 +128,7 @@ export function Sidebar() {
       {collapsed && (
         <button
           onClick={toggle}
-          className="mx-auto mt-3 text-slate-400 hover:text-white transition-colors"
+          className="mx-auto mt-3 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
           title="Mostrar painel"
         >
           <PanelLeftOpen size={18} />

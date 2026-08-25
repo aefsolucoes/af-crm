@@ -200,14 +200,17 @@ function InboxPageInner() {
                 fique na barra, tanto de um lado quanto do outro". */}
             {!isMobile && (
               <>
+                {/* Transparente parado, cor só aparece no hover — mesmo
+                    padrão do botão "Esconder dados do cliente" de dentro do
+                    painel (usuário pediu pra ficar igual dos dois lados). */}
                 <button
                   onClick={() => toggleLeadPanel(!hideLeadPanel)}
                   title={hideLeadPanel ? 'Mostrar dados do cliente' : 'Esconder dados do cliente'}
-                  className="flex-shrink-0 w-8 border-l border-af-border bg-af-mid hover:bg-af-navy flex items-center justify-center transition-colors shadow-sm"
+                  className="group flex-shrink-0 w-8 border-l border-af-border hover:bg-af-mid flex items-center justify-center transition-colors"
                 >
                   {hideLeadPanel
-                    ? <PanelRightOpen size={18} className="text-white" />
-                    : <PanelRightClose size={18} className="text-white" />}
+                    ? <PanelRightOpen size={18} className="text-af-mid group-hover:text-white transition-colors" />
+                    : <PanelRightClose size={18} className="text-af-mid group-hover:text-white transition-colors" />}
                 </button>
                 {!hideLeadPanel && (
                   (lead as any).isGroup ? (
