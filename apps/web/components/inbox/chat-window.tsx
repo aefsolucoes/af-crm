@@ -247,6 +247,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [pendingMetaTemplate, setPendingMetaTemplate] = useState<MetaTemplate | null>(null);
   const [metaTemplateVars, setMetaTemplateVars] = useState<Record<number, string>>({});
   const [sendingTemplate, setSendingTemplate] = useState(false);
+  // Busca dentro do painel de templates — filtra tanto as respostas rápidas
+  // quanto os templates Meta pelo nome ou corpo do texto.
+  const [templateSearch, setTemplateSearch] = useState('');
 
   // ── Recuperação do erro "contato só tem @lid, sem telefone de verdade" ──
   // Em vez de um toast sem saída (o colaborador tinha que ir caçar sozinho
@@ -357,6 +360,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       return l.name.toLowerCase().includes(q) || (qDigits.length >= 3 && phone.includes(qDigits));
     })
     .slice(0, 30);
+
+  const templateQuery = templateSearch.trim().toLowerCase();
+  const filteredTemplates = !templateQuery
+    ? templates
+    : templates.filter((t) => t.name.toLowerCase().includes(templateQuery) || t.body.toLowerCase().includes(templateQuery));
+  const filteredMetaTemplates = !templateQuery
+    ? metaTemplates
+    : (metaTemplates || []).filter((t) => {
+        const body = t.components.find((c) => c.type === 'BODY')?.text || '';
+        return t.name.toLowerCase().includes(templateQuery) || body.toLowerCase().includes(templateQuery);
+      });
 
   // Só para o contador de 24h "tickar" (recalcula a cada minuto).
   const [, setNowTick] = useState(0);
@@ -585,6 +599,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     setShowTemplates(v => !v);
     setShowAI(false);
     setPendingMetaTemplate(null);
+    setTemplateSearch('');
     // Busca do banco (compartilhado pela equipe) — não do localStorage, que
     // ficava desatualizado (não refletia exclusão/criação feita por ninguém,
     // e às vezes até "ressuscitava" um template já excluído).
@@ -1121,11 +1136,33 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             </div>
           ) : (
             <>
+              {/* Busca — filtra respostas rápidas e templates Meta juntos,
+                  pelo nome ou pelo texto do corpo. */}
+              <div className="sticky top-0 z-10 p-2 bg-[#202c33] border-b border-[#222e35]">
+                <div className="relative">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8696a0] pointer-events-none" />
+                  <input
+                    autoFocus
+                    value={templateSearch}
+                    onChange={(e) => setTemplateSearch(e.target.value)}
+                    placeholder="Buscar template..."
+                    className="w-full pl-7 pr-7 py-1.5 text-sm rounded-lg bg-[#2a3942] text-[#e9edef] placeholder-[#8696a0] border border-transparent focus:outline-none focus:border-[#00a884]/40"
+                  />
+                  {templateSearch && (
+                    <button onClick={() => setTemplateSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8696a0] hover:text-[#e9edef]">
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
               <div className="p-2 space-y-1">
                 <p className="px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#8696a0]">Respostas rápidas</p>
-                {templates.length === 0 ? (
-                  <div className="px-2 py-2 text-xs text-[#8696a0]">Nenhuma cadastrada. Crie em Templates.</div>
-                ) : templates.map((t) => {
+                {filteredTemplates.length === 0 ? (
+                  <div className="px-2 py-2 text-xs text-[#8696a0]">
+                    {templateQuery ? 'Nenhuma resposta rápida encontrada.' : 'Nenhuma cadastrada. Crie em Templates.'}
+                  </div>
+                ) : filteredTemplates.map((t) => {
                   const cm = CATEGORY_META[t.category];
                   return (
                     <button
@@ -1150,9 +1187,11 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                 <p className="px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#8696a0]">Templates Meta (aprovados)</p>
                 {metaTemplates === null ? (
                   <div className="px-2 py-2 text-xs text-[#8696a0]">Carregando...</div>
-                ) : metaTemplates.length === 0 ? (
-                  <div className="px-2 py-2 text-xs text-[#8696a0]">Nenhum template aprovado ainda. Crie em Templates → WhatsApp (Meta).</div>
-                ) : metaTemplates.map((t) => {
+                ) : (filteredMetaTemplates || []).length === 0 ? (
+                  <div className="px-2 py-2 text-xs text-[#8696a0]">
+                    {templateQuery ? 'Nenhum template Meta encontrado.' : 'Nenhum template aprovado ainda. Crie em Templates → WhatsApp (Meta).'}
+                  </div>
+                ) : (filteredMetaTemplates || []).map((t) => {
                   const body = t.components.find((c) => c.type === 'BODY')?.text || '';
                   return (
                     <button
