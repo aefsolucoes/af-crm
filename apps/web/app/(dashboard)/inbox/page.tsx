@@ -206,7 +206,7 @@ function InboxPageInner() {
                 <button
                   onClick={() => toggleLeadPanel(!hideLeadPanel)}
                   title={hideLeadPanel ? 'Mostrar dados do cliente' : 'Esconder dados do cliente'}
-                  className="group flex-shrink-0 w-8 border-l border-af-border hover:bg-af-mid flex items-center justify-center transition-colors"
+                  className="group flex-shrink-0 w-8 border-l border-af-border bg-af-light hover:bg-af-mid flex items-center justify-center transition-colors"
                 >
                   {hideLeadPanel
                     ? <PanelRightOpen size={18} className="text-af-mid group-hover:text-white transition-colors" />
