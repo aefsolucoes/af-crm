@@ -37,10 +37,10 @@ export function GroupMembersPanel({ leadId, groupName, onHide, className }: { le
           {onHide && (
             <button
               onClick={onHide}
-              className="text-[#8696a0] hover:text-[#e9edef] transition-colors"
+              className="flex-shrink-0 p-1.5 rounded-lg text-[#8696a0] hover:text-[#e9edef] hover:bg-white/10 transition-colors"
               title="Esconder integrantes"
             >
-              <PanelRightClose size={14} />
+              <PanelRightClose size={18} />
             </button>
           )}
         </div>

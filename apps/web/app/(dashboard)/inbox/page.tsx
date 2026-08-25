@@ -195,12 +195,16 @@ function InboxPageInner() {
                 overlay sob demanda (botão "i" no cabeçalho do chat). */}
             {!isMobile && (
               hideLeadPanel ? (
+                // Cor sólida (não depende do fundo translúcido do tema, que
+                // em alguns temas claros deixava o ícone quase invisível —
+                // usuário reportou "preciso que esse botão de esconder seja
+                // mais visível").
                 <button
                   onClick={() => toggleLeadPanel(false)}
                   title="Mostrar dados do cliente"
-                  className="flex-shrink-0 w-6 border-l border-af-border app-column-surface flex items-center justify-center hover:bg-af-light/60 transition-colors"
+                  className="flex-shrink-0 w-8 border-l border-af-border bg-af-mid hover:bg-af-navy flex items-center justify-center transition-colors shadow-sm"
                 >
-                  <PanelRightOpen size={14} className="text-slate-400" />
+                  <PanelRightOpen size={18} className="text-white" />
                 </button>
               ) : (lead as any).isGroup ? (
                 <GroupMembersPanel leadId={selectedId} groupName={displayName} onHide={() => toggleLeadPanel(true)} />

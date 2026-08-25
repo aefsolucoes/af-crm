@@ -124,10 +124,10 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
               {onHide && (
                 <button
                   onClick={onHide}
-                  className="text-slate-400 hover:text-slate-600 transition-colors"
+                  className="flex-shrink-0 ml-1 p-1.5 rounded-lg text-af-mid hover:text-white hover:bg-af-mid transition-colors"
                   title="Esconder dados do cliente"
                 >
-                  <PanelRightClose size={14} />
+                  <PanelRightClose size={16} />
                 </button>
               )}
             </div>
