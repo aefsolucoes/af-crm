@@ -10,7 +10,7 @@ import { GroupMembersPanel } from '@/components/inbox/group-members-panel';
 import { Conversation, Message, LeadDetail } from '@/types';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { PanelRightOpen } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose } from 'lucide-react';
 import { useIsMobile } from '@/hooks/use-media-query';
 
 // Lembra se o painel de dados do cliente/grupo deve ficar escondido — pra
@@ -192,25 +192,31 @@ function InboxPageInner() {
               onOpenInfo={() => setShowMobileInfo(true)}
             />
             {/* Painel de dados: desktop mostra sempre ao lado; mobile só como
-                overlay sob demanda (botão "i" no cabeçalho do chat). */}
+                overlay sob demanda (botão "i" no cabeçalho do chat). A barra
+                de mostrar/esconder fica SEMPRE na mesma posição (borda entre
+                chat e painel), nos dois estados — antes cada lado tinha um
+                botão num lugar diferente (um preso no cabeçalho do painel,
+                outro só quando colapsado); usuário pediu "quero que ele
+                fique na barra, tanto de um lado quanto do outro". */}
             {!isMobile && (
-              hideLeadPanel ? (
-                // Cor sólida (não depende do fundo translúcido do tema, que
-                // em alguns temas claros deixava o ícone quase invisível —
-                // usuário reportou "preciso que esse botão de esconder seja
-                // mais visível").
+              <>
                 <button
-                  onClick={() => toggleLeadPanel(false)}
-                  title="Mostrar dados do cliente"
+                  onClick={() => toggleLeadPanel(!hideLeadPanel)}
+                  title={hideLeadPanel ? 'Mostrar dados do cliente' : 'Esconder dados do cliente'}
                   className="flex-shrink-0 w-8 border-l border-af-border bg-af-mid hover:bg-af-navy flex items-center justify-center transition-colors shadow-sm"
                 >
-                  <PanelRightOpen size={18} className="text-white" />
+                  {hideLeadPanel
+                    ? <PanelRightOpen size={18} className="text-white" />
+                    : <PanelRightClose size={18} className="text-white" />}
                 </button>
-              ) : (lead as any).isGroup ? (
-                <GroupMembersPanel leadId={selectedId} groupName={displayName} onHide={() => toggleLeadPanel(true)} />
-              ) : (
-                <InboxLeadPanel lead={lead} onRefresh={handleRefresh} onHide={() => toggleLeadPanel(true)} />
-              )
+                {!hideLeadPanel && (
+                  (lead as any).isGroup ? (
+                    <GroupMembersPanel leadId={selectedId} groupName={displayName} />
+                  ) : (
+                    <InboxLeadPanel lead={lead} onRefresh={handleRefresh} />
+                  )
+                )}
+              </>
             )}
             {isMobile && showMobileInfo && (
               <div className="fixed inset-0 z-50 flex flex-col md:hidden">
