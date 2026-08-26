@@ -210,7 +210,8 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
                     tabIndex={0}
                     title={isGroup ? 'Tirar de Grupos' : 'Mover para Grupos'}
                     onClick={(e) => { e.stopPropagation(); onToggleGroup(conv.id, !isGroup); }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-[#8696a0] hover:text-[#e9edef] p-0.5 rounded hover:bg-[#2a3942]"
+                    onTouchStart={() => {}}
+                    className="text-[#8696a0] hover:text-[#e9edef] p-0.5 rounded hover:bg-[#2a3942] transition-colors"
                   >
                     {isGroup ? <UserMinus size={14} /> : <Users size={14} />}
                   </span>
