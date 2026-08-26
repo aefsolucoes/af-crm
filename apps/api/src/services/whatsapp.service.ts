@@ -824,6 +824,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         // Para o dashboard inteiro — evento SEPARADO só para som/badge (sem duplicar mensagem)
         io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
       }
+      const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+      sendPushToAccount(accountId, { title: profileName || 'Nova mensagem', body: text || '📎 Anexo recebido', leadId }).catch(() => {});
 
       // Gatilho automático (Templates → "Disparar automaticamente") e
       // assistente de IA (Inbox → botão de IA na conversa) — só para texto de

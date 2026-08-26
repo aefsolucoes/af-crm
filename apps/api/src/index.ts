@@ -29,9 +29,11 @@ import departmentRoutes from './routes/departments';
 import browserAgentRoutes from './routes/browser-agent';
 import salesBotRoutes from './routes/salesbot';
 import automationRoutes from './routes/automations';
+import pushRoutes from './routes/push';
 import { failOrphanedRunningTasks } from './services/browser-agent.service';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
+import { configureWebPush } from './services/push.service';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
 import { generateRecurringTransactions } from './routes/finance';
@@ -88,6 +90,9 @@ app.use('/api/departments', departmentRoutes);
 app.use('/api/browser-agent', browserAgentRoutes);
 app.use('/api/salesbot', salesBotRoutes);
 app.use('/api/automations', automationRoutes);
+app.use('/api/push', pushRoutes);
+
+configureWebPush();
 
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
 

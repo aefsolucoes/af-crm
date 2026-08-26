@@ -928,6 +928,10 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
 
     globalIO?.to(`lead:${leadId}`).emit('new_message', message);
     globalIO?.emit('new_conversation', { leadId });
+    if (!fromMe) {
+      const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+      sendPushToAccount(accountId, { title: senderName || msg.pushName || 'Nova mensagem', body: text, leadId }).catch(() => {});
+    }
 
     // Gatilho automático (Templates → "Disparar automaticamente") e assistente
     // de IA (Inbox → botão de IA na conversa): só para mensagem de cliente de
@@ -1171,6 +1175,10 @@ async function processIncomingContactCard(msg: any, accountId: string, numberId:
       globalIO?.to(`lead:${leadId}`).emit('new_message', message);
     }
     globalIO?.emit('new_conversation', { leadId });
+    if (!fromMe) {
+      const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+      sendPushToAccount(accountId, { title: senderName || msg.pushName || 'Nova mensagem', body: '📇 Contato compartilhado', leadId }).catch(() => {});
+    }
   } catch (err) {
     console.error('[Baileys] Erro ao processar contato compartilhado:', err);
   }
@@ -1228,6 +1236,10 @@ async function processIncomingMedia(msg: any, accountId: string, numberId: strin
 
   globalIO?.to(`lead:${leadId}`).emit('new_message', message);
   globalIO?.emit('new_conversation', { leadId });
+  if (!fromMe) {
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(accountId, { title: senderName || msg.pushName || 'Nova mensagem', body: content, leadId }).catch(() => {});
+  }
   console.log(`[Baileys] Mídia ${buffer ? 'capturada' : 'registrada (sem bytes)'}: ${info.fileName} → lead ${leadId}`);
 
   // Mídia fica no CRM (banco) — o upload pro Drive agora é só sob-demanda.
