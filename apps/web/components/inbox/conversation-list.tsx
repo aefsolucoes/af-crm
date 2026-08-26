@@ -209,7 +209,14 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
                     role="button"
                     tabIndex={0}
                     title={isGroup ? 'Tirar de Grupos' : 'Mover para Grupos'}
-                    onClick={(e) => { e.stopPropagation(); onToggleGroup(conv.id, !isGroup); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const name = conv.contact?.name || conv.name;
+                      const ok = window.confirm(
+                        isGroup ? `Tirar "${name}" de Grupos?` : `Marcar "${name}" como Grupo?`
+                      );
+                      if (ok) onToggleGroup(conv.id, !isGroup);
+                    }}
                     onTouchStart={() => {}}
                     className="text-[#8696a0] hover:text-[#e9edef] p-0.5 rounded hover:bg-[#2a3942] transition-colors"
                   >
