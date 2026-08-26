@@ -361,6 +361,16 @@ model Message {
   pinned                Boolean             @default(false)
   pinnedAt              DateTime?
   starred               Boolean             @default(false)
+
+  // A tabela ficou sem índice nenhum até 2026-08 — e a Inbox (getConversations)
+  // busca, POR CONVERSA, a última mensagem e a contagem de não lidas. Sem
+  // índice isso vira varredura da tabela inteira várias vezes por carregamento,
+  // que foi degradando conforme as mensagens acumularam até a tela travar
+  // carregando. O índice por externalId é do caminho de RECEBIMENTO: todo
+  // webhook/mensagem nova faz findFirst({ externalId }) pra deduplicar.
+  @@index([leadId, createdAt])
+  @@index([leadId, read, direction])
+  @@index([externalId])
 }
 
 // Documento/imagem recebido no WhatsApp (guardado até ir para o Drive)

@@ -3,7 +3,7 @@ import { Conversation, WhatsAppNumber } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatDateTime } from '@/lib/utils';
 import { useState } from 'react';
-import { Users, UserMinus, Search, X, BadgeCheck } from 'lucide-react';
+import { Users, UserMinus, Search, X, BadgeCheck, AlertCircle, RefreshCw } from 'lucide-react';
 
 /** true se a conversa é um grupo: marcada manualmente OU com JID de grupo (@g.us). */
 function isGroupConversation(c: Conversation): boolean {
@@ -31,12 +31,16 @@ interface ConversationListProps {
   onRefreshGroupNames?: () => Promise<void>;
   whatsappNumbers?: WhatsAppNumber[];
   loading?: boolean;
+  /** A busca das conversas falhou (rede/servidor) — precisa aparecer como ERRO,
+   *  nunca como "nenhuma conversa" (some a lista inteira e parece perda de dados). */
+  loadError?: boolean;
+  onRetry?: () => void;
 }
 
 // 'ALL' | 'GROUPS' | <whatsappNumberId>
 type Filter = string;
 
-export function ConversationList({ conversations, selectedId, onSelect, onToggleGroup, onRefreshGroupNames, whatsappNumbers = [], loading }: ConversationListProps) {
+export function ConversationList({ conversations, selectedId, onSelect, onToggleGroup, onRefreshGroupNames, whatsappNumbers = [], loading, loadError, onRetry }: ConversationListProps) {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [search, setSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
@@ -227,7 +231,26 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
             </div>
           );
         })}
-        {!loading && filtered.length === 0 && (
+        {!loading && loadError && conversations.length === 0 && (
+          <div className="flex flex-col items-center justify-center gap-3 h-48 px-6 text-center">
+            <AlertCircle size={28} className="text-amber-400" />
+            <div>
+              <p className="text-sm text-[#e9edef] font-medium">Não consegui carregar as conversas</p>
+              <p className="text-xs text-[#8696a0] mt-1">
+                Falha de conexão com o servidor — nada foi perdido, é só recarregar.
+              </p>
+            </div>
+            {onRetry && (
+              <button
+                onClick={onRetry}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-medium bg-[#00a884] text-[#111b21] hover:bg-[#02c093] transition-colors"
+              >
+                <RefreshCw size={12} /> Tentar de novo
+              </button>
+            )}
+          </div>
+        )}
+        {!loading && !(loadError && conversations.length === 0) && filtered.length === 0 && (
           <div className="flex items-center justify-center h-40 text-[#8696a0] text-sm">
             Nenhuma conversa encontrada
           </div>

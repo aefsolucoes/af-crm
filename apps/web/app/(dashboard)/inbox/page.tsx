@@ -26,7 +26,11 @@ function storeHideLeadPanel(hidden: boolean) {
 }
 
 async function fetchConversations(): Promise<Conversation[]> {
-  const { data } = await api.get('/api/messages');
+  // Timeout explícito: sem ele, uma consulta lenta no servidor deixava a lista
+  // presa no esqueleto de carregamento pra sempre, sem erro e sem retry —
+  // parecia que "sumiram todas as conversas". Melhor falhar e mostrar o botão
+  // de tentar de novo do que pendurar em silêncio.
+  const { data } = await api.get('/api/messages', { timeout: 20000 });
   return data;
 }
 
@@ -75,10 +79,14 @@ function InboxPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadIdParam]);
 
-  const { data: conversations, isLoading: loadingConvs } = useQuery({
+  const { data: conversations, isLoading: loadingConvs, isError: convsError, refetch: refetchConvs } = useQuery({
     queryKey: ['conversations'],
     queryFn: fetchConversations,
     refetchInterval: 30000, // rede de segurança; o tempo real vem pelo socket abaixo
+    // Blip de rede/servidor não pode zerar a lista: tenta de novo sozinho antes
+    // de desistir, e o que já tinha carregado continua na tela enquanto isso.
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
   });
 
   // Atualiza a lista de conversas em TEMPO REAL (sem esperar o poll de 30s).
@@ -176,6 +184,8 @@ function InboxPageInner() {
             }}
             whatsappNumbers={whatsappNumbers || []}
             loading={loadingConvs}
+            loadError={convsError}
+            onRetry={() => { refetchConvs(); }}
           />
         )}
 
