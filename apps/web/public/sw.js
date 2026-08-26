@@ -79,3 +79,46 @@ self.addEventListener('fetch', (event) => {
     })
   );
 });
+
+// ── Web Push ────────────────────────────────────────────────────────────
+// Payload vem do backend (push.service.ts) como JSON: { title, body, url }.
+self.addEventListener('push', (event) => {
+  let data = { title: 'AF CRM', body: 'Nova mensagem recebida.', url: '/inbox' };
+  try {
+    if (event.data) data = { ...data, ...event.data.json() };
+  } catch {
+    // payload não veio em JSON — mantém o fallback acima
+  }
+
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      data: { url: data.url || '/inbox' },
+      tag: data.url || 'af-crm-notification', // notificações da mesma conversa se substituem em vez de empilhar
+      renotify: true,
+    })
+  );
+});
+
+// Clique na notificação: foca uma aba já aberta do CRM (navegando pra
+// conversa) ou abre uma nova quando não há nenhuma.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = event.notification.data?.url || '/inbox';
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientsList) => {
+      for (const client of clientsList) {
+        const clientUrl = new URL(client.url);
+        if (clientUrl.origin === self.location.origin && 'focus' in client) {
+          client.focus();
+          if ('navigate' in client) client.navigate(targetUrl);
+          return;
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
+    })
+  );
+});

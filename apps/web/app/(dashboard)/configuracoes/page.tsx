@@ -4,8 +4,72 @@ import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2 } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, QrCode, Wifi, WifiOff, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2 } from 'lucide-react';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
+import { usePushSubscription } from '@/hooks/use-push-subscription';
+
+// ── Notificação push (chega no celular com o app fechado/em 2º plano) ──────
+function PushNotificationCard() {
+  const { status, busy, subscribe, unsubscribe } = usePushSubscription();
+
+  if (status === 'unsupported') return null; // navegador sem suporte a Web Push — não mostra a opção
+
+  const isOn = status === 'subscribed';
+
+  return (
+    <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
+      <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border bg-gradient-to-r from-af-blue to-af-mid">
+        <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+          <Bell size={22} className="text-white" />
+        </div>
+        <div>
+          <h2 className="text-white font-bold text-base">Notificação Push</h2>
+          <p className="text-white/70 text-xs">Receba um aviso no celular mesmo com o app fechado</p>
+        </div>
+      </div>
+
+      <div className="px-6 py-5 space-y-3">
+        {status === 'denied' ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5">
+            <p className="text-xs text-amber-700">
+              <strong>🔕 Notificações bloqueadas.</strong> Você negou a permissão antes — pra ativar, libere notificações pra este site nas configurações do navegador (ou do app instalado) e recarregue a página.
+            </p>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 p-3.5 rounded-xl border border-af-border">
+            {isOn ? (
+              <Bell size={20} className="text-af-blue flex-shrink-0" />
+            ) : (
+              <BellOff size={20} className="text-slate-400 flex-shrink-0" />
+            )}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-slate-800">
+                {isOn ? 'Notificações ativadas' : 'Notificações desativadas'}
+              </p>
+              <p className="text-xs text-slate-400">
+                {isOn
+                  ? 'Chega um aviso sempre que alguém falar com um dos WhatsApp, mesmo com o app fechado.'
+                  : 'Ative para receber um aviso no celular quando chegar mensagem, mesmo com o app fechado.'}
+              </p>
+            </div>
+            <button
+              onClick={() => (isOn ? unsubscribe() : subscribe())}
+              disabled={busy}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs rounded-lg font-medium transition-colors flex-shrink-0 disabled:opacity-60 ${
+                isOn
+                  ? 'border border-af-border text-slate-500 hover:bg-slate-100'
+                  : 'bg-af-blue text-white hover:bg-af-mid'
+              }`}
+            >
+              {busy ? <Loader2 size={12} className="animate-spin" /> : null}
+              {isOn ? 'Desativar' : 'Ativar'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 type Tab = 'api' | 'qr' | 'sons' | 'ia' | 'aparencia' | 'agente' | 'drive' | 'setores';
 
@@ -134,6 +198,8 @@ export default function ConfiguracoesPage() {
           {tab === 'api' && <ApiOficialTab />}
           {/* ── Sons Tab ── */}
           {tab === 'sons' && (
+            <div className="space-y-6">
+            <PushNotificationCard />
             <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
               <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border bg-gradient-to-r from-violet-600 to-indigo-600">
                 <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
@@ -203,6 +269,7 @@ export default function ConfiguracoesPage() {
                   </p>
                 </div>
               </div>
+            </div>
             </div>
           )}
 
