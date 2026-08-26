@@ -8,6 +8,7 @@ import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
 import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
+import { useIsMobile } from '@/hooks/use-media-query';
 
 type SoundKey = 'whatsapp' | 'ding' | 'pop' | 'chime' | 'bell' | 'soft' | 'alert' | 'none';
 
@@ -48,6 +49,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { user, init } = useAuthStore();
   const router = useRouter();
   const pathname = usePathname();
+  const isMobile = useIsMobile();
   const lastSoundRef = useRef<number>(0);
 
   useEffect(() => {
@@ -131,7 +133,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {children}
       </main>
       <ToastContainer />
-      <SupportChatButton />
+      {/* No mobile, dentro da Inbox, esse botão flutuante fica em cima da
+          caixa de digitar/enviar mensagem — atrapalha encaminhar/responder.
+          No desktop tem espaço de sobra (não esconde nada), então some só
+          nesse caso específico. */}
+      {!(isMobile && pathname?.startsWith('/inbox')) && <SupportChatButton />}
     </div>
   );
 }
