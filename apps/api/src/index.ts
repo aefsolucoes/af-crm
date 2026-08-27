@@ -36,6 +36,7 @@ import { checkInactivityAutomations } from './services/automation.service';
 import { configureWebPush } from './services/push.service';
 import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
+import { syncAllKnowledgeBases } from './services/knowledge.service';
 import { generateRecurringTransactions } from './routes/finance';
 
 const app = express();
@@ -253,4 +254,16 @@ httpServer.listen(PORT, () => {
       checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade:', err?.message));
     }, AUTOMATION_INACTIVITY_POLL_MS);
   }, 90 * 1000);
+
+  // Base de Conhecimento: sincroniza sozinha a cada 15min, sem precisar
+  // clicar em "Sincronizar" toda vez que alguém sobe um arquivo novo na
+  // pasta do Drive — pedido do usuário. syncKnowledgeBase já é idempotente
+  // (pula arquivo que não mudou), então rodar em intervalo é barato.
+  const KNOWLEDGE_SYNC_MS = 15 * 60 * 1000;
+  setTimeout(() => {
+    syncAllKnowledgeBases().catch((err) => console.error('[Base de Conhecimento] Sync automático (boot):', err?.message));
+    setInterval(() => {
+      syncAllKnowledgeBases().catch((err) => console.error('[Base de Conhecimento] Sync automático:', err?.message));
+    }, KNOWLEDGE_SYNC_MS);
+  }, 3 * 60 * 1000);
 });

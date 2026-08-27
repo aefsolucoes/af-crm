@@ -303,3 +303,29 @@ export async function searchKnowledge(accountId: string, query: string, topK = 6
   return scored.filter((s) => s.score > 0.3).slice(0, topK);
 }
 
+/**
+ * Roda syncKnowledgeBase para TODA conta que tem uma pasta configurada —
+ * chamada num intervalo (ver index.ts), pra ninguém precisar clicar em
+ * "Sincronizar" toda vez que sobe um arquivo novo na pasta do Drive. Segura
+ * (idempotente): syncKnowledgeBase já pula arquivo que não mudou desde a
+ * última vez (por modifiedTime), então rodar de novo em cima do que já
+ * estava sincronizado não reprocessa/reembeda à toa. Uma conta falhando
+ * (Drive desconectado, sem crédito de embedding etc) não impede as outras.
+ */
+export async function syncAllKnowledgeBases(): Promise<void> {
+  const configs = await prisma.agentConfig.findMany({
+    where: { knowledgeFolderId: { not: null } },
+    select: { accountId: true },
+  });
+  for (const cfg of configs) {
+    try {
+      const result = await syncKnowledgeBase(cfg.accountId);
+      if (result.indexed > 0 || result.failed > 0) {
+        console.log(`[Base de Conhecimento] Sync automático accountId=${cfg.accountId}: ${result.indexed} indexados, ${result.skipped} sem mudança, ${result.failed} falhas`);
+      }
+    } catch (err) {
+      console.error(`[Base de Conhecimento] Sync automático falhou para accountId=${cfg.accountId}:`, (err as any)?.message);
+    }
+  }
+}
+
