@@ -494,6 +494,20 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
   const leadNames = new Map(leads.map(l => [l.id, l.name]));
 
   const techFolder = await createFolder(accountId, WHATSAPP_ARCHIVE_FOLDER, conn.rootFolderId);
+  // Subpasta por cliente, MESMA estrutura do auto-upload (autoUploadAttachment
+  // ToDrive) — os dois caminhos escrevem na mesma pasta técnica, então tinham
+  // que concordar. Antes aqui era arquivo solto com o nome do cliente no
+  // prefixo, e lá era subpasta: a pasta técnica ficava com os dois formatos
+  // misturados. Cache por lead pra não repetir a busca de pasta no Drive a
+  // cada anexo do mesmo cliente dentro da mesma rodada.
+  const leadFolderIds = new Map<string, string>();
+  async function folderForLead(leadId: string, leadName: string): Promise<string> {
+    const cached = leadFolderIds.get(leadId);
+    if (cached) return cached;
+    const f = await createFolder(accountId, leadName, techFolder.id);
+    leadFolderIds.set(leadId, f.id);
+    return f.id;
+  }
 
   let archived = 0;
   let errors = 0;
@@ -508,10 +522,10 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
       });
       if (!withData?.data) continue; // já foi arquivado por outro caminho nesse meio-tempo
       const up = await uploadFile(accountId, {
-        name: `${leadName} — ${att.fileName}`,
+        name: att.fileName,
         mimeType: att.mimeType,
         data: Buffer.from(withData.data),
-        parentId: techFolder.id,
+        parentId: await folderForLead(att.leadId, leadName),
       });
       await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
       archived++;
