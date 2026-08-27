@@ -6,7 +6,7 @@ import { sendOutboundWhatsApp, sendOutboundMedia, sendOutboundWhatsAppTemplate, 
 import { listMetaTemplates, createMetaTemplate, TemplateCategory } from '../services/whatsapp.service';
 import { searchKnowledge, learnFromWhatsAppConversations } from '../services/knowledge.service';
 import {
-  organizeLeadDocsToDrive, downloadDriveFile, findFolderByNameUnderRoot, listFolderContents,
+  organizeLeadDocsToDrive, downloadDriveFile, downloadDriveFileForVision, convertHeicIfNeeded, HEIC_MIME_TYPES, findFolderByNameUnderRoot, listFolderContents,
   createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink, findFilesInFolderTree,
   listFolders, findFoldersByNamesInTree, listAllFilesInFolderTree, uploadFile, extractFolderId,
 } from '../services/google.service';
@@ -586,7 +586,11 @@ const AGENT_TOOLS = [
   },
 ];
 
-const DRIVE_DOC_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+// HEIC/HEIF (foto de iPhone) entra na lista de "documento reconhecido" — o
+// download em si converte pra JPEG (downloadDriveFileForVision), a Anthropic
+// não lê HEIC/HEIF direto. Sem isso, RG/comprovante em HEIC sumia calado de
+// toda conferência de documento (achado num caso real).
+const DRIVE_DOC_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', ...HEIC_MIME_TYPES];
 // Nome contém termos comuns de documento — usado só pra priorizar QUAIS
 // documentos baixar primeiro dentro do orçamento abaixo, nunca pra filtrar
 // (documento sem nome "óbvio" ainda entra, só fica por último). Documento de
@@ -678,8 +682,8 @@ export async function resolveClientDriveDocuments(
   const docs: { name: string; mimeType: string; buffer: Buffer }[] = [];
   for (const f of chosen) {
     try {
-      const buffer = await downloadDriveFile(accountId, f.id, f.mimeType);
-      docs.push({ name: f.name, mimeType: f.mimeType, buffer });
+      const { buffer, mimeType } = await downloadDriveFileForVision(accountId, f.id, f.mimeType);
+      docs.push({ name: f.name, mimeType, buffer });
     } catch {
       deixadosDeFora.push(f.name);
     }
@@ -803,8 +807,8 @@ export async function resolveClientImovelDocuments(
   const docs: { name: string; mimeType: string; buffer: Buffer }[] = [];
   for (const f of allFiles.slice(0, MAX_DOCS)) {
     try {
-      const buffer = await downloadDriveFile(accountId, f.id, f.mimeType);
-      docs.push({ name: f.name, mimeType: f.mimeType, buffer });
+      const { buffer, mimeType } = await downloadDriveFileForVision(accountId, f.id, f.mimeType);
+      docs.push({ name: f.name, mimeType, buffer });
     } catch { /* segue sem esse arquivo */ }
   }
   if (docs.length === 0) return { ok: false, error: 'Não consegui baixar nenhum documento da subpasta "Imóvel".' };
@@ -1650,7 +1654,7 @@ async function executeAgentTool(
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId } });
     if (!lead) return { success: false, error: 'Lead não encontrado' };
 
-    const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+    const SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', ...HEIC_MIME_TYPES];
     let buffer: Buffer | null = null;
     let mimeType = '';
     let fileName = '';
@@ -1716,6 +1720,15 @@ async function executeAgentTool(
 
     if (!buffer) return { success: false, error: 'Nenhum documento (foto ou PDF) encontrado — nem na pasta do cliente no Drive, nem na conversa do WhatsApp.' };
     if (!SUPPORTED.includes(mimeType)) return { success: false, error: `Tipo de arquivo não suportado para leitura (${mimeType}). Peça uma foto (JPG/PNG) ou PDF do documento.` };
+
+    // HEIC/HEIF (foto de iPhone) — a Anthropic não lê direto, converte pra JPEG.
+    if (HEIC_MIME_TYPES.includes(mimeType)) {
+      try {
+        ({ buffer, mimeType } = await convertHeicIfNeeded(buffer, mimeType));
+      } catch (err: any) {
+        return { success: false, error: err?.message || 'Falha ao converter a foto HEIC/HEIF.' };
+      }
+    }
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return { success: false, error: 'ANTHROPIC_API_KEY não configurada' };
@@ -1875,11 +1888,12 @@ async function executeAgentTool(
       }
       const escolhido = candidatos[0];
       try {
-        refBuffer = await downloadDriveFile(accountId, escolhido.id, escolhido.mimeType);
+        const downloaded = await downloadDriveFileForVision(accountId, escolhido.id, escolhido.mimeType);
+        refBuffer = downloaded.buffer;
+        refMimeType = downloaded.mimeType;
       } catch (err: any) {
         return { success: false, error: `Falha ao baixar "${escolhido.name}" do Drive: ${err?.message || 'erro desconhecido'}` };
       }
-      refMimeType = escolhido.mimeType;
       refFileName = escolhido.name;
       refLabel = `arquivo "${escolhido.name}" já salvo na pasta do cliente no Drive${escolhido.path ? ` (em ${escolhido.path})` : ''}`;
       excludeFileId = escolhido.id;

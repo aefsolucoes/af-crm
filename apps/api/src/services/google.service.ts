@@ -1,6 +1,7 @@
 import { google } from 'googleapis';
 import { Readable } from 'stream';
 import { PrismaClient } from '@prisma/client';
+import convertHeic from 'heic-convert';
 
 const prisma = new PrismaClient();
 
@@ -274,6 +275,37 @@ export async function downloadDriveFile(accountId: string, fileId: string, mimeT
     { responseType: 'arraybuffer' },
   );
   return Buffer.from(res.data as ArrayBuffer);
+}
+
+/** HEIC/HEIF = formato padrão de foto do iPhone. A Anthropic não lê esse
+ *  formato direto (só JPEG/PNG/GIF/WebP) — achado num caso real: a foto do
+ *  RG e do comprovante de residência de um cliente estavam em HEIC e
+ *  sumiam CALADAS de toda conferência de documento (nem entravam, nem
+ *  apareciam como "deixado de fora" — o filtro de tipo simplesmente as
+ *  descartava antes de qualquer outra lógica rodar). */
+export const HEIC_MIME_TYPES = ['image/heic', 'image/heif'];
+
+/** Converte um buffer HEIC/HEIF pra JPEG — usado tanto pra arquivo baixado
+ *  do Drive quanto pra anexo do WhatsApp já salvo no banco (mesmo formato,
+ *  duas origens). Se o mimeType não for HEIC/HEIF, devolve sem mexer. */
+export async function convertHeicIfNeeded(buffer: Buffer, mimeType: string): Promise<{ buffer: Buffer; mimeType: string }> {
+  if (!HEIC_MIME_TYPES.includes(mimeType)) return { buffer, mimeType };
+  try {
+    const converted = await convertHeic({ buffer, format: 'JPEG', quality: 0.92 });
+    return { buffer: Buffer.from(converted), mimeType: 'image/jpeg' };
+  } catch (err) {
+    console.error('[Drive] Falha ao converter HEIC/HEIF:', (err as any)?.message);
+    throw new Error('Falha ao converter a foto (formato HEIC/HEIF) para um formato legível.');
+  }
+}
+
+/** Baixa um arquivo do Drive já pronto pra mandar pra visão da IA —
+ *  converte HEIC/HEIF pra JPEG automaticamente (ver HEIC_MIME_TYPES).
+ *  Devolve o mimeType efetivo do buffer retornado, que pode não ser mais o
+ *  mimeType original do arquivo no Drive. */
+export async function downloadDriveFileForVision(accountId: string, fileId: string, mimeType: string): Promise<{ buffer: Buffer; mimeType: string }> {
+  const buffer = await downloadDriveFile(accountId, fileId, mimeType);
+  return convertHeicIfNeeded(buffer, mimeType);
 }
 
 /**
