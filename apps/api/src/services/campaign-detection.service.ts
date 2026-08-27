@@ -13,10 +13,11 @@ const prisma = new PrismaClient();
  * conversa já existente, pra não mover ninguém sem querer no meio do
  * atendimento.
  *
- * Cadastro de novas campanhas: adicionar um item em CAMPAIGN_SIGNATURES.
- * Hoje só "Crédito com Garantia de Imóvel" (Home Equity) está confirmado —
- * Consórcio e Habitação entram do mesmo jeito assim que eu tiver o texto real
- * dessas fichas.
+ * Cadastro de novas campanhas: adicionar um item em CAMPAIGN_SIGNATURES, com
+ * o mapa de campos DESSA campanha (o mesmo rótulo "Prazo" significa coisas
+ * diferentes em fichas diferentes — Home Equity guarda texto solto
+ * (prazo_financ), Consórcio guarda só o número de meses (prazo_consorcio) —
+ * por isso o mapa é por campanha, não global).
  */
 
 function stripAccents(s: string): string {
@@ -25,6 +26,9 @@ function stripAccents(s: string): string {
 function norm(s: string): string {
   return stripAccents(s).toLowerCase().trim();
 }
+
+type FieldKind = 'text' | 'number' | 'date';
+type FieldMap = Record<string, { key: string; kind: FieldKind }>;
 
 interface CampaignSignature {
   /** Nome só para log/depuração. */
@@ -35,22 +39,13 @@ interface CampaignSignature {
   departmentName: string;
   /** Substring (normalizada) que precisa aparecer no NOME do estágio-alvo. */
   stageMarker: string;
+  /** Rótulo da ficha (normalizado) -> key do FieldDefinition (prisma/seed.ts).
+   *  Match é EXATO no rótulo inteiro depois de normalizar — de propósito:
+   *  "nome" não pode casar com "nome da mãe" por conter a palavra. */
+  fields: FieldMap;
 }
 
-const CAMPAIGN_SIGNATURES: CampaignSignature[] = [
-  {
-    label: 'Home Equity — Crédito com Garantia de Imóvel',
-    marker: 'proposta de credito com garantia de imovel',
-    departmentName: 'Home Equity',
-    stageMarker: 'prospec', // casa "Prospecção", "Prospecção Home Equity" etc.
-  },
-];
-
-/** Campo da ficha (rótulo como vem na mensagem, já normalizado, SEM acento/
- *  caixa) -> key do FieldDefinition (ver prisma/seed.ts). Match é EXATO no
- *  rótulo inteiro depois de normalizar — de propósito: "nome" não pode casar
- *  com "nome da mae" por conter a palavra. */
-const FIELD_LABEL_MAP: Record<string, { key: string; kind: 'text' | 'number' | 'date' }> = {
+const HOME_EQUITY_FIELDS: FieldMap = {
   'nome': { key: 'participante_1', kind: 'text' },
   'cpf': { key: 'cpf_1', kind: 'text' },
   'nascimento': { key: 'nascimento_1', kind: 'date' },
@@ -58,18 +53,47 @@ const FIELD_LABEL_MAP: Record<string, { key: string; kind: 'text' | 'number' | '
   'email': { key: 'email_1', kind: 'text' },
   'celular': { key: 'telefone_1', kind: 'text' },
   'renda bruta': { key: 'renda_1', kind: 'number' },
-  // Home Equity — seção "SIMULAÇÃO — CRÉDITO COM GARANTIA"
+  // seção "SIMULAÇÃO — CRÉDITO COM GARANTIA"
   'imovel': { key: 'valor_imovel', kind: 'number' },
   'credito': { key: 'valor_credito', kind: 'number' },
-  'prazo': { key: 'prazo_financ', kind: 'text' },
+  'prazo': { key: 'prazo_financ', kind: 'text' }, // TEXT: guarda "60 meses" como veio
   '1ª parcela estimada': { key: 'primeira_parcela', kind: 'number' },
 };
 
+const CONSORCIO_FIELDS: FieldMap = {
+  'nome': { key: 'participante_1', kind: 'text' },
+  'cpf': { key: 'cpf_1', kind: 'text' },
+  'renda bruta mensal': { key: 'renda_1', kind: 'number' },
+  'credito desejado': { key: 'credito_consorcio', kind: 'number' },
+  'prazo': { key: 'prazo_consorcio', kind: 'number' }, // NUMBER aqui: só "120", sem "meses"
+  'parcela ate a contemplacao': { key: 'parcela_consorcio', kind: 'number' },
+  // "Endereço" e "Parcela após a contemplação" ficam de fora: não existe campo
+  // pra endereço completo nem pra 2ª parcela no card — regra é não inventar
+  // campo que não existe.
+};
+
+const CAMPAIGN_SIGNATURES: CampaignSignature[] = [
+  {
+    label: 'Home Equity — Crédito com Garantia de Imóvel',
+    marker: 'proposta de credito com garantia de imovel',
+    departmentName: 'Home Equity',
+    stageMarker: 'prospec', // casa "Prospecção", "Prospecção Home Equity" etc.
+    fields: HOME_EQUITY_FIELDS,
+  },
+  {
+    label: 'Consórcio',
+    marker: 'tenho interesse no consorcio', // casa qualquer produto: "Consórcio Volkswagen", "Consórcio de Imóvel" etc.
+    departmentName: 'Consórcio',
+    stageMarker: 'prospec',
+    fields: CONSORCIO_FIELDS,
+  },
+];
+
 const SKIP_VALUES = new Set(['—', '-', '', 'nao informada', 'nao informado']);
 
-/** "R$ 100 mil" / "R$ 1.508,38" / "50000" -> "100000" / "1508.38" / "50000"
- *  (número puro, sem separador de milhar — convenção dos campos NUMBER, ver
- *  lead-sidebar.tsx normalizeForSave). */
+/** "R$ 100 mil" / "R$ 1.508,38" / "120 meses" / "50000" -> "100000" /
+ *  "1508.38" / "120" / "50000" (número puro, sem separador de milhar —
+ *  convenção dos campos NUMBER, ver lead-sidebar.tsx normalizeForSave). */
 function parseMoneyOrNumber(raw: string): string | null {
   let s = raw.trim().toLowerCase();
   const isMil = /\bmil\b/.test(s);
@@ -85,9 +109,9 @@ function parseMoneyOrNumber(raw: string): string | null {
 }
 
 /** Lê "Campo: valor" (pode ter mais de um por linha, separado por " | ") e
- *  devolve só os campos que a gente reconhece. Ignora cabeçalho de seção
- *  (emoji, sem dois-pontos) e placeholder ("—", "não informada"). */
-function parseFicha(text: string): Record<string, string> {
+ *  devolve só os campos que ESSA campanha reconhece. Ignora cabeçalho de
+ *  seção (emoji, sem dois-pontos) e placeholder ("—", "não informada"). */
+function parseFicha(text: string, fieldMap: FieldMap): Record<string, string> {
   const out: Record<string, string> = {};
   for (const rawLine of text.split('\n')) {
     for (const part of rawLine.split('|')) {
@@ -97,7 +121,7 @@ function parseFicha(text: string): Record<string, string> {
       const value = part.slice(idx + 1).replace(/[*_~`]/g, '').trim();
       if (!label || !value) continue;
       if (SKIP_VALUES.has(norm(value))) continue;
-      const field = FIELD_LABEL_MAP[label];
+      const field = fieldMap[label];
       if (!field) continue;
       const parsed = field.kind === 'number' ? parseMoneyOrNumber(value) : value;
       if (parsed !== null && parsed !== '') out[field.key] = parsed;
@@ -140,7 +164,7 @@ export async function detectCampaignRoute(accountId: string, text: string): Prom
   for (const p of pipelines) {
     const stage = p.stages.find((st) => norm(st.name).includes(sig.stageMarker));
     if (stage) {
-      return { signature: sig.label, pipelineId: p.id, stageId: stage.id, fields: parseFicha(text) };
+      return { signature: sig.label, pipelineId: p.id, stageId: stage.id, fields: parseFicha(text, sig.fields) };
     }
   }
   console.warn(`[Campanha] "${sig.label}" detectada, mas nenhum funil do setor "${sig.departmentName}" tem estágio com "${sig.stageMarker}" no nome.`);
