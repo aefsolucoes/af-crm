@@ -738,6 +738,37 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
   return results;
 }
 
+/** Chama a Anthropic pedindo uma resposta em JSON e faz o parse, tentando de
+ *  novo (1x por padrão) se o texto vier com JSON malformado — achado num caso
+ *  real: o modelo às vezes deixa uma aspas/quebra de linha sem escapar dentro
+ *  de um campo de texto (ex.: "observacao"), quebrando o JSON.parse mesmo com
+ *  max_tokens de sobra. Como isso é não-determinístico, tentar de novo resolve
+ *  na prática sem precisar reescrever o parsing pra algo mais complexo. */
+async function callAnthropicForJson(apiKey: string, body: Record<string, unknown>, maxRetries = 1): Promise<any> {
+  let lastErr: any;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`${res.status} ${errText.slice(0, 200)}`);
+    }
+    const data = await res.json() as { content: { type: string; text?: string }[] };
+    const raw = data.content?.find((b) => b.type === 'text')?.text || '{}';
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    try {
+      return JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+    } catch (err) {
+      lastErr = err;
+      // tenta de novo (o problema costuma ser não-determinístico)
+    }
+  }
+  throw lastErr;
+}
+
 /** Transcreve UM documento isolado — mesma tarefa (e mesma confiabilidade)
  *  do ler_documento_identificacao, só que com mais campos. `prompt` é
  *  parametrizável pra reaproveitar a mesma leitura-documento-por-documento
@@ -1865,27 +1896,15 @@ async function executeAgentTool(
       if (!transcricao) return { success: false, error: 'Erro ao ler os documentos do Drive.' };
 
       // 2º passo: compara TEXTO com TEXTO (o cadastro vs. a transcrição acima).
-      const visionRes = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-5',
-          max_tokens: 4096,
-          system: 'Você audita cadastros de clientes de uma financeira comparando os dados já digitados com os documentos oficiais dela (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorCadastro": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — releia número por número antes de decidir (CPF, número de documento, CEP, telefone, valores) e não aponte algo que não esteja claramente na transcrição, e nunca inclua um campo que não apareça em nenhum documento. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir.',
-          messages: [{
-            role: 'user',
-            content: `Dados atualmente registrados no cadastro deste cliente:\n${linhasCadastro.join('\n')}\n\nDados extraídos dos documentos de referência (transcrição literal, dígito por dígito):\n${transcricao}\n\nCompare cada dado do cadastro acima com a transcrição. Aponte SOMENTE divergências claras e que você tenha certeza (ex.: nome escrito diferente, CPF ou número de documento com dígito trocado, valor diferente). NÃO aponte um campo do cadastro se ele não aparecer na transcrição — nesse caso simplesmente não dá pra conferir esse campo, ignore-o.`,
-          }],
-        }),
+      const parsed = await callAnthropicForJson(apiKey, {
+        model: 'claude-sonnet-5',
+        max_tokens: 4096,
+        system: 'Você audita cadastros de clientes de uma financeira comparando os dados já digitados com os documentos oficiais dela (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorCadastro": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — releia número por número antes de decidir (CPF, número de documento, CEP, telefone, valores) e não aponte algo que não esteja claramente na transcrição, e nunca inclua um campo que não apareça em nenhum documento. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir. IMPORTANTE: escape corretamente aspas e quebras de linha dentro dos valores de texto do JSON.',
+        messages: [{
+          role: 'user',
+          content: `Dados atualmente registrados no cadastro deste cliente:\n${linhasCadastro.join('\n')}\n\nDados extraídos dos documentos de referência (transcrição literal, dígito por dígito):\n${transcricao}\n\nCompare cada dado do cadastro acima com a transcrição. Aponte SOMENTE divergências claras e que você tenha certeza (ex.: nome escrito diferente, CPF ou número de documento com dígito trocado, valor diferente). NÃO aponte um campo do cadastro se ele não aparecer na transcrição — nesse caso simplesmente não dá pra conferir esse campo, ignore-o.`,
+        }],
       });
-      if (!visionRes.ok) {
-        const errText = await visionRes.text();
-        return { success: false, error: `Erro ao conferir os documentos: ${visionRes.status} ${errText.slice(0, 200)}` };
-      }
-      const visionData = await visionRes.json() as { content: { type: string; text?: string }[] };
-      const raw = visionData.content?.find((b) => b.type === 'text')?.text || '{}';
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
 
       return {
         success: true,
@@ -1971,27 +1990,15 @@ async function executeAgentTool(
       if (!transcricaoFormulario || !transcricaoDocs) return { success: false, error: 'Erro ao ler o formulário ou os documentos do Drive.' };
 
       // 2º passo: compara TEXTO com TEXTO (as duas transcrições acima).
-      const visionRes = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-5',
-          max_tokens: 4096,
-          system: 'Você audita formulários/cadastros de clientes de uma financeira comparando um formulário preenchido com os documentos oficiais do cliente (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorFormulario": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — releia número por número antes de decidir (CPF, número de documento, CEP, telefone, valores) e não aponte algo que não esteja claramente nas transcrições, e nunca inclua um campo do formulário que não apareça em nenhuma transcrição de documento de referência. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir.',
-          messages: [{
-            role: 'user',
-            content: `FORMULÁRIO A CONFERIR (${refLabel}) — dados transcritos:\n${transcricaoFormulario}\n\nDOCUMENTOS DE REFERÊNCIA DO CLIENTE (Drive) — dados transcritos:\n${transcricaoDocs}\n\nCompare os dados do formulário com os documentos de referência. Aponte SOMENTE divergências claras e que você tenha certeza (ex.: nome escrito diferente, CPF ou número de documento com dígito trocado, valor/data diferente). NÃO aponte um campo do formulário se ele não aparecer em nenhuma transcrição de documento de referência — nesse caso simplesmente não dá pra conferir esse campo, ignore-o.`,
-          }],
-        }),
+      const parsed = await callAnthropicForJson(apiKey, {
+        model: 'claude-sonnet-5',
+        max_tokens: 4096,
+        system: 'Você audita formulários/cadastros de clientes de uma financeira comparando um formulário preenchido com os documentos oficiais do cliente (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorFormulario": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — releia número por número antes de decidir (CPF, número de documento, CEP, telefone, valores) e não aponte algo que não esteja claramente nas transcrições, e nunca inclua um campo do formulário que não apareça em nenhuma transcrição de documento de referência. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir. IMPORTANTE: escape corretamente aspas e quebras de linha dentro dos valores de texto do JSON.',
+        messages: [{
+          role: 'user',
+          content: `FORMULÁRIO A CONFERIR (${refLabel}) — dados transcritos:\n${transcricaoFormulario}\n\nDOCUMENTOS DE REFERÊNCIA DO CLIENTE (Drive) — dados transcritos:\n${transcricaoDocs}\n\nCompare os dados do formulário com os documentos de referência. Aponte SOMENTE divergências claras e que você tenha certeza (ex.: nome escrito diferente, CPF ou número de documento com dígito trocado, valor/data diferente). NÃO aponte um campo do formulário se ele não aparecer em nenhuma transcrição de documento de referência — nesse caso simplesmente não dá pra conferir esse campo, ignore-o.`,
+        }],
       });
-      if (!visionRes.ok) {
-        const errText = await visionRes.text();
-        return { success: false, error: `Erro ao conferir os documentos: ${visionRes.status} ${errText.slice(0, 200)}` };
-      }
-      const visionData = await visionRes.json() as { content: { type: string; text?: string }[] };
-      const raw = visionData.content?.find((b) => b.type === 'text')?.text || '{}';
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
 
       return {
         success: true,
