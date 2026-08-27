@@ -1870,7 +1870,7 @@ async function executeAgentTool(
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
           model: 'claude-sonnet-5',
-          max_tokens: 1500,
+          max_tokens: 4096,
           system: 'Você audita cadastros de clientes de uma financeira comparando os dados já digitados com os documentos oficiais dela (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorCadastro": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — releia número por número antes de decidir (CPF, número de documento, CEP, telefone, valores) e não aponte algo que não esteja claramente na transcrição, e nunca inclua um campo que não apareça em nenhum documento. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir.',
           messages: [{
             role: 'user',
@@ -1976,7 +1976,7 @@ async function executeAgentTool(
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
           model: 'claude-sonnet-5',
-          max_tokens: 1500,
+          max_tokens: 4096,
           system: 'Você audita formulários/cadastros de clientes de uma financeira comparando um formulário preenchido com os documentos oficiais do cliente (RG, CNH, comprovante de renda/residência, certidões, contratos etc). Responda SOMENTE com um JSON válido, sem markdown, no formato exato: {"divergencias": [{"campo": string, "valorFormulario": string, "valorDocumento": string, "documento": string, "observacao": string}], "resumo": string}. "divergencias" só deve conter casos em que você tem certeza da diferença — releia número por número antes de decidir (CPF, número de documento, CEP, telefone, valores) e não aponte algo que não esteja claramente nas transcrições, e nunca inclua um campo do formulário que não apareça em nenhuma transcrição de documento de referência. Se não encontrar nenhuma divergência, devolva "divergencias": [] e um "resumo" dizendo que está tudo batendo com o que foi possível conferir.',
           messages: [{
             role: 'user',
