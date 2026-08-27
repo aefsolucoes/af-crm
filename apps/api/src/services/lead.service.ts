@@ -92,9 +92,21 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
 }
 
 export async function updateLeadStage(id: string, accountId: string, stageId: string) {
+  // Move o FUNIL junto com o estágio. Antes só o stageId era gravado: mover um
+  // lead pra um estágio de outro funil (a automação e o SalesBot deixam
+  // escolher qualquer estágio, de qualquer funil) deixava o card com
+  // pipelineId de um funil e stageId de outro — some da tela, porque cada
+  // funil só mostra os estágios dele. Dentro do mesmo funil nada muda: o
+  // pipelineId gravado é o mesmo que já estava lá.
+  const stage = await prisma.stage.findFirst({
+    where: { id: stageId, pipeline: { accountId } },
+    select: { pipelineId: true },
+  });
+  if (!stage) throw new Error('Estágio não encontrado nesta conta');
+
   return prisma.lead.update({
     where: { id },
-    data: { stageId },
+    data: { stageId, pipelineId: stage.pipelineId },
     include: { stage: true },
   });
 }
