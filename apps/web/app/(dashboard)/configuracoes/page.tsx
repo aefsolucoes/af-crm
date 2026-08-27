@@ -1118,6 +1118,97 @@ function ArchiveOldAttachmentsButton() {
   );
 }
 
+type ReorgResult = {
+  dryRun: boolean; totalFlatFiles: number; eligible: number; moved: number;
+  skippedNoSeparator: number; errors: number; remaining: number;
+  sample: { from: string; toFolder: string; newName: string }[];
+};
+
+/** Organiza os anexos ANTIGOS que ficaram soltos na pasta técnica do WhatsApp
+ *  ("Cliente — arquivo.jpg") movendo cada um pra subpasta do cliente. Sempre
+ *  SIMULA primeiro — mover arquivo no Drive de alguém não é coisa de fazer no
+ *  susto. */
+function ReorganizeArchiveButton() {
+  const [running, setRunning] = useState(false);
+  const [preview, setPreview] = useState<ReorgResult | null>(null);
+  const [done, setDone] = useState<ReorgResult | null>(null);
+
+  async function simular() {
+    setRunning(true); setDone(null);
+    try {
+      const { data } = await api.post('/api/google/reorganize-whatsapp-archive', { dryRun: true });
+      setPreview(data);
+      if (data.eligible === 0) toast('Nada para organizar — os arquivos já estão em subpastas.');
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao simular a organização', 'error');
+    } finally { setRunning(false); }
+  }
+
+  async function aplicar() {
+    if (!preview) return;
+    if (!confirm(`Mover ${preview.eligible} arquivo(s) para as subpastas dos clientes?\n\nNada é apagado — os arquivos só mudam de pasta e perdem o prefixo do nome. Os anexos continuam abrindo normal na Inbox.`)) return;
+    setRunning(true);
+    try {
+      const { data } = await api.post('/api/google/reorganize-whatsapp-archive', { dryRun: false });
+      setDone(data);
+      setPreview(data.remaining > 0 ? { ...preview, eligible: data.remaining } : null);
+      toast(`${data.moved} arquivo(s) organizado(s).${data.remaining > 0 ? ` Faltam ${data.remaining} — clique de novo.` : ''}`);
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao organizar os arquivos', 'error');
+    } finally { setRunning(false); }
+  }
+
+  return (
+    <div className="mt-3 pt-3 border-t border-af-border">
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          onClick={simular}
+          disabled={running}
+          className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {running && !preview ? 'Verificando…' : 'Verificar anexos antigos desorganizados'}
+        </button>
+        {preview && preview.eligible > 0 && (
+          <button
+            onClick={aplicar}
+            disabled={running}
+            className="text-xs px-3 py-1.5 rounded-lg bg-af-blue text-white font-medium hover:bg-af-mid disabled:opacity-50"
+          >
+            {running ? 'Organizando…' : `Organizar ${preview.eligible} arquivo(s)`}
+          </button>
+        )}
+      </div>
+
+      {preview && preview.eligible > 0 && (
+        <div className="mt-2 text-xs text-slate-500 space-y-1">
+          <p>
+            <strong>{preview.eligible}</strong> arquivo(s) solto(s) seriam movidos para a subpasta do cliente
+            {preview.skippedNoSeparator > 0 && <> — {preview.skippedNoSeparator} sem nome de cliente ficam como estão</>}.
+          </p>
+          <div className="bg-slate-50 border border-af-border rounded-lg p-2 space-y-0.5">
+            {preview.sample.map((x, i) => (
+              <p key={i} className="truncate font-mono text-[11px] text-slate-500">
+                {x.from} → {x.toFolder}/{x.newName}
+              </p>
+            ))}
+            {preview.eligible > preview.sample.length && (
+              <p className="text-[11px] text-slate-400">…e mais {preview.eligible - preview.sample.length}.</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {done && (
+        <p className="text-xs text-slate-400 mt-1.5">
+          {done.moved} arquivo(s) organizado(s)
+          {done.errors > 0 ? ` — ${done.errors} falharam` : ''}
+          {done.remaining > 0 ? ` — faltam ${done.remaining}, clique de novo` : ''}.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function GoogleDriveTab() {
   const [status, setStatus] = useState<{ connected: boolean; email: string | null; rootFolderId: string | null; rootFolderName: string | null; configured: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1295,6 +1386,7 @@ function GoogleDriveTab() {
                     Use o botão abaixo uma vez para arquivar os que já estavam salvos de antes.
                   </p>
                   <ArchiveOldAttachmentsButton />
+              <ReorganizeArchiveButton />
                 </div>
               )}
             </>

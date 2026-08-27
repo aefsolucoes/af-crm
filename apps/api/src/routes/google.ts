@@ -3,6 +3,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import {
   getAuthUrl, handleOAuthCallback, getGoogleStatus, disconnectGoogle,
   listFolders, setRootFolder, createFolder, isGoogleConfigured, bulkArchiveOldAttachments,
+  reorganizeWhatsAppArchive,
   getFolderName, extractFolderId, moveDriveItem,
 } from '../services/google.service';
 
@@ -141,6 +142,23 @@ router.post('/archive-old-attachments', async (req: AuthRequest, res: Response) 
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao arquivar anexos antigos' });
+  }
+});
+
+// Organização única dos anexos ANTIGOS da pasta técnica do WhatsApp: move os
+// arquivos soltos ("Cliente — arquivo.jpg") para a subpasta do cliente. Só move
+// e renomeia, nada é apagado. Padrão é SIMULAR — precisa de dryRun:false
+// explícito pra mexer de verdade.
+router.post('/reorganize-whatsapp-archive', async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.user!.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Só um administrador pode reorganizar os arquivos do Drive.' });
+    }
+    const { dryRun, limit } = (req.body || {}) as { dryRun?: boolean; limit?: number };
+    const result = await reorganizeWhatsAppArchive(req.user!.accountId, { dryRun, limit });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao reorganizar os anexos antigos' });
   }
 });
 

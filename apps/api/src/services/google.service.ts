@@ -377,6 +377,133 @@ export async function organizeLeadDocsToDrive(params: {
  * ou sem pasta-raiz), não faz nada — o anexo fica no banco como antes, e
  * alguém organiza manualmente depois (botão/assistente).
  */
+/**
+ * Organização única dos anexos ANTIGOS da pasta técnica do WhatsApp.
+ *
+ * Até 2026-08-26 o arquivamento periódico salvava arquivo solto com o nome do
+ * cliente no prefixo ("João Silva — foto.jpg"); depois passou a usar subpasta
+ * por cliente ("João Silva/foto.jpg"), igual ao auto-upload. Isso deixou os
+ * dois formatos misturados na mesma pasta. Esta rotina move os soltos para a
+ * subpasta certa e tira o prefixo do nome.
+ *
+ * - Só MOVE e RENOMEIA: nada é apagado, e o `driveFileId` guardado no banco
+ *   continua válido (o Drive mantém o id ao mover) — os anexos seguem abrindo
+ *   normal na Inbox.
+ * - Arquivo cujo nome não tem o separador " — " é deixado quieto, sem adivinhar
+ *   a quem pertence.
+ * - `dryRun` só conta e devolve exemplos, sem tocar em nada.
+ * - Processa no máximo `limit` por chamada (cota da API do Drive); `remaining`
+ *   diz se ainda sobrou pra uma próxima rodada.
+ */
+export async function reorganizeWhatsAppArchive(
+  accountId: string,
+  opts: { dryRun?: boolean; limit?: number } = {},
+): Promise<{
+  dryRun: boolean;
+  totalFlatFiles: number;
+  eligible: number;
+  moved: number;
+  skippedNoSeparator: number;
+  errors: number;
+  remaining: number;
+  sample: { from: string; toFolder: string; newName: string }[];
+}> {
+  const dryRun = opts.dryRun !== false; // seguro por padrão: só simula
+  const limit = opts.limit ?? 300;
+
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  if (!conn?.refreshToken || !conn.rootFolderId) throw new Error('Conecte o Google Drive e escolha a pasta-raiz primeiro');
+
+  const techFolderId = await findFolder(accountId, WHATSAPP_ARCHIVE_FOLDER, conn.rootFolderId);
+  if (!techFolderId) {
+    return { dryRun, totalFlatFiles: 0, eligible: 0, moved: 0, skippedNoSeparator: 0, errors: 0, remaining: 0, sample: [] };
+  }
+
+  // Lista PAGINADA: listFolderContents() para em 200 e aqui pode ter muito mais.
+  const drive = await getDrive(accountId);
+  const flat: { id: string; name: string }[] = [];
+  let pageToken: string | undefined;
+  do {
+    const res = await drive.files.list({
+      q: `'${techFolderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
+      fields: 'nextPageToken, files(id, name)',
+      pageSize: 1000,
+      pageToken,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    for (const f of res.data.files || []) {
+      if (f.id && f.name) flat.push({ id: f.id, name: f.name });
+    }
+    pageToken = res.data.nextPageToken || undefined;
+  } while (pageToken);
+
+  const SEP = ' — ';
+  let skippedNoSeparator = 0;
+  const eligible: { id: string; name: string; client: string; newName: string }[] = [];
+  for (const f of flat) {
+    const idx = f.name.indexOf(SEP); // primeiro separador: o nome do cliente vem antes
+    if (idx <= 0) { skippedNoSeparator++; continue; }
+    const client = f.name.slice(0, idx).trim();
+    const newName = f.name.slice(idx + SEP.length).trim();
+    if (!client || !newName) { skippedNoSeparator++; continue; }
+    eligible.push({ id: f.id, name: f.name, client, newName });
+  }
+
+  const batch = eligible.slice(0, limit);
+  const sample = batch.slice(0, 10).map((e) => ({ from: e.name, toFolder: e.client, newName: e.newName }));
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      totalFlatFiles: flat.length,
+      eligible: eligible.length,
+      moved: 0,
+      skippedNoSeparator,
+      errors: 0,
+      remaining: eligible.length,
+      sample,
+    };
+  }
+
+  const folderCache = new Map<string, string>();
+  let moved = 0;
+  let errors = 0;
+  for (const e of batch) {
+    try {
+      let folderId = folderCache.get(e.client);
+      if (!folderId) {
+        folderId = (await createFolder(accountId, e.client, techFolderId)).id;
+        folderCache.set(e.client, folderId);
+      }
+      // Move e renomeia numa chamada só — metade das requisições à API do Drive.
+      const current = await drive.files.get({ fileId: e.id, fields: 'parents', supportsAllDrives: true });
+      await drive.files.update({
+        fileId: e.id,
+        addParents: folderId,
+        removeParents: (current.data.parents || []).join(','),
+        requestBody: { name: e.newName },
+        supportsAllDrives: true,
+      });
+      moved++;
+    } catch (err) {
+      errors++;
+      console.error('[Drive] Falha ao reorganizar anexo antigo:', e.name, (err as any)?.message);
+    }
+  }
+
+  return {
+    dryRun: false,
+    totalFlatFiles: flat.length,
+    eligible: eligible.length,
+    moved,
+    skippedNoSeparator,
+    errors,
+    remaining: Math.max(0, eligible.length - moved),
+    sample,
+  };
+}
+
 /** Pasta técnica onde TODO anexo de WhatsApp é guardado (auto-upload e
  *  arquivamento periódico usam a mesma). Fica separada de propósito: a
  *  organização manual do usuário na pasta-raiz (ex.: "1. LEADS ATIVOS",
