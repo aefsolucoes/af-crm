@@ -377,6 +377,12 @@ export async function organizeLeadDocsToDrive(params: {
  * ou sem pasta-raiz), não faz nada — o anexo fica no banco como antes, e
  * alguém organiza manualmente depois (botão/assistente).
  */
+/** Pasta técnica onde TODO anexo de WhatsApp é guardado (auto-upload e
+ *  arquivamento periódico usam a mesma). Fica separada de propósito: a
+ *  organização manual do usuário na pasta-raiz (ex.: "1. LEADS ATIVOS",
+ *  "3. CONCLUIDOS") nunca deve ser poluída com uma pasta por cliente. */
+const WHATSAPP_ARCHIVE_FOLDER = 'WhatsApp — arquivo automático';
+
 export async function autoUploadAttachmentToDrive(accountId: string, leadId: string, attachmentId: string): Promise<void> {
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
   if (!conn?.refreshToken || !conn.rootFolderId) return;
@@ -387,7 +393,11 @@ export async function autoUploadAttachmentToDrive(accountId: string, leadId: str
   ]);
   if (!att || !att.data || att.driveFileId) return;
 
-  const folder = await createFolder(accountId, (lead?.name || 'Sem nome').trim() || 'Sem nome', conn.rootFolderId);
+  // Dentro da pasta técnica, uma subpasta por cliente. Antes isso criava a
+  // pasta do cliente DIRETO na raiz, misturando centenas de pastas com a
+  // organização manual do usuário — nunca chegou a rodar em produção assim.
+  const archiveRoot = await createFolder(accountId, WHATSAPP_ARCHIVE_FOLDER, conn.rootFolderId);
+  const folder = await createFolder(accountId, (lead?.name || 'Sem nome').trim() || 'Sem nome', archiveRoot.id);
   const up = await uploadFile(accountId, {
     name: att.fileName,
     mimeType: att.mimeType,
@@ -483,7 +493,7 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
   const leads = await prisma.lead.findMany({ where: { id: { in: leadIds } }, select: { id: true, name: true } });
   const leadNames = new Map(leads.map(l => [l.id, l.name]));
 
-  const techFolder = await createFolder(accountId, 'WhatsApp — arquivo automático', conn.rootFolderId);
+  const techFolder = await createFolder(accountId, WHATSAPP_ARCHIVE_FOLDER, conn.rootFolderId);
 
   let archived = 0;
   let errors = 0;
