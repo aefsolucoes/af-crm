@@ -550,10 +550,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     }
   }
 
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // permite reenviar o mesmo arquivo
-    if (!file) return;
+  /** Envia 1 arquivo — usado pelo seletor (📎), por arrastar-e-soltar e por
+   *  colar (Ctrl+V) na caixa de mensagem. */
+  async function uploadFile(file: File) {
     if (file.size > 25 * 1024 * 1024) { toast('Arquivo muito grande (máx. 25 MB)', 'error'); return; }
     setUploadingFile(true);
     try {
@@ -578,6 +577,38 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     } finally {
       setUploadingFile(false);
     }
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite reenviar o mesmo arquivo
+    if (!file) return;
+    await uploadFile(file);
+  }
+
+  // Arrastar-e-soltar: sem preventDefault no dragOver o navegador nunca chama
+  // onDrop (segue a regra padrão dele, que é ABRIR o arquivo numa aba nova —
+  // era exatamente o bug reportado). Conta quantos "drag enter" estão ativos
+  // porque o evento dispara pra CADA elemento filho sobrevoado — sem o
+  // contador, sair de um filho pra outro (dragLeave + dragEnter) pisca a
+  // sobreposição.
+  const [dragDepth, setDragDepth] = useState(0);
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('Files')) setDragDepth((d) => d + 1);
+  }
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault(); // sem isso o onDrop nunca dispara
+  }
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    setDragDepth((d) => Math.max(0, d - 1));
+  }
+  async function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragDepth(0);
+    const files = Array.from(e.dataTransfer.files || []);
+    for (const file of files) await uploadFile(file); // um de cada vez — mesma ordem em que soltou
   }
 
   // Insere o emoji na posição do cursor (não só no final) e mantém o foco
@@ -732,7 +763,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   };
 
   return (
-    <div className="flex flex-col flex-1 h-full" style={{ background: '#0b141a' }}>
+    <div
+      className="relative flex flex-col flex-1 h-full"
+      style={{ background: '#0b141a' }}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* WhatsApp-style background pattern */}
       <div
         className="absolute inset-0 pointer-events-none opacity-[0.06]"
@@ -740,6 +778,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23000000' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
         }}
       />
+
+      {/* Sobreposição enquanto arrasta um arquivo por cima — some ao soltar
+          (ou ao sair da área) via handleDragLeave/handleDrop. */}
+      {dragDepth > 0 && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#00a884]/20 border-4 border-dashed border-[#00a884] backdrop-blur-[1px] pointer-events-none">
+          <div className="bg-[#202c33] text-[#e9edef] px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3">
+            <Paperclip size={24} className="text-[#00a884]" />
+            <span className="text-sm font-medium">Solte para enviar</span>
+          </div>
+        </div>
+      )}
 
       {/* Header — WhatsApp dark */}
       <div className="relative z-10 flex items-center gap-3 px-4 py-3 text-[#e9edef] shadow-md" style={{ backgroundColor: '#202c33' }}>
