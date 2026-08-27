@@ -517,7 +517,17 @@ export async function sendOutboundMedia(params: {
     io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
   }
 
-  // Mídia fica no CRM (banco) — o upload pro Drive agora é só sob-demanda.
+  // Anexo sobe pro Drive na hora e os bytes saem do banco. Sem isso o Postgres
+  // enchia (incidentes de 2026-08-05 e 2026-08-26 — disco 100%, CRM fora do ar).
+  // Fire-and-forget: falha/Drive desconectado não pode atrapalhar o envio (a
+  // mensagem JÁ saiu pro cliente neste ponto) — nesse caso os bytes ficam no
+  // banco mesmo, e o arquivamento periódico pega depois. A rota do anexo já
+  // sabe servir do Drive quando `data` está vazio.
+  for (const att of message.attachments || []) {
+    const { autoUploadAttachmentToDrive } = require('./google.service') as typeof import('./google.service');
+    autoUploadAttachmentToDrive(accountId, leadId, att.id).catch((err: any) =>
+      console.error('[Drive] Auto-upload do anexo falhou:', err?.message));
+  }
 
   return { success: true, message };
 }

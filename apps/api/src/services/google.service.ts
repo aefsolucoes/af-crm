@@ -457,14 +457,24 @@ export async function bulkArchiveOldAttachments(accountId: string): Promise<{ ar
  * própria ("WhatsApp — arquivo automático"), separada da estrutura de clientes.
  * Anexos recentes ficam no CRM (com miniatura) até o usuário organizar manualmente.
  */
-export async function archiveOldAttachmentsAutomatic(accountId: string, olderThanDays = 30): Promise<{ archived: number; errors: number }> {
+export async function archiveOldAttachmentsAutomatic(accountId: string, olderThanDays = 2): Promise<{ archived: number; errors: number }> {
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
   if (!conn?.refreshToken || !conn.rootFolderId) return { archived: 0, errors: 0 };
 
+  // Janela curta (2 dias, era 30) porque agora o anexo sobe pro Drive JÁ na
+  // chegada/envio. Se depois de 2 dias ainda tem bytes no banco, foi upload que
+  // falhou (ou anexo de antes desta mudança) — é exatamente o que essa rede de
+  // segurança tem que recolher, não algo pra segurar por um mês. Segurar 30 dias
+  // foi o que deixou o disco encher duas vezes.
   const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+  // Sem `data` aqui de propósito: carregar os bytes de 200 anexos de uma vez
+  // estourava a memória do container (arquivo grande × 200) e o arquivamento
+  // simplesmente não rodava — justo quando o disco mais precisava dele. Os bytes
+  // são lidos um a um dentro do laço.
   const attachments = await prisma.messageAttachment.findMany({
     where: { driveFileId: null, NOT: { data: null }, createdAt: { lt: cutoff } },
     orderBy: { createdAt: 'asc' },
+    select: { id: true, leadId: true, fileName: true, mimeType: true },
     take: 200, // por execução — evita rodadas gigantes de uma vez
   });
   if (!attachments.length) return { archived: 0, errors: 0 };
@@ -480,10 +490,17 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
   for (const att of attachments) {
     try {
       const leadName = (leadNames.get(att.leadId) || 'Sem nome').trim() || 'Sem nome';
+      // Lê os bytes só deste anexo, agora — mantém a memória constante por
+      // rodada, independente do tamanho do lote.
+      const withData = await prisma.messageAttachment.findUnique({
+        where: { id: att.id },
+        select: { data: true },
+      });
+      if (!withData?.data) continue; // já foi arquivado por outro caminho nesse meio-tempo
       const up = await uploadFile(accountId, {
         name: `${leadName} — ${att.fileName}`,
         mimeType: att.mimeType,
-        data: Buffer.from(att.data!),
+        data: Buffer.from(withData.data),
         parentId: techFolder.id,
       });
       await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
@@ -497,7 +514,7 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
   return { archived, errors };
 }
 
-/** Roda o arquivamento automático (30+ dias) para TODAS as contas com Drive conectado. */
+/** Roda o arquivamento automático (2+ dias) para TODAS as contas com Drive conectado. */
 export async function archiveOldAttachmentsAllAccounts(): Promise<void> {
   const conns = await prisma.googleConnection.findMany({
     where: { rootFolderId: { not: null } },
