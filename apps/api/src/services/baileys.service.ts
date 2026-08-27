@@ -670,6 +670,9 @@ async function getOrCreateLeadForPhone(
   accountId: string,
   numberId: string,
   sock?: any,
+  /** Texto da 1ª mensagem — só quem chama de mensagem de TEXTO passa isso,
+   *  pra checagem de campanha (mídia/cartão de contato não carregam ficha). */
+  firstMessageText?: string,
 ): Promise<string | null> {
   const isGroup = from.endsWith('@g.us');
   const isLid = from.endsWith('@lid');
@@ -747,39 +750,53 @@ async function getOrCreateLeadForPhone(
     return lead.id;
   }
 
+  // Lead de campanha (ficha do site preenchida) já nasce no funil/estágio
+  // certo, com os campos da ficha pré-preenchidos — em vez da Caixa de
+  // Entrada genérica. Só pra mensagem de texto de contato real (nunca
+  // grupo/@lid sem telefone), e só na criação do lead.
+  const { detectCampaignRoute } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
+  const campaignRoute = (!isGroup && firstMessageText)
+    ? await detectCampaignRoute(accountId, firstMessageText).catch(() => null)
+    : null;
+
   // Novos leads do WhatsApp entram na "Caixa de Entrada" DO SETOR desse
   // número (cada número QR pode pertencer a um departamento diferente —
   // ex: Financiamento Habitacional vs Consórcio). Número sem setor definido
   // ainda cai na Caixa de Entrada "genérica" (compatibilidade).
   const thisNumber = await prisma.whatsAppNumber.findUnique({ where: { id: numberId }, select: { departmentId: true } });
   const targetDepartmentId = thisNumber?.departmentId ?? null;
-  const pipeline = await getOrCreateInboxPipeline(accountId, targetDepartmentId);
+  const pipeline = campaignRoute ? null : await getOrCreateInboxPipeline(accountId, targetDepartmentId);
   // Prefere um usuário do MESMO setor como responsável padrão do card; sem
   // ninguém do setor ainda, cai em qualquer usuário da conta (como antes).
   const admin =
     (targetDepartmentId && await prisma.user.findFirst({ where: { accountId, departmentIds: { has: targetDepartmentId } } })) ||
     (await prisma.user.findFirst({ where: { accountId } }));
-  if (!pipeline?.stages.length || !admin) return null;
+  if ((!campaignRoute && !pipeline?.stages.length) || !admin) return null;
 
   // telefone_1 só é preenchido quando temos número real; grupo/@lid ficam em branco.
+  // Ficha de campanha tem prioridade sobre o nome do perfil/telefone detectado
+  // quando os dois existem.
   const custom: any = { participante_1: contact.name };
   const telDisplay = formatPhoneDisplay(realPhone);
   if (telDisplay) custom.telefone_1 = telDisplay;
+  if (campaignRoute) Object.assign(custom, campaignRoute.fields);
 
   const newLead = await prisma.lead.create({
     data: {
       name: contact.name,
       accountId,
-      pipelineId: pipeline.id,
-      stageId: pipeline.stages[0].id,
+      pipelineId: campaignRoute ? campaignRoute.pipelineId : pipeline!.id,
+      stageId: campaignRoute ? campaignRoute.stageId : pipeline!.stages[0].id,
       userId: admin.id,
       contactId: contact.id,
       status: 'OPEN',
       whatsappNumberId: numberId,
       isGroup,
+      tags: campaignRoute ? ['Campanha'] : [],
       customFields: custom,
     },
   });
+  if (campaignRoute) console.log(`[Campanha] Lead roteado por "${campaignRoute.signature}": ${newLead.id}`);
   // Grupo não é um "lead" de venda de verdade — não dispara automação.
   if (!isGroup) {
     const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
@@ -900,9 +917,11 @@ async function processIncomingMessage(msg: any, accountId: string, numberId: str
     if (!text || !from || from.endsWith('@broadcast')) return;
 
     // self-chat (Você) → conversa própria do número; senão, contato normal.
+    // Texto só entra na checagem de campanha quando é do CLIENTE (!fromMe) —
+    // uma mensagem nossa iniciando conversa nunca é ficha de proposta.
     const leadId = selfChat
       ? await getOrCreateSelfLead(accountId, numberId)
-      : await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock);
+      : await getOrCreateLeadForPhone(from, fromMe ? undefined : msg.pushName, accountId, numberId, sock, fromMe ? undefined : text);
     if (!leadId) return;
 
     const dup = await prisma.message.findFirst({ where: { externalId: msg.key.id } });

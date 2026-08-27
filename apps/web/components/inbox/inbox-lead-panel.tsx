@@ -194,6 +194,18 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
                   <Shuffle size={12} className="flex-shrink-0 text-slate-400" />
                 </button>
               </div>
+              {/* Setor vem do funil (Pipeline.departmentId), não é um campo à
+                  parte do lead — mudar de setor é mudar de funil, no mesmo
+                  botão "Funil" acima. Só exibe; funil "genérico" (sem setor)
+                  não mostra a linha. */}
+              {lead.pipeline.department && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex-shrink-0 w-14">Setor</span>
+                  <span className="flex-1 min-w-0 truncate text-xs font-semibold text-slate-700 rounded-lg px-2.5 py-1.5 border border-af-border bg-af-light/50">
+                    {lead.pipeline.department.name}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex-shrink-0 w-14">Estágio</span>
                 <select

@@ -752,13 +752,20 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         }
         leadId = existingLead.id;
       } else {
+        // Lead de campanha (ficha do site preenchida) já nasce no funil/estágio
+        // certo, com os campos da ficha pré-preenchidos — em vez da Caixa de
+        // Entrada genérica. Só na criação do lead (1ª mensagem do contato);
+        // sem match, segue o roteamento normal por setor do número.
+        const { detectCampaignRoute } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
+        const campaignRoute = await detectCampaignRoute(accountId, text).catch(() => null);
+
         // Get dedicated WhatsApp pipeline (do setor deste número/config, se houver)
-        const pipeline = await getOrCreateWhatsAppPipeline(accountId, departmentId);
+        const pipeline = campaignRoute ? null : await getOrCreateWhatsAppPipeline(accountId, departmentId);
         const admin =
           (departmentId && await prisma.user.findFirst({ where: { accountId, departmentIds: { has: departmentId } }, orderBy: { createdAt: 'asc' } })) ||
           (await prisma.user.findFirst({ where: { accountId }, orderBy: { createdAt: 'asc' } }));
 
-        if (!pipeline.stages.length || !admin) {
+        if ((!campaignRoute && !pipeline!.stages.length) || !admin) {
           console.error('[WhatsApp] Pipeline sem estágios ou sem usuário admin');
           return;
         }
@@ -767,19 +774,22 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
           data: {
             name: profileName,
             accountId,
-            pipelineId: pipeline.id,
-            stageId: pipeline.stages[0].id,
+            pipelineId: campaignRoute ? campaignRoute.pipelineId : pipeline!.id,
+            stageId: campaignRoute ? campaignRoute.stageId : pipeline!.stages[0].id,
             userId: admin.id,
             contactId: contact.id,
             status: 'OPEN',
-            tags: ['WhatsApp'],
-            // Auto-fill participant fields
+            tags: campaignRoute ? ['WhatsApp', 'Campanha'] : ['WhatsApp'],
+            // Auto-fill participant fields — ficha de campanha tem prioridade
+            // sobre o nome/telefone do perfil do WhatsApp quando os dois existem.
             customFields: {
               participante_1: profileName,
               telefone_1: formattedPhone,
+              ...(campaignRoute?.fields || {}),
             } as any,
           },
         });
+        if (campaignRoute) console.log(`[Campanha] Lead roteado por "${campaignRoute.signature}": ${lead.id}`);
         leadId = lead.id;
         console.log(`[WhatsApp] Lead criado: ${lead.id} — ${profileName} (${formattedPhone})`);
         const { runAutomations } = require('./automation.service') as typeof import('./automation.service');

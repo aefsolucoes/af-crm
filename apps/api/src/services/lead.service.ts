@@ -43,7 +43,7 @@ export async function getLeadById(id: string, accountId: string) {
     where: { id, accountId },
     include: {
       stage: true,
-      pipeline: { include: { stages: { orderBy: { order: 'asc' } } } },
+      pipeline: { include: { stages: { orderBy: { order: 'asc' } }, department: { select: { id: true, name: true } } } },
       user: { select: { id: true, name: true, email: true } },
       contact: true,
       company: true,
