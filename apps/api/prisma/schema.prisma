@@ -26,6 +26,7 @@ model Account {
   transactions       Transaction[]
   knowledgeFiles     KnowledgeFile[]
   assistantQuestions AssistantQuestion[]
+  assistantMemories  AssistantMemory[]
   messageTemplates   MessageTemplate[]
   departments        Department[]
   automationRules    AutomationRule[]
@@ -123,6 +124,7 @@ model User {
   createdAt                  DateTime            @default(now())
   assistantQuestionsAsked    AssistantQuestion[] @relation("AssistantQuestionAskedBy")
   assistantQuestionsReceived AssistantQuestion[] @relation("AssistantQuestionTarget")
+  assistantMemoriesCreated   AssistantMemory[]
   pushSubscriptions          PushSubscription[]
 }
 
@@ -216,6 +218,23 @@ model AssistantQuestion {
   answeredAt    DateTime?
 
   @@index([accountId, targetUserId, answered])
+}
+
+// Coisas que um colaborador pediu pro assistente "lembrar" (ex.: "lembra que
+// o cliente Fulano prefere ser chamado de Beltrano"). Compartilhada com a
+// conta inteira — injetada no system prompt de TODA conversa (ver
+// SUPPORT_SYSTEM_PROMPT em routes/ai.ts), igual à Base de Conhecimento, só
+// que escrita pelo próprio chat em vez de subir um arquivo.
+model AssistantMemory {
+  id              String   @id @default(cuid())
+  accountId       String
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  content         String
+  createdByUserId String?
+  createdBy       User?    @relation(fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  @@index([accountId])
 }
 
 // Templates de mensagem ("Respostas rápidas") — compartilhados pela conta

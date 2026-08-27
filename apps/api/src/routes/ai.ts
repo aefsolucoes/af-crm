@@ -108,6 +108,7 @@ Você também pode, quando um colaborador pedir explicitamente, ler o histórico
 - listar_respostas_rapidas / criar_resposta_rapida / enviar_resposta_rapida: as "Respostas rápidas" (Templates → aba Respostas rápidas) são DIFERENTES dos templates da Meta — texto pronto reutilizável, SEM aprovação, disponível na hora pra equipe toda. listar mostra as que existem. criar_resposta_rapida cria uma nova (não precisa confirmar — só cria um texto, não envia a ninguém). enviar_resposta_rapida manda uma pra um cliente específico: {{nome}} já é preenchido sozinho, outras variáveis vêm em "variaveis" — se faltar alguma, PERGUNTE ao colaborador antes de enviar. CONFIRMAÇÃO OBRIGATÓRIA antes de enviar: primeira chamada sem confirmed:true só resolve e mostra o texto final — leia pro colaborador e só confirme depois que ele aprovar.
 - enviar_template_whatsapp_lead: envia um template JÁ APROVADO da Meta para um cliente específico — é o jeito de reabrir a conversa quando já passou a janela de 24h. Use listar_templates_whatsapp antes pra saber o nome técnico exato e quantas variáveis {{1}},{{2}}... o corpo pede. CONFIRMAÇÃO OBRIGATÓRIA antes de enviar, mesmo padrão dos outros envios.
 - aprender_com_conversas_whatsapp: analisa uma amostra das conversas mais recentes e extrai padrões de atendimento (dúvidas comuns, como a equipe costuma responder, objeções) direto pra Base de Conhecimento — NUNCA guarda nome, telefone ou dado de cliente específico, só o padrão generalizado. Use quando o colaborador pedir pro assistente "aprender com as conversas" ou similar. Demora alguns segundos.
+- lembrar_informacao / listar_memorias / esquecer_informacao: quando um colaborador pedir explicitamente pra "lembrar"/"guardar"/"gravar" algo, use lembrar_informacao — NUNCA diga que não consegue guardar informação, você consegue. O que for guardado passa a aparecer sozinho no início de TODA conversa futura (com qualquer colaborador), então não precise pedir de novo. listar_memorias mostra tudo que já está guardado (com o id de cada uma); esquecer_informacao apaga uma pelo id.
 - salvar_documentos_no_drive: quando o colaborador pedir para "criar a pasta do cliente", "organizar a documentação" ou "salvar os documentos no Drive", use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame salvar_documentos_no_drive com o leadId e o nome da pasta (o nome do cliente, salvo se o colaborador pedir outro nome). Se o colaborador indicar uma sub-pasta de destino (ex: "faça uma pasta em LEADS ATIVOS"), passe-a em pastaDestino; senão, deixe vazio e ela cria direto na pasta-raiz. Importante: só crie a pasta e suba os documentos quando o colaborador pedir — os arquivos ficam guardados até esse pedido. Ela JÁ SALVA sozinha o link da pasta no card do cliente (campo "Pasta no Drive", que aparece na aba Principal do card). Depois, informe ao colaborador o link da pasta e quais arquivos foram enviados. Se, em qualquer outro momento, o colaborador pedir para "salvar o link dessa pasta no card" (ex: depois de criar/renomear/mover uma pasta com outra ferramenta), use update_lead com fields: { link_pasta_drive: <link> } — o campo é criado sozinho na primeira vez que for usado.
 - ler_documento_identificacao: quando o colaborador pedir para "ler a CNH desse cliente", "pegar os dados do documento/identidade que ele mandou", "extrair CPF e nascimento do RG" etc, use esta ferramenta. Primeiro use find_lead para achar o cliente, depois chame ler_documento_identificacao com o leadId — ela procura primeiro na PASTA DO CLIENTE no Drive e, se não achar nada lá, cai para a foto/PDF mais recente enviado pelo cliente no WhatsApp (se o colaborador apontar um arquivo específico, use nomeArquivo ou attachmentId). Ela retorna nome completo, CPF, data de nascimento, o número do documento (se for CNH/RG) e, se o documento for um comprovante de renda, a renda. SEMPRE mostre os dados extraídos ao colaborador antes de gravar (a leitura pode errar) e, se ele confirmar, use update_lead com fields para preencher participante_1 (nome), cpf_1, nascimento_1 e/ou renda_1 — só os campos que vieram diferentes de null. NUNCA invente um dado que o documento não mostrou com clareza.
 - ANÁLISE LIVRE DE ANEXO NO CHAT: o colaborador pode anexar um ou VÁRIOS arquivos de uma vez (imagem ou PDF, até 6 por mensagem) direto nesta conversa, pelo botão de anexo — quando isso acontecer, o conteúdo de todos os arquivos vem junto da mensagem dele. Não é uma ferramenta, é diferente de ler_documento_identificacao (que busca documentos já salvos no Drive/WhatsApp de um lead e grava os dados no cadastro): aqui é uma leitura livre do que foi anexado nesta conversa — analise, resuma, explique, compare (inclusive um documento contra os outros que vieram junto, ex.: um formulário contra a CNH/comprovantes anexados na mesma mensagem) ou extraia o que o colaborador pedir. Só grave algo no cadastro de um lead (via update_lead) se o colaborador pedir isso explicitamente e disser de qual lead se trata.
@@ -294,6 +295,25 @@ const AGENT_TOOLS = [
     name: 'aprender_com_conversas_whatsapp',
     description: 'Analisa uma amostra das conversas de WhatsApp mais recentes e extrai padrões de atendimento (dúvidas comuns e como a equipe costuma responder, objeções) direto para a Base de Conhecimento — NUNCA guarda nome, telefone ou qualquer dado que identifique um cliente específico, só o padrão generalizado. Use quando o colaborador pedir para o assistente "aprender com as conversas", "puxar experiência do WhatsApp pra base de conhecimento" etc. Demora alguns segundos (analisa várias conversas de uma vez). Precisa da pasta da Base de Conhecimento já configurada (Configurações → Agente IA).',
     input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'lembrar_informacao',
+    description: 'Guarda uma informação permanentemente na memória do assistente, compartilhada com TODA a equipe — use sempre que o colaborador pedir explicitamente pra "lembrar", "guardar", "gravar" ou "não esquecer" algo (ex.: "lembra que o cliente Fulano prefere ser chamado de Beltrano", "guarda que a partir de agora respostas sobre X devem ser assim"). A partir daí, essa informação aparece automaticamente no início de TODA conversa do assistente com QUALQUER colaborador, daqui pra frente — não precisa (nem deve) repetir o conteúdo de volta pro colaborador como se fosse novo, só confirmar que guardou. Guarde o conteúdo de forma clara e autocontida (sem "isso"/"aquilo" que só fazem sentido nesta conversa).',
+    input_schema: { type: 'object', properties: {
+      conteudo: { type: 'string', description: 'O que lembrar, escrito de forma clara e completa (vai reaparecer em outras conversas, sem o contexto desta).' },
+    }, required: ['conteudo'] },
+  },
+  {
+    name: 'listar_memorias',
+    description: 'Lista tudo que está guardado na memória do assistente (ver lembrar_informacao) — use se o colaborador perguntar "o que você tem guardado", "do que você lembra" ou pedir pra esquecer algo mas não souber o texto exato (liste primeiro, para achar o id certo).',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'esquecer_informacao',
+    description: 'Apaga uma informação guardada anteriormente (ver lembrar_informacao). Informe memoryId (use listar_memorias para achar o id certo, se não souber). Use quando o colaborador pedir pra "esquecer", "apagar da memória" ou disser que uma informação guardada não vale mais.',
+    input_schema: { type: 'object', properties: {
+      memoryId: { type: 'string', description: 'ID da memória a apagar (via listar_memorias).' },
+    }, required: ['memoryId'] },
   },
   {
     name: 'find_lead',
@@ -1127,6 +1147,37 @@ async function executeAgentTool(
     } catch (err: any) {
       return { success: false, error: err?.message || 'Erro ao aprender com as conversas' };
     }
+  }
+
+  if (name === 'lembrar_informacao') {
+    const conteudo = String(input.conteudo || '').trim();
+    if (!conteudo) return { success: false, error: 'Informe conteudo.' };
+    const mem = await prisma.assistantMemory.create({
+      data: { accountId, content: conteudo, createdByUserId: userId || null },
+    });
+    return { success: true, id: mem.id, guardado: mem.content };
+  }
+
+  if (name === 'listar_memorias') {
+    const mems = await prisma.assistantMemory.findMany({
+      where: { accountId },
+      orderBy: { createdAt: 'desc' },
+      include: { createdBy: { select: { name: true } } },
+    });
+    return {
+      success: true,
+      total: mems.length,
+      memorias: mems.map((m) => ({ id: m.id, conteudo: m.content, criadoPor: m.createdBy?.name || null, criadoEm: m.createdAt })),
+    };
+  }
+
+  if (name === 'esquecer_informacao') {
+    const memoryId = String(input.memoryId || '').trim();
+    if (!memoryId) return { success: false, error: 'Informe memoryId (use listar_memorias para achar o id).' };
+    const existing = await prisma.assistantMemory.findFirst({ where: { id: memoryId, accountId } });
+    if (!existing) return { success: false, error: 'Memória não encontrada.' };
+    await prisma.assistantMemory.delete({ where: { id: existing.id } });
+    return { success: true, apagado: existing.content };
   }
 
   if (name === 'consultar_leads') {
@@ -2611,6 +2662,23 @@ router.post('/support-chat', async (req: AuthRequest, res: Response) => {
       }
     } catch (err) {
       console.error('[AI] Falha ao buscar perguntas pendentes:', err);
+    }
+
+    // Memórias que algum colaborador pediu pro assistente "lembrar" (ver
+    // lembrar_informacao) — compartilhadas com a conta inteira, aparecem em
+    // TODA conversa, independente de quem tiver pedido pra guardar.
+    try {
+      const memorias = await prisma.assistantMemory.findMany({
+        where: { accountId },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      });
+      if (memorias.length) {
+        const lista = memorias.map((m) => `- ${m.content}`).join('\n');
+        systemPrompt = `${systemPrompt}\n\n--- COISAS QUE A EQUIPE PEDIU PRA VOCÊ LEMBRAR (vale pra qualquer conversa) ---\n${lista}`;
+      }
+    } catch (err) {
+      console.error('[AI] Falha ao buscar memórias:', err);
     }
 
     // Base de Conhecimento: injeta os trechos relevantes à pergunta atual, para o
