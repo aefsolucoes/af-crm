@@ -43,10 +43,10 @@ Você pode PAUSAR a tarefa e falar com o operador (o colaborador que pediu essa 
 - Chame ask_human SOZINHA no turno (sem combinar com outra ferramenta) e pare — a resposta do operador chega no próximo turno, como se fosse o resultado dessa ferramenta.
 
 Regras fixas de segurança (sem exceção):
-- NUNCA digite senha, CPF+senha, código de certificado digital, dados de cartão/pagamento, nem tente resolver um CAPTCHA. Se a tarefa exigir qualquer um desses passos, PARE e explique em texto (sem chamar mais nenhuma ferramenta, nem ask_human — ainda não existe como o operador assumir o controle da aba ao vivo) o que falta um humano fazer manualmente — não tente contornar.
+- NUNCA digite senha, CPF+senha, código de certificado digital, dados de cartão/pagamento, nem tente resolver um CAPTCHA. Se a tarefa exigir qualquer um desses passos, chame ask_human com kind="manual_action" explicando exatamente o que falta um humano fazer manualmente pra destravar (ex.: "o site pede pra sincronizar a senha antes de continuar — preencha a senha atual e a nova senha forte na tela, depois inicie uma nova tarefa pra este mesmo cliente que eu continuo") — não tente contornar. Isso marca a tarefa como "esperando você" (não como concluída), pra ficar claro que ainda falta uma ação sua.
 - Vá com calma: olhe a screenshot com atenção antes de clicar, prefira poucos passos deliberados a muitos passos apressados.
 
-Quando terminar a tarefa (ou quando precisar parar por causa da regra de senha/CAPTCHA acima), responda em TEXTO simples (sem chamar mais ferramentas) resumindo o que foi feito e o que falta, se algo faltar.`;
+Quando terminar a tarefa DE VERDADE, responda em TEXTO simples (sem chamar mais ferramentas) resumindo o que foi feito. Não use texto solto pra dizer que está travado — use ask_human (kind="manual_action" pro caso de senha/CAPTCHA acima, "question" ou "approval" pros outros casos) sempre que a tarefa não puder seguir sozinha.`;
 }
 
 const BROWSER_AGENT_TOOLS = [
@@ -122,12 +122,12 @@ const BROWSER_AGENT_TOOLS = [
   {
     name: 'ask_human',
     description:
-      'Pausa a tarefa e pergunta ao operador antes de continuar. Use kind="question" quando precisar de uma informação que não tem certeza (dado do cliente, valor de campo, qual opção escolher). Use kind="approval" quando estiver prestes a confirmar uma ação irreversível (enviar, comprar, assinar, emitir, submeter) e precisar de aprovação explícita antes de clicar. Chame sozinha, sem combinar com outra ferramenta no mesmo turno — você recebe a resposta do operador no próximo turno.',
+      'Pausa a tarefa e avisa o operador. Use kind="question" quando precisar de uma informação que não tem certeza (dado do cliente, valor de campo, qual opção escolher) — você recebe a resposta dele no próximo turno. Use kind="approval" quando estiver prestes a confirmar uma ação irreversível (enviar, comprar, assinar, emitir, submeter) e precisar de aprovação explícita antes de clicar — você recebe aprovar/recusar no próximo turno. Use kind="manual_action" quando a tarefa exigir senha/CPF+senha/CAPTCHA (algo que você NUNCA deve digitar) — esse caso NÃO tem retomada automática: a tarefa termina como "esperando você", e o operador precisa iniciar uma nova tarefa depois de resolver manualmente. Chame sozinha, sem combinar com outra ferramenta no mesmo turno.',
     input_schema: {
       type: 'object',
       properties: {
-        kind: { type: 'string', enum: ['question', 'approval'] },
-        message: { type: 'string', description: 'A pergunta ou o que está prestes a fazer, em português claro e direto pro operador entender e responder rápido.' },
+        kind: { type: 'string', enum: ['question', 'approval', 'manual_action'] },
+        message: { type: 'string', description: 'A pergunta, o que está prestes a fazer, ou o que falta o operador fazer manualmente — em português claro e direto.' },
       },
       required: ['kind', 'message'],
     },
@@ -377,15 +377,33 @@ async function executeLoop(
         convo.push({ role: 'assistant', content: data.content });
 
         if (askHumanBlock) {
+          seq += 1;
+          const rawKind = String(askHumanBlock.input?.kind || 'question');
+          const message = String(askHumanBlock.input?.message || 'O agente precisa da sua ajuda pra continuar.');
+
+          if (rawKind === 'manual_action') {
+            // Senha/CPF+senha/CAPTCHA: SEM retomada automática (não existe
+            // take-over de aba ao vivo ainda, ver AWAITING_HUMAN_TAKEOVER no
+            // schema). Antes disto, esse caso terminava o loop com texto solto
+            // e caía no `finishTask(..., 'COMPLETED', ...)` do fim da função —
+            // a tarefa aparecia "Concluída" mesmo travada esperando o operador
+            // digitar a senha manualmente, o que é enganoso (bug real
+            // reportado: "não deve encerrar o serviço sem antes me consultar").
+            await prisma.agentActionLog.create({
+              data: { taskId, seq, tool: 'ask_human', input: { kind: 'manual_action', message } },
+            });
+            await prisma.agentTask.update({ where: { id: taskId }, data: { stepCount: seq } });
+            await finishTask(taskId, userId, io, 'AWAITING_HUMAN_TAKEOVER', message);
+            return;
+          }
+
           // Pausa: o turno do assistant já entrou no convo, mas o tool_result
           // do ask_human ainda falta — só entra quando o operador responder
           // (applyHumanResponse). Guarda os resultados das OUTRAS ferramentas
           // do mesmo turno (se o modelo combinou, mesmo sendo instruído a não
           // combinar) em pendingAction.otherResults pra completar o turno certo
           // na retomada.
-          seq += 1;
-          const kind: 'question' | 'approval' = askHumanBlock.input?.kind === 'approval' ? 'approval' : 'question';
-          const message = String(askHumanBlock.input?.message || 'O agente precisa da sua ajuda pra continuar.');
+          const kind: 'question' | 'approval' = rawKind === 'approval' ? 'approval' : 'question';
           const log = await prisma.agentActionLog.create({
             data: { taskId, seq, tool: 'ask_human', input: { kind, message }, requiredApproval: kind === 'approval' },
           });
@@ -587,13 +605,17 @@ async function finishTask(
   taskId: string,
   userId: string,
   io: IO,
-  status: 'COMPLETED' | 'FAILED' | 'CANCELLED',
+  status: 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'AWAITING_HUMAN_TAKEOVER',
   resultSummary?: string,
   errorMessage?: string
 ) {
+  // AWAITING_HUMAN_TAKEOVER não é terminal de verdade (a tarefa está parada
+  // esperando o operador, não concluída/falha/cancelada) — completedAt fica
+  // em branco, igual PENDING/RUNNING/AWAITING_*.
+  const isTerminal = status !== 'AWAITING_HUMAN_TAKEOVER';
   await prisma.agentTask.update({
     where: { id: taskId },
-    data: { status, resultSummary, errorMessage, completedAt: new Date() },
+    data: { status, resultSummary, errorMessage, ...(isTerminal ? { completedAt: new Date() } : {}) },
   });
   io.to(`user_${userId}`).emit('agent_task_status', { taskId, status, resultSummary, errorMessage });
 }
