@@ -17,6 +17,51 @@ function isApiConversation(c: Conversation): boolean {
   return typeof ext === 'string' && ext.startsWith('wamid');
 }
 
+/** minúsculo e sem acento — pra "Mônica" achar "Monica" e vice-versa. */
+function normalizeSearch(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+/** Busca avançada da Inbox: não precisa ser o nome/número exato.
+ *  - Nome: quebra o texto digitado em palavras — cada palavra precisa
+ *    aparecer em algum lugar do nome OU dos participantes do card (não
+ *    precisa ser a frase inteira nem estar na ordem certa: "silva monica"
+ *    acha "Mônica da Silva Santos"). Olha contact.name/lead.name E
+ *    customFields.participante_1/2 — o card pode ter o nome corrigido ali
+ *    mesmo quando o nome do perfil do WhatsApp ficou errado/apelido.
+ *  - Telefone: aceita busca parcial (só os últimos dígitos que a pessoa
+ *    lembra) E ignora o "9" a mais/a menos do celular (o Brasil passou a
+ *    exigir esse dígito depois de muito número já estar salvo sem ele —
+ *    compara pelos últimos 8 dígitos quando o texto digitado é longo o
+ *    bastante pra ser um número quase inteiro). */
+function matchesSearch(c: Conversation, query: string): boolean {
+  const q = normalizeSearch(query.trim());
+  const qDigits = query.replace(/\D/g, '');
+  if (!q && !qDigits) return true;
+
+  if (qDigits.length >= 4) {
+    const cf = c.customFields || {};
+    const phones = [c.contact?.whatsappPhone, c.contact?.phone, cf.telefone_1, cf.telefone_2]
+      .filter((p): p is string => !!p)
+      .map((p) => p.replace(/\D/g, ''));
+    const phoneHit = phones.some((p) =>
+      p.includes(qDigits) || (qDigits.length >= 8 && p.length >= 8 && p.slice(-8) === qDigits.slice(-8))
+    );
+    if (phoneHit) return true;
+  }
+
+  if (q) {
+    const cf = c.customFields || {};
+    const haystack = normalizeSearch(
+      [c.contact?.name, c.name, cf.participante_1, cf.participante_2].filter(Boolean).join(' ')
+    );
+    const words = q.split(/\s+/).filter(Boolean);
+    if (words.length > 0 && words.every((w) => haystack.includes(w))) return true;
+  }
+
+  return false;
+}
+
 /** data da última mensagem (para ordenar as conversas) */
 function lastMessageTime(c: Conversation): number {
   const t = c.messages?.[0]?.createdAt || c.updatedAt;
@@ -48,19 +93,14 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
   const groupCount = conversations.filter(isGroupConversation).length;
   const apiCount = conversations.filter((c) => !isGroupConversation(c) && isApiConversation(c)).length;
 
-  const q = search.trim().toLowerCase();
-  const qDigits = q.replace(/\D/g, '');
+  const q = search.trim();
 
   const filtered = conversations
     .filter((c) => {
       const isGroup = isGroupConversation(c);
       // Busca por nome ou número — vale sobre qualquer filtro (inclusive grupos).
       if (q) {
-        const name = (c.contact?.name || c.name || '').toLowerCase();
-        const phone = (c.contact?.whatsappPhone || c.contact?.phone || '').replace(/\D/g, '');
-        const hit = name.includes(q) || (qDigits.length >= 3 && phone.includes(qDigits));
-        if (!hit) return false;
-        return true; // ao buscar, ignora as abas e procura em tudo
+        return matchesSearch(c, q); // ao buscar, ignora as abas e procura em tudo
       }
       if (filter === 'GROUPS') return isGroup;
       // Nas demais visões, os grupos ficam fora — têm aba própria.

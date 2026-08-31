@@ -210,6 +210,11 @@ export interface Conversation {
   whatsappNumberId?: string | null;
   whatsappNumber?: { id: string; label: string; phone?: string | null } | null;
   aiAutoReplyActive?: boolean;
+  // getConversations() devolve o Lead inteiro (sem `select`) — customFields
+  // vem junto mesmo sem estar listado aqui antes; usado na busca avançada da
+  // Inbox (nome corrigido no card pode estar em participante_1/2, não em
+  // contact.name — esse é só o nome que veio do perfil do WhatsApp).
+  customFields?: Record<string, string> | null;
 }
 
 export interface SalesBot {
