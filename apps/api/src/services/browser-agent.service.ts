@@ -316,6 +316,14 @@ async function executeLoop(
   const apiKey = process.env.ANTHROPIC_API_KEY!;
   let seq = startSeq;
   let finalText = 'A tarefa não terminou dentro do limite de passos — peça de novo dividindo em partes menores.';
+  // Só vira true no `break` de baixo, quando o modelo PARA sozinho com texto
+  // final (parou de chamar ferramenta). Se o for esgotar MAX_STEPS sem isso
+  // (ex.: extensão travando/dando timeout repetido — visto em produção: 2
+  // timeouts seguidos, dá pra tentar até acabar o orçamento sem nunca
+  // "terminar"), NÃO é sucesso — antes disto caía direto em COMPLETED mesmo
+  // sem ter feito o que foi pedido, o mesmo tipo de rótulo enganoso já
+  // corrigido pro caso de senha/CAPTCHA (AWAITING_HUMAN_TAKEOVER).
+  let stoppedNaturally = false;
 
   try {
     for (let i = 0; i < MAX_STEPS; i++) {
@@ -453,10 +461,15 @@ async function executeLoop(
       }
 
       finalText = data.content.find((b) => b.type === 'text')?.text ?? finalText;
+      stoppedNaturally = true;
       break;
     }
 
-    await finishTask(taskId, userId, io, 'COMPLETED', finalText);
+    if (stoppedNaturally) {
+      await finishTask(taskId, userId, io, 'COMPLETED', finalText);
+    } else {
+      await finishTask(taskId, userId, io, 'FAILED', undefined, finalText);
+    }
   } catch (err: any) {
     console.error('[Agente de Navegador] Erro no loop:', err);
     await finishTask(taskId, userId, io, 'FAILED', undefined, err?.message || 'Erro inesperado no loop.');
