@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, Home, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, MousePointerClick, Landmark, X,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, Landmark, X,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -33,7 +33,6 @@ const NAV: NavItem[] = [
   { href: '/usuarios', label: 'Usuários', icon: UserCog, perm: 'users' },
   { href: '/financeiro', label: 'Financeiro', icon: Wallet, perm: 'finance' },
   { href: '/importar', label: 'Importar', icon: Upload, perm: 'funnel_manage' },
-  { href: '/agente-navegador', label: 'Agente de Navegador', icon: MousePointerClick, perm: 'browser_agent' },
   { href: '/configuracoes', label: 'Configurações', icon: Settings, perm: 'settings' },
 ];
 

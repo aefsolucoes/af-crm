@@ -26,11 +26,9 @@ import dashboardNoteRoutes from './routes/dashboard-notes';
 import importRoutes from './routes/import';
 import messageTemplateRoutes from './routes/message-templates';
 import departmentRoutes from './routes/departments';
-import browserAgentRoutes from './routes/browser-agent';
 import salesBotRoutes from './routes/salesbot';
 import automationRoutes from './routes/automations';
 import pushRoutes from './routes/push';
-import { failOrphanedRunningTasks } from './services/browser-agent.service';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
 import { configureWebPush } from './services/push.service';
@@ -49,12 +47,6 @@ app.use(cors({
     if (origin.endsWith('.netlify.app')) return cb(null, true);
     if (origin.endsWith('.pages.dev')) return cb(null, true);
     if (origin.endsWith('.aefsolucoesfinanceiras.com.br')) return cb(null, true);
-    // Extensão do Agente de Navegador (apps/browser-extension) — o id muda
-    // por instalação (carregada "sem compactação"), então não dá pra
-    // whitelistar um id fixo; quem garante a segurança aqui é o JWT de cada
-    // rota, não a origem. Sem isso, o login da extensão falhava com CORS e
-    // o navegador devolvia a página de erro em HTML em vez do JSON esperado.
-    if (origin.startsWith('chrome-extension://')) return cb(null, true);
     if (allowedOrigins.length === 0 || allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
     cb(new Error('Not allowed by CORS'));
   },
@@ -88,7 +80,6 @@ app.use('/api/dashboard-notes', dashboardNoteRoutes);
 app.use('/api/import', importRoutes);
 app.use('/api/message-templates', messageTemplateRoutes);
 app.use('/api/departments', departmentRoutes);
-app.use('/api/browser-agent', browserAgentRoutes);
 app.use('/api/salesbot', salesBotRoutes);
 app.use('/api/automations', automationRoutes);
 app.use('/api/push', pushRoutes);
@@ -213,10 +204,6 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 API AF CRM rodando em http://localhost:${PORT}`);
   // Restore WhatsApp QR sessions after restart
   restoreActiveSessions().catch(console.error);
-  // Tarefas do Agente de Navegador que ficaram "rodando" quando o processo
-  // anterior caiu/reiniciou (todo deploy reinicia) — retoma sozinho de onde
-  // parou, em vez de desistir e o operador ter que começar do zero.
-  failOrphanedRunningTasks(io).catch(console.error);
 
   // Válvula de segurança do disco: arquiva no Drive só os anexos com 30+ dias,
   // numa pasta técnica separada — nunca mexe na organização manual do usuário.
