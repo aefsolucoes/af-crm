@@ -621,16 +621,51 @@ async function finishTask(
 }
 
 /** Ao subir o processo, tarefas que ficaram "RUNNING" (o servidor reiniciou
- *  no meio) nunca mais vão terminar sozinhas — o loop delas morreu junto com
- *  o processo anterior, no meio de uma ação sem estado bem definido pra
- *  retomar. Marca como FAILED em vez de deixar penduradas pra sempre como
- *  "rodando". Diferente de AWAITING_APPROVAL/AWAITING_ANSWER (essas ficam
- *  penduradas de propósito — a conversa persistida sabe exatamente o que
- *  falta, continueAgentLoop retoma normalmente mesmo depois de um restart). */
-export async function failOrphanedRunningTasks(): Promise<void> {
-  const { count } = await prisma.agentTask.updateMany({
+ *  no meio — cada deploy reinicia o processo) RETOMA sozinho, em vez de
+ *  desistir e obrigar o operador a começar tudo de novo do zero (gastando
+ *  passos/tokens repetindo o que já tinha sido feito). Reaproveita
+ *  continueAgentLoop — o MESMO mecanismo já usado pra retomar depois de um
+ *  ask_human (aprovação/pergunta), que já sabe recarregar a conversa
+ *  persistida do banco sem depender de nada em memória.
+ *
+ *  Só cai pra FAILED quando a conversa ainda está vazia (`[]`, o valor
+ *  default) — quer dizer que o processo caiu ANTES do 1º turno terminar de
+ *  ser salvo, e não tem nenhum estado seguro de onde continuar; nesse caso
+ *  específico, sim, precisa pedir de novo. */
+export async function failOrphanedRunningTasks(io?: IO): Promise<void> {
+  const orphans = await prisma.agentTask.findMany({
     where: { status: 'RUNNING' },
-    data: { status: 'FAILED', errorMessage: 'A API reiniciou no meio desta tarefa.', completedAt: new Date() },
+    select: { id: true, accountId: true, userId: true, conversation: true },
   });
-  if (count > 0) console.log(`[Agente de Navegador] ${count} tarefa(s) órfã(s) marcada(s) como falhas ao subir.`);
+  if (!orphans.length) return;
+
+  let resumed = 0;
+  let failed = 0;
+  for (const task of orphans) {
+    const convo = task.conversation as unknown[];
+    if (!Array.isArray(convo) || convo.length === 0) {
+      await prisma.agentTask.update({
+        where: { id: task.id },
+        data: { status: 'FAILED', errorMessage: 'A API reiniciou bem no início desta tarefa, antes do 1º passo ser salvo — peça de novo.', completedAt: new Date() },
+      });
+      if (io) io.to(`user_${task.userId}`).emit('agent_task_status', { taskId: task.id, status: 'FAILED' });
+      failed++;
+      continue;
+    }
+    try {
+      if (io) io.to(`user_${task.userId}`).emit('agent_task_status', { taskId: task.id, status: 'RUNNING' });
+      // Roda em background — index.ts não espera o boot inteiro por isso, e
+      // cada tarefa que falhar ao retomar não deve travar as demais (o catch
+      // interno de executeLoop já cobre a maioria dos erros aqui, isso é só
+      // rede de segurança pra erro ANTES de entrar no loop, ex.: falha ao
+      // montar o system prompt).
+      continueAgentLoop(task.id, task.accountId, io ?? { to: () => ({ emit: () => {} }) })
+        .catch((err) => console.error(`[Agente de Navegador] Falha ao retomar tarefa órfã ${task.id}:`, err));
+      resumed++;
+    } catch (err) {
+      console.error(`[Agente de Navegador] Falha ao retomar tarefa órfã ${task.id}:`, err);
+      failed++;
+    }
+  }
+  console.log(`[Agente de Navegador] ${orphans.length} tarefa(s) órfã(s) ao subir — ${resumed} retomada(s), ${failed} marcada(s) como falha.`);
 }

@@ -214,8 +214,9 @@ httpServer.listen(PORT, () => {
   // Restore WhatsApp QR sessions after restart
   restoreActiveSessions().catch(console.error);
   // Tarefas do Agente de Navegador que ficaram "rodando" quando o processo
-  // anterior caiu/reiniciou nunca mais terminam sozinhas — marca como falha.
-  failOrphanedRunningTasks().catch(console.error);
+  // anterior caiu/reiniciou (todo deploy reinicia) — retoma sozinho de onde
+  // parou, em vez de desistir e o operador ter que começar do zero.
+  failOrphanedRunningTasks(io).catch(console.error);
 
   // Válvula de segurança do disco: arquiva no Drive só os anexos com 30+ dias,
   // numa pasta técnica separada — nunca mexe na organização manual do usuário.
