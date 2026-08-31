@@ -779,6 +779,11 @@ model AgentTask {
   // últimas screenshots) pra não estourar o banco nem o custo de tokens.
   conversation  Json            @default("[]")
   pendingAction Json? // ação sensível aguardando decisão (Fase 2)
+  // Mensagem do operador enviada ENQUANTO a tarefa está rodando (chat ao
+  // vivo, Fase 2b) — o loop lê e aplica no próximo turno, no meio do
+  // check de cancelamento (mesmo checkpoint). Não é uma fila: só 1
+  // pendente por vez, concatenada se chegar mais de uma antes do loop ler.
+  liveMessage   String?         @db.Text
   resultSummary String?         @db.Text
   errorMessage  String?         @db.Text
   stepCount     Int             @default(0)

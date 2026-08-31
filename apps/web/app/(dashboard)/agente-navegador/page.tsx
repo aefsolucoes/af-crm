@@ -81,6 +81,8 @@ export default function AgenteNavegadorPage() {
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [answerText, setAnswerText] = useState('');
   const [responding, setResponding] = useState(false);
+  const [liveText, setLiveText] = useState('');
+  const [sendingLive, setSendingLive] = useState(false);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   const { data: tasks } = useQuery({ queryKey: ['browser-agent-tasks'], queryFn: fetchTasks, refetchInterval: 15000 });
@@ -167,6 +169,26 @@ export default function AgenteNavegadorPage() {
       await api.post(`/api/browser-agent/tasks/${activeTaskId}/cancel`);
     } catch {
       toast('Erro ao cancelar', 'error');
+    }
+  }
+
+  /** Chat AO VIVO — manda uma mensagem enquanto a tarefa está rodando, sem
+   *  esperar ela parar sozinha pra perguntar (diferente de handleRespond,
+   *  que só serve pra tarefa PAUSADA). O agente lê no próximo passo — some
+   *  do campo na hora, mas leva alguns segundos pra aparecer no histórico. */
+  async function handleSendLive(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activeTaskId || !liveText.trim() || sendingLive) return;
+    setSendingLive(true);
+    const text = liveText.trim();
+    setLiveText('');
+    try {
+      await api.post(`/api/browser-agent/tasks/${activeTaskId}/message`, { text });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao enviar a mensagem', 'error');
+      setLiveText(text); // devolve o texto pro campo — não perde o que foi digitado
+    } finally {
+      setSendingLive(false);
     }
   }
 
@@ -291,14 +313,25 @@ export default function AgenteNavegadorPage() {
                   {steps.length === 0 && isRunning && (
                     <p className="text-xs text-slate-400 italic">Aguardando a IA decidir o primeiro passo…</p>
                   )}
-                  {steps.map((s) => (
-                    <div key={s.seq} className={cn('text-xs px-3 py-2 rounded-lg', s.ok ? 'bg-slate-50' : 'bg-red-50')}>
-                      <p className="font-medium text-slate-700">
-                        {s.seq}. {toolLabel(s.tool, s.input)}
-                      </p>
-                      {s.summary && <p className={cn('mt-0.5', s.ok ? 'text-slate-500' : 'text-red-600')}>{s.summary}</p>}
-                    </div>
-                  ))}
+                  {steps.map((s) =>
+                    s.tool === 'operator_message' ? (
+                      // Mensagem do chat ao vivo (handleSendLive) — bolha de chat, não
+                      // "N. ferramenta" como os passos normais, pra ficar claro que foi
+                      // você quem falou, não uma ação do agente.
+                      <div key={s.seq} className="flex justify-end">
+                        <p className="max-w-[85%] text-xs px-3 py-2 rounded-lg bg-af-mid text-white">
+                          {String(s.input.text ?? s.summary)}
+                        </p>
+                      </div>
+                    ) : (
+                      <div key={s.seq} className={cn('text-xs px-3 py-2 rounded-lg', s.ok ? 'bg-slate-50' : 'bg-red-50')}>
+                        <p className="font-medium text-slate-700">
+                          {s.seq}. {toolLabel(s.tool, s.input)}
+                        </p>
+                        {s.summary && <p className={cn('mt-0.5', s.ok ? 'text-slate-500' : 'text-red-600')}>{s.summary}</p>}
+                      </div>
+                    )
+                  )}
                   {(result?.summary || result?.error) && (
                     <div className={cn('text-xs px-3 py-2 rounded-lg font-medium', result.error ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700')}>
                       {result.error || result.summary}
@@ -366,6 +399,24 @@ export default function AgenteNavegadorPage() {
                   )}
                   <div ref={transcriptEndRef} />
                 </div>
+                {(status === 'RUNNING' || status === 'PENDING') && (
+                  <form onSubmit={handleSendLive} className="flex gap-2 px-3 py-2.5 border-t border-af-border bg-slate-50 flex-shrink-0">
+                    <input
+                      value={liveText}
+                      onChange={(e) => setLiveText(e.target.value)}
+                      placeholder="Mandar uma mensagem pro agente (ele lê antes do próximo passo)…"
+                      disabled={sendingLive}
+                      className="flex-1 px-3 py-1.5 text-xs border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent disabled:opacity-50"
+                    />
+                    <button
+                      type="submit"
+                      disabled={sendingLive || !liveText.trim()}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-af-mid text-white text-xs font-medium hover:bg-af-dark disabled:opacity-50"
+                    >
+                      {sendingLive ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                    </button>
+                  </form>
+                )}
               </div>
 
               {/* Screenshot ao vivo */}

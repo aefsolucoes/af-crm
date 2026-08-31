@@ -165,6 +165,37 @@ router.post('/tasks/:id/respond', async (req: AuthRequest, res: Response) => {
   });
 });
 
+// Chat AO VIVO durante a execução (Fase 2b) — diferente de /respond, que só
+// vale quando a tarefa PAUSOU esperando aprovação/resposta, esta serve pra
+// redirecionar a tarefa enquanto ela está RODANDO (sem esperar ela parar
+// sozinha pra perguntar). O loop lê no próximo passo (ver checkpoint em
+// executeLoop) — não é instantâneo, mas é o próximo checkpoint disponível
+// (a cada passo, tipicamente poucos segundos).
+router.post('/tasks/:id/message', async (req: AuthRequest, res: Response) => {
+  const text = String((req.body as { text?: string })?.text || '').trim();
+  if (!text) {
+    res.status(400).json({ error: 'Mensagem vazia.' });
+    return;
+  }
+  const task = await prisma.agentTask.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
+  if (!task) {
+    res.status(404).json({ error: 'Tarefa não encontrada' });
+    return;
+  }
+  if (task.status !== 'RUNNING' && task.status !== 'PENDING') {
+    res.status(409).json({ error: 'Essa tarefa não está rodando agora — use "Aprovar/Responder" se ela estiver pausada esperando você.' });
+    return;
+  }
+  // Concatena em vez de sobrescrever: se o operador mandar 2 mensagens antes
+  // do loop conseguir ler a 1ª (checkpoint só roda 1x por passo), nenhuma se perde.
+  await prisma.agentTask.update({
+    where: { id: task.id },
+    data: { liveMessage: task.liveMessage ? `${task.liveMessage}
+${text}` : text },
+  });
+  res.json({ ok: true });
+});
+
 // Gera um AgentPlaybook a partir de uma tarefa CONCLUÍDA — uma chamada à IA
 // (ver generatePlaybookFromTask), síncrona (não é rápido tipo /respond, mas
 // também não é uma tarefa longa como o loop principal — só 1 chamada).

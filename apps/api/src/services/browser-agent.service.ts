@@ -319,11 +319,32 @@ async function executeLoop(
 
   try {
     for (let i = 0; i < MAX_STEPS; i++) {
-      // Alguém pode ter cancelado via POST /tasks/:id/cancel enquanto o loop rodava.
-      const fresh = await prisma.agentTask.findUnique({ where: { id: taskId }, select: { status: true } });
+      // Alguém pode ter cancelado via POST /tasks/:id/cancel enquanto o loop rodava,
+      // ou mandado uma mensagem ao vivo via POST /tasks/:id/message (chat durante
+      // a execução, Fase 2b) — os dois são lidos no mesmo checkpoint, 1x por passo.
+      const fresh = await prisma.agentTask.findUnique({ where: { id: taskId }, select: { status: true, liveMessage: true } });
       if (!fresh || fresh.status === 'CANCELLED') {
         io.to(`user_${userId}`).emit('agent_task_status', { taskId, status: 'CANCELLED' });
         return;
+      }
+      if (fresh.liveMessage) {
+        // Anexa como bloco de texto EXTRA na última mensagem 'user' do convo
+        // (tool_results do passo anterior, ou a instrução inicial na 1ª volta)
+        // — nunca uma mensagem 'user' nova sozinha, isso quebraria a alternância
+        // user/assistant que a API da Anthropic exige.
+        const last = convo[convo.length - 1];
+        const text = `[Mensagem do operador, enviada durante a execução — leve em conta a partir de agora]: ${fresh.liveMessage}`;
+        if (last?.role === 'user') {
+          last.content = Array.isArray(last.content) ? [...last.content, { type: 'text', text }] : [{ type: 'text', text: String(last.content) }, { type: 'text', text }];
+        } else {
+          convo.push({ role: 'user', content: [{ type: 'text', text }] });
+        }
+        seq += 1;
+        await prisma.agentActionLog.create({
+          data: { taskId, seq, tool: 'operator_message', input: { text: fresh.liveMessage }, output: { ok: true, summary: fresh.liveMessage } as any },
+        });
+        await prisma.agentTask.update({ where: { id: taskId }, data: { stepCount: seq, liveMessage: null } });
+        io.to(`user_${userId}`).emit('agent_step', { taskId, seq, tool: 'operator_message', input: { text: fresh.liveMessage }, ok: true, summary: fresh.liveMessage });
       }
 
       const response = await fetch('https://api.anthropic.com/v1/messages', {
