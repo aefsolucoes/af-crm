@@ -87,6 +87,20 @@ const CAMPAIGN_SIGNATURES: CampaignSignature[] = [
     stageMarker: 'prospec',
     fields: CONSORCIO_FIELDS,
   },
+  {
+    label: 'Financiamento Habitacional',
+    marker: 'proposta de financiamento habitacional',
+    // Nome do Department padrão da conta (department.service.ts,
+    // DEFAULT_DEPARTMENTS) — mesma string usada em funil-habitacao/page.tsx.
+    // Diferente de Home Equity, esse setor já existe por padrão em toda conta.
+    departmentName: 'Financiamento Habitacional',
+    stageMarker: 'prospec',
+    // Só roteamento por enquanto — pedido não veio com o texto completo da
+    // ficha, então sem mapa de campos (não dá pra adivinhar rótulo sem
+    // exemplo real). Adicionar aqui do mesmo jeito que HOME_EQUITY_FIELDS/
+    // CONSORCIO_FIELDS assim que tiver uma mensagem de exemplo.
+    fields: {},
+  },
 ];
 
 const SKIP_VALUES = new Set(['—', '-', '', 'nao informada', 'nao informado']);
