@@ -108,7 +108,13 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
       if (filter === 'ALL') return true;
       // aba da API Oficial (Meta Cloud API)
       if (filter === 'API') return isApiConversation(c);
-      // filtro por número de WhatsApp conectado (QR) — API não tem whatsappNumberId
+      // Aba de um número QR específico: mostra o card se ESSE número já
+      // mandou/recebeu qualquer mensagem dele — não só se for o "último
+      // usado" (whatsappNumberId muda toda vez que o cliente fala por outro
+      // número; sem isso, a aba "esquecia" o cliente e a conversa parecia
+      // ter sumido). Um card pode aparecer em mais de uma aba de número,
+      // de propósito, se o cliente já falou pelos dois.
+      if (c.usedNumberIds?.includes(filter)) return !isApiConversation(c);
       return (c.whatsappNumber?.id || c.whatsappNumberId) === filter && !isApiConversation(c);
     })
     .sort((a, b) => lastMessageTime(b) - lastMessageTime(a));

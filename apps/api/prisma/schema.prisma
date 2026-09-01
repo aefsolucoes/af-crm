@@ -390,6 +390,9 @@ model Message {
   @@index([leadId, createdAt])
   @@index([leadId, read, direction])
   @@index([externalId])
+  // Cobre o GROUP BY leadId+whatsappNumberId de getConversations() — monta
+  // "todo número que já falou com este lead" pras abas por número da Inbox.
+  @@index([leadId, whatsappNumberId])
 }
 
 // Documento/imagem recebido no WhatsApp (guardado até ir para o Drive)

@@ -215,6 +215,11 @@ export interface Conversation {
   // Inbox (nome corrigido no card pode estar em participante_1/2, não em
   // contact.name — esse é só o nome que veio do perfil do WhatsApp).
   customFields?: Record<string, string> | null;
+  // Todo número de WhatsApp que já mandou/recebeu alguma mensagem deste lead
+  // (não só o último usado, que é o que whatsappNumberId guarda) — usado pra
+  // um card aparecer em TODAS as abas de número que ele já passou, não só a
+  // do contato mais recente.
+  usedNumberIds?: string[];
 }
 
 export interface SalesBot {

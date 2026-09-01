@@ -714,14 +714,36 @@ export async function getConversations(accountId: string, scopeDepartmentIds: st
       },
     },
   });
+  // Todo número de WhatsApp que JÁ mandou/recebeu alguma mensagem de cada
+  // lead — não só o "último usado" (lead.whatsappNumberId, que é sobrescrito
+  // toda vez que o cliente fala por um número diferente, ver comentário em
+  // getOrCreateLeadForPhone). Sem isso, a aba de um número "esquecia" o
+  // cliente assim que ele mandava UMA mensagem por outro número — a conversa
+  // não sumia de verdade, só a etiqueta de qual número mudava (bug real
+  // reportado: "as conversas do 3606 sumiram"). GROUP BY em vez de trazer
+  // toda mensagem — só as combinações distintas (leadId, whatsappNumberId).
+  const numberUsage = await prisma.message.groupBy({
+    by: ['leadId', 'whatsappNumberId'],
+    where: { lead: { accountId }, whatsappNumberId: { not: null } },
+  });
+  const usedNumbersByLead = new Map<string, string[]>();
+  for (const row of numberUsage) {
+    if (!row.whatsappNumberId) continue;
+    const list = usedNumbersByLead.get(row.leadId);
+    if (list) list.push(row.whatsappNumberId);
+    else usedNumbersByLead.set(row.leadId, [row.whatsappNumberId]);
+  }
+
   // Ordena pela data da ÚLTIMA MENSAGEM (não pelo updatedAt do lead, que muda
   // quando se edita dados/estágio). Assim a conversa que recebeu/enviou msg mais
   // recente fica no topo.
-  return leads.sort((a, b) => {
-    const ta = a.messages[0]?.createdAt?.getTime() ?? a.updatedAt.getTime();
-    const tb = b.messages[0]?.createdAt?.getTime() ?? b.updatedAt.getTime();
-    return tb - ta;
-  });
+  return leads
+    .map((lead) => ({ ...lead, usedNumberIds: usedNumbersByLead.get(lead.id) || [] }))
+    .sort((a, b) => {
+      const ta = a.messages[0]?.createdAt?.getTime() ?? a.updatedAt.getTime();
+      const tb = b.messages[0]?.createdAt?.getTime() ?? b.updatedAt.getTime();
+      return tb - ta;
+    });
 }
 
 /** Busca um anexo (com bytes) garantindo que pertence à conta. */
