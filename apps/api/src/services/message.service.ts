@@ -23,13 +23,30 @@ function plainPhone(contact?: { phone?: string | null; whatsappPhone?: string | 
  * for de setor(es) específico(s)) de algum deles — senão devolve null, como
  * se a conversa não existisse pra quem está pedindo.
  */
-export async function getMessages(leadId: string, accountId: string, scopeDepartmentIds: string[] = []) {
+export async function getMessages(leadId: string, accountId: string, scopeDepartmentIds: string[] = [], scopeNumberIds: string[] | null = null) {
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
     include: { pipeline: { select: { departmentId: true } } },
   });
   if (!lead) return null;
   if (scopeDepartmentIds.length && lead.pipeline.departmentId && !scopeDepartmentIds.includes(lead.pipeline.departmentId)) return null;
+
+  // Mesma restrição por número do getConversations() (lista), aplicada aqui
+  // também — senão dava pra abrir uma conversa fora do escopo direto pelo
+  // link (leadId), sem passar pela lista filtrada.
+  if (scopeNumberIds) {
+    const whatsappMsgs = await prisma.message.findMany({
+      where: { leadId, channel: 'WHATSAPP' },
+      select: { whatsappNumberId: true },
+      take: 50,
+    });
+    if (whatsappMsgs.length > 0) {
+      const usedApi = whatsappMsgs.some((m) => !m.whatsappNumberId);
+      const usedNumbers = whatsappMsgs.map((m) => m.whatsappNumberId).filter((v): v is string => !!v);
+      const allowed = usedNumbers.some((id) => scopeNumberIds.includes(id)) || (usedApi && scopeNumberIds.includes('API'));
+      if (!allowed) return null;
+    }
+  }
 
   return prisma.message.findMany({
     where: { leadId },
@@ -682,7 +699,20 @@ export async function markMessagesRead(leadId: string) {
   });
 }
 
-export async function getConversations(accountId: string, scopeDepartmentIds: string[] = []) {
+/** Números (WhatsAppNumber.id) + o pseudo-valor "API" que o usuário logado
+ *  pode enxergar na Inbox — null = sem restrição (ADMIN, ou ninguém marcou
+ *  nada pra esse usuário ainda em Usuários; mesma filosofia de
+ *  getScopeDepartmentIds). Busca sempre fresca no banco (nunca vem do JWT) —
+ *  mesmo motivo do fix de papel/setor: mudar isso pra alguém já logado
+ *  precisa valer rápido, não só depois de relogar. */
+export async function getScopeNumberIds(accountId: string, userId: string, role: string): Promise<string[] | null> {
+  if (role === 'ADMIN') return null;
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { whatsAppNumberIds: true } });
+  if (!user || user.whatsAppNumberIds.length === 0) return null;
+  return user.whatsAppNumberIds;
+}
+
+export async function getConversations(accountId: string, scopeDepartmentIds: string[] = [], scopeNumberIds: string[] | null = null) {
   const leads = await prisma.lead.findMany({
     where: {
       accountId,
@@ -714,36 +744,55 @@ export async function getConversations(accountId: string, scopeDepartmentIds: st
       },
     },
   });
-  // Todo número de WhatsApp que JÁ mandou/recebeu alguma mensagem de cada
-  // lead — não só o "último usado" (lead.whatsappNumberId, que é sobrescrito
-  // toda vez que o cliente fala por um número diferente, ver comentário em
-  // getOrCreateLeadForPhone). Sem isso, a aba de um número "esquecia" o
-  // cliente assim que ele mandava UMA mensagem por outro número — a conversa
-  // não sumia de verdade, só a etiqueta de qual número mudava (bug real
-  // reportado: "as conversas do 3606 sumiram"). GROUP BY em vez de trazer
-  // toda mensagem — só as combinações distintas (leadId, whatsappNumberId).
+  // Todo número de WhatsApp (ou API Oficial, quando whatsappNumberId é null)
+  // que JÁ mandou/recebeu alguma mensagem de cada lead — não só o "último
+  // usado" (lead.whatsappNumberId, que é sobrescrito toda vez que o cliente
+  // fala por um número diferente, ver comentário em getOrCreateLeadForPhone).
+  // Sem isso, a aba de um número "esquecia" o cliente assim que ele mandava
+  // UMA mensagem por outro número — a conversa não sumia de verdade, só a
+  // etiqueta de qual número mudava (bug real reportado: "as conversas do
+  // 3606 sumiram"). GROUP BY em vez de trazer toda mensagem — só as
+  // combinações distintas (leadId, whatsappNumberId). Sem filtrar
+  // whatsappNumberId != null de propósito: uma linha com null identifica
+  // "esse lead já falou pela API Oficial" — usado pro scopeNumberIds abaixo.
   const numberUsage = await prisma.message.groupBy({
     by: ['leadId', 'whatsappNumberId'],
-    where: { lead: { accountId }, whatsappNumberId: { not: null } },
+    where: { lead: { accountId }, channel: 'WHATSAPP' },
   });
   const usedNumbersByLead = new Map<string, string[]>();
+  const usedApiOficialLeads = new Set<string>();
   for (const row of numberUsage) {
-    if (!row.whatsappNumberId) continue;
-    const list = usedNumbersByLead.get(row.leadId);
-    if (list) list.push(row.whatsappNumberId);
-    else usedNumbersByLead.set(row.leadId, [row.whatsappNumberId]);
+    if (row.whatsappNumberId) {
+      const list = usedNumbersByLead.get(row.leadId);
+      if (list) list.push(row.whatsappNumberId);
+      else usedNumbersByLead.set(row.leadId, [row.whatsappNumberId]);
+    } else {
+      usedApiOficialLeads.add(row.leadId);
+    }
   }
+
+  const withUsage = leads.map((lead) => ({ ...lead, usedNumberIds: usedNumbersByLead.get(lead.id) || [] }));
+
+  // Restrição por número (Usuários → "Números de WhatsApp que ele enxerga"):
+  // um lead que nunca usou WhatsApp (Instagram/Telegram/Webchat/e-mail) passa
+  // direto — a restrição é só sobre canais de WhatsApp, não esconde o resto.
+  const scoped = scopeNumberIds
+    ? withUsage.filter((lead) => {
+        const used = usedNumbersByLead.get(lead.id) || [];
+        const usedApi = usedApiOficialLeads.has(lead.id);
+        if (used.length === 0 && !usedApi) return true;
+        return used.some((id) => scopeNumberIds.includes(id)) || (usedApi && scopeNumberIds.includes('API'));
+      })
+    : withUsage;
 
   // Ordena pela data da ÚLTIMA MENSAGEM (não pelo updatedAt do lead, que muda
   // quando se edita dados/estágio). Assim a conversa que recebeu/enviou msg mais
   // recente fica no topo.
-  return leads
-    .map((lead) => ({ ...lead, usedNumberIds: usedNumbersByLead.get(lead.id) || [] }))
-    .sort((a, b) => {
-      const ta = a.messages[0]?.createdAt?.getTime() ?? a.updatedAt.getTime();
-      const tb = b.messages[0]?.createdAt?.getTime() ?? b.updatedAt.getTime();
-      return tb - ta;
-    });
+  return scoped.sort((a, b) => {
+    const ta = a.messages[0]?.createdAt?.getTime() ?? a.updatedAt.getTime();
+    const tb = b.messages[0]?.createdAt?.getTime() ?? b.updatedAt.getTime();
+    return tb - ta;
+  });
 }
 
 /** Busca um anexo (com bytes) garantindo que pertence à conta. */

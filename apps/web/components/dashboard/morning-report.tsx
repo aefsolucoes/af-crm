@@ -7,7 +7,7 @@ import { Sun, CheckSquare, MessageCircle, AlertCircle } from 'lucide-react';
 
 interface MorningData {
   user: { name: string };
-  number: { id: string; label: string } | null;
+  numbers: { id: string; label: string }[];
   tasks: { id: string; title: string; dueAt: string; overdue: boolean; leadId: string | null; leadName: string | null }[];
   clients: { leadId: string; name: string; phone: string | null; lastMessage: string; at: string | null }[];
 }
@@ -84,9 +84,9 @@ export function MorningReport() {
         {/* Clientes esperando resposta */}
         <div className="bg-white/10 rounded-xl p-3.5 min-w-0">
           <div className="flex items-center gap-2 text-sm font-semibold mb-2">
-            <MessageCircle size={15} /> Clientes esperando resposta {data.number ? <span className="text-white/50 font-normal">· {data.number.label}</span> : null}
+            <MessageCircle size={15} /> Clientes esperando resposta {data.numbers.length ? <span className="text-white/50 font-normal">· {data.numbers.map((n) => n.label).join(', ')}</span> : null}
           </div>
-          {!data.number ? (
+          {!data.numbers.length ? (
             <div className="space-y-2">
               <p className="text-xs text-amber-200">Vincule o seu número pra ver seus clientes aqui:</p>
               <div className="flex gap-2">

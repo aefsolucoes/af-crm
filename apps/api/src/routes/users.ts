@@ -9,7 +9,7 @@ const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
 
-const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true, operatesApiOficial: true, permissions: true, departmentIds: true, assistantProjectUrl: true } as const;
+const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberIds: true, permissions: true, departmentIds: true, assistantProjectUrl: true } as const;
 const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
 
 /** Confere que todos os ids mandados são setores de verdade DESSA conta —
@@ -25,12 +25,20 @@ async function sanitizeDepartmentIds(raw: unknown, accountId: string): Promise<s
   return ids.filter((id) => validIds.has(id));
 }
 
-/** O seletor "número que ele opera" no front é um select único (QR
- *  específico, API Oficial, ou nenhum) — o valor especial "API" vira os
- *  dois campos reais do banco: operatesApiOficial + whatsAppNumberId. */
-function resolveOperatorChannel(raw: string | null | undefined): { whatsAppNumberId: string | null; operatesApiOficial: boolean } {
-  if (raw === 'API') return { whatsAppNumberId: null, operatesApiOficial: true };
-  return { whatsAppNumberId: raw || null, operatesApiOficial: false };
+/** Confere que cada valor da lista de "números que ele enxerga" é um número
+ *  de WhatsApp de verdade dessa conta, ou o pseudo-valor "API" (API
+ *  Oficial) — filtra silenciosamente o resto (mesmo padrão de
+ *  sanitizeDepartmentIds, pra não travar o form por um id órfão). */
+async function sanitizeNumberIds(raw: unknown, accountId: string): Promise<string[]> {
+  if (!Array.isArray(raw)) return [];
+  const ids = Array.from(new Set(raw.filter((v): v is string => typeof v === 'string' && v.length > 0)));
+  if (!ids.length) return [];
+  const realIds = ids.filter((id) => id !== 'API');
+  const valid = realIds.length
+    ? await prisma.whatsAppNumber.findMany({ where: { id: { in: realIds }, accountId }, select: { id: true } })
+    : [];
+  const validIds = new Set(valid.map((n) => n.id));
+  return ids.filter((id) => id === 'API' || validIds.has(id));
 }
 
 // Normaliza o objeto de permissões recebido: mantém só as chaves conhecidas como
@@ -71,8 +79,8 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: 'Você não tem permissão para gerenciar usuários' });
     }
     const accountId = req.user!.accountId;
-    const { name, email, password, role, whatsAppNumberId, departmentIds } = req.body as {
-      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null; departmentIds?: unknown;
+    const { name, email, password, role, whatsAppNumberIds, departmentIds } = req.body as {
+      name?: string; email?: string; password?: string; role?: string; whatsAppNumberIds?: unknown; departmentIds?: unknown;
     };
 
     const cleanName = (name || '').trim();
@@ -86,11 +94,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     const existing = await prisma.user.findUnique({ where: { email: cleanEmail } });
     if (existing) return res.status(409).json({ error: 'Já existe um usuário com esse e-mail' });
 
-    const channel = resolveOperatorChannel(whatsAppNumberId);
-    if (channel.whatsAppNumberId) {
-      const num = await prisma.whatsAppNumber.findFirst({ where: { id: channel.whatsAppNumberId, accountId } });
-      if (!num) return res.status(400).json({ error: 'Número de WhatsApp inválido' });
-    }
+    const cleanNumberIds = await sanitizeNumberIds(whatsAppNumberIds, accountId);
     const cleanDepartmentIds = await sanitizeDepartmentIds(departmentIds, accountId);
 
     const hashed = await bcrypt.hash(password, 10);
@@ -101,8 +105,11 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         password: hashed,
         role: (VALID_ROLES.includes(role as Role) ? role : 'AGENT') as Role,
         accountId,
-        whatsAppNumberId: channel.whatsAppNumberId,
-        operatesApiOficial: channel.operatesApiOficial,
+        whatsAppNumberIds: cleanNumberIds,
+        // Compat: nada mais lê esses dois — mantidos em sincronia com a
+        // lista nova por segurança, sem custo (ver whatsAppNumberIds no schema).
+        whatsAppNumberId: cleanNumberIds.find((id) => id !== 'API') || null,
+        operatesApiOficial: cleanNumberIds.includes('API'),
         departmentIds: cleanDepartmentIds,
         permissions: sanitizePermissions((req.body as { permissions?: unknown }).permissions) ?? undefined,
       },
@@ -124,8 +131,8 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     const target = await prisma.user.findFirst({ where: { id: req.params.id, accountId } });
     if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
 
-    const { name, email, password, role, whatsAppNumberId, departmentIds, assistantProjectUrl } = req.body as {
-      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null; departmentIds?: unknown; assistantProjectUrl?: string | null;
+    const { name, email, password, role, whatsAppNumberIds, departmentIds, assistantProjectUrl } = req.body as {
+      name?: string; email?: string; password?: string; role?: string; whatsAppNumberIds?: unknown; departmentIds?: unknown; assistantProjectUrl?: string | null;
     };
     const data: Record<string, unknown> = {};
 
@@ -154,14 +161,11 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
       }
       data.role = role as Role;
     }
-    if (whatsAppNumberId !== undefined) {
-      const channel = resolveOperatorChannel(whatsAppNumberId);
-      if (channel.whatsAppNumberId) {
-        const num = await prisma.whatsAppNumber.findFirst({ where: { id: channel.whatsAppNumberId, accountId } });
-        if (!num) return res.status(400).json({ error: 'Número de WhatsApp inválido' });
-      }
-      data.whatsAppNumberId = channel.whatsAppNumberId;
-      data.operatesApiOficial = channel.operatesApiOficial;
+    if (whatsAppNumberIds !== undefined) {
+      const cleanNumberIds = await sanitizeNumberIds(whatsAppNumberIds, accountId);
+      data.whatsAppNumberIds = cleanNumberIds;
+      data.whatsAppNumberId = cleanNumberIds.find((id) => id !== 'API') || null;
+      data.operatesApiOficial = cleanNumberIds.includes('API');
     }
     if (departmentIds !== undefined) {
       data.departmentIds = await sanitizeDepartmentIds(departmentIds, accountId);
@@ -238,7 +242,10 @@ router.patch('/me/theme', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// PATCH /api/users/me/whatsapp — o próprio usuário vincula o número que ele opera.
+// PATCH /api/users/me/whatsapp — o próprio usuário vincula o número que ele
+// opera (picker rápido do Relatório Matinal, quando ninguém configurou nada
+// pra ele ainda em Usuários — sempre substitui a lista por esse único número,
+// já que só dispara a partir do estado vazio).
 router.patch('/me/whatsapp', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
@@ -247,10 +254,11 @@ router.patch('/me/whatsapp', async (req: AuthRequest, res: Response) => {
       const num = await prisma.whatsAppNumber.findFirst({ where: { id: whatsAppNumberId, accountId } });
       if (!num) return res.status(400).json({ error: 'Número de WhatsApp inválido' });
     }
+    const ids = whatsAppNumberId ? [whatsAppNumberId] : [];
     const user = await prisma.user.update({
       where: { id: req.user!.id },
-      data: { whatsAppNumberId: whatsAppNumberId || null },
-      select: { id: true, whatsAppNumberId: true },
+      data: { whatsAppNumberIds: ids, whatsAppNumberId: whatsAppNumberId || null, operatesApiOficial: false },
+      select: { id: true, whatsAppNumberIds: true },
     });
     res.json(user);
   } catch {
@@ -258,8 +266,9 @@ router.patch('/me/whatsapp', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// PATCH /api/users/:id/whatsapp — vincula (ou desvincula) o número de WhatsApp
-// que o usuário opera. Usado no Relatório Matinal pra dividir os clientes.
+// PATCH /api/users/:id/whatsapp — vincula (ou desvincula) um único número de
+// WhatsApp pro usuário (atalho legado; a edição completa — vários números +
+// API Oficial — é pelo PATCH /api/users/:id).
 router.patch('/:id/whatsapp', async (req: AuthRequest, res: Response) => {
   try {
     if (req.user!.role === 'AGENT') {
@@ -276,10 +285,11 @@ router.patch('/:id/whatsapp', async (req: AuthRequest, res: Response) => {
       if (!num) return res.status(400).json({ error: 'Número de WhatsApp inválido' });
     }
 
+    const ids = whatsAppNumberId ? [whatsAppNumberId] : [];
     const user = await prisma.user.update({
       where: { id: req.params.id },
-      data: { whatsAppNumberId: whatsAppNumberId || null },
-      select: { id: true, whatsAppNumberId: true },
+      data: { whatsAppNumberIds: ids, whatsAppNumberId: whatsAppNumberId || null, operatesApiOficial: false },
+      select: { id: true, whatsAppNumberIds: true },
     });
     res.json(user);
   } catch {

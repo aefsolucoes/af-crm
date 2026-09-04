@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone, deleteMessage, reactToMessage, setMessagePinned, setMessageStarred } from '../services/message.service';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone, deleteMessage, reactToMessage, setMessagePinned, setMessageStarred, getScopeNumberIds } from '../services/message.service';
 import { downloadDriveFile } from '../services/google.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { runAutomations } from '../services/automation.service';
@@ -29,9 +29,10 @@ const messageSchema = z.object({
 router.get('/', async (req: AuthRequest, res: Response) => {
   const { leadId } = req.query;
   const scopeDepartmentIds = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+  const scopeNumberIds = await getScopeNumberIds(req.user!.accountId, req.user!.id, req.user!.role);
   if (leadId) {
     try {
-      const messages = await getMessages(leadId as string, req.user!.accountId, scopeDepartmentIds);
+      const messages = await getMessages(leadId as string, req.user!.accountId, scopeDepartmentIds, scopeNumberIds);
       if (messages === null) { res.status(404).json({ error: 'Conversa não encontrada' }); return; }
       res.json(messages);
     } catch {
@@ -39,7 +40,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     }
   } else {
     try {
-      const conversations = await getConversations(req.user!.accountId, scopeDepartmentIds);
+      const conversations = await getConversations(req.user!.accountId, scopeDepartmentIds, scopeNumberIds);
       res.json(conversations);
     } catch {
       res.status(500).json({ error: 'Erro ao buscar conversas' });

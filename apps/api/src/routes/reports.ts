@@ -221,17 +221,15 @@ router.get('/documentacao', async (req: AuthRequest, res: Response) => {
 
 // Relatório Matinal: o que o usuário logado tem pra hoje.
 // - Tarefas dele (vencendo hoje ou atrasadas).
-// - Clientes esperando resposta: conversas do NÚMERO dele (WhatsApp vinculado)
-//   cuja última mensagem foi do cliente (INBOUND).
+// - Clientes esperando resposta: conversas de QUALQUER canal marcado pra ele
+//   em Usuários (um ou mais números QR e/ou API Oficial) cuja última
+//   mensagem foi do cliente (INBOUND) — juntando tudo numa lista só.
 router.get('/morning', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
     const userId = req.user!.id;
 
-    const user = await prisma.user.findFirst({
-      where: { id: userId, accountId },
-      include: { whatsAppNumber: { select: { id: true, label: true } } },
-    });
+    const user = await prisma.user.findFirst({ where: { id: userId, accountId } });
     if (!user) { res.status(404).json({ error: 'Usuário não encontrado' }); return; }
 
     const now = new Date();
@@ -244,12 +242,16 @@ router.get('/morning', async (req: AuthRequest, res: Response) => {
       take: 50,
     });
 
-    // Clientes esperando resposta: no número QR do usuário, OU (se ele opera
-    // pela API Oficial) nas conversas da API dentro do SETOR dele.
-    let clients: Array<{ leadId: string; name: string; phone: string | null; lastMessage: string; at: Date | null }> = [];
-    if (user.whatsAppNumberId) {
+    type ClientRow = { leadId: string; name: string; phone: string | null; lastMessage: string; at: Date | null };
+    const clientsByLead = new Map<string, ClientRow>();
+    const numbers: { id: string; label: string }[] = [];
+
+    const qrIds = user.whatsAppNumberIds.filter((id) => id !== 'API');
+    if (qrIds.length) {
+      const qrNumbers = await prisma.whatsAppNumber.findMany({ where: { id: { in: qrIds }, accountId }, select: { id: true, label: true } });
+      numbers.push(...qrNumbers);
       const leads = await prisma.lead.findMany({
-        where: { accountId, whatsappNumberId: user.whatsAppNumberId, archived: false },
+        where: { accountId, whatsappNumberId: { in: qrIds }, archived: false },
         include: {
           contact: { select: { name: true, whatsappPhone: true, phone: true } },
           messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { direction: true, content: true, createdAt: true } },
@@ -257,16 +259,20 @@ router.get('/morning', async (req: AuthRequest, res: Response) => {
         orderBy: { updatedAt: 'desc' },
         take: 200,
       });
-      clients = leads
-        .filter((l) => l.messages[0]?.direction === 'INBOUND')
-        .map((l) => ({
+      for (const l of leads) {
+        if (l.messages[0]?.direction !== 'INBOUND') continue;
+        clientsByLead.set(l.id, {
           leadId: l.id,
           name: l.name || l.contact?.name || 'Sem nome',
           phone: l.contact?.whatsappPhone || l.contact?.phone || null,
           lastMessage: (l.messages[0]?.content || '').slice(0, 90),
           at: l.messages[0]?.createdAt || null,
-        }));
-    } else if (user.operatesApiOficial) {
+        });
+      }
+    }
+
+    if (user.whatsAppNumberIds.includes('API')) {
+      numbers.push({ id: 'API', label: 'API Oficial' });
       // Antes daqui não checava role === 'ADMIN' (só o resto do arquivo
       // fazia) — um admin com setor(es) preenchido(s) ficava incorretamente
       // restrito. getScopeDepartmentIds já resolve isso certo (ADMIN = []).
@@ -285,20 +291,23 @@ router.get('/morning', async (req: AuthRequest, res: Response) => {
         orderBy: { updatedAt: 'desc' },
         take: 200,
       });
-      clients = leads
-        .filter((l) => l.messages[0]?.direction === 'INBOUND' && l.messages[0]?.externalId?.startsWith('wamid'))
-        .map((l) => ({
+      for (const l of leads) {
+        if (l.messages[0]?.direction !== 'INBOUND' || !l.messages[0]?.externalId?.startsWith('wamid')) continue;
+        clientsByLead.set(l.id, {
           leadId: l.id,
           name: l.name || l.contact?.name || 'Sem nome',
           phone: l.contact?.whatsappPhone || l.contact?.phone || null,
           lastMessage: (l.messages[0]?.content || '').slice(0, 90),
           at: l.messages[0]?.createdAt || null,
-        }));
+        });
+      }
     }
+
+    const clients = Array.from(clientsByLead.values()).sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
 
     res.json({
       user: { name: user.name },
-      number: user.operatesApiOficial ? { id: 'API', label: 'API Oficial' } : (user.whatsAppNumber || null),
+      numbers,
       tasks: tasksRaw.map((t) => ({
         id: t.id, title: t.title, dueAt: t.dueAt, overdue: t.dueAt < now,
         leadId: t.leadId, leadName: t.lead?.name || null,

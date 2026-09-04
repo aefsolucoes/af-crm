@@ -19,8 +19,7 @@ interface UserRecord {
   name: string;
   email: string;
   role: Role;
-  whatsAppNumberId: string | null;
-  operatesApiOficial: boolean;
+  whatsAppNumberIds: string[];
   departmentIds: string[];
   permissions: Record<string, boolean> | null;
   assistantProjectUrl: string | null;
@@ -43,7 +42,7 @@ const ROLE_META: Record<Role, { label: string; color: string; icon: React.ReactN
 };
 
 const EMPTY_FORM = {
-  name: '', email: '', password: '', role: 'AGENT' as Role, whatsAppNumberId: '', departmentIds: [] as string[],
+  name: '', email: '', password: '', role: 'AGENT' as Role, whatsAppNumberIds: [] as string[], departmentIds: [] as string[],
   permissions: { ...ROLE_DEFAULTS.AGENT } as PermissionMap,
   assistantProjectUrl: '',
 };
@@ -70,10 +69,12 @@ export default function UsuariosPage() {
     queryKey: ['departments'],
     queryFn: async () => (await api.get('/api/departments')).data as DepartmentOption[],
   });
-  // Rótulo do canal que o usuário opera — número QR ou "API Oficial".
-  const channelLabel = (u: UserRecord) => {
-    if (u.operatesApiOficial) return 'API Oficial';
-    return numbers.find((n) => n.id === u.whatsAppNumberId)?.label;
+  // Rótulos dos canais que o usuário enxerga — um ou mais números QR e/ou API Oficial.
+  const channelLabels = (u: UserRecord) => {
+    if (!u.whatsAppNumberIds?.length) return [];
+    return u.whatsAppNumberIds
+      .map((id) => (id === 'API' ? 'API Oficial' : numbers.find((n) => n.id === id)?.label))
+      .filter((label): label is string => !!label);
   };
   const departmentName = (id: string | null) => departments.find((d) => d.id === id)?.name;
   const departmentNames = (ids: string[]) => ids.map((id) => departmentName(id)).filter(Boolean).join(', ');
@@ -88,7 +89,7 @@ export default function UsuariosPage() {
         name: form.name,
         email: form.email,
         role: form.role,
-        whatsAppNumberId: form.whatsAppNumberId || null,
+        whatsAppNumberIds: form.whatsAppNumberIds,
         departmentIds: form.departmentIds,
         // Admin sempre tem tudo (guardamos null = usa o padrão do papel).
         permissions: form.role === 'ADMIN' ? null : form.permissions,
@@ -125,7 +126,7 @@ export default function UsuariosPage() {
     setEditingUser(u);
     setForm({
       name: u.name, email: u.email, password: '', role: u.role,
-      whatsAppNumberId: u.operatesApiOficial ? 'API' : (u.whatsAppNumberId || ''),
+      whatsAppNumberIds: u.whatsAppNumberIds || [],
       departmentIds: u.departmentIds || [],
       permissions: effectivePermissions(u.role, u.permissions),
       assistantProjectUrl: u.assistantProjectUrl || '',
@@ -148,6 +149,15 @@ export default function UsuariosPage() {
       departmentIds: f.departmentIds.includes(id)
         ? f.departmentIds.filter((d) => d !== id)
         : [...f.departmentIds, id],
+    }));
+  }
+
+  function toggleNumber(id: string) {
+    setForm((f) => ({
+      ...f,
+      whatsAppNumberIds: f.whatsAppNumberIds.includes(id)
+        ? f.whatsAppNumberIds.filter((n) => n !== id)
+        : [...f.whatsAppNumberIds, id],
     }));
   }
 
@@ -187,7 +197,7 @@ export default function UsuariosPage() {
           {[
             { label: 'Total', value: users.length, color: 'bg-af-light text-af-accent' },
             { label: 'Admins', value: users.filter((u) => u.role === 'ADMIN').length, color: 'bg-red-50 text-red-600' },
-            { label: 'Com WhatsApp vinculado', value: users.filter((u) => u.whatsAppNumberId || u.operatesApiOficial).length, color: 'bg-green-50 text-green-700' },
+            { label: 'Com WhatsApp vinculado', value: users.filter((u) => u.whatsAppNumberIds?.length).length, color: 'bg-green-50 text-green-700' },
           ].map((s) => (
             <div key={s.label} className={`rounded-xl p-4 ${s.color}`}>
               <p className="text-2xl font-bold">{s.value}</p>
@@ -226,7 +236,7 @@ export default function UsuariosPage() {
               ) : (
                 users.map((u) => {
                   const rm = ROLE_META[u.role];
-                  const label = channelLabel(u);
+                  const labels = channelLabels(u);
                   const deptNames = departmentNames(u.departmentIds || []);
                   return (
                     <tr key={u.id} className="hover:bg-af-light transition-colors">
@@ -259,9 +269,9 @@ export default function UsuariosPage() {
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {label ? (
+                        {labels.length ? (
                           <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
-                            <Smartphone size={13} className="text-af-accent" /> {label}
+                            <Smartphone size={13} className="text-af-accent" /> {labels.join(', ')}
                           </span>
                         ) : (
                           <span className="text-xs text-slate-400">Não vinculado</span>
@@ -364,19 +374,27 @@ export default function UsuariosPage() {
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-slate-700">Número de WhatsApp que ele opera</label>
-              <select
-                value={form.whatsAppNumberId}
-                onChange={(e) => setForm({ ...form, whatsAppNumberId: e.target.value })}
-                className="w-full border border-af-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-af-accent/30"
-              >
-                <option value="">Nenhum (não recebe clientes no relatório matinal)</option>
-                <option value="API">API Oficial</option>
-                {numbers.map((n) => (
-                  <option key={n.id} value={n.id}>{n.label}</option>
-                ))}
-              </select>
-              <p className="text-xs text-slate-400 mt-1">Usado no Relatório Matinal para mostrar os clientes desse número (ou os que falaram pela API Oficial do setor dele) para o usuário.</p>
+              <label className="text-sm font-medium text-slate-700">Números de WhatsApp que ele enxerga</label>
+              <div className="flex flex-wrap gap-2">
+                {[{ id: 'API', label: 'API Oficial' }, ...numbers].map((n) => {
+                  const selected = form.whatsAppNumberIds.includes(n.id);
+                  return (
+                    <button
+                      key={n.id}
+                      type="button"
+                      onClick={() => toggleNumber(n.id)}
+                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 text-xs font-medium transition-colors ${selected ? 'border-af-accent bg-af-light text-af-accent' : 'border-af-border hover:border-af-mid text-slate-600'}`}
+                    >
+                      <Smartphone size={13} />
+                      {n.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {form.whatsAppNumberIds.length === 0 && (
+                <p className="text-xs text-amber-500 mt-1">Nenhum marcado — vê todos os números liberados pro setor dele na Inbox (comportamento de antes).</p>
+              )}
+              <p className="text-xs text-slate-400 mt-1">Restringe a Inbox a só esses canais e mostra os clientes deles no Relatório Matinal. Pode marcar mais de um.</p>
             </div>
 
             <div className="flex flex-col gap-1">

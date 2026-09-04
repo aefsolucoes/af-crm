@@ -100,16 +100,24 @@ model User {
   themeColor                 String              @default("white")
   themeImage                 String?
   themeOpacity               Int                 @default(85)
-  // Número de WhatsApp (QR) que o usuário opera — usado para dividir os
-  // clientes por usuário no Relatório Matinal. Mutuamente exclusivo com
-  // operatesApiOficial (o seletor na tela é um só: QR específico OU API
-  // Oficial, nunca os dois).
+  // @deprecated — campo antigo, seletor único (QR específico OU API Oficial,
+  // nunca os dois). Substituído por whatsAppNumberIds (lista), que permite
+  // marcar mais de um. Mantido só pra não perder a coluna; não é mais lido
+  // por rota nenhuma (ver migração 20260904_user_whatsapp_number_ids, que
+  // migra o valor de cada um pra whatsAppNumberIds antes de parar de usá-los).
   whatsAppNumberId           String?
   whatsAppNumber             WhatsAppNumber?     @relation(fields: [whatsAppNumberId], references: [id])
-  // true = o usuário opera pela API Oficial (não por um número QR
-  // específico) — o Relatório Matinal busca os clientes que falaram pela
-  // API dentro do SETOR dele, em vez de por whatsAppNumberId.
+  // @deprecated — ver whatsAppNumberIds.
   operatesApiOficial         Boolean             @default(false)
+  // Números de WhatsApp (QR) + API Oficial que o usuário PODE ENXERGAR — na
+  // Inbox (filtra as conversas que ele vê) e no Relatório Matinal (de quais
+  // números mostrar os clientes esperando resposta). Guarda o id de
+  // WhatsAppNumber normalmente, e a string literal "API" pro pseudo-canal
+  // API Oficial (mesma convenção de resolveOperatorChannel() em
+  // routes/users.ts). Vazio = sem restrição — mesma filosofia de
+  // departmentIds vazio: não trava quem ainda não foi configurado, então só
+  // enxerga tudo que o setor já permitir (ver getScopeNumberIds()).
+  whatsAppNumberIds          String[]            @default([])
   // Permissões por usuário (as "caixinhas"): { chave: boolean }. Null = usa o
   // padrão do papel. Admin sempre tem tudo. Ver src/lib/permissions.ts.
   permissions                Json?
