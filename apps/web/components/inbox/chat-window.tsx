@@ -223,12 +223,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     inputRef.current?.focus();
   }
 
-  // Sugestão AUTOMÁTICA — dispara sozinha a cada mensagem NOVA do cliente
-  // (nunca depois de uma mensagem minha), enquanto essa conversa está aberta.
-  // Não dispara na 1ª carga de uma conversa (senão sugeriria pra toda
-  // conversa que você abre, mesmo já resolvida há dias) — só quando a lista
-  // CRESCE com o chat já aberto. Agrupa rajada de mensagens rápidas do
-  // cliente numa sugestão só (debounce), em vez de uma chamada por mensagem.
+  // Sugestão AUTOMÁTICA — dispara sozinha sempre que a última mensagem é do
+  // CLIENTE (nunca depois de uma mensagem minha, isso já evita sugerir numa
+  // conversa que eu já respondi). Dois gatilhos: (a) mensagem nova chega com
+  // a conversa JÁ aberta (grew), e (b) acabei de ABRIR uma conversa que já
+  // está com uma mensagem do cliente esperando resposta (isNewConversation)
+  // — sem o (b), só funcionava se eu já estivesse com o chat aberto no
+  // instante exato em que a mensagem chegasse, o que quase nunca acontece:
+  // na prática o colaborador abre a conversa DEPOIS de ser notificado, não
+  // antes (bug real reportado: "a sugestão não aparece mais sozinha").
+  // Agrupa rajada de mensagens rápidas do cliente numa sugestão só (debounce),
+  // em vez de uma chamada por mensagem.
   const autoSuggestLeadIdRef = useRef<string | null>(null);
   const autoSuggestCountRef = useRef(0);
   const autoSuggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -243,7 +248,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     // "vista" depois de ter mensagem de verdade.
     if (messages.length > 0) autoSuggestLeadIdRef.current = leadId;
 
-    if (isNewConversation || !grew || lastMsg?.direction !== 'INBOUND') return;
+    const shouldSuggest = messages.length > 0 && lastMsg?.direction === 'INBOUND' && (grew || isNewConversation);
+    if (!shouldSuggest) return;
 
     if (autoSuggestTimerRef.current) clearTimeout(autoSuggestTimerRef.current);
     autoSuggestTimerRef.current = setTimeout(() => { handleSuggestReply(true); }, 800);
