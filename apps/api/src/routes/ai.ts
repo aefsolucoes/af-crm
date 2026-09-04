@@ -5,6 +5,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { sendOutboundWhatsApp, sendOutboundMedia, sendOutboundWhatsAppTemplate, findOrCreateLeadByPhone, listConnectedWhatsAppNumbers, resolveStageTarget } from '../services/message.service';
 import { listMetaTemplates, createMetaTemplate, TemplateCategory } from '../services/whatsapp.service';
 import { searchKnowledge, learnFromWhatsAppConversations } from '../services/knowledge.service';
+import { generateReplySuggestion } from '../services/ai-reply-suggestion.service';
 import {
   organizeLeadDocsToDrive, downloadDriveFile, downloadDriveFileForVision, convertHeicIfNeeded, HEIC_MIME_TYPES, findFolderByNameUnderRoot, listFolderContents,
   createFolder, renameFile, moveDriveItem, trashDriveItem, folderLink, findFilesInFolderTree,
@@ -88,6 +89,28 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[AI] Erro:', err);
     res.status(500).json({ error: 'Erro interno ao processar IA' });
+  }
+});
+
+// Sugestão de resposta sob demanda pro colaborador (Inbox → botão "Sugerir
+// resposta") — nunca envia nada sozinha, só devolve o texto pro balão; quem
+// manda é o colaborador, depois de revisar. Ver ai-reply-suggestion.service.ts.
+router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
+  const { leadId } = req.body as { leadId?: string };
+  if (!leadId) {
+    res.status(400).json({ error: 'leadId obrigatório' });
+    return;
+  }
+  try {
+    const result = await generateReplySuggestion(req.user!.accountId, leadId);
+    if (!result) {
+      res.status(422).json({ error: 'Não consegui gerar uma sugestão agora (sem histórico de conversa, ou IA indisponível).' });
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[AI] Erro ao sugerir resposta:', err);
+    res.status(500).json({ error: 'Erro interno ao gerar sugestão' });
   }
 });
 

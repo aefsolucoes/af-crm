@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -196,6 +196,30 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     }
   }
 
+  // Sugestão de resposta sob demanda (balão) — diferente do "Ativar IA" acima
+  // (que responde o cliente sozinha): aqui é só sugestão, nunca envia nada
+  // sozinha. "Usar" só coloca o texto no campo de digitar.
+  const [suggestion, setSuggestion] = useState<string | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
+  async function handleSuggestReply() {
+    setSuggesting(true);
+    setSuggestion(null);
+    try {
+      const { data } = await api.post('/api/ai/suggest-reply', { leadId });
+      setSuggestion(data.suggestion);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao gerar sugestão', 'error');
+    } finally {
+      setSuggesting(false);
+    }
+  }
+  function useSuggestion() {
+    if (!suggestion) return;
+    setContent(suggestion);
+    setSuggestion(null);
+    inputRef.current?.focus();
+  }
+
   // Disponibilidade dos canais de WhatsApp (números via QR Code e API oficial)
   const { data: qrNumbers } = useQuery({
     queryKey: ['whatsapp-qr-numbers'],
@@ -238,6 +262,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
   // Ao trocar de conversa, volta o seletor para "automático".
   useEffect(() => { setFromNumberId(null); }, [leadId]);
+  // Some com a sugestão ao trocar de conversa — sem isso, uma sugestão gerada
+  // pra um cliente ficava visível (e clicável em "Usar") ao abrir outro.
+  useEffect(() => { setSuggestion(null); }, [leadId]);
   const [aiLoading, setAiLoading] = useState<AIMode | null>(null);
   const [showAI, setShowAI] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -852,6 +879,15 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           Copiar link
         </button>
         <button
+          onClick={handleSuggestReply}
+          disabled={suggesting}
+          title="Sugerir uma resposta pra você usar — nunca envia sozinha"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
+        >
+          {suggesting ? <Loader2 size={13} className="animate-spin" /> : <Lightbulb size={13} />}
+          <span className="hidden md:inline">Sugerir resposta</span>
+        </button>
+        <button
           onClick={handleToggleAi}
           disabled={togglingAi}
           title={aiActive ? 'IA está respondendo esse cliente sozinha — clique para desligar' : 'Ativar a IA para responder esse cliente sozinha'}
@@ -1298,6 +1334,34 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       )}
 
       {/* AI assistant toolbar */}
+      {/* Balão de sugestão de resposta — só aparece por pedido (botão "Sugerir
+          resposta" no cabeçalho). Nunca envia sozinho: "Usar" só põe o texto
+          no campo de digitar, pra revisar antes de mandar. */}
+      {suggestion && (
+        <div className="relative z-10 flex items-start gap-2.5 px-3 py-2.5 bg-[#1f2c34] border-t border-amber-500/30">
+          <Lightbulb size={16} className="text-amber-400 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] uppercase tracking-wide text-amber-400 font-semibold mb-0.5">Sugestão — revise antes de mandar</p>
+            <p className="text-sm text-[#e9edef]">{suggestion}</p>
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={useSuggestion}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-[#00a884] text-[#111b21] hover:bg-[#02c093] transition-colors"
+            >
+              Usar
+            </button>
+            <button
+              onClick={() => setSuggestion(null)}
+              title="Dispensar"
+              className="p-1 rounded-lg text-[#8696a0] hover:text-[#e9edef] hover:bg-white/10 transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {showAI && (
         <div className="relative z-10 flex items-center gap-2 px-3 py-2 bg-[#202c33] border-t border-[#222e35] flex-wrap">
           <Sparkles size={13} className="text-[#00a884] flex-shrink-0" />
