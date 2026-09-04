@@ -201,14 +201,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // sozinha. "Usar" só coloca o texto no campo de digitar.
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [suggesting, setSuggesting] = useState(false);
-  async function handleSuggestReply() {
+  // silent=true (disparo automático) não mostra toast de erro — uma falha
+  // em segundo plano não deve incomodar quem nem pediu; o botão manual
+  // continua ali pra tentar de novo quando quiser.
+  async function handleSuggestReply(silent = false) {
     setSuggesting(true);
     setSuggestion(null);
     try {
       const { data } = await api.post('/api/ai/suggest-reply', { leadId });
       setSuggestion(data.suggestion);
     } catch (err: any) {
-      toast(err?.response?.data?.error || 'Erro ao gerar sugestão', 'error');
+      if (!silent) toast(err?.response?.data?.error || 'Erro ao gerar sugestão', 'error');
     } finally {
       setSuggesting(false);
     }
@@ -219,6 +222,34 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     setSuggestion(null);
     inputRef.current?.focus();
   }
+
+  // Sugestão AUTOMÁTICA — dispara sozinha a cada mensagem NOVA do cliente
+  // (nunca depois de uma mensagem minha), enquanto essa conversa está aberta.
+  // Não dispara na 1ª carga de uma conversa (senão sugeriria pra toda
+  // conversa que você abre, mesmo já resolvida há dias) — só quando a lista
+  // CRESCE com o chat já aberto. Agrupa rajada de mensagens rápidas do
+  // cliente numa sugestão só (debounce), em vez de uma chamada por mensagem.
+  const autoSuggestLeadIdRef = useRef<string | null>(null);
+  const autoSuggestCountRef = useRef(0);
+  const autoSuggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const isNewConversation = autoSuggestLeadIdRef.current !== leadId;
+    const grew = messages.length > autoSuggestCountRef.current;
+    autoSuggestCountRef.current = messages.length;
+    const lastMsg = messages[messages.length - 1];
+
+    // Mesma corrida do efeito de rolagem: o 1º render de uma conversa nova
+    // chega com messages=[] (a query ainda não resolveu) — só marca como
+    // "vista" depois de ter mensagem de verdade.
+    if (messages.length > 0) autoSuggestLeadIdRef.current = leadId;
+
+    if (isNewConversation || !grew || lastMsg?.direction !== 'INBOUND') return;
+
+    if (autoSuggestTimerRef.current) clearTimeout(autoSuggestTimerRef.current);
+    autoSuggestTimerRef.current = setTimeout(() => { handleSuggestReply(true); }, 800);
+    return () => { if (autoSuggestTimerRef.current) clearTimeout(autoSuggestTimerRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, leadId]);
 
   // Disponibilidade dos canais de WhatsApp (números via QR Code e API oficial)
   const { data: qrNumbers } = useQuery({
@@ -879,7 +910,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           Copiar link
         </button>
         <button
-          onClick={handleSuggestReply}
+          onClick={() => handleSuggestReply()}
           disabled={suggesting}
           title="Sugerir uma resposta pra você usar — nunca envia sozinha"
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
