@@ -569,6 +569,13 @@ export async function reorganizeWhatsAppArchive(
  *  "3. CONCLUIDOS") nunca deve ser poluída com uma pasta por cliente. */
 const WHATSAPP_ARCHIVE_FOLDER = 'WhatsApp — arquivo automático';
 
+/** Espera entre tentativas do auto-upload (ms) — só usado dentro de
+ *  autoUploadAttachmentToDrive, pra dar tempo de uma falha passageira (rede,
+ *  token expirando, instabilidade momentânea do Drive) se resolver sozinha
+ *  sem precisar esperar a rodada periódica (que só passa de novo em até 2
+ *  dias). Curto de propósito: é fire-and-forget, não pode segurar o envio. */
+const AUTO_UPLOAD_RETRY_DELAYS_MS = [3000, 10000];
+
 export async function autoUploadAttachmentToDrive(accountId: string, leadId: string, attachmentId: string): Promise<void> {
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
   if (!conn?.refreshToken || !conn.rootFolderId) return;
@@ -579,21 +586,44 @@ export async function autoUploadAttachmentToDrive(accountId: string, leadId: str
   ]);
   if (!att || !att.data || att.driveFileId) return;
 
-  // Dentro da pasta técnica, uma subpasta por cliente. Antes isso criava a
-  // pasta do cliente DIRETO na raiz, misturando centenas de pastas com a
-  // organização manual do usuário — nunca chegou a rodar em produção assim.
-  const archiveRoot = await createFolder(accountId, WHATSAPP_ARCHIVE_FOLDER, conn.rootFolderId);
-  const folder = await createFolder(accountId, (lead?.name || 'Sem nome').trim() || 'Sem nome', archiveRoot.id);
-  const up = await uploadFile(accountId, {
-    name: att.fileName,
-    mimeType: att.mimeType,
-    data: Buffer.from(att.data),
-    parentId: folder.id,
-  });
-  await prisma.messageAttachment.update({
-    where: { id: att.id },
-    data: { driveFileId: up.id, data: null },
-  });
+  // Achado ao vivo em 2026-09-04: um anexo (cliente "Corretor Daniel") nunca
+  // chegou a subir pro Drive e não sobrou nem rastro de erro visível — provável
+  // falha passageira na primeira (e única) tentativa. Antes disso o auto-upload
+  // tentava só UMA vez e, se falhasse, ficava só esperando o arquivamento
+  // periódico pegar em até 2 dias — o usuário pediu explicitamente que o anexo
+  // seja salvo "na mesma hora" que chega, então agora tenta de novo (com
+  // pausa curta) antes de desistir e deixar pra rodada periódica.
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= AUTO_UPLOAD_RETRY_DELAYS_MS.length + 1; attempt++) {
+    try {
+      // Dentro da pasta técnica, uma subpasta por cliente. Antes isso criava a
+      // pasta do cliente DIRETO na raiz, misturando centenas de pastas com a
+      // organização manual do usuário — nunca chegou a rodar em produção assim.
+      const archiveRoot = await createFolder(accountId, WHATSAPP_ARCHIVE_FOLDER, conn.rootFolderId);
+      const folder = await createFolder(accountId, (lead?.name || 'Sem nome').trim() || 'Sem nome', archiveRoot.id);
+      const up = await uploadFile(accountId, {
+        name: att.fileName,
+        mimeType: att.mimeType,
+        data: Buffer.from(att.data),
+        parentId: folder.id,
+      });
+      await prisma.messageAttachment.update({
+        where: { id: att.id },
+        data: { driveFileId: up.id, data: null },
+      });
+      return; // sucesso — não precisa das próximas tentativas
+    } catch (err) {
+      lastErr = err;
+      const delay = AUTO_UPLOAD_RETRY_DELAYS_MS[attempt - 1];
+      if (delay === undefined) break; // já era a última tentativa
+      console.error(`[Drive] Auto-upload do anexo ${attachmentId} falhou (tentativa ${attempt}), tentando de novo em ${delay}ms:`, (err as any)?.message);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  // As 3 tentativas falharam: relança pro .catch() de quem chamou (loga o erro
+  // final) — os bytes continuam no banco, e o arquivamento periódico ainda
+  // pega esse anexo depois como última rede de segurança.
+  throw lastErr;
 }
 
 /**
