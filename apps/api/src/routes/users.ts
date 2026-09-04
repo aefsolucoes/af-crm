@@ -9,7 +9,7 @@ const router = Router();
 const prisma = new PrismaClient();
 router.use(authMiddleware);
 
-const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true, operatesApiOficial: true, permissions: true, departmentIds: true } as const;
+const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberId: true, operatesApiOficial: true, permissions: true, departmentIds: true, assistantProjectUrl: true } as const;
 const VALID_ROLES: Role[] = ['ADMIN', 'MANAGER', 'AGENT'];
 
 /** Confere que todos os ids mandados são setores de verdade DESSA conta —
@@ -124,8 +124,8 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     const target = await prisma.user.findFirst({ where: { id: req.params.id, accountId } });
     if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
 
-    const { name, email, password, role, whatsAppNumberId, departmentIds } = req.body as {
-      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null; departmentIds?: unknown;
+    const { name, email, password, role, whatsAppNumberId, departmentIds, assistantProjectUrl } = req.body as {
+      name?: string; email?: string; password?: string; role?: string; whatsAppNumberId?: string | null; departmentIds?: unknown; assistantProjectUrl?: string | null;
     };
     const data: Record<string, unknown> = {};
 
@@ -165,6 +165,13 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     }
     if (departmentIds !== undefined) {
       data.departmentIds = await sanitizeDepartmentIds(departmentIds, accountId);
+    }
+    if (assistantProjectUrl !== undefined) {
+      const trimmed = (assistantProjectUrl || '').trim();
+      if (trimmed && !/^https:\/\//i.test(trimmed)) {
+        return res.status(400).json({ error: 'O link do assistente precisa começar com https://' });
+      }
+      data.assistantProjectUrl = trimmed || null;
     }
     if ('permissions' in (req.body as object)) {
       data.permissions = sanitizePermissions((req.body as { permissions?: unknown }).permissions);

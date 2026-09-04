@@ -23,6 +23,7 @@ interface UserRecord {
   operatesApiOficial: boolean;
   departmentIds: string[];
   permissions: Record<string, boolean> | null;
+  assistantProjectUrl: string | null;
 }
 
 interface WhatsNumber {
@@ -44,6 +45,7 @@ const ROLE_META: Record<Role, { label: string; color: string; icon: React.ReactN
 const EMPTY_FORM = {
   name: '', email: '', password: '', role: 'AGENT' as Role, whatsAppNumberId: '', departmentIds: [] as string[],
   permissions: { ...ROLE_DEFAULTS.AGENT } as PermissionMap,
+  assistantProjectUrl: '',
 };
 
 function errMsg(e: unknown, fallback: string) {
@@ -90,6 +92,7 @@ export default function UsuariosPage() {
         departmentIds: form.departmentIds,
         // Admin sempre tem tudo (guardamos null = usa o padrão do papel).
         permissions: form.role === 'ADMIN' ? null : form.permissions,
+        assistantProjectUrl: form.assistantProjectUrl,
         ...(form.password ? { password: form.password } : {}),
       };
       if (editingUser) return (await api.patch(`/api/users/${editingUser.id}`, payload)).data;
@@ -125,6 +128,7 @@ export default function UsuariosPage() {
       whatsAppNumberId: u.operatesApiOficial ? 'API' : (u.whatsAppNumberId || ''),
       departmentIds: u.departmentIds || [],
       permissions: effectivePermissions(u.role, u.permissions),
+      assistantProjectUrl: u.assistantProjectUrl || '',
     });
     setShowModal(true);
   }
@@ -373,6 +377,16 @@ export default function UsuariosPage() {
                 ))}
               </select>
               <p className="text-xs text-slate-400 mt-1">Usado no Relatório Matinal para mostrar os clientes desse número (ou os que falaram pela API Oficial do setor dele) para o usuário.</p>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-700">Link do assistente pessoal (Claude)</label>
+              <Input
+                value={form.assistantProjectUrl}
+                onChange={(e) => setForm({ ...form, assistantProjectUrl: e.target.value })}
+                placeholder="https://claude.ai/project/..."
+              />
+              <p className="text-xs text-slate-400 mt-1">Se o colaborador tiver um Projeto próprio no Claude, cole o link aqui — ele aparece como atalho na aba "Meu Assistente" dele.</p>
             </div>
 
             {/* Permissões (as caixinhas) */}

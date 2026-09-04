@@ -121,6 +121,12 @@ model User {
   // de propósito — mesmo padrão de Lead.tags/FieldDefinition.options, não
   // precisa de metadado por vínculo (ver department.service.ts).
   departmentIds              String[]            @default([])
+  // Link do Projeto pessoal do colaborador no Claude (claude.ai) — cada
+  // operador pode ter um assistente próprio, configurado por fora do CRM.
+  // A aba "Meu Assistente" só abre esse link numa aba nova; nada roda de
+  // verdade dentro do CRM (claude.ai não é embutível). Admin configura pelo
+  // cadastro do usuário (Usuários), null = ninguém configurou ainda.
+  assistantProjectUrl        String?
   createdAt                  DateTime            @default(now())
   assistantQuestionsAsked    AssistantQuestion[] @relation("AssistantQuestionAskedBy")
   assistantQuestionsReceived AssistantQuestion[] @relation("AssistantQuestionTarget")

@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, Home, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, Landmark, X,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, Landmark, X, Sparkles,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -19,6 +19,10 @@ interface NavItem { href: string; label: string; icon: typeof BarChart3; perm: P
 
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: BarChart3, perm: 'dashboard' },
+  // perm: 'dashboard' de propósito — é a única permissão que todo papel tem
+  // por padrão (ADMIN/MANAGER/AGENT), então todo colaborador vê esse atalho
+  // sem precisar de configuração extra de permissão.
+  { href: '/meu-assistente', label: 'Meu Assistente', icon: Sparkles, perm: 'dashboard' },
   // departmentName: só aparece pra quem é daquele setor (ou Admin, ou quem
   // não tem setor definido — mesmo critério de "sem restrição" já usado em
   // getScopeDepartmentId no backend).

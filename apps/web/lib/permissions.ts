@@ -56,6 +56,7 @@ export const ROLE_DEFAULTS: Record<string, PermissionMap> = {
 // menu e barrar o acesso direto por URL.
 export const ROUTE_PERMISSION: { prefix: string; perm: PermissionKey }[] = [
   { prefix: '/dashboard', perm: 'dashboard' },
+  { prefix: '/meu-assistente', perm: 'dashboard' },
   { prefix: '/funil', perm: 'funnel_view' },
   { prefix: '/inbox', perm: 'inbox_view' },
   { prefix: '/tarefas', perm: 'tasks' },
