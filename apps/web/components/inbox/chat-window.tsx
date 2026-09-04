@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -425,9 +425,22 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const lastLeadIdRef = useRef<string | null>(null);
   const lastMessageCountRef = useRef(0);
+  // Botão "ir pro final" — reforço pro auto-scroll de cima: aparece sempre
+  // que o usuário não está perto do fim (rolou pra ler histórico, ou o
+  // auto-scroll não pegou por algum motivo, ex.: imagem grande ainda
+  // carregando e empurrando a altura da página depois do salto inicial).
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  function handleScroll() {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    setShowJumpToBottom(scrollHeight - (scrollTop + clientHeight) > 150);
+  }
+  function jumpToBottom() {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }
   useEffect(() => {
     const isNewConversation = lastLeadIdRef.current !== leadId;
-    lastLeadIdRef.current = leadId;
 
     const container = scrollContainerRef.current;
     const grew = messages.length > lastMessageCountRef.current;
@@ -443,7 +456,18 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
     if (isNewConversation || justSentByMe || nearBottom) {
       bottomRef.current?.scrollIntoView({ behavior: isNewConversation ? 'auto' : 'smooth' });
+      setShowJumpToBottom(false);
     }
+
+    // Só marca a conversa como "já vista" depois de ter mensagem de
+    // verdade pra rolar — o 1º render de uma conversa nova chega com
+    // messages=[] (a query ainda não resolveu); sem essa condição, o ref já
+    // ficava marcado nesse 1º render vazio, e quando as mensagens reais
+    // chegavam um instante depois (2º render, mesmo leadId) o código não
+    // tratava mais como "nova" — passava a checar a posição de rolagem real,
+    // que é o topo (conteúdo acabou de renderizar) — e não descia. Era o
+    // motivo de abrir uma conversa sempre lá em cima em vez da última msg.
+    if (messages.length > 0) lastLeadIdRef.current = leadId;
   }, [messages, leadId]);
 
   // Cresce a caixa de mensagem conforme o texto (até um limite), como no WhatsApp.
@@ -925,7 +949,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       })()}
 
       {/* Timeline unificado: mensagens + eventos de fluxo */}
-      <div ref={scrollContainerRef} className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
+      <div ref={scrollContainerRef} onScroll={handleScroll} className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
         {grouped.map(({ date, items }) => (
           <div key={date}>
             {/* Separador de data */}
@@ -1150,6 +1174,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         ))}
         <div ref={bottomRef} />
       </div>
+
+      {/* Botão flutuante "ir pro final" — some quando já está perto do fim. */}
+      {showJumpToBottom && (
+        <button
+          onClick={jumpToBottom}
+          title="Ir para a última mensagem"
+          className="absolute bottom-24 right-6 z-20 w-9 h-9 rounded-full bg-[#202c33] border border-[#2a3942] text-[#e9edef] shadow-lg flex items-center justify-center hover:bg-[#2a3942] transition-colors"
+        >
+          <ChevronDown size={18} />
+        </button>
+      )}
 
       {/* Templates toolbar */}
       {showTemplates && (
