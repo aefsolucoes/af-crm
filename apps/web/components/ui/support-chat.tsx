@@ -1,7 +1,34 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { MessageCircle, X, Send, Loader2, Plus, History, Trash2, Paperclip, FileText } from 'lucide-react';
-import { useSupportChat, MAX_ATTACHMENTS } from '@/hooks/use-support-chat';
+import api from '@/lib/api';
+
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+interface PendingAttachment {
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+}
+
+const SUPPORTED_ATTACH_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+const MAX_ATTACH_BYTES = 8 * 1024 * 1024; // 8 MB por arquivo
+const MAX_ATTACHMENTS = 6; // ex.: formulário + CNH + comprovantes, tudo de uma vez
+const MAX_ATTACH_TOTAL_BYTES = 20 * 1024 * 1024; // 20 MB somando todos os anexos da mensagem
+
+interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: string;
+}
+
+const WELCOME_MESSAGE: ChatMessage = {
+  role: 'assistant',
+  content: 'Olá! Sou o assistente do AF CRM. Pode me perguntar sobre o funil de vendas, inbox, SalesBot ou qualquer parte do processo — e também posso agir no CRM por você. Como posso ajudar?',
+};
 
 function relativeTime(iso: string): string {
   const d = new Date(iso).getTime();
@@ -17,17 +44,17 @@ function relativeTime(iso: string): string {
 
 export function SupportChatButton() {
   const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [attachError, setAttachError] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  const {
-    messages, conversationId, input, setInput, loading,
-    conversations, loadConversations,
-    attachments, attachError, fileInputRef,
-    newConversation, openConversation, deleteConversation,
-    handleFileSelect, removeAttachment, sendMessage,
-  } = useSupportChat();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -40,20 +67,133 @@ export function SupportChatButton() {
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [input]);
 
+  async function loadConversations() {
+    try {
+      const { data } = await api.get('/api/ai/conversations');
+      setConversations(data);
+    } catch { /* silencioso */ }
+  }
+
   // Ao abrir o painel, carrega a lista de conversas do colaborador.
   useEffect(() => {
     if (open) loadConversations();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  function handleNewConversation() {
-    newConversation();
+  function newConversation() {
+    setMessages([WELCOME_MESSAGE]);
+    setConversationId(null);
     setShowHistory(false);
+    setInput('');
+    setAttachments([]);
+    setAttachError('');
   }
 
-  async function handleOpenConversation(id: string) {
+  async function openConversation(id: string) {
     setShowHistory(false);
-    await openConversation(id);
+    try {
+      const { data } = await api.get(`/api/ai/conversations/${id}`);
+      const msgs = Array.isArray(data.messages) ? data.messages : [WELCOME_MESSAGE];
+      setMessages(msgs.length ? msgs : [WELCOME_MESSAGE]);
+      setConversationId(id);
+    } catch { /* silencioso */ }
+  }
+
+  async function deleteConversation(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    try {
+      await api.delete(`/api/ai/conversations/${id}`);
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (id === conversationId) newConversation();
+    } catch { /* silencioso */ }
+  }
+
+  function readFileAsBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+      reader.onerror = () => reject(new Error('read error'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // permite escolher o mesmo arquivo de novo depois
+    if (files.length === 0) return;
+    setAttachError('');
+
+    const accepted: File[] = [];
+    let totalSoFar = attachments.reduce((s, a) => s + Math.ceil((a.dataBase64.length * 3) / 4), 0);
+    for (const file of files) {
+      if (attachments.length + accepted.length >= MAX_ATTACHMENTS) {
+        setAttachError(`Máximo de ${MAX_ATTACHMENTS} arquivos por mensagem — os demais não foram adicionados.`);
+        break;
+      }
+      if (!SUPPORTED_ATTACH_TYPES.includes(file.type)) {
+        setAttachError(`"${file.name}": tipo não suportado (envie imagem JPG/PNG ou PDF).`);
+        continue;
+      }
+      if (file.size > MAX_ATTACH_BYTES) {
+        setAttachError(`"${file.name}": arquivo muito grande (máx. 8 MB por arquivo).`);
+        continue;
+      }
+      if (totalSoFar + file.size > MAX_ATTACH_TOTAL_BYTES) {
+        setAttachError('Limite de 20 MB no total entre os anexos da mensagem — pare aqui e envie o restante numa próxima mensagem.');
+        break;
+      }
+      totalSoFar += file.size;
+      accepted.push(file);
+    }
+    if (accepted.length === 0) return;
+
+    try {
+      const read = await Promise.all(accepted.map(async (file) => ({
+        fileName: file.name,
+        mimeType: file.type,
+        dataBase64: await readFileAsBase64(file),
+      })));
+      setAttachments((prev) => [...prev, ...read]);
+    } catch {
+      setAttachError('Não consegui ler um dos arquivos. Tente de novo.');
+    }
+  }
+
+  function removeAttachment(index: number) {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function sendMessage() {
+    const text = input.trim();
+    if ((!text && attachments.length === 0) || loading) return;
+
+    const displayContent = attachments.length
+      ? `${attachments.map((a) => `📎 ${a.fileName}`).join('\n')}${text ? `\n${text}` : ''}`
+      : text;
+    const nextMessages = [...messages, { role: 'user' as const, content: displayContent }];
+    const pendingAttachments = attachments;
+    setMessages(nextMessages);
+    setInput('');
+    setAttachments([]);
+    setAttachError('');
+    setLoading(true);
+
+    try {
+      const { data } = await api.post('/api/ai/support-chat', {
+        messages: nextMessages,
+        conversationId,
+        ...(pendingAttachments.length ? { attachments: pendingAttachments } : {}),
+      });
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }]);
+      if (data.conversationId) {
+        setConversationId(data.conversationId);
+        loadConversations(); // atualiza o histórico (novo título/ordem)
+      }
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || 'Não consegui responder agora. Tente novamente em instantes ou fale com seu gestor.';
+      setMessages((prev) => [...prev, { role: 'assistant', content: msg }]);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -71,7 +211,7 @@ export function SupportChatButton() {
             <button onClick={() => setShowHistory((v) => !v)} title="Histórico de conversas" className={`p-1.5 rounded-lg transition-colors ${showHistory ? 'bg-white/20 text-white' : 'text-white/70 hover:text-white hover:bg-white/10'}`}>
               <History size={17} />
             </button>
-            <button onClick={handleNewConversation} title="Nova conversa" className="p-1.5 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-colors">
+            <button onClick={newConversation} title="Nova conversa" className="p-1.5 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-colors">
               <Plus size={18} />
             </button>
             <button onClick={() => setOpen(false)} title="Fechar" className="p-1.5 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-colors">
@@ -85,7 +225,7 @@ export function SupportChatButton() {
               <div className="absolute inset-0 z-10 bg-white flex flex-col">
                 <div className="px-4 py-2.5 border-b border-af-border flex items-center justify-between">
                   <span className="text-sm font-semibold text-slate-700">Suas conversas</span>
-                  <button onClick={handleNewConversation} className="text-xs font-medium text-af-accent hover:underline flex items-center gap-1">
+                  <button onClick={newConversation} className="text-xs font-medium text-af-accent hover:underline flex items-center gap-1">
                     <Plus size={13} /> Nova
                   </button>
                 </div>
@@ -96,7 +236,7 @@ export function SupportChatButton() {
                     conversations.map((c) => (
                       <div
                         key={c.id}
-                        onClick={() => handleOpenConversation(c.id)}
+                        onClick={() => openConversation(c.id)}
                         className={`group flex items-center gap-2 px-4 py-2.5 border-b border-af-border/50 cursor-pointer hover:bg-af-light transition-colors ${c.id === conversationId ? 'bg-af-light' : ''}`}
                       >
                         <div className="min-w-0 flex-1">
