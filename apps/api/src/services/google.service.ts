@@ -189,17 +189,44 @@ export async function findFolderLoose(accountId: string, name: string, parentId:
   return { id: files[0].id!, name: files[0].name! };
 }
 
-/** Cria uma pasta (ou retorna a existente de mesmo nome) dentro de um parent */
+/** Fila de criação por (conta+pasta-pai+nome) — ver comentário em createFolder. */
+const folderCreationLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Cria uma pasta (ou retorna a existente de mesmo nome) dentro de um parent.
+ *
+ * O "achar ou criar" abaixo não é atômico: duas chamadas concorrentes pro
+ * MESMO cliente (ex.: vários anexos chegando juntos no auto-upload) podiam
+ * rodar o `findFolder` ao mesmo tempo, nenhuma achar nada ainda, e as duas
+ * criarem uma pasta cada — pasta duplicada, com os arquivos espalhados entre
+ * as duas (achado ao vivo em 2026-09-04: duas pastas "ISABELLE SANCHEZ",
+ * criadas 0,5s uma da outra, cada uma com anexos diferentes do mesmo cliente).
+ *
+ * Corrigido enfileirando por chave (conta+pasta-pai+nome): a segunda chamada
+ * só roda depois que a primeira terminou (achou ou criou), então já encontra
+ * a pasta pronta. Só serializa dentro deste processo — é suficiente porque a
+ * API roda numa instância só.
+ */
 export async function createFolder(accountId: string, name: string, parentId: string): Promise<{ id: string; name: string; existed: boolean }> {
-  const existing = await findFolder(accountId, name, parentId);
-  if (existing) return { id: existing, name, existed: true };
-  const drive = await getDrive(accountId);
-  const res = await drive.files.create({
-    requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
-    fields: 'id, name',
-    supportsAllDrives: true,
-  });
-  return { id: res.data.id!, name: res.data.name!, existed: false };
+  const key = `${accountId}::${parentId}::${name}`;
+  const run = async (): Promise<{ id: string; name: string; existed: boolean }> => {
+    const existing = await findFolder(accountId, name, parentId);
+    if (existing) return { id: existing, name, existed: true };
+    const drive = await getDrive(accountId);
+    const res = await drive.files.create({
+      requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+      fields: 'id, name',
+      supportsAllDrives: true,
+    });
+    return { id: res.data.id!, name: res.data.name!, existed: false };
+  };
+
+  const previous = folderCreationLocks.get(key) || Promise.resolve();
+  const result = previous.then(run);
+  // guarda uma cópia que nunca rejeita — senão uma falha travaria a fila pra
+  // sempre esperando uma promise rejeitada que ninguém mais trata.
+  folderCreationLocks.set(key, result.catch(() => undefined));
+  return result;
 }
 
 /** Sobe um arquivo (buffer) para uma pasta */
