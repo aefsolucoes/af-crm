@@ -126,9 +126,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     };
   }, []);
 
+  // "Meu Assistente" abre numa aba própria do navegador (nunca dentro do
+  // CRM) e, por pedido explícito, sem a barra lateral/topo do CRM em volta —
+  // deve parecer um app à parte, mesmo rodando por trás no mesmo backend. A
+  // checagem de sessão/permissão acima continua valendo igual (só o visual
+  // muda aqui embaixo).
+  const isStandaloneAssistant = pathname === '/meu-assistente';
+
   return (
     <div className="flex h-screen overflow-hidden app-bg-surface">
-      <Sidebar />
+      {!isStandaloneAssistant && <Sidebar />}
       <main className="flex-1 flex flex-col overflow-hidden">
         {children}
       </main>
@@ -136,8 +143,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* No mobile, dentro da Inbox, esse botão flutuante fica em cima da
           caixa de digitar/enviar mensagem — atrapalha encaminhar/responder.
           No desktop tem espaço de sobra (não esconde nada), então some só
-          nesse caso específico. */}
-      {!(isMobile && pathname?.startsWith('/inbox')) && <SupportChatButton />}
+          nesse caso específico. Some também na aba solo do assistente —
+          seria o mesmo assistente flutuando em cima de si mesmo. */}
+      {!isStandaloneAssistant && !(isMobile && pathname?.startsWith('/inbox')) && <SupportChatButton />}
     </div>
   );
 }

@@ -142,10 +142,15 @@ export function Sidebar() {
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
         {nav.map(({ href, label, icon: Icon }) => {
           const active = pathname.startsWith(href);
+          // "Meu Assistente" abre numa aba própria do navegador (pedido
+          // explícito do usuário) — nunca navega embora da tela em que você
+          // já está no CRM, ex.: sai da Inbox no meio de um atendimento.
+          const isAssistant = href === '/meu-assistente';
           return (
             <Link
               key={href}
               href={href}
+              {...(isAssistant ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
               title={collapsed ? label : undefined}
               className={cn(
                 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
@@ -213,10 +218,16 @@ export function Sidebar() {
           <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
             {nav.map(({ href, label, icon: Icon }) => {
               const active = pathname.startsWith(href);
+              // "Meu Assistente" abre numa aba própria (não navega embora da
+              // tela atual) — como o pathname desta aba não muda, o fecha-ao-
+              // navegar do drawer (efeito [pathname] acima) não dispararia
+              // sozinho aqui; fecha explícito no clique.
+              const isAssistant = href === '/meu-assistente';
               return (
                 <Link
                   key={href}
                   href={href}
+                  {...(isAssistant ? { target: '_blank', rel: 'noopener noreferrer', onClick: closeMobile } : {})}
                   className={cn(
                     'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
                     active ? 'bg-af-mid text-white' : 'text-slate-300 hover:bg-af-blue hover:text-white'
