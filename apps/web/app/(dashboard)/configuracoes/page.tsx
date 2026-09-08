@@ -715,6 +715,88 @@ function DepartmentsTab() {
           ))}
         </div>
       )}
+
+      <DuplicatePipelinesPanel />
+    </div>
+  );
+}
+
+interface DupPipeline { id: string; name: string; leadCount: number; stageNames: string[]; }
+interface DupGroup { departmentId: string | null; departmentName: string; pipelines: DupPipeline[]; }
+
+/** Achado ao vivo em 2026-09-08: getOrCreateInboxPipeline() tinha a mesma
+ *  corrida do createFolder() do Drive (achar-ou-criar sem trava) — mensagens
+ *  chegando quase juntas pro mesmo setor podiam criar dois funis "Caixa de
+ *  Entrada". Já corrigido pra não acontecer de novo; este painel é a
+ *  ferramenta de limpeza pros que já ficaram duplicados. */
+function DuplicatePipelinesPanel() {
+  const [checking, setChecking] = useState(false);
+  const [groups, setGroups] = useState<DupGroup[] | null>(null);
+  const [merging, setMerging] = useState<string | null>(null);
+
+  async function verificar() {
+    setChecking(true);
+    try {
+      const { data } = await api.get('/api/departments/duplicate-inbox-pipelines');
+      setGroups(data);
+      if (data.length === 0) toast('Nenhum funil "Caixa de Entrada" duplicado — tudo certo.');
+    } catch {
+      toast('Erro ao verificar funis duplicados', 'error');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function mesclar(group: DupGroup) {
+    const key = group.departmentId ?? 'sem-setor';
+    if (!confirm(`Mesclar os ${group.pipelines.length} funis "Caixa de Entrada" de ${group.departmentName} num só?\n\nOs leads dos funis menores são movidos pro que tem mais leads (casando por nome de etapa, criando a etapa se faltar) e os funis vazios são apagados depois. Nenhum lead é perdido.`)) return;
+    setMerging(key);
+    try {
+      const { data } = await api.post(`/api/departments/${key}/merge-inbox-pipelines`, { dryRun: false });
+      const total = (data.merged || []).reduce((n: number, m: { leadsMoved: number }) => n + m.leadsMoved, 0);
+      toast(`Mesclado: ${total} lead(s) movido(s), ${(data.merged || []).length} funil(is) removido(s).`);
+      setGroups((prev) => (prev || []).filter((g) => g.departmentId !== group.departmentId));
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao mesclar', 'error');
+    } finally {
+      setMerging(null);
+    }
+  }
+
+  return (
+    <div className="mt-3 pt-3 border-t border-af-border">
+      <button
+        onClick={verificar}
+        disabled={checking}
+        className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+      >
+        {checking ? 'Verificando…' : 'Verificar funis "Caixa de Entrada" duplicados'}
+      </button>
+
+      {groups && groups.length > 0 && (
+        <div className="mt-3 space-y-3">
+          {groups.map((g) => {
+            const key = g.departmentId ?? 'sem-setor';
+            return (
+              <div key={key} className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <p className="text-xs font-semibold text-amber-900">{g.departmentName} — {g.pipelines.length} funis "Caixa de Entrada"</p>
+                <ul className="mt-1 text-xs text-amber-800 space-y-0.5">
+                  {g.pipelines.map((p) => (
+                    <li key={p.id}>{p.name} — {p.leadCount} lead(s), etapas: {p.stageNames.join(', ') || '(nenhuma)'}</li>
+                  ))}
+                </ul>
+                <button
+                  onClick={() => mesclar(g)}
+                  disabled={merging === key}
+                  className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-af-blue text-white font-medium hover:bg-af-mid disabled:opacity-50"
+                >
+                  {merging === key ? 'Mesclando…' : 'Mesclar num funil só'}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

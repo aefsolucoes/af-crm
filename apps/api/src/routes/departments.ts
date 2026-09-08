@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
-import { listDepartments } from '../services/department.service';
+import { listDepartments, findDuplicateInboxPipelines, mergeDuplicateInboxPipelines } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -96,6 +96,32 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: 'Erro ao excluir departamento' });
+  }
+});
+
+// GET /api/departments/duplicate-inbox-pipelines — detecta funis "Caixa de
+// Entrada" duplicados (sobra da corrida corrigida em getOrCreateInboxPipeline).
+// Só leitura, mesmo padrão de acesso do GET / (qualquer colaborador logado).
+router.get('/duplicate-inbox-pipelines', async (req: AuthRequest, res: Response) => {
+  try {
+    const groups = await findDuplicateInboxPipelines(req.user!.accountId);
+    res.json(groups);
+  } catch {
+    res.status(500).json({ error: 'Erro ao verificar funis duplicados' });
+  }
+});
+
+// POST /api/departments/:id/merge-inbox-pipelines — mescla os "Caixa de
+// Entrada" duplicados de UM setor no que tem mais leads. dryRun (padrão true)
+// só simula. Passar "sem-setor" como :id trata os funis sem departmento.
+router.post('/:id/merge-inbox-pipelines', async (req: AuthRequest, res: Response) => {
+  try {
+    const departmentId = req.params.id === 'sem-setor' ? null : req.params.id;
+    const dryRun = req.body?.dryRun !== false;
+    const result = await mergeDuplicateInboxPipelines(req.user!.accountId, departmentId, { dryRun });
+    res.json(result);
+  } catch {
+    res.status(500).json({ error: 'Erro ao mesclar os funis duplicados' });
   }
 });
 
