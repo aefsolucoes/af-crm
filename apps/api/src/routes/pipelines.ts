@@ -136,6 +136,38 @@ router.post('/:id/stages', validate(stageCreateSchema), async (req: AuthRequest,
   }
 });
 
+// PATCH /api/pipelines/:id/stages/reorder — reordena as colunas do funil (o
+// próprio colaborador arrasta a etapa pra outra posição no Kanban). Precisa
+// vir ANTES de /:id/stages/:stageId — senão o Express casa "reorder" como se
+// fosse um :stageId e essa rota nunca é alcançada.
+router.patch('/:id/stages/reorder', async (req: AuthRequest, res: Response) => {
+  try {
+    if (await blockedByDepartment(req, res, req.params.id)) return;
+    const { stageIds } = req.body as { stageIds?: unknown };
+    if (!Array.isArray(stageIds) || !stageIds.every((id) => typeof id === 'string')) {
+      return res.status(400).json({ error: 'stageIds precisa ser uma lista de ids' });
+    }
+
+    const existing = await prisma.stage.findMany({ where: { pipelineId: req.params.id }, select: { id: true } });
+    const existingIds = new Set(existing.map((s) => s.id));
+    // Confere que a lista bate exatamente com as etapas do funil (mesmo
+    // conjunto, nada a mais nem a menos) — senão uma etapa fica sem `order`
+    // definido, ou uma de outro funil é alterada por engano.
+    if (stageIds.length !== existing.length || !stageIds.every((id) => existingIds.has(id as string))) {
+      return res.status(400).json({ error: 'A lista de etapas não bate com as etapas deste funil' });
+    }
+
+    await prisma.$transaction(
+      (stageIds as string[]).map((id, index) => prisma.stage.update({ where: { id }, data: { order: index } })),
+    );
+
+    const stages = await prisma.stage.findMany({ where: { pipelineId: req.params.id }, orderBy: { order: 'asc' } });
+    res.json(stages);
+  } catch {
+    res.status(500).json({ error: 'Erro ao reordenar as etapas' });
+  }
+});
+
 // PATCH /api/pipelines/:id/stages/:stageId — renomeia e/ou muda a cor de uma
 // etapa já existente (não existia nenhum jeito de editar depois de criada —
 // toda etapa nova nascia cinza, sem como corrigir pela tela).

@@ -1,12 +1,13 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   DndContext, DragEndEvent, PointerSensor, useSensor, useSensors, closestCorners,
 } from '@dnd-kit/core';
+import { SortableContext, horizontalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { Plus, X, Check } from 'lucide-react';
 import { Stage, Lead, Pipeline, Contact, User } from '@/types';
-import { KanbanColumn } from './kanban-column';
+import { KanbanColumn, stageColumnDragId } from './kanban-column';
 import { LeadModal } from './lead-modal';
 import { LeadDetailModal } from './lead-detail-modal';
 import { StageGateModal } from './stage-gate-modal';
@@ -62,6 +63,33 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 12 } }));
 
+  // Ordem otimista das colunas (arrastar pra reordenar) — null = usa a ordem
+  // que já vem de pipeline.stages (o backend já devolve ordenado por
+  // `order`). Reseta ao trocar de funil, senão a ordem de um funil vazava
+  // visualmente pro outro por um instante até o próximo fetch.
+  const [stageOrder, setStageOrder] = useState<string[] | null>(null);
+  useEffect(() => { setStageOrder(null); }, [pipeline.id]);
+  const displayStages = stageOrder
+    ? (stageOrder.map((id) => pipeline.stages.find((s) => s.id === id)).filter((s): s is Stage => !!s))
+    : pipeline.stages;
+
+  async function handleStageReorder(draggedStageId: string, overStageId: string) {
+    const currentOrder = stageOrder || pipeline.stages.map((s) => s.id);
+    const oldIndex = currentOrder.indexOf(draggedStageId);
+    const newIndex = currentOrder.indexOf(overStageId);
+    if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) return;
+
+    const reordered = arrayMove(currentOrder, oldIndex, newIndex);
+    setStageOrder(reordered);
+    try {
+      await api.patch(`/api/pipelines/${pipeline.id}/stages/reorder`, { stageIds: reordered });
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+    } catch {
+      toast('Erro ao reordenar as etapas', 'error');
+      setStageOrder(null); // desfaz o otimista, volta pra ordem do servidor
+    }
+  }
+
   function getLeadsForStage(stageId: string) {
     return leads.filter((l) => l.stageId === stageId);
   }
@@ -80,6 +108,23 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (!over) return;
+
+    // Arrasto de COLUNA (reordenar etapas) — distinguido pelo `data.type`
+    // marcado em useSortable() no kanban-column.tsx. Id prefixado (col:...),
+    // então nunca colide com um id de lead.
+    if (active.data.current?.type === 'stage') {
+      const draggedStageId = active.data.current.stageId as string;
+      // `over` pode ser: outra alça de coluna (type "stage"), um CARD dentro
+      // de alguma coluna (usa a etapa dona do card), ou a área vazia do
+      // corpo da coluna (o useDroppable ali usa o id "cru" da etapa).
+      const overId = over.id as string;
+      const overStageId = over.data.current?.type === 'stage'
+        ? (over.data.current.stageId as string)
+        : leads.find((l) => l.id === overId)?.stageId
+          ?? pipeline.stages.find((s) => s.id === overId)?.id;
+      if (overStageId) await handleStageReorder(draggedStageId, overStageId);
+      return;
+    }
 
     const leadId = active.id as string;
     const overId = over.id as string;
@@ -130,15 +175,17 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
 
       <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
         <div className="flex gap-4 h-full overflow-x-auto pb-4 px-4 scrollbar-thin">
-          {pipeline.stages.map((stage) => (
-            <KanbanColumn
-              key={stage.id}
-              stage={stage}
-              leads={getLeadsForStage(stage.id)}
-              onAddLead={(stageId) => setAddLeadStageId(stageId)}
-              onOpenLead={(leadId) => setOpenLeadId(leadId)}
-            />
-          ))}
+          <SortableContext items={displayStages.map((s) => stageColumnDragId(s.id))} strategy={horizontalListSortingStrategy}>
+            {displayStages.map((stage) => (
+              <KanbanColumn
+                key={stage.id}
+                stage={stage}
+                leads={getLeadsForStage(stage.id)}
+                onAddLead={(stageId) => setAddLeadStageId(stageId)}
+                onOpenLead={(leadId) => setOpenLeadId(leadId)}
+              />
+            ))}
+          </SortableContext>
 
           {/* Adicionar etapa */}
           <div className="flex flex-col w-72 flex-shrink-0">

@@ -2,14 +2,23 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDroppable } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { Stage, Lead } from '@/types';
 import { KanbanCard } from './kanban-card';
 import { ColorSwatches } from './color-swatches';
 import { formatCurrency } from '@/lib/utils';
-import { Plus } from 'lucide-react';
+import { Plus, GripVertical } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
+
+/** Id do arrasto da COLUNA (reordenar etapas) — prefixado pra não colidir
+ *  com o id "cru" da etapa, já usado pelo useDroppable abaixo (soltar um
+ *  CARD dentro da coluna). Dois nós registrados com o mesmo id no dnd-kit
+ *  brigam entre si. */
+export function stageColumnDragId(stageId: string) {
+  return `col:${stageId}`;
+}
 
 interface KanbanColumnProps {
   stage: Stage;
@@ -46,6 +55,10 @@ const STAGE_DESCRIPTIONS: Record<string, string> = {
 
 export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
+  const {
+    attributes, listeners, setNodeRef: setColumnRef, transform, transition, isDragging,
+  } = useSortable({ id: stageColumnDragId(stage.id), data: { type: 'stage', stageId: stage.id } });
+  const columnStyle = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
   const queryClient = useQueryClient();
 
   const [editing, setEditing] = useState(false);
@@ -79,7 +92,7 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColu
   }
 
   return (
-    <div className="flex flex-col w-72 flex-shrink-0 h-full">
+    <div ref={setColumnRef} style={columnStyle} className="flex flex-col w-72 flex-shrink-0 h-full">
       {/* Cabeçalho do estágio — único bloco com o fundo translúcido */}
       <div className="rounded-xl app-column-surface shadow-md px-3 pt-3 pb-2 flex-shrink-0">
         {editing ? (
@@ -114,13 +127,23 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColu
                 {leads.length}
               </span>
             </button>
-            <button
-              onClick={() => onAddLead(stage.id)}
-              className="text-slate-400 hover:text-af-mid hover:bg-af-light rounded p-0.5 transition-colors flex-shrink-0"
-              title="Adicionar lead"
-            >
-              <Plus size={16} />
-            </button>
+            <div className="flex items-center gap-0.5 flex-shrink-0">
+              <button
+                {...attributes}
+                {...listeners}
+                className="text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing p-0.5 rounded transition-colors"
+                title="Arrastar para mover a etapa"
+              >
+                <GripVertical size={15} />
+              </button>
+              <button
+                onClick={() => onAddLead(stage.id)}
+                className="text-slate-400 hover:text-af-mid hover:bg-af-light rounded p-0.5 transition-colors"
+                title="Adicionar lead"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
           </div>
         )}
 
