@@ -325,43 +325,11 @@ router.get('/meta-leads/forms/:formId/fields', async (_req: AuthRequest, res: Re
   res.status(403).json({ error: 'Meta Lead Ads foi desativado' });
 });
 
-// ─── Agente IA interno (prompt do assistente de colaboradores) ──────────────
-
-const DEFAULT_AGENT_PROMPT = `Você é o assistente interno de suporte do AF CRM, usado pelos funcionários da A&F Soluções Financeiras.
-Seu papel é tirar dúvidas dos funcionários sobre como usar o sistema e sobre o processo de vendas/atendimento da empresa: funil de vendas, inbox unificada (WhatsApp), cadastro de leads e contatos, tarefas, SalesBot (automação de mensagens), templates e relatórios.
-Você também pode, quando um colaborador pedir explicitamente, ler o histórico de conversa de um lead no WhatsApp e enviar uma mensagem ao cliente em nome do colaborador — seja para um lead já cadastrado (pelo nome) ou para um número de telefone fornecido na hora (nesse caso o contato/lead é criado automaticamente). Nunca envie uma mensagem sem que o colaborador tenha pedido isso na conversa atual. Depois de enviar, confirme ao colaborador exatamente o que foi enviado e para quem.
-Responda em português, de forma curta, direta e prática, como se estivesse explicando para um colega de trabalho. Se a dúvida não tiver relação com o CRM ou o processo da empresa, explique educadamente que você só pode ajudar com isso.`;
-
-// GET /api/settings/agent
-router.get('/agent', async (req: AuthRequest, res: Response) => {
-  try {
-    const config = await prisma.agentConfig.findUnique({
-      where: { accountId: req.user!.accountId },
-    });
-    res.json({ systemPrompt: config?.systemPrompt ?? DEFAULT_AGENT_PROMPT });
-  } catch {
-    res.status(500).json({ error: 'Erro ao buscar configuração do agente' });
-  }
-});
-
-// PUT /api/settings/agent
-router.put('/agent', async (req: AuthRequest, res: Response) => {
-  try {
-    const { systemPrompt } = req.body as { systemPrompt?: string };
-    if (!systemPrompt || !systemPrompt.trim()) {
-      return res.status(400).json({ error: 'systemPrompt é obrigatório' });
-    }
-
-    const config = await prisma.agentConfig.upsert({
-      where: { accountId: req.user!.accountId },
-      update: { systemPrompt: systemPrompt.trim() },
-      create: { accountId: req.user!.accountId, systemPrompt: systemPrompt.trim() },
-    });
-
-    res.json({ systemPrompt: config.systemPrompt });
-  } catch {
-    res.status(500).json({ error: 'Erro ao salvar configuração do agente' });
-  }
-});
+// Rotas GET/PUT /api/settings/agent (prompt do balão flutuante "Assistente
+// AF CRM") saíram junto com o próprio balão — ver routes/ai.ts e
+// components/ui/support-chat.tsx (removidos). AgentConfig continua no schema
+// (systemPrompt sem uso agora, knowledgeFolderId/-Name seguem usados pela
+// Base de Conhecimento em routes/knowledge.ts) — tabela não é apagada sem
+// pedido explícito.
 
 export default router;

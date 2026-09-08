@@ -3,12 +3,10 @@ import { useEffect, useRef } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/ui/sidebar';
 import { ToastContainer } from '@/components/ui/toast';
-import { SupportChatButton } from '@/components/ui/support-chat';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
 import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
-import { useIsMobile } from '@/hooks/use-media-query';
 
 type SoundKey = 'whatsapp' | 'ding' | 'pop' | 'chime' | 'bell' | 'soft' | 'alert' | 'none';
 
@@ -49,7 +47,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { user, init } = useAuthStore();
   const router = useRouter();
   const pathname = usePathname();
-  const isMobile = useIsMobile();
   const lastSoundRef = useRef<number>(0);
 
   useEffect(() => {
@@ -101,12 +98,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       if (message?.direction === 'INBOUND') triggerSound();
     }
 
-    // assistant_question — outro colaborador pediu para o assistente perguntar
-    // algo a este colaborador (fica pendente no chat dele). Toca som pra avisar.
-    function onAssistantQuestion() {
-      triggerSound();
-    }
-
     // ai_handoff — a IA que respondia um cliente sozinha se desligou porque
     // ele pediu atendente (ou saiu do escopo do setor). Toca som E mostra
     // toast, porque exige ação do colaborador (não é só uma pendência).
@@ -116,12 +107,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
 
     socket.on('new_notification', onNewNotification);
-    socket.on('assistant_question', onAssistantQuestion);
     socket.on('ai_handoff', onAiHandoff);
 
     return () => {
       socket.off('new_notification', onNewNotification);
-      socket.off('assistant_question', onAssistantQuestion);
       socket.off('ai_handoff', onAiHandoff);
     };
   }, []);
@@ -133,11 +122,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {children}
       </main>
       <ToastContainer />
-      {/* No mobile, dentro da Inbox, esse botão flutuante fica em cima da
-          caixa de digitar/enviar mensagem — atrapalha encaminhar/responder.
-          No desktop tem espaço de sobra (não esconde nada), então some só
-          nesse caso específico. */}
-      {!(isMobile && pathname?.startsWith('/inbox')) && <SupportChatButton />}
     </div>
   );
 }
