@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
-import { listDepartments, findDuplicateInboxPipelines, mergeDuplicateInboxPipelines } from '../services/department.service';
+import { listDepartments, findDuplicateInboxPipelines, mergeDuplicateInboxPipelines, moveInboxLeadsToStage } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -122,6 +122,23 @@ router.post('/:id/merge-inbox-pipelines', async (req: AuthRequest, res: Response
     res.json(result);
   } catch {
     res.status(500).json({ error: 'Erro ao mesclar os funis duplicados' });
+  }
+});
+
+// POST /api/departments/:id/move-inbox-to-stage — esvazia todo funil "Caixa
+// de Entrada" do setor, movendo os leads pra `targetStageName` (ex.:
+// "Prospecção") num outro funil do mesmo setor, e apaga os funis "Caixa de
+// Entrada" (ficam vazios) — um novo nasce sozinho na próxima mensagem de
+// WhatsApp. dryRun (padrão true) só simula.
+router.post('/:id/move-inbox-to-stage', async (req: AuthRequest, res: Response) => {
+  try {
+    const targetStageName = String(req.body?.targetStageName || '').trim();
+    if (!targetStageName) return res.status(400).json({ error: 'targetStageName é obrigatório' });
+    const dryRun = req.body?.dryRun !== false;
+    const result = await moveInboxLeadsToStage(req.user!.accountId, req.params.id, targetStageName, { dryRun });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao mover os leads' });
   }
 });
 

@@ -716,85 +716,107 @@ function DepartmentsTab() {
         </div>
       )}
 
-      <DuplicatePipelinesPanel />
+      <MoveInboxToStagePanel departments={departments} />
     </div>
   );
 }
 
-interface DupPipeline { id: string; name: string; leadCount: number; stageNames: string[]; }
-interface DupGroup { departmentId: string | null; departmentName: string; pipelines: DupPipeline[]; }
+interface MoveInboxPreview {
+  dryRun: boolean;
+  departmentName: string;
+  targetPipelineName: string;
+  targetStageName: string;
+  leadsMoved: number;
+  sourcePipelines: { id: string; name: string; leadCount: number }[];
+  pipelinesRemoved: number;
+}
 
-/** Achado ao vivo em 2026-09-08: getOrCreateInboxPipeline() tinha a mesma
- *  corrida do createFolder() do Drive (achar-ou-criar sem trava) — mensagens
- *  chegando quase juntas pro mesmo setor podiam criar dois funis "Caixa de
- *  Entrada". Já corrigido pra não acontecer de novo; este painel é a
- *  ferramenta de limpeza pros que já ficaram duplicados. */
-function DuplicatePipelinesPanel() {
+/** Esvazia o(s) funil(is) "Caixa de Entrada" de um setor, movendo os leads
+ *  pra uma etapa de outro funil (ex.: "Prospecção") e apagando os funis
+ *  vazios em seguida — um novo "Caixa de Entrada" nasce sozinho na próxima
+ *  mensagem de WhatsApp. Cobre tanto o caso de funil duplicado (esvazia os
+ *  dois) quanto o de só querer tirar tudo da caixa de entrada genérica. */
+function MoveInboxToStagePanel({ departments }: { departments: DepartmentRow[] }) {
+  const [departmentId, setDepartmentId] = useState('');
+  const [targetStageName, setTargetStageName] = useState('Prospecção');
   const [checking, setChecking] = useState(false);
-  const [groups, setGroups] = useState<DupGroup[] | null>(null);
-  const [merging, setMerging] = useState<string | null>(null);
+  const [moving, setMoving] = useState(false);
+  const [preview, setPreview] = useState<MoveInboxPreview | null>(null);
+  const [errorMsg, setErrorMsg] = useState('');
 
   async function verificar() {
+    if (!departmentId) { toast('Escolha um setor', 'warning'); return; }
+    if (!targetStageName.trim()) { toast('Diga o nome da etapa de destino', 'warning'); return; }
     setChecking(true);
+    setErrorMsg('');
+    setPreview(null);
     try {
-      const { data } = await api.get('/api/departments/duplicate-inbox-pipelines');
-      setGroups(data);
-      if (data.length === 0) toast('Nenhum funil "Caixa de Entrada" duplicado — tudo certo.');
-    } catch {
-      toast('Erro ao verificar funis duplicados', 'error');
+      const { data } = await api.post(`/api/departments/${departmentId}/move-inbox-to-stage`, { targetStageName: targetStageName.trim(), dryRun: true });
+      setPreview(data);
+    } catch (e: any) {
+      setErrorMsg(e?.response?.data?.error || 'Erro ao verificar');
     } finally {
       setChecking(false);
     }
   }
 
-  async function mesclar(group: DupGroup) {
-    const key = group.departmentId ?? 'sem-setor';
-    if (!confirm(`Mesclar os ${group.pipelines.length} funis "Caixa de Entrada" de ${group.departmentName} num só?\n\nOs leads dos funis menores são movidos pro que tem mais leads (casando por nome de etapa, criando a etapa se faltar) e os funis vazios são apagados depois. Nenhum lead é perdido.`)) return;
-    setMerging(key);
+  async function mover() {
+    if (!preview) return;
+    if (!confirm(`Mover ${preview.leadsMoved} lead(s) de "Caixa de Entrada" pra "${preview.targetStageName}" (funil ${preview.targetPipelineName})?\n\nOs funis "Caixa de Entrada" ficam vazios e são apagados — um novo nasce sozinho na próxima mensagem de WhatsApp.`)) return;
+    setMoving(true);
     try {
-      const { data } = await api.post(`/api/departments/${key}/merge-inbox-pipelines`, { dryRun: false });
-      const total = (data.merged || []).reduce((n: number, m: { leadsMoved: number }) => n + m.leadsMoved, 0);
-      toast(`Mesclado: ${total} lead(s) movido(s), ${(data.merged || []).length} funil(is) removido(s).`);
-      setGroups((prev) => (prev || []).filter((g) => g.departmentId !== group.departmentId));
+      const { data } = await api.post(`/api/departments/${departmentId}/move-inbox-to-stage`, { targetStageName: targetStageName.trim(), dryRun: false });
+      toast(`${data.leadsMoved} lead(s) movido(s), ${data.pipelinesRemoved} funil(is) "Caixa de Entrada" removido(s).`);
+      setPreview(null);
     } catch (e: any) {
-      toast(e?.response?.data?.error || 'Erro ao mesclar', 'error');
+      toast(e?.response?.data?.error || 'Erro ao mover', 'error');
     } finally {
-      setMerging(null);
+      setMoving(false);
     }
   }
 
   return (
-    <div className="mt-3 pt-3 border-t border-af-border">
-      <button
-        onClick={verificar}
-        disabled={checking}
-        className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-      >
-        {checking ? 'Verificando…' : 'Verificar funis "Caixa de Entrada" duplicados'}
-      </button>
+    <div className="mt-3 pt-3 border-t border-af-border space-y-2">
+      <p className="text-xs font-medium text-slate-600">Mover leads de "Caixa de Entrada" pra outra etapa</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={departmentId}
+          onChange={(e) => { setDepartmentId(e.target.value); setPreview(null); setErrorMsg(''); }}
+          className="text-xs border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700"
+        >
+          <option value="">Setor…</option>
+          {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+        <input
+          value={targetStageName}
+          onChange={(e) => setTargetStageName(e.target.value)}
+          placeholder="Etapa de destino"
+          className="text-xs border border-af-border rounded-lg px-2 py-1.5 w-40"
+        />
+        <button
+          onClick={verificar}
+          disabled={checking || !departmentId}
+          className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {checking ? 'Verificando…' : 'Verificar'}
+        </button>
+      </div>
 
-      {groups && groups.length > 0 && (
-        <div className="mt-3 space-y-3">
-          {groups.map((g) => {
-            const key = g.departmentId ?? 'sem-setor';
-            return (
-              <div key={key} className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-                <p className="text-xs font-semibold text-amber-900">{g.departmentName} — {g.pipelines.length} funis "Caixa de Entrada"</p>
-                <ul className="mt-1 text-xs text-amber-800 space-y-0.5">
-                  {g.pipelines.map((p) => (
-                    <li key={p.id}>{p.name} — {p.leadCount} lead(s), etapas: {p.stageNames.join(', ') || '(nenhuma)'}</li>
-                  ))}
-                </ul>
-                <button
-                  onClick={() => mesclar(g)}
-                  disabled={merging === key}
-                  className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-af-blue text-white font-medium hover:bg-af-mid disabled:opacity-50"
-                >
-                  {merging === key ? 'Mesclando…' : 'Mesclar num funil só'}
-                </button>
-              </div>
-            );
-          })}
+      {errorMsg && <p className="text-xs text-red-500">{errorMsg}</p>}
+
+      {preview && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900">
+          <p>
+            <strong>{preview.leadsMoved}</strong> lead(s) em {preview.sourcePipelines.length} funil(is) "Caixa de Entrada" de {preview.departmentName} vão pra etapa
+            {' '}"{preview.targetStageName}" do funil "{preview.targetPipelineName}".
+          </p>
+          <button
+            onClick={mover}
+            disabled={moving}
+            className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-af-blue text-white font-medium hover:bg-af-mid disabled:opacity-50"
+          >
+            {moving ? 'Movendo…' : `Mover ${preview.leadsMoved} lead(s)`}
+          </button>
         </div>
       )}
     </div>

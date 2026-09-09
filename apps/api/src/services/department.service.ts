@@ -242,6 +242,102 @@ export async function mergeDuplicateInboxPipelines(
   return { dryRun, canonicalId: canonical.id, merged };
 }
 
+/** Remove acento/caixa pra comparar nome de etapa sem depender de escrita
+ *  exata ("Prospecção" vs "prospeccao" vs " Prospecção "). */
+function normalizeStageName(name: string): string {
+  return name.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+export interface MoveInboxToStageResult {
+  dryRun: boolean;
+  departmentName: string;
+  targetPipelineName: string;
+  targetStageName: string;
+  leadsMoved: number;
+  sourcePipelines: { id: string; name: string; leadCount: number }[];
+  pipelinesRemoved: number;
+}
+
+/**
+ * Esvazia TODO funil "Caixa de Entrada" de um setor, movendo os leads pra
+ * etapa `targetStageName` (ex.: "Prospecção") — precisa existir em exatamente
+ * UM outro funil do mesmo setor, senão não decide sozinho pra onde mandar.
+ * `dryRun` (padrão true) só simula. Sem dryRun, depois de mover os leads
+ * apaga os funis "Caixa de Entrada" (ficam vazios) — um novo nasce sozinho na
+ * próxima mensagem de WhatsApp, via getOrCreateInboxPipeline.
+ */
+export async function moveInboxLeadsToStage(
+  accountId: string,
+  departmentId: string,
+  targetStageName: string,
+  opts: { dryRun?: boolean } = {},
+): Promise<MoveInboxToStageResult> {
+  const dryRun = opts.dryRun !== false;
+
+  const department = await prisma.department.findFirst({ where: { id: departmentId, accountId } });
+  if (!department) throw new Error('Departamento não encontrado');
+
+  const pipelines = await prisma.pipeline.findMany({
+    where: { accountId, departmentId },
+    include: { stages: { orderBy: { order: 'asc' } }, _count: { select: { leads: true } } },
+  });
+
+  const inboxPipelines = pipelines.filter((p) => p.name.toLowerCase().includes('caixa'));
+  if (!inboxPipelines.length) {
+    throw new Error(`Não achei nenhum funil "Caixa de Entrada" em ${department.name}.`);
+  }
+
+  const wanted = normalizeStageName(targetStageName);
+  const candidates = pipelines
+    .filter((p) => !inboxPipelines.some((ip) => ip.id === p.id))
+    .flatMap((p) => p.stages.filter((s) => normalizeStageName(s.name) === wanted).map((s) => ({ pipeline: p, stage: s })));
+
+  if (candidates.length === 0) {
+    throw new Error(`Não achei nenhuma etapa "${targetStageName}" em outro funil de ${department.name}.`);
+  }
+  if (candidates.length > 1) {
+    throw new Error(`Achei "${targetStageName}" em mais de um funil de ${department.name} (${candidates.map((c) => c.pipeline.name).join(', ')}) — não decido sozinho pra qual mandar.`);
+  }
+  const { pipeline: targetPipeline, stage: targetStage } = candidates[0];
+
+  const sourcePipelines = inboxPipelines.map((p) => ({ id: p.id, name: p.name, leadCount: p._count.leads }));
+  const totalLeads = sourcePipelines.reduce((n, p) => n + p.leadCount, 0);
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      departmentName: department.name,
+      targetPipelineName: targetPipeline.name,
+      targetStageName: targetStage.name,
+      leadsMoved: totalLeads,
+      sourcePipelines,
+      pipelinesRemoved: 0,
+    };
+  }
+
+  const moveResult = totalLeads > 0
+    ? await prisma.lead.updateMany({
+        where: { pipelineId: { in: inboxPipelines.map((p) => p.id) } },
+        data: { pipelineId: targetPipeline.id, stageId: targetStage.id },
+      })
+    : { count: 0 };
+
+  for (const p of inboxPipelines) {
+    await prisma.stage.deleteMany({ where: { pipelineId: p.id } });
+    await prisma.pipeline.delete({ where: { id: p.id } });
+  }
+
+  return {
+    dryRun: false,
+    departmentName: department.name,
+    targetPipelineName: targetPipeline.name,
+    targetStageName: targetStage.name,
+    leadsMoved: moveResult.count,
+    sourcePipelines,
+    pipelinesRemoved: inboxPipelines.length,
+  };
+}
+
 /**
  * Setores efetivos do usuário logado, para filtrar o que ele enxerga.
  * ADMIN sempre retorna [] (= sem filtro, vê tudo). Não-admin sem nenhum
