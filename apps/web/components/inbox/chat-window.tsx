@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2 } from 'lucide-react';
+import { transcodeToWhatsAppOgg } from '@/lib/audio-transcode';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -665,6 +666,92 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     } finally {
       setUploadingFile(false);
     }
+  }
+
+  // ── Gravar áudio (microfone) e mandar como voz — diferente de anexar um
+  // arquivo de áudio já pronto. O MediaRecorder do navegador grava em
+  // formatos diferentes por navegador (webm no Chrome, mp4 no Safari, ogg no
+  // Firefox) e o WhatsApp só aceita alguns — por isso converte pra Ogg/Opus
+  // (lib/audio-transcode.ts) antes de mandar pelo mesmo caminho de sempre
+  // (uploadFile → /api/messages/send-media).
+  const [recording, setRecording] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const [processingAudio, setProcessingAudio] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordStreamRef = useRef<MediaStream | null>(null);
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function stopRecordingTracks() {
+    recordStreamRef.current?.getTracks().forEach((t) => t.stop());
+    recordStreamRef.current = null;
+    if (recordTimerRef.current) { clearInterval(recordTimerRef.current); recordTimerRef.current = null; }
+  }
+
+  async function startRecording() {
+    if (recording) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordStreamRef.current = stream;
+      const mimeType = ['audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/webm']
+        .find((t) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(t)) || '';
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recordedChunksRef.current = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunksRef.current.push(e.data); };
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setRecording(true);
+      setRecordSeconds(0);
+      recordTimerRef.current = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
+    } catch {
+      toast('Não consegui acessar o microfone — verifique a permissão do navegador.', 'error');
+    }
+  }
+
+  function cancelRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.ondataavailable = null;
+      recorder.stop();
+    }
+    stopRecordingTracks();
+    mediaRecorderRef.current = null;
+    recordedChunksRef.current = [];
+    setRecording(false);
+    setRecordSeconds(0);
+  }
+
+  async function finishRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') return;
+    const mimeType = recorder.mimeType || 'audio/webm';
+    const blob = await new Promise<Blob>((resolve) => {
+      recorder.onstop = () => resolve(new Blob(recordedChunksRef.current, { type: mimeType }));
+      recorder.stop();
+    });
+    stopRecordingTracks();
+    mediaRecorderRef.current = null;
+    setRecording(false);
+    setRecordSeconds(0);
+
+    setProcessingAudio(true);
+    try {
+      const ogg = await transcodeToWhatsAppOgg(blob, mimeType);
+      const file = new File([ogg], `audio-${Date.now()}.ogg`, { type: 'audio/ogg' });
+      await uploadFile(file);
+    } catch {
+      toast('Erro ao processar o áudio gravado', 'error');
+    } finally {
+      setProcessingAudio(false);
+    }
+  }
+
+  useEffect(() => () => { stopRecordingTracks(); }, []); // some da tela: solta o microfone se ainda estiver gravando
+
+  function formatRecordTime(totalSeconds: number): string {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
   }
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1502,69 +1589,111 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         onSubmit={handleSend}
         className="relative z-10 flex items-end gap-2 px-3 py-3 bg-[#202c33]"
       >
-        <EmojiPickerButton onSelect={handleEmojiSelect} />
-        <input
-          ref={fileInputRef}
-          type="file"
-          className="hidden"
-          onChange={handleFileChange}
-        />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploadingFile}
-          title="Anexar documento ou imagem"
-          className="flex-shrink-0 p-2 text-[#8696a0] hover:text-[#e9edef] disabled:opacity-50"
-        >
-          {uploadingFile ? <Loader2 size={22} className="animate-spin" /> : <Paperclip size={22} />}
-        </button>
-        <textarea
-          ref={inputRef}
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={windowClosedForApi ? 'Janela fechada — use um template acima' : 'Digite uma mensagem'}
-          rows={1}
-          spellCheck
-          lang="pt-BR"
-          className="flex-1 resize-none px-4 py-2.5 text-sm bg-[#2a3942] rounded-3xl border-none outline-none text-[#e9edef] placeholder-[#8696a0] scrollbar-thin max-h-32"
-          style={{ lineHeight: '1.4' }}
-        />
-        {/* Templates toggle button */}
-        <button
-          type="button"
-          onClick={handleOpenTemplates}
-          title="Templates prontos"
-          className={cn(
-            'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
-            showTemplates ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
-          )}
-        >
-          <FileText size={18} />
-        </button>
-        {/* AI toggle button */}
-        <button
-          type="button"
-          onClick={() => { setShowAI(v => !v); setShowTemplates(false); }}
-          title="Assistente IA"
-          className={cn(
-            'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
-            showAI ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
-          )}
-        >
-          <Sparkles size={18} />
-        </button>
-        <button
-          type="submit"
-          disabled={!content.trim() || sending}
-          className={cn(
-            'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-white transition-all',
-            content.trim() ? 'opacity-100 scale-100' : 'opacity-50 scale-95',
-          )}
-          style={{ backgroundColor: '#00a884' }}
-        >
-          <Send size={18} />
-        </button>
+        {recording ? (
+          <>
+            {/* Gravando — barra mínima, igual ao WhatsApp: cancelar, tempo, e o
+                botão da direita vira "parar e enviar" (troca o Send de sempre). */}
+            <button
+              type="button"
+              onClick={cancelRecording}
+              title="Cancelar gravação"
+              className="flex-shrink-0 p-2 text-[#8696a0] hover:text-red-400"
+            >
+              <Trash2 size={22} />
+            </button>
+            <div className="flex-1 flex items-center gap-2 px-4 py-2.5 text-sm text-[#e9edef]">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse flex-shrink-0" />
+              Gravando… {formatRecordTime(recordSeconds)}
+            </div>
+          </>
+        ) : (
+          <>
+            <EmojiPickerButton onSelect={handleEmojiSelect} />
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploadingFile}
+              title="Anexar documento ou imagem"
+              className="flex-shrink-0 p-2 text-[#8696a0] hover:text-[#e9edef] disabled:opacity-50"
+            >
+              {uploadingFile ? <Loader2 size={22} className="animate-spin" /> : <Paperclip size={22} />}
+            </button>
+            <textarea
+              ref={inputRef}
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={windowClosedForApi ? 'Janela fechada — use um template acima' : 'Digite uma mensagem'}
+              rows={1}
+              spellCheck
+              lang="pt-BR"
+              className="flex-1 resize-none px-4 py-2.5 text-sm bg-[#2a3942] rounded-3xl border-none outline-none text-[#e9edef] placeholder-[#8696a0] scrollbar-thin max-h-32"
+              style={{ lineHeight: '1.4' }}
+            />
+            {/* Templates toggle button */}
+            <button
+              type="button"
+              onClick={handleOpenTemplates}
+              title="Templates prontos"
+              className={cn(
+                'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
+                showTemplates ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
+              )}
+            >
+              <FileText size={18} />
+            </button>
+            {/* AI toggle button */}
+            <button
+              type="button"
+              onClick={() => { setShowAI(v => !v); setShowTemplates(false); }}
+              title="Assistente IA"
+              className={cn(
+                'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
+                showAI ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
+              )}
+            >
+              <Sparkles size={18} />
+            </button>
+          </>
+        )}
+        {recording ? (
+          <button
+            type="button"
+            onClick={finishRecording}
+            disabled={processingAudio}
+            title="Parar e enviar áudio"
+            className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-white transition-all disabled:opacity-60"
+            style={{ backgroundColor: '#00a884' }}
+          >
+            {processingAudio ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+          </button>
+        ) : content.trim() ? (
+          <button
+            type="submit"
+            disabled={sending}
+            className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-white transition-all opacity-100 scale-100"
+            style={{ backgroundColor: '#00a884' }}
+          >
+            <Send size={18} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={startRecording}
+            disabled={processingAudio}
+            title="Gravar áudio"
+            className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-white transition-all disabled:opacity-60"
+            style={{ backgroundColor: '#00a884' }}
+          >
+            {processingAudio ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
+          </button>
+        )}
       </form>
 
       {/* Encaminhar mensagem — escolher a conversa de destino */}
