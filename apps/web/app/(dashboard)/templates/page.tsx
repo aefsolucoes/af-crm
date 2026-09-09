@@ -42,7 +42,12 @@ const META_STATUS_META: Record<string, { label: string; color: string; icon: typ
   PENDING:  { label: 'Em análise', color: 'bg-amber-50 text-amber-600', icon: Clock },
   REJECTED: { label: 'Rejeitado', color: 'bg-red-50 text-red-500', icon: XCircle },
 };
-const META_EMPTY_FORM = { name: '', category: 'UTILITY', language: 'pt_BR', body: '', footer: '', codeExpirationMinutes: '10' };
+const META_EMPTY_FORM = {
+  name: '', category: 'UTILITY', language: 'pt_BR', body: '', footer: '', codeExpirationMinutes: '10',
+  quickReply1: '', quickReply2: '', quickReply3: '',
+  ctaUrlText: '', ctaUrl: '',
+  ctaPhoneText: '', ctaPhoneNumber: '',
+};
 
 function WhatsAppTemplatesTab() {
   const me = useAuthStore((s) => s.user);
@@ -106,9 +111,22 @@ function WhatsAppTemplatesTab() {
     }
     setSaving(true);
     try {
+      const quickReplies = [form.quickReply1, form.quickReply2, form.quickReply3].map((s) => s.trim()).filter(Boolean);
+      const hasUrl = form.ctaUrlText.trim() && form.ctaUrl.trim();
+      const hasPhone = form.ctaPhoneText.trim() && form.ctaPhoneNumber.trim();
+      const hasButtons = !isAuth && (quickReplies.length > 0 || hasUrl || hasPhone);
       await api.post('/api/settings/whatsapp/templates', {
-        ...form,
+        name: form.name,
+        category: form.category,
+        language: form.language,
+        body: form.body,
+        footer: form.footer,
         codeExpirationMinutes: isAuth ? (parseInt(form.codeExpirationMinutes, 10) || 10) : undefined,
+        buttons: hasButtons ? {
+          quickReplies: quickReplies.length ? quickReplies : undefined,
+          url: hasUrl ? { text: form.ctaUrlText.trim(), url: form.ctaUrl.trim() } : undefined,
+          phone: hasPhone ? { text: form.ctaPhoneText.trim(), phoneNumber: form.ctaPhoneNumber.trim() } : undefined,
+        } : undefined,
         departmentId: metaDepartmentId || undefined,
       });
       toast('Template enviado para aprovação da Meta!');
@@ -259,6 +277,56 @@ function WhatsAppTemplatesTab() {
                 </div>
 
                 <Input label="Rodapé (opcional)" value={form.footer} onChange={(e) => setForm({ ...form, footer: e.target.value })} placeholder="Ex: A&F Soluções Financeiras" />
+
+                <div className="flex flex-col gap-2 pt-2 border-t border-af-border">
+                  <label className="text-sm font-medium text-slate-700">Botões (opcional)</label>
+                  <p className="text-xs text-slate-400 -mt-1">Até 3 de resposta rápida, 1 de link e 1 de telefone — tudo opcional.</p>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['quickReply1', 'quickReply2', 'quickReply3'] as const).map((field, i) => (
+                      <Input
+                        key={field}
+                        label={`Resposta rápida ${i + 1}`}
+                        value={form[field]}
+                        onChange={(e) => setForm({ ...form, [field]: e.target.value })}
+                        placeholder="Ex: Quero saber mais"
+                        maxLength={25}
+                      />
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      label="Texto do botão de link"
+                      value={form.ctaUrlText}
+                      onChange={(e) => setForm({ ...form, ctaUrlText: e.target.value })}
+                      placeholder="Ex: Ver proposta"
+                      maxLength={25}
+                    />
+                    <Input
+                      label="URL"
+                      value={form.ctaUrl}
+                      onChange={(e) => setForm({ ...form, ctaUrl: e.target.value })}
+                      placeholder="https://... (pode terminar em {{1}} pra sufixo dinâmico)"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      label="Texto do botão de telefone"
+                      value={form.ctaPhoneText}
+                      onChange={(e) => setForm({ ...form, ctaPhoneText: e.target.value })}
+                      placeholder="Ex: Ligar agora"
+                      maxLength={25}
+                    />
+                    <Input
+                      label="Número (com DDI)"
+                      value={form.ctaPhoneNumber}
+                      onChange={(e) => setForm({ ...form, ctaPhoneNumber: e.target.value })}
+                      placeholder="Ex: 5561999999999"
+                    />
+                  </div>
+                </div>
               </>
             )}
           </div>

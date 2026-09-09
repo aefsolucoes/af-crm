@@ -96,6 +96,34 @@ export async function listMetaTemplates(accountId: string, departmentId?: string
   return j.data || [];
 }
 
+/** Botões de um template MARKETING/UTILITY (AUTHENTICATION tem o próprio
+ *  botão fixo de copiar código, ver abaixo — não usa isto). Mesmo limite
+ *  "seguro" que o próprio WhatsApp Business App oferece: até 3 de resposta
+ *  rápida, 1 de link e 1 de telefone (misturar tipos além disso a Meta pode
+ *  rejeitar). O texto do link pode terminar em "{{1}}" pra um sufixo
+ *  dinâmico (ex.: "https://af.com.br/proposta/{{1}}") — por isso a URL não é
+ *  validada como link estrito, só como texto não vazio. */
+export interface MetaTemplateButtons {
+  quickReplies?: string[];
+  url?: { text: string; url: string } | null;
+  phone?: { text: string; phoneNumber: string } | null;
+}
+
+function buildButtonsComponent(buttons?: MetaTemplateButtons): Record<string, unknown> | null {
+  if (!buttons) return null;
+  const list: Record<string, unknown>[] = [];
+  for (const label of (buttons.quickReplies || []).map((s) => s.trim()).filter(Boolean).slice(0, 3)) {
+    list.push({ type: 'QUICK_REPLY', text: label });
+  }
+  if (buttons.url?.text?.trim() && buttons.url?.url?.trim()) {
+    list.push({ type: 'URL', text: buttons.url.text.trim(), url: buttons.url.url.trim() });
+  }
+  if (buttons.phone?.text?.trim() && buttons.phone?.phoneNumber?.trim()) {
+    list.push({ type: 'PHONE_NUMBER', text: buttons.phone.text.trim(), phone_number: buttons.phone.phoneNumber.trim() });
+  }
+  return list.length ? { type: 'BUTTONS', buttons: list } : null;
+}
+
 /** Envia um novo template para aprovação da Meta. Lança erro (Error) com
  *  mensagem pronta para mostrar em caso de falha. */
 export async function createMetaTemplate(accountId: string, params: {
@@ -106,6 +134,8 @@ export async function createMetaTemplate(accountId: string, params: {
   footer?: string;
   /** Só usado em AUTHENTICATION: minutos até o código expirar (padrão 10). */
   codeExpirationMinutes?: number;
+  /** Botões (MARKETING/UTILITY) — ver buildButtonsComponent. */
+  buttons?: MetaTemplateButtons;
 }, departmentId?: string | null): Promise<any> {
   const config = await getWhatsAppConfig(accountId, departmentId);
   if (!config?.accessToken) throw new Error('Configure o Access Token primeiro (aba API Oficial).');
@@ -127,6 +157,8 @@ export async function createMetaTemplate(accountId: string, params: {
     if (!body?.trim()) throw new Error('Corpo da mensagem é obrigatório para esta categoria.');
     components = [{ type: 'BODY', text: body.trim() }];
     if (footer?.trim()) components.push({ type: 'FOOTER', text: footer.trim() });
+    const buttonsComponent = buildButtonsComponent(params.buttons);
+    if (buttonsComponent) components.push(buttonsComponent);
   }
 
   const r = await fetch(`https://graph.facebook.com/v20.0/${config.wabaId}/message_templates`, {

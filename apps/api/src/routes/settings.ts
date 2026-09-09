@@ -271,6 +271,14 @@ const templateSchema = z.object({
   footer: z.string().max(60).optional(),
   // Só usado em AUTHENTICATION: minutos até o código expirar (padrão 10).
   codeExpirationMinutes: z.number().int().min(1).max(90).optional(),
+  // Botões (MARKETING/UTILITY — ignorado em AUTHENTICATION, que tem o
+  // próprio botão fixo de copiar código). url.url não é validado como link
+  // estrito de propósito: pode terminar em "{{1}}" pra um sufixo dinâmico.
+  buttons: z.object({
+    quickReplies: z.array(z.string().min(1).max(25)).max(3).optional(),
+    url: z.object({ text: z.string().min(1).max(25), url: z.string().min(1).max(2000) }).nullable().optional(),
+    phone: z.object({ text: z.string().min(1).max(25), phoneNumber: z.string().min(1).max(20) }).nullable().optional(),
+  }).optional(),
 });
 
 // GET /api/settings/whatsapp/templates — lista os templates da conta (com status de aprovação)
