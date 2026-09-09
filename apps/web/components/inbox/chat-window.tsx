@@ -1080,6 +1080,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               const liveReactions = reactionsMap[msg.id] ?? msg.reactions ?? [];
               const livePinned = pinnedMap[msg.id] ?? msg.pinned;
               const liveStarred = starredMap[msg.id] ?? msg.starred;
+              // Áudio/imagem/documento: menu sempre visível (não só no hover do
+              // mouse) — o botão "⋮ Encaminhar" ficava fácil de não notar numa
+              // bolha de áudio pequena (achado real: usuário não achava a opção
+              // de encaminhar áudio). Texto puro continua discreto (só hover),
+              // igual sempre foi.
+              const hasAttachment = !!(msg.attachments && msg.attachments.length > 0);
               const menuProps = {
                 message: { ...msg, pinned: livePinned, starred: liveStarred },
                 isOut,
@@ -1094,7 +1100,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               return (
                 <div key={msg.id} className={cn('group flex items-center gap-1 mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
                   {isOut && !liveDeleted && (
-                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                    <div className={cn('transition-opacity flex-shrink-0', hasAttachment ? 'opacity-70 group-hover:opacity-100' : 'opacity-0 group-hover:opacity-100')}>
                       <MessageMenu {...menuProps} />
                     </div>
                   )}
@@ -1236,7 +1242,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                     </div>
                   </div>
                   {!isOut && !liveDeleted && (
-                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                    <div className={cn('transition-opacity flex-shrink-0', hasAttachment ? 'opacity-70 group-hover:opacity-100' : 'opacity-0 group-hover:opacity-100')}>
                       <MessageMenu {...menuProps} />
                     </div>
                   )}
