@@ -76,6 +76,7 @@ export interface Lead {
   name: string;
   value?: number;
   status: LeadStatus;
+  lostReason?: string | null;
   pipelineId: string;
   stageId: string;
   stage: Stage;

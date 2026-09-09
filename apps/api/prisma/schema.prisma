@@ -178,6 +178,11 @@ model Lead {
   name               String
   value              Float?
   status             LeadStatus          @default(OPEN)
+  // Motivo informado ao marcar como Perdido (obrigatório na tela — o
+  // backend aceita sem, pra não travar automações/integrações que mudem o
+  // status por outro caminho). Fica só o último motivo; o histórico de
+  // quando/quem marcou já vive na Note de auditoria.
+  lostReason         String?
   pipelineId         String
   pipeline           Pipeline            @relation(fields: [pipelineId], references: [id])
   stageId            String

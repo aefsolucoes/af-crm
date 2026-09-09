@@ -78,6 +78,7 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
   name: string;
   value: number;
   status: LeadStatus;
+  lostReason: string | null;
   userId: string;
   contactId: string;
   companyId: string;

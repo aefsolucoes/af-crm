@@ -65,28 +65,52 @@ function parseFieldNumber(raw: unknown): number {
   return parseFloat(cleaned) || 0;
 }
 
-/** Funil "Concluído" — para onde vão os leads marcados como Ganho, um estágio
- *  por mês do ano (para saber quantos fecharam em cada mês). Cria sozinho na
- *  primeira vez que precisar, sem exigir configuração manual antes. Um
- *  "Concluído" por departamento — os leads ganhos de cada setor ficam
- *  separados, do mesmo jeito que o resto do funil. */
-async function getOrCreateConcluidoPipeline(accountId: string, departmentId?: string | null) {
-  let pipeline = await prisma.pipeline.findFirst({
-    where: { accountId, name: 'Concluído', departmentId: departmentId ?? null },
-    include: { stages: { orderBy: { order: 'asc' } } },
-  });
-  if (!pipeline) {
-    pipeline = await prisma.pipeline.create({
+/** Fila de criação por (conta+nome+setor) — o "achar ou criar" abaixo não é
+ *  atômico: dois PUTs marcando leads como Ganho/Perdido quase juntos podiam
+ *  criar dois funis "Concluído"/"Perdidos" duplicados — mesma classe de
+ *  corrida já corrigida em createFolder (google.service.ts) e
+ *  getOrCreateInboxPipeline (department.service.ts). */
+const namedPipelineLocks = new Map<string, Promise<unknown>>();
+
+/** Funil com um estágio por mês do ano (pra saber quantos entraram em cada
+ *  mês) — usado tanto por "Concluído" (leads Ganho) quanto "Perdidos" (leads
+ *  Perdido). Cria sozinho na primeira vez que precisar, sem exigir
+ *  configuração manual antes. Um por departamento — cada setor tem o seu. */
+async function getOrCreateNamedPipeline(accountId: string, name: string, departmentId: string | null | undefined, stageColor: string) {
+  const key = `${accountId}::${name}::${departmentId ?? ''}`;
+  const run = async () => {
+    const existing = await prisma.pipeline.findFirst({
+      where: { accountId, name, departmentId: departmentId ?? null },
+      include: { stages: { orderBy: { order: 'asc' } } },
+    });
+    if (existing) return existing;
+    return prisma.pipeline.create({
       data: {
-        name: 'Concluído',
+        name,
         accountId,
         departmentId: departmentId ?? null,
-        stages: { create: MONTH_NAMES_PT.map((name, i) => ({ name, order: i + 1, color: '#10b981' })) },
+        stages: { create: MONTH_NAMES_PT.map((n, i) => ({ name: n, order: i + 1, color: stageColor })) },
       },
       include: { stages: { orderBy: { order: 'asc' } } },
     });
-  }
-  return pipeline;
+  };
+  const previous = namedPipelineLocks.get(key) || Promise.resolve();
+  const result = previous.then(run);
+  // guarda uma cópia que nunca rejeita — senão uma falha travaria a fila pra
+  // sempre esperando uma promise rejeitada que ninguém mais trata.
+  namedPipelineLocks.set(key, result.catch(() => undefined));
+  return result as ReturnType<typeof run>;
+}
+
+async function getOrCreateConcluidoPipeline(accountId: string, departmentId?: string | null) {
+  return getOrCreateNamedPipeline(accountId, 'Concluído', departmentId, '#10b981');
+}
+
+/** Funil "Perdidos" — pra onde vão os leads marcados como Perdido, do mesmo
+ *  jeito que "Concluído" já faz com Ganho (usuário pediu: card sumia dentro
+ *  do funil ativo, só com uma etiqueta, difícil de achar depois). */
+async function getOrCreatePerdidosPipeline(accountId: string, departmentId?: string | null) {
+  return getOrCreateNamedPipeline(accountId, 'Perdidos', departmentId, '#ef4444');
 }
 
 const createLeadSchema = z.object({
@@ -103,6 +127,7 @@ const createLeadSchema = z.object({
 
 const updateLeadSchema = createLeadSchema.partial().extend({
   status: z.enum(['OPEN', 'WON', 'LOST']).optional(),
+  lostReason: z.string().max(500).nullable().optional(),
   isGroup: z.boolean().optional(),
 });
 const stageSchema = z.object({ stageId: z.string() });
@@ -364,6 +389,37 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
             }
           } catch (err) {
             console.error('[Comissão] Falha ao criar sugestão:', (err as any)?.message);
+          }
+        }
+
+        // ── Auto-migração: lead marcado como Perdido → funil "Perdidos" (mês atual) ──
+        // Antes o card só ganhava uma etiqueta e continuava perdido de vista no
+        // funil ativo — usuário pediu pra sumir de lá, igual já acontece com Ganho.
+        if (req.body.status === 'LOST') {
+          const perdidos = await getOrCreatePerdidosPipeline(req.user!.accountId, before?.pipeline?.departmentId ?? null);
+          const mesAtual = currentMonthNamePT();
+          const targetStage = perdidos.stages.find((s) => s.name === mesAtual) || perdidos.stages[0];
+          if (targetStage) {
+            const motivo = typeof req.body.lostReason === 'string' ? req.body.lostReason.trim() : '';
+            const movedLead = await prisma.lead.update({
+              where: { id: req.params.id },
+              data: {
+                pipelineId: perdidos.id,
+                stageId: targetStage.id,
+                notes: {
+                  create: {
+                    content: motivo
+                      ? `Lead migrado automaticamente para o funil "Perdidos" (${targetStage.name}) ao ser marcado como Perdido — por ${userName}. Motivo: ${motivo}`
+                      : `Lead migrado automaticamente para o funil "Perdidos" (${targetStage.name}) ao ser marcado como Perdido — por ${userName}.`,
+                    type: 'STAGE_CHANGE',
+                    userId: req.user!.id,
+                  },
+                },
+              },
+            });
+            const io = (req as any).app.get('io');
+            if (io) io.to(`account_${req.user!.accountId}`).emit('lead_moved', { lead: movedLead });
+            console.log(`[Auto-migração] Lead "${movedLead.name}" marcado como Perdido → funil Perdidos (${targetStage.name})`);
           }
         }
       }
