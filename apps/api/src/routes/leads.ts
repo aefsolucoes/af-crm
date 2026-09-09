@@ -227,6 +227,43 @@ router.get('/duplicate-groups', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── GET /api/leads/find-by-phone ──────────────────────────────────────────
+// Acha o lead mais recente com esse telefone (últimos 8 dígitos) — usado pelo
+// "+Novo Lead" pra avisar ANTES de criar duplicado (achado real: cadastro
+// manual não checava telefone repetido, ao contrário das mensagens
+// automáticas de WhatsApp, que já reaproveitam o lead existente). Registrado
+// ANTES de '/:id' para não ser capturado como um id.
+router.get('/find-by-phone', async (req: AuthRequest, res: Response) => {
+  try {
+    const raw = String(req.query.phone || '').replace(/\D/g, '');
+    if (raw.length < 8) return res.json(null);
+    const last8 = raw.slice(-8);
+
+    const leads = await prisma.lead.findMany({
+      where: { accountId: req.user!.accountId, archived: false },
+      include: { contact: true, stage: { include: { pipeline: true } } },
+      orderBy: { updatedAt: 'desc' },
+      take: 500, // conta grande — evita varrer a tabela inteira; telefone repetido tende a ser recente
+    });
+
+    const match = leads.find((l) => {
+      const cf = (l.customFields || {}) as Record<string, string>;
+      const phone = (cf.telefone_1 || l.contact?.phone || l.contact?.whatsappPhone || '').replace(/\D/g, '');
+      return phone.length >= 8 && phone.slice(-8) === last8;
+    });
+
+    if (!match) return res.json(null);
+    res.json({
+      id: match.id,
+      name: match.name,
+      pipelineName: match.stage?.pipeline?.name || '',
+      stageName: match.stage?.name || '',
+    });
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar por telefone' });
+  }
+});
+
 router.get('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const lead = await getLeadById(req.params.id, req.user!.accountId);

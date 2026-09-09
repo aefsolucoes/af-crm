@@ -64,10 +64,25 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
 
   const [form, setForm] = useState(emptyForm());
   const [loading, setLoading] = useState(false);
+  // Aviso de telefone repetido — o cadastro manual, ao contrário das
+  // mensagens automáticas de WhatsApp, não reaproveitava lead existente e
+  // criava duplicado sem avisar (achado real: mesmo cliente virou 2 leads).
+  const [phoneMatch, setPhoneMatch] = useState<{ id: string; name: string; pipelineName: string; stageName: string } | null>(null);
+
+  async function checkPhoneDuplicate(rawPhone: string) {
+    const digits = rawPhone.replace(/\D/g, '');
+    if (digits.length < 10) { setPhoneMatch(null); return; }
+    try {
+      const { data } = await api.get('/api/leads/find-by-phone', { params: { phone: digits } });
+      setPhoneMatch(data || null);
+    } catch {
+      setPhoneMatch(null);
+    }
+  }
 
   // Reset when modal opens with possibly different defaultStageId
   useEffect(() => {
-    if (open) setForm(emptyForm());
+    if (open) { setForm(emptyForm()); setPhoneMatch(null); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, defaultStageId]);
 
@@ -122,6 +137,14 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
     if (!form.participante_1.trim()) {
       if (!silent) toast('Informe o nome do Participante 1', 'error');
       return;
+    }
+    // Silent (clique fora do modal) não interrompe com confirm() — só o
+    // envio deliberado (botão/Enter) pergunta antes de duplicar.
+    if (!silent && phoneMatch) {
+      const ok = confirm(
+        `Já existe um lead com esse telefone: "${phoneMatch.name}" (${phoneMatch.pipelineName} → ${phoneMatch.stageName}).\n\nCriar um lead novo mesmo assim?`
+      );
+      if (!ok) return;
     }
     setLoading(true);
     try {
@@ -205,13 +228,22 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
           />
 
           <div className="grid grid-cols-2 gap-3">
-            <Input
-              label="Telefone"
-              type="tel"
-              value={form.telefone_1}
-              onChange={e => handleChange('telefone_1', e.target.value)}
-              placeholder="(61) 99999-0000"
-            />
+            <div>
+              <Input
+                label="Telefone"
+                type="tel"
+                value={form.telefone_1}
+                onChange={e => { handleChange('telefone_1', e.target.value); setPhoneMatch(null); }}
+                onBlur={e => checkPhoneDuplicate(e.target.value)}
+                placeholder="(61) 99999-0000"
+              />
+              {phoneMatch && (
+                <p className="text-[11px] text-amber-600 mt-1 leading-snug">
+                  ⚠ Já existe um lead com esse telefone: <strong>{phoneMatch.name}</strong>
+                  {phoneMatch.pipelineName && <> ({phoneMatch.pipelineName} → {phoneMatch.stageName})</>}
+                </p>
+              )}
+            </div>
             <Input
               label="CPF"
               value={form.cpf_1}
