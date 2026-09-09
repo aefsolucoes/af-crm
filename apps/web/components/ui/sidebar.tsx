@@ -2,20 +2,18 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import {
-  LayoutDashboard, Kanban, Home, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, Landmark, X, Sparkles,
+  LayoutDashboard, Kanban, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
 import { useRouter } from 'next/navigation';
 import { Avatar } from './avatar';
 import { effectivePermissions, PermissionKey } from '@/lib/permissions';
-import api from '@/lib/api';
 
-interface NavItem { href: string; label: string; icon: typeof BarChart3; perm: PermissionKey; departmentName?: string; }
+interface NavItem { href: string; label: string; icon: typeof BarChart3; perm: PermissionKey; }
 
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: BarChart3, perm: 'dashboard' },
@@ -23,12 +21,11 @@ const NAV: NavItem[] = [
   // por padrão (ADMIN/MANAGER/AGENT), então todo colaborador vê esse atalho
   // sem precisar de configuração extra de permissão.
   { href: '/meu-assistente', label: 'Meu Assistente', icon: Sparkles, perm: 'dashboard' },
-  // departmentName: só aparece pra quem é daquele setor (ou Admin, ou quem
-  // não tem setor definido — mesmo critério de "sem restrição" já usado em
-  // getScopeDepartmentId no backend).
-  { href: '/funil-habitacao', label: 'Funil de Vendas Habitação', icon: Home, perm: 'funnel_view', departmentName: 'Financiamento Habitacional' },
-  { href: '/funil-consorcio', label: 'Funil de Vendas Consórcio', icon: Kanban, perm: 'funnel_view', departmentName: 'Consórcio' },
-  { href: '/funil-home-equity', label: 'Funil de Vendas Home Equity', icon: Landmark, perm: 'funnel_view', departmentName: 'Home Equity' },
+  // Item único pros 3 setores (Habitação/Consórcio/Home Equity) — antes eram
+  // 3 itens de menu separados, um por setor; agora FunilView tem seu próprio
+  // seletor de setor (mesmo critério de "só os próprios setores" de antes,
+  // aplicado lá dentro em vez de aqui no menu).
+  { href: '/funil', label: 'Funil de Vendas', icon: Kanban, perm: 'funnel_view' },
   { href: '/inbox', label: 'Inbox', icon: MessageSquare, perm: 'inbox_view' },
   { href: '/tarefas', label: 'Tarefas', icon: CheckSquare, perm: 'tasks' },
   { href: '/salesbot', label: 'SalesBot', icon: Bot, perm: 'salesbot' },
@@ -46,29 +43,12 @@ export function Sidebar() {
   const { collapsed, toggle, init, mobileOpen, closeMobile } = useSidebarStore();
   const router = useRouter();
 
-  // Pra decidir qual "Funil de Vendas <Setor>" mostrar — só busca se tiver
-  // usuário logado com setor definido (Admin/sem setor não precisa, já vê tudo).
-  const { data: departments } = useQuery({
-    queryKey: ['departments'],
-    queryFn: async () => { const { data } = await api.get('/api/departments'); return data as { id: string; name: string }[]; },
-    enabled: !!user && user.role !== 'ADMIN' && !!user.departmentIds?.length,
-  });
-  const myDepartmentNames = (departments || [])
-    .filter((d) => (user?.departmentIds || []).includes(d.id))
-    .map((d) => d.name);
-
-  // Mostra no menu só o que o usuário tem permissão de acessar — e, pros
-  // itens de funil por setor, só os dos PRÓPRIOS setores (Admin ou quem não
-  // tem setor definido continua vendo todos, igual sempre viu tudo em outras
-  // áreas escopadas por departamento).
+  // Mostra no menu só o que o usuário tem permissão de acessar. O filtro por
+  // setor pro item "Funil de Vendas" saiu daqui — agora é o seletor de setor
+  // dentro de FunilView (mesmo critério de "só os próprios setores", só que
+  // aplicado lá dentro em vez de esconder/mostrar itens de menu inteiros).
   const perms = effectivePermissions(user?.role || 'AGENT', user?.permissions ?? null);
-  const isAdmin = user?.role === 'ADMIN';
-  const nav = NAV.filter((item) => {
-    if (!perms[item.perm]) return false;
-    if (!item.departmentName) return true;
-    if (isAdmin || !user?.departmentIds?.length) return true;
-    return myDepartmentNames.includes(item.departmentName);
-  });
+  const nav = NAV.filter((item) => perms[item.perm]);
 
   useEffect(() => {
     init();

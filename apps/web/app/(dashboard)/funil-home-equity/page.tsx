@@ -1,12 +1,13 @@
 'use client';
-import { FunilView } from '@/components/funil/funil-view';
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 
-export default function FunilHomeEquityPage() {
-  return (
-    <FunilView
-      departmentName="Home Equity"
-      title="Funil de Vendas Home Equity"
-      storageKeySuffix="home-equity"
-    />
-  );
+// Rota antiga (item de menu próprio) virou o seletor de setor dentro de
+// /funil — mantido só como redirect pra não quebrar favorito/link salvo.
+export default function FunilHomeEquityRedirect() {
+  const router = useRouter();
+  useEffect(() => {
+    router.replace('/funil?dep=' + encodeURIComponent('Home Equity'));
+  }, [router]);
+  return null;
 }

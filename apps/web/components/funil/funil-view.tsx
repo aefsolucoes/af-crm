@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState, useMemo } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { Button } from '@/components/ui/button';
@@ -46,19 +47,10 @@ async function fetchContacts(): Promise<Contact[]> {
   return data;
 }
 
-interface FunilViewProps {
-  /** Nome exato do Department (ex.: "Financiamento Habitacional") — filtra
-   *  quais pipelines aparecem aqui. Cada setor tem sua própria tela agora,
-   *  em vez de um único "Funil de Vendas" misturando tudo. */
-  departmentName: string;
-  /** Título mostrado no topo (ex.: "Funil de Vendas Habitação"). */
-  title: string;
-  /** Sufixo pra chave do localStorage — cada setor lembra seu próprio último
-   *  funil selecionado, sem um sobrescrever o do outro. */
-  storageKeySuffix: string;
-}
-
-export function FunilView({ departmentName, title, storageKeySuffix }: FunilViewProps) {
+// Volta a ser UM item só de menu ("Funil de Vendas") em vez de um item fixo
+// por setor — o seletor de DEPARTAMENTO abaixo escolhe qual ver, do mesmo
+// jeito que o seletor de pipeline já escolhe qual funil dentro do setor.
+export function FunilView() {
   const { leads: storeLeads, setLeads, moveLeadOptimistic } = usePipelineStore();
   const [openAddLead, setOpenAddLead] = useState(false);
   const [openDuplicates, setOpenDuplicates] = useState(false);
@@ -66,8 +58,48 @@ export function FunilView({ departmentName, title, storageKeySuffix }: FunilView
   const me = useAuthStore((s) => s.user);
   const isAdmin = me?.role === 'ADMIN';
   const [showArchived, setShowArchived] = useState(false);
+  const searchParams = useSearchParams();
 
-  const selectedPipelineKey = `af-crm:funil:${storageKeySuffix}:selectedPipelineId`;
+  const { data: departments } = useQuery({ queryKey: ['departments'], queryFn: fetchDepartments });
+
+  // Só oferece os setores do próprio colaborador (Admin ou quem não tem
+  // setor definido continua vendo todos — mesmo critério do menu lateral).
+  const availableDepartments = useMemo(() => {
+    const all = departments || [];
+    if (isAdmin || !me?.departmentIds?.length) return all;
+    return all.filter((d) => me.departmentIds!.includes(d.id));
+  }, [departments, isAdmin, me?.departmentIds]);
+
+  const selectedDeptKey = 'af-crm:funil:selectedDepartmentName';
+  function readStoredDepartmentName(): string {
+    if (typeof window === 'undefined') return '';
+    try { return localStorage.getItem(selectedDeptKey) || ''; } catch { return ''; }
+  }
+  const [selectedDepartmentName, setSelectedDepartmentNameRaw] = useState<string>(() => {
+    // Bookmark/link antigo (?dep=Nome) tem prioridade sobre o que ficou
+    // lembrado — assim um link direto pra um setor específico continua indo
+    // pro lugar certo mesmo depois de já ter visitado outro setor antes.
+    const fromQuery = searchParams?.get('dep');
+    return fromQuery || readStoredDepartmentName();
+  });
+  function setSelectedDepartmentName(name: string) {
+    setSelectedDepartmentNameRaw(name);
+    if (typeof window === 'undefined') return;
+    try { localStorage.setItem(selectedDeptKey, name); } catch { /* indisponível — segue sem persistir */ }
+  }
+  useEffect(() => {
+    if (!availableDepartments.length) return;
+    const stillExists = availableDepartments.some((d) => d.name === selectedDepartmentName);
+    if (!selectedDepartmentName || !stillExists) {
+      setSelectedDepartmentName(availableDepartments[0].name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableDepartments]);
+
+  const departmentName = selectedDepartmentName;
+  const title = 'Funil de Vendas';
+
+  const selectedPipelineKey = `af-crm:funil:${departmentName}:selectedPipelineId`;
   function readStoredPipelineId(): string {
     if (typeof window === 'undefined') return '';
     try { return localStorage.getItem(selectedPipelineKey) || ''; } catch { return ''; }
@@ -86,6 +118,15 @@ export function FunilView({ departmentName, title, storageKeySuffix }: FunilView
     setSelectedPipelineIdRaw(id);
     storePipelineId(id);
   }
+  // Trocar de SETOR muda a chave acima (cada setor lembra seu próprio último
+  // funil) — recarrega o que estava lembrado pra ESSE setor, em vez de
+  // continuar com o id do setor anterior (que o efeito abaixo trataria como
+  // "não existe mais" e cairia pro primeiro da lista de qualquer jeito, mas
+  // sem respeitar o que o colaborador tinha deixado selecionado ali antes).
+  useEffect(() => {
+    setSelectedPipelineIdRaw(readStoredPipelineId());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [departmentName]);
   const [showNewPipeline, setShowNewPipeline] = useState(false);
   const [newPipelineName, setNewPipelineName] = useState('');
   const [showRenamePipeline, setShowRenamePipeline] = useState(false);
@@ -112,7 +153,6 @@ export function FunilView({ departmentName, title, storageKeySuffix }: FunilView
     queryFn: fetchPipelines,
   });
 
-  const { data: departments } = useQuery({ queryKey: ['departments'], queryFn: fetchDepartments });
   const department = (departments || []).find((d) => d.name === departmentName);
 
   // Pipelines deste setor — mais os "órfãos" (sem departamento definido).
@@ -278,10 +318,28 @@ export function FunilView({ departmentName, title, storageKeySuffix }: FunilView
 
   return (
     <div className="flex flex-col h-full">
-      <Topbar title={title} subtitle={search.trim() ? `Todos os funis de ${departmentName}` : pipeline?.name} />
+      <Topbar
+        title={title}
+        subtitle={search.trim() ? `Todos os funis de ${departmentName}` : [departmentName, pipeline?.name].filter(Boolean).join(' · ')}
+      />
 
       <div className="flex items-center justify-between px-6 py-3 app-topbar-surface border-b gap-4">
         <div className="flex items-center gap-3 flex-1">
+          {/* Seletor de setor — só aparece se o colaborador tem acesso a mais
+              de um (senão é ruído: um dropdown com uma opção só). Antes cada
+              setor era um item de menu separado ("Funil de Vendas
+              Habitação", "...Consórcio", "...Home Equity"); agora é um item
+              só, com esse seletor escolhendo qual ver. */}
+          {availableDepartments.length > 1 && (
+            <select
+              value={departmentName}
+              onChange={e => setSelectedDepartmentName(e.target.value)}
+              className="text-sm border border-af-border rounded-lg px-3 py-1.5 bg-white text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-af-accent flex-shrink-0"
+            >
+              {availableDepartments.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
+            </select>
+          )}
+
           {/* Seletor de pipeline (oculto durante busca) */}
           {!search.trim() && pipeline && (
             <div className="flex items-center gap-1 flex-shrink-0">
