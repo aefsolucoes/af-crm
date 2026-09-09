@@ -103,18 +103,14 @@ export function LeadMetaPanel({ lead, onRefresh }: LeadMetaPanelProps) {
 
         <div>
           <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Funil atual</p>
-          <div className="flex items-center gap-1.5">
-            <span className="flex-1 text-xs font-medium text-slate-700 bg-white border border-af-border px-2.5 py-1.5 rounded-lg truncate">
-              {lead.pipeline.name}
-            </span>
-            <button
-              onClick={() => setShowPipelineModal(true)}
-              className="flex-shrink-0 p-1.5 border border-af-border rounded-lg text-slate-400 hover:text-af-mid hover:bg-af-light transition-colors"
-              title="Mover para outro funil"
-            >
-              <Shuffle size={13} />
-            </button>
-          </div>
+          <button
+            onClick={() => setShowPipelineModal(true)}
+            className="w-full flex items-center justify-between gap-1.5 text-xs font-medium text-slate-700 bg-white border border-af-border hover:border-af-mid px-2.5 py-1.5 rounded-lg transition-colors text-left"
+            title="Mover para outro funil"
+          >
+            <span className="truncate">{lead.pipeline.name}</span>
+            <Shuffle size={13} className="flex-shrink-0 text-slate-400" />
+          </button>
         </div>
 
         <div>
