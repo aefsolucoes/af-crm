@@ -74,70 +74,74 @@ export async function listDepartments(accountId: string) {
 }
 
 /**
- * Funil "Caixa de Entrada" — onde caem leads novos vindos do WhatsApp. Um por
- * departamento (departmentId null = "genérico"/compartilhado, usado por
- * números/canais ainda não migrados pra um setor). Cria sozinho na primeira
- * vez que precisar, sem exigir configuração manual antes. Compartilhado entre
- * baileys.service.ts e whatsapp.service.ts pra não duplicar a lógica (e sem
- * criar import circular entre os dois — este arquivo não importa nenhum).
+ * Funil "Caixa de Entrada" — a central ÚNICA onde TODO lead novo cai primeiro:
+ * WhatsApp (número novo), lead criado manualmente sem funil, importação. É UMA
+ * só pra conta inteira e SEM setor (departmentId null) de propósito: assim ela
+ * aparece em toda tela de /funil (o filtro de lá inclui `|| !p.department`) e
+ * um humano move o card pro funil do setor certo depois. Antes era uma por
+ * setor — dava várias "Caixa de Entrada" iguais e a confusão de uma aparecer
+ * no funil de outro setor; agora é centralizada, então "aparecer em todos" é o
+ * comportamento desejado, não bug. `departmentId` fica na assinatura só por
+ * compatibilidade com os callers e é ignorado.
+ *
+ * Compartilhado entre baileys.service.ts e whatsapp.service.ts pra não
+ * duplicar a lógica (e sem import circular — este arquivo não importa nenhum).
  */
-/** Fila de criação por (conta+setor) — ver comentário em getOrCreateInboxPipeline. */
+const INBOX_NAME_MATCH = [
+  { name: { contains: 'Caixa', mode: 'insensitive' as const } },
+  { name: { contains: 'Inbox', mode: 'insensitive' as const } },
+];
+
+/** Fila de criação por conta — o "achar ou criar" não é atômico: duas
+ *  mensagens de WhatsApp quase simultâneas podiam rodar o findFirst ao mesmo
+ *  tempo, nenhuma achar nada, e as duas criarem uma "Caixa de Entrada" cada.
+ *  Enfileirando por conta, a 2ª só roda depois da 1ª e já acha pronta. Só
+ *  serializa dentro deste processo — basta, a API roda numa instância só. */
 const inboxPipelineLocks = new Map<string, Promise<unknown>>();
 
-/**
- * Acha (ou cria) o funil "Caixa de Entrada" de um setor. O "achar ou criar"
- * não é atômico: mensagens de WhatsApp chegando quase juntas pro MESMO setor
- * (ex.: dois clientes novos do Financiamento Habitacional em poucos segundos)
- * podiam rodar o findFirst ao mesmo tempo, nenhuma achar nada ainda, e as
- * duas criarem um funil "Caixa de Entrada" cada — funil duplicado, com os
- * leads espalhados entre os dois (mesma classe de bug do createFolder() do
- * Drive, ver google.service.ts).
- *
- * Corrigido enfileirando por chave (conta+setor): a segunda chamada só roda
- * depois que a primeira terminou, então já encontra o funil pronto. Só
- * serializa dentro deste processo — é suficiente porque a API roda numa
- * instância só.
- */
-export async function getOrCreateInboxPipeline(accountId: string, departmentId?: string | null) {
-  // Nunca cria um funil ÓRFÃO (sem setor): funil sem departmentId aparece em
-  // TODOS os setores na tela /funil (o filtro lá inclui `|| !p.department`
-  // por compatibilidade), o que confundia — "Caixa de Entrada" do Home
-  // Equity brotava dentro do funil de Habitação. Sem setor informado, cai no
-  // primeiro setor da conta (mesma suposição do ensureDefaultDepartments).
-  let effectiveDeptId = departmentId ?? null;
-  if (!effectiveDeptId) {
-    const first = await prisma.department.findFirst({ where: { accountId }, orderBy: { order: 'asc' }, select: { id: true } });
-    effectiveDeptId = first?.id ?? null;
-  }
-
-  const key = `${accountId}::${effectiveDeptId ?? ''}`;
+export async function getOrCreateInboxPipeline(accountId: string, _departmentId?: string | null) {
   const run = async () => {
-    const pipeline = await prisma.pipeline.findFirst({
-      where: {
-        accountId,
-        name: { contains: 'Caixa', mode: 'insensitive' },
-        departmentId: effectiveDeptId,
-      },
+    // 1) Já existe a global (sem setor)? usa ela.
+    const globalInbox = await prisma.pipeline.findFirst({
+      where: { accountId, departmentId: null, OR: INBOX_NAME_MATCH },
+      orderBy: { id: 'asc' }, // Pipeline não tem createdAt; cuid ~cresce com o tempo, serve pra "a mais antiga"
       include: { stages: { orderBy: { order: 'asc' } } },
     });
-    if (pipeline) return pipeline;
+    if (globalInbox) return globalInbox;
 
+    // 2) Existe uma "Caixa de Entrada" antiga presa a um setor? adota ela como
+    //    global (só tira o setor) em vez de criar outra — não perde os leads
+    //    que já estão nela.
+    const legacy = await prisma.pipeline.findFirst({
+      where: { accountId, OR: INBOX_NAME_MATCH },
+      orderBy: { id: 'asc' }, // Pipeline não tem createdAt; cuid ~cresce com o tempo, serve pra "a mais antiga"
+      include: { stages: { orderBy: { order: 'asc' } } },
+    });
+    if (legacy) {
+      return prisma.pipeline.update({
+        where: { id: legacy.id },
+        data: { departmentId: null },
+        include: { stages: { orderBy: { order: 'asc' } } },
+      });
+    }
+
+    // 3) Nenhuma existe ainda — cria a global.
     return prisma.pipeline.create({
       data: {
         name: 'Caixa de Entrada',
         accountId,
-        departmentId: effectiveDeptId,
+        departmentId: null,
         stages: { create: [{ name: 'Leads de Entrada', order: 0, color: '#25D366' }] },
       },
       include: { stages: { orderBy: { order: 'asc' } } },
     });
   };
 
-  const previous = inboxPipelineLocks.get(key) || Promise.resolve();
+  const previous = inboxPipelineLocks.get(accountId) || Promise.resolve();
   const result = previous.then(run);
   // guarda uma cópia que nunca rejeita — senão uma falha travaria a fila pra
   // sempre esperando uma promise rejeitada que ninguém mais trata.
-  inboxPipelineLocks.set(key, result.catch(() => undefined));
+  inboxPipelineLocks.set(accountId, result.catch(() => undefined));
   return result;
 }
 
@@ -346,6 +350,80 @@ export async function moveInboxLeadsToStage(
     leadsMoved: moveResult.count,
     sourcePipelines,
     pipelinesRemoved: inboxPipelines.length,
+  };
+}
+
+export interface ConsolidateInboxResult {
+  dryRun: boolean;
+  globalPipelineId: string;
+  globalPipelineName: string;
+  merged: { id: string; name: string; departmentName: string | null; leadCount: number }[];
+  leadsMoved: number;
+  pipelinesRemoved: number;
+}
+
+/**
+ * Junta TODA "Caixa de Entrada" espalhada (as antigas, uma por setor, e
+ * qualquer duplicata) na Caixa de Entrada global única. Move os leads pra 1ª
+ * etapa da global e apaga os funis que ficaram vazios. `dryRun` (padrão true)
+ * só simula — o retorno já lista o que seria mesclado. A global é criada se
+ * ainda não existir (via getOrCreateInboxPipeline).
+ */
+export async function consolidateInboxPipelines(
+  accountId: string,
+  opts: { dryRun?: boolean } = {},
+): Promise<ConsolidateInboxResult> {
+  const dryRun = opts.dryRun !== false;
+
+  const globalInbox = await getOrCreateInboxPipeline(accountId);
+  const firstStageId = globalInbox.stages[0]?.id;
+  if (!firstStageId) throw new Error('A Caixa de Entrada global não tem nenhuma etapa.');
+
+  const others = await prisma.pipeline.findMany({
+    where: { accountId, id: { not: globalInbox.id }, OR: INBOX_NAME_MATCH },
+    include: { _count: { select: { leads: true } }, department: { select: { name: true } } },
+    orderBy: { id: 'asc' },
+  });
+
+  const merged = others.map((p) => ({
+    id: p.id,
+    name: p.name,
+    departmentName: p.department?.name ?? null,
+    leadCount: p._count.leads,
+  }));
+  const leadsToMove = merged.reduce((n, p) => n + p.leadCount, 0);
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      globalPipelineId: globalInbox.id,
+      globalPipelineName: globalInbox.name,
+      merged,
+      leadsMoved: leadsToMove,
+      pipelinesRemoved: 0,
+    };
+  }
+
+  if (others.length) {
+    if (leadsToMove > 0) {
+      await prisma.lead.updateMany({
+        where: { pipelineId: { in: others.map((p) => p.id) } },
+        data: { pipelineId: globalInbox.id, stageId: firstStageId },
+      });
+    }
+    for (const p of others) {
+      await prisma.stage.deleteMany({ where: { pipelineId: p.id } });
+      await prisma.pipeline.delete({ where: { id: p.id } }).catch(() => undefined);
+    }
+  }
+
+  return {
+    dryRun: false,
+    globalPipelineId: globalInbox.id,
+    globalPipelineName: globalInbox.name,
+    merged,
+    leadsMoved: leadsToMove,
+    pipelinesRemoved: others.length,
   };
 }
 

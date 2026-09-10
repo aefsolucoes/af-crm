@@ -512,54 +512,12 @@ export async function sendWhatsAppTemplateMessage(
   }
 }
 
-// Finds or creates the "Caixa de Entrada" pipeline for incoming WhatsApp leads.
-// Sem departmentId: mantém o comportamento antigo (casa por vários nomes
-// legados, pipeline "genérica"/compartilhada — conta que só tem uma linha de
-// negócio). Com departmentId: cai no funil "Caixa de Entrada" DAQUELE setor
-// (cria um novo se ainda não existir), separado dos outros setores.
-export async function getOrCreateWhatsAppPipeline(accountId: string, departmentId?: string | null) {
-  if (departmentId) {
-    return getOrCreateInboxPipeline(accountId, departmentId);
-  }
-
-  // Try to find existing pipeline named "Caixa de Entrada" (or legacy names)
-  let pipeline = await prisma.pipeline.findFirst({
-    where: {
-      accountId,
-      departmentId: null,
-      OR: [
-        { name: { contains: 'Caixa de Entrada', mode: 'insensitive' } },
-        { name: { contains: 'WhatsApp',          mode: 'insensitive' } },
-        { name: { contains: 'Mensagens',          mode: 'insensitive' } },
-        { name: { contains: 'Inbox',              mode: 'insensitive' } },
-      ],
-    },
-    include: { stages: { orderBy: { order: 'asc' } } },
-  });
-
-  // Create it if not found
-  if (!pipeline) {
-    pipeline = await prisma.pipeline.create({
-      data: {
-        name: 'Caixa de Entrada',
-        accountId,
-        stages: {
-          create: [
-            {
-              name: 'Leads de Entrada',
-              order: 0,
-              color: '#25D366',
-              // description field if schema supports it, otherwise ignored
-            },
-          ],
-        },
-      },
-      include: { stages: { orderBy: { order: 'asc' } } },
-    });
-    console.log(`[WhatsApp] Pipeline "Caixa de Entrada" criado para accountId=${accountId}`);
-  }
-
-  return pipeline;
+// Funil de entrada dos leads de WhatsApp (e da importação). Agora é sempre a
+// Caixa de Entrada global única — ver getOrCreateInboxPipeline em
+// department.service.ts. `departmentId` fica na assinatura só pra não mexer
+// nos callers; é ignorado (não existe mais uma Caixa por setor).
+export async function getOrCreateWhatsAppPipeline(accountId: string, _departmentId?: string | null) {
+  return getOrCreateInboxPipeline(accountId);
 }
 
 // Format phone for display: "5561999990000" → "(61) 99999-0000"

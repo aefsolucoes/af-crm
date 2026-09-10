@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
-import { listDepartments, findDuplicateInboxPipelines, mergeDuplicateInboxPipelines, moveInboxLeadsToStage } from '../services/department.service';
+import { listDepartments, findDuplicateInboxPipelines, mergeDuplicateInboxPipelines, moveInboxLeadsToStage, consolidateInboxPipelines } from '../services/department.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -139,6 +139,20 @@ router.post('/:id/move-inbox-to-stage', async (req: AuthRequest, res: Response) 
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao mover os leads' });
+  }
+});
+
+// POST /api/departments/consolidate-inbox — junta TODA "Caixa de Entrada"
+// espalhada (as antigas por setor + duplicatas) numa única global, movendo os
+// leads pra 1ª etapa dela e apagando os funis vazios. dryRun (padrão true) só
+// simula. Um segmento só — não colide com /:id/... (dois segmentos).
+router.post('/consolidate-inbox', async (req: AuthRequest, res: Response) => {
+  try {
+    const dryRun = req.body?.dryRun !== false;
+    const result = await consolidateInboxPipelines(req.user!.accountId, { dryRun });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao unificar as Caixas de Entrada' });
   }
 });
 

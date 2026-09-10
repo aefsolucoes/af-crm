@@ -716,7 +716,101 @@ function DepartmentsTab() {
         </div>
       )}
 
+      <ConsolidateInboxPanel />
       <MoveInboxToStagePanel departments={departments} />
+    </div>
+  );
+}
+
+interface ConsolidateInboxPreview {
+  dryRun: boolean;
+  globalPipelineId: string;
+  globalPipelineName: string;
+  merged: { id: string; name: string; departmentName: string | null; leadCount: number }[];
+  leadsMoved: number;
+  pipelinesRemoved: number;
+}
+
+/** Junta TODA "Caixa de Entrada" espalhada (as antigas por setor + duplicatas)
+ *  numa única global — a central onde todo lead novo cai antes de ser
+ *  distribuído pros setores. Move os leads pra 1ª etapa da global e apaga os
+ *  funis que ficam vazios. "Verificar" só simula. */
+function ConsolidateInboxPanel() {
+  const [checking, setChecking] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [preview, setPreview] = useState<ConsolidateInboxPreview | null>(null);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  async function verificar() {
+    setChecking(true);
+    setErrorMsg('');
+    setPreview(null);
+    try {
+      const { data } = await api.post('/api/departments/consolidate-inbox', { dryRun: true });
+      setPreview(data);
+    } catch (e: any) {
+      setErrorMsg(e?.response?.data?.error || 'Erro ao verificar');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function unificar() {
+    if (!preview) return;
+    if (!confirm(`Juntar ${preview.merged.length} funil(is) "Caixa de Entrada" num só, movendo ${preview.leadsMoved} lead(s) pra Caixa de Entrada global?\n\nOs funis que ficarem vazios são apagados.`)) return;
+    setRunning(true);
+    try {
+      const { data } = await api.post('/api/departments/consolidate-inbox', { dryRun: false });
+      toast(`${data.leadsMoved} lead(s) movido(s), ${data.pipelinesRemoved} funil(is) unificado(s) na Caixa de Entrada global.`);
+      setPreview(null);
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao unificar', 'error');
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 pt-3 border-t border-af-border space-y-2">
+      <p className="text-xs font-medium text-slate-600">Unificar as "Caixa de Entrada" num funil global</p>
+      <p className="text-[11px] text-slate-400 leading-tight">
+        Todo cliente novo (WhatsApp, lead manual sem funil, importação) cai numa Caixa de Entrada única, que aparece em todos os setores. Use isto uma vez pra juntar as caixas antigas (uma por setor) nessa central.
+      </p>
+      <button
+        onClick={verificar}
+        disabled={checking}
+        className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+      >
+        {checking ? 'Verificando…' : 'Verificar'}
+      </button>
+
+      {errorMsg && <p className="text-xs text-red-500">{errorMsg}</p>}
+
+      {preview && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 space-y-1">
+          {preview.merged.length === 0 ? (
+            <p>Nada a fazer — já existe só a Caixa de Entrada global ({preview.globalPipelineName}).</p>
+          ) : (
+            <>
+              <p>
+                <strong>{preview.merged.length}</strong> funil(is) "Caixa de Entrada" vão virar um só, movendo <strong>{preview.leadsMoved}</strong> lead(s) pra Caixa de Entrada global:
+              </p>
+              <ul className="list-disc list-inside">
+                {preview.merged.map((m) => (
+                  <li key={m.id}>{m.name}{m.departmentName ? ` (${m.departmentName})` : ''} — {m.leadCount} lead(s)</li>
+                ))}
+              </ul>
+              <button
+                onClick={unificar}
+                disabled={running}
+                className="mt-1 text-xs px-3 py-1.5 rounded-lg bg-af-blue text-white font-medium hover:bg-af-mid disabled:opacity-50"
+              >
+                {running ? 'Unificando…' : 'Unificar agora'}
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

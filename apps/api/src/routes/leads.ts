@@ -5,7 +5,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact } from '../services/lead.service';
-import { getScopeDepartmentIds } from '../services/department.service';
+import { getScopeDepartmentIds, getOrCreateInboxPipeline } from '../services/department.service';
 import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { checkHasWhatsApp } from '../services/baileys.service';
 import { normalizeClientName } from '../lib/text';
@@ -142,8 +142,11 @@ async function getOrCreatePerdidosPipeline(accountId: string, departmentId?: str
 const createLeadSchema = z.object({
   name: z.string().min(1),
   value: z.number().optional(),
-  pipelineId: z.string(),
-  stageId: z.string(),
+  // Sem funil/etapa definidos, o lead cai na Caixa de Entrada global (resolvido
+  // no handler do POST). O +Novo Lead sempre manda os dois; isso cobre chamadas
+  // de API e cenários futuros de intake automático.
+  pipelineId: z.string().optional(),
+  stageId: z.string().optional(),
   userId: z.string(),
   contactId: z.string().optional(),
   companyId: z.string().optional(),
@@ -383,7 +386,16 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
 
 router.post('/', validate(createLeadSchema), async (req: AuthRequest, res: Response) => {
   try {
-    const lead = await createLead({ ...req.body, accountId: req.user!.accountId });
+    const body = { ...req.body };
+    // Sem funil/etapa: cai na Caixa de Entrada global (mesma central do
+    // WhatsApp e da importação).
+    if (!body.pipelineId || !body.stageId) {
+      const inbox = await getOrCreateInboxPipeline(req.user!.accountId);
+      body.pipelineId = inbox.id;
+      body.stageId = inbox.stages[0]?.id;
+      if (!body.stageId) return res.status(500).json({ error: 'Caixa de Entrada sem etapa de destino' });
+    }
+    const lead = await createLead({ ...body, accountId: req.user!.accountId });
     res.status(201).json(lead);
     runAutomations({ accountId: req.user!.accountId, trigger: 'NEW_LEAD', leadId: lead.id, io: (req as any).app.get('io') }).catch(() => {});
   } catch {
