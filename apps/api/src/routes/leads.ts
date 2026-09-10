@@ -76,7 +76,16 @@ const namedPipelineLocks = new Map<string, Promise<unknown>>();
  *  mês) — usado tanto por "Concluído" (leads Ganho) quanto "Perdidos" (leads
  *  Perdido). Cria sozinho na primeira vez que precisar, sem exigir
  *  configuração manual antes. Um por departamento — cada setor tem o seu. */
-async function getOrCreateNamedPipeline(accountId: string, name: string, departmentId: string | null | undefined, stageColor: string) {
+async function getOrCreateNamedPipeline(
+  accountId: string,
+  name: string,
+  departmentId: string | null | undefined,
+  stageColor: string,
+  /** Etapas do funil na criação. Sem isso, cria um estágio por mês (uso de
+   *  "Concluído"/"Perdidos"). Com isso, cria exatamente essas (ex.: as 7 de
+   *  "Em contratação"). Ignorado se o funil já existir. */
+  stageDefs?: { name: string; order: number; color: string }[],
+) {
   const key = `${accountId}::${name}::${departmentId ?? ''}`;
   const run = async () => {
     const existing = await prisma.pipeline.findFirst({
@@ -91,7 +100,11 @@ async function getOrCreateNamedPipeline(accountId: string, name: string, departm
         name,
         accountId,
         departmentId: departmentId ?? null,
-        stages: { create: MONTH_NAMES_PT.map((n, i) => ({ name: n, order: i + 1, color: stageColor })) },
+        stages: {
+          create: stageDefs
+            ? stageDefs.map((s) => ({ name: s.name, order: s.order, color: s.color }))
+            : MONTH_NAMES_PT.map((n, i) => ({ name: n, order: i + 1, color: stageColor })),
+        },
       },
       include: { stages: { orderBy: { order: 'asc' } } },
     });
@@ -137,6 +150,26 @@ async function getOrCreateConcluidoPipeline(accountId: string, departmentId?: st
  *  do funil ativo, só com uma etiqueta, difícil de achar depois). */
 async function getOrCreatePerdidosPipeline(accountId: string, departmentId?: string | null) {
   return getOrCreateNamedPipeline(accountId, 'Perdidos', departmentId, '#ef4444');
+}
+
+/** Etapas do funil de contratação (mesmas do "Em contratação" criado em
+ *  POST /api/pipelines/setup) — usadas pra criar o "Em contratação Home
+ *  Equity" quando ainda não existe. */
+const CONTRACTING_STAGES = [
+  { name: 'Documentação Recebida', order: 1, color: '#3b82f6' },
+  { name: 'Crédito em Análise',    order: 2, color: '#f59e0b' },
+  { name: 'Crédito Aprovado',      order: 3, color: '#10b981' },
+  { name: 'Vistoria do Imóvel',    order: 4, color: '#8b5cf6' },
+  { name: 'Análise Jurídica',      order: 5, color: '#f97316' },
+  { name: 'Registro em Cartório',  order: 6, color: '#ef4444' },
+  { name: 'Pagamento ao Vendedor', order: 7, color: '#059669' },
+];
+
+/** Funil "Em contratação" de um setor — cria com as 7 etapas padrão se faltar.
+ *  Financiamento Habitacional usa o "Em contratação" que já existe; Home Equity
+ *  ganha o seu ("Em contratação Home Equity"). */
+async function getOrCreateContractingPipeline(accountId: string, name: string, departmentId?: string | null) {
+  return getOrCreateNamedPipeline(accountId, name, departmentId, '#3b82f6', CONTRACTING_STAGES);
 }
 
 const createLeadSchema = z.object({
@@ -547,7 +580,10 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
 
     // ── Auditoria de mudança de estágio ──────────────────────────────────────
     try {
-      const newStage = await prisma.stage.findUnique({ where: { id: req.body.stageId }, include: { pipeline: true } });
+      const newStage = await prisma.stage.findUnique({
+        where: { id: req.body.stageId },
+        include: { pipeline: { include: { department: { select: { id: true, name: true } } } } },
+      });
       const userName = req.user!.id
         ? (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário'
         : 'Usuário';
@@ -559,12 +595,32 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
         runAutomations({ accountId: req.user!.accountId, trigger: 'STAGE_CHANGE', leadId: req.params.id, io: (req as any).app.get('io'), context: { newStageId: req.body.stageId } }).catch(() => {});
       }
 
-      // ── Auto-migração: se movido para "Fechado" no pipeline "Vendas" ────────
-      if (newStage?.name === 'Fechado' && newStage.pipeline.name === 'Vendas') {
-        const emContratacao = await prisma.pipeline.findFirst({
-          where: { accountId: req.user!.accountId, name: 'Em contratação' },
-          include: { stages: { orderBy: { order: 'asc' } } },
-        });
+      // ── Auto-migração ao entrar na etapa "Fechado" ─────────────────────────
+      // Financiamento Habitacional: "Fechado" no funil "Vendas" → "Em contratação"
+      //   (funil que já existe; não cria).
+      // Home Equity: "Fechado" no funil do setor → "Em contratação Home Equity"
+      //   (cria com as 7 etapas padrão se ainda não existir).
+      // Nos dois casos, avisa o time do setor com um popup (evento
+      // "contracting_lead") — o cliente chegou pra contratação.
+      if (newStage?.name === 'Fechado') {
+        const srcPipe = newStage.pipeline;
+        const srcDeptName = srcPipe.department?.name || null;
+        let emContratacao: Awaited<ReturnType<typeof getOrCreateContractingPipeline>> | null = null;
+        let recipientDeptId: string | null = null;
+
+        if (srcPipe.name === 'Vendas') {
+          emContratacao = await prisma.pipeline.findFirst({
+            where: { accountId: req.user!.accountId, name: 'Em contratação' },
+            include: { stages: { orderBy: { order: 'asc' } } },
+          });
+          recipientDeptId = srcPipe.departmentId
+            ?? (await prisma.department.findFirst({ where: { accountId: req.user!.accountId, name: 'Financiamento Habitacional' }, select: { id: true } }))?.id
+            ?? null;
+        } else if (srcDeptName === 'Home Equity') {
+          emContratacao = await getOrCreateContractingPipeline(req.user!.accountId, 'Em contratação Home Equity', srcPipe.departmentId);
+          recipientDeptId = srcPipe.departmentId ?? null;
+        }
+
         const targetStage = emContratacao?.stages.find(s => s.name === 'Documentação Recebida') || emContratacao?.stages[0];
         if (emContratacao && targetStage) {
           const movedLead = await prisma.lead.update({
@@ -574,7 +630,7 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
               stageId: targetStage.id,
               notes: {
                 create: {
-                  content: `Lead migrado automaticamente para o funil "Em contratação" (${targetStage.name}) ao ser fechado em Vendas.`,
+                  content: `Lead migrado automaticamente para o funil "${emContratacao.name}" (${targetStage.name}) ao ser fechado em ${srcPipe.name}.`,
                   type: 'STAGE_CHANGE',
                   userId: req.user!.id,
                 },
@@ -583,7 +639,21 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
           });
           const io = (req as any).app.get('io');
           if (io) io.to(`account_${req.user!.accountId}`).emit('lead_moved', { lead: movedLead });
-          console.log(`[Auto-migração] Lead "${movedLead.name}" movido → Em contratação (${targetStage.name})`);
+          console.log(`[Auto-migração] Lead "${movedLead.name}" movido → ${emContratacao.name} (${targetStage.name})`);
+
+          // Popup pro time do setor: chegou cliente pra contratação.
+          if (io) {
+            const recipients = recipientDeptId
+              ? await prisma.user.findMany({ where: { accountId: req.user!.accountId, departmentIds: { has: recipientDeptId } }, select: { id: true } })
+              : await prisma.user.findMany({ where: { accountId: req.user!.accountId, role: 'ADMIN' }, select: { id: true } });
+            for (const u of recipients) {
+              io.to(`user_${u.id}`).emit('contracting_lead', {
+                leadId: movedLead.id,
+                leadName: movedLead.name,
+                pipelineName: emContratacao.name,
+              });
+            }
+          }
         }
       }
     } catch (migErr) {

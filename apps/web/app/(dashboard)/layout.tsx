@@ -5,6 +5,7 @@ import { Sidebar } from '@/components/ui/sidebar';
 import { ToastContainer } from '@/components/ui/toast';
 import { toast } from '@/components/ui/toast';
 import { GoogleDriveAlert } from '@/components/ui/google-drive-alert';
+import { ContractingLeadAlert } from '@/components/ui/contracting-lead-alert';
 import { useAuthStore } from '@/store/auth.store';
 import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
@@ -107,12 +108,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       toast(`A IA encerrou o atendimento de ${leadName || 'um cliente'} — o cliente pediu para falar com alguém. Confira a conversa na Inbox.`, 'warning');
     }
 
+    // contracting_lead — cliente fechado entrou no funil de contratação. Só
+    // toca o som aqui; o popup com os links é o <ContractingLeadAlert />.
+    function onContractingLead() { triggerSound(); }
+
     socket.on('new_notification', onNewNotification);
     socket.on('ai_handoff', onAiHandoff);
+    socket.on('contracting_lead', onContractingLead);
 
     return () => {
       socket.off('new_notification', onNewNotification);
       socket.off('ai_handoff', onAiHandoff);
+      socket.off('contracting_lead', onContractingLead);
     };
   }, []);
 
@@ -124,6 +131,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       </main>
       <ToastContainer />
       <GoogleDriveAlert />
+      <ContractingLeadAlert />
     </div>
   );
 }
