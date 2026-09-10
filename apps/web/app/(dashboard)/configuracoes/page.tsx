@@ -1408,7 +1408,7 @@ function ReorganizeArchiveButton() {
 }
 
 function GoogleDriveTab() {
-  const [status, setStatus] = useState<{ connected: boolean; email: string | null; rootFolderId: string | null; rootFolderName: string | null; configured: boolean } | null>(null);
+  const [status, setStatus] = useState<{ connected: boolean; email: string | null; rootFolderId: string | null; rootFolderName: string | null; whatsappAttachmentsFolderId: string | null; whatsappAttachmentsFolderName: string | null; configured: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   // navegação de pastas para escolher a raiz
   const [browsing, setBrowsing] = useState(false);
@@ -1417,6 +1417,9 @@ function GoogleDriveTab() {
   const [loadingFolders, setLoadingFolders] = useState(false);
   const [folderLinkInput, setFolderLinkInput] = useState('');
   const [settingByLink, setSettingByLink] = useState(false);
+  // pasta dos anexos do WhatsApp (opcional)
+  const [attFolderLink, setAttFolderLink] = useState('');
+  const [savingAttFolder, setSavingAttFolder] = useState(false);
 
   async function loadStatus() {
     try { const { data } = await api.get('/api/google/status'); setStatus(data); }
@@ -1500,6 +1503,35 @@ function GoogleDriveTab() {
     }
   }
 
+  async function handleSetAttachmentsFolder() {
+    if (!attFolderLink.trim()) return;
+    setSavingAttFolder(true);
+    try {
+      const { data } = await api.post('/api/google/whatsapp-attachments-folder', { folderLink: attFolderLink.trim() });
+      setAttFolderLink('');
+      loadStatus();
+      toast(`Anexos do WhatsApp vão pra: ${data.folderName}`);
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Não consegui usar esse link — confira se a conta conectada tem acesso à pasta', 'error');
+    } finally {
+      setSavingAttFolder(false);
+    }
+  }
+
+  async function handleClearAttachmentsFolder() {
+    if (!confirm('Voltar ao padrão? Os anexos passam a cair em "<pasta-raiz>/WhatsApp — arquivo automático/<nome do cliente>".')) return;
+    setSavingAttFolder(true);
+    try {
+      await api.post('/api/google/whatsapp-attachments-folder', {});
+      loadStatus();
+      toast('Pasta de anexos removida — voltou ao padrão.');
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao limpar', 'error');
+    } finally {
+      setSavingAttFolder(false);
+    }
+  }
+
   if (loading) return <p className="text-sm text-slate-400 py-6 text-center">Carregando...</p>;
 
   if (status && !status.configured) {
@@ -1580,9 +1612,54 @@ function GoogleDriveTab() {
                 <div className="border-t border-af-border pt-4">
                   <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Anexos do WhatsApp</p>
                   <p className="text-xs text-slate-400 mb-2">
-                    Fotos e documentos recebidos/enviados agora sobem direto para o Drive (não ficam guardados no banco).
-                    Use o botão abaixo uma vez para arquivar os que já estavam salvos de antes.
+                    Fotos e documentos recebidos/enviados sobem direto para o Drive (não ficam guardados no banco).
+                    Arquivo de <strong>grupo</strong> não sobe sozinho — só manualmente pelo assistente. Use o botão
+                    abaixo uma vez para arquivar os que já estavam salvos de antes.
                   </p>
+
+                  <div className="bg-slate-50 border border-af-border rounded-lg p-3 mb-3">
+                    <p className="text-xs font-medium text-slate-600 mb-1">Pasta de destino</p>
+                    {status.whatsappAttachmentsFolderName ? (
+                      <p className="text-xs text-slate-500 mb-2">
+                        Cada anexo cai em{' '}
+                        <span className="inline-flex items-center gap-1 text-slate-700 font-medium">
+                          <FolderOpen size={13} className="text-af-mid" /> {status.whatsappAttachmentsFolderName}
+                        </span>{' '}
+                        <span className="text-slate-400">/ &lt;telefone do cliente&gt; / arquivo</span> (telefone = DDD + número, sem o 55).
+                      </p>
+                    ) : (
+                      <p className="text-xs text-slate-500 mb-2">
+                        Padrão: <span className="text-slate-700">{status.rootFolderName} / WhatsApp — arquivo automático / &lt;nome do cliente&gt;</span>.
+                        Cole abaixo o link de uma pasta pra mandar tudo pra lá, com uma subpasta por telefone do cliente.
+                      </p>
+                    )}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <input
+                        value={attFolderLink}
+                        onChange={(e) => setAttFolderLink(e.target.value)}
+                        placeholder="Cole o link da pasta do Drive"
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-af-border flex-1 min-w-[200px] focus:outline-none focus:ring-1 focus:ring-af-accent"
+                      />
+                      <button
+                        onClick={handleSetAttachmentsFolder}
+                        disabled={!attFolderLink.trim() || savingAttFolder}
+                        className="text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50"
+                        style={{ backgroundColor: '#2261a8' }}
+                      >
+                        {savingAttFolder ? 'Salvando…' : 'Usar esta pasta'}
+                      </button>
+                      {status.whatsappAttachmentsFolderName && (
+                        <button
+                          onClick={handleClearAttachmentsFolder}
+                          disabled={savingAttFolder}
+                          className="text-xs px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Voltar ao padrão
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
                   <ArchiveOldAttachmentsButton />
               <ReorganizeArchiveButton />
                 </div>

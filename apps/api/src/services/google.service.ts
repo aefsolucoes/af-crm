@@ -104,6 +104,8 @@ export async function getGoogleStatus(accountId: string) {
     email: conn?.email || null,
     rootFolderId: conn?.rootFolderId || null,
     rootFolderName: conn?.rootFolderName || null,
+    whatsappAttachmentsFolderId: conn?.whatsappAttachmentsFolderId || null,
+    whatsappAttachmentsFolderName: conn?.whatsappAttachmentsFolderName || null,
     configured: isGoogleConfigured(),
   };
 }
@@ -116,6 +118,15 @@ export async function setRootFolder(accountId: string, folderId: string, folderN
   await prisma.googleConnection.update({
     where: { accountId },
     data: { rootFolderId: folderId, rootFolderName: folderName },
+  });
+}
+
+/** Define (ou limpa, passando null) a pasta pra onde vão os anexos do WhatsApp.
+ *  Com ela definida, cada anexo cai em <pasta>/<telefone do cliente>/arquivo. */
+export async function setWhatsAppAttachmentsFolder(accountId: string, folderId: string | null, folderName: string | null) {
+  await prisma.googleConnection.update({
+    where: { accountId },
+    data: { whatsappAttachmentsFolderId: folderId, whatsappAttachmentsFolderName: folderName },
   });
 }
 
@@ -566,8 +577,51 @@ export async function reorganizeWhatsAppArchive(
 /** Pasta técnica onde TODO anexo de WhatsApp é guardado (auto-upload e
  *  arquivamento periódico usam a mesma). Fica separada de propósito: a
  *  organização manual do usuário na pasta-raiz (ex.: "1. LEADS ATIVOS",
- *  "3. CONCLUIDOS") nunca deve ser poluída com uma pasta por cliente. */
+ *  "3. CONCLUIDOS") nunca deve ser poluída com uma pasta por cliente.
+ *  Só usada quando NÃO há uma pasta de anexos escolhida (conn
+ *  .whatsappAttachmentsFolderId) — ver resolveAttachmentParentFolder. */
 const WHATSAPP_ARCHIVE_FOLDER = 'WhatsApp — arquivo automático';
+
+type LeadFolderInfo = {
+  name: string | null;
+  customFields?: unknown;
+  contact?: { phone: string | null; whatsappPhone: string | null } | null;
+};
+
+/** Telefone do cliente pronto pra virar nome de pasta: DDD + número, só
+ *  dígitos, SEM o DDI 55 (ex.: "5561999998888" → "61999998888"). Null quando o
+ *  lead não tem telefone utilizável (grupo de WhatsApp, lead criado à mão sem
+ *  número) — nesse caso o chamador usa o nome do cliente. */
+function leadPhoneFolderName(lead: LeadFolderInfo): string | null {
+  const cf = (lead.customFields || {}) as Record<string, unknown>;
+  const raw = String(cf.telefone_1 || lead.contact?.whatsappPhone || lead.contact?.phone || '').replace(/\D/g, '');
+  if (!raw) return null;
+  let d = raw;
+  if (d.length >= 12 && d.startsWith('55')) d = d.slice(2); // tira o DDI
+  if (d.length < 10 || d.length > 11) return null; // não parece DDD + número
+  return d;
+}
+
+/** Pasta-pai onde um anexo de WhatsApp deve ser guardado no Drive.
+ *  - Com pasta de anexos escolhida (conn.whatsappAttachmentsFolderId):
+ *    <essa pasta>/<telefone do cliente, ou o nome se não houver telefone>.
+ *  - Sem ela: <raiz>/WhatsApp — arquivo automático/<nome do cliente>
+ *    (comportamento antigo).
+ *  Auto-upload e rede de segurança chamam ESTA função — os dois precisam
+ *  escrever no mesmo lugar, senão os arquivos de um cliente se espalham. */
+async function resolveAttachmentParentFolder(
+  accountId: string,
+  conn: { rootFolderId: string | null; whatsappAttachmentsFolderId: string | null },
+  lead: LeadFolderInfo,
+): Promise<string> {
+  const nameFallback = (lead.name || 'Sem nome').trim() || 'Sem nome';
+  if (conn.whatsappAttachmentsFolderId) {
+    const sub = leadPhoneFolderName(lead) || nameFallback;
+    return (await createFolder(accountId, sub, conn.whatsappAttachmentsFolderId)).id;
+  }
+  const archiveRoot = await createFolder(accountId, WHATSAPP_ARCHIVE_FOLDER, conn.rootFolderId!);
+  return (await createFolder(accountId, nameFallback, archiveRoot.id)).id;
+}
 
 /** Espera entre tentativas do auto-upload (ms) — só usado dentro de
  *  autoUploadAttachmentToDrive, pra dar tempo de uma falha passageira (rede,
@@ -582,9 +636,16 @@ export async function autoUploadAttachmentToDrive(accountId: string, leadId: str
 
   const [att, lead] = await Promise.all([
     prisma.messageAttachment.findUnique({ where: { id: attachmentId } }),
-    prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } }),
+    prisma.lead.findUnique({
+      where: { id: leadId },
+      select: { name: true, isGroup: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } } },
+    }),
   ]);
   if (!att || !att.data || att.driveFileId) return;
+  // Arquivo de GRUPO não sobe sozinho — o Fabio pediu que grupo só vá pro Drive
+  // manualmente (botão/assistente de organizar). Os bytes ficam no banco; a
+  // rede de segurança (archiveOldAttachmentsAutomatic) também pula grupo.
+  if (lead?.isGroup) return;
 
   // Achado ao vivo em 2026-09-04: um anexo (cliente "Corretor Daniel") nunca
   // chegou a subir pro Drive e não sobrou nem rastro de erro visível — provável
@@ -596,16 +657,15 @@ export async function autoUploadAttachmentToDrive(accountId: string, leadId: str
   let lastErr: unknown;
   for (let attempt = 1; attempt <= AUTO_UPLOAD_RETRY_DELAYS_MS.length + 1; attempt++) {
     try {
-      // Dentro da pasta técnica, uma subpasta por cliente. Antes isso criava a
-      // pasta do cliente DIRETO na raiz, misturando centenas de pastas com a
-      // organização manual do usuário — nunca chegou a rodar em produção assim.
-      const archiveRoot = await createFolder(accountId, WHATSAPP_ARCHIVE_FOLDER, conn.rootFolderId);
-      const folder = await createFolder(accountId, (lead?.name || 'Sem nome').trim() || 'Sem nome', archiveRoot.id);
+      // Onde guardar: <pasta de anexos>/<telefone do cliente> se configurada;
+      // senão <raiz>/WhatsApp — arquivo automático/<nome>. Ver
+      // resolveAttachmentParentFolder.
+      const parentId = await resolveAttachmentParentFolder(accountId, conn, lead ?? { name: null });
       const up = await uploadFile(accountId, {
         name: att.fileName,
         mimeType: att.mimeType,
         data: Buffer.from(att.data),
-        parentId: folder.id,
+        parentId,
       });
       await prisma.messageAttachment.update({
         where: { id: att.id },
@@ -640,14 +700,18 @@ export async function bulkArchiveOldAttachments(accountId: string): Promise<{ ar
     orderBy: { createdAt: 'asc' },
   });
   const leadIds = [...new Set(attachments.map(a => a.leadId))];
-  const leads = await prisma.lead.findMany({ where: { id: { in: leadIds } }, select: { id: true, name: true } });
-  const leadNames = new Map(leads.map(l => [l.id, l.name]));
+  const leads = await prisma.lead.findMany({
+    where: { id: { in: leadIds } },
+    select: { id: true, name: true, isGroup: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } } },
+  });
+  const leadById = new Map(leads.map(l => [l.id, l]));
 
-  const byLead = new Map<string, { name: string; items: typeof attachments }>();
+  const byLead = new Map<string, { lead: typeof leads[number]; items: typeof attachments }>();
   for (const att of attachments) {
-    const name = leadNames.get(att.leadId);
-    if (!name) continue; // lead pode ter sido excluído
-    if (!byLead.has(att.leadId)) byLead.set(att.leadId, { name, items: [] as any });
+    const lead = leadById.get(att.leadId);
+    if (!lead) continue;       // lead pode ter sido excluído
+    if (lead.isGroup) continue; // grupo não sobe sozinho (só manualmente)
+    if (!byLead.has(att.leadId)) byLead.set(att.leadId, { lead, items: [] as any });
     byLead.get(att.leadId)!.items.push(att);
   }
 
@@ -655,12 +719,12 @@ export async function bulkArchiveOldAttachments(accountId: string): Promise<{ ar
   let errors = 0;
   for (const [, group] of byLead) {
     try {
-      const folder = await createFolder(accountId, (group.name || 'Sem nome').trim() || 'Sem nome', conn.rootFolderId);
+      const folderId = await resolveAttachmentParentFolder(accountId, conn, group.lead);
       for (const att of group.items) {
         if (!att.data) continue;
         try {
           const up = await uploadFile(accountId, {
-            name: att.fileName, mimeType: att.mimeType, data: Buffer.from(att.data), parentId: folder.id,
+            name: att.fileName, mimeType: att.mimeType, data: Buffer.from(att.data), parentId: folderId,
           });
           await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
           archived++;
@@ -693,12 +757,22 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
   // segurança tem que recolher, não algo pra segurar por um mês. Segurar 30 dias
   // foi o que deixou o disco encher duas vezes.
   const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+
+  // Grupo não sobe sozinho (só manualmente) — tira da jogada logo na query pra
+  // não ocupar as 200 vagas por rodada com anexo que nunca vai ser arquivado.
+  const groupLeadIds = (await prisma.lead.findMany({ where: { isGroup: true }, select: { id: true } })).map((l) => l.id);
+
   // Sem `data` aqui de propósito: carregar os bytes de 200 anexos de uma vez
   // estourava a memória do container (arquivo grande × 200) e o arquivamento
   // simplesmente não rodava — justo quando o disco mais precisava dele. Os bytes
   // são lidos um a um dentro do laço.
   const attachments = await prisma.messageAttachment.findMany({
-    where: { driveFileId: null, NOT: { data: null }, createdAt: { lt: cutoff } },
+    where: {
+      driveFileId: null,
+      NOT: { data: null },
+      createdAt: { lt: cutoff },
+      ...(groupLeadIds.length ? { leadId: { notIn: groupLeadIds } } : {}),
+    },
     orderBy: { createdAt: 'asc' },
     select: { id: true, leadId: true, fileName: true, mimeType: true },
     take: 200, // por execução — evita rodadas gigantes de uma vez
@@ -706,30 +780,32 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
   if (!attachments.length) return { archived: 0, errors: 0 };
 
   const leadIds = [...new Set(attachments.map(a => a.leadId))];
-  const leads = await prisma.lead.findMany({ where: { id: { in: leadIds } }, select: { id: true, name: true } });
-  const leadNames = new Map(leads.map(l => [l.id, l.name]));
+  const leads = await prisma.lead.findMany({
+    where: { id: { in: leadIds } },
+    select: { id: true, name: true, isGroup: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } } },
+  });
+  const leadById = new Map(leads.map(l => [l.id, l]));
 
-  const techFolder = await createFolder(accountId, WHATSAPP_ARCHIVE_FOLDER, conn.rootFolderId);
-  // Subpasta por cliente, MESMA estrutura do auto-upload (autoUploadAttachment
-  // ToDrive) — os dois caminhos escrevem na mesma pasta técnica, então tinham
-  // que concordar. Antes aqui era arquivo solto com o nome do cliente no
-  // prefixo, e lá era subpasta: a pasta técnica ficava com os dois formatos
-  // misturados. Cache por lead pra não repetir a busca de pasta no Drive a
-  // cada anexo do mesmo cliente dentro da mesma rodada.
+  // Cache por lead pra não repetir a busca/criação de pasta no Drive a cada
+  // anexo do mesmo cliente dentro da mesma rodada. O destino real (pasta de
+  // anexos + telefone, ou pasta técnica + nome) sai do resolveAttachmentParent
+  // Folder — MESMA regra do auto-upload, senão os arquivos de um cliente se
+  // espalham entre dois lugares.
   const leadFolderIds = new Map<string, string>();
-  async function folderForLead(leadId: string, leadName: string): Promise<string> {
+  async function folderForLead(leadId: string): Promise<string> {
     const cached = leadFolderIds.get(leadId);
     if (cached) return cached;
-    const f = await createFolder(accountId, leadName, techFolder.id);
-    leadFolderIds.set(leadId, f.id);
-    return f.id;
+    const lead = leadById.get(leadId) ?? { name: null };
+    const id = await resolveAttachmentParentFolder(accountId, conn!, lead);
+    leadFolderIds.set(leadId, id);
+    return id;
   }
 
   let archived = 0;
   let errors = 0;
   for (const att of attachments) {
     try {
-      const leadName = (leadNames.get(att.leadId) || 'Sem nome').trim() || 'Sem nome';
+      if (leadById.get(att.leadId)?.isGroup) continue; // trava extra (a query já filtra)
       // Lê os bytes só deste anexo, agora — mantém a memória constante por
       // rodada, independente do tamanho do lote.
       const withData = await prisma.messageAttachment.findUnique({
@@ -741,7 +817,7 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
         name: att.fileName,
         mimeType: att.mimeType,
         data: Buffer.from(withData.data),
-        parentId: await folderForLead(att.leadId, leadName),
+        parentId: await folderForLead(att.leadId),
       });
       await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
       archived++;

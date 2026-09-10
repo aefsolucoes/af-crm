@@ -503,6 +503,11 @@ model GoogleConnection {
   expiresAt      DateTime?
   rootFolderId   String? // pasta-raiz onde ficam as pastas dos clientes
   rootFolderName String?
+  // Pasta pra onde vão os anexos do WhatsApp (auto-upload). Definida =
+  // <esta pasta>/<telefone do cliente, DDD+número sem DDI>/arquivo. Vazia =
+  // comportamento antigo (<raiz>/WhatsApp — arquivo automático/<nome>/arquivo).
+  whatsappAttachmentsFolderId   String?
+  whatsappAttachmentsFolderName String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 }

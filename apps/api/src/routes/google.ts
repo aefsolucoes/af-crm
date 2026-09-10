@@ -2,7 +2,7 @@ import { Router, Response, Request } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import {
   getAuthUrl, handleOAuthCallback, getGoogleStatus, disconnectGoogle,
-  listFolders, setRootFolder, createFolder, isGoogleConfigured, bulkArchiveOldAttachments,
+  listFolders, setRootFolder, setWhatsAppAttachmentsFolder, createFolder, isGoogleConfigured, bulkArchiveOldAttachments,
   reorganizeWhatsAppArchive,
   getFolderName, extractFolderId, moveDriveItem,
 } from '../services/google.service';
@@ -104,6 +104,29 @@ router.post('/root-folder', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao definir a pasta-raiz' });
+  }
+});
+
+// Define a pasta pra onde vão os anexos do WhatsApp (auto-upload). Com ela:
+// <pasta>/<telefone do cliente, DDD+número sem DDI>/arquivo. Aceita folderLink
+// (link colado) ou folderId; string vazia / null limpa (volta ao padrão
+// <raiz>/WhatsApp — arquivo automático/<nome>). Grupo nunca sobe sozinho.
+router.post('/whatsapp-attachments-folder', async (req: AuthRequest, res: Response) => {
+  try {
+    const { folderId, folderLink } = req.body as { folderId?: string; folderLink?: string };
+    const accountId = req.user!.accountId;
+    const rawLink = (folderLink ?? '').trim();
+    const rawId = (folderId ?? '').trim();
+    if (!rawLink && !rawId) {
+      await setWhatsAppAttachmentsFolder(accountId, null, null);
+      return res.json({ success: true, cleared: true });
+    }
+    const id = rawLink ? extractFolderId(rawLink) : rawId;
+    const name = await getFolderName(accountId, id); // valida acesso — lança se não conseguir ver a pasta
+    await setWhatsAppAttachmentsFolder(accountId, id, name);
+    res.json({ success: true, folderId: id, folderName: name });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao definir a pasta dos anexos' });
   }
 });
 
