@@ -49,6 +49,11 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
     });
   }
   function clearSelection() { setSelectedLeadIds(new Set()); }
+  // "Selecionar tudo" — todos os leads que estão na tela do funil atual
+  // (durante busca, `leads` é cross-funil; sem busca, só os deste funil).
+  const allVisibleLeadIds = leads.map((l) => l.id);
+  function selectAll() { setSelectedLeadIds(new Set(allVisibleLeadIds)); }
+  const allSelected = allVisibleLeadIds.length > 0 && selectedLeadIds.size >= allVisibleLeadIds.length;
   // Some com a seleção ao trocar de funil (ids não valem no outro).
   useEffect(() => { clearSelection(); }, [pipeline.id]);
 
@@ -266,18 +271,30 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
       />
 
       {/* Barra flutuante de seleção em massa */}
-      {selectedLeadIds.size > 0 && (
+      {!isSearching && allVisibleLeadIds.length > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-af-navy text-white rounded-full shadow-xl px-5 py-2.5">
-          <span className="text-sm font-medium">{selectedLeadIds.size} selecionado(s)</span>
-          <button
-            onClick={() => setBulkMoveOpen(true)}
-            className="flex items-center gap-1.5 text-sm font-semibold bg-white text-af-navy px-3 py-1.5 rounded-full hover:bg-slate-100 transition-colors"
-          >
-            <Shuffle size={13} /> Mover
-          </button>
-          <button onClick={clearSelection} className="text-sm text-white/70 hover:text-white transition-colors">
-            Limpar
-          </button>
+          {selectedLeadIds.size > 0 && <span className="text-sm font-medium">{selectedLeadIds.size} selecionado(s)</span>}
+          {!allSelected && (
+            <button
+              onClick={selectAll}
+              className="flex items-center gap-1.5 text-sm font-medium text-white/90 hover:text-white transition-colors"
+            >
+              <Check size={13} /> Selecionar tudo ({allVisibleLeadIds.length})
+            </button>
+          )}
+          {selectedLeadIds.size > 0 && (
+            <>
+              <button
+                onClick={() => setBulkMoveOpen(true)}
+                className="flex items-center gap-1.5 text-sm font-semibold bg-white text-af-navy px-3 py-1.5 rounded-full hover:bg-slate-100 transition-colors"
+              >
+                <Shuffle size={13} /> Mover
+              </button>
+              <button onClick={clearSelection} className="text-sm text-white/70 hover:text-white transition-colors">
+                Limpar
+              </button>
+            </>
+          )}
         </div>
       )}
 
