@@ -49,11 +49,18 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
     });
   }
   function clearSelection() { setSelectedLeadIds(new Set()); }
-  // "Selecionar tudo" — todos os leads que estão na tela do funil atual
-  // (durante busca, `leads` é cross-funil; sem busca, só os deste funil).
-  const allVisibleLeadIds = leads.map((l) => l.id);
-  function selectAll() { setSelectedLeadIds(new Set(allVisibleLeadIds)); }
-  const allSelected = allVisibleLeadIds.length > 0 && selectedLeadIds.size >= allVisibleLeadIds.length;
+  // "Selecionar todos desta etapa" — marca/desmarca de uma vez só os cards de
+  // UMA coluna (não do funil inteiro). Se já estão todos marcados, desmarca;
+  // senão, marca todos.
+  function toggleStageSelection(stageLeadIds: string[]) {
+    if (stageLeadIds.length === 0) return;
+    setSelectedLeadIds((prev) => {
+      const next = new Set(prev);
+      const allIn = stageLeadIds.every((id) => next.has(id));
+      stageLeadIds.forEach((id) => (allIn ? next.delete(id) : next.add(id)));
+      return next;
+    });
+  }
   // Some com a seleção ao trocar de funil (ids não valem no outro).
   useEffect(() => { clearSelection(); }, [pipeline.id]);
 
@@ -205,6 +212,7 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
                 onOpenLead={(leadId) => setOpenLeadId(leadId)}
                 selectedLeadIds={selectedLeadIds}
                 onToggleSelect={toggleLeadSelect}
+                onToggleStageSelection={toggleStageSelection}
               />
             ))}
           </SortableContext>
@@ -270,31 +278,21 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
         onClose={() => { setOpenLeadId(null); onRefresh(); }}
       />
 
-      {/* Barra flutuante de seleção em massa */}
-      {!isSearching && allVisibleLeadIds.length > 0 && (
+      {/* Barra flutuante de seleção em massa — aparece quando há algo marcado.
+          A seleção agora é por etapa (checkbox no topo de cada coluna) ou card
+          a card; não existe mais "selecionar tudo do funil". */}
+      {!isSearching && selectedLeadIds.size > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-af-navy text-white rounded-full shadow-xl px-5 py-2.5">
-          {selectedLeadIds.size > 0 && <span className="text-sm font-medium">{selectedLeadIds.size} selecionado(s)</span>}
-          {!allSelected && (
-            <button
-              onClick={selectAll}
-              className="flex items-center gap-1.5 text-sm font-medium text-white/90 hover:text-white transition-colors"
-            >
-              <Check size={13} /> Selecionar tudo ({allVisibleLeadIds.length})
-            </button>
-          )}
-          {selectedLeadIds.size > 0 && (
-            <>
-              <button
-                onClick={() => setBulkMoveOpen(true)}
-                className="flex items-center gap-1.5 text-sm font-semibold bg-white text-af-navy px-3 py-1.5 rounded-full hover:bg-slate-100 transition-colors"
-              >
-                <Shuffle size={13} /> Mover
-              </button>
-              <button onClick={clearSelection} className="text-sm text-white/70 hover:text-white transition-colors">
-                Limpar
-              </button>
-            </>
-          )}
+          <span className="text-sm font-medium">{selectedLeadIds.size} selecionado(s)</span>
+          <button
+            onClick={() => setBulkMoveOpen(true)}
+            className="flex items-center gap-1.5 text-sm font-semibold bg-white text-af-navy px-3 py-1.5 rounded-full hover:bg-slate-100 transition-colors"
+          >
+            <Shuffle size={13} /> Mover
+          </button>
+          <button onClick={clearSelection} className="text-sm text-white/70 hover:text-white transition-colors">
+            Limpar
+          </button>
         </div>
       )}
 

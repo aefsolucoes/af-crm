@@ -7,8 +7,8 @@ import { CSS } from '@dnd-kit/utilities';
 import { Stage, Lead } from '@/types';
 import { KanbanCard } from './kanban-card';
 import { ColorSwatches } from './color-swatches';
-import { formatCurrency } from '@/lib/utils';
-import { Plus, GripVertical, Trash2 } from 'lucide-react';
+import { formatCurrency, cn } from '@/lib/utils';
+import { Plus, GripVertical, Trash2, Check, Minus } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 
@@ -27,6 +27,8 @@ interface KanbanColumnProps {
   onOpenLead: (leadId: string) => void;
   selectedLeadIds?: Set<string>;
   onToggleSelect?: (leadId: string) => void;
+  /** Marca/desmarca de uma vez todos os cards DESTA etapa. */
+  onToggleStageSelection?: (stageLeadIds: string[]) => void;
 }
 
 const STAGE_DESCRIPTIONS: Record<string, string> = {
@@ -55,8 +57,14 @@ const STAGE_DESCRIPTIONS: Record<string, string> = {
   'Pagamento ao Vendedor':   'Transferência liberada — negócio concluído',
 };
 
-export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLeadIds, onToggleSelect }: KanbanColumnProps) {
+export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLeadIds, onToggleSelect, onToggleStageSelection }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
+
+  // Seleção em massa por etapa — checkbox no cabeçalho da coluna.
+  const stageLeadIds = leads.map((l) => l.id);
+  const selectionActive = !!selectedLeadIds && selectedLeadIds.size > 0;
+  const someStageSelected = !!selectedLeadIds && stageLeadIds.some((id) => selectedLeadIds.has(id));
+  const allStageSelected = !!selectedLeadIds && stageLeadIds.length > 0 && stageLeadIds.every((id) => selectedLeadIds.has(id));
   const {
     attributes, listeners, setNodeRef: setColumnRef, transform, transition, isDragging,
   } = useSortable({ id: stageColumnDragId(stage.id), data: { type: 'stage', stageId: stage.id } });
@@ -109,7 +117,7 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLead
   }
 
   return (
-    <div ref={setColumnRef} style={columnStyle} className="flex flex-col w-72 flex-shrink-0 h-full">
+    <div ref={setColumnRef} style={columnStyle} className="group/col flex flex-col w-72 flex-shrink-0 h-full">
       {/* Cabeçalho do estágio — único bloco com o fundo translúcido */}
       <div className="rounded-xl app-column-surface shadow-md px-3 pt-3 pb-2 flex-shrink-0">
         {editing ? (
@@ -139,18 +147,42 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLead
             </button>
           </div>
         ) : (
-          <div className="flex items-center justify-between">
-            <button
-              onClick={openEdit}
-              className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity text-left"
-              title="Editar nome/cor da etapa"
-            >
-              <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: stage.color }} />
-              <span className="text-sm font-bold text-slate-800 truncate">{stage.name}</span>
-              <span className="text-xs bg-slate-200/80 text-slate-600 px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0">
-                {leads.length}
-              </span>
-            </button>
+          <div className="flex items-center justify-between gap-1">
+            <div className="flex items-center gap-1.5 min-w-0">
+              {onToggleStageSelection && leads.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onToggleStageSelection(stageLeadIds)}
+                  title={allStageSelected ? 'Desmarcar todos desta etapa' : 'Selecionar todos desta etapa'}
+                  className={cn(
+                    'w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all bg-white flex-shrink-0',
+                    allStageSelected
+                      ? 'border-af-accent bg-af-accent'
+                      : someStageSelected
+                        ? 'border-af-accent'
+                        : 'border-slate-300 hover:border-af-mid',
+                    !someStageSelected && !selectionActive && 'opacity-0 group-hover/col:opacity-100',
+                  )}
+                >
+                  {allStageSelected ? (
+                    <Check size={12} className="text-white" />
+                  ) : someStageSelected ? (
+                    <Minus size={12} className="text-af-accent" />
+                  ) : null}
+                </button>
+              )}
+              <button
+                onClick={openEdit}
+                className="flex items-center gap-2 min-w-0 hover:opacity-80 transition-opacity text-left"
+                title="Editar nome/cor da etapa"
+              >
+                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: stage.color }} />
+                <span className="text-sm font-bold text-slate-800 truncate">{stage.name}</span>
+                <span className="text-xs bg-slate-200/80 text-slate-600 px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0">
+                  {leads.length}
+                </span>
+              </button>
+            </div>
             <div className="flex items-center gap-0.5 flex-shrink-0">
               <button
                 {...attributes}
