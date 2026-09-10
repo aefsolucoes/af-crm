@@ -116,12 +116,49 @@ function buildButtonsComponent(buttons?: MetaTemplateButtons): Record<string, un
     list.push({ type: 'QUICK_REPLY', text: label });
   }
   if (buttons.url?.text?.trim() && buttons.url?.url?.trim()) {
-    list.push({ type: 'URL', text: buttons.url.text.trim(), url: buttons.url.url.trim() });
+    const url = buttons.url.url.trim();
+    // URL com variável ({{1}} no fim, pra sufixo dinâmico) exige um "example"
+    // com a URL completa — sem isso a Meta rejeita com INVALID_FORMAT, do
+    // mesmo jeito que o corpo. A tela ainda não coleta esse exemplo, então
+    // bloqueia com uma mensagem clara em vez de deixar a Meta recusar.
+    if (url.includes('{{')) {
+      throw new Error('Botão de link com variável ({{1}}) ainda não é suportado aqui — use uma URL fixa.');
+    }
+    list.push({ type: 'URL', text: buttons.url.text.trim(), url });
   }
   if (buttons.phone?.text?.trim() && buttons.phone?.phoneNumber?.trim()) {
     list.push({ type: 'PHONE_NUMBER', text: buttons.phone.text.trim(), phone_number: buttons.phone.phoneNumber.trim() });
   }
   return list.length ? { type: 'BUTTONS', buttons: list } : null;
+}
+
+/**
+ * Monta o "example.body_text" que a Meta exige quando o corpo tem {{1}}, {{2}}…
+ * Sem esse exemplo, TODO template com variável é rejeitado com INVALID_FORMAT.
+ * Valida também que as variáveis são sequenciais (1,2,3… sem pular) e que os
+ * exemplos não têm quebra de linha / espaços demais (a Meta recusa).
+ * Retorna null quando o corpo não tem variável (aí nem manda "example").
+ */
+function buildBodyExample(bodyText: string, rawExamples?: string[]): { body_text: string[][] } | null {
+  const nums = [...bodyText.matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => Number(m[1]));
+  if (nums.length === 0) return null;
+
+  const unique = [...new Set(nums)].sort((a, b) => a - b);
+  const sequential = unique.every((n, i) => n === i + 1);
+  if (!sequential) {
+    throw new Error(`As variáveis do corpo precisam ser {{1}}, {{2}}, {{3}}… em sequência, sem pular número (achei: ${unique.map((n) => `{{${n}}}`).join(', ')}).`);
+  }
+
+  const maxVar = unique[unique.length - 1];
+  const examples = (rawExamples || []).slice(0, maxVar).map((s) => (s ?? '').trim());
+  if (examples.length < maxVar || examples.some((s) => !s)) {
+    throw new Error(`Dê um exemplo pra cada variável do corpo ({{1}}…{{${maxVar}}}) — a Meta rejeita template com variável e sem exemplo (INVALID_FORMAT).`);
+  }
+  const bad = examples.find((s) => /[\n\t]/.test(s) || /\s{5,}/.test(s));
+  if (bad) {
+    throw new Error(`O exemplo "${bad}" tem quebra de linha ou espaços demais — a Meta não aceita isso num exemplo de variável.`);
+  }
+  return { body_text: [examples] };
 }
 
 /** Envia um novo template para aprovação da Meta. Lança erro (Error) com
@@ -136,6 +173,9 @@ export async function createMetaTemplate(accountId: string, params: {
   codeExpirationMinutes?: number;
   /** Botões (MARKETING/UTILITY) — ver buildButtonsComponent. */
   buttons?: MetaTemplateButtons;
+  /** Exemplo de cada variável do corpo ({{1}}, {{2}}…), na ordem. Obrigatório
+   *  quando o corpo tem variável — ver buildBodyExample. */
+  bodyExamples?: string[];
 }, departmentId?: string | null): Promise<any> {
   const config = await getWhatsAppConfig(accountId, departmentId);
   if (!config?.accessToken) throw new Error('Configure o Access Token primeiro (aba API Oficial).');
@@ -155,7 +195,11 @@ export async function createMetaTemplate(accountId: string, params: {
     ];
   } else {
     if (!body?.trim()) throw new Error('Corpo da mensagem é obrigatório para esta categoria.');
-    components = [{ type: 'BODY', text: body.trim() }];
+    const bodyText = body.trim();
+    const bodyComponent: Record<string, unknown> = { type: 'BODY', text: bodyText };
+    const example = buildBodyExample(bodyText, params.bodyExamples);
+    if (example) bodyComponent.example = example;
+    components = [bodyComponent];
     if (footer?.trim()) components.push({ type: 'FOOTER', text: footer.trim() });
     const buttonsComponent = buildButtonsComponent(params.buttons);
     if (buttonsComponent) components.push(buttonsComponent);

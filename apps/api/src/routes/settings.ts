@@ -268,6 +268,10 @@ const templateSchema = z.object({
   // Obrigatório para MARKETING/UTILITY; ignorado em AUTHENTICATION (a Meta
   // gera o texto do código sozinha — não aceita corpo customizado).
   body: z.string().max(1024).optional(),
+  // Exemplo de cada variável {{1}}, {{2}}… do corpo, na ordem. A Meta exige
+  // quando o corpo tem variável (senão rejeita com INVALID_FORMAT). Pode vir
+  // parcial/vazio — a validação de verdade é no createMetaTemplate.
+  bodyExamples: z.array(z.string().max(200)).max(10).optional(),
   footer: z.string().max(60).optional(),
   // Só usado em AUTHENTICATION: minutos até o código expirar (padrão 10).
   codeExpirationMinutes: z.number().int().min(1).max(90).optional(),

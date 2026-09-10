@@ -44,10 +44,17 @@ const META_STATUS_META: Record<string, { label: string; color: string; icon: typ
 };
 const META_EMPTY_FORM = {
   name: '', category: 'UTILITY', language: 'pt_BR', body: '', footer: '', codeExpirationMinutes: '10',
+  bodyExamples: [] as string[],
   quickReply1: '', quickReply2: '', quickReply3: '',
   ctaUrlText: '', ctaUrl: '',
   ctaPhoneText: '', ctaPhoneNumber: '',
 };
+
+/** Números das variáveis {{1}}, {{2}}… que aparecem no texto, em ordem crescente e sem repetir. */
+function bodyVarNumbers(body: string): number[] {
+  const nums = Array.from(body.matchAll(/\{\{\s*(\d+)\s*\}\}/g), (m) => Number(m[1]));
+  return Array.from(new Set(nums)).sort((a, b) => a - b);
+}
 
 function WhatsAppTemplatesTab() {
   const me = useAuthStore((s) => s.user);
@@ -88,6 +95,10 @@ function WhatsAppTemplatesTab() {
   useEffect(() => { load(metaDepartmentId); }, [metaDepartmentId]);
 
   const isAuth = form.category === 'AUTHENTICATION';
+  // Variáveis do corpo ({{1}}, {{2}}…) — a Meta exige um exemplo pra cada.
+  const bodyVars = isAuth ? [] : bodyVarNumbers(form.body);
+  const maxBodyVar = bodyVars.length ? bodyVars[bodyVars.length - 1] : 0;
+  const bodyVarsSequential = bodyVars.every((n, i) => n === i + 1);
 
   async function handleDelete(name: string) {
     if (!confirm(`Excluir o template "${name}"? Ele deixa de poder ser usado — a Meta some com o histórico de aprovação dele.`)) return;
@@ -109,8 +120,22 @@ function WhatsAppTemplatesTab() {
       toast(isAuth ? 'Preencha o nome do template.' : 'Preencha nome e corpo da mensagem.', 'warning');
       return;
     }
+    if (!isAuth && maxBodyVar > 0) {
+      if (!bodyVarsSequential) {
+        toast('As variáveis do corpo precisam ser {{1}}, {{2}}, {{3}}… em sequência, sem pular número.', 'warning');
+        return;
+      }
+      const ex = form.bodyExamples.slice(0, maxBodyVar).map((s) => (s || '').trim());
+      if (ex.length < maxBodyVar || ex.some((s) => !s)) {
+        toast(`Preencha um exemplo para cada variável ({{1}}…{{${maxBodyVar}}}) — a Meta rejeita template com variável sem exemplo.`, 'warning');
+        return;
+      }
+    }
     setSaving(true);
     try {
+      const bodyExamples = (!isAuth && maxBodyVar > 0)
+        ? form.bodyExamples.slice(0, maxBodyVar).map((s) => s.trim())
+        : undefined;
       const quickReplies = [form.quickReply1, form.quickReply2, form.quickReply3].map((s) => s.trim()).filter(Boolean);
       const hasUrl = form.ctaUrlText.trim() && form.ctaUrl.trim();
       const hasPhone = form.ctaPhoneText.trim() && form.ctaPhoneNumber.trim();
@@ -120,6 +145,7 @@ function WhatsAppTemplatesTab() {
         category: form.category,
         language: form.language,
         body: form.body,
+        bodyExamples,
         footer: form.footer,
         codeExpirationMinutes: isAuth ? (parseInt(form.codeExpirationMinutes, 10) || 10) : undefined,
         buttons: hasButtons ? {
@@ -131,7 +157,7 @@ function WhatsAppTemplatesTab() {
       });
       toast('Template enviado para aprovação da Meta!');
       setShowModal(false);
-      setForm(META_EMPTY_FORM);
+      setForm({ ...META_EMPTY_FORM, bodyExamples: [] });
       load(metaDepartmentId);
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao enviar template', 'error');
@@ -275,6 +301,36 @@ function WhatsAppTemplatesTab() {
                     placeholder={'Olá, {{1}}!\n\nSua mensagem aqui...'}
                   />
                 </div>
+
+                {maxBodyVar > 0 && (
+                  <div className="flex flex-col gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                    <div>
+                      <label className="text-sm font-medium text-slate-700">Exemplo de cada variável</label>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        A Meta <strong>exige</strong> um exemplo pra cada {'{{n}}'} — sem isso o template é rejeitado (INVALID_FORMAT).
+                        Serve só pra aprovação, o cliente nunca vê esse valor.
+                      </p>
+                    </div>
+                    {!bodyVarsSequential && (
+                      <p className="text-xs text-red-500">
+                        As variáveis precisam ser {'{{1}}'}, {'{{2}}'}… em sequência, sem pular número.
+                      </p>
+                    )}
+                    {Array.from({ length: maxBodyVar }, (_, i) => (
+                      <Input
+                        key={i}
+                        label={`Exemplo para {{${i + 1}}}`}
+                        value={form.bodyExamples[i] || ''}
+                        onChange={(e) => {
+                          const next = [...form.bodyExamples];
+                          next[i] = e.target.value;
+                          setForm({ ...form, bodyExamples: next });
+                        }}
+                        placeholder={i === 0 ? 'Ex: Fabio' : 'Ex: 10/03'}
+                      />
+                    ))}
+                  </div>
+                )}
 
                 <Input label="Rodapé (opcional)" value={form.footer} onChange={(e) => setForm({ ...form, footer: e.target.value })} placeholder="Ex: A&F Soluções Financeiras" />
 
