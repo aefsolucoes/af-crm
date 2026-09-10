@@ -5,11 +5,12 @@ import {
   DndContext, DragEndEvent, PointerSensor, useSensor, useSensors, closestCorners,
 } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
-import { Plus, X, Check } from 'lucide-react';
+import { Plus, X, Check, Shuffle } from 'lucide-react';
 import { Stage, Lead, Pipeline, Contact, User } from '@/types';
 import { KanbanColumn, stageColumnDragId } from './kanban-column';
 import { LeadModal } from './lead-modal';
 import { LeadDetailModal } from './lead-detail-modal';
+import { BulkMoveModal } from './bulk-move-modal';
 import { StageGateModal } from './stage-gate-modal';
 import { ColorSwatches } from './color-swatches';
 import { randomStageColor } from './stage-colors';
@@ -36,6 +37,20 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
   const [newStageName, setNewStageName] = useState('');
   const [newStageColor, setNewStageColor] = useState(randomStageColor());
   const [savingStage, setSavingStage] = useState(false);
+
+  // Seleção em massa — marcar vários cards e mover todos de uma vez.
+  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
+  function toggleLeadSelect(id: string) {
+    setSelectedLeadIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function clearSelection() { setSelectedLeadIds(new Set()); }
+  // Some com a seleção ao trocar de funil (ids não valem no outro).
+  useEffect(() => { clearSelection(); }, [pipeline.id]);
 
   async function handleCreateStage() {
     const name = newStageName.trim();
@@ -183,6 +198,8 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
                 leads={getLeadsForStage(stage.id)}
                 onAddLead={(stageId) => setAddLeadStageId(stageId)}
                 onOpenLead={(leadId) => setOpenLeadId(leadId)}
+                selectedLeadIds={selectedLeadIds}
+                onToggleSelect={toggleLeadSelect}
               />
             ))}
           </SortableContext>
@@ -247,6 +264,30 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
         leadId={openLeadId}
         onClose={() => { setOpenLeadId(null); onRefresh(); }}
       />
+
+      {/* Barra flutuante de seleção em massa */}
+      {selectedLeadIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-af-navy text-white rounded-full shadow-xl px-5 py-2.5">
+          <span className="text-sm font-medium">{selectedLeadIds.size} selecionado(s)</span>
+          <button
+            onClick={() => setBulkMoveOpen(true)}
+            className="flex items-center gap-1.5 text-sm font-semibold bg-white text-af-navy px-3 py-1.5 rounded-full hover:bg-slate-100 transition-colors"
+          >
+            <Shuffle size={13} /> Mover
+          </button>
+          <button onClick={clearSelection} className="text-sm text-white/70 hover:text-white transition-colors">
+            Limpar
+          </button>
+        </div>
+      )}
+
+      {bulkMoveOpen && (
+        <BulkMoveModal
+          leadIds={Array.from(selectedLeadIds)}
+          onClose={() => setBulkMoveOpen(false)}
+          onMoved={() => { setBulkMoveOpen(false); clearSelection(); onRefresh(); queryClient.invalidateQueries({ queryKey: ['leads'] }); }}
+        />
+      )}
     </>
   );
 }

@@ -25,6 +25,8 @@ interface KanbanColumnProps {
   leads: Lead[];
   onAddLead: (stageId: string) => void;
   onOpenLead: (leadId: string) => void;
+  selectedLeadIds?: Set<string>;
+  onToggleSelect?: (leadId: string) => void;
 }
 
 const STAGE_DESCRIPTIONS: Record<string, string> = {
@@ -53,7 +55,7 @@ const STAGE_DESCRIPTIONS: Record<string, string> = {
   'Pagamento ao Vendedor':   'Transferência liberada — negócio concluído',
 };
 
-export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColumnProps) {
+export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLeadIds, onToggleSelect }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
   const {
     attributes, listeners, setNodeRef: setColumnRef, transform, transition, isDragging,
@@ -167,7 +169,15 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead }: KanbanColu
           }`}
         >
           {leads.map((lead) => (
-            <KanbanCard key={lead.id} lead={lead} labelColor={stage.color} onOpen={onOpenLead} />
+            <KanbanCard
+              key={lead.id}
+              lead={lead}
+              labelColor={stage.color}
+              onOpen={onOpenLead}
+              selected={selectedLeadIds?.has(lead.id)}
+              selectionActive={!!selectedLeadIds && selectedLeadIds.size > 0}
+              onToggleSelect={onToggleSelect}
+            />
           ))}
 
           {/* Adicionar cartão — rola junto com os cards */}

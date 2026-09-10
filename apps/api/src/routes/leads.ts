@@ -82,9 +82,11 @@ async function getOrCreateNamedPipeline(accountId: string, name: string, departm
     const existing = await prisma.pipeline.findFirst({
       where: { accountId, name, departmentId: departmentId ?? null },
       include: { stages: { orderBy: { order: 'asc' } } },
+      orderBy: { id: 'asc' },
     });
     if (existing) return existing;
-    return prisma.pipeline.create({
+
+    const created = await prisma.pipeline.create({
       data: {
         name,
         accountId,
@@ -93,6 +95,30 @@ async function getOrCreateNamedPipeline(accountId: string, name: string, departm
       },
       include: { stages: { orderBy: { order: 'asc' } } },
     });
+
+    // Auto-cura da corrida entre PROCESSOS (a trava por chave acima só vale
+    // dentro de um processo; num redeploy do Railway dois processos podem
+    // criar o mesmo funil ao mesmo tempo — foi o que gerou dois "Perdidos"
+    // no Home Equity). Se sobrou mais de um com esse nome/setor, fica com o
+    // de id mais antigo e apaga os outros que estiverem VAZIOS.
+    const all = await prisma.pipeline.findMany({
+      where: { accountId, name, departmentId: departmentId ?? null },
+      include: { _count: { select: { leads: true } } },
+      orderBy: { id: 'asc' },
+    });
+    if (all.length > 1) {
+      const keep = all[0];
+      for (const extra of all.slice(1)) {
+        if (extra._count.leads === 0) {
+          await prisma.stage.deleteMany({ where: { pipelineId: extra.id } }).catch(() => {});
+          await prisma.pipeline.delete({ where: { id: extra.id } }).catch(() => {});
+        }
+      }
+      if (keep.id !== created.id) {
+        return prisma.pipeline.findUniqueOrThrow({ where: { id: keep.id }, include: { stages: { orderBy: { order: 'asc' } } } });
+      }
+    }
+    return created;
   };
   const previous = namedPipelineLocks.get(key) || Promise.resolve();
   const result = previous.then(run);
@@ -286,6 +312,55 @@ router.get('/find-by-phone', async (req: AuthRequest, res: Response) => {
     });
   } catch {
     res.status(500).json({ error: 'Erro ao buscar por telefone' });
+  }
+});
+
+// ─── POST /api/leads/bulk-move ────────────────────────────────────────────
+// Move VÁRIOS leads de uma vez pra outro funil/estágio (seleção em massa no
+// Kanban). Registrado ANTES de '/:id' pra não ser capturado como id.
+router.post('/bulk-move', async (req: AuthRequest, res: Response) => {
+  try {
+    const { leadIds, pipelineId, stageId } = req.body as { leadIds?: unknown; pipelineId?: string; stageId?: string };
+    const ids = Array.isArray(leadIds) ? leadIds.filter((v): v is string => typeof v === 'string' && v.length > 0) : [];
+    if (!ids.length) return res.status(400).json({ error: 'Nenhum lead selecionado' });
+    if (!pipelineId) return res.status(400).json({ error: 'pipelineId obrigatório' });
+
+    const accountId = req.user!.accountId;
+    const pipeline = await prisma.pipeline.findFirst({
+      where: { id: pipelineId, accountId },
+      include: { stages: { orderBy: { order: 'asc' } } },
+    });
+    if (!pipeline || !pipeline.stages.length) return res.status(404).json({ error: 'Funil ou estágio não encontrado' });
+
+    // Estágio pedido tem que ser DESSE funil; sem pedir, cai no primeiro.
+    const targetStage = stageId
+      ? pipeline.stages.find((s) => s.id === stageId)
+      : pipeline.stages[0];
+    if (!targetStage) return res.status(400).json({ error: 'Estágio não pertence ao funil escolhido' });
+
+    // Só mexe nos leads que são REALMENTE da conta (ignora id inválido/de outra conta em silêncio).
+    const owned = await prisma.lead.findMany({ where: { id: { in: ids }, accountId }, select: { id: true } });
+    const ownedIds = owned.map((l) => l.id);
+    if (!ownedIds.length) return res.status(404).json({ error: 'Nenhum lead válido para mover' });
+
+    const result = await prisma.lead.updateMany({
+      where: { id: { in: ownedIds } },
+      data: { pipelineId: pipeline.id, stageId: targetStage.id },
+    });
+
+    // Auditoria + automação por lead, em segundo plano (não segura a resposta).
+    (async () => {
+      const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário';
+      const io = (req as any).app.get('io');
+      for (const id of ownedIds) {
+        await auditNote(id, req.user!.id, `Movido em massa para o funil "${pipeline.name}" (${targetStage.name}) por ${userName}`, 'STAGE_CHANGE');
+        runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: id, io, context: { newStageId: targetStage.id } }).catch(() => {});
+      }
+    })().catch(() => {});
+
+    res.json({ moved: result.count, pipelineName: pipeline.name, stageName: targetStage.name });
+  } catch {
+    res.status(500).json({ error: 'Erro ao mover os leads' });
   }
 });
 

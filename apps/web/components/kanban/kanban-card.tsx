@@ -4,19 +4,25 @@ import { CSS } from '@dnd-kit/utilities';
 import { Lead } from '@/types';
 import { formatCurrency, formatDate, CHANNEL_COLORS } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
-import { Calendar, MessageCircle, GitMerge } from 'lucide-react';
+import { Calendar, MessageCircle, GitMerge, Check } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { cn } from '@/lib/utils';
 import { MergeModal } from './merge-modal';
 
 interface KanbanCardProps {
   lead: Lead;
   labelColor?: string;
   onOpen: (leadId: string) => void;
+  /** Seleção em massa: marcado, se há alguma seleção ativa (mostra o
+   *  checkbox sempre, não só no hover), e o callback de marcar/desmarcar. */
+  selected?: boolean;
+  selectionActive?: boolean;
+  onToggleSelect?: (leadId: string) => void;
 }
 
-export function KanbanCard({ lead, labelColor, onOpen }: KanbanCardProps) {
+export function KanbanCard({ lead, labelColor, onOpen, selected = false, selectionActive = false, onToggleSelect }: KanbanCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [showMerge, setShowMerge] = useState(false);
@@ -52,7 +58,15 @@ export function KanbanCard({ lead, labelColor, onOpen }: KanbanCardProps) {
   }
 
   function handleCardClick() {
+    // Com seleção em massa ligada, clicar no card marca/desmarca em vez de
+    // abrir o detalhe (mais rápido pra selecionar vários seguidos).
+    if (selectionActive && onToggleSelect) { onToggleSelect(lead.id); return; }
     onOpen(lead.id);
+  }
+
+  function handleToggleSelect(e: React.MouseEvent) {
+    e.stopPropagation();
+    onToggleSelect?.(lead.id);
   }
 
   return (
@@ -64,9 +78,29 @@ export function KanbanCard({ lead, labelColor, onOpen }: KanbanCardProps) {
       leadId={lead.id}
       leadName={displayName}
     />
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="group/card relative">
+      {/* Checkbox de seleção em massa — canto superior esquerdo. Sempre
+          visível se marcado ou se já tem seleção ativa; senão, só no hover. */}
+      {onToggleSelect && (
+        <button
+          type="button"
+          onClick={handleToggleSelect}
+          onPointerDown={(e) => e.stopPropagation()}
+          title={selected ? 'Desmarcar' : 'Selecionar'}
+          className={cn(
+            'absolute -top-1.5 -left-1.5 z-10 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all bg-white',
+            selected ? 'border-af-accent bg-af-accent' : 'border-slate-300 hover:border-af-mid',
+            !selected && !selectionActive && 'opacity-0 group-hover/card:opacity-100',
+          )}
+        >
+          {selected && <Check size={12} className="text-white" />}
+        </button>
+      )}
       <div
-        className="app-column-surface rounded-xl border border-af-border shadow-sm hover:shadow-md hover:border-af-mid/50 transition-all cursor-pointer select-none overflow-hidden"
+        className={cn(
+          'app-column-surface rounded-xl border shadow-sm hover:shadow-md transition-all cursor-pointer select-none overflow-hidden',
+          selected ? 'border-af-accent ring-2 ring-af-accent/40' : 'border-af-border hover:border-af-mid/50',
+        )}
         onClick={handleCardClick}
       >
         {labelColor && <div className="h-1.5 w-full" style={{ backgroundColor: labelColor }} />}
