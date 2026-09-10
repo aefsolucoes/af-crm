@@ -1408,7 +1408,7 @@ function ReorganizeArchiveButton() {
 }
 
 function GoogleDriveTab() {
-  const [status, setStatus] = useState<{ connected: boolean; email: string | null; rootFolderId: string | null; rootFolderName: string | null; whatsappAttachmentsFolderId: string | null; whatsappAttachmentsFolderName: string | null; configured: boolean } | null>(null);
+  const [status, setStatus] = useState<{ connected: boolean; needsReconnect?: boolean; email: string | null; rootFolderId: string | null; rootFolderName: string | null; whatsappAttachmentsFolderId: string | null; whatsappAttachmentsFolderName: string | null; configured: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   // navegação de pastas para escolher a raiz
   const [browsing, setBrowsing] = useState(false);
@@ -1553,7 +1553,11 @@ function GoogleDriveTab() {
             <h2 className="text-sm font-bold text-slate-800">Google Drive</h2>
             <p className="text-xs text-slate-400">Criar pastas de clientes, renomear e salvar documentos automaticamente</p>
           </div>
-          {status?.connected ? (
+          {status?.connected && status?.needsReconnect ? (
+            <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
+              <span className="w-2 h-2 rounded-full bg-amber-500" /> Reconecte
+            </span>
+          ) : status?.connected ? (
             <span className="flex items-center gap-1.5 text-xs font-medium text-green-600">
               <span className="w-2 h-2 rounded-full bg-green-500" /> Conectado
             </span>

@@ -25,6 +25,30 @@ export function isGoogleConfigured(): boolean {
   return !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REDIRECT_URI);
 }
 
+/** `invalid_grant` = o refresh token não vale mais (revogado, expirado — comum
+ *  quando a tela de consentimento OAuth está em "Testing", que mata o token a
+ *  cada 7 dias). É o sinal de "precisa reconectar o Drive". */
+function isInvalidGrantError(err: unknown): boolean {
+  const e = err as any;
+  return e?.response?.data?.error === 'invalid_grant'
+    || e?.data?.error === 'invalid_grant'
+    || /invalid_grant/i.test(String(e?.message || ''));
+}
+
+async function markGoogleTokenInvalid(accountId: string): Promise<void> {
+  await prisma.googleConnection.updateMany({
+    where: { accountId, tokenInvalid: false },
+    data: { tokenInvalid: true, tokenInvalidAt: new Date() },
+  }).catch(() => {});
+}
+
+async function clearGoogleTokenInvalid(accountId: string): Promise<void> {
+  await prisma.googleConnection.updateMany({
+    where: { accountId, tokenInvalid: true },
+    data: { tokenInvalid: false, tokenInvalidAt: null },
+  }).catch(() => {});
+}
+
 /** URL de consentimento — o accountId vai no state para vincular no callback */
 export function getAuthUrl(accountId: string): string {
   const oauth2 = getOAuthClient();
@@ -66,11 +90,17 @@ export async function handleOAuthCallback(code: string, accountId: string): Prom
       ...(refreshToken ? { refreshToken } : {}),
       accessToken: tokens.access_token || null,
       expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
+      // reconectou — some com o aviso de "precisa reconectar"
+      tokenInvalid: false,
+      tokenInvalidAt: null,
     },
   });
 }
 
-/** Cliente Drive autenticado para a conta (com refresh automático de token) */
+/** Cliente Drive autenticado para a conta (com refresh automático de token).
+ *  Valida o refresh token de saída: se o Google recusar (invalid_grant), marca
+ *  a conexão como `tokenInvalid` (dispara o popup pro admin) e lança um erro
+ *  claro. Se o token voltar a funcionar, limpa a marca sozinho. */
 async function getDrive(accountId: string) {
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
   if (!conn?.refreshToken) throw new Error('Google Drive não conectado para esta conta');
@@ -94,13 +124,44 @@ async function getDrive(accountId: string) {
     }).catch(() => {});
   });
 
+  // getAccessToken() devolve o token do cache se ainda válido (sem ir na rede);
+  // só chama o Google quando precisa renovar — que é quando o invalid_grant
+  // aparece. Aqui é o ponto único por onde TODA operação de Drive passa.
+  try {
+    await oauth2.getAccessToken();
+    if (conn.tokenInvalid) await clearGoogleTokenInvalid(accountId);
+  } catch (err) {
+    if (isInvalidGrantError(err)) {
+      await markGoogleTokenInvalid(accountId);
+      throw new Error('O Google Drive precisa ser reconectado — o acesso expirou ou foi revogado (Configurações → Google Drive).');
+    }
+    throw err;
+  }
+
   return google.drive({ version: 'v3', auth: oauth2 });
+}
+
+/** Confere se o Drive ainda responde (usa getDrive, que já marca/limpa
+ *  `tokenInvalid`). Usado pelo aviso do admin. `connected` distingue "nunca
+ *  conectou" (não avisa nada) de "conectou e quebrou" (avisa). */
+export async function checkGoogleConnection(accountId: string): Promise<{ ok: boolean; connected: boolean }> {
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId }, select: { refreshToken: true } });
+  if (!conn?.refreshToken) return { ok: false, connected: false };
+  try {
+    await getDrive(accountId);
+    return { ok: true, connected: true };
+  } catch {
+    return { ok: false, connected: true };
+  }
 }
 
 export async function getGoogleStatus(accountId: string) {
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
   return {
     connected: !!conn?.refreshToken,
+    // Conexão existe mas o Google recusou o token — precisa reconectar. A marca
+    // é posta/tirada pelo getDrive (toda operação de Drive) e pelo GET /health.
+    needsReconnect: !!conn?.refreshToken && !!conn?.tokenInvalid,
     email: conn?.email || null,
     rootFolderId: conn?.rootFolderId || null,
     rootFolderName: conn?.rootFolderName || null,

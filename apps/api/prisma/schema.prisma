@@ -508,6 +508,11 @@ model GoogleConnection {
   // comportamento antigo (<raiz>/WhatsApp — arquivo automático/<nome>/arquivo).
   whatsappAttachmentsFolderId   String?
   whatsappAttachmentsFolderName String?
+  // Marcado quando o Google recusa o refresh token (invalid_grant): a conexão
+  // existe mas parou de funcionar — precisa reconectar. Limpo no reconnect ou
+  // quando o token volta a responder. Dispara o popup de aviso pro admin.
+  tokenInvalid   Boolean   @default(false)
+  tokenInvalidAt DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 }

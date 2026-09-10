@@ -4,6 +4,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/ui/sidebar';
 import { ToastContainer } from '@/components/ui/toast';
 import { toast } from '@/components/ui/toast';
+import { GoogleDriveAlert } from '@/components/ui/google-drive-alert';
 import { useAuthStore } from '@/store/auth.store';
 import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
@@ -122,6 +123,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {children}
       </main>
       <ToastContainer />
+      <GoogleDriveAlert />
     </div>
   );
 }

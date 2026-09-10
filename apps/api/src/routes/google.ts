@@ -3,7 +3,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import {
   getAuthUrl, handleOAuthCallback, getGoogleStatus, disconnectGoogle,
   listFolders, setRootFolder, setWhatsAppAttachmentsFolder, createFolder, isGoogleConfigured, bulkArchiveOldAttachments,
-  reorganizeWhatsAppArchive,
+  reorganizeWhatsAppArchive, checkGoogleConnection,
   getFolderName, extractFolderId, moveDriveItem,
 } from '../services/google.service';
 
@@ -68,6 +68,17 @@ router.get('/status', async (req: AuthRequest, res: Response) => {
     res.json(await getGoogleStatus(req.user!.accountId));
   } catch {
     res.status(500).json({ error: 'Erro ao buscar status do Google' });
+  }
+});
+
+// Sonda VIVA: tenta usar o token de verdade. Marca/limpa `tokenInvalid` como
+// efeito colateral (via getDrive). O aviso do admin no CRM chama isto.
+router.get('/health', async (req: AuthRequest, res: Response) => {
+  try {
+    const { ok, connected } = await checkGoogleConnection(req.user!.accountId);
+    res.json({ ok, connected, needsReconnect: connected && !ok });
+  } catch {
+    res.json({ ok: false, connected: true, needsReconnect: true });
   }
 });
 
