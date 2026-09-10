@@ -1,8 +1,9 @@
 'use client';
 import React from 'react';
-import { Bell, Menu } from 'lucide-react';
+import { Menu } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
+import { ActivityBell } from '@/components/ui/activity-bell';
 
 interface TopbarProps {
   title: string | React.ReactNode;
@@ -32,9 +33,7 @@ export function Topbar({ title, subtitle, actions }: TopbarProps) {
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
         {actions}
-        <button className="relative app-topbar-text-muted hover:text-af-mid p-1.5 rounded-lg hover:bg-white/10 transition-colors">
-          <Bell size={18} />
-        </button>
+        <ActivityBell />
         {user && (
           <div className="text-right hidden sm:block">
             <p className="text-xs font-medium" style={{ color: 'var(--app-topbar-text)' }}>{user.name}</p>

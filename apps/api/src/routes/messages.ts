@@ -7,6 +7,19 @@ import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sen
 import { downloadDriveFile } from '../services/google.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { runAutomations } from '../services/automation.service';
+import { logActivity } from '../services/activity.service';
+
+/** Registro silencioso: "Fulano respondeu <cliente>". Fire-and-forget. */
+function logClientReply(req: AuthRequest, leadId: string) {
+  logActivity({
+    accountId: req.user!.accountId,
+    userId: req.user!.id,
+    action: 'client_replied',
+    leadId,
+    summary: 'respondeu o cliente',
+    channel: 'WHATSAPP',
+  });
+}
 
 const router = Router();
 router.use(authMiddleware);
@@ -104,6 +117,7 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
     });
     if (!result.success) return res.status(400).json({ error: result.error });
     res.status(201).json(result.message);
+    logClientReply(req, leadId);
   } catch {
     res.status(500).json({ error: 'Erro ao enviar o arquivo' });
   }
@@ -128,6 +142,7 @@ router.post('/send-template', async (req: AuthRequest, res: Response) => {
     });
     if (!result.success) return res.status(400).json({ error: result.error, code: (result as any).code });
     res.status(201).json(result.message);
+    logClientReply(req, leadId);
   } catch {
     res.status(500).json({ error: 'Erro ao enviar o template' });
   }
@@ -267,7 +282,9 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
       if (!result.success) {
         return res.status(400).json({ error: result.error, code: (result as any).code });
       }
-      return res.status(201).json(result.message);
+      res.status(201).json(result.message);
+      logClientReply(req, req.body.leadId);
+      return;
     }
 
     const message = await createMessage(req.body);
@@ -279,6 +296,7 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
     }
 
     res.status(201).json(message);
+    if (req.body.direction === 'OUTBOUND') logClientReply(req, message.leadId);
   } catch {
     res.status(500).json({ error: 'Erro ao enviar mensagem' });
   }

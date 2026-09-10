@@ -30,6 +30,28 @@ model Account {
   messageTemplates   MessageTemplate[]
   departments        Department[]
   automationRules    AutomationRule[]
+  activityLogs       ActivityLog[]
+}
+
+/// Registro silencioso do que a equipe faz — mexeu num card, respondeu um
+/// cliente, criou lead, mudou status. Só acumula (sem som/popup); a sineta no
+/// topo mostra o feed. Nomes de usuário/lead ficam gravados como snapshot
+/// (`userName`/`leadName`) pra sobreviver a renome/exclusão.
+model ActivityLog {
+  id        String   @id @default(cuid())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId    String? // quem fez (null = sistema/automação)
+  userName  String // snapshot do nome
+  action    String // lead_created | lead_stage_changed | lead_pipeline_changed | lead_edited | lead_status_changed | leads_bulk_moved | client_replied
+  leadId    String? // não é FK — o lead pode ser excluído e o registro fica
+  leadName  String? // snapshot
+  summary   String // texto pronto pra exibir
+  channel   String? // client_replied: WHATSAPP etc.
+  createdAt DateTime @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([leadId])
 }
 
 // Linha de negócio (ex: "Financiamento Habitacional", "Consórcio"). Cada

@@ -10,6 +10,7 @@ import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { checkHasWhatsApp } from '../services/baileys.service';
 import { normalizeClientName } from '../lib/text';
 import { runAutomations } from '../services/automation.service';
+import { logActivity } from '../services/activity.service';
 
 /** Formata um telefone BR (com DDI 55) pra exibição — mesma regra usada em
  *  baileys.service.ts, duplicada aqui de propósito (função pura pequena,
@@ -392,6 +393,11 @@ router.post('/bulk-move', async (req: AuthRequest, res: Response) => {
         await auditNote(id, req.user!.id, `Movido em massa para o funil "${pipeline.name}" (${targetStage.name}) por ${userName}`, 'STAGE_CHANGE');
         runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: id, io, context: { newStageId: targetStage.id } }).catch(() => {});
       }
+      logActivity({
+        accountId, userId: req.user!.id, userName,
+        action: 'leads_bulk_moved',
+        summary: `moveu ${ownedIds.length} lead(s) para "${pipeline.name}" (${targetStage.name})`,
+      });
     })().catch(() => {});
 
     res.json({ moved: result.count, pipelineName: pipeline.name, stageName: targetStage.name });
@@ -431,6 +437,11 @@ router.post('/', validate(createLeadSchema), async (req: AuthRequest, res: Respo
     const lead = await createLead({ ...body, accountId: req.user!.accountId });
     res.status(201).json(lead);
     runAutomations({ accountId: req.user!.accountId, trigger: 'NEW_LEAD', leadId: lead.id, io: (req as any).app.get('io') }).catch(() => {});
+    logActivity({
+      accountId: req.user!.accountId, userId: req.user!.id,
+      action: 'lead_created', leadId: lead.id, leadName: lead.name,
+      summary: 'criou o lead',
+    });
   } catch {
     res.status(500).json({ error: 'Erro ao criar lead' });
   }
@@ -461,6 +472,11 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
         const statusLabels: Record<string, string> = { WON: 'Ganho', LOST: 'Perdido', OPEN: 'Aberto' };
         await auditNote(req.params.id, req.user!.id,
           `Status alterado para "${statusLabels[req.body.status] || req.body.status}" por ${userName}`);
+        logActivity({
+          accountId: req.user!.accountId, userId: req.user!.id, userName,
+          action: 'lead_status_changed', leadId: req.params.id, leadName: lead.name,
+          summary: `marcou como "${statusLabels[req.body.status] || req.body.status}"`,
+        });
 
         // ── Auto-migração: lead marcado como Ganho → funil "Concluído" (mês atual) ──
         if (req.body.status === 'WON') {
@@ -547,6 +563,19 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
         const newUser = await prisma.user.findUnique({ where: { id: req.body.userId }, select: { name: true } });
         await auditNote(req.params.id, req.user!.id,
           `Responsável alterado de "${before?.user?.name || '—'}" para "${newUser?.name || '—'}" por ${userName}`);
+        logActivity({
+          accountId: req.user!.accountId, userId: req.user!.id, userName,
+          action: 'lead_edited', leadId: req.params.id, leadName: lead.name,
+          summary: `passou o card para ${newUser?.name || 'outro responsável'}`,
+        });
+      } else if (!req.body.status && (req.body.name !== undefined || req.body.value !== undefined || req.body.customFields !== undefined || req.body.contactId !== undefined || req.body.companyId !== undefined || req.body.tags !== undefined)) {
+        // Edição comum do card (nome/valor/campos/tags) — um registro só, sem
+        // detalhar cada campo (o histórico fino já vive nas notas do lead).
+        logActivity({
+          accountId: req.user!.accountId, userId: req.user!.id, userName,
+          action: 'lead_edited', leadId: req.params.id, leadName: lead.name,
+          summary: 'editou o card',
+        });
       }
 
       // Gatilho de automação "tag adicionada" — não existe endpoint atômico
@@ -597,6 +626,11 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
           `Estágio: "${before?.stage?.name || '—'}" → "${newStage?.name || '—'}" — por ${userName}`,
           'STAGE_CHANGE');
         runAutomations({ accountId: req.user!.accountId, trigger: 'STAGE_CHANGE', leadId: req.params.id, io: (req as any).app.get('io'), context: { newStageId: req.body.stageId } }).catch(() => {});
+        logActivity({
+          accountId: req.user!.accountId, userId: req.user!.id, userName,
+          action: 'lead_stage_changed', leadId: req.params.id, leadName: lead.name,
+          summary: `moveu de "${before?.stage?.name || '—'}" para "${newStage?.name || '—'}"`,
+        });
       }
 
       // ── Auto-migração ao entrar na etapa "Fechado" ─────────────────────────
@@ -719,6 +753,11 @@ router.patch('/:id/pipeline', async (req: AuthRequest, res: Response) => {
         `Movido do funil "${before?.pipeline?.name || '—'}" para "${newPipeline?.name || '—'}" (${newStage?.name || '—'}) por ${userName}`,
         'STAGE_CHANGE');
       runAutomations({ accountId: req.user!.accountId, trigger: 'STAGE_CHANGE', leadId: req.params.id, io: (req as any).app.get('io'), context: { newStageId: targetStageId } }).catch(() => {});
+      logActivity({
+        accountId: req.user!.accountId, userId: req.user!.id, userName,
+        action: 'lead_pipeline_changed', leadId: req.params.id, leadName: lead.name,
+        summary: `moveu do funil "${before?.pipeline?.name || '—'}" para "${newPipeline?.name || '—'}" (${newStage?.name || '—'})`,
+      });
     } catch { /* silencioso */ }
   } catch {
     res.status(500).json({ error: 'Erro ao mover lead para outro pipeline' });
