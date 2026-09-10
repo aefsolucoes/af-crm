@@ -99,13 +99,24 @@ const inboxPipelineLocks = new Map<string, Promise<unknown>>();
  * instância só.
  */
 export async function getOrCreateInboxPipeline(accountId: string, departmentId?: string | null) {
-  const key = `${accountId}::${departmentId ?? ''}`;
+  // Nunca cria um funil ÓRFÃO (sem setor): funil sem departmentId aparece em
+  // TODOS os setores na tela /funil (o filtro lá inclui `|| !p.department`
+  // por compatibilidade), o que confundia — "Caixa de Entrada" do Home
+  // Equity brotava dentro do funil de Habitação. Sem setor informado, cai no
+  // primeiro setor da conta (mesma suposição do ensureDefaultDepartments).
+  let effectiveDeptId = departmentId ?? null;
+  if (!effectiveDeptId) {
+    const first = await prisma.department.findFirst({ where: { accountId }, orderBy: { order: 'asc' }, select: { id: true } });
+    effectiveDeptId = first?.id ?? null;
+  }
+
+  const key = `${accountId}::${effectiveDeptId ?? ''}`;
   const run = async () => {
     const pipeline = await prisma.pipeline.findFirst({
       where: {
         accountId,
         name: { contains: 'Caixa', mode: 'insensitive' },
-        departmentId: departmentId ?? null,
+        departmentId: effectiveDeptId,
       },
       include: { stages: { orderBy: { order: 'asc' } } },
     });
@@ -115,7 +126,7 @@ export async function getOrCreateInboxPipeline(accountId: string, departmentId?:
       data: {
         name: 'Caixa de Entrada',
         accountId,
-        departmentId: departmentId ?? null,
+        departmentId: effectiveDeptId,
         stages: { create: [{ name: 'Leads de Entrada', order: 0, color: '#25D366' }] },
       },
       include: { stages: { orderBy: { order: 'asc' } } },
