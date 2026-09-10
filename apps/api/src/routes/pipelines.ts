@@ -205,9 +205,17 @@ router.delete('/:id/stages/:stageId', async (req: AuthRequest, res: Response) =>
     if (!stage) return res.status(404).json({ error: 'Etapa não encontrada' });
     if (pipeline.stages.length <= 1) return res.status(400).json({ error: 'O funil precisa ter pelo menos uma etapa.' });
 
-    const leadCount = await prisma.lead.count({ where: { stageId: stage.id } });
-    if (leadCount > 0) {
-      return res.status(400).json({ error: `Essa etapa tem ${leadCount} lead(s) — mova-os para outra etapa antes de excluir.` });
+    // Bloqueia só por lead ATIVO (o que o usuário vê e pode mover). Lead
+    // arquivado/grupo é invisível no funil — se sobrou só isso, realoca pra
+    // outra etapa do mesmo funil (senão a FK stageId quebra) e segue.
+    const activeCount = await prisma.lead.count({ where: { stageId: stage.id, archived: false, isGroup: false } });
+    if (activeCount > 0) {
+      return res.status(400).json({ error: `Essa etapa tem ${activeCount} lead(s) — mova-os para outra etapa antes de excluir.` });
+    }
+    const leftover = await prisma.lead.count({ where: { stageId: stage.id } });
+    if (leftover > 0) {
+      const other = pipeline.stages.find((s) => s.id !== stage.id)!;
+      await prisma.lead.updateMany({ where: { stageId: stage.id }, data: { stageId: other.id } });
     }
 
     await prisma.stage.delete({ where: { id: stage.id } });
@@ -223,15 +231,49 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     if (await blockedByDepartment(req, res, req.params.id)) return;
     const pipeline = await prisma.pipeline.findFirst({
       where: { id: req.params.id, accountId: req.user!.accountId },
-      include: { _count: { select: { leads: true } } },
+      select: { id: true, accountId: true, departmentId: true },
     });
     if (!pipeline) return res.status(404).json({ error: 'Pipeline não encontrado' });
-    if (pipeline._count.leads > 0)
-      return res.status(400).json({ error: `Pipeline tem ${pipeline._count.leads} lead(s) — mova-os antes de excluir` });
+
+    // Bloqueia só por lead ATIVO (não arquivado, não grupo) — esse o usuário
+    // vê no funil e pode mover. Lead arquivado/grupo fica invisível ali; se
+    // for só isso, deixa excluir e realoca eles pra um funil de segurança
+    // (senão a FK pipelineId/stageId quebra). Sem isso o funil ficava preso
+    // pra sempre, sem jeito de tirar (reportado: "Caixa de Entrada" do Home
+    // Equity com 5 leads que não apareciam na tela).
+    const activeCount = await prisma.lead.count({ where: { pipelineId: pipeline.id, archived: false, isGroup: false } });
+    if (activeCount > 0) {
+      return res.status(400).json({ error: `Pipeline tem ${activeCount} lead(s) — mova-os antes de excluir` });
+    }
+
+    const leftover = await prisma.lead.count({ where: { pipelineId: pipeline.id } });
+    if (leftover > 0) {
+      const fallback =
+        (await prisma.pipeline.findFirst({
+          where: {
+            accountId: pipeline.accountId,
+            id: { not: pipeline.id },
+            departmentId: pipeline.departmentId,
+            NOT: { name: { contains: 'Caixa', mode: 'insensitive' } },
+          },
+          include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+        })) ||
+        (await prisma.pipeline.findFirst({
+          where: { accountId: pipeline.accountId, id: { not: pipeline.id } },
+          include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
+        }));
+      if (!fallback || !fallback.stages[0]) {
+        return res.status(400).json({ error: `Pipeline tem ${leftover} lead(s) arquivado(s)/grupo e não há outro funil pra onde movê-los.` });
+      }
+      await prisma.lead.updateMany({
+        where: { pipelineId: pipeline.id },
+        data: { pipelineId: fallback.id, stageId: fallback.stages[0].id },
+      });
+    }
 
     await prisma.stage.deleteMany({ where: { pipelineId: req.params.id } });
     await prisma.pipeline.delete({ where: { id: req.params.id } });
-    res.json({ success: true });
+    res.json({ success: true, movedLeftover: leftover });
   } catch {
     res.status(500).json({ error: 'Erro ao excluir pipeline' });
   }
