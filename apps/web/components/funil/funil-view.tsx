@@ -165,15 +165,17 @@ export function FunilView() {
     [allPipelines, departmentName]
   );
 
-  // Pipelines ordenados: Caixa de Entrada → Vendas → Em contratação → Follow Up
+  // Pipelines ordenados: Caixa de Entrada → Vendas → Em contratação → Follow Up.
+  // Casa por prefixo pra "Em contratação Home Equity" cair no mesmo lugar que
+  // "Em contratação".
   const sortedPipelines = useMemo(() => {
+    const rank = (name: string) => {
+      const i = PIPELINE_ORDER.findIndex((p) => name === p || name.startsWith(p + ' '));
+      return i === -1 ? Infinity : i;
+    };
     return [...departmentPipelines].sort((a, b) => {
-      const ai = PIPELINE_ORDER.indexOf(a.name);
-      const bi = PIPELINE_ORDER.indexOf(b.name);
-      if (ai === -1 && bi === -1) return 0;
-      if (ai === -1) return 1;
-      if (bi === -1) return -1;
-      return ai - bi;
+      const ra = rank(a.name), rb = rank(b.name);
+      return ra === rb ? 0 : ra - rb;
     });
   }, [departmentPipelines]);
 

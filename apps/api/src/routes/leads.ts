@@ -569,10 +569,14 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
 
 router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: Response) => {
   try {
-    // Captura estágio anterior para auditoria
+    // Captura estágio anterior para auditoria + setor do número de WhatsApp
+    // (2º sinal pra saber de que setor é o lead quando o funil não tem setor).
     const before = await prisma.lead.findUnique({
       where: { id: req.params.id },
-      include: { stage: true },
+      include: {
+        stage: true,
+        whatsappNumber: { select: { department: { select: { id: true, name: true } } } },
+      },
     });
 
     const lead = await updateLeadStage(req.params.id, req.user!.accountId, req.body.stageId);
@@ -604,21 +608,27 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
       // "contracting_lead") — o cliente chegou pra contratação.
       if (newStage?.name === 'Fechado') {
         const srcPipe = newStage.pipeline;
-        const srcDeptName = srcPipe.department?.name || null;
+        // Setor do lead: 1º o do funil; se o funil não tiver setor, o do número
+        // de WhatsApp da conversa. (O funil de vendas do Home Equity se chama
+        // "Vendas" também — então NÃO dá pra decidir só pelo nome do funil, tem
+        // que olhar o setor primeiro; senão o lead do Home Equity ia parar no
+        // "Em contratação" do Financiamento.)
+        const deptName = srcPipe.department?.name || before?.whatsappNumber?.department?.name || null;
+        const deptId = srcPipe.departmentId || before?.whatsappNumber?.department?.id || null;
         let emContratacao: Awaited<ReturnType<typeof getOrCreateContractingPipeline>> | null = null;
         let recipientDeptId: string | null = null;
 
-        if (srcPipe.name === 'Vendas') {
+        if (deptName === 'Home Equity') {
+          emContratacao = await getOrCreateContractingPipeline(req.user!.accountId, 'Em contratação Home Equity', deptId);
+          recipientDeptId = deptId;
+        } else if (srcPipe.name === 'Vendas' || deptName === 'Financiamento Habitacional') {
           emContratacao = await prisma.pipeline.findFirst({
             where: { accountId: req.user!.accountId, name: 'Em contratação' },
             include: { stages: { orderBy: { order: 'asc' } } },
           });
-          recipientDeptId = srcPipe.departmentId
+          recipientDeptId = deptId
             ?? (await prisma.department.findFirst({ where: { accountId: req.user!.accountId, name: 'Financiamento Habitacional' }, select: { id: true } }))?.id
             ?? null;
-        } else if (srcDeptName === 'Home Equity') {
-          emContratacao = await getOrCreateContractingPipeline(req.user!.accountId, 'Em contratação Home Equity', srcPipe.departmentId);
-          recipientDeptId = srcPipe.departmentId ?? null;
         }
 
         const targetStage = emContratacao?.stages.find(s => s.name === 'Documentação Recebida') || emContratacao?.stages[0];
@@ -641,11 +651,16 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
           if (io) io.to(`account_${req.user!.accountId}`).emit('lead_moved', { lead: movedLead });
           console.log(`[Auto-migração] Lead "${movedLead.name}" movido → ${emContratacao.name} (${targetStage.name})`);
 
-          // Popup pro time do setor: chegou cliente pra contratação.
+          // Popup pro time do setor: chegou cliente pra contratação. Sem
+          // ninguém do setor (setor não resolvido, ou nenhum usuário marcado
+          // nele), cai pros ADMIN — o aviso nunca some no vazio.
           if (io) {
-            const recipients = recipientDeptId
+            let recipients = recipientDeptId
               ? await prisma.user.findMany({ where: { accountId: req.user!.accountId, departmentIds: { has: recipientDeptId } }, select: { id: true } })
-              : await prisma.user.findMany({ where: { accountId: req.user!.accountId, role: 'ADMIN' }, select: { id: true } });
+              : [];
+            if (recipients.length === 0) {
+              recipients = await prisma.user.findMany({ where: { accountId: req.user!.accountId, role: 'ADMIN' }, select: { id: true } });
+            }
             for (const u of recipients) {
               io.to(`user_${u.id}`).emit('contracting_lead', {
                 leadId: movedLead.id,
