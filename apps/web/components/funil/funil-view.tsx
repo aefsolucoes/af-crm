@@ -144,8 +144,24 @@ export function FunilView() {
       queryClient.invalidateQueries({ queryKey: ['leads-all'] });
     }
 
+    // lead_moved só é emitido na auto-migração ao "Fechado" (Vendas → Em
+    // contratação, ou Home Equity → Em contratação Home Equity). Como esse
+    // funil de destino pode ter ACABADO de ser criado, precisa recarregar a
+    // lista de funis também — senão o card "some" (saiu do funil atual e o de
+    // destino nem aparece no seletor pra navegar até ele).
+    function onLeadMoved() {
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['leads-all'] });
+      toast('Lead fechado — movido para o funil de contratação.', 'success');
+    }
+
     socket.on('new_notification', onNewNotification);
-    return () => { socket.off('new_notification', onNewNotification); };
+    socket.on('lead_moved', onLeadMoved);
+    return () => {
+      socket.off('new_notification', onNewNotification);
+      socket.off('lead_moved', onLeadMoved);
+    };
   }, [queryClient]);
 
   const { data: allPipelines, isLoading: loadingPipelines } = useQuery({

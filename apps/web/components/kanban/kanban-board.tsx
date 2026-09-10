@@ -125,6 +125,10 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
     moveLeadOptimistic(leadId, stageId);
     try {
       await api.patch(`/api/leads/${leadId}/stage`, { stageId });
+      // Mover pra "Fechado" pode disparar uma auto-migração no servidor pra um
+      // funil que talvez tenha acabado de ser criado ("Em contratação Home
+      // Equity") — recarrega a lista de funis pra ele aparecer no seletor.
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
       onRefresh();
     } catch {
       toast('Erro ao mover lead', 'error');
