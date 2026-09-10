@@ -8,7 +8,7 @@ import { Stage, Lead } from '@/types';
 import { KanbanCard } from './kanban-card';
 import { ColorSwatches } from './color-swatches';
 import { formatCurrency } from '@/lib/utils';
-import { Plus, GripVertical } from 'lucide-react';
+import { Plus, GripVertical, Trash2 } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 
@@ -93,6 +93,21 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLead
     }
   }
 
+  async function deleteStage() {
+    if (leads.length > 0) { toast('Mova os leads dessa etapa antes de excluir.', 'warning'); return; }
+    if (!confirm(`Excluir a etapa "${stage.name}"?`)) return;
+    setSaving(true);
+    try {
+      await api.delete(`/api/pipelines/${stage.pipelineId}/stages/${stage.id}`);
+      queryClient.invalidateQueries({ queryKey: ['pipelines'] });
+      toast('Etapa excluída.');
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao excluir a etapa', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div ref={setColumnRef} style={columnStyle} className="flex flex-col w-72 flex-shrink-0 h-full">
       {/* Cabeçalho do estágio — único bloco com o fundo translúcido */}
@@ -115,6 +130,13 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLead
               </button>
             </div>
             <ColorSwatches value={editColor} onChange={setEditColor} />
+            <button
+              onClick={deleteStage}
+              disabled={saving}
+              className="text-xs text-red-500 hover:text-red-600 flex items-center gap-1 disabled:opacity-40"
+            >
+              <Trash2 size={12} /> Excluir etapa
+            </button>
           </div>
         ) : (
           <div className="flex items-center justify-between">

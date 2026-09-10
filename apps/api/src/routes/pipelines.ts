@@ -190,6 +190,33 @@ router.patch('/:id/stages/:stageId', async (req: AuthRequest, res: Response) => 
   }
 });
 
+// DELETE /api/pipelines/:id/stages/:stageId — exclui uma etapa. Só se estiver
+// vazia (mesma regra do excluir funil — mover os leads primeiro) e se o funil
+// tiver mais de uma etapa (funil sempre precisa de pelo menos uma).
+router.delete('/:id/stages/:stageId', async (req: AuthRequest, res: Response) => {
+  try {
+    if (await blockedByDepartment(req, res, req.params.id)) return;
+    const pipeline = await prisma.pipeline.findFirst({
+      where: { id: req.params.id, accountId: req.user!.accountId },
+      include: { stages: true },
+    });
+    if (!pipeline) return res.status(404).json({ error: 'Funil não encontrado' });
+    const stage = pipeline.stages.find((s) => s.id === req.params.stageId);
+    if (!stage) return res.status(404).json({ error: 'Etapa não encontrada' });
+    if (pipeline.stages.length <= 1) return res.status(400).json({ error: 'O funil precisa ter pelo menos uma etapa.' });
+
+    const leadCount = await prisma.lead.count({ where: { stageId: stage.id } });
+    if (leadCount > 0) {
+      return res.status(400).json({ error: `Essa etapa tem ${leadCount} lead(s) — mova-os para outra etapa antes de excluir.` });
+    }
+
+    await prisma.stage.delete({ where: { id: stage.id } });
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ error: 'Erro ao excluir a etapa' });
+  }
+});
+
 // DELETE /api/pipelines/:id
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
