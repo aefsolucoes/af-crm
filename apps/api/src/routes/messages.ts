@@ -37,6 +37,10 @@ const messageSchema = z.object({
   replyToFromMe: z.boolean().optional(),
   replyToContent: z.string().optional(),
   replyToSender: z.string().optional(),
+  // Botão de uma Resposta rápida com botão — um OU outro, nunca os dois (ver
+  // sendOutboundWhatsApp). Vem da tela de Templates → Respostas rápidas.
+  buttons: z.array(z.string().min(1).max(20)).max(3).optional(),
+  ctaButton: z.object({ text: z.string().min(1).max(20), url: z.string().min(1) }).optional(),
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -277,6 +281,8 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
         replyToFromMe: req.body.replyToFromMe,
         replyToContent: req.body.replyToContent,
         replyToSender: req.body.replyToSender,
+        buttons: req.body.buttons,
+        ctaButton: req.body.ctaButton,
         io,
       });
       if (!result.success) {

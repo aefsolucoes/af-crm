@@ -292,6 +292,13 @@ model MessageTemplate {
   variables     String[]
   triggerText   String?
   triggerActive Boolean     @default(false)
+  // Botão opcional — igual ao dos templates Meta, mas uma mensagem avulsa só
+  // aceita UM tipo por vez (regra da própria API do WhatsApp): ou até 3
+  // botões de resposta rápida, ou 1 botão de link. null = sem botão.
+  buttonType    String?     // 'QUICK_REPLY' | 'URL'
+  quickReplies  String[]    @default([])
+  ctaUrlText    String?
+  ctaUrl        String?
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
   // Setor dono deste template — null = "compartilhado" (todo mundo vê,

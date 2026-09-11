@@ -7,7 +7,7 @@ import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
-import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck, Zap, Building2 } from 'lucide-react';
+import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck, Zap, Building2, MousePointerClick } from 'lucide-react';
 import {
   MessageTemplate as LocalTemplate, TemplateCategory as Category, CATEGORY_META,
   extractVariables, fillTemplate,
@@ -24,7 +24,12 @@ interface Template extends Omit<LocalTemplate, 'category'> {
 
 interface DepartmentOption { id: string; name: string; }
 
-const EMPTY_FORM = { name: '', category: 'geral' as Category, body: '', triggerText: '', triggerActive: false, departmentId: '' };
+const EMPTY_FORM = {
+  name: '', category: 'geral' as Category, body: '', triggerText: '', triggerActive: false, departmentId: '',
+  buttonType: '' as '' | 'QUICK_REPLY' | 'URL',
+  quickReply1: '', quickReply2: '', quickReply3: '',
+  ctaUrlText: '', ctaUrl: '',
+};
 
 // ── Templates do WhatsApp (Meta) — precisam de aprovação antes de usar ───────
 type MetaTemplateStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | string;
@@ -459,7 +464,13 @@ export default function TemplatesPage() {
 
   function openEdit(t: Template) {
     setEditingTemplate(t);
-    setForm({ name: t.name, category: t.category, body: t.body, triggerText: t.triggerText || '', triggerActive: !!t.triggerActive, departmentId: t.departmentId || '' });
+    const qr = t.quickReplies || [];
+    setForm({
+      name: t.name, category: t.category, body: t.body, triggerText: t.triggerText || '', triggerActive: !!t.triggerActive, departmentId: t.departmentId || '',
+      buttonType: (t.buttonType as '' | 'QUICK_REPLY' | 'URL') || '',
+      quickReply1: qr[0] || '', quickReply2: qr[1] || '', quickReply3: qr[2] || '',
+      ctaUrlText: t.ctaUrlText || '', ctaUrl: t.ctaUrl || '',
+    });
     setPreviewVars(Object.fromEntries(t.variables.map(v => [v, v])));
     setShowModal(true);
   }
@@ -469,14 +480,28 @@ export default function TemplatesPage() {
       toast('Preencha nome e conteúdo do template.', 'warning');
       return;
     }
+    if (form.buttonType === 'QUICK_REPLY' && ![form.quickReply1, form.quickReply2, form.quickReply3].some(s => s.trim())) {
+      toast('Informe pelo menos um botão de resposta rápida.', 'warning');
+      return;
+    }
+    if (form.buttonType === 'URL' && (!form.ctaUrlText.trim() || !form.ctaUrl.trim())) {
+      toast('Informe o texto e o link do botão.', 'warning');
+      return;
+    }
     setSaving(true);
     try {
+      const { quickReply1, quickReply2, quickReply3, ...rest } = form;
+      const payload = {
+        ...rest,
+        quickReplies: [quickReply1, quickReply2, quickReply3].map(s => s.trim()).filter(Boolean),
+        buttonType: form.buttonType || null,
+      };
       if (editingTemplate) {
-        const { data } = await api.patch(`/api/message-templates/${editingTemplate.id}`, form);
+        const { data } = await api.patch(`/api/message-templates/${editingTemplate.id}`, payload);
         setTemplates(prev => prev.map(t => t.id === data.id ? data : t));
         toast('Template atualizado!');
       } else {
-        const { data } = await api.post('/api/message-templates', form);
+        const { data } = await api.post('/api/message-templates', payload);
         setTemplates(prev => [...prev, data]);
         toast('Template criado!');
       }
@@ -603,6 +628,22 @@ export default function TemplatesPage() {
                       ))}
                     </div>
                   )}
+
+                  {t.buttonType && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {t.buttonType === 'QUICK_REPLY'
+                        ? (t.quickReplies || []).map((q, i) => (
+                            <span key={i} className="inline-flex items-center gap-1 text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
+                              <MousePointerClick size={10} /> {q}
+                            </span>
+                          ))
+                        : (
+                            <span className="inline-flex items-center gap-1 text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
+                              <MousePointerClick size={10} /> {t.ctaUrlText}
+                            </span>
+                          )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-1 px-4 pb-4 pt-2 border-t border-af-border">
@@ -706,6 +747,56 @@ export default function TemplatesPage() {
                 </div>
               </div>
             )}
+
+            <div className="flex flex-col gap-2 pt-2 border-t border-af-border">
+              <label className="text-sm font-medium text-slate-700">Botão (opcional)</label>
+              <p className="text-xs text-slate-400 -mt-1">
+                O WhatsApp só deixa UM tipo por vez numa mensagem avulsa: ou até 3 botões de resposta rápida, ou 1 botão de link — nunca os dois juntos.
+                Botão de verdade (clicável) só funciona pela API Oficial; pelo QR sai como texto normal.
+              </p>
+              <select
+                value={form.buttonType}
+                onChange={e => setForm({ ...form, buttonType: e.target.value as typeof form.buttonType })}
+                className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+              >
+                <option value="">Nenhum</option>
+                <option value="QUICK_REPLY">Botões de resposta rápida (até 3)</option>
+                <option value="URL">Botão de link</option>
+              </select>
+
+              {form.buttonType === 'QUICK_REPLY' && (
+                <div className="grid grid-cols-3 gap-2">
+                  {(['quickReply1', 'quickReply2', 'quickReply3'] as const).map((field, i) => (
+                    <Input
+                      key={field}
+                      label={`Resposta rápida ${i + 1}`}
+                      value={form[field]}
+                      onChange={e => setForm({ ...form, [field]: e.target.value })}
+                      placeholder="Ex: Quero saber mais"
+                      maxLength={20}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {form.buttonType === 'URL' && (
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    label="Texto do botão"
+                    value={form.ctaUrlText}
+                    onChange={e => setForm({ ...form, ctaUrlText: e.target.value })}
+                    placeholder="Ex: Ver proposta"
+                    maxLength={20}
+                  />
+                  <Input
+                    label="URL"
+                    value={form.ctaUrl}
+                    onChange={e => setForm({ ...form, ctaUrl: e.target.value })}
+                    placeholder="https://..."
+                  />
+                </div>
+              )}
+            </div>
 
             <div className="flex flex-col gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
               <label className="flex items-center gap-2 text-sm font-medium text-amber-800 cursor-pointer">

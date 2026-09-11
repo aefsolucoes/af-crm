@@ -501,6 +501,65 @@ export async function sendWhatsAppButtonsMessage(
   }
 }
 
+/** Envia mensagem avulsa com UM botão de link (interactive "cta_url") — a API
+ *  do WhatsApp não deixa combinar com botões de resposta rápida na mesma
+ *  mensagem (isso só existe em template aprovado). Só funciona na API
+ *  Oficial; no QR o link vai como texto puro (o WhatsApp já sublinha
+ *  sozinho). */
+export async function sendWhatsAppCtaUrlMessage(
+  to: string,
+  body: string,
+  buttonText: string,
+  url: string,
+  accountId: string,
+  departmentId?: string | null
+): Promise<{ success: boolean; externalId?: string; error?: string }> {
+  const config = await getWhatsAppConfig(accountId, departmentId);
+  if (!config) return { success: false, error: 'WhatsApp não configurado. Acesse Configurações → API Oficial e salve suas credenciais.' };
+  if (!config.active) return { success: false, error: 'WhatsApp inativo. Acesse Configurações → API Oficial e ative a integração.' };
+
+  const phone = normalizeBrazilianWhatsAppPhone(to);
+  const graphUrl = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
+
+  try {
+    const res = await fetch(graphUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: phone,
+        type: 'interactive',
+        interactive: {
+          type: 'cta_url',
+          body: { text: body },
+          action: {
+            name: 'cta_url',
+            parameters: { display_text: buttonText.slice(0, 20), url },
+          },
+        },
+      }),
+    });
+
+    const json = await res.json() as {
+      messages?: { id: string }[];
+      error?: { message: string; code: number };
+    };
+
+    if (!res.ok || json.error) {
+      console.error(`[WhatsApp] Send cta_url error para "${phone}":`, json.error);
+      return { success: false, error: parseGraphError(json, res, phone) };
+    }
+
+    return { success: true, externalId: json.messages?.[0]?.id };
+  } catch (err) {
+    console.error('[WhatsApp] Fetch error (cta_url):', err);
+    return { success: false, error: 'Falha na conexão com a API do WhatsApp' };
+  }
+}
+
 /** Envia uma mensagem de TEMPLATE (aprovado pela Meta) — único jeito de reabrir
  *  conversa fora da janela de 24h de atendimento gratuito. */
 export async function sendWhatsAppTemplateMessage(

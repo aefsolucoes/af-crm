@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2 } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick } from 'lucide-react';
 import { transcodeToWhatsAppOgg } from '@/lib/audio-transcode';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
@@ -312,6 +312,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [pendingMetaTemplate, setPendingMetaTemplate] = useState<MetaTemplate | null>(null);
   const [metaTemplateVars, setMetaTemplateVars] = useState<Record<number, string>>({});
   const [sendingTemplate, setSendingTemplate] = useState(false);
+  // Resposta rápida COM botão — não dá pra só "encher a caixa de texto e
+  // deixar editar livre" como as sem botão fazem, porque o botão tem que ir
+  // junto na MESMA mensagem. Segue o mesmo modelo do template Meta: mostra
+  // um preview (corpo ainda editável) com um "Enviar" que manda tudo junto.
+  const [pendingLocalTemplate, setPendingLocalTemplate] = useState<MessageTemplate | null>(null);
+  const [localTemplateBody, setLocalTemplateBody] = useState('');
   // Busca dentro do painel de templates — filtra tanto as respostas rápidas
   // quanto os templates Meta pelo nome ou corpo do texto.
   const [templateSearch, setTemplateSearch] = useState('');
@@ -805,6 +811,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     setShowTemplates(v => !v);
     setShowAI(false);
     setPendingMetaTemplate(null);
+    setPendingLocalTemplate(null);
     setTemplateSearch('');
     // Busca do banco (compartilhado pela equipe) — não do localStorage, que
     // ficava desatualizado (não refletia exclusão/criação feita por ninguém,
@@ -825,9 +832,46 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   function handleUseTemplate(template: MessageTemplate) {
     const firstName = leadName?.split(' ')[0] || leadName || '';
     const filled = fillTemplate(template.body, { nome: leadName, primeiro_nome: firstName });
+    // Com botão: o botão precisa ir JUNTO na mesma mensagem, então não dá pra
+    // só jogar na caixa de texto pro colaborador editar livre e mandar depois
+    // — mostra o preview com "Enviar" (igual ao template Meta).
+    if (template.buttonType) {
+      setPendingLocalTemplate(template);
+      setLocalTemplateBody(filled);
+      return;
+    }
     setContent(filled);
     setShowTemplates(false);
     inputRef.current?.focus();
+  }
+
+  async function handleSendLocalTemplateButton() {
+    if (!pendingLocalTemplate) return;
+    const text = localTemplateBody.trim();
+    if (!text) return;
+    setSendingTemplate(true);
+    try {
+      const { data } = await api.post('/api/messages', {
+        content: text,
+        direction: 'OUTBOUND',
+        channel: 'WHATSAPP',
+        leadId,
+        via: effectiveVia,
+        ...(effectiveVia === 'qr' && activeNumberId ? { fromNumberId: activeNumberId } : {}),
+        ...(pendingLocalTemplate.buttonType === 'QUICK_REPLY'
+          ? { buttons: (pendingLocalTemplate.quickReplies || []).filter(Boolean) }
+          : { ctaButton: { text: pendingLocalTemplate.ctaUrlText, url: pendingLocalTemplate.ctaUrl } }),
+      });
+      onNewMessage(data);
+      setPendingLocalTemplate(null);
+      setShowTemplates(false);
+      toast('Enviado!');
+    } catch (err: any) {
+      if (err?.response?.data?.code === 'NO_REAL_PHONE') setPhoneFixKind('text');
+      toast(err?.response?.data?.error || 'Erro ao enviar', 'error');
+    } finally {
+      setSendingTemplate(false);
+    }
   }
 
   // ── Templates aprovados pela Meta ──────────────────────────────────────────
@@ -1355,7 +1399,43 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       {/* Templates toolbar */}
       {showTemplates && (
         <div className="relative z-10 max-h-80 overflow-y-auto bg-[#202c33] border-t border-[#222e35] scrollbar-thin">
-          {pendingMetaTemplate ? (
+          {pendingLocalTemplate ? (
+            // ── Resposta rápida com botão: mostra o preview (corpo editável) antes de enviar ──
+            <div className="p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-[#e9edef]">{pendingLocalTemplate.name}</span>
+                <button onClick={() => setPendingLocalTemplate(null)} className="text-xs text-[#8696a0] hover:text-[#e9edef]">Cancelar</button>
+              </div>
+              <textarea
+                value={localTemplateBody}
+                onChange={(e) => setLocalTemplateBody(e.target.value)}
+                rows={4}
+                className="w-full px-2.5 py-2 text-sm rounded-lg bg-[#2a3942] text-[#e9edef] border border-transparent focus:outline-none focus:border-[#00a884]/40 resize-none"
+              />
+              <div className="flex flex-wrap gap-1.5">
+                {pendingLocalTemplate.buttonType === 'QUICK_REPLY'
+                  ? (pendingLocalTemplate.quickReplies || []).map((q, i) => (
+                      <span key={i} className="text-xs px-2.5 py-1 rounded-full bg-[#111b21] text-[#00a884] border border-[#00a884]/30">{q}</span>
+                    ))
+                  : (
+                      <span className="text-xs px-2.5 py-1 rounded-full bg-[#111b21] text-[#00a884] border border-[#00a884]/30">
+                        🔗 {pendingLocalTemplate.ctaUrlText}
+                      </span>
+                    )}
+              </div>
+              <p className="text-[11px] text-[#8696a0]">
+                Botão clicável de verdade só pela API Oficial; pelo QR o cliente vê como texto.
+              </p>
+              <button
+                onClick={handleSendLocalTemplateButton}
+                disabled={sendingTemplate || !localTemplateBody.trim()}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-[#00a884] text-[#111b21] text-sm font-medium disabled:opacity-50"
+              >
+                {sendingTemplate ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                {sendingTemplate ? 'Enviando...' : 'Enviar'}
+              </button>
+            </div>
+          ) : pendingMetaTemplate ? (
             // ── Preenche as variáveis do template Meta escolhido, antes de enviar ──
             <div className="p-3 space-y-3">
               <div className="flex items-center justify-between">
@@ -1425,6 +1505,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-medium text-[#e9edef] truncate">{t.name}</span>
                           <span className={cn('text-xs px-1.5 py-0.5 rounded-full flex-shrink-0', cm.color)}>{cm.label}</span>
+                          {t.buttonType && <MousePointerClick size={11} className="text-[#00a884] flex-shrink-0" />}
                         </div>
                         <p className="text-xs text-[#8696a0] truncate">{t.body.replace(/\n/g, ' ')}</p>
                       </div>

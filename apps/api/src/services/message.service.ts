@@ -1,5 +1,5 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
-import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage, sendWhatsAppReaction, sendWhatsAppMedia } from './whatsapp.service';
+import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage, sendWhatsAppCtaUrlMessage, sendWhatsAppReaction, sendWhatsAppMedia } from './whatsapp.service';
 import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds, sendBaileysDelete, sendBaileysReaction } from './baileys.service';
 import { downloadDriveFile } from './google.service';
 import { normalizeClientName } from '../lib/text';
@@ -229,13 +229,19 @@ export async function sendOutboundWhatsApp(params: {
   replyToContent?: string;
   replyToSender?: string;
   /** Botões de resposta rápida (ex.: ["Sim","Não"], máx. 3) — usado pelo
-   *  SalesBot. Só funciona de verdade na API Oficial; no QR/Baileys vira uma
-   *  lista numerada anexada ao texto (o WhatsApp descontinuou botões nativos
-   *  por lá, sem alternativa confiável). */
+   *  SalesBot e pelas Respostas rápidas com botão. Só funciona de verdade na
+   *  API Oficial; no QR/Baileys vira uma lista numerada anexada ao texto (o
+   *  WhatsApp descontinuou botões nativos por lá, sem alternativa confiável).
+   *  Nunca junto com `ctaButton` — a API do WhatsApp só aceita um tipo por
+   *  mensagem avulsa. */
   buttons?: string[];
+  /** Botão único de link (Respostas rápidas com botão "URL"). Mesma regra:
+   *  só de verdade na API Oficial; no QR vira o link como texto puro (o
+   *  WhatsApp já sublinha e deixa clicável sozinho). */
+  ctaButton?: { text: string; url: string };
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string; code?: string }> {
-  const { accountId, leadId, content, via, fromNumberId, userId, replyToExternalId, replyToFromMe, replyToContent, replyToSender, buttons, io } = params;
+  const { accountId, leadId, content, via, fromNumberId, userId, replyToExternalId, replyToFromMe, replyToContent, replyToSender, buttons, ctaButton, io } = params;
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -321,6 +327,9 @@ export async function sendOutboundWhatsApp(params: {
     // numerada no próprio texto (cliente responde digitando "1"/"Sim" etc.).
     if (buttons?.length) {
       savedContent = `${content}\n\n${buttons.map((b, i) => `${i + 1}. ${b}`).join('\n')}`;
+    } else if (ctaButton) {
+      // Link como texto puro — o WhatsApp já deixa clicável sozinho.
+      savedContent = `${content}\n\n${ctaButton.text}: ${ctaButton.url}`;
     }
     const outcome = await sendBaileysMessage(phone, savedContent, preferred, quoted);
     if ('failed' in outcome) {
@@ -348,6 +357,8 @@ export async function sendOutboundWhatsApp(params: {
     }
     const result = buttons?.length
       ? await sendWhatsAppButtonsMessage(cloudPhone, content, buttons, accountId, lead.pipeline.departmentId)
+      : ctaButton
+      ? await sendWhatsAppCtaUrlMessage(cloudPhone, content, ctaButton.text, ctaButton.url, accountId, lead.pipeline.departmentId)
       : await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId, replyToExternalId);
     if (result.success) {
       externalId = result.externalId;
@@ -355,6 +366,7 @@ export async function sendOutboundWhatsApp(params: {
       // — aqui só registramos por escrito o que foi oferecido, pro histórico
       // da Inbox mostrar as opções.
       if (buttons?.length) savedContent = `${content}\n\n${buttons.map((b) => `[${b}]`).join('  ')}`;
+      else if (ctaButton) savedContent = `${content}\n\n[${ctaButton.text} → ${ctaButton.url}]`;
     } else {
       return { success: false, error: result.error || 'Falha ao enviar mensagem WhatsApp' };
     }

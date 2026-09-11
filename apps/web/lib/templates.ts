@@ -7,6 +7,12 @@ export interface MessageTemplate {
   body: string;
   variables: string[];
   createdAt: string;
+  // Botão opcional — igual ao dos templates Meta, mas só um tipo por vez
+  // (mensagem avulsa do WhatsApp não deixa combinar os dois).
+  buttonType?: 'QUICK_REPLY' | 'URL' | null;
+  quickReplies?: string[];
+  ctaUrlText?: string | null;
+  ctaUrl?: string | null;
 }
 
 const STORAGE_KEY = 'af_templates';

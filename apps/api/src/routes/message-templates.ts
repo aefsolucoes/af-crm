@@ -12,6 +12,35 @@ function extractVariables(text: string): string[] {
   return [...new Set(matches.map((m) => m.replace(/\{\{|\}\}/g, '').trim()))];
 }
 
+/** Normaliza o botão opcional de uma Resposta rápida — só UM tipo por vez
+ *  (a API do WhatsApp não deixa combinar botão de resposta rápida com botão
+ *  de link numa mensagem avulsa; isso só existe em template aprovado). Lança
+ *  Error com mensagem pronta pra devolver ao front se algo estiver incompleto. */
+function normalizeButtons(input: {
+  buttonType?: string | null;
+  quickReplies?: unknown;
+  ctaUrlText?: string | null;
+  ctaUrl?: string | null;
+}): { buttonType: string | null; quickReplies: string[]; ctaUrlText: string | null; ctaUrl: string | null } {
+  const type = input.buttonType || null;
+  if (type === 'QUICK_REPLY') {
+    const list = (Array.isArray(input.quickReplies) ? input.quickReplies : [])
+      .map((s) => String(s).trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .map((s) => s.slice(0, 20));
+    if (!list.length) throw new Error('Informe pelo menos um botão de resposta rápida.');
+    return { buttonType: 'QUICK_REPLY', quickReplies: list, ctaUrlText: null, ctaUrl: null };
+  }
+  if (type === 'URL') {
+    const text = (input.ctaUrlText || '').trim().slice(0, 20);
+    const url = (input.ctaUrl || '').trim();
+    if (!text || !url) throw new Error('Informe o texto e o link do botão.');
+    return { buttonType: 'URL', quickReplies: [], ctaUrlText: text, ctaUrl: url };
+  }
+  return { buttonType: null, quickReplies: [], ctaUrlText: null, ctaUrl: null };
+}
+
 // GET /api/message-templates — templates da conta. Admin vê todos; colaborador
 // só os do PRÓPRIO setor + os "compartilhados" (sem setor definido).
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -36,8 +65,9 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 router.post('/', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
-    const { name, category, body, triggerText, triggerActive, departmentId } = req.body as {
+    const { name, category, body, triggerText, triggerActive, departmentId, buttonType, quickReplies, ctaUrlText, ctaUrl } = req.body as {
       name?: string; category?: string; body?: string; triggerText?: string; triggerActive?: boolean; departmentId?: string | null;
+      buttonType?: string | null; quickReplies?: unknown; ctaUrlText?: string | null; ctaUrl?: string | null;
     };
     if (!name?.trim() || !body?.trim()) return res.status(400).json({ error: 'name e body são obrigatórios' }) as any;
 
@@ -49,6 +79,9 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       const dept = await prisma.department.findFirst({ where: { id: finalDepartmentId, accountId } });
       if (!dept) return res.status(400).json({ error: 'Departamento inválido' }) as any;
     }
+    let buttons;
+    try { buttons = normalizeButtons({ buttonType, quickReplies, ctaUrlText, ctaUrl }); }
+    catch (err: any) { return res.status(400).json({ error: err.message }) as any; }
 
     const template = await prisma.messageTemplate.create({
       data: {
@@ -60,6 +93,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         triggerText: triggerText?.trim() || null,
         triggerActive: triggerActive === true,
         departmentId: finalDepartmentId,
+        ...buttons,
       },
     });
     res.status(201).json(template);
@@ -114,8 +148,9 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: 'Esse template é de outro departamento.' }) as any;
     }
 
-    const { name, category, body, triggerText, triggerActive, departmentId } = req.body as {
+    const { name, category, body, triggerText, triggerActive, departmentId, buttonType, quickReplies, ctaUrlText, ctaUrl } = req.body as {
       name?: string; category?: string; body?: string; triggerText?: string | null; triggerActive?: boolean; departmentId?: string | null;
+      buttonType?: string | null; quickReplies?: unknown; ctaUrlText?: string | null; ctaUrl?: string | null;
     };
     const data: Record<string, unknown> = {};
     if (name !== undefined) data.name = name.trim();
@@ -130,6 +165,10 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
         if (!dept) return res.status(400).json({ error: 'Departamento inválido' }) as any;
       }
       data.departmentId = departmentId || null;
+    }
+    if (buttonType !== undefined) {
+      try { Object.assign(data, normalizeButtons({ buttonType, quickReplies, ctaUrlText, ctaUrl })); }
+      catch (err: any) { return res.status(400).json({ error: err.message }) as any; }
     }
 
     const template = await prisma.messageTemplate.update({ where: { id: existing.id }, data });
