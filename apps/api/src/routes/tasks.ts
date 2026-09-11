@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { getScopeDepartmentIds } from '../services/department.service';
+import { logActivity } from '../services/activity.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -59,6 +60,11 @@ router.post('/', validate(taskSchema), async (req: AuthRequest, res: Response) =
       include: { user: { select: { id: true, name: true } } },
     });
     res.status(201).json(task);
+    logActivity({
+      accountId: req.user!.accountId, userId: req.user!.id,
+      action: 'task_created', leadId: task.leadId,
+      summary: `criou a tarefa: "${task.title}"`,
+    });
   } catch {
     res.status(500).json({ error: 'Erro ao criar tarefa' });
   }
@@ -66,10 +72,22 @@ router.post('/', validate(taskSchema), async (req: AuthRequest, res: Response) =
 
 router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: Response) => {
   try {
+    const before = await prisma.task.findFirst({
+      where: { id: req.params.id, user: { accountId: req.user!.accountId } },
+      select: { done: true, title: true, leadId: true },
+    });
     const data: Record<string, unknown> = { ...req.body };
     if (req.body.dueAt) data.dueAt = new Date(req.body.dueAt);
     const task = await prisma.task.update({ where: { id: req.params.id }, data });
     res.json(task);
+
+    if (before && req.body.done !== undefined && req.body.done !== before.done) {
+      logActivity({
+        accountId: req.user!.accountId, userId: req.user!.id,
+        action: req.body.done ? 'task_completed' : 'task_reopened', leadId: before.leadId,
+        summary: `${req.body.done ? 'concluiu' : 'reabriu'} a tarefa: "${before.title}"`,
+      });
+    }
   } catch {
     res.status(500).json({ error: 'Erro ao atualizar tarefa' });
   }

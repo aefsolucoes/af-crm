@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { logActivity } from '../services/activity.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -20,6 +21,16 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       include: NOTE_INCLUDE,
     });
     res.status(201).json(note);
+    // Só nota escrita à mão entra no registro (as de auditoria — STAGE_CHANGE /
+    // DATA_EDIT — já são geradas por outras ações e virariam ruído).
+    if (!type || type === 'COMMENT') {
+      const trimmed = String(content).trim();
+      logActivity({
+        accountId: req.user!.accountId, userId: req.user!.id,
+        action: 'note_added', leadId,
+        summary: `escreveu uma nota: "${trimmed.slice(0, 80)}${trimmed.length > 80 ? '…' : ''}"`,
+      });
+    }
   } catch {
     res.status(500).json({ error: 'Erro ao criar nota' });
   }

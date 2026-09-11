@@ -781,6 +781,11 @@ router.patch('/:id/archive', async (req: AuthRequest, res: Response) => {
         : 'Usuário';
       await auditNote(req.params.id, req.user!.id,
         archived ? `Lead arquivado por ${userName}` : `Lead restaurado por ${userName}`);
+      logActivity({
+        accountId: req.user!.accountId, userId: req.user!.id, userName,
+        action: 'lead_archived', leadId: req.params.id, leadName: lead.name,
+        summary: archived ? 'arquivou o card' : 'restaurou o card',
+      });
     } catch { /* silencioso */ }
   } catch {
     res.status(500).json({ error: 'Erro ao arquivar lead' });

@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
+import { logActivity } from './activity.service';
 import { normalizeClientName } from '../lib/text';
 // maybeSalesBotStep/runAutomations/maybeMessageReceivedAutomations: require()
 // tardio (dentro da função, não aqui em cima) — salesbot.service.ts e
@@ -972,6 +973,7 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     });
     if (io) io.to(`lead:${leadId}`).emit('new_message', sent);
     await prisma.note.create({ data: { leadId, content: `Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, summary: 'a IA respondeu o cliente', channel: 'WHATSAPP' });
     console.log(`[WhatsApp] Resposta de IA enviada automaticamente para lead ${leadId}`);
 
     if (handoff) await handleAiHandoffCloudApi(leadId, io);
@@ -989,9 +991,10 @@ async function handleAiHandoffCloudApi(leadId: string, io: any) {
     const lead = await prisma.lead.update({
       where: { id: leadId },
       data: { aiAutoReplyActive: false },
-      select: { id: true, name: true, userId: true },
+      select: { id: true, name: true, userId: true, accountId: true },
     });
     await prisma.note.create({ data: { leadId, content: 'Atendimento automático encerrado — cliente pediu atendimento humano (ou pergunta fora do escopo deste chat). Repassado para a equipe.', type: 'COMMENT' } }).catch(() => {});
+    logActivity({ accountId: lead.accountId, userId: null, userName: 'Assistente IA', action: 'ai_handoff', leadId, leadName: lead.name, summary: 'encerrou o atendimento automático e repassou pra equipe' });
     if (io) {
       io.to(`lead:${leadId}`).emit('lead_ai_toggled', { leadId, active: false });
       if (lead.userId) io.to(`user_${lead.userId}`).emit('ai_handoff', { leadId, leadName: lead.name });

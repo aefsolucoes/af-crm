@@ -5,6 +5,7 @@ import * as os from 'os';
 import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
+import { logActivity } from './activity.service';
 import { normalizeClientName } from '../lib/text';
 // maybeSalesBotStep/runAutomations/maybeMessageReceivedAutomations: require()
 // tardio no ponto de uso (não aqui em cima) — salesbot.service.ts e
@@ -1053,6 +1054,7 @@ async function maybeAiAutoReplyQR(accountId: string, leadId: string, incomingTex
     });
     globalIO?.to(`lead:${leadId}`).emit('new_message', sent);
     await prisma.note.create({ data: { leadId, content: `Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, summary: 'a IA respondeu o cliente', channel: 'WHATSAPP' });
     console.log(`[Baileys] Resposta de IA enviada automaticamente para lead ${leadId}`);
 
     if (handoff) await handleAiHandoff(leadId);
@@ -1071,9 +1073,10 @@ async function handleAiHandoff(leadId: string) {
     const lead = await prisma.lead.update({
       where: { id: leadId },
       data: { aiAutoReplyActive: false },
-      select: { id: true, name: true, userId: true },
+      select: { id: true, name: true, userId: true, accountId: true },
     });
     await prisma.note.create({ data: { leadId, content: 'Atendimento automático encerrado — cliente pediu atendimento humano (ou pergunta fora do escopo deste chat). Repassado para a equipe.', type: 'COMMENT' } }).catch(() => {});
+    logActivity({ accountId: lead.accountId, userId: null, userName: 'Assistente IA', action: 'ai_handoff', leadId, leadName: lead.name, summary: 'encerrou o atendimento automático e repassou pra equipe' });
     globalIO?.to(`lead:${leadId}`).emit('lead_ai_toggled', { leadId, active: false });
     if (lead.userId) globalIO?.to(`user_${lead.userId}`).emit('ai_handoff', { leadId, leadName: lead.name });
   } catch (err) {

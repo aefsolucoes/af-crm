@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { Bell } from 'lucide-react';
 import api from '@/lib/api';
@@ -38,11 +39,14 @@ function timeAgo(iso: string): string {
 
 export function ActivityBell() {
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasNew, setHasNew] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setMounted(true); }, []);
 
   const seenAt = () => {
     try { return localStorage.getItem(SEEN_KEY) || ''; } catch { return ''; }
@@ -64,15 +68,6 @@ export function ActivityBell() {
     const t = setInterval(loadFirst, 60000);
     return () => clearInterval(t);
   }, [loadFirst]);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDoc(e: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
 
   function toggle() {
     const next = !open;
@@ -96,6 +91,54 @@ export function ActivityBell() {
     }
   }
 
+  const panel = (
+    <>
+      {/* backdrop transparente — clicar fora fecha */}
+      <div className="fixed inset-0 z-[998]" onClick={() => setOpen(false)} />
+      <div className="fixed top-14 right-3 z-[999] w-80 max-w-[calc(100vw-1.5rem)] bg-white rounded-xl shadow-2xl border border-af-border overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-af-border">
+          <p className="text-sm font-semibold text-slate-800">Registro de atividade</p>
+          <p className="text-[11px] text-slate-400">O que a equipe fez — sem alarde, só registrado</p>
+        </div>
+        <div className="max-h-[70vh] overflow-y-auto scrollbar-thin">
+          {items.length === 0 ? (
+            <p className="text-xs text-slate-400 text-center py-8">Nada registrado ainda.</p>
+          ) : (
+            items.map((it) => {
+              const body = (
+                <div className="px-4 py-2.5 hover:bg-slate-50 border-b border-slate-100">
+                  <p className="text-xs text-slate-700 leading-snug">
+                    <span className="font-semibold">{it.userName}</span> {it.summary}
+                    {it.leadName && (
+                      <> — <span className="font-medium text-slate-900">{it.leadName}</span></>
+                    )}
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">{timeAgo(it.createdAt)}</p>
+                </div>
+              );
+              return it.leadId ? (
+                <Link key={it.id} href={`/inbox?leadId=${it.leadId}`} onClick={() => setOpen(false)} className="block">
+                  {body}
+                </Link>
+              ) : (
+                <div key={it.id}>{body}</div>
+              );
+            })
+          )}
+          {cursor && (
+            <button
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="w-full text-xs text-af-mid hover:bg-slate-50 py-2.5 disabled:opacity-50"
+            >
+              {loadingMore ? 'Carregando…' : 'Carregar mais'}
+            </button>
+          )}
+        </div>
+      </div>
+    </>
+  );
+
   return (
     <div className="relative" ref={wrapRef}>
       <button
@@ -107,49 +150,9 @@ export function ActivityBell() {
         {hasNew && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-af-accent" />}
       </button>
 
-      {open && (
-        <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white rounded-xl shadow-2xl border border-af-border z-50 overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-af-border">
-            <p className="text-sm font-semibold text-slate-800">Registro de atividade</p>
-            <p className="text-[11px] text-slate-400">O que a equipe fez — sem alarde, só registrado</p>
-          </div>
-          <div className="max-h-[60vh] overflow-y-auto scrollbar-thin">
-            {items.length === 0 ? (
-              <p className="text-xs text-slate-400 text-center py-8">Nada registrado ainda.</p>
-            ) : (
-              items.map((it) => {
-                const body = (
-                  <div className="px-4 py-2.5 hover:bg-slate-50 border-b border-slate-100">
-                    <p className="text-xs text-slate-700 leading-snug">
-                      <span className="font-semibold">{it.userName}</span> {it.summary}
-                      {it.leadName && (
-                        <> — <span className="font-medium text-slate-900">{it.leadName}</span></>
-                      )}
-                    </p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">{timeAgo(it.createdAt)}</p>
-                  </div>
-                );
-                return it.leadId ? (
-                  <Link key={it.id} href={`/leads/${it.leadId}`} onClick={() => setOpen(false)} className="block">
-                    {body}
-                  </Link>
-                ) : (
-                  <div key={it.id}>{body}</div>
-                );
-              })
-            )}
-            {cursor && (
-              <button
-                onClick={loadMore}
-                disabled={loadingMore}
-                className="w-full text-xs text-af-mid hover:bg-slate-50 py-2.5 disabled:opacity-50"
-              >
-                {loadingMore ? 'Carregando…' : 'Carregar mais'}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Portal pro <body> — senão os cards do Kanban (que têm transform) ficam
+          por cima do painel. */}
+      {open && mounted && createPortal(panel, document.body)}
     </div>
   );
 }
