@@ -28,6 +28,16 @@ function phoneCore(digits: string): string | null {
   return core.length >= 8 ? core : null;
 }
 
+/** "(12) 98189-2521" — mesmo formato de exibição usado em todo o resto do
+ *  CRM (routes/leads.ts, whatsapp.service.ts etc.); NÃO o "+55..." cru, que
+ *  é só pra matching interno (Contact.whatsappPhone). */
+function formatPhoneDisplay(e164Digits: string): string {
+  const d = e164Digits.startsWith('55') ? e164Digits.slice(2) : e164Digits;
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `+${e164Digits}`;
+}
+
 export interface SiteLeadInput {
   name: string;
   phone: string;
@@ -57,7 +67,7 @@ export async function createLeadFromSiteForm(
   if (!departmentName) return { ok: false, status: 400, error: 'department é obrigatório' };
 
   const e164 = normalizeBrazilianWhatsAppPhone(rawPhone);
-  const formattedPhone = `+${e164}`;
+  const formattedPhone = formatPhoneDisplay(e164);
   const core = phoneCore(e164);
 
   // Resolve setor → funil → etapa de Prospecção — mesma regra usada pelo
