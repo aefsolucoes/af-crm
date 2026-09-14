@@ -886,9 +886,13 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         </span>
       );
     }
-    if (status === 'READ') return <CheckCheck size={14} className="text-blue-400" />;
-    if (status === 'DELIVERED') return <CheckCheck size={14} className="text-slate-300" />;
-    return <Check size={14} className="text-slate-300" />;
+    if (status === 'READ') return <span title="Lida pelo cliente"><CheckCheck size={14} className="text-blue-400" /></span>;
+    if (status === 'DELIVERED') return <span title="Entregue no WhatsApp do cliente"><CheckCheck size={14} className="text-slate-300" /></span>;
+    // SENT (ou sem status ainda) — a Meta aceitou o envio, mas ainda não
+    // confirmou entrega/leitura. NÃO é erro: a Meta nem sempre manda essa
+    // confirmação, mesmo quando a mensagem chegou certinho. Só vira o alerta
+    // vermelho acima quando a Meta avisa de verdade que falhou.
+    return <span title="Enviada — aceita pela Meta, aguardando confirmação de entrega"><Check size={14} className="text-slate-300" /></span>;
   }
 
   // ── Timeline unificado: mensagens + notas de fluxo ordenadas por data ──
