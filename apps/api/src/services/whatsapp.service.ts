@@ -266,14 +266,38 @@ export function normalizeBrazilianWhatsAppPhone(to: string): string {
   return phone;
 }
 
+/** Traduz/explica os erros mais comuns que a Meta devolve — o texto original
+ *  vem cru, em inglês, cheio de jargão da API, sem dizer o que fazer a
+ *  respeito. Usado tanto na falha síncrona (parseGraphError, abaixo) quanto
+ *  na falha assíncrona reportada depois por webhook (processWhatsAppStatus).
+ *  null = código ainda não mapeado; quem chama decide o que fazer nesse caso
+ *  (mostra o texto original da Meta, não perde a informação). */
+function friendlyWhatsAppError(code: number | undefined): string | null {
+  switch (code) {
+    case 190:
+      return 'Token de acesso inválido ou expirado. Acesse Configurações → API Oficial e gere um novo token.';
+    case 131047:
+      return 'Não é possível enviar texto livre: já se passaram mais de 24h desde a última mensagem do cliente. Envie um template aprovado pela Meta (aba Templates) para reabrir a conversa.';
+    case 131026:
+      return 'Esse número não tem WhatsApp (ou está em formato inválido) — confira o telefone cadastrado no card.';
+    case 131031:
+      return 'A conta do WhatsApp Business está restrita pela Meta no momento — não é possível enviar mensagens até a Meta liberar.';
+    case 131048:
+    case 130429:
+      return 'Limite de envio da Meta atingido (muitas mensagens em pouco tempo) — espere um pouco e tente de novo.';
+    case 133010:
+      return 'O número configurado na API Oficial não está registrado/ativo na Meta — confira em Configurações → API Oficial.';
+    default:
+      return null;
+  }
+}
+
 /** Interpreta o erro da Graph API num formato consistente. */
 function parseGraphError(json: { error?: { message: string; code: number } }, res: Response, phone: string): string {
   const errMsg  = json.error?.message || 'Erro desconhecido';
   const errCode = json.error?.code ?? res.status;
-  if (errCode === 190) {
-    return `Token de acesso inválido ou expirado. Acesse Configurações → API Oficial e gere um novo token. (código: 190)`;
-  }
-  return `${errMsg} (código: ${errCode}, número: ${phone})`;
+  const friendly = friendlyWhatsAppError(errCode);
+  return `${friendly || errMsg} (código: ${errCode}, número: ${phone})`;
 }
 
 export async function sendWhatsAppMessage(
@@ -651,11 +675,15 @@ export async function processWhatsAppStatus(body: any, io: any) {
 
           // Quando falha, a Meta manda o motivo em s.errors — sem guardar isso,
           // a mensagem só aparecia "falhou" sem nenhuma explicação do porquê.
+          // O texto cru da Meta vem em inglês; friendlyWhatsAppError traduz os
+          // casos mais comuns (ex.: janela de 24h fechada), com fallback pro
+          // original + código pra qualquer erro ainda não mapeado.
           let statusError: string | null = null;
           if (newStatus === 'FAILED' && Array.isArray(s.errors) && s.errors.length > 0) {
             const e = s.errors[0];
             const details = e?.error_data?.details;
-            statusError = [e?.title || e?.message, details].filter(Boolean).join(' — ');
+            const raw = [e?.title || e?.message, details].filter(Boolean).join(' — ');
+            statusError = friendlyWhatsAppError(e?.code) || raw;
             if (e?.code) statusError = `${statusError} (código: ${e.code})`;
             console.error(`[WA Status] Falha ao entregar ${externalId}:`, JSON.stringify(s.errors));
           }
