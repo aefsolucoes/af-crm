@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import api from '@/lib/api';
+import { toast } from '@/components/ui/toast';
 
 /** VAPID public key vem em base64url — o Push API do navegador exige
  *  Uint8Array. Conversão padrão recomendada pela spec. */
@@ -57,7 +58,9 @@ export function usePushSubscription() {
 
       const { data } = await api.get('/api/push/vapid-public-key');
       if (!data?.publicKey) {
-        // Chaves VAPID ainda não configuradas no servidor — nada a fazer.
+        // Chaves VAPID ainda não configuradas no servidor — antes falhava
+        // 100% silencioso (parecia que o botão não fazia nada); agora avisa.
+        toast('Notificação push ainda não configurada no servidor — fale com o admin.', 'error');
         setStatus('unsubscribed');
         return;
       }
@@ -80,6 +83,7 @@ export function usePushSubscription() {
       setStatus('subscribed');
     } catch (err) {
       console.error('[Push] Falha ao ativar notificações:', err);
+      toast('Não consegui ativar as notificações push. Tente de novo.', 'error');
     } finally {
       setBusy(false);
     }

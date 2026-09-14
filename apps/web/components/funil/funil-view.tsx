@@ -20,6 +20,11 @@ import { useAuthStore } from '@/store/auth.store';
 // Ordem fixa dos pipelines dentro de cada setor
 const PIPELINE_ORDER = ['Caixa de Entrada', 'Vendas', 'Em contratação', 'Follow Up'];
 
+// "Caixa de Entrada" não pertence a nenhum setor (é o funil global de leads
+// novos ainda não triados) — vira uma seção própria no seletor de setor, em
+// vez de aparecer misturada dentro do dropdown de cada setor real.
+const CAIXA_ENTRADA_NAME = 'Caixa de Entrada';
+
 interface DepartmentOption { id: string; name: string; }
 
 async function fetchPipelines(): Promise<Pipeline[]> {
@@ -64,10 +69,12 @@ export function FunilView() {
 
   // Só oferece os setores do próprio colaborador (Admin ou quem não tem
   // setor definido continua vendo todos — mesmo critério do menu lateral).
+  // "Caixa de Entrada" vai SEMPRE na frente, pra todo mundo — não é um setor
+  // de verdade, é a seção separada dos leads ainda não triados.
   const availableDepartments = useMemo(() => {
     const all = departments || [];
-    if (isAdmin || !me?.departmentIds?.length) return all;
-    return all.filter((d) => me.departmentIds!.includes(d.id));
+    const scoped = isAdmin || !me?.departmentIds?.length ? all : all.filter((d) => me.departmentIds!.includes(d.id));
+    return [{ id: '__caixa_entrada__', name: CAIXA_ENTRADA_NAME }, ...scoped];
   }, [departments, isAdmin, me?.departmentIds]);
 
   const selectedDeptKey = 'af-crm:funil:selectedDepartmentName';
@@ -171,15 +178,18 @@ export function FunilView() {
 
   const department = (departments || []).find((d) => d.name === departmentName);
 
-  // Pipelines deste setor — mais os "órfãos" (sem departamento definido).
-  // Mesmo critério que o backend já usa pra decidir o que um colaborador sem
-  // setor vê (services/department.service.ts: OR departmentId=X OU null) —
-  // sem incluir os órfãos aqui, um pipeline sem setor sumia das DUAS telas
-  // novas (nem Habitação nem Consórcio o enxergava mais).
-  const departmentPipelines = useMemo(
-    () => (allPipelines || []).filter((p) => p.department?.name === departmentName || !p.department),
-    [allPipelines, departmentName]
-  );
+  // Na seção "Caixa de Entrada": só os pipelines "órfãos" (sem departamento
+  // definido) — inclusive qualquer outro além do próprio "Caixa de Entrada",
+  // pra não sumir de novo (mesmo critério que o backend já usa pra decidir o
+  // que um colaborador sem setor vê: services/department.service.ts, OR
+  // departmentId=X OU null). Num setor de verdade, só os DELE — não mistura
+  // mais os órfãos aqui, eles têm a seção própria agora.
+  const departmentPipelines = useMemo(() => {
+    if (departmentName === CAIXA_ENTRADA_NAME) {
+      return (allPipelines || []).filter((p) => !p.department);
+    }
+    return (allPipelines || []).filter((p) => p.department?.name === departmentName);
+  }, [allPipelines, departmentName]);
 
   // Pipelines ordenados: Caixa de Entrada → Vendas → Em contratação → Follow Up.
   // Casa por prefixo pra "Em contratação Home Equity" cair no mesmo lugar que
@@ -338,7 +348,13 @@ export function FunilView() {
     <div className="flex flex-col h-full">
       <Topbar
         title={title}
-        subtitle={search.trim() ? `Todos os funis de ${departmentName}` : [departmentName, pipeline?.name].filter(Boolean).join(' · ')}
+        subtitle={
+          search.trim()
+            ? `Todos os funis de ${departmentName}`
+            : departmentName === pipeline?.name
+            ? departmentName
+            : [departmentName, pipeline?.name].filter(Boolean).join(' · ')
+        }
       />
 
       <div className="flex items-center justify-between px-6 py-3 app-topbar-surface border-b gap-4">
