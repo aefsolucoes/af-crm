@@ -1258,7 +1258,11 @@ function SiteLeadTab() {
           <p className="text-[11px] text-slate-400 mt-1">
             <code>name</code>, <code>phone</code> e <code>department</code> são obrigatórios. <code>department</code> precisa
             ser exatamente "Home Equity" ou "Financiamento Habitacional" (o mesmo nome do setor em Departamentos).
-            <code>customFields</code> é opcional — qualquer campo que o card já tenha (ex.: valor_imovel, valor_credito).
+            <code>customFields</code> é opcional — só os campos que o card já tem (não inventa campo novo): valor_imovel,
+            valor_credito, valor_entrada, valor_avaliacao, primeira_parcela, ultima_parcela, prazo_financ, taxa_efetiva,
+            instituicao (Home Equity/Financiamento); credito_consorcio, parcela_consorcio, prazo_consorcio (Consórcio).
+            Os campos de valor aceitam o texto como o formulário já produz ("R$ 100.000,00", "R$ 100 mil") — o CRM
+            converte sozinho.
           </p>
         </div>
       </div>

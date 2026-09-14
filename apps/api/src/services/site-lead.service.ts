@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { normalizeBrazilianWhatsAppPhone } from './whatsapp.service';
 import { normalizeClientName } from '../lib/text';
 import { logActivity } from './activity.service';
+import { parseMoneyOrNumber } from './campaign-detection.service';
 
 const prisma = new PrismaClient();
 
@@ -105,11 +106,24 @@ export async function createLeadFromSiteForm(
     if (Object.keys(patch).length) await prisma.contact.update({ where: { id: contact.id }, data: patch });
   }
 
+  // Campos NUMBER do card (prisma/seed.ts, tab "Financiamento") — aceita o
+  // valor formatado como o formulário do site já produz naturalmente ("R$
+  // 100.000,00", "R$ 100 mil", "50000") e normaliza pra número puro, mesma
+  // regra já usada no roteamento de campanha por WhatsApp. Poupa quem
+  // implementa o lado do site de ter que converter isso antes de mandar.
+  const NUMBER_FIELD_KEYS = new Set([
+    'valor_avaliacao', 'valor_imovel', 'valor_credito', 'valor_entrada',
+    'primeira_parcela', 'ultima_parcela', 'renda_1', 'renda_2',
+    'credito_consorcio', 'parcela_consorcio', 'prazo_consorcio',
+  ]);
+
   const extraFields: Record<string, string> = {};
   if (input.customFields) {
     for (const [k, v] of Object.entries(input.customFields)) {
       if (v === undefined || v === null || v === '') continue;
-      extraFields[k] = String(v);
+      const raw = String(v);
+      const parsed = NUMBER_FIELD_KEYS.has(k) ? parseMoneyOrNumber(raw) : raw;
+      if (parsed !== null && parsed !== '') extraFields[k] = parsed;
     }
   }
   const customFields = {

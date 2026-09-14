@@ -108,7 +108,7 @@ const SKIP_VALUES = new Set(['—', '-', '', 'nao informada', 'nao informado']);
 /** "R$ 100 mil" / "R$ 1.508,38" / "120 meses" / "50000" -> "100000" /
  *  "1508.38" / "120" / "50000" (número puro, sem separador de milhar —
  *  convenção dos campos NUMBER, ver lead-sidebar.tsx normalizeForSave). */
-function parseMoneyOrNumber(raw: string): string | null {
+export function parseMoneyOrNumber(raw: string): string | null {
   let s = raw.trim().toLowerCase();
   const isMil = /\bmil\b/.test(s);
   s = s.replace(/r\$/g, '').replace(/\bmil\b/g, '').replace(/[^\d.,]/g, '').trim();
