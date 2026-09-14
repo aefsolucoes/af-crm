@@ -118,7 +118,11 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
   }
 
   function getLeadsForStage(stageId: string) {
-    return leads.filter((l) => l.stageId === stageId);
+    // Marcados como importante sobem pro topo da etapa (sort estável — não
+    // embaralha a ordem entre eles nem com o resto, só separa os dois grupos).
+    return leads
+      .filter((l) => l.stageId === stageId)
+      .sort((a, b) => (b.starred ? 1 : 0) - (a.starred ? 1 : 0));
   }
 
   async function executeMove(leadId: string, stageId: string) {

@@ -2,13 +2,15 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Lead } from '@/types';
-import { formatCurrency, formatDate, CHANNEL_COLORS } from '@/lib/utils';
+import { formatCurrency, formatDateTime, CHANNEL_COLORS } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
-import { Calendar, MessageCircle, GitMerge, Check } from 'lucide-react';
+import { Calendar, MessageCircle, GitMerge, Check, Star } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
+import api from '@/lib/api';
+import { toast } from '@/components/ui/toast';
 import { MergeModal } from './merge-modal';
 
 interface KanbanCardProps {
@@ -26,6 +28,12 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
   const router = useRouter();
   const queryClient = useQueryClient();
   const [showMerge, setShowMerge] = useState(false);
+  // Otimista: muda na hora, sem esperar o servidor — desfaz se a chamada
+  // falhar. Ressincroniza se o card for atualizado por fora (outro
+  // colaborador marcou, ou um refetch trouxe o valor real do servidor).
+  const [starred, setStarred] = useState(!!lead.starred);
+  const [togglingStar, setTogglingStar] = useState(false);
+  useEffect(() => { setStarred(!!lead.starred); }, [lead.starred]);
 
   // dnd-kit com distance:12 — cliques normais (<12px) passam para onClick
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: lead.id });
@@ -69,6 +77,25 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
     onToggleSelect?.(lead.id);
   }
 
+  async function handleToggleStar(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (togglingStar) return;
+    const next = !starred;
+    setStarred(next); // otimista
+    setTogglingStar(true);
+    try {
+      await api.patch(`/api/leads/${lead.id}/star`, { starred: next });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['leads-all'] });
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    } catch {
+      setStarred(!next); // desfaz
+      toast('Erro ao marcar o lead', 'error');
+    } finally {
+      setTogglingStar(false);
+    }
+  }
+
   return (
     <>
     <MergeModal
@@ -96,10 +123,28 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
           {selected && <Check size={12} className="text-white" />}
         </button>
       )}
+      {/* Estrela de importante/prioridade — canto superior direito. Sempre
+          visível se marcado; senão, só no hover (mesmo padrão do checkbox). */}
+      <button
+        type="button"
+        onClick={handleToggleStar}
+        onPointerDown={(e) => e.stopPropagation()}
+        title={starred ? 'Desmarcar como importante' : 'Marcar como importante'}
+        className={cn(
+          'absolute -top-1.5 -right-1.5 z-10 w-5 h-5 rounded-full flex items-center justify-center transition-all bg-white shadow-sm',
+          !starred && 'opacity-0 group-hover/card:opacity-100',
+        )}
+      >
+        <Star size={13} className={starred ? 'text-amber-400 fill-amber-400' : 'text-slate-300'} />
+      </button>
       <div
         className={cn(
           'app-column-surface rounded-xl border shadow-sm hover:shadow-md transition-all cursor-pointer select-none overflow-hidden',
-          selected ? 'border-af-accent ring-2 ring-af-accent/40' : 'border-af-border hover:border-af-mid/50',
+          selected
+            ? 'border-af-accent ring-2 ring-af-accent/40'
+            : starred
+            ? 'border-amber-300 ring-1 ring-amber-200'
+            : 'border-af-border hover:border-af-mid/50',
         )}
         onClick={handleCardClick}
       >
@@ -147,9 +192,9 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
             <span className={`text-xs font-bold ${lead.value ? 'text-af-mid' : 'text-slate-300'}`}>
               {lead.value ? formatCurrency(lead.value) : '—'}
             </span>
-            <div className="flex items-center gap-1 text-xs text-slate-400">
+            <div className="flex items-center gap-1 text-xs text-slate-700 font-medium">
               <Calendar size={10} />
-              <span>{formatDate(lead.createdAt)}</span>
+              <span>{formatDateTime(lead.createdAt)}</span>
             </div>
             <div className="flex items-center gap-1">
               <button

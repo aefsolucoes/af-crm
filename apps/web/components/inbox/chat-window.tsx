@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
@@ -94,6 +94,40 @@ function messagePreviewText(msg: Message): string {
     return caption || `📎 ${msg.attachments[0].fileName}`;
   }
   return msg.content;
+}
+
+const URL_REGEX = /(https?:\/\/[^\s]+)/g;
+
+/** Vira o texto da mensagem em pedaços, transformando qualquer link http(s)
+ *  em algo clicável de verdade — sem isso, um link (encaminhado, digitado
+ *  pelo agente, ou mandado pelo cliente) aparecia como texto puro, sem jeito
+ *  de clicar. `text.split(regex-com-grupo)` alterna [texto, url, texto, url,
+ *  ...] — usa a POSIÇÃO (par/ímpar) pra saber qual é qual, em vez de testar
+ *  de novo a mesma regex global (o `lastIndex` dela pula match se reusada). */
+function renderMessageText(text: string): React.ReactNode {
+  const parts = text.split(URL_REGEX);
+  if (parts.length === 1) return text;
+  return parts.map((part, i) => {
+    if (i % 2 === 0) return part || null;
+    // Pontuação de fechamento no final provavelmente não é parte do link
+    // (ex.: "confira: https://site.com." — o ponto final é da frase).
+    const trailing = part.match(/[.,;:!?)\]}'"]+$/)?.[0] || '';
+    const url = trailing ? part.slice(0, part.length - trailing.length) : part;
+    return (
+      <Fragment key={i}>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="underline text-[#53bdeb] hover:text-[#6bc9f0] break-all"
+        >
+          {url}
+        </a>
+        {trailing}
+      </Fragment>
+    );
+  });
 }
 
 /** Nome de quem mandou, pra mostrar na citação (igual ao rótulo "via ... · quem enviou"). */
@@ -1270,7 +1304,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                             ? (msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '')
                             : msg.content;
                           if (!text) return null;
-                          return <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{text}</p>;
+                          return <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{renderMessageText(text)}</p>;
                         })()}
                       </>
                     )}

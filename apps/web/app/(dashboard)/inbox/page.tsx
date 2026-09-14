@@ -99,10 +99,14 @@ function InboxPageInner() {
     };
     socket.on('new_conversation', refresh);
     socket.on('new_notification', refresh);
+    // Outro colaborador marcou/desmarcou um lead como importante — atualiza
+    // a estrela na lista pra quem também está com a Inbox aberta.
+    socket.on('lead_starred', refresh);
     return () => {
       if (t) clearTimeout(t);
       socket.off('new_conversation', refresh);
       socket.off('new_notification', refresh);
+      socket.off('lead_starred', refresh);
     };
   }, [queryClient]);
 

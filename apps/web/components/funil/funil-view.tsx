@@ -12,7 +12,7 @@ import { LeadModal } from '@/components/kanban/lead-modal';
 import { DuplicatesModal } from '@/components/kanban/duplicates-modal';
 import { Pipeline, Lead, Contact, User } from '@/types';
 import api from '@/lib/api';
-import { Plus, RefreshCw, Search, X, Pencil, Trash2, FolderPlus, GitMerge, Archive } from 'lucide-react';
+import { Plus, RefreshCw, Search, X, Pencil, Trash2, FolderPlus, GitMerge, Archive, Star } from 'lucide-react';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
@@ -63,6 +63,7 @@ export function FunilView() {
   const me = useAuthStore((s) => s.user);
   const isAdmin = me?.role === 'ADMIN';
   const [showArchived, setShowArchived] = useState(false);
+  const [showStarredOnly, setShowStarredOnly] = useState(false);
   const searchParams = useSearchParams();
 
   const { data: departments } = useQuery({ queryKey: ['departments'], queryFn: fetchDepartments });
@@ -151,6 +152,14 @@ export function FunilView() {
       queryClient.invalidateQueries({ queryKey: ['leads-all'] });
     }
 
+    // Outro colaborador marcou/desmarcou um lead como importante — atualiza
+    // aqui também (o card já muda na hora pra quem clicou, isso é só pros
+    // outros vendo o mesmo funil ao mesmo tempo).
+    function onLeadStarred() {
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['leads-all'] });
+    }
+
     // lead_moved só é emitido na auto-migração ao "Fechado" (Vendas → Em
     // contratação, ou Home Equity → Em contratação Home Equity). Como esse
     // funil de destino pode ter ACABADO de ser criado, precisa recarregar a
@@ -165,9 +174,11 @@ export function FunilView() {
 
     socket.on('new_notification', onNewNotification);
     socket.on('lead_moved', onLeadMoved);
+    socket.on('lead_starred', onLeadStarred);
     return () => {
       socket.off('new_notification', onNewNotification);
       socket.off('lead_moved', onLeadMoved);
+      socket.off('lead_starred', onLeadStarred);
     };
   }, [queryClient]);
 
@@ -243,26 +254,27 @@ export function FunilView() {
 
   // Leads para exibição: se pesquisando usa todos os funis DESTE SETOR, senão
   // usa pipeline atual. Aplica updates otimísticos do store por cima dos
-  // dados do servidor.
+  // dados do servidor. Filtro "Só marcados" entra por último, em cima do
+  // resultado de qualquer um dos caminhos acima.
   const displayLeads = useMemo(() => {
     const baseLeads = search.trim()
       ? (allRawLeads || []).filter((l) => departmentPipelineIds.has(l.pipelineId))
       : (rawLeads || []);
 
+    let result = baseLeads;
+
     if (!search.trim() && storeLeads.length > 0) {
       // Aplica updates otimísticos (drag-and-drop) sem perder novos leads do servidor
-      return baseLeads.map(lead => {
+      result = baseLeads.map(lead => {
         const storeLead = storeLeads.find(l => l.id === lead.id);
         if (storeLead && storeLead.stageId !== lead.stageId) {
           return { ...lead, stageId: storeLead.stageId };
         }
         return lead;
       });
-    }
-
-    if (search.trim()) {
+    } else if (search.trim()) {
       const q = search.toLowerCase();
-      return baseLeads.filter(l => {
+      result = baseLeads.filter(l => {
         const cf = (l.customFields || {}) as Record<string, string>;
         return (
           l.name.toLowerCase().includes(q) ||
@@ -277,8 +289,8 @@ export function FunilView() {
       });
     }
 
-    return baseLeads;
-  }, [rawLeads, allRawLeads, storeLeads, search, departmentPipelineIds]);
+    return showStarredOnly ? result.filter(l => l.starred) : result;
+  }, [rawLeads, allRawLeads, storeLeads, search, departmentPipelineIds, showStarredOnly]);
 
   // Usuários únicos extraídos dos leads
   const users: User[] = useMemo(() =>
@@ -435,6 +447,15 @@ export function FunilView() {
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          <Button
+            variant={showStarredOnly ? 'primary' : 'ghost'}
+            size="sm"
+            onClick={() => setShowStarredOnly((v) => !v)}
+            title="Mostrar só os leads marcados como importante"
+          >
+            <Star size={14} className={showStarredOnly ? 'fill-current' : ''} />
+            {showStarredOnly ? 'Só marcados' : 'Marcados'}
+          </Button>
           {isAdmin && (
             <Button
               variant={showArchived ? 'primary' : 'ghost'}

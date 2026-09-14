@@ -91,6 +91,8 @@ export interface Lead {
   createdAt: string;
   updatedAt: string;
   archived?: boolean;
+  /** Marcado como importante/prioridade — estrela no card do Kanban. */
+  starred?: boolean;
   messages?: Message[];
   _count?: { messages: number };
 }
@@ -201,6 +203,8 @@ export interface Conversation {
   _count: { messages: number };
   updatedAt: string;
   isGroup?: boolean;
+  /** Lead marcado como importante/prioridade — mesma estrela do Kanban. */
+  starred?: boolean;
   whatsappNumberId?: string | null;
   whatsappNumber?: { id: string; label: string; phone?: string | null } | null;
   aiAutoReplyActive?: boolean;

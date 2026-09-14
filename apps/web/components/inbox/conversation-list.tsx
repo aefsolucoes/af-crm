@@ -3,7 +3,7 @@ import { Conversation } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatDateTime } from '@/lib/utils';
 import { useState } from 'react';
-import { Search, X, BadgeCheck, AlertCircle, RefreshCw } from 'lucide-react';
+import { Search, X, BadgeCheck, AlertCircle, RefreshCw, Star } from 'lucide-react';
 
 /** true se a conversa é um grupo do WhatsApp (só existiam pelo canal QR,
  *  removido do CRM — grupos ficam de fora da Inbox, mas o Lead/Message
@@ -203,6 +203,9 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-[#e9edef] truncate flex items-center gap-1.5">
+                    {conv.starred && (
+                      <Star size={12} className="flex-shrink-0 text-amber-400 fill-amber-400" />
+                    )}
                     <span className="truncate">{conv.contact?.name || conv.name}</span>
                   </span>
                   {lastMsg && <span className={cn('text-xs flex-shrink-0 ml-1', unread > 0 ? 'text-[#00a884]' : 'text-[#8696a0]')}>{formatDateTime(lastMsg.createdAt)}</span>}
