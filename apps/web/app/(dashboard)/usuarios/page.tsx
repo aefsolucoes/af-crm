@@ -25,11 +25,6 @@ interface UserRecord {
   assistantProjectUrl: string | null;
 }
 
-interface WhatsNumber {
-  id: string;
-  label: string;
-}
-
 interface DepartmentOption {
   id: string;
   name: string;
@@ -61,21 +56,12 @@ export default function UsuariosPage() {
     queryKey: ['users'],
     queryFn: async () => (await api.get('/api/users')).data as UserRecord[],
   });
-  const { data: numbers = [] } = useQuery({
-    queryKey: ['whatsapp-qr-numbers'],
-    queryFn: async () => (await api.get('/api/whatsapp-qr/numbers')).data as WhatsNumber[],
-  });
   const { data: departments = [] } = useQuery({
     queryKey: ['departments'],
     queryFn: async () => (await api.get('/api/departments')).data as DepartmentOption[],
   });
-  // Rótulos dos canais que o usuário enxerga — um ou mais números QR e/ou API Oficial.
-  const channelLabels = (u: UserRecord) => {
-    if (!u.whatsAppNumberIds?.length) return [];
-    return u.whatsAppNumberIds
-      .map((id) => (id === 'API' ? 'API Oficial' : numbers.find((n) => n.id === id)?.label))
-      .filter((label): label is string => !!label);
-  };
+  // Rótulo do canal que o usuário enxerga — hoje só existe a API Oficial.
+  const channelLabels = (u: UserRecord) => (u.whatsAppNumberIds?.includes('API') ? ['API Oficial'] : []);
   const departmentName = (id: string | null) => departments.find((d) => d.id === id)?.name;
   const departmentNames = (ids: string[]) => ids.map((id) => departmentName(id)).filter(Boolean).join(', ');
 
@@ -374,9 +360,9 @@ export default function UsuariosPage() {
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-slate-700">Números de WhatsApp que ele enxerga</label>
+              <label className="text-sm font-medium text-slate-700">Vê a API Oficial do WhatsApp na Inbox</label>
               <div className="flex flex-wrap gap-2">
-                {[{ id: 'API', label: 'API Oficial' }, ...numbers].map((n) => {
+                {[{ id: 'API', label: 'API Oficial' }].map((n) => {
                   const selected = form.whatsAppNumberIds.includes(n.id);
                   return (
                     <button
@@ -392,9 +378,9 @@ export default function UsuariosPage() {
                 })}
               </div>
               {form.whatsAppNumberIds.length === 0 && (
-                <p className="text-xs text-amber-500 mt-1">Nenhum marcado — vê todos os números liberados pro setor dele na Inbox (comportamento de antes).</p>
+                <p className="text-xs text-amber-500 mt-1">Nenhum marcado — vê todos os canais liberados pro setor dele na Inbox (comportamento de antes).</p>
               )}
-              <p className="text-xs text-slate-400 mt-1">Restringe a Inbox a só esses canais e mostra os clientes deles no Relatório Matinal. Pode marcar mais de um.</p>
+              <p className="text-xs text-slate-400 mt-1">Restringe a Inbox e o Relatório Matinal aos clientes desse canal.</p>
             </div>
 
             <div className="flex flex-col gap-1">

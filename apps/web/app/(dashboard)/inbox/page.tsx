@@ -6,7 +6,6 @@ import { Topbar } from '@/components/ui/topbar';
 import { ConversationList } from '@/components/inbox/conversation-list';
 import { ChatWindow } from '@/components/inbox/chat-window';
 import { InboxLeadPanel } from '@/components/inbox/inbox-lead-panel';
-import { GroupMembersPanel } from '@/components/inbox/group-members-panel';
 import { Conversation, Message, LeadDetail } from '@/types';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
@@ -107,12 +106,6 @@ function InboxPageInner() {
     };
   }, [queryClient]);
 
-  // Números de WhatsApp conectados — para as abas por número na Inbox
-  const { data: whatsappNumbers } = useQuery({
-    queryKey: ['whatsapp-numbers'],
-    queryFn: async () => { const { data } = await api.get('/api/whatsapp-qr/numbers'); return data; },
-  });
-
   // Ao abrir uma conversa, marca as mensagens como lidas (some o contador azul)
   useEffect(() => {
     if (!selectedId) return;
@@ -174,15 +167,6 @@ function InboxPageInner() {
             conversations={conversations || []}
             selectedId={selectedId || undefined}
             onSelect={(id) => { setSelectedId(id); setLocalMessages([]); setShowMobileInfo(false); }}
-            onToggleGroup={async (id, isGroup) => {
-              await api.put(`/api/leads/${id}`, { isGroup });
-              queryClient.invalidateQueries({ queryKey: ['conversations'] });
-            }}
-            onRefreshGroupNames={async () => {
-              await api.post('/api/whatsapp-qr/refresh-groups');
-              queryClient.invalidateQueries({ queryKey: ['conversations'] });
-            }}
-            whatsappNumbers={whatsappNumbers || []}
             loading={loadingConvs}
             loadError={convsError}
             onRetry={() => { refetchConvs(); }}
@@ -223,21 +207,13 @@ function InboxPageInner() {
                     : <PanelRightClose size={14} className="text-af-mid group-hover:text-white transition-colors" />}
                 </button>
                 {!hideLeadPanel && (
-                  (lead as any).isGroup ? (
-                    <GroupMembersPanel leadId={selectedId} groupName={displayName} />
-                  ) : (
-                    <InboxLeadPanel lead={lead} onRefresh={handleRefresh} />
-                  )
+                  <InboxLeadPanel lead={lead} onRefresh={handleRefresh} />
                 )}
               </>
             )}
             {isMobile && showMobileInfo && (
               <div className="fixed inset-0 z-50 flex flex-col md:hidden">
-                {(lead as any).isGroup ? (
-                  <GroupMembersPanel leadId={selectedId} groupName={displayName} onHide={() => setShowMobileInfo(false)} className="w-full" />
-                ) : (
-                  <InboxLeadPanel lead={lead} onRefresh={handleRefresh} onHide={() => setShowMobileInfo(false)} className="w-full" />
-                )}
+                <InboxLeadPanel lead={lead} onRefresh={handleRefresh} onHide={() => setShowMobileInfo(false)} className="w-full" />
               </div>
             )}
           </>

@@ -1,11 +1,13 @@
 'use client';
-import { Conversation, WhatsAppNumber } from '@/types';
+import { Conversation } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatDateTime } from '@/lib/utils';
 import { useState } from 'react';
-import { Users, UserMinus, Search, X, BadgeCheck, AlertCircle, RefreshCw } from 'lucide-react';
+import { Search, X, BadgeCheck, AlertCircle, RefreshCw } from 'lucide-react';
 
-/** true se a conversa é um grupo: marcada manualmente OU com JID de grupo (@g.us). */
+/** true se a conversa é um grupo do WhatsApp (só existiam pelo canal QR,
+ *  removido do CRM — grupos ficam de fora da Inbox, mas o Lead/Message
+ *  continuam no banco intactos, sem nenhuma exclusão de dado). */
 function isGroupConversation(c: Conversation): boolean {
   return c.isGroup === true || !!c.contact?.whatsappPhone?.endsWith('@g.us');
 }
@@ -72,9 +74,6 @@ interface ConversationListProps {
   conversations: Conversation[];
   selectedId?: string;
   onSelect: (id: string) => void;
-  onToggleGroup?: (id: string, isGroup: boolean) => void;
-  onRefreshGroupNames?: () => Promise<void>;
-  whatsappNumbers?: WhatsAppNumber[];
   loading?: boolean;
   /** A busca das conversas falhou (rede/servidor) — precisa aparecer como ERRO,
    *  nunca como "nenhuma conversa" (some a lista inteira e parece perda de dados). */
@@ -82,40 +81,30 @@ interface ConversationListProps {
   onRetry?: () => void;
 }
 
-// 'ALL' | 'GROUPS' | <whatsappNumberId>
-type Filter = string;
+// 'ALL' | 'API' — conversas de grupo nunca aparecem em nenhuma aba (ver isGroupConversation).
+type Filter = 'ALL' | 'API';
 
-export function ConversationList({ conversations, selectedId, onSelect, onToggleGroup, onRefreshGroupNames, whatsappNumbers = [], loading, loadError, onRetry }: ConversationListProps) {
+export function ConversationList({ conversations, selectedId, onSelect, loading, loadError, onRetry }: ConversationListProps) {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [search, setSearch] = useState('');
-  const [refreshing, setRefreshing] = useState(false);
 
-  const groupCount = conversations.filter(isGroupConversation).length;
   const apiCount = conversations.filter((c) => !isGroupConversation(c) && isApiConversation(c)).length;
 
   const q = search.trim();
 
   const filtered = conversations
     .filter((c) => {
-      const isGroup = isGroupConversation(c);
-      // Busca por nome ou número — vale sobre qualquer filtro (inclusive grupos).
+      // Busca por nome ou número — vale sobre qualquer filtro.
       if (q) {
         return matchesSearch(c, q); // ao buscar, ignora as abas e procura em tudo
       }
-      if (filter === 'GROUPS') return isGroup;
-      // Nas demais visões, os grupos ficam fora — têm aba própria.
-      if (isGroup) return false;
+      // Grupos do WhatsApp nunca aparecem na Inbox (o dado continua no banco,
+      // só não tem mais como abrir pela tela — o canal QR/Baileys, único que
+      // dava acesso a grupos, foi removido do CRM).
+      if (isGroupConversation(c)) return false;
       if (filter === 'ALL') return true;
       // aba da API Oficial (Meta Cloud API)
-      if (filter === 'API') return isApiConversation(c);
-      // Aba de um número QR específico: mostra o card se ESSE número já
-      // mandou/recebeu qualquer mensagem dele — não só se for o "último
-      // usado" (whatsappNumberId muda toda vez que o cliente fala por outro
-      // número; sem isso, a aba "esquecia" o cliente e a conversa parecia
-      // ter sumido). Um card pode aparecer em mais de uma aba de número,
-      // de propósito, se o cliente já falou pelos dois.
-      if (c.usedNumberIds?.includes(filter)) return !isApiConversation(c);
-      return (c.whatsappNumber?.id || c.whatsappNumberId) === filter && !isApiConversation(c);
+      return isApiConversation(c);
     })
     .sort((a, b) => lastMessageTime(b) - lastMessageTime(a));
 
@@ -155,16 +144,6 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
           <button onClick={() => setFilter('ALL')} className={chip(filter === 'ALL')}>
             Todas
           </button>
-          {whatsappNumbers.map((n) => (
-            <button
-              key={n.id}
-              onClick={() => setFilter(n.id)}
-              title={n.phone ? `+${n.phone}` : n.label}
-              className={chip(filter === n.id)}
-            >
-              {n.label}
-            </button>
-          ))}
           <button
             onClick={() => setFilter('API')}
             title="Conversas do WhatsApp API oficial (Meta Cloud API)"
@@ -172,19 +151,7 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
           >
             <BadgeCheck size={12} /> API Oficial{apiCount > 0 ? ` (${apiCount})` : ''}
           </button>
-          <button onClick={() => setFilter('GROUPS')} className={cn(chip(filter === 'GROUPS'), 'flex items-center gap-1')}>
-            <Users size={12} /> Grupos{groupCount > 0 ? ` (${groupCount})` : ''}
-          </button>
         </div>
-        {filter === 'GROUPS' && onRefreshGroupNames && (
-          <button
-            onClick={async () => { setRefreshing(true); try { await onRefreshGroupNames(); } finally { setRefreshing(false); } }}
-            disabled={refreshing}
-            className="mt-2 w-full text-xs text-[#00a884] hover:text-[#00c49a] underline decoration-dotted disabled:opacity-50"
-          >
-            {refreshing ? 'Atualizando nomes…' : 'Atualizar nomes dos grupos'}
-          </button>
-        )}
       </div>
 
       {/* List */}
@@ -206,7 +173,6 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
           const lastMsg = conv.messages[0];
           const unread = conv._count.messages;
           const ch = lastMsg?.channel;
-          const isGroup = isGroupConversation(conv);
           return (
             <div
               key={conv.id}
@@ -237,9 +203,6 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-[#e9edef] truncate flex items-center gap-1.5">
-                    {isGroup && (
-                      <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide bg-[#202c33] text-[#8696a0] px-1.5 py-0.5 rounded">Grupo</span>
-                    )}
                     <span className="truncate">{conv.contact?.name || conv.name}</span>
                   </span>
                   {lastMsg && <span className={cn('text-xs flex-shrink-0 ml-1', unread > 0 ? 'text-[#00a884]' : 'text-[#8696a0]')}>{formatDateTime(lastMsg.createdAt)}</span>}
@@ -252,25 +215,6 @@ export function ConversationList({ conversations, selectedId, onSelect, onToggle
                 {unread > 0 && (
                   <span className="bg-[#00a884] text-[#111b21] text-xs rounded-full min-w-5 h-5 px-1.5 flex items-center justify-center font-semibold">
                     {unread}
-                  </span>
-                )}
-                {onToggleGroup && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    title={isGroup ? 'Tirar de Grupos' : 'Mover para Grupos'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const name = conv.contact?.name || conv.name;
-                      const ok = window.confirm(
-                        isGroup ? `Tirar "${name}" de Grupos?` : `Marcar "${name}" como Grupo?`
-                      );
-                      if (ok) onToggleGroup(conv.id, !isGroup);
-                    }}
-                    onTouchStart={() => {}}
-                    className="text-[#8696a0] hover:text-[#e9edef] p-0.5 rounded hover:bg-[#2a3942] transition-colors"
-                  >
-                    {isGroup ? <UserMinus size={14} /> : <Users size={14} />}
                   </span>
                 )}
               </div>

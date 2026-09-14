@@ -193,13 +193,6 @@ export interface Message {
   starred?: boolean;
 }
 
-export interface WhatsAppNumber {
-  id: string;
-  label: string;
-  phone?: string | null;
-  status?: string;
-}
-
 export interface Conversation {
   id: string;
   name: string;

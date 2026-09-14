@@ -63,8 +63,6 @@ const AI_BUTTONS: { mode: AIMode; label: string; emoji: string }[] = [
   { mode: 'fun',          label: 'Divertido',           emoji: '🎉' },
 ];
 
-type WhatsAppVia = 'qr' | 'api';
-
 // ── Templates aprovados pela Meta (janela de 24h) ────────────────────────────
 interface MetaTemplate {
   name: string;
@@ -116,30 +114,10 @@ function lastInboundApiMessage(messages: Message[]): Message | null {
   return latest;
 }
 
-/** Canal "natural" da conversa: por onde o CLIENTE fala com a gente — olhando
- *  a ÚLTIMA mensagem RECEBIDA (não as que já enviamos, que podem estar
- *  "erradas" se algum envio anterior caiu no canal errado). Evita que a caixa
- *  de mensagem sugira o QR por padrão para um lead que só fala pela API
- *  Oficial (ex: veio de um anúncio Clique-para-WhatsApp). */
-function lastInboundChannel(messages: Message[]): { via: WhatsAppVia; numberId?: string } | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.direction !== 'INBOUND') continue;
-    if (m.externalId?.startsWith('wamid')) return { via: 'api' };
-    if (m.whatsappNumberId) return { via: 'qr', numberId: m.whatsappNumberId };
-  }
-  return null;
-}
-
 export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, onNewMessage, onClose, onOpenInfo }: ChatWindowProps) {
   const router = useRouter();
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
-  const [via, setVia] = useState<WhatsAppVia | null>(null);
-  // Número de WhatsApp (QR) escolhido para enviar; null = automático (o número
-  // que a conversa já usa ou o primeiro conectado). Escolher outro NÃO duplica a
-  // conversa — é o mesmo lead, só muda por qual número a mensagem sai.
-  const [fromNumberId, setFromNumberId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
   // Contato compartilhado no WhatsApp (cartão/vCard) — "Conversar" abre a
@@ -258,24 +236,13 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, leadId]);
 
-  // Disponibilidade dos canais de WhatsApp (números via QR Code e API oficial)
-  const { data: qrNumbers } = useQuery({
-    queryKey: ['whatsapp-qr-numbers'],
-    queryFn: async () => { const { data } = await api.get('/api/whatsapp-qr/numbers'); return data as { id: string; label: string; status: string }[]; },
-    refetchInterval: 30000,
-  });
+  // Disponibilidade da API Oficial do WhatsApp
   const { data: apiConfig } = useQuery({
     queryKey: ['whatsapp-api-config'],
     queryFn: async () => { const { data } = await api.get('/api/settings/whatsapp'); return data as { active?: boolean } | null; },
   });
 
-  const qrConnected = !!qrNumbers?.some(n => n.status === 'connected');
   const apiActive = !!apiConfig?.active;
-  // Canal por onde o cliente já fala com a gente nessa conversa (se houver).
-  const inboundChannel = lastInboundChannel(messages);
-  // Canal efetivo: escolha manual, senão o canal natural da conversa, senão
-  // QR se conectado, senão API.
-  const effectiveVia: WhatsAppVia = via ?? inboundChannel?.via ?? (qrConnected ? 'qr' : 'api');
 
   // Janela de 24h da API oficial: conta a partir da última mensagem que o
   // CLIENTE mandou por lá. Passado isso, só dá para responder com template.
@@ -284,22 +251,6 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const windowRemainingMs = windowDeadline ? windowDeadline - Date.now() : null;
   const windowOpen = windowRemainingMs === null ? null : windowRemainingMs > 0;
 
-  // Números QR conectados + rótulos (id → apelido) para o seletor e p/ marcar
-  // cada mensagem enviada com o número que a mandou.
-  const connectedQr = (qrNumbers || []).filter(n => n.status === 'connected');
-  const numberLabels: Record<string, string> = Object.fromEntries((qrNumbers || []).map(n => [n.id, n.label]));
-  // Número que a conversa já vinha usando (última mensagem com número definido).
-  const lastRouted = [...messages].reverse().find(m => m.whatsappNumberId)?.whatsappNumberId ?? null;
-  // Número ativo para enviar: escolha do usuário, senão o número por onde o
-  // cliente já falou (se ainda conectado), senão o da conversa, senão o 1º conectado.
-  const activeNumberId =
-    fromNumberId ??
-    (inboundChannel?.via === 'qr' && inboundChannel.numberId && connectedQr.some(n => n.id === inboundChannel.numberId) ? inboundChannel.numberId : null) ??
-    (lastRouted && connectedQr.some(n => n.id === lastRouted) ? lastRouted : connectedQr[0]?.id) ??
-    null;
-
-  // Ao trocar de conversa, volta o seletor para "automático".
-  useEffect(() => { setFromNumberId(null); }, [leadId]);
   // Some com a sugestão ao trocar de conversa — sem isso, uma sugestão gerada
   // pra um cliente ficava visível (e clicável em "Usar") ao abrir outro.
   useEffect(() => { setSuggestion(null); }, [leadId]);
@@ -339,8 +290,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       const kind = phoneFixKind;
       setPhoneFixKind(null);
       setPhoneFixValue('');
-      // hasWhatsApp: true/false = checado de verdade (precisa de um QR
-      // conectado); null = indeterminado, não é erro — só não dá pra saber agora.
+      // hasWhatsApp: sem canal QR não dá pra checar de verdade — fica sempre
+      // null (indeterminado), não é erro.
       if (data?.hasWhatsApp === false) {
         toast('Telefone salvo — mas esse número não parece ter WhatsApp. Confira antes de reenviar.', 'error');
       } else if (data?.hasWhatsApp === true) {
@@ -600,7 +551,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // aprovado reabre a conversa. Trava ANTES de tentar (a Meta ia recusar de
   // qualquer jeito) e já manda direto pro seletor de template, em vez de só
   // deixar a mensagem falhar silenciosamente lá na frente.
-  const windowClosedForApi = channel === 'WHATSAPP' && effectiveVia === 'api' && windowOpen === false;
+  const windowClosedForApi = channel === 'WHATSAPP' && windowOpen === false;
 
   async function handleSend(e?: React.FormEvent) {
     e?.preventDefault();
@@ -621,9 +572,6 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         direction: 'OUTBOUND',
         channel,
         leadId,
-        ...(channel === 'WHATSAPP'
-          ? { via: effectiveVia, ...(effectiveVia === 'qr' && activeNumberId ? { fromNumberId: activeNumberId } : {}) }
-          : {}),
         ...(quotedMsg
           ? {
               replyToExternalId: quotedMsg.externalId || undefined,
@@ -662,9 +610,6 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         fileName: file.name,
         mimeType: file.type || 'application/octet-stream',
         dataBase64,
-        ...(channel === 'WHATSAPP'
-          ? { via: effectiveVia, ...(effectiveVia === 'qr' && activeNumberId ? { fromNumberId: activeNumberId } : {}) }
-          : {}),
       });
       onNewMessage(data);
     } catch (err: any) {
@@ -856,8 +801,6 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         direction: 'OUTBOUND',
         channel: 'WHATSAPP',
         leadId,
-        via: effectiveVia,
-        ...(effectiveVia === 'qr' && activeNumberId ? { fromNumberId: activeNumberId } : {}),
         ...(pendingLocalTemplate.buttonType === 'QUICK_REPLY'
           ? { buttons: (pendingLocalTemplate.quickReplies || []).filter(Boolean) }
           : { ctaButton: { text: pendingLocalTemplate.ctaUrlText, url: pendingLocalTemplate.ctaUrl } }),
@@ -1069,42 +1012,16 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         </button>
       </div>
 
-      {/* Seletor: por qual WhatsApp enviar — lista única e discreta (cada número
-          pelo apelido, mais a API oficial), sem separar em dois níveis */}
+      {/* Status do canal — só existe a API Oficial, então é um indicador fixo,
+          não mais um seletor (o canal QR/Baileys foi removido do CRM). */}
       <div className="relative z-10 flex items-center gap-1 px-4 py-2 bg-[#202c33] border-b border-[#222e35] flex-wrap">
-        <span className="text-xs text-[#8696a0] font-medium mr-1">Enviar por:</span>
-
-        {(qrNumbers || []).map((n) => {
-          const isConn = n.status === 'connected';
-          const selected = effectiveVia === 'qr' && activeNumberId === n.id;
-          return (
-            <button
-              key={n.id}
-              onClick={() => { if (isConn) { setVia('qr'); setFromNumberId(n.id); } }}
-              disabled={!isConn}
-              title={isConn ? `Enviar por ${n.label}` : `${n.label} desconectado — reconecte em Configurações → QR Code`}
-              className={cn(
-                'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
-                selected ? 'bg-[#2a3942] text-[#e9edef] font-medium' : 'text-[#8696a0] hover:text-[#e9edef]'
-              )}
-            >
-              <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', isConn ? 'bg-green-400' : 'bg-red-400')} />
-              {n.label}
-            </button>
-          );
-        })}
-
-        <button
-          onClick={() => setVia('api')}
+        <span
           title={apiActive ? 'API oficial da Meta ativa' : 'API oficial não configurada/inativa'}
-          className={cn(
-            'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors',
-            effectiveVia === 'api' ? 'bg-[#2a3942] text-[#e9edef] font-medium' : 'text-[#8696a0] hover:text-[#e9edef]'
-          )}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-[#8696a0]"
         >
           <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', apiActive ? 'bg-green-400' : 'bg-red-400')} />
           API Oficial
-        </button>
+        </span>
 
         {/* Janela de 24h da API oficial — aviso discreto, não é um botão */}
         {windowOpen !== null && (
@@ -1268,17 +1185,11 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                           </button>
                         )}
                         {isOut && (() => {
-                          // "via {apelido do número} · {quem enviou}". Mensagens da API
-                          // Oficial (id começa com "wamid") não têm whatsappNumberId — não
-                          // dá pra cair no "último número QR usado" (isso rotulava errado,
-                          // como se tivesse saído pelo QR). O apelido só cai no "último
-                          // número" quando a MESMA mensagem realmente não tem essa info.
+                          // "via API Oficial · {quem enviou}". Mensagens antigas mandadas
+                          // pelo canal QR (removido do CRM) não têm rótulo de canal mais —
+                          // só mostra o remetente pra essas.
                           const isApiMsg = typeof msg.externalId === 'string' && msg.externalId.startsWith('wamid');
-                          const numLabel = msg.whatsappNumberId
-                            ? numberLabels[msg.whatsappNumberId]
-                            : isApiMsg
-                            ? 'API Oficial'
-                            : numberLabels[lastRouted || ''];
+                          const numLabel = isApiMsg ? 'API Oficial' : null;
                           const sender = (msg as any).sentBy?.name as string | undefined;
                           if (!numLabel && !sender) return null;
                           return (
@@ -1424,7 +1335,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                     )}
               </div>
               <p className="text-[11px] text-[#8696a0]">
-                Botão clicável de verdade só pela API Oficial; pelo QR o cliente vê como texto.
+                Botão clicável de verdade — enviado pela API Oficial.
               </p>
               <button
                 onClick={handleSendLocalTemplateButton}

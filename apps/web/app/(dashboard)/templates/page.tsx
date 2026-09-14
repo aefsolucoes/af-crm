@@ -752,7 +752,6 @@ export default function TemplatesPage() {
               <label className="text-sm font-medium text-slate-700">Botão (opcional)</label>
               <p className="text-xs text-slate-400 -mt-1">
                 O WhatsApp só deixa UM tipo por vez numa mensagem avulsa: ou até 3 botões de resposta rápida, ou 1 botão de link — nunca os dois juntos.
-                Botão de verdade (clicável) só funciona pela API Oficial; pelo QR sai como texto normal.
               </p>
               <select
                 value={form.buttonType}

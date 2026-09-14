@@ -1,6 +1,5 @@
 'use client';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import api from '@/lib/api';
 import { Sun, CheckSquare, MessageCircle, AlertCircle } from 'lucide-react';
@@ -23,23 +22,6 @@ export function MorningReport() {
     queryFn: async () => (await api.get('/api/reports/morning')).data as MorningData,
     refetchInterval: 5 * 60 * 1000,
   });
-
-  const qc = useQueryClient();
-  const [picked, setPicked] = useState('');
-  const [saving, setSaving] = useState(false);
-  const { data: numbers } = useQuery({
-    queryKey: ['whatsapp-qr-numbers'],
-    queryFn: async () => (await api.get('/api/whatsapp-qr/numbers')).data as { id: string; label: string }[],
-  });
-
-  async function linkNumber() {
-    if (!picked) return;
-    setSaving(true);
-    try {
-      await api.patch('/api/users/me/whatsapp', { whatsAppNumberId: picked });
-      await qc.invalidateQueries({ queryKey: ['morning-report'] });
-    } finally { setSaving(false); }
-  }
 
   if (isLoading || !data) {
     return <div className="rounded-2xl border border-af-border bg-af-navy/90 h-40 animate-pulse" />;
@@ -87,26 +69,7 @@ export function MorningReport() {
             <MessageCircle size={15} /> Clientes esperando resposta {data.numbers.length ? <span className="text-white/50 font-normal">· {data.numbers.map((n) => n.label).join(', ')}</span> : null}
           </div>
           {!data.numbers.length ? (
-            <div className="space-y-2">
-              <p className="text-xs text-amber-200">Vincule o seu número pra ver seus clientes aqui:</p>
-              <div className="flex gap-2">
-                <select
-                  value={picked}
-                  onChange={(e) => setPicked(e.target.value)}
-                  className="flex-1 text-xs rounded-lg px-2 py-1.5 bg-white/90 text-slate-800 focus:outline-none"
-                >
-                  <option value="">Escolha o número...</option>
-                  {(numbers || []).map((n) => <option key={n.id} value={n.id}>{n.label}</option>)}
-                </select>
-                <button
-                  onClick={linkNumber}
-                  disabled={!picked || saving}
-                  className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-white text-af-navy disabled:opacity-50"
-                >
-                  {saving ? '...' : 'Vincular'}
-                </button>
-              </div>
-            </div>
+            <p className="text-xs text-amber-200">Peça a um admin pra liberar a API Oficial pra você em Usuários.</p>
           ) : data.clients.length === 0 ? (
             <p className="text-xs text-white/60">Ninguém esperando — tudo respondido. 👏</p>
           ) : (

@@ -77,7 +77,7 @@ export function NodeInspector({ step, allSteps, onUpdate, onClose }: NodeInspect
             </div>
             <div className="flex flex-col gap-2">
               <label className="text-sm font-medium text-slate-700">Botões de resposta rápida (opcional, máx. 3)</label>
-              <p className="text-xs text-slate-400 -mt-1">Clicável de verdade na API Oficial; no QR Code vira uma lista numerada no texto.</p>
+              <p className="text-xs text-slate-400 -mt-1">Clicável de verdade — enviado pela API Oficial.</p>
               {buttons.map((b, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <input
