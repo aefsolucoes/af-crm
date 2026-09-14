@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2 } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2, Globe, KeyRound } from 'lucide-react';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { usePushSubscription } from '@/hooks/use-push-subscription';
 
@@ -70,7 +70,7 @@ function PushNotificationCard() {
   );
 }
 
-type Tab = 'api' | 'sons' | 'ia' | 'aparencia' | 'agente' | 'drive' | 'setores';
+type Tab = 'api' | 'sons' | 'ia' | 'aparencia' | 'agente' | 'drive' | 'setores' | 'site';
 
 interface WAConfig {
   phoneNumberId: string;
@@ -180,10 +180,16 @@ export default function ConfiguracoesPage() {
             <button onClick={() => setTab('setores')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${tab === 'setores' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700 hover:bg-white/60'}`}>
               <Building2 size={16} /> Departamentos
             </button>
+            <button onClick={() => setTab('site')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${tab === 'site' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700 hover:bg-white/60'}`}>
+              <Globe size={16} /> Site
+            </button>
           </div>
 
           {/* Departamentos Tab */}
           {tab === 'setores' && <DepartmentsTab />}
+
+          {/* Site Tab — captação de lead por formulário externo */}
+          {tab === 'site' && <SiteLeadTab />}
 
           {/* API Oficial Tab */}
           {tab === 'api' && <ApiOficialTab />}
@@ -1139,6 +1145,123 @@ function ReorganizeArchiveButton() {
           {done.remaining > 0 ? ` — faltam ${done.remaining}, clique de novo` : ''}.
         </p>
       )}
+    </div>
+  );
+}
+
+// ─── Aba Site — captação de lead por formulário externo ────────────────────
+// Chave pública + documentação de uso pra o próprio usuário configurar a
+// chamada no servidor do site dele (nunca temos acesso ao código do site).
+function SiteLeadTab() {
+  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+
+  async function loadKey() {
+    try {
+      const { data } = await api.get('/api/settings/site-lead');
+      setApiKey(data.apiKey);
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { loadKey(); }, []);
+
+  async function handleGenerate() {
+    if (apiKey && !confirm('Gerar uma nova chave? A chave atual para de funcionar — se o site já estiver usando a antiga, precisa trocar lá também.')) return;
+    setGenerating(true);
+    try {
+      const { data } = await api.post('/api/settings/site-lead/regenerate');
+      setApiKey(data.apiKey);
+      toast('Chave gerada!');
+    } catch {
+      toast('Erro ao gerar a chave', 'error');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function copy(text: string, label: string) {
+    navigator.clipboard.writeText(text)
+      .then(() => toast(`${label} copiado!`))
+      .catch(() => toast('Erro ao copiar', 'error'));
+  }
+
+  const webhookUrl = 'https://af-crm-production.up.railway.app/api/webhooks/site-lead';
+  const exampleJson = `{
+  "name": "Maria da Silva",
+  "phone": "61999998888",
+  "email": "maria@email.com",
+  "department": "Home Equity",
+  "customFields": {
+    "valor_imovel": "500000",
+    "valor_credito": "150000"
+  }
+}`;
+
+  if (loading) return <div className="text-sm text-slate-400 px-2 py-8 text-center">Carregando...</div>;
+
+  return (
+    <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
+      <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border bg-gradient-to-r from-amber-500 to-orange-500">
+        <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+          <Globe size={22} className="text-white" />
+        </div>
+        <div>
+          <h2 className="text-white font-bold text-base">Captação do site</h2>
+          <p className="text-white/70 text-xs">Formulário do seu site cria o lead sozinho no funil certo</p>
+        </div>
+      </div>
+
+      <div className="px-6 py-5 space-y-4">
+        <p className="text-xs text-slate-500">
+          Quando alguém preenche o formulário no seu site, ele chama a URL abaixo — do lado do <strong>servidor</strong> do
+          site, nunca direto do navegador (isso expõe a chave) — e o lead já nasce no CRM, no setor certo. Pra mandar
+          uma mensagem automática de boas-vindas, configure em <strong>Automações</strong> uma regra com o gatilho
+          "Formulário do site" (a ação precisa ser um template aprovado pela Meta — texto solto não funciona pro
+          1º contato).
+        </p>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-semibold text-slate-500">URL do webhook</label>
+          <div className="flex gap-2">
+            <input readOnly value={webhookUrl} className="flex-1 text-xs font-mono px-3 py-2 border border-af-border rounded-lg bg-slate-50 text-slate-600" />
+            <button onClick={() => copy(webhookUrl, 'URL')} title="Copiar" className="p-2 rounded-lg border border-af-border hover:bg-slate-50 text-slate-500 flex-shrink-0">
+              <Copy size={14} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-semibold text-slate-500">Chave de acesso — header <code className="font-mono">X-Api-Key</code></label>
+          {apiKey ? (
+            <div className="flex gap-2">
+              <input readOnly value={apiKey} className="flex-1 text-xs font-mono px-3 py-2 border border-af-border rounded-lg bg-slate-50 text-slate-600" />
+              <button onClick={() => copy(apiKey, 'Chave')} title="Copiar" className="p-2 rounded-lg border border-af-border hover:bg-slate-50 text-slate-500 flex-shrink-0">
+                <Copy size={14} />
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-amber-600">Nenhuma chave gerada ainda — gere uma pra ativar a captação.</p>
+          )}
+          <button
+            onClick={handleGenerate}
+            disabled={generating}
+            className="mt-1.5 flex items-center gap-1.5 self-start text-xs font-medium px-3 py-1.5 rounded-lg bg-af-mid text-white hover:bg-af-dark disabled:opacity-50 transition-colors"
+          >
+            <KeyRound size={13} /> {generating ? 'Gerando...' : apiKey ? 'Gerar nova chave' : 'Gerar chave'}
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-semibold text-slate-500">Formato do envio (JSON)</label>
+          <pre className="text-[11px] font-mono px-3 py-2.5 border border-af-border rounded-lg bg-slate-900 text-slate-100 overflow-x-auto whitespace-pre">{exampleJson}</pre>
+          <p className="text-[11px] text-slate-400 mt-1">
+            <code>name</code>, <code>phone</code> e <code>department</code> são obrigatórios. <code>department</code> precisa
+            ser exatamente "Home Equity" ou "Financiamento Habitacional" (o mesmo nome do setor em Departamentos).
+            <code>customFields</code> é opcional — qualquer campo que o card já tenha (ex.: valor_imovel, valor_credito).
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

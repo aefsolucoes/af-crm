@@ -9,7 +9,7 @@ import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { Plus, Trash2, Edit2, Zap, ToggleLeft, ToggleRight, Clock, GitBranch, MessageSquare, ArrowRight } from 'lucide-react';
 
-type TriggerType = 'NEW_LEAD' | 'STAGE_CHANGE' | 'TAG_ADDED' | 'INACTIVITY' | 'MESSAGE_RECEIVED' | 'form_submitted';
+type TriggerType = 'NEW_LEAD' | 'STAGE_CHANGE' | 'TAG_ADDED' | 'INACTIVITY' | 'MESSAGE_RECEIVED' | 'FORM_SUBMITTED';
 type ActionType = 'send_message' | 'send_template' | 'assign_agent' | 'move_stage' | 'add_tag' | 'start_salesbot' | 'webhook';
 
 interface AutomationAction { type: ActionType; config: Record<string, unknown> }
@@ -31,11 +31,11 @@ const TRIGGER_META: Record<TriggerType, { label: string; icon: React.ReactNode; 
   TAG_ADDED: { label: 'Tag adicionada', icon: <GitBranch size={13} />, color: 'text-purple-600 bg-purple-50' },
   INACTIVITY: { label: 'Inatividade do lead', icon: <Clock size={13} />, color: 'text-orange-600 bg-orange-50' },
   MESSAGE_RECEIVED: { label: 'Mensagem recebida', icon: <MessageSquare size={13} />, color: 'text-cyan-600 bg-cyan-50' },
-  form_submitted: { label: 'Formulário enviado', icon: <Zap size={13} />, color: 'text-yellow-600 bg-yellow-50' },
+  FORM_SUBMITTED: { label: 'Formulário do site', icon: <Zap size={13} />, color: 'text-yellow-600 bg-yellow-50' },
 };
-// Ainda não existe captação pública de lead no sistema — fica visível (pra
-// não sumir do vocabulário) mas desabilitado pra seleção.
-const DISABLED_TRIGGERS: TriggerType[] = ['form_submitted'];
+// Captação pública de lead via POST /api/webhooks/site-lead (Configurações
+// → Site) — nenhum gatilho fica travado hoje.
+const DISABLED_TRIGGERS: TriggerType[] = [];
 
 const ACTION_META: Record<ActionType, { label: string }> = {
   send_message: { label: 'Enviar mensagem' },
