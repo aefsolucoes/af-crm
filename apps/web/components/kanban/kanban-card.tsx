@@ -123,8 +123,10 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
           {selected && <Check size={12} className="text-white" />}
         </button>
       )}
-      {/* Estrela de importante/prioridade — canto superior direito. Sempre
-          visível se marcado; senão, só no hover (mesmo padrão do checkbox). */}
+      {/* Estrela de importante/prioridade — canto superior direito. SEMPRE
+          visível (diferente do checkbox de seleção): escondida atrás de
+          hover, ninguém achava que existia. Sutil quando não marcada, clara
+          no hover, cheia/âmbar quando marcada. */}
       <button
         type="button"
         onClick={handleToggleStar}
@@ -132,10 +134,10 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
         title={starred ? 'Desmarcar como importante' : 'Marcar como importante'}
         className={cn(
           'absolute -top-1.5 -right-1.5 z-10 w-5 h-5 rounded-full flex items-center justify-center transition-all bg-white shadow-sm',
-          !starred && 'opacity-0 group-hover/card:opacity-100',
+          !starred && 'opacity-70 group-hover/card:opacity-100',
         )}
       >
-        <Star size={13} className={starred ? 'text-amber-400 fill-amber-400' : 'text-slate-300'} />
+        <Star size={13} className={starred ? 'text-amber-400 fill-amber-400' : 'text-slate-400'} />
       </button>
       <div
         className={cn(
