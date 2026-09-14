@@ -7,14 +7,11 @@ import { validate } from '../middleware/validate';
 import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact } from '../services/lead.service';
 import { getScopeDepartmentIds, getOrCreateInboxPipeline } from '../services/department.service';
 import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
-import { checkHasWhatsApp } from '../services/baileys.service';
 import { normalizeClientName } from '../lib/text';
 import { runAutomations } from '../services/automation.service';
 import { logActivity } from '../services/activity.service';
 
-/** Formata um telefone BR (com DDI 55) pra exibição — mesma regra usada em
- *  baileys.service.ts, duplicada aqui de propósito (função pura pequena,
- *  não vale importar de um serviço de canal pra uma rota de leads). */
+/** Formata um telefone BR (com DDI 55) pra exibição. */
 function formatPhoneDisplay(e164Digits: string): string {
   const d = e164Digits.startsWith('55') ? e164Digits.slice(2) : e164Digits;
   if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
@@ -991,7 +988,6 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
     // Telefone do card É onde se cadastra o telefone de verdade, não só
     // exibição. Nunca sobrescreve um Contact.phone real já confirmado.
     const tel1 = customFields?.telefone_1;
-    let hasWhatsApp: boolean | null = null;
     if (typeof tel1 === 'string') {
       const digits = tel1.replace(/\D/g, '');
       if (digits.length >= 10) {
@@ -1008,7 +1004,6 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
           const contact = await prisma.contact.create({ data: { accountId: lead.accountId, name: normalizeClientName(lead.name), phone: `+${e164}` } });
           await prisma.lead.update({ where: { id: lead.id }, data: { contactId: contact.id } }).catch(() => {});
         }
-        hasWhatsApp = await checkHasWhatsApp(req.user!.accountId, e164);
       }
     }
 
@@ -1030,7 +1025,7 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
       }
     }
 
-    res.json({ ...updatedLead, hasWhatsApp });
+    res.json(updatedLead);
   } catch (err) {
     console.error('[Leads] Erro ao salvar campos:', err);
     res.status(500).json({ error: 'Erro ao salvar campos' });
@@ -1080,27 +1075,21 @@ router.patch('/:id/phone', async (req: AuthRequest, res: Response) => {
       updatedLead = await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf, contactId: contact.id } });
     }
 
-    // Confere se o número tem WhatsApp de verdade (só dá pra saber com algum
-    // QR conectado — null = indeterminado, não é erro).
-    const hasWhatsApp = await checkHasWhatsApp(req.user!.accountId, e164);
-    res.json({ ...updatedLead, hasWhatsApp });
+    res.json(updatedLead);
   } catch (err) {
     console.error('[Leads] Erro ao salvar telefone:', err);
     res.status(500).json({ error: 'Erro ao salvar o telefone' });
   }
 });
 
-// GET /api/leads/:id/whatsapp-status — checa se o telefone JÁ cadastrado no
-// contato tem WhatsApp de verdade (mesma checagem de /phone, sob demanda —
-// pro indicador no card sem precisar reenviar o telefone).
+// GET /api/leads/:id/whatsapp-status — mantida por compatibilidade; sem canal
+// QR não há como checar de verdade se um telefone tem WhatsApp, então sempre
+// devolve indeterminado.
 router.get('/:id/whatsapp-status', async (req: AuthRequest, res: Response) => {
   try {
-    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, include: { contact: true } });
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
     if (!lead) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
-    const phone = lead.contact?.phone;
-    if (!phone || phone.includes('@')) { res.json({ hasWhatsApp: null }); return; }
-    const hasWhatsApp = await checkHasWhatsApp(req.user!.accountId, phone);
-    res.json({ hasWhatsApp });
+    res.json({ hasWhatsApp: null });
   } catch (err) {
     console.error('[Leads] Erro ao checar WhatsApp:', err);
     res.status(500).json({ error: 'Erro ao checar WhatsApp' });

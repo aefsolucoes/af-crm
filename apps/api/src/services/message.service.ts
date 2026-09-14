@@ -1,6 +1,5 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
 import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage, sendWhatsAppCtaUrlMessage, sendWhatsAppReaction, sendWhatsAppMedia } from './whatsapp.service';
-import { sendBaileysMessage, sendBaileysMedia, isNumberConnected, getConnectedNumberIds, sendBaileysDelete, sendBaileysReaction } from './baileys.service';
 import { downloadDriveFile } from './google.service';
 import { normalizeClientName } from '../lib/text';
 
@@ -8,9 +7,9 @@ const prisma = new PrismaClient();
 
 /** Telefone "puro" (E.164, sem sufixo @lid/@s.whatsapp.net/@g.us) — a API
  *  Oficial da Meta exige isso e rejeita qualquer outra coisa com "Message
- *  Undeliverable" (código 131026). O Baileys (QR) é diferente: ele aceita —
- *  e às vezes PRECISA — do JID @lid direto (toWhatsAppJid trata isso de
- *  propósito), então essa função NÃO deve ser usada nos envios via QR. */
+ *  Undeliverable" (código 131026). Contatos que só têm um @lid (herdados do
+ *  extinto canal QR/Baileys) não têm telefone de verdade pra API conseguir
+ *  mandar — precisam do telefone cadastrado manualmente no card. */
 function plainPhone(contact?: { phone?: string | null; whatsappPhone?: string | null } | null): string | undefined {
   const wp = contact?.whatsappPhone?.trim();
   if (wp && !wp.includes('@')) return wp;
@@ -197,29 +196,15 @@ export async function findOrCreateLeadByPhone(
   return { leadId: lead.id, created: true };
 }
 
-/** Números de WhatsApp conectados via QR (id + apelido + telefone) para a conta. */
-export async function listConnectedWhatsAppNumbers(accountId: string) {
-  const ids = getConnectedNumberIds(accountId);
-  if (ids.length === 0) return [];
-  const rows = await prisma.whatsAppNumber.findMany({ where: { accountId, id: { in: ids } } });
-  return rows.map((n) => ({ id: n.id, label: n.label, phone: n.phone }));
-}
-
 /**
- * Envia uma mensagem WhatsApp de saída para o lead (via QR/Baileys se conectado,
- * senão via API oficial da Meta), grava o registro e emite os eventos de socket —
- * mesma lógica usada tanto pelo envio manual (Inbox) quanto pelo agente de IA.
+ * Envia uma mensagem WhatsApp de saída para o lead pela API Oficial da Meta,
+ * grava o registro e emite os eventos de socket — mesma lógica usada tanto
+ * pelo envio manual (Inbox) quanto pelo agente de IA e o SalesBot.
  */
 export async function sendOutboundWhatsApp(params: {
   accountId: string;
   leadId: string;
   content: string;
-  /** Canal preferido: 'qr' (conexão via QR Code) ou 'api' (API oficial da Meta).
-   *  Sem valor: usa o canal por onde o cliente já falou com a gente (última
-   *  mensagem recebida); sem histórico ainda, QR se conectado, senão API. */
-  via?: 'qr' | 'api';
-  /** Número (WhatsAppNumber.id) do qual enviar via QR. Se ausente, usa o número da conversa ou o primeiro conectado. */
-  fromNumberId?: string;
   /** Usuário do CRM que está enviando (para carimbar "enviado por" na mensagem). */
   userId?: string;
   /** Resposta com citação (como no WhatsApp): id/remetente/conteúdo da mensagem
@@ -229,19 +214,14 @@ export async function sendOutboundWhatsApp(params: {
   replyToContent?: string;
   replyToSender?: string;
   /** Botões de resposta rápida (ex.: ["Sim","Não"], máx. 3) — usado pelo
-   *  SalesBot e pelas Respostas rápidas com botão. Só funciona de verdade na
-   *  API Oficial; no QR/Baileys vira uma lista numerada anexada ao texto (o
-   *  WhatsApp descontinuou botões nativos por lá, sem alternativa confiável).
-   *  Nunca junto com `ctaButton` — a API do WhatsApp só aceita um tipo por
-   *  mensagem avulsa. */
+   *  SalesBot e pelas Respostas rápidas com botão. Nunca junto com `ctaButton`
+   *  — a API do WhatsApp só aceita um tipo por mensagem avulsa. */
   buttons?: string[];
-  /** Botão único de link (Respostas rápidas com botão "URL"). Mesma regra:
-   *  só de verdade na API Oficial; no QR vira o link como texto puro (o
-   *  WhatsApp já sublinha e deixa clicável sozinho). */
+  /** Botão único de link (Respostas rápidas com botão "URL"). */
   ctaButton?: { text: string; url: string };
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string; code?: string }> {
-  const { accountId, leadId, content, via, fromNumberId, userId, replyToExternalId, replyToFromMe, replyToContent, replyToSender, buttons, ctaButton, io } = params;
+  const { accountId, leadId, content, userId, replyToExternalId, replyToContent, replyToSender, buttons, ctaButton, io } = params;
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -249,127 +229,29 @@ export async function sendOutboundWhatsApp(params: {
   });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
 
-  const phone = lead.contact?.whatsappPhone || lead.contact?.phone;
-  if (!phone) return { success: false, error: 'Contato sem número de telefone cadastrado' };
-
-  let externalId: string | undefined;
-  let usedNumberId: string | null = null;
-  // O que fica gravado na Inbox como o texto da mensagem — igual a `content`,
-  // exceto quando há botões: no QR (sem botão clicável de verdade) a lista
-  // numerada enviada É o texto; na API Oficial os botões são um elemento à
-  // parte, então anexamos só como registro legível do que foi oferecido.
-  let savedContent = content;
-
-  const connectedNumbers = getConnectedNumberIds(accountId);
-
-  // Quando ninguém escolheu o canal explicitamente (via/fromNumberId), decide
-  // pelo canal "natural" da conversa — de onde o CLIENTE fala com a gente —
-  // em vez de simplesmente preferir QR sempre que algum número estiver
-  // conectado. Isso evita responder pelo número/canal errado (ex: lead que
-  // chegou por um anúncio Clique-para-WhatsApp na API Oficial recebendo a
-  // resposta pelo QR pessoal). Olha a última mensagem RECEBIDA (não as que já
-  // enviamos — essas podem já estar "erradas" por causa desse mesmo bug em
-  // envios anteriores): se veio com id "wamid" é API Oficial; se veio com um
-  // whatsappNumberId é aquele número QR.
-  let inferredVia: 'qr' | 'api' | null = null;
-  let inferredNumberId: string | null = null;
-  if (via === undefined && !fromNumberId) {
-    const lastInbound = await prisma.message.findFirst({
-      where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (lastInbound?.externalId?.startsWith('wamid')) inferredVia = 'api';
-    else if (lastInbound?.whatsappNumberId) { inferredVia = 'qr'; inferredNumberId = lastInbound.whatsappNumberId; }
+  // A API Oficial exige um número de verdade — @lid (só existia por Baileys/QR) não serve.
+  const cloudPhone = plainPhone(lead.contact);
+  if (!cloudPhone) {
+    return { success: false, code: 'NO_REAL_PHONE', error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card.' };
   }
 
-  const useQR = via === 'qr' ? true
-    : via === 'api' ? false
-    : inferredVia === 'api' ? false
-    : inferredVia === 'qr' ? true
-    : (!!fromNumberId || connectedNumbers.length > 0);
+  let externalId: string | undefined;
+  // O que fica gravado na Inbox como o texto da mensagem — igual a `content`,
+  // exceto quando há botões: eles são um elemento à parte na API Oficial,
+  // então anexamos só como registro legível do que foi oferecido.
+  let savedContent = content;
 
-  if (useQR) {
-    // Se o colaborador escolheu um número específico (fromNumberId), envia por ele
-    // — desde que esteja conectado. Senão, prefere o número por onde o cliente
-    // JÁ falou com a gente (inferredNumberId), depois o último usado nesta
-    // conversa (lead.whatsappNumberId), depois o primeiro conectado. Um cliente
-    // pode falar pelos dois números sem duplicar o card — cada mensagem guarda o
-    // SEU próprio número (para o "via {número}"), mas a conversa é uma só.
-    let preferred: string | undefined;
-    if (fromNumberId) {
-      if (!connectedNumbers.includes(fromNumberId)) {
-        return { success: false, error: 'O número de WhatsApp escolhido não está conectado. Verifique em Configurações → QR Code ou escolha outro.' };
-      }
-      preferred = fromNumberId;
-    } else if (inferredNumberId && connectedNumbers.includes(inferredNumberId)) {
-      preferred = inferredNumberId;
-    } else if (lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)) {
-      preferred = lead.whatsappNumberId;
-    } else {
-      preferred = connectedNumbers[0];
-    }
-
-    if (!preferred) {
-      return { success: false, error: 'Nenhum WhatsApp conectado via QR Code. Conecte em Configurações → QR Code ou envie pela API oficial.' };
-    }
-    usedNumberId = preferred;
-    // Retorna o id da mensagem enviada; guardamos como externalId para
-    // deduplicar o eco fromMe que o Baileys emite em messages.upsert.
-    // Se o envio falhar, NÃO gravamos a mensagem nem reportamos sucesso —
-    // senão o agente/inbox diria "enviada" para algo que não saiu.
-    // Citação só faz sentido quando a mensagem original também veio/foi pelo
-    // Baileys (id "wamid" é da API Oficial — o Baileys não sabe citar isso).
-    const quoted =
-      replyToExternalId && !replyToExternalId.startsWith('wamid')
-        ? { externalId: replyToExternalId, fromMe: !!replyToFromMe }
-        : undefined;
-    // QR/Baileys não tem botão clicável confiável — degrada pra lista
-    // numerada no próprio texto (cliente responde digitando "1"/"Sim" etc.).
-    if (buttons?.length) {
-      savedContent = `${content}\n\n${buttons.map((b, i) => `${i + 1}. ${b}`).join('\n')}`;
-    } else if (ctaButton) {
-      // Link como texto puro — o WhatsApp já deixa clicável sozinho.
-      savedContent = `${content}\n\n${ctaButton.text}: ${ctaButton.url}`;
-    }
-    const outcome = await sendBaileysMessage(phone, savedContent, preferred, quoted);
-    if ('failed' in outcome) {
-      const error =
-        outcome.failed === 'no_whatsapp'
-          ? `O número ${formatPhoneDisplay(phone)} não tem WhatsApp (ou está em formato inválido). A mensagem NÃO foi enviada.`
-          : outcome.failed === 'not_connected'
-          ? 'O WhatsApp (QR Code) foi desconectado. Reconecte em Configurações → QR Code e tente novamente.'
-          : 'Não foi possível enviar a mensagem pelo WhatsApp. Tente novamente.';
-      return { success: false, error };
-    }
-    externalId = outcome.id;
-
-    // Mantém o "número atual" da conversa acompanhando o último usado (é só a
-    // sugestão padrão da tela — não impede responder por outro número depois).
-    if (lead.whatsappNumberId !== preferred) {
-      await prisma.lead.update({ where: { id: leadId }, data: { whatsappNumberId: preferred } }).catch(() => {});
-    }
+  const result = buttons?.length
+    ? await sendWhatsAppButtonsMessage(cloudPhone, content, buttons, accountId, lead.pipeline.departmentId)
+    : ctaButton
+    ? await sendWhatsAppCtaUrlMessage(cloudPhone, content, ctaButton.text, ctaButton.url, accountId, lead.pipeline.departmentId)
+    : await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId, replyToExternalId);
+  if (result.success) {
+    externalId = result.externalId;
+    if (buttons?.length) savedContent = `${content}\n\n${buttons.map((b) => `[${b}]`).join('  ')}`;
+    else if (ctaButton) savedContent = `${content}\n\n[${ctaButton.text} → ${ctaButton.url}]`;
   } else {
-    // API Oficial exige um número de verdade — o "phone" acima pode ser um
-    // @lid (válido só pro QR/Baileys), então resolve de novo aqui.
-    const cloudPhone = plainPhone(lead.contact);
-    if (!cloudPhone) {
-      return { success: false, code: 'NO_REAL_PHONE', error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card ou envie pelo QR Code.' };
-    }
-    const result = buttons?.length
-      ? await sendWhatsAppButtonsMessage(cloudPhone, content, buttons, accountId, lead.pipeline.departmentId)
-      : ctaButton
-      ? await sendWhatsAppCtaUrlMessage(cloudPhone, content, ctaButton.text, ctaButton.url, accountId, lead.pipeline.departmentId)
-      : await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId, replyToExternalId);
-    if (result.success) {
-      externalId = result.externalId;
-      // Botões de verdade (clicáveis) são um elemento à parte na API Oficial
-      // — aqui só registramos por escrito o que foi oferecido, pro histórico
-      // da Inbox mostrar as opções.
-      if (buttons?.length) savedContent = `${content}\n\n${buttons.map((b) => `[${b}]`).join('  ')}`;
-      else if (ctaButton) savedContent = `${content}\n\n[${ctaButton.text} → ${ctaButton.url}]`;
-    } else {
-      return { success: false, error: result.error || 'Falha ao enviar mensagem WhatsApp' };
-    }
+    return { success: false, error: result.error || 'Falha ao enviar mensagem WhatsApp' };
   }
 
   const message = await createMessage({
@@ -377,7 +259,6 @@ export async function sendOutboundWhatsApp(params: {
     direction: 'OUTBOUND',
     channel: 'WHATSAPP',
     leadId,
-    whatsappNumberId: usedNumberId ?? undefined,
     sentByUserId: userId,
     externalId,
     status: 'SENT',
@@ -438,13 +319,8 @@ export async function sendOutboundWhatsAppTemplate(params: {
   return { success: true, message };
 }
 
-/** Envia um documento/imagem/vídeo/áudio pelo WhatsApp e salva na conversa
- *  com o anexo — respeita o canal escolhido (QR ou API Oficial), MESMA
- *  decisão de canal de sendOutboundWhatsApp (via/fromNumberId explícito, ou
- *  infere pelo canal da última mensagem RECEBIDA). Antes, mídia só saía
- *  pelo QR — nunca teve caminho pela API Oficial, mesmo com ela selecionada
- *  na conversa (achado real, reportado pelo usuário: texto ia certinho "via
- *  API Oficial", anexo saía "via <número QR>"). */
+/** Envia um documento/imagem/vídeo/áudio pelo WhatsApp (API Oficial) e salva
+ *  na conversa com o anexo. */
 export async function sendOutboundMedia(params: {
   accountId: string;
   leadId: string;
@@ -452,87 +328,32 @@ export async function sendOutboundMedia(params: {
   fileName: string;
   mimeType: string;
   caption?: string;
-  via?: 'qr' | 'api';
-  fromNumberId?: string;
   /** Usuário do CRM que está enviando (para carimbar "enviado por"). */
   userId?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: any } | { success: false; error: string; code?: string }> {
-  const { accountId, leadId, buffer, fileName, mimeType, caption, via, fromNumberId, userId, io } = params;
+  const { accountId, leadId, buffer, fileName, mimeType, caption, userId, io } = params;
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
     include: { contact: true, pipeline: { select: { departmentId: true } } },
   });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
-  const phone = lead.contact?.whatsappPhone || lead.contact?.phone;
-  if (!phone) return { success: false, error: 'Contato sem número cadastrado' };
 
-  let externalId: string | undefined;
-  let usedNumberId: string | null = null;
-  const connectedNumbers = getConnectedNumberIds(accountId);
-
-  // Mesma inferência de sendOutboundWhatsApp: sem canal explícito, olha por
-  // onde o cliente falou por ÚLTIMO com a gente (não o que já enviamos —
-  // pode já estar "errado" por causa desse mesmo bug em envios anteriores).
-  let inferredVia: 'qr' | 'api' | null = null;
-  let inferredNumberId: string | null = null;
-  if (via === undefined && !fromNumberId) {
-    const lastInbound = await prisma.message.findFirst({
-      where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (lastInbound?.externalId?.startsWith('wamid')) inferredVia = 'api';
-    else if (lastInbound?.whatsappNumberId) { inferredVia = 'qr'; inferredNumberId = lastInbound.whatsappNumberId; }
+  const cloudPhone = plainPhone(lead.contact);
+  if (!cloudPhone) {
+    return { success: false, code: 'NO_REAL_PHONE', error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card.' };
   }
 
-  const useQR = via === 'qr' ? true
-    : via === 'api' ? false
-    : inferredVia === 'api' ? false
-    : inferredVia === 'qr' ? true
-    : (!!fromNumberId || connectedNumbers.length > 0);
-
-  if (useQR) {
-    let preferred: string | undefined;
-    if (fromNumberId) {
-      if (!connectedNumbers.includes(fromNumberId)) {
-        return { success: false, error: 'O número de WhatsApp escolhido não está conectado. Verifique em Configurações → QR Code ou escolha outro.' };
-      }
-      preferred = fromNumberId;
-    } else if (inferredNumberId && connectedNumbers.includes(inferredNumberId)) {
-      preferred = inferredNumberId;
-    } else if (lead.whatsappNumberId && isNumberConnected(lead.whatsappNumberId)) {
-      preferred = lead.whatsappNumberId;
-    } else {
-      preferred = connectedNumbers[0];
-    }
-    if (!preferred) {
-      return { success: false, error: 'Nenhum WhatsApp conectado via QR Code. Conecte em Configurações → QR Code ou envie pela API oficial.' };
-    }
-
-    const sentId = await sendBaileysMedia(phone, buffer, fileName, mimeType, caption || '', preferred);
-    if (!sentId) return { success: false, error: 'Falha ao enviar o arquivo pelo WhatsApp.' };
-    externalId = sentId;
-    usedNumberId = preferred;
-
-    if (lead.whatsappNumberId !== preferred) {
-      await prisma.lead.update({ where: { id: leadId }, data: { whatsappNumberId: preferred } }).catch(() => {});
-    }
-  } else {
-    const cloudPhone = plainPhone(lead.contact);
-    if (!cloudPhone) {
-      return { success: false, code: 'NO_REAL_PHONE', error: 'Este contato só tem um identificador do WhatsApp (@lid), sem telefone de verdade cadastrado — a API Oficial não consegue enviar. Cadastre o telefone no card ou envie pelo QR Code.' };
-    }
-    const result = await sendWhatsAppMedia(cloudPhone, buffer, fileName, mimeType, caption || '', accountId, lead.pipeline.departmentId);
-    if (!result.success) return { success: false, error: result.error || 'Falha ao enviar o arquivo pelo WhatsApp.' };
-    externalId = result.externalId;
-  }
+  const result = await sendWhatsAppMedia(cloudPhone, buffer, fileName, mimeType, caption || '', accountId, lead.pipeline.departmentId);
+  if (!result.success) return { success: false, error: result.error || 'Falha ao enviar o arquivo pelo WhatsApp.' };
+  const externalId = result.externalId;
 
   const content = `📎 ${fileName}${caption ? ` — ${caption}` : ''}`;
   const message = await prisma.message.create({
     data: {
       content, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId,
-      whatsappNumberId: usedNumberId, sentByUserId: userId ?? null, read: true, externalId, status: 'SENT',
+      sentByUserId: userId ?? null, read: true, externalId, status: 'SENT',
       attachments: { create: { leadId, fileName, mimeType, data: buffer } },
     },
     include: {
@@ -626,10 +447,9 @@ export async function forwardMessage(params: {
 type MessageActionIO = { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 type MessageActionResult = { success: true; message: any } | { success: false; error: string };
 
-/** "Apagar pra mim" (local, sempre) — e, melhor esforço, "apagar pra todos"
- *  de verdade quando é minha (OUTBOUND) e foi mandada pelo QR (Baileys). API
- *  Oficial e mensagens recebidas só apagam local (o WhatsApp de verdade
- *  também não deixa forçar apagar do celular de quem recebeu). */
+/** "Apagar pra mim" (local, sempre) — a API Oficial não dá acesso a "apagar
+ *  pra todos" de verdade (o WhatsApp de verdade também não deixa forçar
+ *  apagar do celular de quem recebeu). */
 export async function deleteMessage(params: { accountId: string; messageId: string; io?: MessageActionIO }): Promise<MessageActionResult> {
   const { accountId, messageId, io } = params;
   const msg = await prisma.message.findUnique({
@@ -639,22 +459,14 @@ export async function deleteMessage(params: { accountId: string; messageId: stri
   if (!msg || msg.lead.accountId !== accountId) return { success: false, error: 'Mensagem não encontrada' };
   if (msg.deleted) return { success: true, message: msg };
 
-  if (msg.direction === 'OUTBOUND' && msg.whatsappNumberId && msg.externalId && !msg.externalId.startsWith('wamid')) {
-    const phone = msg.lead.contact?.whatsappPhone || msg.lead.contact?.phone;
-    if (phone) {
-      const outcome = await sendBaileysDelete(phone, msg.externalId, true, msg.whatsappNumberId);
-      if (!outcome.ok) console.warn(`[Messages] "Apagar pra todos" falhou, seguindo só com o apagar local: ${outcome.error}`);
-    }
-  }
-
   const updated = await prisma.message.update({ where: { id: messageId }, data: { deleted: true, deletedAt: new Date() } });
   if (io) io.to(`lead:${msg.leadId}`).emit('message_deleted', { id: messageId });
   return { success: true, message: updated };
 }
 
 /** Reage (ou remove a própria reação, emoji='') a uma mensagem — minha ou do
- *  cliente, dos dois canais. Sempre grava local; a chamada de verdade pro
- *  WhatsApp é melhor esforço (não falha a operação toda se a API recusar). */
+ *  cliente. Sempre grava local; a chamada de verdade pro WhatsApp é melhor
+ *  esforço (não falha a operação toda se a API recusar). */
 export async function reactToMessage(params: { accountId: string; messageId: string; emoji: string; io?: MessageActionIO }): Promise<MessageActionResult> {
   const { accountId, messageId, emoji, io } = params;
   const msg = await prisma.message.findUnique({
@@ -665,15 +477,9 @@ export async function reactToMessage(params: { accountId: string; messageId: str
   if (!msg.externalId) return { success: false, error: 'Essa mensagem não pode receber reação.' };
 
   const phone = msg.lead.contact?.whatsappPhone || msg.lead.contact?.phone;
-  const isApiOficial = msg.externalId.startsWith('wamid');
   if (phone) {
-    if (isApiOficial) {
-      const outcome = await sendWhatsAppReaction(phone, msg.externalId, emoji, accountId, msg.lead.pipeline?.departmentId ?? null);
-      if (!outcome.success) console.warn(`[Messages] Reagir via API Oficial falhou: ${outcome.error}`);
-    } else if (msg.whatsappNumberId) {
-      const outcome = await sendBaileysReaction(phone, msg.externalId, msg.direction === 'OUTBOUND', emoji, msg.whatsappNumberId);
-      if (!outcome.ok) console.warn(`[Messages] Reagir via Baileys falhou: ${outcome.error}`);
-    }
+    const outcome = await sendWhatsAppReaction(phone, msg.externalId, emoji, accountId, msg.lead.pipeline?.departmentId ?? null);
+    if (!outcome.success) console.warn(`[Messages] Reagir via API Oficial falhou: ${outcome.error}`);
   }
 
   const current = (Array.isArray(msg.reactions) ? msg.reactions : []) as { emoji: string; fromMe: boolean; at: string }[];

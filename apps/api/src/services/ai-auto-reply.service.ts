@@ -8,8 +8,8 @@ const prisma = new PrismaClient();
  * conversa, via botão na Inbox — Lead.aiAutoReplyActive). Deliberadamente
  * separado do assistente interno (routes/ai.ts): aqui não tem ferramentas, só
  * gera texto — nunca move card, edita cadastro nem faz nenhuma ação no CRM.
- * Isolado num arquivo próprio (sem import de baileys.service/whatsapp.service)
- * pra evitar dependência circular nos dois canais que o chamam.
+ * Isolado num arquivo próprio (sem import de whatsapp.service) pra evitar
+ * dependência circular (whatsapp.service.ts chama de volta pra cá).
  */
 
 const BASE_SYSTEM_PROMPT = `Você é o assistente de atendimento da A&F Soluções Financeiras, conversando DIRETAMENTE com um cliente pelo WhatsApp — isso não é uma conversa interna da equipe, é o próprio cliente do outro lado.

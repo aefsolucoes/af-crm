@@ -7,8 +7,7 @@ import { normalizeClientName } from '../lib/text';
 // tardio (dentro da função, não aqui em cima) — salesbot.service.ts e
 // automation.service.ts importam de volta este arquivo (pra mandar
 // mensagem), um import estático nos dois sentidos criaria dependência
-// circular. Mesmo motivo documentado em baileys.service.ts pra manter os
-// fluxos QR/API separados em vez de compartilhar um helper comum.
+// circular.
 
 const prisma = new PrismaClient();
 
@@ -335,11 +334,7 @@ export async function sendWhatsAppMessage(
 
 /** Envia um arquivo (imagem/vídeo/áudio/documento) pela API Oficial — a
  *  Graph API exige 2 passos: 1) sobe o binário pro endpoint de mídia
- *  (devolve um media_id), 2) manda a mensagem referenciando esse id. Antes
- *  desta função, envio de mídia SÓ existia pelo QR (Baileys) — mensagem de
- *  texto já respeitava o canal escolhido (QR ou API Oficial) há tempos, mas
- *  um anexo saía sempre pelo QR mesmo com "API Oficial" selecionado na
- *  conversa (achado real, reportado pelo usuário). */
+ *  (devolve um media_id), 2) manda a mensagem referenciando esse id. */
 export async function sendWhatsAppMedia(
   to: string,
   buffer: Buffer,
@@ -441,9 +436,7 @@ export async function sendWhatsAppReaction(
 /** Envia uma mensagem com até 3 botões de resposta rápida (interactive reply
  *  buttons) — usado pelo SalesBot (ex.: "Sim"/"Não" clicáveis). Diferente de
  *  template, NÃO precisa aprovação da Meta (é uma mensagem de texto comum
- *  com botões), mas só existe na API Oficial — não tem equivalente confiável
- *  no canal QR/Baileys (o WhatsApp descontinuou botões nativos por lá; quem
- *  chama por esse canal usa uma lista numerada no texto em vez disto). */
+ *  com botões). */
 export async function sendWhatsAppButtonsMessage(
   to: string,
   body: string,
@@ -1042,9 +1035,7 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 }
 
 /** Cliente pediu atendimento humano (ou saiu do escopo do setor) — desliga a
- *  IA nessa conversa sozinha e avisa o colaborador responsável (som + toast).
- *  Duplicado de baileys.service.ts de propósito (não import), pra não criar
- *  dependência circular nesse arquivo crítico. */
+ *  IA nessa conversa sozinha e avisa o colaborador responsável (som + toast). */
 async function handleAiHandoffCloudApi(leadId: string, io: any) {
   try {
     const lead = await prisma.lead.update({

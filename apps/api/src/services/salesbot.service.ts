@@ -384,7 +384,7 @@ async function executeStepsFrom(
   }
 }
 
-/** Chamado nos dois pontos de entrada de mensagem inbound (Baileys/QR e
+/** Chamado no ponto de entrada de mensagem inbound (WhatsApp API Oficial,
  *  WhatsApp Cloud API) — decide se essa mensagem pertence a um SalesBot
  *  (continuando uma run já em andamento, ou disparando uma nova por
  *  palavra-chave). Retorna true quando a mensagem foi "consumida" pelo bot,

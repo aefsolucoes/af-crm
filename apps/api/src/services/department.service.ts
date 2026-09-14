@@ -84,7 +84,7 @@ export async function listDepartments(accountId: string) {
  * comportamento desejado, não bug. `departmentId` fica na assinatura só por
  * compatibilidade com os callers e é ignorado.
  *
- * Compartilhado entre baileys.service.ts e whatsapp.service.ts pra não
+ * Usado por whatsapp.service.ts (e por rotas que criam o funil sob demanda) pra não
  * duplicar a lógica (e sem import circular — este arquivo não importa nenhum).
  */
 const INBOX_NAME_MATCH = [

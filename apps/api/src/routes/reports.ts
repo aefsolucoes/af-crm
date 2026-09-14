@@ -221,9 +221,8 @@ router.get('/documentacao', async (req: AuthRequest, res: Response) => {
 
 // Relatório Matinal: o que o usuário logado tem pra hoje.
 // - Tarefas dele (vencendo hoje ou atrasadas).
-// - Clientes esperando resposta: conversas de QUALQUER canal marcado pra ele
-//   em Usuários (um ou mais números QR e/ou API Oficial) cuja última
-//   mensagem foi do cliente (INBOUND) — juntando tudo numa lista só.
+// - Clientes esperando resposta: conversas da API Oficial (marcada pra ele em
+//   Usuários) cuja última mensagem foi do cliente (INBOUND).
 router.get('/morning', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
@@ -245,31 +244,6 @@ router.get('/morning', async (req: AuthRequest, res: Response) => {
     type ClientRow = { leadId: string; name: string; phone: string | null; lastMessage: string; at: Date | null };
     const clientsByLead = new Map<string, ClientRow>();
     const numbers: { id: string; label: string }[] = [];
-
-    const qrIds = user.whatsAppNumberIds.filter((id) => id !== 'API');
-    if (qrIds.length) {
-      const qrNumbers = await prisma.whatsAppNumber.findMany({ where: { id: { in: qrIds }, accountId }, select: { id: true, label: true } });
-      numbers.push(...qrNumbers);
-      const leads = await prisma.lead.findMany({
-        where: { accountId, whatsappNumberId: { in: qrIds }, archived: false },
-        include: {
-          contact: { select: { name: true, whatsappPhone: true, phone: true } },
-          messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { direction: true, content: true, createdAt: true } },
-        },
-        orderBy: { updatedAt: 'desc' },
-        take: 200,
-      });
-      for (const l of leads) {
-        if (l.messages[0]?.direction !== 'INBOUND') continue;
-        clientsByLead.set(l.id, {
-          leadId: l.id,
-          name: l.name || l.contact?.name || 'Sem nome',
-          phone: l.contact?.whatsappPhone || l.contact?.phone || null,
-          lastMessage: (l.messages[0]?.content || '').slice(0, 90),
-          at: l.messages[0]?.createdAt || null,
-        });
-      }
-    }
 
     if (user.whatsAppNumberIds.includes('API')) {
       numbers.push({ id: 'API', label: 'API Oficial' });

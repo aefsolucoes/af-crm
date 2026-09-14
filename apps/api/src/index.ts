@@ -14,7 +14,6 @@ import pipelineRoutes from './routes/pipelines';
 import reportRoutes from './routes/reports';
 import webhookRoutes from './routes/webhooks';
 import settingsRoutes from './routes/settings';
-import whatsappQrRoutes from './routes/whatsapp-qr';
 import fieldRoutes from './routes/fields';
 import noteRoutes from './routes/notes';
 import userRoutes from './routes/users';
@@ -33,7 +32,6 @@ import activityRoutes from './routes/activity';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
 import { configureWebPush } from './services/push.service';
-import { setBaileysIO, restoreActiveSessions } from './services/baileys.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
 import { syncAllKnowledgeBases } from './services/knowledge.service';
 import { generateRecurringTransactions } from './routes/finance';
@@ -58,7 +56,6 @@ app.use(express.json({ limit: '30mb' }));
 
 const io = setupWebSocket(httpServer);
 app.set('io', io);
-setBaileysIO(io);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/leads', leadRoutes);
@@ -69,7 +66,6 @@ app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/settings', settingsRoutes);
-app.use('/api/whatsapp-qr', whatsappQrRoutes);
 app.use('/api/fields', fieldRoutes);
 app.use('/api/notes', noteRoutes);
 app.use('/api/users', userRoutes);
@@ -88,7 +84,7 @@ app.use('/api/activity', activityRoutes);
 
 configureWebPush();
 
-app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings', 'qr'] }));
+app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings'] }));
 
 // Política de Privacidade — URL pública para uso no Meta Developer Console
 app.get('/privacidade', (_, res) => {
@@ -204,8 +200,6 @@ try {
 
 httpServer.listen(PORT, () => {
   console.log(`🚀 API AF CRM rodando em http://localhost:${PORT}`);
-  // Restore WhatsApp QR sessions after restart
-  restoreActiveSessions().catch(console.error);
 
   // Válvula de segurança do disco: arquiva no Drive só os anexos com 30+ dias,
   // numa pasta técnica separada — nunca mexe na organização manual do usuário.

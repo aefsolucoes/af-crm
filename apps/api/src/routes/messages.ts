@@ -29,8 +29,6 @@ const messageSchema = z.object({
   direction: z.enum(['INBOUND', 'OUTBOUND']),
   channel: z.enum(['WHATSAPP', 'INSTAGRAM', 'TELEGRAM', 'WEBCHAT', 'EMAIL']),
   leadId: z.string(),
-  via: z.enum(['qr', 'api']).optional(),
-  fromNumberId: z.string().optional(),
   // Resposta com citação (como no WhatsApp) — id/remetente/conteúdo da
   // mensagem original, escolhida pelo usuário na Inbox.
   replyToExternalId: z.string().optional(),
@@ -101,9 +99,8 @@ router.get('/attachment/:id', async (req: AuthRequest, res: Response) => {
 
 // Envia um documento/imagem pelo WhatsApp (base64). Limite de corpo elevado só aqui.
 router.post('/send-media', async (req: AuthRequest, res: Response) => {
-  const { leadId, fileName, mimeType, dataBase64, caption, via, fromNumberId } = req.body as {
+  const { leadId, fileName, mimeType, dataBase64, caption } = req.body as {
     leadId?: string; fileName?: string; mimeType?: string; dataBase64?: string; caption?: string;
-    via?: 'qr' | 'api'; fromNumberId?: string;
   };
   if (!leadId || !fileName || !mimeType || !dataBase64) {
     return res.status(400).json({ error: 'leadId, fileName, mimeType e dataBase64 são obrigatórios' });
@@ -117,7 +114,7 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
     }
     const io = req.app.get('io');
     const result = await sendOutboundMedia({
-      accountId: req.user!.accountId, leadId, buffer, fileName, mimeType, caption, via, fromNumberId, userId: req.user!.id, io,
+      accountId: req.user!.accountId, leadId, buffer, fileName, mimeType, caption, userId: req.user!.id, io,
     });
     if (!result.success) return res.status(400).json({ error: result.error });
     res.status(201).json(result.message);
@@ -274,8 +271,6 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
         accountId: req.user!.accountId,
         leadId: req.body.leadId,
         content: req.body.content,
-        via: req.body.via,
-        fromNumberId: req.body.fromNumberId,
         userId: req.user!.id,
         replyToExternalId: req.body.replyToExternalId,
         replyToFromMe: req.body.replyToFromMe,
