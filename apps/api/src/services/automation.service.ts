@@ -165,9 +165,24 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       const language = String(action.config.language || 'pt_BR');
       const rawParams = Array.isArray(action.config.bodyParams) ? (action.config.bodyParams as unknown[]).map(String) : [];
       const bodyParams = rawParams.map((p) => fillVariables(p, lead, context));
+      // Mostra o texto DE VERDADE que foi mandado (igual o envio manual pela
+      // Inbox já faz) — sem isso, a conversa só mostrava 'Template "X"
+      // enviado', sem dar pra saber o que o cliente recebeu. Busca o corpo
+      // aprovado na Meta e preenche as variáveis; se falhar (ex.: Graph API
+      // fora do ar), cai no rótulo genérico — nunca impede o envio em si.
+      let previewText = `Template "${templateName}" enviado`;
+      try {
+        const { listMetaTemplates } = require('./whatsapp.service') as typeof import('./whatsapp.service');
+        const templates = await listMetaTemplates(lead.accountId, lead.pipeline.departmentId);
+        const tpl = templates.find((t: any) => t.name === templateName && t.language === language);
+        const bodyComponent = tpl?.components?.find((c: any) => c.type === 'BODY');
+        if (bodyComponent?.text) {
+          previewText = String(bodyComponent.text).replace(/\{\{(\d+)\}\}/g, (_m: string, n: string) => bodyParams[Number(n) - 1] ?? `{{${n}}}`);
+        }
+      } catch { /* fica com o rótulo genérico */ }
       const result = await sendOutboundWhatsAppTemplate({
         accountId: lead.accountId, leadId: lead.id, templateName, language, bodyParams,
-        previewText: `Template "${templateName}" enviado`, io: io as any,
+        previewText, io: io as any,
       });
       return result.success;
     }
