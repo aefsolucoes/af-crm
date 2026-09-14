@@ -912,21 +912,45 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     }
   }
 
+  // Clicável em vez de só hover: tooltip nativo (title) é fácil de nunca
+  // notar (some rápido, letra minúscula, exige parar o mouse em cima e
+  // esperar) — usuário reportou que "não aparece o erro" mesmo passando o
+  // mouse. O clique mostra a explicação num toast, bem mais visível.
   function StatusTick({ status, error }: { status?: string; error?: string | null }) {
+    let icon: React.ReactNode;
+    let explanation: string;
+    let toastType: 'success' | 'error' | 'warning' = 'success';
+
     if (status === 'FAILED') {
-      return (
-        <span title={error ? `Falhou: ${error}` : 'Falhou ao enviar — a mensagem não chegou ao destinatário'}>
-          <AlertCircle size={14} className="text-red-400" />
-        </span>
-      );
+      icon = <AlertCircle size={14} className="text-red-400" />;
+      explanation = error ? `Falhou ao enviar: ${error}` : 'Falhou ao enviar — a mensagem não chegou ao destinatário.';
+      toastType = 'error';
+    } else if (status === 'READ') {
+      icon = <CheckCheck size={14} className="text-blue-400" />;
+      explanation = 'Lida pelo cliente.';
+    } else if (status === 'DELIVERED') {
+      icon = <CheckCheck size={14} className="text-slate-300" />;
+      explanation = 'Entregue no WhatsApp do cliente.';
+    } else {
+      // SENT (ou sem status ainda) — a Meta aceitou o envio, mas ainda não
+      // confirmou entrega/leitura. NÃO é erro: a Meta nem sempre manda essa
+      // confirmação, mesmo quando a mensagem chegou certinho. Só vira o
+      // alerta vermelho acima quando a Meta avisa de verdade que falhou.
+      icon = <Check size={14} className="text-slate-300" />;
+      explanation = 'Enviada — aceita pela Meta, aguardando confirmação de entrega. Isso NÃO é erro; a Meta nem sempre confirma entrega/leitura.';
+      toastType = 'warning';
     }
-    if (status === 'READ') return <span title="Lida pelo cliente"><CheckCheck size={14} className="text-blue-400" /></span>;
-    if (status === 'DELIVERED') return <span title="Entregue no WhatsApp do cliente"><CheckCheck size={14} className="text-slate-300" /></span>;
-    // SENT (ou sem status ainda) — a Meta aceitou o envio, mas ainda não
-    // confirmou entrega/leitura. NÃO é erro: a Meta nem sempre manda essa
-    // confirmação, mesmo quando a mensagem chegou certinho. Só vira o alerta
-    // vermelho acima quando a Meta avisa de verdade que falhou.
-    return <span title="Enviada — aceita pela Meta, aguardando confirmação de entrega"><Check size={14} className="text-slate-300" /></span>;
+
+    return (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); toast(explanation, toastType); }}
+        title={explanation}
+        className="flex items-center justify-center -m-1 p-1 rounded hover:bg-white/10 transition-colors"
+      >
+        {icon}
+      </button>
+    );
   }
 
   // ── Timeline unificado: mensagens + notas de fluxo ordenadas por data ──
