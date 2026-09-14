@@ -2,14 +2,23 @@ import { PrismaClient, AutomationTrigger } from '@prisma/client';
 import { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate } from './message.service';
 import { updateLead, updateLeadStage } from './lead.service';
 import { startSalesBotRun } from './salesbot.service';
+import { logActivity } from './activity.service';
 
 const prisma = new PrismaClient();
+
+/** minúsculo e sem acento — mesmo critério de campaign-detection.service.ts,
+ *  pra "Follow Up"/"follow-up"/"FOLLOW UP" casarem igual. */
+function norm(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
 
 export type AutomationActionType =
   | 'send_message'
   | 'send_template'
   | 'assign_agent'
   | 'move_stage'
+  | 'move_stage_by_name'
+  | 'add_note'
   | 'add_tag'
   | 'start_salesbot'
   | 'webhook';
@@ -34,6 +43,7 @@ export interface RunContext {
 type LeadForActions = {
   id: string;
   accountId: string;
+  pipelineId: string;
   name: string;
   tags: string[];
   pipeline: { departmentId: string | null };
@@ -186,6 +196,29 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       await updateLeadStage(lead.id, lead.accountId, stageId);
       return true;
     }
+    case 'move_stage_by_name': {
+      // Move pro estágio X DENTRO DO FUNIL ATUAL do lead (não um id fixo) —
+      // funciona igual pra qualquer setor sem precisar de uma regra por
+      // setor: cada lead resolve o "seu" estágio (ex.: "Follow Up") dentro
+      // do próprio funil "Vendas" onde já está.
+      const stageName = norm(String(action.config.stageName || ''));
+      if (!stageName) return false;
+      const stages = await prisma.stage.findMany({ where: { pipelineId: lead.pipelineId } });
+      const match = stages.find((s) => norm(s.name).includes(stageName));
+      if (!match) return false;
+      await updateLeadStage(lead.id, lead.accountId, match.id);
+      return true;
+    }
+    case 'add_note': {
+      const text = String(action.config.text || '').trim();
+      if (!text) return false;
+      const note = await prisma.note.create({ data: { leadId: lead.id, content: text, type: 'COMMENT' } });
+      logActivity({
+        accountId: lead.accountId, userId: null, userName: 'Automação', action: 'note_added',
+        leadId: lead.id, leadName: lead.name, summary: `escreveu uma nota: "${text.slice(0, 80)}"`,
+      });
+      return !!note;
+    }
     case 'add_tag': {
       const tag = String(action.config.tag || '').trim();
       if (!tag) return false;
@@ -323,20 +356,55 @@ export async function maybeMessageReceivedAutomations(accountId: string, leadId:
  *  curta. Dedupe via AutomationLog: só dispara de novo pra um lead depois
  *  de uma mensagem NOVA resetar o silêncio (evita repetir a cada poll
  *  enquanto o lead continua inativo). */
+/** Hora atual em São Paulo — não depende do fuso do servidor (Railway roda
+ *  em UTC), pra "só de manhã" valer o horário de Brasília de verdade. */
+function currentHourSaoPaulo(): number {
+  return Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false }).format(new Date()));
+}
+
+/** Diferença em DIAS DE CALENDÁRIO (fuso de São Paulo), não em horas
+ *  corridas — um lead que entrou às 23h de segunda já conta 1 dia na terça
+ *  de manhã, não só depois de 24h completas (senão "sempre no dia seguinte
+ *  de manhã" viraria "2 dias depois" pra quem entra à tarde). */
+function calendarDaysSince(date: Date): number {
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const [y1, m1, d1] = fmt.format(date).split('-').map(Number);
+  const [y2, m2, d2] = fmt.format(new Date()).split('-').map(Number);
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86_400_000);
+}
+
 export async function checkInactivityAutomations(io: unknown): Promise<void> {
   const rules = await prisma.automationRule.findMany({ where: { trigger: 'INACTIVITY', active: true } });
   for (const rule of rules) {
     try {
-      const days = Number((rule.triggerConfig as any)?.days || 3);
+      const cfg = (rule.triggerConfig as any) || {};
+      const days = Number(cfg.days || 3);
       if (!days || days <= 0) continue;
+
+      // Janela de horário (opcional) — ex.: 8h-10h. Quando configurada, usa
+      // dia de CALENDÁRIO em vez de "N*24h corridas" (ver calendarDaysSince),
+      // e só executa a regra inteira se o poll atual cair dentro da janela —
+      // fora dela, tenta de novo no próximo poll (a cada 15min), sem marcar
+      // nada como "já feito" (executeRuleForLead só grava o log ao executar).
+      const hasWindow = cfg.sendHourStart !== undefined && cfg.sendHourEnd !== undefined;
+      if (hasWindow) {
+        const hour = currentHourSaoPaulo();
+        if (hour < Number(cfg.sendHourStart) || hour >= Number(cfg.sendHourEnd)) continue;
+      }
+
       const threshold = new Date(Date.now() - days * 86_400_000);
       const leads = await prisma.lead.findMany({
-        where: { accountId: rule.accountId, status: 'OPEN', archived: false, isGroup: false, messages: { some: {} } },
+        where: {
+          accountId: rule.accountId, status: 'OPEN', archived: false, isGroup: false, messages: { some: {} },
+          ...(cfg.onlySiteLeads ? { tags: { has: 'Site' } } : {}),
+        },
         select: { id: true, messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true } } },
       });
       for (const lead of leads) {
         const lastMsgAt = lead.messages[0]?.createdAt;
-        if (!lastMsgAt || lastMsgAt > threshold) continue;
+        if (!lastMsgAt) continue;
+        const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;
+        if (!eligible) continue;
         const already = await prisma.automationLog.findFirst({ where: { ruleId: rule.id, leadId: lead.id, createdAt: { gt: lastMsgAt } } });
         if (already) continue;
         await executeRuleForLead(rule, lead.id, io, {}).catch((err) => console.error('[Automation] Falha (inatividade)', rule.id, err));

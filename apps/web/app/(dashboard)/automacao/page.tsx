@@ -10,7 +10,7 @@ import api from '@/lib/api';
 import { Plus, Trash2, Edit2, Zap, ToggleLeft, ToggleRight, Clock, GitBranch, MessageSquare, ArrowRight } from 'lucide-react';
 
 type TriggerType = 'NEW_LEAD' | 'STAGE_CHANGE' | 'TAG_ADDED' | 'INACTIVITY' | 'MESSAGE_RECEIVED' | 'FORM_SUBMITTED';
-type ActionType = 'send_message' | 'send_template' | 'assign_agent' | 'move_stage' | 'add_tag' | 'start_salesbot' | 'webhook';
+type ActionType = 'send_message' | 'send_template' | 'assign_agent' | 'move_stage' | 'move_stage_by_name' | 'add_note' | 'add_tag' | 'start_salesbot' | 'webhook';
 
 interface AutomationAction { type: ActionType; config: Record<string, unknown> }
 
@@ -42,6 +42,8 @@ const ACTION_META: Record<ActionType, { label: string }> = {
   send_template: { label: 'Usar template' },
   assign_agent: { label: 'Atribuir agente' },
   move_stage: { label: 'Mover estágio' },
+  move_stage_by_name: { label: 'Mover pra etapa (por nome, no funil atual)' },
+  add_note: { label: 'Adicionar nota' },
   add_tag: { label: 'Adicionar tag' },
   start_salesbot: { label: 'Iniciar Salesbot' },
   webhook: { label: 'Disparar webhook' },
@@ -284,13 +286,48 @@ export default function AutomacaoPage() {
               </div>
 
               {form.trigger === 'INACTIVITY' && (
-                <Input
-                  label="Dias de inatividade"
-                  type="number"
-                  min={1}
-                  value={String(form.triggerConfig.days ?? '3')}
-                  onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, days: e.target.value } })}
-                />
+                <div className="space-y-2">
+                  <Input
+                    label="Dias de inatividade"
+                    type="number"
+                    min={1}
+                    value={String(form.triggerConfig.days ?? '3')}
+                    onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, days: e.target.value } })}
+                  />
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={!!form.triggerConfig.onlySiteLeads}
+                      onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, onlySiteLeads: e.target.checked || undefined } })}
+                    />
+                    Só leads vindos do formulário do site
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      label="Só enviar a partir de (hora)"
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={String(form.triggerConfig.sendHourStart ?? '')}
+                      onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, sendHourStart: e.target.value === '' ? undefined : e.target.value } })}
+                      placeholder="ex.: 8"
+                    />
+                    <Input
+                      label="Até (hora)"
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={String(form.triggerConfig.sendHourEnd ?? '')}
+                      onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, sendHourEnd: e.target.value === '' ? undefined : e.target.value } })}
+                      placeholder="ex.: 10"
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Deixe as horas em branco pra disparar assim que completar os dias, a qualquer hora. Preenchendo os
+                    dois, só dispara dentro dessa janela (horário de Brasília) — e passa a contar por dia de
+                    calendário, não 24h corridas (quem entrou de tarde ainda cai no dia seguinte de manhã).
+                  </p>
+                </div>
               )}
               {form.trigger === 'STAGE_CHANGE' && (
                 <StageSelect
@@ -412,6 +449,28 @@ export default function AutomacaoPage() {
                       pipelines={pipelines}
                       value={String(action.config.stageId || '')}
                       onChange={(stageId) => updateActionConfig(i, 'stageId', stageId)}
+                    />
+                  )}
+
+                  {action.type === 'move_stage_by_name' && (
+                    <div className="space-y-1.5">
+                      <Input
+                        value={String(action.config.stageName || '')}
+                        onChange={(e) => updateActionConfig(i, 'stageName', e.target.value)}
+                        placeholder='Nome da etapa, ex.: "Follow Up"'
+                      />
+                      <p className="text-[11px] text-slate-400">
+                        Move o lead pra essa etapa DENTRO do funil onde ele já está — funciona pra qualquer setor sem
+                        precisar de uma regra por setor (cada lead resolve a etapa certa no próprio funil dele).
+                      </p>
+                    </div>
+                  )}
+
+                  {action.type === 'add_note' && (
+                    <Input
+                      value={String(action.config.text || '')}
+                      onChange={(e) => updateActionConfig(i, 'text', e.target.value)}
+                      placeholder="Texto da nota, ex.: Follow-up automático enviado"
                     />
                   )}
 

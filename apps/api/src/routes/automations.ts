@@ -17,7 +17,7 @@ router.use(authMiddleware);
 router.use(requirePermission('automations'));
 
 const TRIGGERS = ['NEW_LEAD', 'STAGE_CHANGE', 'TAG_ADDED', 'INACTIVITY', 'MESSAGE_RECEIVED', 'FORM_SUBMITTED'] as const;
-const ACTION_TYPES = ['send_message', 'send_template', 'assign_agent', 'move_stage', 'add_tag', 'start_salesbot', 'webhook'] as const;
+const ACTION_TYPES = ['send_message', 'send_template', 'assign_agent', 'move_stage', 'move_stage_by_name', 'add_note', 'add_tag', 'start_salesbot', 'webhook'] as const;
 
 const actionSchema = z.object({
   type: z.enum(ACTION_TYPES),
