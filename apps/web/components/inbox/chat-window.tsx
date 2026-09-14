@@ -1172,6 +1172,16 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
       {/* Timeline unificado: mensagens + eventos de fluxo */}
       <div ref={scrollContainerRef} onScroll={handleScroll} className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
+        {grouped.length === 0 && (
+          // Lead novo (ex.: veio do formulário do site) sem nenhuma mensagem
+          // ainda — sem isso ficava um vazio preto enorme, parecendo quebrado
+          // (mais visível ainda com o painel de templates aberto embaixo).
+          <div className="flex flex-col items-center justify-center h-full text-center px-6">
+            <MessageCircle size={32} className="text-[#2a3942] mb-2" />
+            <p className="text-sm text-[#8696a0] font-medium">Nenhuma mensagem ainda</p>
+            <p className="text-xs text-[#8696a0]/70 mt-1">Mande uma mensagem ou um template pra começar a conversa.</p>
+          </div>
+        )}
         {grouped.map(({ date, items }) => (
           <div key={date}>
             {/* Separador de data */}
