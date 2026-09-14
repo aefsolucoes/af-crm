@@ -114,7 +114,20 @@ router.post('/site-lead', async (req: Request, res: Response) => {
     const result = await createLeadFromSiteForm(account.id, { name, phone, email, department, customFields }, io);
 
     if (!result.ok) return res.status(result.status).json({ error: result.error });
-    res.status(201).json({ ok: true });
+    // Ecoa o que foi de fato recebido em customFields — serve pra quem está
+    // implementando o lado do site confirmar na hora, pela própria resposta
+    // do POST, se os valores (valor_imovel, valor_credito etc.) chegaram ou
+    // não, sem precisar abrir o CRM pra checar o card.
+    const receivedCustomFieldKeys = customFields && typeof customFields === 'object' ? Object.keys(customFields) : [];
+    res.status(201).json({
+      ok: true,
+      leadId: result.leadId,
+      created: result.created,
+      receivedCustomFieldKeys,
+      warning: receivedCustomFieldKeys.length === 0
+        ? 'Nenhum campo extra recebido em "customFields" — só nome/telefone/e-mail/setor chegaram. Se o formulário captura valor do imóvel, entrada, prazo etc., confira se o POST do site está mandando um objeto "customFields" com essas chaves.'
+        : undefined,
+    });
   } catch (err) {
     console.error('[Site Lead] Webhook POST error:', err);
     res.status(500).json({ error: 'Erro ao processar o lead' });
