@@ -223,6 +223,9 @@ model Lead {
   tags               String[]
   archived           Boolean             @default(false)
   isGroup            Boolean             @default(false)
+  // Marcação de "importante/prioridade" — estrela no card do Kanban, ordena
+  // pro topo da etapa e mostra um indicador na Inbox. Sem níveis, é só liga/desliga.
+  starred            Boolean             @default(false)
   // Assistente de IA responde o cliente SOZINHO nesta conversa (sem revisão
   // humana antes de enviar) — ligado/desligado por um botão na Inbox. Usa a
   // Base de Conhecimento; nunca inventa valor/prazo/promessa específica.

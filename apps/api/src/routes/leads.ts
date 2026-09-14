@@ -789,6 +789,24 @@ router.patch('/:id/archive', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// PATCH /api/leads/:id/star — marcar/desmarcar como importante (estrela no
+// card do Kanban). Sem auditoria/activity log de propósito — é um toggle de
+// tela, não uma ação de negócio (mesmo critério de fixar/favoritar mensagem).
+router.patch('/:id/star', async (req: AuthRequest, res: Response) => {
+  try {
+    const { starred } = req.body as { starred: boolean };
+    const lead = await prisma.lead.update({
+      where: { id: req.params.id },
+      data: { starred: starred === true },
+      select: { id: true, starred: true },
+    });
+    req.app.get('io')?.to(`account_${req.user!.accountId}`).emit('lead_starred', { leadId: lead.id, starred: lead.starred });
+    res.json(lead);
+  } catch {
+    res.status(500).json({ error: 'Erro ao marcar lead' });
+  }
+});
+
 // Liga/desliga o assistente de IA respondendo esse cliente SOZINHO no
 // WhatsApp (sem revisão humana) — botão na Inbox. Ver ai-auto-reply.service.ts.
 router.patch('/:id/ai-auto-reply', async (req: AuthRequest, res: Response) => {
