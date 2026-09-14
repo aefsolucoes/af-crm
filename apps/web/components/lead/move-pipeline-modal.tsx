@@ -35,12 +35,13 @@ export function MovePipelineModal({ leadId, currentPipelineId, onClose, onMoved 
     queryFn: async () => (await api.get('/api/pipelines')).data,
   });
 
-  // Pipelines sem setor (compatibilidade, funis antigos) entram como um
-  // grupo "Sem setor" — só aparece se algum existir de verdade.
+  // Pipelines sem setor (a Caixa de Entrada global e qualquer outro órfão)
+  // entram como um grupo à parte — só aparece se algum existir de verdade.
+  // Nomeado igual ao rótulo que já existe no seletor principal do Funil.
   const hasOrphanPipelines = pipelines.some(p => !p.department);
   const departmentOptions = [
     ...departments,
-    ...(hasOrphanPipelines ? [{ id: '__none__', name: 'Sem setor' }] : []),
+    ...(hasOrphanPipelines ? [{ id: '__none__', name: 'Caixa de Entrada' }] : []),
   ];
 
   const pipelinesInDepartment = pipelines.filter(p => {

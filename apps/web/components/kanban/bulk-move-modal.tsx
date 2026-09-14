@@ -33,7 +33,10 @@ export function BulkMoveModal({ leadIds, onClose, onMoved }: BulkMoveModalProps)
   const hasOrphanPipelines = pipelines.some((p) => !p.department);
   const departmentOptions = [
     ...departments,
-    ...(hasOrphanPipelines ? [{ id: '__none__', name: 'Sem setor' }] : []),
+    // Funis sem setor (a Caixa de Entrada global e qualquer outro órfão) —
+    // nomeado igual ao rótulo que já existe no seletor principal do Funil,
+    // senão "Sem setor" não dizia nada sobre onde estava a Caixa de Entrada.
+    ...(hasOrphanPipelines ? [{ id: '__none__', name: 'Caixa de Entrada' }] : []),
   ];
 
   const pipelinesInDepartment = pipelines.filter((p) => {
