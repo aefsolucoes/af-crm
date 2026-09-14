@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { processIncomingWhatsApp, processWhatsAppStatus } from '../services/whatsapp.service';
+import { createLeadFromSiteForm } from '../services/site-lead.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -92,6 +93,31 @@ router.post('/whatsapp', async (req: Request, res: Response) => {
     await processIncomingWhatsApp(body, config.accountId, io, config.departmentId);
   } catch (err) {
     console.error('[WhatsApp] Webhook POST error:', err);
+  }
+});
+
+// ─── Formulário do site (fora do CRM) ──────────────────────────────────────
+// Site externo (campanha do Meta Ads leva o cliente até lá) chama isso
+// direto do SERVIDOR dele quando o formulário é preenchido — sem
+// authMiddleware (não é um usuário logado no CRM), autenticado por uma
+// chave própria (Account.leadIntakeApiKey, gerada em Configurações → Site).
+router.post('/site-lead', async (req: Request, res: Response) => {
+  try {
+    const apiKey = req.header('X-Api-Key');
+    if (!apiKey) return res.status(401).json({ error: 'X-Api-Key ausente' });
+
+    const account = await prisma.account.findFirst({ where: { leadIntakeApiKey: apiKey }, select: { id: true } });
+    if (!account) return res.status(401).json({ error: 'Chave inválida' });
+
+    const { name, phone, email, department, customFields } = req.body || {};
+    const io = (req as any).app.get('io');
+    const result = await createLeadFromSiteForm(account.id, { name, phone, email, department, customFields }, io);
+
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error('[Site Lead] Webhook POST error:', err);
+    res.status(500).json({ error: 'Erro ao processar o lead' });
   }
 });
 

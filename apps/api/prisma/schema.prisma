@@ -11,6 +11,10 @@ model Account {
   id                 String              @id @default(cuid())
   name               String
   createdAt          DateTime            @default(now())
+  // Chave pública pro site externo (fora do CRM) chamar POST /api/webhooks/
+  // site-lead e criar um lead sozinho — null até o admin gerar em
+  // Configurações → Site. Ver services/site-lead.service.ts.
+  leadIntakeApiKey   String?             @unique
   users              User[]
   pipelines          Pipeline[]
   leads              Lead[]
@@ -688,6 +692,9 @@ enum AutomationTrigger {
   TAG_ADDED
   INACTIVITY
   MESSAGE_RECEIVED
+  // Formulário do site (fora do CRM) — POST /api/webhooks/site-lead.
+  // Existia como opção travada no front há tempos, sem back-end nenhum.
+  FORM_SUBMITTED
 }
 
 // Regra "quando X, faça Y" configurada pelo usuário em Automações. `actions`

@@ -1,5 +1,6 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
+import crypto from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
@@ -335,6 +336,21 @@ router.get('/meta-leads/forms', async (_req: AuthRequest, res: Response) => {
 
 router.get('/meta-leads/forms/:formId/fields', async (_req: AuthRequest, res: Response) => {
   res.status(403).json({ error: 'Meta Lead Ads foi desativado' });
+});
+
+// ─── Captação de lead do site (Configurações → Site) ───────────────────────
+// Chave pública pro POST /api/webhooks/site-lead — o site externo do usuário
+// manda o formulário preenchido pra cá. Ver services/site-lead.service.ts.
+
+router.get('/site-lead', async (req: AuthRequest, res: Response) => {
+  const account = await prisma.account.findUnique({ where: { id: req.user!.accountId }, select: { leadIntakeApiKey: true } });
+  res.json({ apiKey: account?.leadIntakeApiKey || null });
+});
+
+router.post('/site-lead/regenerate', async (req: AuthRequest, res: Response) => {
+  const apiKey = crypto.randomBytes(24).toString('hex');
+  await prisma.account.update({ where: { id: req.user!.accountId }, data: { leadIntakeApiKey: apiKey } });
+  res.json({ apiKey });
 });
 
 // Rotas GET/PUT /api/settings/agent (prompt do balão flutuante "Assistente
