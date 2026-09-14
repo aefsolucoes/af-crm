@@ -25,6 +25,10 @@ export interface RunContext {
   incomingText?: string;
   newStageId?: string;
   addedTag?: string;
+  /** Setor do lead — só preenchido no gatilho FORM_SUBMITTED, pra permitir
+   *  uma regra por setor (ex.: template de boas-vindas diferente pra Home
+   *  Equity e Financiamento Habitacional, mesmo formulário do site pros dois). */
+  departmentId?: string;
 }
 
 type LeadForActions = {
@@ -255,6 +259,8 @@ function matchesTriggerConfig(rule: { trigger: AutomationTrigger; triggerConfig:
       return !cfg.stageId || cfg.stageId === context.newStageId;
     case 'TAG_ADDED':
       return !cfg.tag || String(cfg.tag).trim().toLowerCase() === String(context.addedTag || '').trim().toLowerCase();
+    case 'FORM_SUBMITTED':
+      return !cfg.departmentId || cfg.departmentId === context.departmentId;
     default:
       return true;
   }

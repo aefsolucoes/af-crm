@@ -166,7 +166,7 @@ export async function createLeadFromSiteForm(
   // Lazy require (não estático) — mesmo motivo documentado em
   // whatsapp.service.ts: evita dependência circular com automation.service.ts.
   const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
-  runAutomations({ accountId, trigger: 'FORM_SUBMITTED', leadId: lead.id, io }).catch(() => {});
+  runAutomations({ accountId, trigger: 'FORM_SUBMITTED', leadId: lead.id, io, context: { departmentId: dept.id } }).catch(() => {});
 
   if (io) io.to(`account_${accountId}`).emit('new_notification', { leadId: lead.id });
 

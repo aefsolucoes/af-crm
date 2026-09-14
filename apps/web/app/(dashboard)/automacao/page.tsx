@@ -81,6 +81,10 @@ export default function AutomacaoPage() {
     queryKey: ['pipelines'],
     queryFn: async () => (await api.get('/api/pipelines')).data as Pipeline[],
   });
+  const { data: departments } = useQuery({
+    queryKey: ['departments'],
+    queryFn: async () => (await api.get('/api/departments')).data as { id: string; name: string }[],
+  });
   const { data: users } = useQuery({
     queryKey: ['users'],
     queryFn: async () => (await api.get('/api/users')).data as UserOption[],
@@ -304,6 +308,20 @@ export default function AutomacaoPage() {
                   onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, tag: e.target.value || undefined } })}
                   placeholder="nome-da-tag"
                 />
+              )}
+              {form.trigger === 'FORM_SUBMITTED' && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-slate-500">Setor específico (opcional — deixe em branco pra qualquer setor)</label>
+                  <select
+                    value={String(form.triggerConfig.departmentId || '')}
+                    onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, departmentId: e.target.value || undefined } })}
+                    className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent bg-white"
+                  >
+                    <option value="">Qualquer setor</option>
+                    {(departments || []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                  <p className="text-[11px] text-slate-400">Use isso pra mandar um template diferente por produto (ex.: Home Equity x Financiamento Habitacional) — crie uma regra por setor.</p>
+                </div>
               )}
             </div>
 
