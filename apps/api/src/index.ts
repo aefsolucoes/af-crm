@@ -45,7 +45,11 @@ app.use(cors({
     if (!origin) return cb(null, true);
     if (origin.endsWith('.netlify.app')) return cb(null, true);
     if (origin.endsWith('.pages.dev')) return cb(null, true);
-    if (origin.endsWith('.aefsolucoesfinanceiras.com.br')) return cb(null, true);
+    // Cobre qualquer subdomínio (crm., www.) E o domínio raiz sem "www" —
+    // o site institucional roda em https://aefsolucoesfinanceiras.com.br
+    // (sem www), que "endsWith" sozinho não cobria (achado ao configurar o
+    // envio dos simuladores pro webhook de captação de lead).
+    if (origin === 'https://aefsolucoesfinanceiras.com.br' || origin.endsWith('.aefsolucoesfinanceiras.com.br')) return cb(null, true);
     if (allowedOrigins.length === 0 || allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
     cb(new Error('Not allowed by CORS'));
   },
