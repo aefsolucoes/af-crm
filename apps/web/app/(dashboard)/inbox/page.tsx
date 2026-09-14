@@ -185,6 +185,7 @@ function InboxPageInner() {
               messages={allMessages}
               notes={lead.notes}
               aiAutoReplyActive={(lead as any).aiAutoReplyActive}
+              starred={(lead as any).starred}
               onNewMessage={handleNewMessage}
               onClose={() => { setSelectedId(null); setShowMobileInfo(false); }}
               onOpenInfo={() => setShowMobileInfo(true)}

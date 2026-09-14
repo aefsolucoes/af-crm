@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
 import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick } from 'lucide-react';
@@ -46,6 +46,8 @@ interface ChatWindowProps {
   notes?: Note[];
   /** true = a IA responde esse cliente SOZINHA no WhatsApp, sem revisão humana. */
   aiAutoReplyActive?: boolean;
+  /** Lead marcado como importante/prioridade — mesma estrela do Kanban. */
+  starred?: boolean;
   onNewMessage: (msg: Message) => void;
   /** Fecha a conversa (ESC), como no WhatsApp. No mobile também é o botão de voltar pra lista. */
   onClose?: () => void;
@@ -148,8 +150,9 @@ function lastInboundApiMessage(messages: Message[]): Message | null {
   return latest;
 }
 
-export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, onNewMessage, onClose, onOpenInfo }: ChatWindowProps) {
+export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo }: ChatWindowProps) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
   const [sending, setSending] = useState(false);
@@ -184,6 +187,13 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [togglingAi, setTogglingAi] = useState(false);
   useEffect(() => { setAiActive(!!aiAutoReplyActive); }, [leadId, aiAutoReplyActive]);
 
+  // Marcar como importante/prioridade — mesma estrela do Kanban, botão aqui
+  // no cabeçalho da Inbox (pedido do usuário: quem trabalha pela Inbox não
+  // ia achar o botão que só existia no card do Funil).
+  const [starred, setStarred] = useState(!!starredProp);
+  const [togglingStar, setTogglingStar] = useState(false);
+  useEffect(() => { setStarred(!!starredProp); }, [leadId, starredProp]);
+
   // Link direto pra essa conversa (?leadId=... já é lido pela própria tela
   // da Inbox — apps/web/app/(dashboard)/inbox/page.tsx — e abre direto
   // nela). Quem receber o link precisa estar logado no CRM.
@@ -206,6 +216,24 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       toast('Erro ao mudar o assistente de IA', 'error');
     } finally {
       setTogglingAi(false);
+    }
+  }
+
+  async function handleToggleStar() {
+    const next = !starred;
+    setTogglingStar(true);
+    setStarred(next); // otimista
+    try {
+      await api.patch(`/api/leads/${leadId}/star`, { starred: next });
+      queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['leads-all'] });
+    } catch {
+      setStarred(!next); // desfaz
+      toast('Erro ao marcar o lead', 'error');
+    } finally {
+      setTogglingStar(false);
     }
   }
 
@@ -1032,6 +1060,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             {CHANNEL_ICONS[channel]} {CHANNEL_LABELS[channel]}
           </p>
         </div>
+        <button
+          onClick={handleToggleStar}
+          disabled={togglingStar}
+          title={starred ? 'Desmarcar como importante' : 'Marcar como importante'}
+          className={cn(
+            'flex items-center justify-center w-8 h-8 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0',
+            starred ? 'text-amber-400 hover:bg-white/10' : 'text-[#8696a0] hover:text-[#e9edef] hover:bg-white/10'
+          )}
+        >
+          <Star size={18} className={starred ? 'fill-amber-400' : ''} />
+        </button>
         {/* Dados do lead/grupo — no mobile o painel não fica ao lado (não
             cabe), abre como overlay ao tocar aqui. */}
         {onOpenInfo && (
