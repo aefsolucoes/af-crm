@@ -364,6 +364,38 @@ export function NodeInspector({ step, allSteps, onUpdate, onClose }: NodeInspect
             )}
           </>
         )}
+
+        {/* ─── ai_reply ─── */}
+        {step.type === 'ai_reply' && (
+          <>
+            <p className="text-xs text-slate-400 -mt-2">
+              Usa a mesma Base de Conhecimento e Respostas Rápidas do setor deste lead — não precisa configurar o conteúdo aqui, só o que fazer depois.
+            </p>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-700">Se a IA pedir um humano, ir para</label>
+              <select
+                value={cfg(step, 'handoffStepId')}
+                onChange={(e) => u('handoffStepId', e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+              >
+                <option value="">Encerra o fluxo aqui</option>
+                {otherSteps.map((s, i) => <option key={s.id} value={s.id}>{`${i + 1}. ${getStepMeta(s.type).label}`}</option>)}
+              </select>
+              <p className="text-xs text-slate-400">Acontece quando o cliente pede pra falar com alguém, parece insatisfeito, ou pergunta algo fora do escopo do setor — a equipe já recebe um aviso (som + toast) nesse caso.</p>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-700">Mensagem de reserva (se a IA estiver indisponível)</label>
+              <textarea
+                value={cfg(step, 'fallbackMessage')}
+                onChange={(e) => u('fallbackMessage', e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-af-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-af-accent"
+                rows={2}
+                placeholder="Já já um atendente te retorna, tudo bem?"
+              />
+              <p className="text-xs text-slate-400">Opcional — só é usada nesse caso raro; o fluxo segue normalmente depois.</p>
+            </div>
+          </>
+        )}
       </div>
     </aside>
   );

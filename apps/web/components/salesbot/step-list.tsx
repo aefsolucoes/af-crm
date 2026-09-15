@@ -42,6 +42,8 @@ function stepPreview(step: BotStep): string {
       return `Valida "${c.validationType || 'text'}" e guarda em "${c.field || '?'}"`;
     case 'stop_salesbot':
       return c.sendFinalMessage ? 'Encerra o fluxo, com mensagem final' : 'Encerra o fluxo';
+    case 'ai_reply':
+      return 'Responde com IA (Base de Conhecimento) — encerra ou repassa se a IA pedir um humano';
     default:
       return '';
   }

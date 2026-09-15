@@ -1,14 +1,14 @@
 'use client';
-import { MessageSquare, Pause, Zap, GitBranch, CheckCircle2, StopCircle } from 'lucide-react';
+import { MessageSquare, Pause, Zap, GitBranch, CheckCircle2, StopCircle, Sparkles } from 'lucide-react';
 
-// Só os 6 tipos que o motor (apps/api/src/services/salesbot.service.ts) sabe
+// Só os 7 tipos que o motor (apps/api/src/services/salesbot.service.ts) sabe
 // executar de verdade — a paleta do editor não oferece mais tipo nenhum que
-// não rode. Os outros 10 do mockup original (reação, comentário, mensagem
+// não rode. Os outros 9 do mockup original (reação, comentário, mensagem
 // interna, list message, subscrever Meta, ir para etapa solto, iniciar outro
 // bot, etapa em código, widget, round robin) ficam fora do MVP de propósito
 // (ver plano) — reintroduzir qualquer um deles exige dar suporte no motor
 // primeiro, senão o fluxo trava com "tipo não suportado" ao chegar nele.
-export type StepType = 'send_message' | 'pause' | 'condition' | 'action' | 'validation' | 'stop_salesbot';
+export type StepType = 'send_message' | 'pause' | 'condition' | 'action' | 'validation' | 'stop_salesbot' | 'ai_reply';
 
 interface StepMeta {
   type: StepType;
@@ -60,6 +60,13 @@ export const STEP_TYPES: StepMeta[] = [
     icon: <StopCircle size={14} />,
     color: '#dc2626',
     description: 'Encerra o fluxo — com uma mensagem de despedida, se quiser',
+  },
+  {
+    type: 'ai_reply',
+    label: 'Responder com IA',
+    icon: <Sparkles size={14} />,
+    color: '#00a884',
+    description: 'Deixa a IA responder a pergunta do cliente com base na Base de Conhecimento — pra perguntas que o fluxo não previu',
   },
 ];
 

@@ -1,15 +1,16 @@
 import { PrismaClient, SalesBotRun } from '@prisma/client';
 import { sendOutboundWhatsApp } from './message.service';
 import { updateLead, updateLeadStage } from './lead.service';
+import { generateAiAutoReply } from './ai-auto-reply.service';
 
 const prisma = new PrismaClient();
 
 // Formato do JSON guardado em SalesBot.flow — espelha
-// apps/web/components/salesbot/node-types.tsx (só os 6 tipos do MVP:
-// send_message, pause, condition, action, validation, stop_salesbot). Ordem
-// do array = próximo passo por padrão; só "condition" desvia (trueStepId/
-// falseStepId), permitindo até voltar pra um passo anterior (loop de
-// validação, por ex.).
+// apps/web/components/salesbot/node-types.tsx (só os 7 tipos do MVP:
+// send_message, pause, condition, action, validation, stop_salesbot,
+// ai_reply). Ordem do array = próximo passo por padrão; só "condition"
+// desvia (trueStepId/falseStepId), permitindo até voltar pra um passo
+// anterior (loop de validação, por ex.).
 export interface SalesBotFlow {
   trigger: { keywords: string[] };
   steps: SalesBotStep[];
@@ -17,7 +18,7 @@ export interface SalesBotFlow {
 
 export interface SalesBotStep {
   id: string;
-  type: 'send_message' | 'pause' | 'condition' | 'action' | 'validation' | 'stop_salesbot';
+  type: 'send_message' | 'pause' | 'condition' | 'action' | 'validation' | 'stop_salesbot' | 'ai_reply';
   config: Record<string, unknown>;
 }
 
@@ -276,6 +277,54 @@ async function executeStepsFrom(
       const result = await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: run.leadId, content: message, buttons, io: io as any });
       await logStep(run.id, step, { ok: result.success, error: result.success ? undefined : result.error });
       if (!result.success) { await finishRun(run.id, 'ERROR', `Falha ao enviar mensagem: ${result.error}`); return; }
+      currentId = nextDefaultId;
+      continue;
+    }
+
+    if (step.type === 'ai_reply') {
+      // Responde a pergunta REAL do cliente usando a mesma Base de
+      // Conhecimento + Respostas Rápidas que a "Sugerir resposta" do
+      // colaborador usa (generateAiAutoReply) — pra perguntas que o fluxo
+      // fixo não previu (ex.: "posso usar o FGTS na entrada?"), em vez de
+      // cair sempre na mesma mensagem genérica de um "Enviar mensagem" fixo.
+      const lead = await prisma.lead.findUnique({ where: { id: run.leadId }, select: { accountId: true, name: true, userId: true } });
+      if (!lead) { await finishRun(run.id, 'ERROR', 'Lead não existe mais'); return; }
+
+      const genResult = await generateAiAutoReply(lead.accountId, run.leadId, incomingText);
+      if (!genResult) {
+        // IA indisponível (sem ANTHROPIC_API_KEY, erro na chamada etc.) — usa
+        // a mensagem de reserva configurada, se tiver, e segue o fluxo normal.
+        const fallback = String(step.config.fallbackMessage || '');
+        if (fallback) await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: run.leadId, content: fallback, io: io as any });
+        await logStep(run.id, step, { ok: false, reason: 'ia indisponível' });
+        currentId = nextDefaultId;
+        continue;
+      }
+
+      const sendResult = await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: run.leadId, content: genResult.reply, io: io as any });
+      await logStep(run.id, step, { ok: sendResult.success, handoff: genResult.handoff, error: sendResult.success ? undefined : sendResult.error });
+      if (!sendResult.success) { await finishRun(run.id, 'ERROR', `Falha ao enviar mensagem: ${sendResult.error}`); return; }
+
+      if (genResult.handoff) {
+        // A própria IA decidiu que precisa de um humano (pergunta fora do
+        // escopo do setor, cliente insatisfeito, pediu atendente) — mesmo
+        // aviso (som + toast pro responsável) que o "Ativar IA" avulso já dá,
+        // via o evento ai_handoff que o layout.tsx já escuta.
+        await prisma.note.create({
+          data: { leadId: run.leadId, content: 'IA do SalesBot encerrou essa etapa — pergunta fora do que consegue responder, ou cliente pediu atendimento humano. Repassado para a equipe.', type: 'COMMENT' },
+        }).catch(() => {});
+        const { logActivity } = require('./activity.service') as typeof import('./activity.service');
+        logActivity({
+          accountId: lead.accountId, userId: null, userName: 'Assistente IA', action: 'ai_handoff',
+          leadId: run.leadId, leadName: lead.name, summary: 'IA do SalesBot repassou a conversa pra equipe',
+        });
+        if (io && lead.userId) (io as any).to(`user_${lead.userId}`).emit('ai_handoff', { leadId: run.leadId, leadName: lead.name });
+
+        const handoffStepId = String(step.config.handoffStepId || '');
+        if (handoffStepId) { currentId = handoffStepId; continue; }
+        await finishRun(run.id, 'STOPPED', 'ai_handoff');
+        return;
+      }
       currentId = nextDefaultId;
       continue;
     }
