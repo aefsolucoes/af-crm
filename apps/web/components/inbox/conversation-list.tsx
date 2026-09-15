@@ -2,7 +2,7 @@
 import { Conversation } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatDateTime } from '@/lib/utils';
-import { useState } from 'react';
+import { useState, useRef, useLayoutEffect } from 'react';
 import { Search, X, BadgeCheck, AlertCircle, RefreshCw, Star } from 'lucide-react';
 
 /** true se a conversa é um grupo do WhatsApp (só existiam pelo canal QR,
@@ -88,6 +88,25 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
   const [filter, setFilter] = useState<Filter>('ALL');
   const [search, setSearch] = useState('');
 
+  // Trava a rolagem da lista: quando chega/sai mensagem, a conversa envolvida
+  // reordena pra posição 0 normalmente (igual antes) — mas a TELA do usuário
+  // não deve se mexer por causa disso (ele pode estar no meio de um
+  // follow-up, descendo a lista uma a uma, e tinha que ficar descendo de novo
+  // toda vez que respondia). Guarda a posição que o próprio usuário definiu
+  // ao rolar, e força de volta pra ela a cada atualização — roda em
+  // useLayoutEffect (antes do navegador pintar a tela), então o usuário
+  // nunca chega a ver o salto.
+  const listRef = useRef<HTMLDivElement>(null);
+  const scrollTopRef = useRef(0);
+
+  useLayoutEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = scrollTopRef.current;
+  });
+
+  function handleListScroll(e: React.UIEvent<HTMLDivElement>) {
+    scrollTopRef.current = e.currentTarget.scrollTop;
+  }
+
   const apiCount = conversations.filter((c) => !isGroupConversation(c) && isApiConversation(c)).length;
 
   const q = search.trim();
@@ -155,7 +174,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
       </div>
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin">
+      <div ref={listRef} onScroll={handleListScroll} className="flex-1 overflow-y-auto scrollbar-thin">
         {loading && (
           <div className="flex flex-col gap-0">
             {[1, 2, 3, 4].map((i) => (
