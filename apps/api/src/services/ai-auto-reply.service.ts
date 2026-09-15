@@ -95,7 +95,7 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
       ? templates.map((t) => `- "${t.name}": ${t.body}`).join('\n')
       : '(nenhuma resposta rápida cadastrada)';
     const escopoTexto = escopo
-      ? `Este atendimento é EXCLUSIVO do setor "${department?.name}" — você só deve responder sobre: ${escopo}. Se a pergunta do cliente for sobre outro produto/linha de negócio da empresa (fora dessa lista), NÃO tente responder — encerre e chame um humano (ver regras de handoff abaixo).`
+      ? `Este atendimento é EXCLUSIVO do setor "${department?.name}" — você só deve responder sobre: ${escopo}. Trate isso como o produto CORRETO do cliente, mesmo que a mensagem dele use um termo ambíguo que pareça outro produto da empresa (ex.: "crédito com garantia de imóvel" pode soar como Home Equity, mas se o setor deste card for Financiamento Habitacional, é disso que se trata aqui — não troque de produto por conta própria). Se a pergunta do cliente for GENUINAMENTE sobre outro produto/linha de negócio da empresa (fora dessa lista), NÃO tente responder — encerre e chame um humano (ver regras de handoff abaixo).`
       : '(este atendimento não tem um setor/produto definido — responda normalmente com base no material disponível, sem restrição de escopo)';
 
     // Estilo de escrita do colaborador responsável por este lead — pra IA soar

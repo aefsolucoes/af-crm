@@ -62,6 +62,17 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
     const lastClientMsg = [...ordered].reverse().find((m) => m.direction === 'INBOUND')?.content || '';
 
     const department = lead.pipeline?.department;
+    // Escopo de produtos deste setor — mesma regra do ai-auto-reply.service.ts
+    // (essa aqui NÃO tinha, e foi por isso que um card corretamente
+    // classificado em "Financiamento Habitacional" recebeu sugestão sobre
+    // Home Equity: o cliente usou um termo ambíguo — "crédito com garantia de
+    // imóvel" — que soa como Home Equity, e a IA seguiu o palavreado do
+    // cliente em vez de respeitar o setor real do card).
+    const escopo = department?.aiScope?.trim() || department?.name || null;
+    const escopoTexto = escopo
+      ? `Este card já está classificado no setor "${department?.name}" — os produtos deste setor são: ${escopo}. Trate isso como o produto CORRETO do cliente, mesmo que a mensagem dele use um termo ambíguo que pareça outro produto da empresa (ex.: "crédito com garantia de imóvel" pode soar como Home Equity, mas se o setor do card for Financiamento Habitacional, é disso que se trata aqui). NÃO troque de produto por conta própria nem sugira uma proposta/link de outro produto — se a mensagem do cliente parecer genuinamente sobre outra linha de negócio (fora do que esse setor atende), sugira uma resposta que confirme com o cliente qual produto ele quer, em vez de assumir.`
+      : '(este atendimento não tem um setor/produto definido — sem restrição de escopo)';
+
     // Escopado pelo setor deste lead — mesma regra do ai-auto-reply: uma
     // entrada manual marcada "Home Equity" não deve influenciar sugestão
     // num chat de Financiamento Habitacional, e vice-versa.
@@ -97,6 +108,9 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
     }
 
     const systemPrompt = `${SYSTEM_PROMPT}
+
+--- ESCOPO DE ATENDIMENTO (produto deste card) ---
+${escopoTexto}
 
 --- ESTILO DE ESCRITA DO VENDEDOR (${lead.user?.name || 'sem responsável definido'}) ---
 Imite só o TOM e o jeito de escrever destes exemplos reais dele(a) — nunca reaproveite o conteúdo/fatos, que são de outras conversas:
