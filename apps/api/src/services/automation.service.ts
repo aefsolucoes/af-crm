@@ -423,15 +423,28 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         if (hour < Number(cfg.sendHourStart) || hour >= Number(cfg.sendHourEnd)) continue;
       }
 
+      // Etapa atual (opcional, mas fortemente recomendada) — sem isso a
+      // regra pegava QUALQUER lead inativo da conta inteira (Consórcio,
+      // Caixa de Entrada, qualquer setor), não só quem está de fato
+      // "esperando follow-up" na etapa certa. Mesmo critério de nome usado
+      // em move_stage_by_name — funciona em qualquer funil sem precisar de
+      // uma regra por setor.
+      const stageNamePattern = norm(String(cfg.stageName || ''));
+
       const threshold = new Date(Date.now() - days * 86_400_000);
       const leads = await prisma.lead.findMany({
         where: {
           accountId: rule.accountId, status: 'OPEN', archived: false, isGroup: false, messages: { some: {} },
           ...(cfg.onlySiteLeads ? { tags: { has: 'Site' } } : {}),
         },
-        select: { id: true, messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true } } },
+        select: {
+          id: true,
+          stage: { select: { name: true } },
+          messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true } },
+        },
       });
       for (const lead of leads) {
+        if (stageNamePattern && !norm(lead.stage?.name || '').includes(stageNamePattern)) continue;
         const lastMsgAt = lead.messages[0]?.createdAt;
         if (!lastMsgAt) continue;
         const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;

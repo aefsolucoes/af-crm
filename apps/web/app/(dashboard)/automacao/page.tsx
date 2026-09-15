@@ -329,6 +329,17 @@ export default function AutomacaoPage() {
                     dois, só dispara dentro dessa janela (horário de Brasília) — e passa a contar por dia de
                     calendário, não 24h corridas (quem entrou de tarde ainda cai no dia seguinte de manhã).
                   </p>
+                  <Input
+                    label='Etapa atual (recomendado, ex.: "Prospecção")'
+                    value={String(form.triggerConfig.stageName ?? '')}
+                    onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, stageName: e.target.value || undefined } })}
+                    placeholder='ex.: "Prospecção" ou "Follow Up"'
+                  />
+                  <p className="text-[11px] text-slate-400">
+                    Só considera leads que estão HOJE nessa etapa (em qualquer funil onde o nome bater) — sem isso, a
+                    regra vale pra QUALQUER lead inativo da conta inteira, mesmo de outro setor/etapa que não tem nada
+                    a ver com esse follow-up.
+                  </p>
                 </div>
               )}
               {form.trigger === 'STAGE_CHANGE' && (
