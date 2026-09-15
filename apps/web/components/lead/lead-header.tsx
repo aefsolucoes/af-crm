@@ -13,6 +13,12 @@ import { useRouter } from 'next/navigation';
 interface LeadHeaderProps {
   lead: LeadDetail;
   onStageChange: () => void;
+  /** Chamado quando o lead é arquivado — só quando este componente é usado
+   *  DENTRO de um modal (Kanban/Inbox → LeadDetailModal), pra fechar o
+   *  modal e atualizar a lista de baixo, sem navegar a página inteira pra
+   *  outro lugar. Quando ausente (uso na página standalone /leads/[id]),
+   *  cai no comportamento antigo — vai pro Funil. */
+  onArchived?: () => void;
 }
 
 // Paleta de labels estilo Trello — cor sólida por tag, escolhida por hash do nome
@@ -53,7 +59,7 @@ export function LeadHeaderTop({ lead }: { lead: LeadDetail }) {
 }
 
 /** Linhas 2 e 3: etiquetas + ações de status — ficam acima da aba Dados, na coluna da esquerda */
-export function LeadHeaderActions({ lead, onStageChange }: LeadHeaderProps) {
+export function LeadHeaderActions({ lead, onStageChange, onArchived }: LeadHeaderProps) {
   const [tagInput, setTagInput] = useState('');
   const [editingTags, setEditingTags] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -71,15 +77,25 @@ export function LeadHeaderActions({ lead, onStageChange }: LeadHeaderProps) {
     try {
       await api.patch(`/api/leads/${lead.id}/archive`, { archived: archive });
       toast(archive ? 'Lead arquivado' : 'Lead restaurado!');
-      // router.back() saía daqui pra QUALQUER lugar do histórico do
-      // navegador — inclusive telas sem nenhuma relação (ex.: Configurações,
-      // se foi a última aba visitada antes de abrir este lead por um link).
-      // Essa página é aberta de vários lugares (Inbox, Leads, Tarefas), e
-      // "voltar" não é confiável entre eles. Destino fixo e previsível: o
-      // funil, que é exatamente onde o próprio aviso acima diz que o lead
-      // deixa de aparecer.
-      if (archive) router.push('/funil');
-      else onStageChange();
+      if (archive) {
+        if (onArchived) {
+          // Uso dentro de modal (Kanban ou painel da Inbox → LeadDetailModal)
+          // — NUNCA navega a página inteira. Só fecha o modal/atualiza a
+          // lista de baixo, senão arquivar um lead pela Inbox jogava o
+          // usuário pro Funil no meio do que ele estava fazendo.
+          onArchived();
+        } else {
+          // Página standalone (/leads/[id]) — router.back() saía daqui pra
+          // QUALQUER lugar do histórico do navegador (inclusive telas sem
+          // nenhuma relação, tipo Configurações, se foi a última aba
+          // visitada antes de abrir este lead por um link). Destino fixo e
+          // previsível: o funil, que é exatamente onde o próprio aviso
+          // acima diz que o lead deixa de aparecer.
+          router.push('/funil');
+        }
+      } else {
+        onStageChange();
+      }
     } catch {
       toast('Erro ao arquivar lead', 'error');
     } finally {

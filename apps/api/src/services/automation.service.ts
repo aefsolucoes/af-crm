@@ -21,7 +21,9 @@ export type AutomationActionType =
   | 'add_note'
   | 'add_tag'
   | 'start_salesbot'
-  | 'webhook';
+  | 'webhook'
+  | 'activate_ai'
+  | 'deactivate_ai';
 
 export interface AutomationAction {
   type: AutomationActionType;
@@ -246,6 +248,20 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       if (!botId) return false;
       const result = await startSalesBotRun(lead.accountId, lead.id, botId, io);
       return result.started;
+    }
+    case 'activate_ai': {
+      // Liga a IA de auto-resposta (mesmo campo do botão "Ativar IA" da
+      // Inbox) — pra automatizar exatamente esse toggle por regra (ex.:
+      // "entrou em Prospecção/Follow Up" → liga sozinho), sem precisar
+      // ninguém clicar conversa por conversa.
+      await prisma.lead.update({ where: { id: lead.id }, data: { aiAutoReplyActive: true } });
+      if (io) (io as any).to(`lead:${lead.id}`).emit('lead_ai_toggled', { leadId: lead.id, active: true });
+      return true;
+    }
+    case 'deactivate_ai': {
+      await prisma.lead.update({ where: { id: lead.id }, data: { aiAutoReplyActive: false } });
+      if (io) (io as any).to(`lead:${lead.id}`).emit('lead_ai_toggled', { leadId: lead.id, active: false });
+      return true;
     }
     case 'webhook': {
       const url = String(action.config.url || '');

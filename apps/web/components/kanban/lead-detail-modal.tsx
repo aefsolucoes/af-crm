@@ -86,7 +86,20 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
             <LeadHeaderTop lead={lead} />
             <div className="flex flex-1 overflow-hidden">
               <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-                <LeadHeaderActions lead={lead} onStageChange={handleRefresh} />
+                <LeadHeaderActions
+                  lead={lead}
+                  onStageChange={handleRefresh}
+                  // Arquivar aqui dentro NUNCA deve navegar a página (o modal
+                  // abre tanto de cima do Funil quanto da Inbox) — só fecha
+                  // o modal e atualiza a lista de quem chamou (leads do
+                  // Funil, conversations da Inbox — invalida as duas, já que
+                  // este componente não sabe de qual das duas telas veio).
+                  onArchived={() => {
+                    onClose();
+                    queryClient.invalidateQueries({ queryKey: ['leads'] });
+                    queryClient.invalidateQueries({ queryKey: ['conversations'] });
+                  }}
+                />
                 <LeadSidebar lead={lead} onRefresh={handleRefresh} className="w-auto flex-1 border-r-0" />
               </div>
               <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">

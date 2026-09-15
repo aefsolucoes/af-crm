@@ -10,7 +10,7 @@ import api from '@/lib/api';
 import { Plus, Trash2, Edit2, Zap, ToggleLeft, ToggleRight, Clock, GitBranch, MessageSquare, ArrowRight } from 'lucide-react';
 
 type TriggerType = 'NEW_LEAD' | 'STAGE_CHANGE' | 'TAG_ADDED' | 'INACTIVITY' | 'MESSAGE_RECEIVED' | 'FORM_SUBMITTED';
-type ActionType = 'send_message' | 'send_template' | 'assign_agent' | 'move_stage' | 'move_stage_by_name' | 'add_note' | 'add_tag' | 'start_salesbot' | 'webhook';
+type ActionType = 'send_message' | 'send_template' | 'assign_agent' | 'move_stage' | 'move_stage_by_name' | 'add_note' | 'add_tag' | 'start_salesbot' | 'webhook' | 'activate_ai' | 'deactivate_ai';
 
 interface AutomationAction { type: ActionType; config: Record<string, unknown> }
 
@@ -47,6 +47,8 @@ const ACTION_META: Record<ActionType, { label: string }> = {
   add_tag: { label: 'Adicionar tag' },
   start_salesbot: { label: 'Iniciar Salesbot' },
   webhook: { label: 'Disparar webhook' },
+  activate_ai: { label: 'Ativar IA (auto-resposta)' },
+  deactivate_ai: { label: 'Desativar IA (auto-resposta)' },
 };
 
 // {{campo}} disponíveis na mensagem — mensagem_recebida só faz sentido
@@ -472,6 +474,14 @@ export default function AutomacaoPage() {
                       onChange={(e) => updateActionConfig(i, 'text', e.target.value)}
                       placeholder="Texto da nota, ex.: Follow-up automático enviado"
                     />
+                  )}
+
+                  {(action.type === 'activate_ai' || action.type === 'deactivate_ai') && (
+                    <p className="text-[11px] text-slate-400">
+                      {action.type === 'activate_ai'
+                        ? 'Liga a IA de auto-resposta pra esse lead (mesmo botão "Ativar IA" da Inbox) — ela passa a responder o cliente sozinha pelo WhatsApp, seguindo o escopo/Base de Conhecimento do setor dele.'
+                        : 'Desliga a IA de auto-resposta pra esse lead — volta a exigir um humano pra responder.'}
+                    </p>
                   )}
 
                   {action.type === 'add_tag' && (
