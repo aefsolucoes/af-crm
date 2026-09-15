@@ -125,7 +125,14 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
       // aba da API Oficial (Meta Cloud API)
       return isApiConversation(c);
     })
-    .sort((a, b) => lastMessageTime(b) - lastMessageTime(a));
+    .sort((a, b) => {
+      // Estrela primeiro: cliente marcado como importante fica fixo no topo
+      // da Inbox, mesma lógica do Kanban (Lead.starred). Dentro de cada
+      // grupo (com/sem estrela), mantém a ordem normal por última mensagem.
+      const starredDiff = (b.starred ? 1 : 0) - (a.starred ? 1 : 0);
+      if (starredDiff !== 0) return starredDiff;
+      return lastMessageTime(b) - lastMessageTime(a);
+    });
 
   const chip = (active: boolean) =>
     cn(
