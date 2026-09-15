@@ -112,14 +112,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     // toca o som aqui; o popup com os links é o <ContractingLeadAlert />.
     function onContractingLead() { triggerSound(); }
 
+    // site_lead_created — lead novo chegou pelo formulário do site (campanha
+    // do Meta Ads). Não é mensagem (new_notification não toca som pra isso),
+    // então precisa de aviso próprio — mesmo padrão do ai_handoff.
+    function onSiteLeadCreated({ leadName, department }: { leadId: string; leadName?: string; department?: string }) {
+      triggerSound();
+      toast(`Novo lead do site: ${leadName || 'Cliente'}${department ? ` — ${department}` : ''}`, 'success');
+    }
+
     socket.on('new_notification', onNewNotification);
     socket.on('ai_handoff', onAiHandoff);
     socket.on('contracting_lead', onContractingLead);
+    socket.on('site_lead_created', onSiteLeadCreated);
 
     return () => {
       socket.off('new_notification', onNewNotification);
       socket.off('ai_handoff', onAiHandoff);
       socket.off('contracting_lead', onContractingLead);
+      socket.off('site_lead_created', onSiteLeadCreated);
     };
   }, []);
 

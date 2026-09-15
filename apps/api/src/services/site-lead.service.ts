@@ -178,7 +178,19 @@ export async function createLeadFromSiteForm(
   const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
   runAutomations({ accountId, trigger: 'FORM_SUBMITTED', leadId: lead.id, io, context: { departmentId: dept.id } }).catch(() => {});
 
-  if (io) io.to(`account_${accountId}`).emit('new_notification', { leadId: lead.id });
+  // new_notification é o evento "genérico" (o Funil já escuta ele pra
+  // recarregar a lista de leads — ver funil-view.tsx). Mas ele NÃO toca som
+  // nem mostra toast por si só (layout.tsx só reage a mensagem INBOUND), e
+  // lead novo pelo site não é mensagem nenhuma — por isso emite também um
+  // evento dedicado (mesmo padrão de ai_handoff/contracting_lead) pra
+  // realmente alertar quem está usando o CRM, mais push pro celular (mesmo
+  // canal que já avisa mensagem do WhatsApp — ver push.service.ts).
+  if (io) {
+    io.to(`account_${accountId}`).emit('new_notification', { leadId: lead.id });
+    io.to(`account_${accountId}`).emit('site_lead_created', { leadId: lead.id, leadName: displayName, department: departmentName });
+  }
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: 'Novo lead do site', body: `${displayName} — ${departmentName}`, leadId: lead.id }).catch(() => {});
 
   return { ok: true, leadId: lead.id, created: true };
 }
