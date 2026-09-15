@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { syncKnowledgeBase } from '../services/knowledge.service';
+import { syncKnowledgeBase, listKnowledgeEntries, createKnowledgeEntry, updateKnowledgeEntry, deleteKnowledgeEntry } from '../services/knowledge.service';
 import { isVoyageConfigured } from '../services/voyage.service';
 
 const router = Router();
@@ -68,6 +68,55 @@ router.post('/sync', async (req: AuthRequest, res: Response) => {
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao sincronizar a base' });
+  }
+});
+
+// ─── Entradas manuais (correções/fatos digitados direto, sem Drive) ──────────
+// "Um lugar pra ir ajustando as respostas — o que deveria ter sido dito" —
+// participam da mesma busca semântica que os documentos do Drive
+// (searchKnowledge), com a diferença de poderem ser escopadas por setor.
+
+// GET /api/knowledge/entries
+router.get('/entries', async (req: AuthRequest, res: Response) => {
+  try {
+    const entries = await listKnowledgeEntries(req.user!.accountId);
+    res.json(entries);
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar as entradas da base de conhecimento' });
+  }
+});
+
+// POST /api/knowledge/entries
+router.post('/entries', async (req: AuthRequest, res: Response) => {
+  try {
+    const { title, content, departmentId } = req.body as { title?: string; content?: string; departmentId?: string | null };
+    const entry = await createKnowledgeEntry(req.user!.accountId, { title: title || '', content: content || '', departmentId: departmentId || null });
+    res.status(201).json(entry);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao criar a entrada' });
+  }
+});
+
+// PUT /api/knowledge/entries/:id
+router.put('/entries/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const { title, content, departmentId } = req.body as { title?: string; content?: string; departmentId?: string | null };
+    const entry = await updateKnowledgeEntry(req.params.id, req.user!.accountId, { title: title || '', content: content || '', departmentId: departmentId || null });
+    if (!entry) return res.status(404).json({ error: 'Entrada não encontrada' });
+    res.json(entry);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao atualizar a entrada' });
+  }
+});
+
+// DELETE /api/knowledge/entries/:id
+router.delete('/entries/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const ok = await deleteKnowledgeEntry(req.params.id, req.user!.accountId);
+    if (!ok) return res.status(404).json({ error: 'Entrada não encontrada' });
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Erro ao apagar a entrada' });
   }
 });
 

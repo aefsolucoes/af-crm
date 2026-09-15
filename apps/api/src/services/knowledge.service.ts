@@ -265,8 +265,15 @@ interface CachedChunk { content: string; fileName: string; embedding: number[]; 
 // todos os vetores do banco a cada pergunta.
 const chunkCache = new Map<string, CachedChunk[]>();
 
+interface CachedEntry { content: string; fileName: string; embedding: number[]; departmentId: string | null; }
+// Mesma ideia do cache acima, só que pras entradas manuais (KnowledgeEntry)
+// — invalidado junto (mesma função), porque as duas fontes alimentam a
+// mesma busca (searchKnowledge).
+const entryCache = new Map<string, CachedEntry[]>();
+
 export function invalidateKnowledgeCache(accountId: string): void {
   chunkCache.delete(accountId);
+  entryCache.delete(accountId);
 }
 
 async function loadChunks(accountId: string): Promise<CachedChunk[]> {
@@ -281,6 +288,18 @@ async function loadChunks(accountId: string): Promise<CachedChunk[]> {
   return chunks;
 }
 
+async function loadEntries(accountId: string): Promise<CachedEntry[]> {
+  const cached = entryCache.get(accountId);
+  if (cached) return cached;
+  const rows = await prisma.knowledgeEntry.findMany({
+    where: { accountId },
+    select: { title: true, content: true, embedding: true, departmentId: true },
+  });
+  const entries = rows.map((r) => ({ content: `${r.title}: ${r.content}`, fileName: r.title, embedding: r.embedding, departmentId: r.departmentId }));
+  entryCache.set(accountId, entries);
+  return entries;
+}
+
 function cosine(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
   let dot = 0, na = 0, nb = 0;
@@ -290,17 +309,85 @@ function cosine(a: number[], b: number[]): number {
 
 export interface KnowledgeHit { content: string; fileName: string; score: number; }
 
-/** Retorna os trechos mais relevantes da base para a pergunta (ou [] se a base está vazia / Voyage não configurada). */
-export async function searchKnowledge(accountId: string, query: string, topK = 6): Promise<KnowledgeHit[]> {
+/** Retorna os trechos mais relevantes da base para a pergunta (ou [] se a base
+ *  está vazia / Voyage não configurada). Combina os documentos do Drive
+ *  (sem setor — valem pra qualquer atendimento) com as entradas manuais
+ *  (KnowledgeEntry) — essas sim escopadas por setor quando `departmentId` é
+ *  passado: só entram as "compartilhadas" (sem setor) + as do setor
+ *  informado, pra Home Equity não puxar fato de Financiamento Habitacional
+ *  e vice-versa. */
+export async function searchKnowledge(accountId: string, query: string, topK = 6, departmentId?: string | null): Promise<KnowledgeHit[]> {
   if (!isVoyageConfigured() || !query.trim()) return [];
-  const chunks = await loadChunks(accountId);
-  if (chunks.length === 0) return [];
+  const [chunks, entries] = await Promise.all([loadChunks(accountId), loadEntries(accountId)]);
+  const scopedEntries = entries.filter((e) => !e.departmentId || e.departmentId === departmentId);
+  const all: CachedChunk[] = [...chunks, ...scopedEntries];
+  if (all.length === 0) return [];
 
   const qv = await embedQuery(query);
-  const scored = chunks.map((c) => ({ content: c.content, fileName: c.fileName, score: cosine(qv, c.embedding) }));
+  const scored = all.map((c) => ({ content: c.content, fileName: c.fileName, score: cosine(qv, c.embedding) }));
   scored.sort((a, b) => b.score - a.score);
   // Corta ruído: só trechos com similaridade minimamente relevante.
   return scored.filter((s) => s.score > 0.3).slice(0, topK);
+}
+
+// ─── Entradas manuais (correções/fatos digitados direto, sem Drive) ──────────
+
+export interface KnowledgeEntryInput {
+  title: string;
+  content: string;
+  departmentId?: string | null;
+}
+
+async function embedEntry(title: string, content: string): Promise<number[]> {
+  const [vec] = await embedDocuments([`${title}: ${content}`]);
+  return vec || [];
+}
+
+export async function listKnowledgeEntries(accountId: string) {
+  return prisma.knowledgeEntry.findMany({
+    where: { accountId },
+    orderBy: { updatedAt: 'desc' },
+    select: { id: true, title: true, content: true, departmentId: true, createdAt: true, updatedAt: true },
+  });
+}
+
+export async function createKnowledgeEntry(accountId: string, input: KnowledgeEntryInput) {
+  if (!isVoyageConfigured()) throw new Error('VOYAGE_API_KEY não configurada — necessária pra indexar a entrada.');
+  const title = input.title?.trim();
+  const content = input.content?.trim();
+  if (!title || !content) throw new Error('Título e resposta são obrigatórios.');
+
+  const embedding = await embedEntry(title, content);
+  const entry = await prisma.knowledgeEntry.create({
+    data: { accountId, title, content, departmentId: input.departmentId || null, embedding },
+  });
+  invalidateKnowledgeCache(accountId);
+  return entry;
+}
+
+export async function updateKnowledgeEntry(id: string, accountId: string, input: KnowledgeEntryInput) {
+  const existing = await prisma.knowledgeEntry.findFirst({ where: { id, accountId } });
+  if (!existing) return null;
+  if (!isVoyageConfigured()) throw new Error('VOYAGE_API_KEY não configurada — necessária pra reindexar a entrada.');
+  const title = input.title?.trim();
+  const content = input.content?.trim();
+  if (!title || !content) throw new Error('Título e resposta são obrigatórios.');
+
+  const embedding = await embedEntry(title, content);
+  const entry = await prisma.knowledgeEntry.update({
+    where: { id },
+    data: { title, content, departmentId: input.departmentId || null, embedding },
+  });
+  invalidateKnowledgeCache(accountId);
+  return entry;
+}
+
+export async function deleteKnowledgeEntry(id: string, accountId: string): Promise<boolean> {
+  const existing = await prisma.knowledgeEntry.findFirst({ where: { id, accountId } });
+  if (!existing) return false;
+  await prisma.knowledgeEntry.delete({ where: { id } });
+  invalidateKnowledgeCache(accountId);
+  return true;
 }
 
 /**

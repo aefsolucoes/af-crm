@@ -64,16 +64,20 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
     });
     const historico = recent.reverse().map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Atendente'}: ${m.content}`).join('\n') || '(sem histórico anterior)';
 
-    const hits = await searchKnowledge(accountId, incomingText, 5);
-    const contexto = hits.length
-      ? hits.map((h, i) => `[${i + 1}] ${h.content}`).join('\n\n')
-      : '(nenhum material relevante encontrado na Base de Conhecimento para esta pergunta — se a dúvida do cliente depender disso, siga a regra de dizer que vai verificar com a equipe)';
-
     // Escopo de produtos deste setor — a IA não deve sair respondendo sobre
     // outra linha de negócio (ex.: um chat de Financiamento Habitacional não
     // deve responder sobre Consórcio); nesses casos ela encerra e chama humano.
     const department = lead.pipeline?.department;
     const escopo = department?.aiScope?.trim() || department?.name || null;
+
+    // Escopado pelo setor deste lead — uma entrada manual da Base de
+    // Conhecimento marcada "Home Equity" não deve aparecer num chat de
+    // Financiamento Habitacional, e vice-versa (documentos do Drive
+    // continuam valendo pra qualquer setor, sem essa restrição).
+    const hits = await searchKnowledge(accountId, incomingText, 5, department?.id);
+    const contexto = hits.length
+      ? hits.map((h, i) => `[${i + 1}] ${h.content}`).join('\n\n')
+      : '(nenhum material relevante encontrado na Base de Conhecimento para esta pergunta — se a dúvida do cliente depender disso, siga a regra de dizer que vai verificar com a equipe)';
 
     // Respostas Rápidas — mesmo material que os colaboradores usam pra
     // responder manualmente (ex.: lista de documentos). Sem isso a IA só

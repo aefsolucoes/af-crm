@@ -61,12 +61,14 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
     // histórico geral, só sem foco de busca na Base de Conhecimento.
     const lastClientMsg = [...ordered].reverse().find((m) => m.direction === 'INBOUND')?.content || '';
 
-    const hits = lastClientMsg ? await searchKnowledge(accountId, lastClientMsg, 5) : [];
+    const department = lead.pipeline?.department;
+    // Escopado pelo setor deste lead — mesma regra do ai-auto-reply: uma
+    // entrada manual marcada "Home Equity" não deve influenciar sugestão
+    // num chat de Financiamento Habitacional, e vice-versa.
+    const hits = lastClientMsg ? await searchKnowledge(accountId, lastClientMsg, 5, department?.id) : [];
     const contexto = hits.length
       ? hits.map((h, i) => `[${i + 1}] ${h.content}`).join('\n\n')
       : '(nenhum material relevante encontrado na Base de Conhecimento — se a objeção depender de um fato específico, não invente; sugira avançar sem citar o dado que falta)';
-
-    const department = lead.pipeline?.department;
     const templates = await prisma.messageTemplate.findMany({
       where: {
         accountId,

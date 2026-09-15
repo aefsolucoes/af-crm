@@ -29,6 +29,7 @@ model Account {
   fieldDefinitions   FieldDefinition[]
   transactions       Transaction[]
   knowledgeFiles     KnowledgeFile[]
+  knowledgeEntries   KnowledgeEntry[]
   assistantQuestions AssistantQuestion[]
   assistantMemories  AssistantMemory[]
   messageTemplates   MessageTemplate[]
@@ -81,6 +82,7 @@ model Department {
   whatsappNumbers  WhatsAppNumber[]
   whatsappConfigs  WhatsAppConfig[]
   messageTemplates MessageTemplate[]
+  knowledgeEntries KnowledgeEntry[]
 
   @@index([accountId])
 }
@@ -302,7 +304,7 @@ model MessageTemplate {
   // Botão opcional — igual ao dos templates Meta, mas uma mensagem avulsa só
   // aceita UM tipo por vez (regra da própria API do WhatsApp): ou até 3
   // botões de resposta rápida, ou 1 botão de link. null = sem botão.
-  buttonType    String?     // 'QUICK_REPLY' | 'URL'
+  buttonType    String? // 'QUICK_REPLY' | 'URL'
   quickReplies  String[]    @default([])
   ctaUrlText    String?
   ctaUrl        String?
@@ -530,15 +532,15 @@ model BaileysSession {
 
 // Conexão com o Google Drive (OAuth) por conta
 model GoogleConnection {
-  id             String    @id @default(cuid())
-  accountId      String    @unique
-  account        Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  email          String? // e-mail da conta Google conectada
-  refreshToken   String    @db.Text
-  accessToken    String?   @db.Text
-  expiresAt      DateTime?
-  rootFolderId   String? // pasta-raiz onde ficam as pastas dos clientes
-  rootFolderName String?
+  id                            String    @id @default(cuid())
+  accountId                     String    @unique
+  account                       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  email                         String? // e-mail da conta Google conectada
+  refreshToken                  String    @db.Text
+  accessToken                   String?   @db.Text
+  expiresAt                     DateTime?
+  rootFolderId                  String? // pasta-raiz onde ficam as pastas dos clientes
+  rootFolderName                String?
   // Pasta pra onde vão os anexos do WhatsApp (auto-upload). Definida =
   // <esta pasta>/<telefone do cliente, DDD+número sem DDI>/arquivo. Vazia =
   // comportamento antigo (<raiz>/WhatsApp — arquivo automático/<nome>/arquivo).
@@ -547,10 +549,10 @@ model GoogleConnection {
   // Marcado quando o Google recusa o refresh token (invalid_grant): a conexão
   // existe mas parou de funcionar — precisa reconectar. Limpo no reconnect ou
   // quando o token volta a responder. Dispara o popup de aviso pro admin.
-  tokenInvalid   Boolean   @default(false)
-  tokenInvalidAt DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  tokenInvalid                  Boolean   @default(false)
+  tokenInvalidAt                DateTime?
+  createdAt                     DateTime  @default(now())
+  updatedAt                     DateTime  @updatedAt
 }
 
 // Cada número de WhatsApp conectado via QR Code (multi-sessão por conta)
@@ -622,6 +624,32 @@ model KnowledgeChunk {
 
   @@index([accountId])
   @@index([fileId])
+}
+
+/// Entrada MANUAL da Base de Conhecimento — um fato/correção digitado direto
+/// pelo usuário em Configurações → Base de Conhecimento (sem precisar subir
+/// arquivo no Drive), editável a qualquer momento ("respostas que deveriam
+/// ter dito, ir ajustando"). Participa da MESMA busca semântica que os
+/// documentos do Drive (searchKnowledge, apps/api/src/services/knowledge.
+/// service.ts) — mesmo cosine similarity sobre o embedding da Voyage.
+model KnowledgeEntry {
+  id           String      @id @default(cuid())
+  accountId    String
+  account      Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  // Setor dono desta entrada — null = "compartilhada" (vale pra todos os
+  // setores), mesmo critério de MessageTemplate.departmentId. Assim dá pra
+  // separar o conteúdo de Home Equity do de Financiamento Habitacional sem
+  // um vazar resposta no chat do outro.
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  title        String // pergunta/tópico, ex.: "Horário de atendimento"
+  content      String      @db.Text // a resposta/fato correto
+  embedding    Float[] // vetor da Voyage sobre title+content — recalculado a cada edição
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([accountId])
+  @@index([departmentId])
 }
 
 // flow guarda { trigger: { keywords: string[] }, steps: BotStep[] } — ver

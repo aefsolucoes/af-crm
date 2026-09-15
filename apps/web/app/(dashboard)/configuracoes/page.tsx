@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2, Globe, KeyRound } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2, Globe, KeyRound, Sparkles } from 'lucide-react';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { usePushSubscription } from '@/hooks/use-push-subscription';
 
@@ -1576,6 +1576,7 @@ function AgenteTab() {
   return (
     <div className="space-y-6">
       <KnowledgeBasePanel />
+      <KnowledgeEntriesPanel />
     </div>
   );
 }
@@ -1708,6 +1709,202 @@ function KnowledgeBasePanel() {
         </div>
       ) : (
         <p className="text-xs text-slate-400">Nenhum arquivo indexado ainda. Defina a pasta e clique em Sincronizar.</p>
+      )}
+    </div>
+  );
+}
+
+interface KBEntry { id: string; title: string; content: string; departmentId: string | null; createdAt: string; updatedAt: string; }
+interface KBEntryDept { id: string; name: string; }
+
+// "Um lugar pra ir ajustando as respostas — o que deveria ter sido dito":
+// fatos/correções digitados direto (sem precisar de arquivo no Drive),
+// escopáveis por setor pra Home Equity e Financiamento Habitacional não
+// misturarem conteúdo. Participam da mesma busca da IA (searchKnowledge).
+function KnowledgeEntriesPanel() {
+  const [entries, setEntries] = useState<KBEntry[]>([]);
+  const [departments, setDepartments] = useState<KBEntryDept[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [departmentId, setDepartmentId] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [editDepartmentId, setEditDepartmentId] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  async function load() {
+    try {
+      const [{ data: entriesData }, { data: deptData }] = await Promise.all([
+        api.get('/api/knowledge/entries'),
+        api.get('/api/departments'),
+      ]);
+      setEntries(entriesData);
+      setDepartments(deptData);
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function handleAdd() {
+    if (!title.trim() || !content.trim()) { toast('Preencha o título e a resposta', 'error'); return; }
+    setSaving(true);
+    try {
+      const { data } = await api.post('/api/knowledge/entries', { title: title.trim(), content: content.trim(), departmentId: departmentId || null });
+      setEntries(prev => [data, ...prev]);
+      setTitle(''); setContent(''); setDepartmentId('');
+      toast('Entrada adicionada — já vale pras próximas respostas.');
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao adicionar', 'error');
+    } finally { setSaving(false); }
+  }
+
+  function startEdit(entry: KBEntry) {
+    setEditingId(entry.id);
+    setEditTitle(entry.title);
+    setEditContent(entry.content);
+    setEditDepartmentId(entry.departmentId || '');
+  }
+
+  async function saveEdit(id: string) {
+    if (!editTitle.trim() || !editContent.trim()) { toast('Preencha o título e a resposta', 'error'); return; }
+    setSavingEdit(true);
+    try {
+      const { data } = await api.put(`/api/knowledge/entries/${id}`, { title: editTitle.trim(), content: editContent.trim(), departmentId: editDepartmentId || null });
+      setEntries(prev => prev.map(e => (e.id === id ? data : e)));
+      setEditingId(null);
+      toast('Entrada atualizada.');
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao salvar', 'error');
+    } finally { setSavingEdit(false); }
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm('Apagar esta entrada?')) return;
+    try {
+      await api.delete(`/api/knowledge/entries/${id}`);
+      setEntries(prev => prev.filter(e => e.id !== id));
+    } catch {
+      toast('Erro ao apagar', 'error');
+    }
+  }
+
+  function deptName(id: string | null) {
+    if (!id) return 'Todos os setores';
+    return departments.find(d => d.id === id)?.name || 'Setor removido';
+  }
+
+  return (
+    <div className="mt-8 pt-6 border-t border-af-border space-y-4">
+      <div className="flex items-start gap-3">
+        <div className="p-2 bg-indigo-100 rounded-lg flex-shrink-0"><Sparkles size={20} className="text-indigo-600" /></div>
+        <div>
+          <p className="text-sm font-semibold text-slate-800">Correções e fatos (editável)</p>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Fatos rápidos que a IA deve saber — sem precisar subir arquivo no Drive. Use pra corrigir uma resposta que saiu errada: escreva aqui o que ela <strong className="text-slate-700">deveria</strong> ter dito, e vá ajustando sempre que precisar.
+            O setor evita que um fato de Home Equity apareça numa conversa de Financiamento Habitacional (e vice-versa) — deixe em "Todos os setores" só pra algo válido nos dois.
+          </p>
+        </div>
+      </div>
+
+      <div className="border border-af-border rounded-lg p-3 space-y-2 bg-slate-50">
+        <input
+          value={title}
+          onChange={e => setTitle(e.target.value)}
+          placeholder='Título/tópico — ex: "Horário de atendimento"'
+          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+        />
+        <textarea
+          value={content}
+          onChange={e => setContent(e.target.value)}
+          placeholder='O que a IA deveria responder — ex: "Nosso horário de atendimento é das 08h às 20h. A pré-análise de crédito só acontece dentro desse período."'
+          rows={3}
+          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-af-accent"
+        />
+        <div className="flex items-center gap-2">
+          <select
+            value={departmentId}
+            onChange={e => setDepartmentId(e.target.value)}
+            className="flex-1 px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+          >
+            <option value="">Todos os setores (compartilhado)</option>
+            {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+          <button
+            onClick={handleAdd}
+            disabled={saving || !title.trim() || !content.trim()}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-medium disabled:opacity-50 flex-shrink-0"
+            style={{ backgroundColor: '#075e54' }}
+          >
+            <Plus size={15} /> {saving ? 'Adicionando...' : 'Adicionar'}
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <p className="text-xs text-slate-400">Carregando...</p>
+      ) : entries.length === 0 ? (
+        <p className="text-xs text-slate-400">Nenhuma entrada ainda.</p>
+      ) : (
+        <div className="border border-af-border rounded-lg divide-y divide-slate-100 overflow-hidden">
+          {entries.map(entry => (
+            <div key={entry.id} className="px-3 py-2.5 text-sm">
+              {editingId === entry.id ? (
+                <div className="space-y-2">
+                  <input
+                    value={editTitle}
+                    onChange={e => setEditTitle(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+                  />
+                  <textarea
+                    value={editContent}
+                    onChange={e => setEditContent(e.target.value)}
+                    rows={3}
+                    className="w-full px-2.5 py-1.5 text-sm border border-af-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-af-accent"
+                  />
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={editDepartmentId}
+                      onChange={e => setEditDepartmentId(e.target.value)}
+                      className="flex-1 px-2.5 py-1.5 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent"
+                    >
+                      <option value="">Todos os setores (compartilhado)</option>
+                      {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                    <button onClick={() => saveEdit(entry.id)} disabled={savingEdit} className="px-3 py-1.5 rounded-lg text-white text-xs font-medium disabled:opacity-50 flex-shrink-0" style={{ backgroundColor: '#075e54' }}>
+                      {savingEdit ? 'Salvando...' : 'Salvar'}
+                    </button>
+                    <button onClick={() => setEditingId(null)} className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium flex-shrink-0">
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-slate-800">{entry.title}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{deptName(entry.departmentId)}</span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5 leading-snug">{entry.content}</p>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button onClick={() => startEdit(entry)} className="p-1.5 text-slate-400 hover:text-af-accent rounded hover:bg-slate-100">
+                      <Pencil size={14} />
+                    </button>
+                    <button onClick={() => handleDelete(entry.id)} className="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-slate-100">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
