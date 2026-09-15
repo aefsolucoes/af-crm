@@ -309,25 +309,39 @@ function cosine(a: number[], b: number[]): number {
 
 export interface KnowledgeHit { content: string; fileName: string; score: number; }
 
-/** Retorna os trechos mais relevantes da base para a pergunta (ou [] se a base
- *  está vazia / Voyage não configurada). Combina os documentos do Drive
- *  (sem setor — valem pra qualquer atendimento) com as entradas manuais
- *  (KnowledgeEntry) — essas sim escopadas por setor quando `departmentId` é
- *  passado: só entram as "compartilhadas" (sem setor) + as do setor
- *  informado, pra Home Equity não puxar fato de Financiamento Habitacional
- *  e vice-versa. */
+/** Retorna o material mais relevante da base para a pergunta. Combina duas
+ *  fontes com regras BEM diferentes:
+ *  - Documentos do Drive (KnowledgeChunk): muitos, longos, sem setor — só
+ *    entram os topK trechos mais parecidos com a pergunta (corte de
+ *    similaridade > 0.3), senão o prompt fica gigante e ruidoso.
+ *  - Entradas manuais (KnowledgeEntry): poucas, curtas, escritas à mão pelo
+ *    usuário como REGRA/CORREÇÃO que ele quer sempre respeitada (ex.: "só
+ *    pedir documento depois da pré-análise aprovada") — por isso entram
+ *    TODAS as que baterem o setor (`departmentId`), sem depender de
+ *    parecer com a última mensagem do cliente. Isso importa porque o texto
+ *    de uma regra de processo raramente "parece", por similaridade
+ *    semântica, com uma proposta cheia de números/endereço/taxa — se
+ *    dependesse de score, a regra nunca apareceria pro modelo bem na hora
+ *    que mais precisa dela.
+ *  Escopo por setor (`departmentId`): só entram as entradas "compartilhadas"
+ *  (sem setor) + as do setor informado, pra Home Equity não puxar fato de
+ *  Financiamento Habitacional e vice-versa — vale só pras entradas manuais,
+ *  documentos do Drive continuam sem essa restrição. */
 export async function searchKnowledge(accountId: string, query: string, topK = 6, departmentId?: string | null): Promise<KnowledgeHit[]> {
-  if (!isVoyageConfigured() || !query.trim()) return [];
-  const [chunks, entries] = await Promise.all([loadChunks(accountId), loadEntries(accountId)]);
+  const entries = await loadEntries(accountId);
   const scopedEntries = entries.filter((e) => !e.departmentId || e.departmentId === departmentId);
-  const all: CachedChunk[] = [...chunks, ...scopedEntries];
-  if (all.length === 0) return [];
+  const alwaysInclude: KnowledgeHit[] = scopedEntries.map((e) => ({ content: e.content, fileName: e.fileName, score: 1 }));
+
+  if (!isVoyageConfigured() || !query.trim()) return alwaysInclude;
+  const chunks = await loadChunks(accountId);
+  if (chunks.length === 0) return alwaysInclude;
 
   const qv = await embedQuery(query);
-  const scored = all.map((c) => ({ content: c.content, fileName: c.fileName, score: cosine(qv, c.embedding) }));
+  const scored = chunks.map((c) => ({ content: c.content, fileName: c.fileName, score: cosine(qv, c.embedding) }));
   scored.sort((a, b) => b.score - a.score);
   // Corta ruído: só trechos com similaridade minimamente relevante.
-  return scored.filter((s) => s.score > 0.3).slice(0, topK);
+  const topChunks = scored.filter((s) => s.score > 0.3).slice(0, topK);
+  return [...alwaysInclude, ...topChunks];
 }
 
 // ─── Entradas manuais (correções/fatos digitados direto, sem Drive) ──────────
