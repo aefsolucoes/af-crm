@@ -71,7 +71,14 @@ export function LeadHeaderActions({ lead, onStageChange }: LeadHeaderProps) {
     try {
       await api.patch(`/api/leads/${lead.id}/archive`, { archived: archive });
       toast(archive ? 'Lead arquivado' : 'Lead restaurado!');
-      if (archive) router.back();
+      // router.back() saía daqui pra QUALQUER lugar do histórico do
+      // navegador — inclusive telas sem nenhuma relação (ex.: Configurações,
+      // se foi a última aba visitada antes de abrir este lead por um link).
+      // Essa página é aberta de vários lugares (Inbox, Leads, Tarefas), e
+      // "voltar" não é confiável entre eles. Destino fixo e previsível: o
+      // funil, que é exatamente onde o próprio aviso acima diz que o lead
+      // deixa de aparecer.
+      if (archive) router.push('/funil');
       else onStageChange();
     } catch {
       toast('Erro ao arquivar lead', 'error');
