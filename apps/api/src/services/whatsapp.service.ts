@@ -290,6 +290,8 @@ function friendlyWhatsAppError(code: number | undefined): string | null {
       return 'O número configurado na API Oficial não está registrado/ativo na Meta — confira em Configurações → API Oficial.';
     case 131042:
       return 'A Meta bloqueou o envio de mensagens por pendência de pagamento na conta do WhatsApp Business (fatura em aberto ou forma de pagamento com problema) — acesse o Gerenciador de Negócios da Meta (business.facebook.com), aba Pagamentos, e regularize pra voltar a enviar.';
+    case 131049:
+      return 'A Meta bloqueou só esta mensagem por um limite de "engajamento saudável" — acontece quando várias mensagens parecidas são mandadas pro mesmo número em pouco tempo sem ele responder. Não é a conta toda bloqueada, só essa tentativa: espere algumas horas e tente de novo, evitando repetir a mesma mensagem várias vezes seguidas pro mesmo contato.';
     default:
       return null;
   }
