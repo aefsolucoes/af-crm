@@ -1573,8 +1573,14 @@ function GoogleDriveTab() {
 
 
 function AgenteTab() {
+  // Única aba de Configurações sem o "cartão branco" que todas as outras têm
+  // (IAChatbotTab, GoogleDriveTab etc.) — sem ele, o tema de fundo do
+  // usuário (imagem/cor personalizável em Aparência) aparecia atrás do
+  // texto, difícil de ler. As duas seções abaixo foram desenhadas pra viver
+  // DENTRO de um cartão (por isso o "mt-8 pt-6 border-t" da segunda, como
+  // divisória) — só faltava o cartão em si.
   return (
-    <div className="space-y-6">
+    <div className="bg-white rounded-2xl border border-af-border shadow-sm p-6 space-y-6">
       <KnowledgeBasePanel />
       <KnowledgeEntriesPanel />
     </div>
@@ -1632,7 +1638,7 @@ function KnowledgeBasePanel() {
   }
 
   return (
-    <div className="mt-8 pt-6 border-t border-af-border space-y-4">
+    <div className="space-y-4">
       <div className="flex items-start gap-3">
         <div className="p-2 bg-emerald-100 rounded-lg flex-shrink-0"><HardDrive size={20} className="text-emerald-600" /></div>
         <div>
