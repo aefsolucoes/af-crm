@@ -309,8 +309,8 @@ async function executeStepsFrom(
       // Mover etapa / preencher dados do card — mesma ação que o "Ativar
       // IA" avulso da Inbox já faz (ver whatsapp.service.ts), pra ficar
       // consistente entre os dois jeitos de usar a mesma IA.
-      if (genResult.moveToStage || (genResult.extractedFields && Object.keys(genResult.extractedFields).length)) {
-        await applyAiExtractedActions(lead.accountId, run.leadId, { moveToStage: genResult.moveToStage, extractedFields: genResult.extractedFields }, io as any);
+      if (genResult.moveToStage || genResult.markLost || (genResult.extractedFields && Object.keys(genResult.extractedFields).length)) {
+        await applyAiExtractedActions(lead.accountId, run.leadId, { moveToStage: genResult.moveToStage, markLost: genResult.markLost, extractedFields: genResult.extractedFields }, io as any);
       }
 
       if (genResult.handoff) {

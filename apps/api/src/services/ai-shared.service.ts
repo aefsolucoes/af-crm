@@ -206,12 +206,17 @@ function normalize(s: string): string {
 export interface AiExtractedAction {
   moveToStage?: string | null;
   extractedFields?: Record<string, string> | null;
+  /** Motivo da perda, se a IA decidiu marcar o lead como Perdido — string
+   *  não-vazia = marca; ausente/vazio = não mexe no status. */
+  markLost?: string | null;
 }
 
 /** Aplica o que a IA de auto-resposta decidiu (opcional): mover o card pra
- *  uma das etapas permitidas, e/ou preencher campos que o cliente mencionou
- *  na conversa. Nunca lança erro pro chamador — cada ação é independente e
- *  fire-and-forget, igual o resto do fluxo de mensagem recebida. */
+ *  uma das etapas permitidas, preencher campos que o cliente mencionou na
+ *  conversa, e/ou marcar como Perdido (status, não etapa — mesma ação do
+ *  botão "Marcar Perdido" já existente). Nunca lança erro pro chamador —
+ *  cada ação é independente e fire-and-forget, igual o resto do fluxo de
+ *  mensagem recebida. */
 export async function applyAiExtractedActions(
   accountId: string,
   leadId: string,
@@ -225,10 +230,26 @@ export async function applyAiExtractedActions(
     });
     if (!lead) return;
 
-    // Mover etapa — só estes 4 valores são aceitos (usuário definiu esse
-    // alcance explicitamente: nada de Fechado/Aprovado/Perdido sozinha).
-    // Resolve o nome DENTRO do funil onde o lead já está — mesmo critério
-    // de move_stage_by_name em automation.service.ts.
+    // Marcar como Perdido — separado de moveToStage de propósito: é o
+    // STATUS do lead (Aberto/Ganho/Perdido), não a etapa do funil, e exige
+    // motivo (mesma regra do botão "Marcar Perdido" na tela). Usuário
+    // definiu o critério: só quando o cliente recusa EXPLICITAMENTE (ver
+    // regra exata no prompt de ai-auto-reply.service.ts) — nunca por
+    // silêncio (isso é "Lead Sem Retorno", abaixo).
+    if (action.markLost && action.markLost.trim()) {
+      const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+      await updateLead(lead.id, accountId, { status: 'LOST', lostReason: action.markLost.trim() });
+      logActivity({
+        accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed',
+        leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: "${action.markLost.trim()}"`,
+      });
+    }
+
+    // Mover etapa — só estes valores são aceitos (usuário definiu esse
+    // alcance explicitamente: nada de Fechado/Aprovado sozinha, Perdido é
+    // tratado acima como status, não como etapa). Resolve o nome DENTRO do
+    // funil onde o lead já está — mesmo critério de move_stage_by_name em
+    // automation.service.ts.
     if (action.moveToStage) {
       const ALLOWED = ['prospeccao', 'follow up', 'lead sem retorno', 'pre-analise', 'pre analise'];
       const target = normalize(action.moveToStage);

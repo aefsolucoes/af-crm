@@ -29,14 +29,20 @@ ENCERRAR E CHAMAR UM HUMANO ("handoff": true) sempre que:
 - REALMENTE não houver nenhum material nem contexto que sustente uma resposta séria pra pergunta do cliente (isso é a EXCEÇÃO, não o padrão — não use por cautela).
 Quando marcar "handoff": true, a "reply" ainda deve ser uma mensagem curta e natural avisando o cliente que alguém da equipe vai continuar o atendimento a partir daqui — nunca deixe o campo "reply" vazio.`;
 
-/** Só estes 4 valores são aceitos em "moveToStage" — usuário definiu esse
+/** Só estes valores são aceitos em "moveToStage" — usuário definiu esse
  *  alcance explicitamente: a IA NUNCA move sozinha pra etapas que fecham
- *  negócio (Fechado, Aprovado, Perdido etc.), só pra estas de andamento. */
+ *  negócio (Fechado, Aprovado etc.), só pra estas de andamento. "Perdido"
+ *  não é etapa — é status, tratado separado em MARK_LOST_RULES. */
 const MOVE_STAGE_RULES = `MOVER O CARD DE ETAPA ("moveToStage") — só estes valores são aceitos, escolha no máximo um, ou null se não for o caso (a maioria das mensagens não muda de etapa):
 - "Follow Up": o cliente demonstrou interesse mas precisa de acompanhamento (disse que vai pensar, pediu pra retornarem depois, ainda não deu informação suficiente pra avançar).
-- "Lead Sem Retorno": o cliente disse EXPLICITAMENTE que não tem mais interesse, ou pediu pra não ser mais contatado.
+- "Lead Sem Retorno": o cliente foi ficando em silêncio/enrolando, sem dar uma resposta clara nem positiva nem negativa — NÃO use isso quando o cliente recusar explicitamente (isso é "Perdido", ver regra abaixo).
 - "Pré-Análise": o cliente confirmou que já preencheu a proposta/formulário manual completo, OU você já reuniu nesta conversa todos os dados pessoais necessários pra uma pré-análise (nome, telefone, CPF, renda etc. de todos os participantes). Só use se essa condição foi REALMENTE atendida — não adiante.
 - "Prospecção": raramente necessário (o lead já começa nessa etapa).`;
+
+/** "Perdido" é o STATUS do lead (Aberto/Ganho/Perdido, mesmo botão "Marcar
+ *  Perdido" da tela), não uma etapa — por isso é um campo separado, com
+ *  motivo obrigatório quando usado. */
+const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um motivo curto (1 frase, baseado no que o cliente disse) quando ele recusar EXPLICITAMENTE: disser que não quer mais, não tem mais interesse, desistiu, ou pedir pra não ser mais contatado. Deixe null/vazio em todos os outros casos — isso é diferente de só ficar em silêncio (isso é "Lead Sem Retorno", acima), e é definitivo, então só use quando a recusa for clara.`;
 
 function buildFillFieldsRules(camposTexto: string): string {
   return `PREENCHER DADOS DO CARD ("extractedFields") — um objeto com os campos abaixo que o cliente mencionar CLARAMENTE na conversa (nunca invente, deduza ou arredonde um valor que ele não disse). Use só chaves desta lista, ou {} se nada novo foi mencionado:
@@ -45,7 +51,7 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente>", "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
+{"reply": "<mensagem para o cliente>", "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | null>", "markLost": "<motivo curto, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
 
 export interface AiAutoReplyResult {
   reply: string;
@@ -53,6 +59,8 @@ export interface AiAutoReplyResult {
   handoff: boolean;
   /** Etapa pra mover o card, se a IA identificou uma mudança — aplicar via applyAiExtractedActions (ai-shared.service.ts), que valida contra a lista permitida. */
   moveToStage?: string | null;
+  /** Motivo da perda, se a IA identificou uma recusa explícita — aplicar via applyAiExtractedActions (marca status LOST, não é etapa). */
+  markLost?: string | null;
   /** Campos do card que a IA extraiu da conversa — aplicar via applyAiExtractedActions. */
   extractedFields?: Record<string, string> | null;
 }
@@ -84,6 +92,8 @@ ${SAFETY_RULES}
 ${HANDOFF_RULES}
 
 ${MOVE_STAGE_RULES}
+
+${MARK_LOST_RULES}
 
 ${buildFillFieldsRules(camposTexto)}
 
@@ -136,6 +146,7 @@ function parseReply(raw: string): AiAutoReplyResult {
           reply: parsed.reply.trim(),
           handoff: parsed.handoff === true,
           moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
+          markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
           extractedFields,
         };
       }

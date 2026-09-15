@@ -1044,7 +1044,7 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 
     const genResult = await generateAiAutoReply(accountId, leadId, incomingText);
     if (!genResult) return;
-    const { reply, handoff, moveToStage, extractedFields } = genResult;
+    const { reply, handoff, moveToStage, markLost, extractedFields } = genResult;
 
     const result = await sendWhatsAppMessage(phone, reply, accountId, departmentId);
     if (!result.success) {
@@ -1059,10 +1059,10 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, summary: 'a IA respondeu o cliente', channel: 'WHATSAPP' });
     console.log(`[WhatsApp] Resposta de IA enviada automaticamente para lead ${leadId}`);
 
-    // Mover etapa / preencher dados do card — independente do handoff (pode
-    // mover pra "Lead Sem Retorno" no mesmo turno em que encerra, por ex.).
-    if (moveToStage || (extractedFields && Object.keys(extractedFields).length)) {
-      await applyAiExtractedActions(accountId, leadId, { moveToStage, extractedFields }, io);
+    // Mover etapa / marcar Perdido / preencher dados do card — independente
+    // do handoff (pode marcar Perdido no mesmo turno em que encerra, por ex.).
+    if (moveToStage || markLost || (extractedFields && Object.keys(extractedFields).length)) {
+      await applyAiExtractedActions(accountId, leadId, { moveToStage, markLost, extractedFields }, io);
     }
 
     if (handoff) await handleAiHandoffCloudApi(leadId, io);
