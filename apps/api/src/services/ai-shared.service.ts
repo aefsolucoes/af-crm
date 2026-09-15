@@ -1,5 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { searchKnowledge } from './knowledge.service';
+import { parseMoneyOrNumber } from './campaign-detection.service';
+import { logActivity } from './activity.service';
 
 const prisma = new PrismaClient();
 
@@ -15,9 +17,10 @@ const prisma = new PrismaClient();
  * Conhecimento, Respostas Rápidas, estilo do vendedor, escopo do setor) e
  * as mesmas regras de como responder (CORE_RULES) — só o que é
  * estruturalmente inevitável continua diferente em cada arquivo: a
- * auto-resposta precisa decidir quando chamar um humano (handoff) e
- * devolver JSON, porque ninguém revisa antes dela mandar; a sugestão só
- * devolve texto puro, porque um vendedor sempre vê antes de enviar.
+ * auto-resposta precisa decidir quando chamar um humano (handoff) e agora
+ * também pode mover o card de etapa/preencher dados extraídos da conversa
+ * (ver applyAiExtractedActions) — a sugestão nunca precisou disso, porque
+ * um vendedor sempre revisa e faz essas ações ele mesmo.
  */
 
 export const CORE_RULES = `REGRAS OBRIGATÓRIAS:
@@ -151,4 +154,121 @@ ${ctx.respostasRapidasTexto}
 
 --- HISTÓRICO RECENTE DESTA CONVERSA ---
 ${ctx.historicoTexto}`;
+}
+
+// ─── Ações que só a IA de auto-resposta pode tomar (mover etapa / ────────
+// ─── preencher dados do card) — a Sugerir resposta nunca faz isso        ─
+// sozinha, porque um humano sempre revisa e mexe no card ele mesmo.
+
+/** Campos "fixos" da aba Principal (lead-sidebar.tsx) — não vêm de
+ *  FieldDefinition, por isso ficam hardcoded aqui (mesmo critério já usado
+ *  em site-lead.service.ts pros campos conhecidos). */
+const BUILTIN_LEAD_FIELDS: { key: string; label: string }[] = [
+  { key: 'participante_1', label: 'Nome do participante 1' },
+  { key: 'participante_2', label: 'Nome do participante 2' },
+  { key: 'telefone_1', label: 'Telefone do participante 1' },
+  { key: 'telefone_2', label: 'Telefone do participante 2' },
+  { key: 'cpf_1', label: 'CPF do participante 1' },
+  { key: 'cpf_2', label: 'CPF do participante 2' },
+  { key: 'nascimento_1', label: 'Data de nascimento do participante 1' },
+  { key: 'nascimento_2', label: 'Data de nascimento do participante 2' },
+  { key: 'renda_1', label: 'Renda do participante 1' },
+  { key: 'renda_2', label: 'Renda do participante 2' },
+  { key: 'email_1', label: 'E-mail do participante 1' },
+  { key: 'email_2', label: 'E-mail do participante 2' },
+  { key: 'vinculo_1', label: 'Tipo de vínculo do participante 1 (ex.: CLT, autônomo)' },
+  { key: 'vinculo_2', label: 'Tipo de vínculo do participante 2' },
+];
+
+/** Campos numéricos — passam por parseMoneyOrNumber ("R$ 100 mil" → número
+ *  puro) antes de gravar. Mesmo critério de site-lead.service.ts. */
+const NUMBER_FIELD_KEYS = new Set([
+  'valor_avaliacao', 'valor_imovel', 'valor_credito', 'valor_entrada',
+  'primeira_parcela', 'ultima_parcela', 'renda_1', 'renda_2',
+  'credito_consorcio', 'parcela_consorcio', 'prazo_consorcio',
+]);
+
+/** Texto listando todos os campos que a IA pode preencher no card — os
+ *  fixos da aba Principal + os que a própria conta cadastrou (Financiamento/
+ *  Consórcio/abas customizadas), buscados de FieldDefinition pra sempre
+ *  refletir o que a conta realmente tem hoje. */
+export async function buildFillableFieldsText(accountId: string): Promise<string> {
+  const defs = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }] });
+  const builtinText = BUILTIN_LEAD_FIELDS.map((f) => `- "${f.key}": ${f.label}`).join('\n');
+  const customText = defs.map((d) => `- "${d.key}" (aba ${d.tab}): ${d.name}`).join('\n');
+  return [builtinText, customText].filter(Boolean).join('\n');
+}
+
+function normalize(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+export interface AiExtractedAction {
+  moveToStage?: string | null;
+  extractedFields?: Record<string, string> | null;
+}
+
+/** Aplica o que a IA de auto-resposta decidiu (opcional): mover o card pra
+ *  uma das etapas permitidas, e/ou preencher campos que o cliente mencionou
+ *  na conversa. Nunca lança erro pro chamador — cada ação é independente e
+ *  fire-and-forget, igual o resto do fluxo de mensagem recebida. */
+export async function applyAiExtractedActions(
+  accountId: string,
+  leadId: string,
+  action: AiExtractedAction,
+  io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } }
+): Promise<void> {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: { id: true, name: true, pipelineId: true, customFields: true },
+    });
+    if (!lead) return;
+
+    // Mover etapa — só estes 4 valores são aceitos (usuário definiu esse
+    // alcance explicitamente: nada de Fechado/Aprovado/Perdido sozinha).
+    // Resolve o nome DENTRO do funil onde o lead já está — mesmo critério
+    // de move_stage_by_name em automation.service.ts.
+    if (action.moveToStage) {
+      const ALLOWED = ['prospeccao', 'follow up', 'lead sem retorno', 'pre-analise', 'pre analise'];
+      const target = normalize(action.moveToStage);
+      const isAllowed = ALLOWED.some((a) => target.includes(a) || a.includes(target));
+      if (isAllowed) {
+        const stages = await prisma.stage.findMany({ where: { pipelineId: lead.pipelineId } });
+        const match = stages.find((s) => { const n = normalize(s.name); return n.includes(target) || target.includes(n); });
+        if (match) {
+          const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+          await updateLeadStage(lead.id, accountId, match.id);
+          logActivity({
+            accountId, userId: null, userName: 'Assistente IA', action: 'lead_stage_changed',
+            leadId: lead.id, leadName: lead.name, summary: `moveu o card pra "${match.name}", com base na conversa`,
+          });
+          if (io) io.to(`lead:${leadId}`).emit('lead_moved', { leadId, stageId: match.id });
+        }
+      }
+    }
+
+    // Preencher dados extraídos da conversa — só chaves conhecidas
+    // (buildFillableFieldsText), nunca sobrescreve com vazio.
+    if (action.extractedFields && Object.keys(action.extractedFields).length) {
+      const patch: Record<string, string> = {};
+      for (const [k, v] of Object.entries(action.extractedFields)) {
+        if (v === undefined || v === null) continue;
+        const raw = String(v).trim();
+        if (!raw) continue;
+        const parsed = NUMBER_FIELD_KEYS.has(k) ? parseMoneyOrNumber(raw) : raw;
+        if (parsed !== null && parsed !== '') patch[k] = parsed;
+      }
+      if (Object.keys(patch).length) {
+        const customFields = { ...((lead.customFields as any) || {}), ...patch };
+        await prisma.lead.update({ where: { id: lead.id }, data: { customFields } });
+        logActivity({
+          accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited',
+          leadId: lead.id, leadName: lead.name, summary: `preencheu dados do card a partir da conversa (${Object.keys(patch).join(', ')})`,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[AI] Erro ao aplicar ações extraídas (mover etapa/preencher campos):', err);
+  }
 }

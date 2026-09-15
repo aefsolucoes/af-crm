@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
+import { applyAiExtractedActions } from './ai-shared.service';
 import { logActivity } from './activity.service';
 import { normalizeClientName } from '../lib/text';
 // maybeSalesBotStep/runAutomations/maybeMessageReceivedAutomations: require()
@@ -1043,7 +1044,7 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 
     const genResult = await generateAiAutoReply(accountId, leadId, incomingText);
     if (!genResult) return;
-    const { reply, handoff } = genResult;
+    const { reply, handoff, moveToStage, extractedFields } = genResult;
 
     const result = await sendWhatsAppMessage(phone, reply, accountId, departmentId);
     if (!result.success) {
@@ -1057,6 +1058,12 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     await prisma.note.create({ data: { leadId, content: `Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, summary: 'a IA respondeu o cliente', channel: 'WHATSAPP' });
     console.log(`[WhatsApp] Resposta de IA enviada automaticamente para lead ${leadId}`);
+
+    // Mover etapa / preencher dados do card — independente do handoff (pode
+    // mover pra "Lead Sem Retorno" no mesmo turno em que encerra, por ex.).
+    if (moveToStage || (extractedFields && Object.keys(extractedFields).length)) {
+      await applyAiExtractedActions(accountId, leadId, { moveToStage, extractedFields }, io);
+    }
 
     if (handoff) await handleAiHandoffCloudApi(leadId, io);
   } catch (err) {

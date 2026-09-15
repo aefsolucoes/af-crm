@@ -1,18 +1,20 @@
-import { buildSharedAiContext, buildContextBlocks, CORE_RULES } from './ai-shared.service';
+import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES } from './ai-shared.service';
 
 /**
  * Assistente de IA que conversa DIRETO com o cliente pelo WhatsApp (ligado por
  * conversa, via botão na Inbox — Lead.aiAutoReplyActive). Deliberadamente
- * separado do assistente interno (routes/ai.ts): aqui não tem ferramentas, só
- * gera texto — nunca move card, edita cadastro nem faz nenhuma ação no CRM.
- * Isolado num arquivo próprio (sem import de whatsapp.service) pra evitar
- * dependência circular (whatsapp.service.ts chama de volta pra cá).
+ * separado do assistente interno (routes/ai.ts): aqui não tem ferramentas
+ * genéricas, só o que está explicitamente listado abaixo (responder, mover
+ * de etapa entre um conjunto fixo, preencher campos conhecidos do card) —
+ * nunca faz nenhuma outra ação no CRM.
  *
  * Usa o MESMO "cérebro" (ai-shared.service.ts) que a Sugerir resposta —
- * mesma Base de Conhecimento, mesmas regras de confiança/tom. A única
- * diferença estrutural é que esta IA fala sem ninguém revisando, então
- * precisa saber decidir quando chamar um humano (handoff) — a Sugerir
- * resposta nunca precisou disso, sempre teve um vendedor revisando antes.
+ * mesma Base de Conhecimento, mesmas regras de confiança/tom. A diferença
+ * estrutural é que esta IA fala sem ninguém revisando, então precisa saber
+ * decidir quando chamar um humano (handoff) e é a única que pode agir
+ * direto no card (mover etapa, preencher dados) — a Sugerir resposta nunca
+ * precisou disso, sempre teve um vendedor revisando e fazendo essas ações
+ * ele mesmo.
  */
 
 const ROLE_FRAMING = `Você é o assistente de atendimento da A&F Soluções Financeiras, conversando DIRETAMENTE com um cliente pelo WhatsApp — isso não é uma conversa interna da equipe, é o próprio cliente do outro lado.`;
@@ -25,16 +27,34 @@ ENCERRAR E CHAMAR UM HUMANO ("handoff": true) sempre que:
 - o cliente parecer insatisfeito, impaciente, ou trouxer um problema fora do comum que você não consegue resolver com o material disponível;
 - a pergunta do cliente for GENUINAMENTE sobre um produto ou assunto fora do escopo de atendimento deste chat (ver acima) — nesse caso não tente responder por conta própria, mesmo que ache que sabe a resposta;
 - REALMENTE não houver nenhum material nem contexto que sustente uma resposta séria pra pergunta do cliente (isso é a EXCEÇÃO, não o padrão — não use por cautela).
-Quando marcar "handoff": true, a "reply" ainda deve ser uma mensagem curta e natural avisando o cliente que alguém da equipe vai continuar o atendimento a partir daqui — nunca deixe o campo "reply" vazio.
+Quando marcar "handoff": true, a "reply" ainda deve ser uma mensagem curta e natural avisando o cliente que alguém da equipe vai continuar o atendimento a partir daqui — nunca deixe o campo "reply" vazio.`;
 
-FORMATO DE RESPOSTA — OBRIGATÓRIO:
+/** Só estes 4 valores são aceitos em "moveToStage" — usuário definiu esse
+ *  alcance explicitamente: a IA NUNCA move sozinha pra etapas que fecham
+ *  negócio (Fechado, Aprovado, Perdido etc.), só pra estas de andamento. */
+const MOVE_STAGE_RULES = `MOVER O CARD DE ETAPA ("moveToStage") — só estes valores são aceitos, escolha no máximo um, ou null se não for o caso (a maioria das mensagens não muda de etapa):
+- "Follow Up": o cliente demonstrou interesse mas precisa de acompanhamento (disse que vai pensar, pediu pra retornarem depois, ainda não deu informação suficiente pra avançar).
+- "Lead Sem Retorno": o cliente disse EXPLICITAMENTE que não tem mais interesse, ou pediu pra não ser mais contatado.
+- "Pré-Análise": o cliente confirmou que já preencheu a proposta/formulário manual completo, OU você já reuniu nesta conversa todos os dados pessoais necessários pra uma pré-análise (nome, telefone, CPF, renda etc. de todos os participantes). Só use se essa condição foi REALMENTE atendida — não adiante.
+- "Prospecção": raramente necessário (o lead já começa nessa etapa).`;
+
+function buildFillFieldsRules(camposTexto: string): string {
+  return `PREENCHER DADOS DO CARD ("extractedFields") — um objeto com os campos abaixo que o cliente mencionar CLARAMENTE na conversa (nunca invente, deduza ou arredonde um valor que ele não disse). Use só chaves desta lista, ou {} se nada novo foi mencionado:
+${camposTexto}`;
+}
+
+const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente>", "handoff": <true ou false>}`;
+{"reply": "<mensagem para o cliente>", "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
 
 export interface AiAutoReplyResult {
   reply: string;
   /** true = cliente pediu atendimento humano (ou pergunta fora do escopo deste setor/produto) — quem chamou deve desligar o Lead.aiAutoReplyActive e avisar o colaborador responsável. */
   handoff: boolean;
+  /** Etapa pra mover o card, se a IA identificou uma mudança — aplicar via applyAiExtractedActions (ai-shared.service.ts), que valida contra a lista permitida. */
+  moveToStage?: string | null;
+  /** Campos do card que a IA extraiu da conversa — aplicar via applyAiExtractedActions. */
+  extractedFields?: Record<string, string> | null;
 }
 
 /**
@@ -55,11 +75,19 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
     });
     if (!ctx) return null;
 
+    const camposTexto = await buildFillableFieldsText(accountId);
+
     const systemPrompt = `${ROLE_FRAMING}
 
 ${CORE_RULES}
 ${SAFETY_RULES}
 ${HANDOFF_RULES}
+
+${MOVE_STAGE_RULES}
+
+${buildFillFieldsRules(camposTexto)}
+
+${OUTPUT_FORMAT}
 
 ${buildContextBlocks(ctx)}`;
 
@@ -68,7 +96,7 @@ ${buildContextBlocks(ctx)}`;
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: 500,
+        max_tokens: 600,
         system: systemPrompt,
         messages: [{ role: 'user', content: incomingText }],
       }),
@@ -91,14 +119,25 @@ ${buildContextBlocks(ctx)}`;
 /** O modelo deve responder só com JSON, mas por segurança extrai o primeiro
  *  bloco {...} do texto (cobre o caso raro de markdown/texto extra ao redor)
  *  e, se o parse falhar de qualquer jeito, cai pro texto cru como resposta
- *  (handoff false) — nunca deixa de responder por causa de um JSON malformado. */
+ *  (sem handoff/ação nenhuma) — nunca deixa de responder por causa de um
+ *  JSON malformado. moveToStage/extractedFields são sempre opcionais e
+ *  validados de verdade só em applyAiExtractedActions — aqui só extrai o
+ *  que veio, sem confiar cegamente no formato. */
 function parseReply(raw: string): AiAutoReplyResult {
   const match = raw.match(/\{[\s\S]*\}/);
   if (match) {
     try {
       const parsed = JSON.parse(match[0]);
       if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
-        return { reply: parsed.reply.trim(), handoff: parsed.handoff === true };
+        const extractedFields = parsed.extractedFields && typeof parsed.extractedFields === 'object' && !Array.isArray(parsed.extractedFields)
+          ? parsed.extractedFields
+          : null;
+        return {
+          reply: parsed.reply.trim(),
+          handoff: parsed.handoff === true,
+          moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
+          extractedFields,
+        };
       }
     } catch {
       // cai no fallback abaixo

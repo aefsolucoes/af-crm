@@ -2,6 +2,7 @@ import { PrismaClient, SalesBotRun } from '@prisma/client';
 import { sendOutboundWhatsApp } from './message.service';
 import { updateLead, updateLeadStage } from './lead.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
+import { applyAiExtractedActions } from './ai-shared.service';
 
 const prisma = new PrismaClient();
 
@@ -304,6 +305,13 @@ async function executeStepsFrom(
       const sendResult = await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: run.leadId, content: genResult.reply, io: io as any });
       await logStep(run.id, step, { ok: sendResult.success, handoff: genResult.handoff, error: sendResult.success ? undefined : sendResult.error });
       if (!sendResult.success) { await finishRun(run.id, 'ERROR', `Falha ao enviar mensagem: ${sendResult.error}`); return; }
+
+      // Mover etapa / preencher dados do card — mesma ação que o "Ativar
+      // IA" avulso da Inbox já faz (ver whatsapp.service.ts), pra ficar
+      // consistente entre os dois jeitos de usar a mesma IA.
+      if (genResult.moveToStage || (genResult.extractedFields && Object.keys(genResult.extractedFields).length)) {
+        await applyAiExtractedActions(lead.accountId, run.leadId, { moveToStage: genResult.moveToStage, extractedFields: genResult.extractedFields }, io as any);
+      }
 
       if (genResult.handoff) {
         // A própria IA decidiu que precisa de um humano (pergunta fora do
