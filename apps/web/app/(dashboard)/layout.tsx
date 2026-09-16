@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/ui/sidebar';
 import { ToastContainer } from '@/components/ui/toast';
@@ -49,6 +50,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { user, init } = useAuthStore();
   const router = useRouter();
   const pathname = usePathname();
+  const queryClient = useQueryClient();
   const lastSoundRef = useRef<number>(0);
 
   useEffect(() => {
@@ -120,18 +122,30 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       toast(`Novo lead do site: ${leadName || 'Cliente'}${department ? ` — ${department}` : ''}`, 'success');
     }
 
+    // lead_merged — dois cards viraram um só (Inbox/Funil → "Unificar
+    // duplicados"). Sem isso, quem está com a Inbox/Funil aberto continuava
+    // vendo o estado de antes do merge até recarregar a página manualmente
+    // (reportado como "o card sumiu" — na verdade os dados foram pro card
+    // mantido, só a tela não tinha atualizado).
+    function onLeadMerged() {
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    }
+
     socket.on('new_notification', onNewNotification);
     socket.on('ai_handoff', onAiHandoff);
     socket.on('contracting_lead', onContractingLead);
     socket.on('site_lead_created', onSiteLeadCreated);
+    socket.on('lead_merged', onLeadMerged);
 
     return () => {
       socket.off('new_notification', onNewNotification);
       socket.off('ai_handoff', onAiHandoff);
       socket.off('contracting_lead', onContractingLead);
       socket.off('site_lead_created', onSiteLeadCreated);
+      socket.off('lead_merged', onLeadMerged);
     };
-  }, []);
+  }, [queryClient]);
 
   return (
     <div className="flex h-screen overflow-hidden app-bg-surface">

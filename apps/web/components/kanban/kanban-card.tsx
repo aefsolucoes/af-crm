@@ -101,7 +101,12 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
     <MergeModal
       open={showMerge}
       onClose={() => setShowMerge(false)}
-      onMerged={() => { queryClient.invalidateQueries({ queryKey: ['leads'] }); }}
+      onMerged={() => {
+        queryClient.invalidateQueries({ queryKey: ['leads'] });
+        // Conversas migram junto no merge (backend) — sem isso a Inbox só
+        // refletia depois de recarregar a página manualmente.
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      }}
       leadId={lead.id}
       leadName={displayName}
     />
