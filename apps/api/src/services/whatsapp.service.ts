@@ -928,6 +928,28 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         mediaBuffer = await downloadCloudApiMedia(mediaInfo.mediaId, config.accessToken);
       }
 
+      // ── Citação (cliente respondeu citando uma mensagem, dele ou nossa) ──
+      // A Meta manda `context.id` com o wamid da mensagem citada. Só existia
+      // o caminho contrário (agente cita ao responder, via replyTo* no envio
+      // — ver sendOutboundWhatsApp) — aqui a citação chegava e sumia: a
+      // mensagem em si salvava normal, só sem o balãozinho de "respondendo
+      // a...". Mesmos 3 campos, preenchidos igual pro lado de cá.
+      let replyToExternalId: string | undefined;
+      let replyToContent: string | undefined;
+      let replyToSender: string | undefined;
+      const quotedWamid = msg.context?.id as string | undefined;
+      if (quotedWamid) {
+        const quoted = await prisma.message.findFirst({
+          where: { externalId: quotedWamid, leadId },
+          select: { content: true, direction: true, senderName: true, sentBy: { select: { name: true } } },
+        });
+        if (quoted) {
+          replyToExternalId = quotedWamid;
+          replyToContent = quoted.content;
+          replyToSender = quoted.direction === 'OUTBOUND' ? (quoted.sentBy?.name || 'Você') : (quoted.senderName || profileName);
+        }
+      }
+
       // ── Save message ────────────────────────────────────────────────────
       const message = await prisma.message.create({
         data: {
@@ -938,6 +960,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
           read: false,
           externalId,
           status: 'DELIVERED',
+          ...(replyToExternalId ? { replyToExternalId, replyToContent, replyToSender } : {}),
           ...(mediaBuffer && mediaInfo ? {
             attachments: {
               create: { leadId, fileName: mediaInfo.fileName, mimeType: mediaInfo.mimeType, data: mediaBuffer },
