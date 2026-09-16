@@ -37,6 +37,17 @@ export async function transcodeToOggOpus(buffer: Buffer, sourceMimeType: string)
     await writeFile(inputPath, buffer);
     await execFileAsync(ffmpegPath, [
       '-y', '-i', inputPath,
+      // -map_metadata -1: o ffmpeg por padrão COPIA os metadados do arquivo
+      // de origem pro Ogg de saída — quando a origem é um MP4 (Safari/Chrome
+      // recente gravam nesse formato), isso deixa campos de contêiner MP4
+      // (major_brand/compatible_brands/handler_name "isom" etc.) dentro do
+      // Ogg, um arquivo que deveria ser "puro". Confirmado como a causa real
+      // do erro 131053 da Meta: reproduzi local (mesmos campos MP4
+      // vazando pro .ogg) e comparei com/sem essa flag — sem ela, o Ogg
+      // sai "sujo" mesmo sendo estruturalmente válido, e a Meta recusa.
+      // -vn: garante que nenhuma trilha de vídeo/capa embutida (alguns
+      // gravadores anexam uma imagem) vá pro Ogg, que é só áudio.
+      '-map_metadata', '-1', '-vn',
       '-c:a', 'libopus', '-b:a', '32k', '-ar', '16000', '-ac', '1',
       outputPath,
     ], { timeout: 30_000 });
