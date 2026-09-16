@@ -292,6 +292,8 @@ function friendlyWhatsAppError(code: number | undefined): string | null {
       return 'A Meta bloqueou o envio de mensagens por pendência de pagamento na conta do WhatsApp Business (fatura em aberto ou forma de pagamento com problema) — acesse o Gerenciador de Negócios da Meta (business.facebook.com), aba Pagamentos, e regularize pra voltar a enviar.';
     case 131049:
       return 'A Meta bloqueou só esta mensagem por um limite de "engajamento saudável" — acontece quando várias mensagens parecidas são mandadas pro mesmo número em pouco tempo sem ele responder. Não é a conta toda bloqueada, só essa tentativa: espere algumas horas e tente de novo, evitando repetir a mesma mensagem várias vezes seguidas pro mesmo contato.';
+    case 131053:
+      return 'O arquivo de áudio enviado não é um áudio válido de verdade (o conteúdo não bate com o formato declarado) — tente gravar de novo. Se continuar acontecendo, tente enviar o áudio como um arquivo comum em vez de gravar pelo microfone.';
     default:
       return null;
   }

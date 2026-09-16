@@ -92,8 +92,19 @@ export async function transcodeToWhatsAppOgg(blob: Blob, sourceMimeType: string)
   const outputName = 'output.ogg';
   await ffmpeg.writeFile(inputName, await fetchFile(blob));
   try {
-    await ffmpeg.exec(['-i', inputName, '-c:a', 'libopus', '-b:a', '32k', '-ar', '16000', '-ac', '1', outputName]);
+    // O ffmpeg.wasm nem sempre lança exceção quando a conversão falha por
+    // dentro (varia por navegador/core) — ele só devolve um código de saída
+    // diferente de 0, ou termina "ok" com um arquivo vazio/quase vazio.
+    // Incidente real: isso passou batido, o arquivo (não-Ogg de verdade) foi
+    // mandado pro WhatsApp rotulado como "audio/ogg" e a Meta recusou (erro
+    // 131053, "mimetype não bate com o conteúdo real") — só que já dentro da
+    // conversa com o cliente, com um erro cru em inglês. Checar o código de
+    // saída + o tamanho do resultado pega isso ANTES de subir pro WhatsApp e
+    // cai no catch de quem chamou (toast em português, sem nada ser enviado).
+    const code = await ffmpeg.exec(['-i', inputName, '-c:a', 'libopus', '-b:a', '32k', '-ar', '16000', '-ac', '1', outputName]);
+    if (code !== 0) throw new Error(`ffmpeg terminou com código ${code} ao converter o áudio`);
     const data = await ffmpeg.readFile(outputName);
+    if (!data || data.length < 200) throw new Error('Conversão de áudio gerou arquivo vazio/inválido');
     // O tipo de retorno do ffmpeg.wasm (Uint8Array<ArrayBufferLike>) não bate
     // exatamente com o que o Blob espera nessa versão do TS/lib DOM — o valor
     // em si é um Uint8Array normal em tempo de execução.
