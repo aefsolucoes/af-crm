@@ -106,7 +106,10 @@ ${buildContextBlocks(ctx)}`;
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: 600,
+        // 600 não era suficiente quando o card tem muitos campos pra
+        // extrair (extractedFields grande) — o JSON cortava no meio e
+        // quebrava o parser (ver comentário em parseReply). 1024 dá folga.
+        max_tokens: 1024,
         system: systemPrompt,
         messages: [{ role: 'user', content: incomingText }],
       }),
@@ -127,32 +130,54 @@ ${buildContextBlocks(ctx)}`;
 }
 
 /** O modelo deve responder só com JSON, mas por segurança extrai o primeiro
- *  bloco {...} do texto (cobre o caso raro de markdown/texto extra ao redor)
- *  e, se o parse falhar de qualquer jeito, cai pro texto cru como resposta
- *  (sem handoff/ação nenhuma) — nunca deixa de responder por causa de um
- *  JSON malformado. moveToStage/extractedFields são sempre opcionais e
- *  validados de verdade só em applyAiExtractedActions — aqui só extrai o
- *  que veio, sem confiar cegamente no formato. */
+ *  bloco {...} do texto (cobre o caso raro de markdown/texto extra ao redor).
+ *
+ *  INCIDENTE REAL (16/09/2026): quando o JSON vem cortado/malformado (ex.:
+ *  estourou o max_tokens no meio do extractedFields), o fallback antigo
+ *  mandava o TEXTO INTEIRO — chaves, "extractedFields", CPF etc. — como se
+ *  fosse a mensagem, e isso foi parar de verdade no WhatsApp de um cliente.
+ *  Agora, se o JSON completo não parsear, tenta recuperar só o VALOR de
+ *  "reply" na marra (ele normalmente vem primeiro, antes do resto quebrar);
+ *  se nem isso der, usa uma mensagem genérica seria — nunca mais o texto
+ *  cru. moveToStage/extractedFields são sempre opcionais e validados de
+ *  verdade só em applyAiExtractedActions — aqui só extrai o que veio, sem
+ *  confiar cegamente no formato. */
 function parseReply(raw: string): AiAutoReplyResult {
   const match = raw.match(/\{[\s\S]*\}/);
-  if (match) {
+  if (!match) {
+    // Sem chave nenhuma no texto — não é um JSON quebrado, é resposta livre
+    // mesmo (raro, mas seguro de mandar como está).
+    return { reply: raw, handoff: false };
+  }
+
+  try {
+    const parsed = JSON.parse(match[0]);
+    if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
+      const extractedFields = parsed.extractedFields && typeof parsed.extractedFields === 'object' && !Array.isArray(parsed.extractedFields)
+        ? parsed.extractedFields
+        : null;
+      return {
+        reply: parsed.reply.trim(),
+        handoff: parsed.handoff === true,
+        moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
+        markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
+        extractedFields,
+      };
+    }
+  } catch {
+    // JSON malformado/cortado — segue pro resgate abaixo, NUNCA usa `raw`
+    // (que contém as chaves { } e o resto do JSON) como mensagem.
+  }
+
+  const replyMatch = raw.match(/"reply"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (replyMatch) {
     try {
-      const parsed = JSON.parse(match[0]);
-      if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
-        const extractedFields = parsed.extractedFields && typeof parsed.extractedFields === 'object' && !Array.isArray(parsed.extractedFields)
-          ? parsed.extractedFields
-          : null;
-        return {
-          reply: parsed.reply.trim(),
-          handoff: parsed.handoff === true,
-          moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
-          markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
-          extractedFields,
-        };
-      }
+      const reply = (JSON.parse(`"${replyMatch[1]}"`) as string).trim();
+      if (reply) return { reply, handoff: false };
     } catch {
-      // cai no fallback abaixo
+      // segue pro fallback genérico abaixo
     }
   }
-  return { reply: raw, handoff: false };
+
+  return { reply: 'Recebi sua mensagem! Só um instante que já te retorno.', handoff: false };
 }
