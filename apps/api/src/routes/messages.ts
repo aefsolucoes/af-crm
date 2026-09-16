@@ -99,8 +99,12 @@ router.get('/attachment/:id', async (req: AuthRequest, res: Response) => {
 
 // Envia um documento/imagem pelo WhatsApp (base64). Limite de corpo elevado só aqui.
 router.post('/send-media', async (req: AuthRequest, res: Response) => {
-  const { leadId, fileName, mimeType, dataBase64, caption } = req.body as {
+  const { leadId, fileName, mimeType, dataBase64, caption, transcodeAudio } = req.body as {
     leadId?: string; fileName?: string; mimeType?: string; dataBase64?: string; caption?: string;
+    /** true = veio do gravador de voz da Inbox (microfone), não de um arquivo
+     *  já pronto — precisa passar pelo ffmpeg do servidor antes de ir pro
+     *  WhatsApp (ver services/audio-transcode.service.ts). */
+    transcodeAudio?: boolean;
   };
   if (!leadId || !fileName || !mimeType || !dataBase64) {
     return res.status(400).json({ error: 'leadId, fileName, mimeType e dataBase64 são obrigatórios' });
@@ -108,13 +112,26 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
   try {
     const perms = await loadPerms(req);
     if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para enviar mensagens.' });
-    const buffer = Buffer.from(dataBase64, 'base64');
+    let buffer: Buffer = Buffer.from(dataBase64, 'base64');
     if (buffer.length > 25 * 1024 * 1024) {
       return res.status(413).json({ error: 'Arquivo muito grande (máx. 25 MB)' });
     }
+    let finalFileName = fileName;
+    let finalMimeType = mimeType;
+    if (transcodeAudio) {
+      try {
+        const { transcodeToOggOpus } = require('../services/audio-transcode.service') as typeof import('../services/audio-transcode.service');
+        buffer = await transcodeToOggOpus(buffer, mimeType);
+        finalFileName = `audio-${Date.now()}.ogg`;
+        finalMimeType = 'audio/ogg';
+      } catch (err) {
+        console.error('[Audio] Falha ao converter áudio gravado:', err);
+        return res.status(422).json({ error: 'Não consegui converter o áudio gravado. Tente gravar de novo.' });
+      }
+    }
     const io = req.app.get('io');
     const result = await sendOutboundMedia({
-      accountId: req.user!.accountId, leadId, buffer, fileName, mimeType, caption, userId: req.user!.id, io,
+      accountId: req.user!.accountId, leadId, buffer, fileName: finalFileName, mimeType: finalMimeType, caption, userId: req.user!.id, io,
     });
     if (!result.success) return res.status(400).json({ error: result.error });
     res.status(201).json(result.message);

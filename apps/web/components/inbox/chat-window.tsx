@@ -5,7 +5,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
 import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick } from 'lucide-react';
-import { transcodeToWhatsAppOgg } from '@/lib/audio-transcode';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -657,7 +656,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
   /** Envia 1 arquivo — usado pelo seletor (📎), por arrastar-e-soltar e por
    *  colar (Ctrl+V) na caixa de mensagem. */
-  async function uploadFile(file: File) {
+  async function uploadFile(file: File, opts?: { transcodeAudio?: boolean }) {
     if (file.size > 25 * 1024 * 1024) { toast('Arquivo muito grande (máx. 25 MB)', 'error'); return; }
     setUploadingFile(true);
     try {
@@ -672,6 +671,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         fileName: file.name,
         mimeType: file.type || 'application/octet-stream',
         dataBase64,
+        ...(opts?.transcodeAudio ? { transcodeAudio: true } : {}),
       });
       onNewMessage(data);
     } catch (err: any) {
@@ -684,9 +684,13 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // ── Gravar áudio (microfone) e mandar como voz — diferente de anexar um
   // arquivo de áudio já pronto. O MediaRecorder do navegador grava em
   // formatos diferentes por navegador (webm no Chrome, mp4 no Safari, ogg no
-  // Firefox) e o WhatsApp só aceita alguns — por isso converte pra Ogg/Opus
-  // (lib/audio-transcode.ts) antes de mandar pelo mesmo caminho de sempre
-  // (uploadFile → /api/messages/send-media).
+  // Firefox) e o WhatsApp só aceita Ogg/Opus mono 16kHz de verdade pra voz —
+  // a conversão roda no SERVIDOR agora (audio-transcode.service.ts, flag
+  // `transcodeAudio`), não mais no navegador. A versão anterior usava
+  // ffmpeg.wasm aqui no cliente e às vezes gerava um arquivo inválido sem
+  // lançar erro nenhum — a Meta recusava (código 131053) já dentro da
+  // conversa com o cliente. Rodar com ffmpeg de verdade no servidor é muito
+  // mais confiável.
   const [recording, setRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const [processingAudio, setProcessingAudio] = useState(false);
@@ -749,9 +753,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
     setProcessingAudio(true);
     try {
-      const ogg = await transcodeToWhatsAppOgg(blob, mimeType);
-      const file = new File([ogg], `audio-${Date.now()}.ogg`, { type: 'audio/ogg' });
-      await uploadFile(file);
+      const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+      const file = new File([blob], `audio-${Date.now()}.${ext}`, { type: mimeType });
+      await uploadFile(file, { transcodeAudio: true });
     } catch {
       toast('Erro ao processar o áudio gravado', 'error');
     } finally {
