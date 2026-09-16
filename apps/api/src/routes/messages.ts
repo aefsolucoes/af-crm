@@ -163,7 +163,12 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
         console.log(`[Audio] convertido: ${buffer.length} bytes, header=${buffer.subarray(0, 16).toString('hex')}`);
         lastAudioDebug.transcoded = buffer;
         finalFileName = `audio-${Date.now()}.ogg`;
-        finalMimeType = 'audio/ogg';
+        // O WhatsApp só reconhece como NOTA DE VOZ de verdade (tocável, com
+        // forma de onda) com esse mimetype EXATO, "codecs=opus" incluído —
+        // sem isso a Meta aceita o envio (fica ✓ no CRM) mas o áudio não
+        // toca no destinatário. Incidente real: "audio/ogg" sozinho passava
+        // pela validação de upload mas nunca virava um áudio reproduzível.
+        finalMimeType = 'audio/ogg; codecs=opus';
       } catch (err) {
         console.error('[Audio] Falha ao converter áudio gravado:', err);
         lastAudioDebug.error = (err as Error)?.message || String(err);
