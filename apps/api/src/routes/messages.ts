@@ -24,6 +24,38 @@ function logClientReply(req: AuthRequest, leadId: string) {
 const router = Router();
 router.use(authMiddleware);
 
+/** Diagnóstico temporário (16/09/2026) — guarda só o ÚLTIMO áudio de voz que
+ *  passou pelo /send-media com transcodeAudio (bruto + convertido), pra dar
+ *  pra investigar por que a Meta recusa mesmo depois da conversão no
+ *  servidor. Sem persistência (cai ao reiniciar), só ADMIN acessa. Remover
+ *  as rotas /debug/last-audio* junto com isto depois de resolvido. */
+let lastAudioDebug: { raw: Buffer; transcoded: Buffer | null; mimeType: string; error: string | null; at: Date } | null = null;
+
+router.get('/debug/last-audio/info', (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só admin' });
+  if (!lastAudioDebug) return res.status(404).json({ error: 'Nenhum áudio capturado ainda' });
+  res.json({
+    mimeType: lastAudioDebug.mimeType,
+    rawLength: lastAudioDebug.raw.length,
+    rawHeaderHex: lastAudioDebug.raw.subarray(0, 32).toString('hex'),
+    transcodedLength: lastAudioDebug.transcoded?.length ?? null,
+    transcodedHeaderHex: lastAudioDebug.transcoded?.subarray(0, 32).toString('hex') ?? null,
+    error: lastAudioDebug.error,
+    at: lastAudioDebug.at,
+  });
+});
+
+router.get('/debug/last-audio', (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só admin' });
+  if (!lastAudioDebug) return res.status(404).json({ error: 'Nenhum áudio capturado ainda' });
+  const which = req.query.which === 'transcoded' ? 'transcoded' : 'raw';
+  const buf = which === 'transcoded' ? lastAudioDebug.transcoded : lastAudioDebug.raw;
+  if (!buf) return res.status(404).json({ error: 'Não disponível' });
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${which}.bin"`);
+  res.send(buf);
+});
+
 const messageSchema = z.object({
   content: z.string().min(1),
   direction: z.enum(['INBOUND', 'OUTBOUND']),
@@ -119,13 +151,22 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
     let finalFileName = fileName;
     let finalMimeType = mimeType;
     if (transcodeAudio) {
+      // Diagnóstico temporário (16/09/2026): a Meta segue recusando o áudio
+      // (131053) mesmo depois da conversão rodar no servidor — precisa ver o
+      // arquivo de verdade pra saber por quê. Ver GET /debug/last-audio* logo
+      // abaixo. Remover depois de resolvido.
+      console.log(`[Audio] recebido do gravador: ${buffer.length} bytes, mimeType="${mimeType}", header=${buffer.subarray(0, 16).toString('hex')}`);
+      lastAudioDebug = { raw: buffer, transcoded: null, mimeType, error: null, at: new Date() };
       try {
         const { transcodeToOggOpus } = require('../services/audio-transcode.service') as typeof import('../services/audio-transcode.service');
         buffer = await transcodeToOggOpus(buffer, mimeType);
+        console.log(`[Audio] convertido: ${buffer.length} bytes, header=${buffer.subarray(0, 16).toString('hex')}`);
+        lastAudioDebug.transcoded = buffer;
         finalFileName = `audio-${Date.now()}.ogg`;
         finalMimeType = 'audio/ogg';
       } catch (err) {
         console.error('[Audio] Falha ao converter áudio gravado:', err);
+        lastAudioDebug.error = (err as Error)?.message || String(err);
         return res.status(422).json({ error: 'Não consegui converter o áudio gravado. Tente gravar de novo.' });
       }
     }
