@@ -77,13 +77,21 @@ const CAMPAIGN_SIGNATURES: CampaignSignature[] = [
     label: 'Home Equity — Crédito com Garantia de Imóvel',
     marker: 'proposta de credito com garantia de imovel',
     departmentName: 'Home Equity',
-    stageMarker: 'prospec', // casa "Prospecção", "Prospecção Home Equity" etc.
+    // Esse marker SÓ bate quando o cliente já preencheu a proposta completa
+    // (CPF, renda, valores etc. — ver HOME_EQUITY_FIELDS) — já tem o que
+    // precisa pra pré-análise, não faz sentido nascer em Prospecção pra
+    // alguém ter que mover na mão depois. "prospec" era o valor antigo.
+    stageMarker: 'pre-analise', // casa "Pré-Análise", "Pré-Analise" etc. (norm() tira acento)
     fields: HOME_EQUITY_FIELDS,
   },
   {
     label: 'Consórcio',
     marker: 'tenho interesse no consorcio', // casa qualquer produto: "Consórcio Volkswagen", "Consórcio de Imóvel" etc.
     departmentName: 'Consórcio',
+    // Continua em "prospec": o funil de Consórcio ainda não tem um estágio
+    // de Pré-Análise (só "Prospecção") — mudar aqui sem esse estágio existir
+    // faria o roteamento inteiro falhar (cai no fallback genérico, perdendo
+    // o setor certo). Trocar pra 'pre-analise' quando o estágio for criado.
     stageMarker: 'prospec',
     fields: CONSORCIO_FIELDS,
   },
@@ -94,7 +102,8 @@ const CAMPAIGN_SIGNATURES: CampaignSignature[] = [
     // DEFAULT_DEPARTMENTS) — mesma string usada em funil-habitacao/page.tsx.
     // Diferente de Home Equity, esse setor já existe por padrão em toda conta.
     departmentName: 'Financiamento Habitacional',
-    stageMarker: 'prospec',
+    // Mesmo raciocínio do Home Equity acima — ficha completa já veio.
+    stageMarker: 'pre-analise',
     // Só roteamento por enquanto — pedido não veio com o texto completo da
     // ficha, então sem mapa de campos (não dá pra adivinhar rótulo sem
     // exemplo real). Adicionar aqui do mesmo jeito que HOME_EQUITY_FIELDS/
