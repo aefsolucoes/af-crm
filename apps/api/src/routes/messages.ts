@@ -56,6 +56,43 @@ router.get('/debug/last-audio', (req: AuthRequest, res: Response) => {
   res.send(buf);
 });
 
+// Roda o ffmpeg de verdade em cima do áudio capturado e devolve o que ele
+// "vê" (duração, stream, codec) — `ffmpeg -i` sem saída sempre "falha" (não
+// gerou arquivo nenhum), mas o stderr tem o dump de metadados que queremos.
+// Bem mais confiável que só olhar os primeiros bytes do arquivo.
+router.get('/debug/last-audio/probe', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só admin' });
+  if (!lastAudioDebug) return res.status(404).json({ error: 'Nenhum áudio capturado ainda' });
+  const which = req.query.which === 'transcoded' ? 'transcoded' : 'raw';
+  const buf = which === 'transcoded' ? lastAudioDebug.transcoded : lastAudioDebug.raw;
+  if (!buf) return res.status(404).json({ error: 'Não disponível' });
+  try {
+    const { execFile } = require('child_process') as typeof import('child_process');
+    const { promisify } = require('util') as typeof import('util');
+    const { mkdtemp, writeFile, rm } = require('fs/promises') as typeof import('fs/promises');
+    const { tmpdir } = require('os') as typeof import('os');
+    const path = require('path') as typeof import('path');
+    const ffmpegPath = require('ffmpeg-static') as string;
+    const execFileAsync = promisify(execFile);
+    const dir = await mkdtemp(path.join(tmpdir(), 'af-probe-'));
+    const inputPath = path.join(dir, which === 'transcoded' ? 'input.ogg' : 'input.bin');
+    try {
+      await writeFile(inputPath, buf);
+      let stderr = '';
+      try {
+        await execFileAsync(ffmpegPath, ['-i', inputPath], { timeout: 15_000 });
+      } catch (err: any) {
+        stderr = err?.stderr || err?.message || String(err);
+      }
+      res.json({ which, length: buf.length, ffmpegOutput: stderr });
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
 const messageSchema = z.object({
   content: z.string().min(1),
   direction: z.enum(['INBOUND', 'OUTBOUND']),
