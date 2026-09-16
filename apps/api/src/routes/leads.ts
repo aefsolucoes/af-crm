@@ -956,6 +956,20 @@ router.post('/:id/merge', async (req: AuthRequest, res: Response) => {
     const useSourceName = looksLikePhoneOnly(keep.name) && !looksLikePhoneOnly(source.name);
     const finalName = useSourceName ? source.name : keep.name;
 
+    // Estágio/funil final: se o source teve atividade mais recente que o
+    // keep, ele reflete melhor o andamento real do negócio — o "keep" às
+    // vezes é um card antigo/pouco preenchido que ficou parado num estágio
+    // cedo. Incidente real: o keep tinha ficado em estágio inicial enquanto
+    // o source já estava em "Em contratação"; depois do merge, uma
+    // automação de inatividade "pescou" o card (agora com o estágio velho)
+    // e moveu pra "Lead Sem Retorno" + disparou o follow-up final, como se o
+    // negócio tivesse esfriado — quando na verdade estava avançado. Update
+    // direto (sem passar por updateLeadStage/runAutomations) — merge é
+    // correção de dado, não uma mudança de estágio de verdade, não deve
+    // disparar automação nenhuma.
+    const useSourceStage = source.updatedAt > keep.updatedAt
+      && (source.pipelineId !== keep.pipelineId || source.stageId !== keep.stageId);
+
     await prisma.$transaction([
       // Move mensagens
       prisma.message.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
@@ -966,7 +980,10 @@ router.post('/:id/merge', async (req: AuthRequest, res: Response) => {
       // Atualiza lead principal com campos mesclados
       prisma.lead.update({
         where: { id: keepId },
-        data: { name: finalName, customFields: mergedCF as any, value: mergedValue },
+        data: {
+          name: finalName, customFields: mergedCF as any, value: mergedValue,
+          ...(useSourceStage ? { pipelineId: source.pipelineId, stageId: source.stageId } : {}),
+        },
       }),
       // Sincroniza o nome do Contato também (mesmo critério do PATCH de
       // custom-fields — quem aparece na Inbox é o nome do Contact).
@@ -977,7 +994,8 @@ router.post('/:id/merge', async (req: AuthRequest, res: Response) => {
       prisma.note.create({
         data: {
           leadId: keepId,
-          content: `Lead unificado com "${source.name}" (ID: ${sourceId}). Mensagens, tarefas e notas foram migradas.`,
+          content: `Lead unificado com "${source.name}" (ID: ${sourceId}). Mensagens, tarefas e notas foram migradas.`
+            + (useSourceStage ? ' Estágio/funil atualizado pro do lead mais recente.' : ''),
           type: 'DATA_EDIT',
           userId: req.user!.id,
         },
