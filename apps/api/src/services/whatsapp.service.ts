@@ -916,6 +916,16 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         console.log(`[WhatsApp] Lead criado: ${lead.id} — ${profileName} (${formattedPhone})`);
         const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
         runAutomations({ accountId, trigger: 'NEW_LEAD', leadId: lead.id, io }).catch(() => {});
+        // Ficha completa (campaignRoute) nasce DIRETO no estágio-alvo (ex.:
+        // Pré-Análise) — nunca passa pela rota de mudança de estágio de
+        // verdade, então uma automação STAGE_CHANGE configurada pra esse
+        // estágio nunca disparava (mesma lacuna já corrigida antes pro
+        // FORM_SUBMITTED/"Ativar IA" — aqui é o caminho de criação via
+        // WhatsApp, não o webhook do site). Dispara manualmente como se
+        // tivesse "mudado" pro estágio de nascimento.
+        if (campaignRoute) {
+          runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: lead.id, io, context: { newStageId: campaignRoute.stageId } }).catch(() => {});
+        }
       }
 
       // ── Avoid duplicate messages ────────────────────────────────────────
