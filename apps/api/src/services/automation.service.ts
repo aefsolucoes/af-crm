@@ -429,7 +429,15 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
       // "esperando follow-up" na etapa certa. Mesmo critério de nome usado
       // em move_stage_by_name — funciona em qualquer funil sem precisar de
       // uma regra por setor.
+      //
+      // Incidente real: "Prospecção" existe com o NOME IDÊNTICO nos funis de
+      // Home Equity e Financiamento Habitacional — tentar diferenciar só
+      // pelo nome ("Prospecção Finan"/"Prospecção Home") nunca bate com
+      // nada, porque esse texto não é substring do nome real da etapa
+      // ("Prospecção" sozinho). Por isso agora tem o filtro de Setor
+      // abaixo, separado — stageName continua só pra etapa em si.
       const stageNamePattern = norm(String(cfg.stageName || ''));
+      const departmentId = cfg.departmentId ? String(cfg.departmentId) : null;
 
       const threshold = new Date(Date.now() - days * 86_400_000);
       const leads = await prisma.lead.findMany({
@@ -440,11 +448,13 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         select: {
           id: true,
           stage: { select: { name: true } },
+          pipeline: { select: { departmentId: true } },
           messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true } },
         },
       });
       for (const lead of leads) {
         if (stageNamePattern && !norm(lead.stage?.name || '').includes(stageNamePattern)) continue;
+        if (departmentId && lead.pipeline?.departmentId !== departmentId) continue;
         const lastMsgAt = lead.messages[0]?.createdAt;
         if (!lastMsgAt) continue;
         const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;

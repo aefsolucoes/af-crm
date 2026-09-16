@@ -340,6 +340,23 @@ export default function AutomacaoPage() {
                     regra vale pra QUALQUER lead inativo da conta inteira, mesmo de outro setor/etapa que não tem nada
                     a ver com esse follow-up.
                   </p>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-semibold text-slate-500">Setor específico (opcional — deixe em branco pra qualquer setor)</label>
+                    <select
+                      value={String(form.triggerConfig.departmentId || '')}
+                      onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, departmentId: e.target.value || undefined } })}
+                      className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent bg-white"
+                    >
+                      <option value="">Qualquer setor</option>
+                      {(departments || []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                    <p className="text-[11px] text-slate-400">
+                      Use isso quando dois setores têm uma etapa com o MESMO NOME (ex.: "Prospecção" existe em Home
+                      Equity e Financiamento Habitacional) — tentar diferenciar só pelo texto da etapa (ex.: digitar
+                      "Prospecção Finan") não funciona, porque esse texto não é o nome real de etapa nenhuma. Crie uma
+                      regra por setor e escolha aqui.
+                    </p>
+                  </div>
                 </div>
               )}
               {form.trigger === 'STAGE_CHANGE' && (
