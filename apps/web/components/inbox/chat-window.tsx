@@ -1277,7 +1277,18 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               return (
                 <div key={msg.id} className={cn('group flex items-center gap-1 mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
                   {isOut && !liveDeleted && (
-                    <div className={cn('transition-opacity flex-shrink-0', hasAttachment ? 'opacity-70 group-hover:opacity-100' : 'opacity-0 group-hover:opacity-100')}>
+                    <div className={cn(
+                      'transition-opacity flex-shrink-0',
+                      hasAttachment
+                        ? 'opacity-70 group-hover:opacity-100'
+                        // Texto puro: continua discreto (só hover) na tela
+                        // grande, mas celular não tem hover — o botão ficava
+                        // com opacidade 0 pra sempre, impossível de tocar
+                        // (achado real: "encaminhar" some no celular pra
+                        // qualquer mensagem de texto). max-md é um proxy
+                        // razoável pra "provavelmente touch".
+                        : 'opacity-0 group-hover:opacity-100 max-md:opacity-60'
+                    )}>
                       <MessageMenu {...menuProps} />
                     </div>
                   )}
@@ -1413,7 +1424,18 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                     </div>
                   </div>
                   {!isOut && !liveDeleted && (
-                    <div className={cn('transition-opacity flex-shrink-0', hasAttachment ? 'opacity-70 group-hover:opacity-100' : 'opacity-0 group-hover:opacity-100')}>
+                    <div className={cn(
+                      'transition-opacity flex-shrink-0',
+                      hasAttachment
+                        ? 'opacity-70 group-hover:opacity-100'
+                        // Texto puro: continua discreto (só hover) na tela
+                        // grande, mas celular não tem hover — o botão ficava
+                        // com opacidade 0 pra sempre, impossível de tocar
+                        // (achado real: "encaminhar" some no celular pra
+                        // qualquer mensagem de texto). max-md é um proxy
+                        // razoável pra "provavelmente touch".
+                        : 'opacity-0 group-hover:opacity-100 max-md:opacity-60'
+                    )}>
                       <MessageMenu {...menuProps} />
                     </div>
                   )}
