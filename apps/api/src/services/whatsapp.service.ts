@@ -84,10 +84,27 @@ export async function listMetaTemplates(accountId: string, departmentId?: string
   if (!config?.accessToken) throw new Error('Configure o Access Token primeiro (aba API Oficial).');
   if (!config.wabaId) throw new Error('Informe o WABA ID em "Ativar recebimento" primeiro.');
 
-  const r = await fetch(
-    `https://graph.facebook.com/v20.0/${config.wabaId}/message_templates?fields=name,status,category,language,components,rejected_reason&limit=100`,
-    { headers: { Authorization: `Bearer ${config.accessToken}` } },
-  );
+  // Incidente real: essa chamada pra Meta não tinha limite de tempo nenhum —
+  // se a Meta demorasse/travasse, o pedido ficava pendurado pra sempre, e
+  // como o front só tenta buscar 1x por sessão, o colaborador ficava
+  // travado sem conseguir nem tentar de novo (nem recarregando a tela
+  // resolvia sozinho). Grave porque template é a ÚNICA forma de mandar
+  // mensagem quando a janela de 24h fecha. Agora desiste depois de 15s com
+  // um erro claro, em vez de travar pra sempre.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let r: Response;
+  try {
+    r = await fetch(
+      `https://graph.facebook.com/v20.0/${config.wabaId}/message_templates?fields=name,status,category,language,components,rejected_reason&limit=100`,
+      { headers: { Authorization: `Bearer ${config.accessToken}` }, signal: controller.signal },
+    );
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw new Error('A Meta demorou demais pra responder (mais de 15s) — tente de novo em instantes.');
+    throw new Error(`Falha de conexão com a Meta: ${err?.message || err}`);
+  } finally {
+    clearTimeout(timeout);
+  }
   const j = await r.json() as any;
   if (!r.ok || j.error) {
     const code = j.error?.code ?? r.status;

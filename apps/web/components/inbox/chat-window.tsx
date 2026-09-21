@@ -321,6 +321,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [templatesLoadedOnce, setTemplatesLoadedOnce] = useState(false);
   const [metaTemplates, setMetaTemplates] = useState<MetaTemplate[] | null>(null);
+  const [metaTemplatesError, setMetaTemplatesError] = useState<string | null>(null);
   const [pendingMetaTemplate, setPendingMetaTemplate] = useState<MetaTemplate | null>(null);
   const [metaTemplateVars, setMetaTemplateVars] = useState<Record<number, string>>({});
   const [sendingTemplate, setSendingTemplate] = useState(false);
@@ -818,6 +819,23 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     });
   }
 
+  // Incidente real: a busca de templates da Meta não tinha limite de tempo
+  // no servidor e só era tentada UMA VEZ por sessão (`metaTemplates ===
+  // null`) — se essa 1ª tentativa travasse (Meta lenta/instável), o
+  // colaborador ficava preso pra sempre sem conseguir nem tentar de novo,
+  // justo na única forma de mandar mensagem com a janela de 24h fechada.
+  // Servidor agora desiste em 15s (whatsapp.service.ts); aqui separa "ainda
+  // não tentou"/null de "tentou e falhou"/erro, com botão de tentar de novo.
+  function loadMetaTemplates() {
+    setMetaTemplatesError(null);
+    api.get('/api/settings/whatsapp/templates')
+      .then(({ data }) => setMetaTemplates((data.templates || []).filter((t: MetaTemplate) => t.status === 'APPROVED')))
+      .catch((err) => {
+        setMetaTemplates([]);
+        setMetaTemplatesError(err?.response?.data?.error || 'Não consegui buscar os templates da Meta.');
+      });
+  }
+
   function handleOpenTemplates() {
     setShowTemplates(v => !v);
     setShowAI(false);
@@ -833,11 +851,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         .then(({ data }) => setTemplates(data || []))
         .catch(() => setTemplates([]));
     }
-    if (metaTemplates === null) {
-      api.get('/api/settings/whatsapp/templates')
-        .then(({ data }) => setMetaTemplates((data.templates || []).filter((t: MetaTemplate) => t.status === 'APPROVED')))
-        .catch(() => setMetaTemplates([])); // sem WABA/config ainda — mostra a seção vazia, sem quebrar o painel
-    }
+    if (metaTemplates === null) loadMetaTemplates();
   }
 
   function handleUseTemplate(template: MessageTemplate) {
@@ -1544,6 +1558,16 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                 <p className="px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#8696a0]">Templates Meta (aprovados)</p>
                 {metaTemplates === null ? (
                   <div className="px-2 py-2 text-xs text-[#8696a0]">Carregando...</div>
+                ) : metaTemplatesError ? (
+                  <div className="px-2 py-2 space-y-1.5">
+                    <p className="text-xs text-amber-400">{metaTemplatesError}</p>
+                    <button
+                      onClick={() => { setMetaTemplates(null); loadMetaTemplates(); }}
+                      className="text-xs font-medium text-[#00a884] hover:underline"
+                    >
+                      Tentar de novo
+                    </button>
+                  </div>
                 ) : (filteredMetaTemplates || []).length === 0 ? (
                   <div className="px-2 py-2 text-xs text-[#8696a0]">
                     {templateQuery ? 'Nenhum template Meta encontrado.' : 'Nenhum template aprovado ainda. Crie em Templates → WhatsApp (Meta).'}
