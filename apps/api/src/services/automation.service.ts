@@ -420,7 +420,10 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
       const hasWindow = cfg.sendHourStart !== undefined && cfg.sendHourEnd !== undefined;
       if (hasWindow) {
         const hour = currentHourSaoPaulo();
-        if (hour < Number(cfg.sendHourStart) || hour >= Number(cfg.sendHourEnd)) continue;
+        if (hour < Number(cfg.sendHourStart) || hour >= Number(cfg.sendHourEnd)) {
+          console.log(`[Automation][inatividade] "${rule.name}" (${rule.id}): fora da janela (agora=${hour}h, janela=${cfg.sendHourStart}h-${cfg.sendHourEnd}h) — pulando esse poll inteiro.`);
+          continue;
+        }
       }
 
       // Etapa atual (opcional, mas fortemente recomendada) — sem isso a
@@ -452,17 +455,31 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
           messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true } },
         },
       });
+      // Diagnóstico (incidente real: regra ativa, configuração aparentemente
+      // certa, e mesmo assim um lead específico nunca recebia o follow-up —
+      // sem log nenhum não dava pra saber EM QUAL filtro ele estava caindo).
+      // Conta quantos leads passam em cada filtro, nessa ordem — se o número
+      // já zera cedo (ex.: "stage" ou "setor"), o problema é config; se só
+      // zera no "eligible"/"already", é timing/dedupe.
+      let countStage = 0, countDept = 0, countEligible = 0, countAlready = 0, countExecuted = 0;
+
       for (const lead of leads) {
         if (stageNamePattern && !norm(lead.stage?.name || '').includes(stageNamePattern)) continue;
+        countStage++;
         if (departmentId && lead.pipeline?.departmentId !== departmentId) continue;
+        countDept++;
         const lastMsgAt = lead.messages[0]?.createdAt;
         if (!lastMsgAt) continue;
         const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;
         if (!eligible) continue;
+        countEligible++;
         const already = await prisma.automationLog.findFirst({ where: { ruleId: rule.id, leadId: lead.id, createdAt: { gt: lastMsgAt } } });
-        if (already) continue;
+        if (already) { countAlready++; continue; }
+        countExecuted++;
         await executeRuleForLead(rule, lead.id, io, {}).catch((err) => console.error('[Automation] Falha (inatividade)', rule.id, err));
       }
+
+      console.log(`[Automation][inatividade] "${rule.name}" (${rule.id}): ${leads.length} leads na base (OPEN${cfg.onlySiteLeads ? '+Site' : ''}) → ${countStage} bateram etapa "${cfg.stageName || '(qualquer)'}" → ${countDept} bateram setor${departmentId ? '' : ' (qualquer, sem filtro)'} → ${countEligible} elegíveis por tempo (${days}d) → ${countExecuted} executados (${countAlready} já tinham disparado antes).`);
     } catch (err) {
       console.error('[Automation] Erro em checkInactivityAutomations (regra ' + rule.id + '):', err);
     }
