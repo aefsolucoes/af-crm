@@ -456,7 +456,7 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
       },
     });
 
-    const lead = await updateLead(req.params.id, req.user!.accountId, req.body);
+    const lead = await updateLead(req.params.id, req.user!.accountId, req.body, req.app.get('io'));
     res.json(lead);
 
     // Auditoria assíncrona

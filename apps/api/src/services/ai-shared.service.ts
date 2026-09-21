@@ -238,7 +238,7 @@ export async function applyAiExtractedActions(
     // silêncio (isso é "Lead Sem Retorno", abaixo).
     if (action.markLost && action.markLost.trim()) {
       const { updateLead } = require('./lead.service') as typeof import('./lead.service');
-      await updateLead(lead.id, accountId, { status: 'LOST', lostReason: action.markLost.trim() });
+      await updateLead(lead.id, accountId, { status: 'LOST', lostReason: action.markLost.trim() }, io);
       logActivity({
         accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed',
         leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: "${action.markLost.trim()}"`,

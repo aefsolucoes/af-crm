@@ -86,11 +86,24 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
   tags: string[];
   customFields: Record<string, unknown>;
   isGroup: boolean;
-}>) {
-  return prisma.lead.update({
+}>, io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null) {
+  // Perdido é definitivo — a IA de auto-resposta não deve continuar
+  // conversando com o cliente depois disso (usuário pediu: não pode "dar
+  // esperança" oferecendo outro produto pra quem já recusou). Central aqui
+  // porque os dois caminhos que marcam Perdido passam por updateLead: o
+  // botão manual "Marcar Perdido" e a própria IA quando ela mesma decide
+  // marcar (applyAiExtractedActions, ai-shared.service.ts).
+  const deactivatingAi = data.status === 'LOST';
+  const lead = await prisma.lead.update({
     where: { id },
-    data: { ...data, ...(data.name !== undefined ? { name: normalizeClientName(data.name) } : {}) } as any,
+    data: {
+      ...data,
+      ...(data.name !== undefined ? { name: normalizeClientName(data.name) } : {}),
+      ...(deactivatingAi ? { aiAutoReplyActive: false } : {}),
+    } as any,
   });
+  if (deactivatingAi) io?.to(`lead:${id}`).emit('lead_ai_toggled', { leadId: id, active: false });
+  return lead;
 }
 
 export async function updateLeadStage(id: string, accountId: string, stageId: string) {
