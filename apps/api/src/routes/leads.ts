@@ -4,7 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact } from '../services/lead.service';
+import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact, mergeLeadPair } from '../services/lead.service';
 import { getScopeDepartmentIds, getOrCreateInboxPipeline } from '../services/department.service';
 import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { normalizeClientName } from '../lib/text';
@@ -919,109 +919,17 @@ router.get('/:id/duplicates', async (req: AuthRequest, res: Response) => {
  *  de verdade — incidente real: card ficou só como "+556192368658" depois
  *  de unificar com "JULIO CESAR BELARMINO DA SILVA", que tinha o nome bom
  *  mas era o lado "source" (excluído) — o usuário não achava mais o card. */
-function looksLikePhoneOnly(name: string | null | undefined): boolean {
-  if (!name || !name.trim()) return true;
-  const digits = name.replace(/\D/g, '');
-  return digits.length >= 8 && digits.length >= name.replace(/\s/g, '').length - 2;
-}
-
 // ─── POST /api/leads/:id/merge ─────────────────────────────────────────────────
-// Une o lead duplicado (sourceId) neste lead (keepId = :id)
-// Migra: mensagens, tarefas, notas. Exclui o sourceId.
+// Une o lead duplicado (sourceId) neste lead (keepId = :id) — lógica real em
+// mergeLeadPair (lead.service.ts), compartilhada com o job automático por
+// telefone (autoMergeDuplicatesByPhone).
 router.post('/:id/merge', async (req: AuthRequest, res: Response) => {
-  try {
-    const keepId   = req.params.id;
-    const { sourceId } = req.body as { sourceId: string };
-    if (!sourceId) return res.status(400).json({ error: 'sourceId obrigatório' });
-
-    const [keep, source] = await Promise.all([
-      prisma.lead.findUnique({ where: { id: keepId, accountId: req.user!.accountId }, include: { contact: true } }),
-      prisma.lead.findUnique({ where: { id: sourceId, accountId: req.user!.accountId } }),
-    ]);
-    if (!keep || !source) return res.status(404).json({ error: 'Lead não encontrado' });
-
-    // Merge customFields: keep tem prioridade, MAS nunca deixa um valor vazio
-    // do keep apagar um valor de verdade do source (mesmo critério já usado
-    // no PATCH de custom-fields — "nunca sobrescreve com vazio").
-    const mergedCF: Record<string, unknown> = { ...((source.customFields as any) || {}) };
-    for (const [k, v] of Object.entries((keep.customFields as any) || {})) {
-      if (v !== undefined && v !== null && String(v).trim() !== '') mergedCF[k] = v;
-    }
-
-    // Merge value (maior vence)
-    const mergedValue = Math.max(keep.value || 0, source.value || 0) || undefined;
-
-    // Nome final: nunca fica só com telefone se o outro lado tinha nome de
-    // verdade (ver looksLikePhoneOnly acima).
-    const useSourceName = looksLikePhoneOnly(keep.name) && !looksLikePhoneOnly(source.name);
-    const finalName = useSourceName ? source.name : keep.name;
-
-    // Estágio/funil final: se o source teve atividade mais recente que o
-    // keep, ele reflete melhor o andamento real do negócio — o "keep" às
-    // vezes é um card antigo/pouco preenchido que ficou parado num estágio
-    // cedo. Incidente real: o keep tinha ficado em estágio inicial enquanto
-    // o source já estava em "Em contratação"; depois do merge, uma
-    // automação de inatividade "pescou" o card (agora com o estágio velho)
-    // e moveu pra "Lead Sem Retorno" + disparou o follow-up final, como se o
-    // negócio tivesse esfriado — quando na verdade estava avançado. Update
-    // direto (sem passar por updateLeadStage/runAutomations) — merge é
-    // correção de dado, não uma mudança de estágio de verdade, não deve
-    // disparar automação nenhuma.
-    const useSourceStage = source.updatedAt > keep.updatedAt
-      && (source.pipelineId !== keep.pipelineId || source.stageId !== keep.stageId);
-
-    await prisma.$transaction([
-      // Move mensagens
-      prisma.message.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
-      // Move tarefas
-      prisma.task.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
-      // Move notas
-      prisma.note.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
-      // Atualiza lead principal com campos mesclados
-      prisma.lead.update({
-        where: { id: keepId },
-        data: {
-          name: finalName, customFields: mergedCF as any, value: mergedValue,
-          ...(useSourceStage ? { pipelineId: source.pipelineId, stageId: source.stageId } : {}),
-        },
-      }),
-      // Sincroniza o nome do Contato também (mesmo critério do PATCH de
-      // custom-fields — quem aparece na Inbox é o nome do Contact).
-      ...(useSourceName && keep.contactId
-        ? [prisma.contact.update({ where: { id: keep.contactId }, data: { name: finalName } })]
-        : []),
-      // Adiciona nota de auditoria
-      prisma.note.create({
-        data: {
-          leadId: keepId,
-          content: `Lead unificado com "${source.name}" (ID: ${sourceId}). Mensagens, tarefas e notas foram migradas.`
-            + (useSourceStage ? ' Estágio/funil atualizado pro do lead mais recente.' : ''),
-          type: 'DATA_EDIT',
-          userId: req.user!.id,
-        },
-      }),
-      // Deleta lead duplicado
-      prisma.lead.delete({ where: { id: sourceId } }),
-    ]);
-
-    // Registro de atividade — faltava (sineta do topo não mostrava merge nenhum).
-    logActivity({
-      accountId: req.user!.accountId, userId: req.user!.id,
-      action: 'lead_merged', leadId: keepId, leadName: finalName || keep.name,
-      summary: `unificou "${source.name}" neste card — mensagens, tarefas e notas migradas`,
-    });
-
-    const updated = await prisma.lead.findUnique({ where: { id: keepId } });
-    const io = req.app.get('io');
-    // Avisa quem estiver com a Inbox/Funil aberto — sem isso o card unificado
-    // só aparece certo depois de recarregar a página manualmente (foi
-    // relatado como "o card sumiu").
-    io?.to(`account_${req.user!.accountId}`).emit('lead_merged', { keepId, sourceId, lead: updated });
-    res.json({ success: true, lead: updated });
-  } catch (err) {
-    console.error('[Merge]', err);
-    res.status(500).json({ error: 'Erro ao unificar leads' });
-  }
+  const { sourceId } = req.body as { sourceId: string };
+  if (!sourceId) return res.status(400).json({ error: 'sourceId obrigatório' });
+  const io = req.app.get('io');
+  const result = await mergeLeadPair(req.user!.accountId, req.params.id, sourceId, req.user!.id, io);
+  if (!result.ok) return res.status(result.error === 'Lead não encontrado' ? 404 : 500).json({ error: result.error });
+  res.json({ success: true, lead: result.lead });
 });
 
 // POST /api/leads/merge-same-contact — correção pontual do incidente de

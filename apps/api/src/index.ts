@@ -31,6 +31,7 @@ import pushRoutes from './routes/push';
 import activityRoutes from './routes/activity';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
+import { autoMergeDuplicatesByPhone } from './services/lead.service';
 import { configureWebPush } from './services/push.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
 import { syncAllKnowledgeBases } from './services/knowledge.service';
@@ -242,6 +243,20 @@ httpServer.listen(PORT, () => {
       checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade:', err?.message));
     }, AUTOMATION_INACTIVITY_POLL_MS);
   }, 90 * 1000);
+
+  // Unificação automática de leads duplicados por TELEFONE (pedido real:
+  // campanha cria o 1º card pelo webhook do site, cliente preenche a
+  // proposta e manda pelo WhatsApp, criava um 2º card — causa raiz já
+  // corrigida em whatsapp.service.ts, isso aqui é a rede de segurança pra
+  // qualquer duplicata que ainda escapar). Mesma cadência do poll de
+  // inatividade, escalonado mais 30s pra não competir no boot.
+  const AUTO_MERGE_PHONE_POLL_MS = 15 * 60 * 1000;
+  setTimeout(() => {
+    autoMergeDuplicatesByPhone(io).catch((err) => console.error('[Auto-merge telefone] Poll (boot):', err?.message));
+    setInterval(() => {
+      autoMergeDuplicatesByPhone(io).catch((err) => console.error('[Auto-merge telefone] Poll:', err?.message));
+    }, AUTO_MERGE_PHONE_POLL_MS);
+  }, 120 * 1000);
 
   // Base de Conhecimento: sincroniza sozinha a cada 15min, sem precisar
   // clicar em "Sincronizar" toda vez que alguém sobe um arquivo novo na

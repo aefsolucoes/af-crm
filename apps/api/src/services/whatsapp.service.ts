@@ -824,11 +824,26 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       console.log(`[WhatsApp] Incoming from=${from} name="${profileName}"`);
 
       // ── Find or create contact ──────────────────────────────────────────
+      // Incidente real: cliente já tinha Contact/Lead criado pelo webhook do
+      // site (Contact.whatsappPhone SEMPRE normalizado com o 9º dígito, ver
+      // normalizeBrazilianWhatsAppPhone) — mas a Meta às vezes manda `from`
+      // SEM o 9º dígito (bug conhecido da Cloud API pra número brasileiro).
+      // Comparar `from` cru contra um valor sempre normalizado nunca batia,
+      // e o fallback por `phone.contains(...)` também não ajudava (o
+      // Contact.phone fica formatado "(DD) 9XXXX-XXXX" — o traço cai bem no
+      // meio dos últimos 8 dígitos, então NUNCA é substring de verdade).
+      // Resultado: um card novo nascia pra cada variação, cliente duplicado.
+      // Agora compara pelas DUAS formas (com e sem o 9º dígito).
+      const normalizedFrom = normalizeBrazilianWhatsAppPhone(from);
+      const withoutNinthDigit = normalizedFrom.length === 13 && normalizedFrom.startsWith('55')
+        ? normalizedFrom.slice(0, 4) + normalizedFrom.slice(5)
+        : normalizedFrom;
       let contact = await prisma.contact.findFirst({
         where: {
           accountId,
           OR: [
-            { whatsappPhone: from },
+            { whatsappPhone: normalizedFrom },
+            { whatsappPhone: withoutNinthDigit },
             { phone: { contains: from.slice(-8) } },
           ],
         },
@@ -836,10 +851,14 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       });
 
       if (!contact) {
+        // Grava sempre normalizado (com o 9º dígito) — mesmo formato que o
+        // webhook do site usa (site-lead.service.ts) — pra não perpetuar o
+        // mesmo desencontro na direção oposta (cliente manda WhatsApp
+        // primeiro, preenche o site depois).
         contact = await prisma.contact.create({
           data: {
             name: profileName,
-            whatsappPhone: from,
+            whatsappPhone: normalizedFrom,
             phone: formattedPhone,
             accountId,
           },
@@ -849,7 +868,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       } else if (!contact.whatsappPhone) {
         await prisma.contact.update({
           where: { id: contact.id },
-          data: { whatsappPhone: from, phone: contact.phone || formattedPhone },
+          data: { whatsappPhone: normalizedFrom, phone: contact.phone || formattedPhone },
         });
       }
 
