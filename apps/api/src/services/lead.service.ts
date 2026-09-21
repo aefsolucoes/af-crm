@@ -201,11 +201,13 @@ function looksLikePhoneOnly(name: string | null | undefined): boolean {
 }
 
 /** Une o lead `sourceId` dentro do lead `keepId` — mensagens, tarefas e
- *  notas migram, campos/valor/nome/estágio são mesclados com prioridade pro
- *  dado mais completo/recente, e o source é excluído. Compartilhada entre a
- *  rota manual (POST /:id/merge, usuário escolhe os dois) e o job automático
- *  por telefone (autoMergeDuplicatesByPhone) — `userId` null = ação do
- *  sistema. Nunca lança: quem chama decide o que fazer com {ok:false}. */
+ *  notas migram, campos/valor/nome são mesclados com prioridade pro dado
+ *  mais completo; estágio/funil e status Perdido seguem o card MAIS ANTIGO
+ *  dos dois (createdAt), não o mais recentemente ativo — decisão explícita
+ *  do usuário. O source é excluído. Compartilhada entre a rota manual
+ *  (POST /:id/merge, usuário escolhe os dois) e o job automático por
+ *  telefone (autoMergeDuplicatesByPhone) — `userId` null = ação do sistema.
+ *  Nunca lança: quem chama decide o que fazer com {ok:false}. */
 export async function mergeLeadPair(
   accountId: string,
   keepId: string,
@@ -230,8 +232,25 @@ export async function mergeLeadPair(
     const useSourceName = looksLikePhoneOnly(keep.name) && !looksLikePhoneOnly(source.name);
     const finalName = useSourceName ? source.name : keep.name;
 
-    const useSourceStage = source.updatedAt > keep.updatedAt
+    // Estágio/funil: sempre o do card MAIS ANTIGO dos dois (por createdAt) —
+    // decisão explícita do usuário, mesmo sabendo que num caso real
+    // (cliente com card antigo parado numa etapa cedo + card novo onde a
+    // conversa de verdade avançou) isso pode manter um estágio
+    // desatualizado — prefere isso a um comportamento "adivinhado" pela
+    // atividade recente.
+    const sourceIsOlder = source.createdAt < keep.createdAt;
+    const useSourceStage = sourceIsOlder
       && (source.pipelineId !== keep.pipelineId || source.stageId !== keep.stageId);
+
+    // Status: Perdido é definitivo e "gruda" no card mais antigo — cliente
+    // que já foi marcado Perdido e manda mensagem de novo (ex.: cai um card
+    // novo na Caixa de Entrada) NÃO reabre sozinho no merge, pra não dar a
+    // entender que é um lead novo/ativo. Só o mais antigo dos dois "manda"
+    // aqui — um source recém-perdido não deve "contaminar" um keep mais
+    // antigo que nunca foi perdido. Reabrir é decisão humana (botão
+    // "Reabrir" já existe na tela).
+    const older = sourceIsOlder ? source : keep;
+    const useOlderStatus = older.status === 'LOST' && keep.status !== 'LOST';
 
     await prisma.$transaction([
       prisma.message.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
@@ -242,6 +261,7 @@ export async function mergeLeadPair(
         data: {
           name: finalName, customFields: mergedCF as any, value: mergedValue,
           ...(useSourceStage ? { pipelineId: source.pipelineId, stageId: source.stageId } : {}),
+          ...(useOlderStatus ? { status: 'LOST', lostReason: older.lostReason } : {}),
         },
       }),
       ...(useSourceName && keep.contactId
@@ -251,7 +271,8 @@ export async function mergeLeadPair(
         data: {
           leadId: keepId,
           content: `Lead unificado com "${source.name}" (ID: ${sourceId}). Mensagens, tarefas e notas foram migradas.`
-            + (useSourceStage ? ' Estágio/funil atualizado pro do lead mais recente.' : '')
+            + (useSourceStage ? ' Estágio/funil atualizado pro do card mais antigo.' : '')
+            + (useOlderStatus ? ' Mantido como Perdido (o card mais antigo já tinha essa marcação).' : '')
             + (userId ? '' : ' (unificação automática por telefone)'),
           type: 'DATA_EDIT',
           ...(userId ? { userId } : {}),
@@ -287,12 +308,19 @@ export async function mergeLeadPair(
  *  existia antes do fix). Mantém o card com mais mensagens (desempate: mais
  *  dado preenchido, depois mais antigo) — mesma lógica de
  *  GET /api/leads/duplicate-groups, só que só por telefone e sem precisar de
- *  alguém abrir a tela. */
+ *  alguém abrir a tela.
+ *
+ *  Inclui leads Perdidos de propósito (não filtra por status): cliente já
+ *  marcado Perdido que manda mensagem de novo cai num card novo na Caixa de
+ *  Entrada — sem unir os dois esse card novo nunca seria pego (Perdido
+ *  ficaria de fora do agrupamento pra sempre). mergeLeadPair já garante que
+ *  o status Perdido do card mais antigo "gruda" no resultado, não reabre
+ *  sozinho. */
 export async function autoMergeDuplicatesByPhone(
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null,
 ): Promise<{ merged: number; groups: number }> {
   const leads = await prisma.lead.findMany({
-    where: { archived: false, isGroup: false, status: 'OPEN' },
+    where: { archived: false, isGroup: false },
     include: { contact: true, _count: { select: { messages: true } } },
   });
 
