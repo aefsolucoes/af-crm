@@ -218,7 +218,11 @@ function InboxPageInner() {
             )}
             {isMobile && showMobileInfo && (
               <div className="fixed inset-0 z-50 flex flex-col md:hidden">
-                <InboxLeadPanel lead={lead} onRefresh={handleRefresh} onHide={() => setShowMobileInfo(false)} className="w-full" />
+                {/* Sem h-full o painel só ficava alto o quanto o conteúdo
+                    exigia (flex-col não estica altura por padrão), sobrando
+                    fundo vazio ou cortando o popup — ficava com cara de
+                    quebrado. */}
+                <InboxLeadPanel lead={lead} onRefresh={handleRefresh} onHide={() => setShowMobileInfo(false)} className="w-full h-full" />
               </div>
             )}
           </>

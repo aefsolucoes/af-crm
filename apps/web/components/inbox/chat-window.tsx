@@ -1102,14 +1102,16 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           <Star size={18} className={starred ? 'fill-amber-400' : ''} />
         </button>
         {/* Dados do lead/grupo — no mobile o painel não fica ao lado (não
-            cabe), abre como overlay ao tocar aqui. */}
+            cabe), abre como overlay ao tocar aqui. Com texto (não só ícone):
+            usuário não estava achando esse botão entre os outros ícones. */}
         {onOpenInfo && (
           <button
             onClick={onOpenInfo}
             title="Ver dados do cliente"
-            className="md:hidden flex-shrink-0 text-[#8696a0] hover:text-[#e9edef] p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+            className="md:hidden flex-shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold bg-white/15 text-[#e9edef] hover:bg-white/25 transition-colors"
           >
-            <Info size={18} />
+            <Info size={15} />
+            Card
           </button>
         )}
         <button
