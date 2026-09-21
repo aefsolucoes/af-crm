@@ -1800,7 +1800,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               rows={1}
               spellCheck
               lang="pt-BR"
-              className="flex-1 resize-none px-4 py-2.5 text-sm bg-[#2a3942] rounded-3xl border-none outline-none text-[#e9edef] placeholder-[#8696a0] scrollbar-thin max-h-32"
+              className="flex-1 min-w-0 resize-none px-4 py-2.5 text-sm bg-[#2a3942] rounded-3xl border-none outline-none text-[#e9edef] placeholder-[#8696a0] scrollbar-thin max-h-32"
               style={{ lineHeight: '1.4' }}
             />
             {/* Templates toggle button */}
