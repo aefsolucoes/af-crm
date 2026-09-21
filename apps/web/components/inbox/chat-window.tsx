@@ -465,9 +465,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
   // ESC fecha a conversa (como no WhatsApp). Se houver um popup aberto
   // (templates/IA), o ESC fecha o popup primeiro.
+  // Usuário reportou que o ESC "não funcionava" — fase de captura (3º
+  // parâmetro `true`), igual já é feito em emoji-picker.tsx, garante que
+  // isso roda ANTES de qualquer outro listener da página ter chance de
+  // interceptar/parar o evento no caminho até aqui.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return;
+      // Prioridade: cancela uma resposta/citação em andamento primeiro (ação
+      // mais local, igual o WhatsApp), depois fecha popup, só por último
+      // fecha a conversa inteira — nunca pula direto pra a ação mais
+      // "destrutiva" quando tem algo menor pra desfazer primeiro.
+      if (replyingTo) {
+        setReplyingTo(null);
+        return;
+      }
       if (showAI || showTemplates) {
         setShowAI(false);
         setShowTemplates(false);
@@ -475,9 +487,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       }
       onClose?.();
     }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [showAI, showTemplates, onClose]);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [replyingTo, showAI, showTemplates, onClose]);
   // Mapa de status atualizado via socket: messageId → status
   const [statusMap, setStatusMap] = useState<Record<string, string>>({});
   const [statusErrorMap, setStatusErrorMap] = useState<Record<string, string | null>>({});
