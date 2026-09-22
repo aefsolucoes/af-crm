@@ -330,11 +330,13 @@ export default function AutomacaoPage() {
                     dois, só dispara dentro dessa janela (horário de Brasília) — e passa a contar por dia de
                     calendário, não 24h corridas (quem entrou de tarde ainda cai no dia seguinte de manhã).
                   </p>
-                  <Input
-                    label='Etapa atual (recomendado, ex.: "Prospecção")'
+                  <StageNameSelect
+                    label="Etapa atual (recomendado)"
+                    pipelines={pipelines}
                     value={String(form.triggerConfig.stageName ?? '')}
-                    onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, stageName: e.target.value || undefined } })}
-                    placeholder='ex.: "Prospecção" ou "Follow Up"'
+                    onChange={(name) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, stageName: name || undefined } })}
+                    allowEmpty
+                    emptyLabel="Qualquer etapa (não recomendado)"
                   />
                   <p className="text-[11px] text-slate-400">
                     Só considera leads que estão HOJE nessa etapa (em qualquer funil onde o nome bater) — sem isso, a
@@ -503,10 +505,10 @@ export default function AutomacaoPage() {
 
                   {action.type === 'move_stage_by_name' && (
                     <div className="space-y-1.5">
-                      <Input
+                      <StageNameSelect
+                        pipelines={pipelines}
                         value={String(action.config.stageName || '')}
-                        onChange={(e) => updateActionConfig(i, 'stageName', e.target.value)}
-                        placeholder='Nome da etapa, ex.: "Follow Up"'
+                        onChange={(name) => updateActionConfig(i, 'stageName', name)}
                       />
                       <p className="text-[11px] text-slate-400">
                         Move o lead pra essa etapa DENTRO do funil onde ele já está — funciona pra qualquer setor sem
@@ -597,6 +599,44 @@ function StageSelect({
               <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </optgroup>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/** Junta os estágios de todos os funis por NOME (deduplicado) — pra escolher
+ *  uma etapa "por nome, em qualquer funil" (regras que valem pra vários
+ *  setores de uma vez) a partir de uma lista real, em vez de digitar o nome
+ *  à mão e torcer pra bater exatamente com o que existe. */
+function distinctStageNames(pipelines?: Pipeline[]): { name: string; pipelineNames: string[] }[] {
+  const byName = new Map<string, Set<string>>();
+  for (const p of pipelines || []) {
+    for (const s of p.stages) {
+      if (!byName.has(s.name)) byName.set(s.name, new Set());
+      byName.get(s.name)!.add(p.name);
+    }
+  }
+  return Array.from(byName.entries())
+    .map(([name, pipelineNames]) => ({ name, pipelineNames: Array.from(pipelineNames) }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+}
+
+function StageNameSelect({
+  pipelines, value, onChange, label, allowEmpty, emptyLabel,
+}: { pipelines?: Pipeline[]; value: string; onChange: (name: string) => void; label?: string; allowEmpty?: boolean; emptyLabel?: string }) {
+  const options = distinctStageNames(pipelines);
+  return (
+    <div className="flex flex-col gap-1">
+      {label && <label className="text-sm font-medium text-slate-700">{label}</label>}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent bg-white"
+      >
+        <option value="">{allowEmpty ? (emptyLabel || 'Qualquer etapa') : 'Selecione uma etapa...'}</option>
+        {options.map((o) => (
+          <option key={o.name} value={o.name}>{o.name} — {o.pipelineNames.join(', ')}</option>
         ))}
       </select>
     </div>
