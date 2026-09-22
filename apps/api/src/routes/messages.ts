@@ -8,6 +8,7 @@ import { downloadDriveFile } from '../services/google.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { runAutomations } from '../services/automation.service';
 import { logActivity } from '../services/activity.service';
+import { sendGenericEmail } from '../services/email.service';
 
 /** Registro silencioso: "Fulano respondeu <cliente>". Fire-and-forget. */
 function logClientReply(req: AuthRequest, leadId: string) {
@@ -30,6 +31,24 @@ router.use(authMiddleware);
  *  servidor. Sem persistência (cai ao reiniciar), só ADMIN acessa. Remover
  *  as rotas /debug/last-audio* junto com isto depois de resolvido. */
 let lastAudioDebug: { raw: Buffer; transcoded: Buffer | null; mimeType: string; error: string | null; at: Date } | null = null;
+
+// Teste pontual do SMTP recém configurado (Titan) — ADMIN manda um e-mail de
+// teste pra si mesmo. Remover depois de confirmado.
+router.post('/debug/test-email', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só admin' });
+  const to = String(req.body?.to || '');
+  if (!to) return res.status(400).json({ error: 'to é obrigatório' });
+  try {
+    await sendGenericEmail(
+      to,
+      'Teste de envio — AF CRM',
+      'Este é um e-mail de teste do envio automático de follow-up do AF CRM.\n\nSe você recebeu isso, o SMTP está funcionando certinho.'
+    );
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Falha ao enviar' });
+  }
+});
 
 router.get('/debug/last-audio/info', (req: AuthRequest, res: Response) => {
   if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só admin' });
