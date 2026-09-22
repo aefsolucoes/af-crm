@@ -30,6 +30,13 @@ export interface AutomationAction {
   config: Record<string, unknown>;
 }
 
+/** Ações que falam de verdade com o cliente — se uma dessas falhar, as
+ *  ações seguintes da regra (mover estágio, gravar nota) não devem rodar:
+ *  elas presumem que a comunicação deu certo. Mesmo critério já usado em
+ *  maybeMessageReceivedAutomations pra decidir se a mensagem foi
+ *  "respondida" por automação. */
+const COMMUNICATION_ACTION_TYPES = new Set<AutomationActionType>(['send_message', 'send_template', 'start_salesbot']);
+
 /** Contexto do disparo — o que muda de gatilho pra gatilho (texto da
  *  mensagem recebida, novo estágio, tag adicionada). */
 export interface RunContext {
@@ -302,13 +309,21 @@ async function executeRuleForLead(
   const actions = (rule.actions as unknown as AutomationAction[]) || [];
   const results: { type: string; ok: boolean }[] = [];
   for (const action of actions) {
+    let ok: boolean;
     try {
-      const ok = await executeAction(action, lead, context, io);
+      ok = await executeAction(action, lead, context, io);
       results.push({ type: action.type, ok });
     } catch (err) {
       console.error('[Automation] Falha ao executar ação', action.type, 'da regra', rule.id, err);
       results.push({ type: action.type, ok: false });
+      ok = false;
     }
+    // Se a ação que fala com o cliente falhou (ex.: template rejeitado pela
+    // Meta), para aqui — sem isso as ações seguintes (mover estágio,
+    // "Follow-up automático enviado") rodavam do mesmo jeito, escondendo a
+    // falha: o card avançava como se a mensagem tivesse saído quando na
+    // verdade o cliente nunca recebeu nada.
+    if (!ok && COMMUNICATION_ACTION_TYPES.has(action.type)) break;
   }
 
   await prisma.automationLog
@@ -371,7 +386,7 @@ export async function maybeMessageReceivedAutomations(accountId: string, leadId:
       await executeRuleForLead(rule, leadId, io, { incomingText: text })
         .catch((err) => console.error('[Automation] Falha na regra', rule.id, err));
       const actions = (rule.actions as unknown as AutomationAction[]) || [];
-      if (actions.some((a) => a.type === 'send_message' || a.type === 'send_template' || a.type === 'start_salesbot')) {
+      if (actions.some((a) => COMMUNICATION_ACTION_TYPES.has(a.type))) {
         repliedByAutomation = true;
       }
     }
