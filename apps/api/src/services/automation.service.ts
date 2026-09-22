@@ -1,5 +1,5 @@
 import { PrismaClient, AutomationTrigger } from '@prisma/client';
-import { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate } from './message.service';
+import { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, sendOutboundEmail } from './message.service';
 import { updateLead, updateLeadStage } from './lead.service';
 import { startSalesBotRun } from './salesbot.service';
 import { logActivity } from './activity.service';
@@ -15,6 +15,7 @@ function norm(s: string): string {
 export type AutomationActionType =
   | 'send_message'
   | 'send_template'
+  | 'send_email'
   | 'assign_agent'
   | 'move_stage'
   | 'move_stage_by_name'
@@ -35,7 +36,7 @@ export interface AutomationAction {
  *  elas presumem que a comunicação deu certo. Mesmo critério já usado em
  *  maybeMessageReceivedAutomations pra decidir se a mensagem foi
  *  "respondida" por automação. */
-const COMMUNICATION_ACTION_TYPES = new Set<AutomationActionType>(['send_message', 'send_template', 'start_salesbot']);
+const COMMUNICATION_ACTION_TYPES = new Set<AutomationActionType>(['send_message', 'send_template', 'send_email', 'start_salesbot']);
 
 /** Contexto do disparo — o que muda de gatilho pra gatilho (texto da
  *  mensagem recebida, novo estágio, tag adicionada). */
@@ -56,7 +57,7 @@ type LeadForActions = {
   name: string;
   tags: string[];
   pipeline: { departmentId: string | null };
-  contact: { name: string | null; phone: string | null; whatsappPhone: string | null } | null;
+  contact: { name: string | null; phone: string | null; whatsappPhone: string | null; email: string | null } | null;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -195,6 +196,13 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       });
       return result.success;
     }
+    case 'send_email': {
+      const subject = fillVariables(String(action.config.subject || ''), lead, context);
+      const body = fillVariables(String(action.config.body || ''), lead, context);
+      if (!subject.trim() || !body.trim()) return false;
+      const result = await sendOutboundEmail({ accountId: lead.accountId, leadId: lead.id, subject, body, io: io as any });
+      return result.success;
+    }
     case 'assign_agent': {
       const mode = String(action.config.mode || 'specific');
       if (mode === 'least_open_leads') {
@@ -302,7 +310,7 @@ async function executeRuleForLead(
 ): Promise<void> {
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
-    include: { contact: { select: { name: true, phone: true, whatsappPhone: true } }, pipeline: { select: { departmentId: true } } },
+    include: { contact: { select: { name: true, phone: true, whatsappPhone: true, email: true } }, pipeline: { select: { departmentId: true } } },
   });
   if (!lead) return;
 

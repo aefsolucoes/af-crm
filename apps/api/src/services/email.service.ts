@@ -36,6 +36,38 @@ export function isEmailConfigured(): boolean {
   return getTransporter() !== null;
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** E-mail com corpo livre (automações de follow-up) — cada linha em branco
+ *  vira um parágrafo, igual quem escreveu enxerga no campo de texto. */
+export async function sendGenericEmail(to: string, subject: string, bodyText: string): Promise<void> {
+  const transporter = getTransporter();
+  if (!transporter) throw new Error('E-mail não configurado');
+
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const paragraphs = bodyText
+    .split('\n')
+    .map((line) => line.trim() ? `<p style="margin:0 0 14px">${escapeHtml(line)}</p>` : '')
+    .join('');
+
+  await transporter.sendMail({
+    from: `A&F Soluções Financeiras <${from}>`,
+    to,
+    subject,
+    text: bodyText,
+    html: `
+<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#1e293b">
+  <div style="margin-bottom:24px">
+    <div style="display:inline-block;background:#0d2545;color:#fff;font-weight:800;padding:10px 16px;border-radius:10px;font-size:18px">A&amp;F</div>
+  </div>
+  <div style="font-size:14px;line-height:1.5;color:#334155">${paragraphs}</div>
+  <p style="font-size:12px;color:#94a3b8;margin:24px 0 0">A&amp;F Soluções Financeiras</p>
+</div>`,
+  });
+}
+
 export async function sendLoginCodeEmail(to: string, name: string, code: string): Promise<void> {
   const transporter = getTransporter();
   if (!transporter) throw new Error('E-mail não configurado');

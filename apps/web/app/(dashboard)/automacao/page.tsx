@@ -10,7 +10,7 @@ import api from '@/lib/api';
 import { Plus, Trash2, Edit2, Zap, ToggleLeft, ToggleRight, Clock, GitBranch, MessageSquare, ArrowRight } from 'lucide-react';
 
 type TriggerType = 'NEW_LEAD' | 'STAGE_CHANGE' | 'TAG_ADDED' | 'INACTIVITY' | 'MESSAGE_RECEIVED' | 'FORM_SUBMITTED';
-type ActionType = 'send_message' | 'send_template' | 'assign_agent' | 'move_stage' | 'move_stage_by_name' | 'add_note' | 'add_tag' | 'start_salesbot' | 'webhook' | 'activate_ai' | 'deactivate_ai';
+type ActionType = 'send_message' | 'send_template' | 'send_email' | 'assign_agent' | 'move_stage' | 'move_stage_by_name' | 'add_note' | 'add_tag' | 'start_salesbot' | 'webhook' | 'activate_ai' | 'deactivate_ai';
 
 interface AutomationAction { type: ActionType; config: Record<string, unknown> }
 
@@ -40,6 +40,7 @@ const DISABLED_TRIGGERS: TriggerType[] = [];
 const ACTION_META: Record<ActionType, { label: string }> = {
   send_message: { label: 'Enviar mensagem' },
   send_template: { label: 'Usar template' },
+  send_email: { label: 'Enviar e-mail' },
   assign_agent: { label: 'Atribuir agente' },
   move_stage: { label: 'Mover estágio' },
   move_stage_by_name: { label: 'Mover pra etapa (por nome, no funil atual)' },
@@ -446,6 +447,24 @@ export default function AutomacaoPage() {
                         onChange={(e) => updateActionConfig(i, 'bodyParams', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
                         placeholder="Parâmetros do corpo, separados por vírgula (opcional)"
                       />
+                    </div>
+                  )}
+
+                  {action.type === 'send_email' && (
+                    <div className="space-y-1.5">
+                      <Input
+                        value={String(action.config.subject || '')}
+                        onChange={(e) => updateActionConfig(i, 'subject', e.target.value)}
+                        placeholder="Assunto do e-mail... aceita variáveis, ex.: Olá {{nome}}"
+                      />
+                      <MessageActionFields
+                        value={String(action.config.body || '')}
+                        onChange={(v) => updateActionConfig(i, 'body', v)}
+                        showMensagemRecebida={form.trigger === 'MESSAGE_RECEIVED'}
+                      />
+                      <p className="text-xs text-slate-400">
+                        Vai pro e-mail cadastrado no card do cliente. Sem e-mail cadastrado (ou se o envio falhar), as ações seguintes desta regra não rodam pra esse lead — evita mover estágio/gravar nota como se tivesse enviado quando não enviou.
+                      </p>
                     </div>
                   )}
 

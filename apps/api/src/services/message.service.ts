@@ -1,6 +1,7 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
 import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage, sendWhatsAppCtaUrlMessage, sendWhatsAppReaction, sendWhatsAppMedia } from './whatsapp.service';
 import { downloadDriveFile } from './google.service';
+import { sendGenericEmail } from './email.service';
 import { normalizeClientName } from '../lib/text';
 
 const prisma = new PrismaClient();
@@ -308,6 +309,46 @@ export async function sendOutboundWhatsAppTemplate(params: {
     leadId,
     sentByUserId: userId,
     externalId: result.externalId,
+    status: 'SENT',
+  });
+
+  if (io) {
+    io.to(`lead:${leadId}`).emit('new_message', message);
+    io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
+  }
+
+  return { success: true, message };
+}
+
+/** Envia um e-mail de follow-up (automações) e grava na própria conversa do
+ *  lead como uma mensagem de canal EMAIL — mesmo padrão do WhatsApp, pra
+ *  ficar tudo visível num lugar só sem precisar de uma tela separada. */
+export async function sendOutboundEmail(params: {
+  accountId: string;
+  leadId: string;
+  subject: string;
+  body: string;
+  io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
+}): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string; code?: string }> {
+  const { accountId, leadId, subject, body, io } = params;
+
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true } });
+  if (!lead) return { success: false, error: 'Lead não encontrado' };
+
+  const to = lead.contact?.email?.trim();
+  if (!to) return { success: false, code: 'NO_EMAIL', error: 'Este contato não tem e-mail cadastrado — cadastre no card do cliente.' };
+
+  try {
+    await sendGenericEmail(to, subject, body);
+  } catch (err) {
+    return { success: false, error: (err as Error)?.message || 'Falha ao enviar o e-mail' };
+  }
+
+  const message = await createMessage({
+    content: `📧 ${subject}\n\n${body}`,
+    direction: 'OUTBOUND',
+    channel: 'EMAIL',
+    leadId,
     status: 'SENT',
   });
 
