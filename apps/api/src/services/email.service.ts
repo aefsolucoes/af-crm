@@ -40,6 +40,22 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Assinatura institucional (sem nome de pessoa — vai em e-mail automático,
+// não em nome de um consultor específico). Pedido do usuário: telefone,
+// site e endereço, no mesmo estilo do cartão de assinatura pessoal que ele
+// já usa, só sem o nome.
+const COMPANY_PHONE = '(61) 9.9957-9754';
+const COMPANY_SITE = 'aefsolucoesfinanceiras.com.br';
+const COMPANY_ADDRESS = 'SCS Q. 1 Bloco M Sala 714 Ed. Gilberto Salomão — Asa Sul, Brasília';
+const COMPANY_SIGNATURE_HTML = `
+  <p style="font-size:14px;color:#334155;margin:28px 0 12px">Atenciosamente,</p>
+  <div style="border-left:3px solid #3b82f6;padding-left:14px">
+    <p style="font-size:13px;font-weight:700;letter-spacing:0.5px;color:#0d2545;margin:0 0 6px">A &amp; F SOLUÇÕES FINANCEIRAS</p>
+    <p style="font-size:12px;color:#475569;margin:0 0 3px">Telefone: <a href="tel:+5561999579754" style="color:#3b82f6;text-decoration:none">${COMPANY_PHONE}</a></p>
+    <p style="font-size:12px;color:#475569;margin:0 0 3px">Site: <a href="https://${COMPANY_SITE}" style="color:#3b82f6;text-decoration:none">${COMPANY_SITE}</a></p>
+    <p style="font-size:12px;color:#475569;margin:0">Endereço: ${COMPANY_ADDRESS}</p>
+  </div>`;
+
 /** E-mail com corpo livre (automações de follow-up) — cada linha em branco
  *  vira um parágrafo, igual quem escreveu enxerga no campo de texto. */
 export async function sendGenericEmail(to: string, subject: string, bodyText: string): Promise<void> {
@@ -56,14 +72,14 @@ export async function sendGenericEmail(to: string, subject: string, bodyText: st
     from: `A&F Soluções Financeiras <${from}>`,
     to,
     subject,
-    text: bodyText,
+    text: `${bodyText}\n\n--\nA & F Soluções Financeiras\nTelefone: ${COMPANY_PHONE}\nSite: ${COMPANY_SITE}\nEndereço: ${COMPANY_ADDRESS}`,
     html: `
 <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#1e293b">
   <div style="margin-bottom:24px">
     <div style="display:inline-block;background:#0d2545;color:#fff;font-weight:800;padding:10px 16px;border-radius:10px;font-size:18px">A&amp;F</div>
   </div>
   <div style="font-size:14px;line-height:1.5;color:#334155">${paragraphs}</div>
-  <p style="font-size:12px;color:#94a3b8;margin:24px 0 0">A&amp;F Soluções Financeiras</p>
+  ${COMPANY_SIGNATURE_HTML}
 </div>`,
   });
 }
