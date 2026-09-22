@@ -125,6 +125,71 @@ export async function deleteAutomationRule(id: string, accountId: string) {
   return true;
 }
 
+/** Correção pontual do bug do template `follow_up_credito` sem parâmetro
+ *  (regras "Follow-up manhã seguinte"): antes do fix, o envio falhava mas o
+ *  motor seguia em frente e movia o card + gravava nota de "enviado" mesmo
+ *  assim. Acha exatamente essas execuções (send_template falhou, mas
+ *  move_stage_by_name deu certo) e devolve o lead pra etapa de Prospecção do
+ *  próprio funil dele — só quando ninguém mexeu manualmente no card depois
+ *  (etapa atual ainda é a que a regra moveu, e não está Perdido). Sem isso,
+ *  esses leads nunca mais seriam pegos pela regra de novo (ela só olha quem
+ *  está em Prospecção) mesmo já corrigida. Maintenance one-off — chamada uma
+ *  única vez, não faz parte do fluxo normal do produto. */
+export async function revertFalseFollowupExecutions(accountId: string) {
+  const rules = await prisma.automationRule.findMany({
+    where: { accountId, name: { in: ['Follow-up manhã seguinte Home Equity', 'Follow-up manhã seguinte Finan Hab'] } },
+  });
+
+  const reverted: { leadId: string; leadName: string; from: string; to: string }[] = [];
+  const skipped: { leadId: string; reason: string }[] = [];
+
+  for (const rule of rules) {
+    const actions = (rule.actions as unknown as AutomationAction[]) || [];
+    const moveAction = actions.find((a) => a.type === 'move_stage_by_name');
+    const movedToName = norm(String(moveAction?.config.stageName || ''));
+    if (!movedToName) continue;
+
+    const logs = await prisma.automationLog.findMany({ where: { ruleId: rule.id } });
+    const affectedLeadIds = Array.from(new Set(
+      logs
+        .filter((l) => {
+          const results = (l.actionsResult as unknown as { type: string; ok: boolean }[]) || [];
+          const sendFailed = results.find((r) => r.type === 'send_template' && !r.ok);
+          const moveOk = results.find((r) => r.type === 'move_stage_by_name' && r.ok);
+          return !!sendFailed && !!moveOk;
+        })
+        .map((l) => l.leadId)
+    ));
+
+    for (const leadId of affectedLeadIds) {
+      const lead = await prisma.lead.findUnique({
+        where: { id: leadId },
+        include: { stage: true, pipeline: { include: { stages: true } } },
+      });
+      if (!lead) { skipped.push({ leadId, reason: 'Lead não existe mais' }); continue; }
+      if (lead.status === 'LOST') { skipped.push({ leadId, reason: 'Está Perdido — não reabre sozinho' }); continue; }
+      if (norm(lead.stage.name) !== movedToName) {
+        skipped.push({ leadId, reason: `Etapa atual ("${lead.stage.name}") já foi mexida depois — não é mais a que a regra moveu` });
+        continue;
+      }
+      const prospeccao = lead.pipeline.stages.find((s) => norm(s.name).includes('prospec'));
+      if (!prospeccao) { skipped.push({ leadId, reason: 'Funil não tem etapa de Prospecção' }); continue; }
+
+      await updateLeadStage(lead.id, accountId, prospeccao.id);
+      await prisma.note.create({
+        data: {
+          leadId: lead.id,
+          type: 'COMMENT',
+          content: `Card devolvido pra "${prospeccao.name}" — a mensagem de follow-up ("${rule.name}") tinha falhado (bug corrigido), mas o card tinha avançado do mesmo jeito. Agora a automação corrigida vai tentar de novo.`,
+        },
+      });
+      reverted.push({ leadId: lead.id, leadName: lead.name, from: lead.stage.name, to: prospeccao.name });
+    }
+  }
+
+  return { reverted, skipped };
+}
+
 export async function listAutomationLogs(ruleId: string, accountId: string) {
   const rule = await prisma.automationRule.findFirst({ where: { id: ruleId, accountId } });
   if (!rule) return null;

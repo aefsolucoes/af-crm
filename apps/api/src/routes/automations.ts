@@ -10,6 +10,7 @@ import {
   updateAutomationRule,
   deleteAutomationRule,
   listAutomationLogs,
+  revertFalseFollowupExecutions,
 } from '../services/automation.service';
 
 const router = Router();
@@ -84,6 +85,17 @@ router.get('/:id/logs', async (req: AuthRequest, res: Response) => {
     return;
   }
   res.json(logs);
+});
+
+// MANUTENÇÃO PONTUAL — corrige os leads que o bug do template
+// follow_up_credito (sem {{1}}) moveu sem o follow-up ter sido enviado de
+// verdade. Só ADMIN, sem persistência de "já rodei" (idempotente por
+// natureza — leads já corrigidos saem do filtro sozinhos). Remover depois
+// de rodar uma vez em produção.
+router.post('/maintenance/revert-false-followups', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só admin' });
+  const result = await revertFalseFollowupExecutions(req.user!.accountId);
+  res.json(result);
 });
 
 export default router;
