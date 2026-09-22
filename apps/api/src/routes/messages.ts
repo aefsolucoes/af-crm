@@ -38,15 +38,18 @@ router.post('/debug/test-email', async (req: AuthRequest, res: Response) => {
   if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só admin' });
   const to = String(req.body?.to || '');
   if (!to) return res.status(400).json({ error: 'to é obrigatório' });
+  console.log(`[EmailTest] Tentando enviar pra ${to} via ${process.env.SMTP_HOST}:${process.env.SMTP_PORT}...`);
   try {
     await sendGenericEmail(
       to,
       'Teste de envio — AF CRM',
       'Este é um e-mail de teste do envio automático de follow-up do AF CRM.\n\nSe você recebeu isso, o SMTP está funcionando certinho.'
     );
+    console.log(`[EmailTest] Enviado com sucesso pra ${to}`);
     res.json({ ok: true });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Falha ao enviar' });
+    console.error('[EmailTest] Falha:', err?.code, err?.message, err?.command);
+    res.status(500).json({ error: err?.message || 'Falha ao enviar', code: err?.code });
   }
 });
 

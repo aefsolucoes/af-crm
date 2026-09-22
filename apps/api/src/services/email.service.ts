@@ -27,6 +27,12 @@ function getTransporter(): Transporter | null {
     port,
     secure: port === 465, // 465 = SSL; 587 = STARTTLS
     auth: { user: SMTP_USER, pass: SMTP_PASS },
+    // Sem isso o nodemailer usa o timeout padrão (bem longo) e uma falha de
+    // rede/porta bloqueada fica "pendurada" minutos antes de dar erro —
+    // 15s é mais que suficiente pra um handshake SMTP de verdade.
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 15000,
   });
   cachedKey = key;
   return cached;
