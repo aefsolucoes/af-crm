@@ -1791,18 +1791,27 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             >
               {uploadingFile ? <Loader2 size={22} className="animate-spin" /> : <Paperclip size={22} />}
             </button>
-            <textarea
-              ref={inputRef}
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={windowClosedForApi ? 'Janela fechada — use um template acima' : 'Digite uma mensagem'}
-              rows={1}
-              spellCheck
-              lang="pt-BR"
-              className="flex-1 min-w-0 resize-none px-4 py-2.5 text-sm bg-[#2a3942] rounded-3xl border-none outline-none text-[#e9edef] placeholder-[#8696a0] scrollbar-thin max-h-32"
-              style={{ lineHeight: '1.4' }}
-            />
+            {/* Safari/WebKit não encolhe um <textarea> com min-w-0 tão
+                confiável quanto o Chrome dentro de flex (o campo mantinha a
+                largura "natural" e empurrava os botões de IA/Enviar pra fora
+                da tela no iPhone, mesmo com min-w-0 direto nele — testado e
+                confirmado funcionando no Chrome, mas não no Safari real).
+                Envolver numa div própria com flex-1 min-w-0 contorna a
+                falha, deixando o textarea só com w-full dentro dela. */}
+            <div className="flex-1 min-w-0">
+              <textarea
+                ref={inputRef}
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={windowClosedForApi ? 'Janela fechada — use um template acima' : 'Digite uma mensagem'}
+                rows={1}
+                spellCheck
+                lang="pt-BR"
+                className="w-full resize-none px-4 py-2.5 text-sm bg-[#2a3942] rounded-3xl border-none outline-none text-[#e9edef] placeholder-[#8696a0] scrollbar-thin max-h-32"
+                style={{ lineHeight: '1.4' }}
+              />
+            </div>
             {/* Templates toggle button */}
             <button
               type="button"
