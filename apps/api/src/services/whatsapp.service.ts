@@ -782,6 +782,151 @@ async function downloadCloudApiMedia(mediaId: string, token: string): Promise<Bu
   }
 }
 
+/** Acha (ou cria) o Contact + Lead correspondente a um número de telefone que
+ *  chegou pela API Oficial — mensagem OU ligação, mesma lógica de dedupe e
+ *  roteamento pros dois casos. Extraído de dentro de processIncomingWhatsApp
+ *  (mesmo comportamento, só fatorado) pra ser reaproveitado pela Calling API
+ *  sem duplicar a lógica de matching de telefone uma terceira vez.
+ *  `textForCampaignDetection` só faz sentido pra mensagem de texto (usado pra
+ *  rotear a ficha de campanha do site); ligação não tem texto, passa vazio —
+ *  detectCampaignRoute simplesmente não acha nenhuma assinatura e segue o
+ *  roteamento normal por setor do número. */
+export async function resolveContactAndLeadByPhone(
+  accountId: string,
+  from: string,
+  profileName: string,
+  io: any,
+  departmentId?: string | null,
+  textForCampaignDetection: string = ''
+): Promise<{ contact: any; leadId: string; formattedPhone: string }> {
+  const formattedPhone = formatPhoneDisplay(from);
+
+  // ── Find or create contact ──────────────────────────────────────────
+  // Incidente real: cliente já tinha Contact/Lead criado pelo webhook do
+  // site (Contact.whatsappPhone SEMPRE normalizado com o 9º dígito, ver
+  // normalizeBrazilianWhatsAppPhone) — mas a Meta às vezes manda `from`
+  // SEM o 9º dígito (bug conhecido da Cloud API pra número brasileiro).
+  // Comparar `from` cru contra um valor sempre normalizado nunca batia,
+  // e o fallback por `phone.contains(...)` também não ajudava (o
+  // Contact.phone fica formatado "(DD) 9XXXX-XXXX" — o traço cai bem no
+  // meio dos últimos 8 dígitos, então NUNCA é substring de verdade).
+  // Resultado: um card novo nascia pra cada variação, cliente duplicado.
+  // Agora compara pelas DUAS formas (com e sem o 9º dígito).
+  const normalizedFrom = normalizeBrazilianWhatsAppPhone(from);
+  const withoutNinthDigit = normalizedFrom.length === 13 && normalizedFrom.startsWith('55')
+    ? normalizedFrom.slice(0, 4) + normalizedFrom.slice(5)
+    : normalizedFrom;
+  let contact = await prisma.contact.findFirst({
+    where: {
+      accountId,
+      OR: [
+        { whatsappPhone: normalizedFrom },
+        { whatsappPhone: withoutNinthDigit },
+        { phone: { contains: from.slice(-8) } },
+      ],
+    },
+    include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
+  });
+
+  if (!contact) {
+    // Grava sempre normalizado (com o 9º dígito) — mesmo formato que o
+    // webhook do site usa (site-lead.service.ts) — pra não perpetuar o
+    // mesmo desencontro na direção oposta (cliente manda WhatsApp
+    // primeiro, preenche o site depois).
+    contact = await prisma.contact.create({
+      data: {
+        name: profileName,
+        whatsappPhone: normalizedFrom,
+        phone: formattedPhone,
+        accountId,
+      },
+      include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
+    });
+    console.log(`[WhatsApp] Contato criado: ${contact.id} — ${profileName}`);
+  } else if (!contact.whatsappPhone) {
+    await prisma.contact.update({
+      where: { id: contact.id },
+      data: { whatsappPhone: normalizedFrom, phone: contact.phone || formattedPhone },
+    });
+  }
+
+  // ── Find or create lead ─────────────────────────────────────────────
+  let leadId: string;
+
+  if (contact.leads.length > 0) {
+    // Existing lead — update customFields if telefone_1 is missing
+    const existingLead = contact.leads[0];
+    const cf = (existingLead as any).customFields as Record<string, string> | null;
+    if (!cf?.telefone_1) {
+      await prisma.lead.update({
+        where: { id: existingLead.id },
+        data: {
+          customFields: {
+            ...((cf as any) || {}),
+            participante_1: cf?.participante_1 || profileName,
+            telefone_1: formattedPhone,
+          } as any,
+        },
+      });
+    }
+    leadId = existingLead.id;
+  } else {
+    // Lead de campanha (ficha do site preenchida) já nasce no funil/estágio
+    // certo, com os campos da ficha pré-preenchidos — em vez da Caixa de
+    // Entrada genérica. Só na criação do lead (1ª mensagem do contato);
+    // sem match, segue o roteamento normal por setor do número.
+    const { detectCampaignRoute } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
+    const campaignRoute = await detectCampaignRoute(accountId, textForCampaignDetection).catch(() => null);
+
+    // Get dedicated WhatsApp pipeline (do setor deste número/config, se houver)
+    const pipeline = campaignRoute ? null : await getOrCreateWhatsAppPipeline(accountId, departmentId);
+    const admin =
+      (departmentId && await prisma.user.findFirst({ where: { accountId, departmentIds: { has: departmentId } }, orderBy: { createdAt: 'asc' } })) ||
+      (await prisma.user.findFirst({ where: { accountId }, orderBy: { createdAt: 'asc' } }));
+
+    if ((!campaignRoute && !pipeline!.stages.length) || !admin) {
+      throw new Error('Pipeline sem estágios ou sem usuário admin');
+    }
+
+    const lead = await prisma.lead.create({
+      data: {
+        name: profileName,
+        accountId,
+        pipelineId: campaignRoute ? campaignRoute.pipelineId : pipeline!.id,
+        stageId: campaignRoute ? campaignRoute.stageId : pipeline!.stages[0].id,
+        userId: admin.id,
+        contactId: contact.id,
+        status: 'OPEN',
+        tags: campaignRoute ? ['WhatsApp', 'Campanha'] : ['WhatsApp'],
+        // Auto-fill participant fields — ficha de campanha tem prioridade
+        // sobre o nome/telefone do perfil do WhatsApp quando os dois existem.
+        customFields: {
+          participante_1: profileName,
+          telefone_1: formattedPhone,
+          ...(campaignRoute?.fields || {}),
+        } as any,
+      },
+    });
+    if (campaignRoute) console.log(`[Campanha] Lead roteado por "${campaignRoute.signature}": ${lead.id}`);
+    leadId = lead.id;
+    console.log(`[WhatsApp] Lead criado: ${lead.id} — ${profileName} (${formattedPhone})`);
+    const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
+    runAutomations({ accountId, trigger: 'NEW_LEAD', leadId: lead.id, io }).catch(() => {});
+    // Ficha completa (campaignRoute) nasce DIRETO no estágio-alvo (ex.:
+    // Pré-Análise) — nunca passa pela rota de mudança de estágio de
+    // verdade, então uma automação STAGE_CHANGE configurada pra esse
+    // estágio nunca disparava (mesma lacuna já corrigida antes pro
+    // FORM_SUBMITTED/"Ativar IA" — aqui é o caminho de criação via
+    // WhatsApp, não o webhook do site). Dispara manualmente como se
+    // tivesse "mudado" pro estágio de nascimento.
+    if (campaignRoute) {
+      runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: lead.id, io, context: { newStageId: campaignRoute.stageId } }).catch(() => {});
+    }
+  }
+
+  return { contact, leadId, formattedPhone };
+}
+
 export async function processIncomingWhatsApp(body: any, accountId: string, io: any, departmentId?: string | null) {
   try {
     const config = await getWhatsAppConfig(accountId, departmentId);
@@ -836,132 +981,18 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         : buttonReplyTitle || (msg.text?.body as string) || '';
       const externalId = msg.id as string;
       const profileName = normalizeClientName(value.contacts?.[0]?.profile?.name || `+${from}`);
-      const formattedPhone = formatPhoneDisplay(from);
 
       console.log(`[WhatsApp] Incoming from=${from} name="${profileName}"`);
 
-      // ── Find or create contact ──────────────────────────────────────────
-      // Incidente real: cliente já tinha Contact/Lead criado pelo webhook do
-      // site (Contact.whatsappPhone SEMPRE normalizado com o 9º dígito, ver
-      // normalizeBrazilianWhatsAppPhone) — mas a Meta às vezes manda `from`
-      // SEM o 9º dígito (bug conhecido da Cloud API pra número brasileiro).
-      // Comparar `from` cru contra um valor sempre normalizado nunca batia,
-      // e o fallback por `phone.contains(...)` também não ajudava (o
-      // Contact.phone fica formatado "(DD) 9XXXX-XXXX" — o traço cai bem no
-      // meio dos últimos 8 dígitos, então NUNCA é substring de verdade).
-      // Resultado: um card novo nascia pra cada variação, cliente duplicado.
-      // Agora compara pelas DUAS formas (com e sem o 9º dígito).
-      const normalizedFrom = normalizeBrazilianWhatsAppPhone(from);
-      const withoutNinthDigit = normalizedFrom.length === 13 && normalizedFrom.startsWith('55')
-        ? normalizedFrom.slice(0, 4) + normalizedFrom.slice(5)
-        : normalizedFrom;
-      let contact = await prisma.contact.findFirst({
-        where: {
-          accountId,
-          OR: [
-            { whatsappPhone: normalizedFrom },
-            { whatsappPhone: withoutNinthDigit },
-            { phone: { contains: from.slice(-8) } },
-          ],
-        },
-        include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
-      });
-
-      if (!contact) {
-        // Grava sempre normalizado (com o 9º dígito) — mesmo formato que o
-        // webhook do site usa (site-lead.service.ts) — pra não perpetuar o
-        // mesmo desencontro na direção oposta (cliente manda WhatsApp
-        // primeiro, preenche o site depois).
-        contact = await prisma.contact.create({
-          data: {
-            name: profileName,
-            whatsappPhone: normalizedFrom,
-            phone: formattedPhone,
-            accountId,
-          },
-          include: { leads: { take: 1, orderBy: { updatedAt: 'desc' } } },
-        });
-        console.log(`[WhatsApp] Contato criado: ${contact.id} — ${profileName}`);
-      } else if (!contact.whatsappPhone) {
-        await prisma.contact.update({
-          where: { id: contact.id },
-          data: { whatsappPhone: normalizedFrom, phone: contact.phone || formattedPhone },
-        });
-      }
-
-      // ── Find or create lead ─────────────────────────────────────────────
       let leadId: string;
-
-      if (contact.leads.length > 0) {
-        // Existing lead — update customFields if telefone_1 is missing
-        const existingLead = contact.leads[0];
-        const cf = (existingLead as any).customFields as Record<string, string> | null;
-        if (!cf?.telefone_1) {
-          await prisma.lead.update({
-            where: { id: existingLead.id },
-            data: {
-              customFields: {
-                ...((cf as any) || {}),
-                participante_1: cf?.participante_1 || profileName,
-                telefone_1: formattedPhone,
-              } as any,
-            },
-          });
-        }
-        leadId = existingLead.id;
-      } else {
-        // Lead de campanha (ficha do site preenchida) já nasce no funil/estágio
-        // certo, com os campos da ficha pré-preenchidos — em vez da Caixa de
-        // Entrada genérica. Só na criação do lead (1ª mensagem do contato);
-        // sem match, segue o roteamento normal por setor do número.
-        const { detectCampaignRoute } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
-        const campaignRoute = await detectCampaignRoute(accountId, text).catch(() => null);
-
-        // Get dedicated WhatsApp pipeline (do setor deste número/config, se houver)
-        const pipeline = campaignRoute ? null : await getOrCreateWhatsAppPipeline(accountId, departmentId);
-        const admin =
-          (departmentId && await prisma.user.findFirst({ where: { accountId, departmentIds: { has: departmentId } }, orderBy: { createdAt: 'asc' } })) ||
-          (await prisma.user.findFirst({ where: { accountId }, orderBy: { createdAt: 'asc' } }));
-
-        if ((!campaignRoute && !pipeline!.stages.length) || !admin) {
-          console.error('[WhatsApp] Pipeline sem estágios ou sem usuário admin');
-          return;
-        }
-
-        const lead = await prisma.lead.create({
-          data: {
-            name: profileName,
-            accountId,
-            pipelineId: campaignRoute ? campaignRoute.pipelineId : pipeline!.id,
-            stageId: campaignRoute ? campaignRoute.stageId : pipeline!.stages[0].id,
-            userId: admin.id,
-            contactId: contact.id,
-            status: 'OPEN',
-            tags: campaignRoute ? ['WhatsApp', 'Campanha'] : ['WhatsApp'],
-            // Auto-fill participant fields — ficha de campanha tem prioridade
-            // sobre o nome/telefone do perfil do WhatsApp quando os dois existem.
-            customFields: {
-              participante_1: profileName,
-              telefone_1: formattedPhone,
-              ...(campaignRoute?.fields || {}),
-            } as any,
-          },
-        });
-        if (campaignRoute) console.log(`[Campanha] Lead roteado por "${campaignRoute.signature}": ${lead.id}`);
-        leadId = lead.id;
-        console.log(`[WhatsApp] Lead criado: ${lead.id} — ${profileName} (${formattedPhone})`);
-        const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
-        runAutomations({ accountId, trigger: 'NEW_LEAD', leadId: lead.id, io }).catch(() => {});
-        // Ficha completa (campaignRoute) nasce DIRETO no estágio-alvo (ex.:
-        // Pré-Análise) — nunca passa pela rota de mudança de estágio de
-        // verdade, então uma automação STAGE_CHANGE configurada pra esse
-        // estágio nunca disparava (mesma lacuna já corrigida antes pro
-        // FORM_SUBMITTED/"Ativar IA" — aqui é o caminho de criação via
-        // WhatsApp, não o webhook do site). Dispara manualmente como se
-        // tivesse "mudado" pro estágio de nascimento.
-        if (campaignRoute) {
-          runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: lead.id, io, context: { newStageId: campaignRoute.stageId } }).catch(() => {});
-        }
+      let formattedPhone: string;
+      try {
+        const resolved = await resolveContactAndLeadByPhone(accountId, from, profileName, io, departmentId, text);
+        leadId = resolved.leadId;
+        formattedPhone = resolved.formattedPhone;
+      } catch (err) {
+        console.error('[WhatsApp] Erro ao resolver contato/lead:', err);
+        continue;
       }
 
       // ── Avoid duplicate messages ────────────────────────────────────────

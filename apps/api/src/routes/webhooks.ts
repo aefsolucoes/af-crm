@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { processIncomingWhatsApp, processWhatsAppStatus } from '../services/whatsapp.service';
+import { processIncomingWhatsAppCall } from '../services/whatsapp-calling.service';
 import { createLeadFromSiteForm } from '../services/site-lead.service';
 
 const router = Router();
@@ -91,6 +92,10 @@ router.post('/whatsapp', async (req: Request, res: Response) => {
     // Processa mensagens recebidas — no MESMO setor do número que recebeu
     // (cada departamento pode ter seu próprio número na API Oficial).
     await processIncomingWhatsApp(body, config.accountId, io, config.departmentId);
+
+    // Processa sinalização de chamada de voz (Calling API) — mesmo padrão,
+    // no-op se o payload não tiver `calls`.
+    await processIncomingWhatsAppCall(body, config.accountId, io, config.departmentId);
   } catch (err) {
     console.error('[WhatsApp] Webhook POST error:', err);
   }

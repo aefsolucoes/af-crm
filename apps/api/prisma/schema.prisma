@@ -36,6 +36,8 @@ model Account {
   departments        Department[]
   automationRules    AutomationRule[]
   activityLogs       ActivityLog[]
+  calls              Call[]
+  callPermissions    CallPermission[]
 }
 
 /// Registro silencioso do que a equipe faz — mexeu num card, respondeu um
@@ -168,6 +170,7 @@ model User {
   assistantQuestionsReceived AssistantQuestion[] @relation("AssistantQuestionTarget")
   assistantMemoriesCreated   AssistantMemory[]
   pushSubscriptions          PushSubscription[]
+  callsAnswered              Call[]
 }
 
 enum Role {
@@ -240,6 +243,7 @@ model Lead {
   notes              Note[]
   messages           Message[]
   assistantQuestions AssistantQuestion[]
+  calls              Call[]
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
 }
@@ -327,18 +331,19 @@ enum LeadStatus {
 }
 
 model Contact {
-  id            String   @id @default(cuid())
-  name          String
-  email         String?
-  phone         String?
-  whatsappPhone String?
-  avatar        String? // URL da foto de perfil (WhatsApp ou outro)
-  accountId     String
-  account       Account  @relation(fields: [accountId], references: [id])
-  companyId     String?
-  company       Company? @relation(fields: [companyId], references: [id])
-  leads         Lead[]
-  createdAt     DateTime @default(now())
+  id              String           @id @default(cuid())
+  name            String
+  email           String?
+  phone           String?
+  whatsappPhone   String?
+  avatar          String? // URL da foto de perfil (WhatsApp ou outro)
+  accountId       String
+  account         Account          @relation(fields: [accountId], references: [id])
+  companyId       String?
+  company         Company?         @relation(fields: [companyId], references: [id])
+  leads           Lead[]
+  callPermissions CallPermission[]
+  createdAt       DateTime         @default(now())
 }
 
 model Company {
@@ -491,8 +496,66 @@ model WhatsAppConfig {
   wabaId        String? // ID da conta do WhatsApp Business (WABA) — salvo em "Ativar recebimento", reaproveitado para templates
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
+  calls         Call[]
 
   @@unique([accountId, departmentId])
+}
+
+// Chamada de voz via WhatsApp Calling API (WebRTC, Meta é o SFU/TURN — só
+// sinalização passa por aqui). waCallId é o call_id que a Meta devolve;
+// único pra dedupe de webhook repetido (Meta reenvia em retry).
+model Call {
+  id               String         @id @default(cuid())
+  accountId        String
+  account          Account        @relation(fields: [accountId], references: [id])
+  whatsappConfigId String
+  whatsappConfig   WhatsAppConfig @relation(fields: [whatsappConfigId], references: [id])
+  leadId           String?
+  lead             Lead?          @relation(fields: [leadId], references: [id])
+  waCallId         String         @unique
+  direction        Direction
+  status           CallStatus     @default(RINGING)
+  fromPhone        String
+  toPhone          String
+  answeredByUserId String?
+  answeredBy       User?          @relation(fields: [answeredByUserId], references: [id])
+  startedAt        DateTime       @default(now())
+  connectedAt      DateTime?
+  endedAt          DateTime?
+  endReason        String?
+  createdAt        DateTime       @default(now())
+
+  @@index([accountId])
+  @@index([leadId])
+}
+
+enum CallStatus {
+  RINGING
+  CONNECTING
+  CONNECTED
+  ENDED
+  MISSED
+  REJECTED
+  FAILED
+}
+
+// Permissão do cliente pra RECEBER uma ligação da empresa (exigida pela Meta
+// pra ligação business-initiated) — pedida via template especial, concedida
+// pelo cliente no próprio WhatsApp. Janela de 72h após concedida pra UMA
+// ligação; 4 não-atendidas seguidas revoga sozinho (contador local).
+model CallPermission {
+  id                    String    @id @default(cuid())
+  accountId             String
+  account               Account   @relation(fields: [accountId], references: [id])
+  contactId             String
+  contact               Contact   @relation(fields: [contactId], references: [id])
+  requestedAt           DateTime  @default(now())
+  grantedAt             DateTime?
+  expiresAt             DateTime?
+  status                String    @default("PENDING")
+  consecutiveUnanswered Int       @default(0)
+
+  @@index([accountId, contactId])
 }
 
 enum Direction {

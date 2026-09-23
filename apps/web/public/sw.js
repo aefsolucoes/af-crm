@@ -81,7 +81,12 @@ self.addEventListener('fetch', (event) => {
 });
 
 // ── Web Push ────────────────────────────────────────────────────────────
-// Payload vem do backend (push.service.ts) como JSON: { title, body, url }.
+// Payload vem do backend (push.service.ts) como JSON: { title, body, url,
+// type? }. type:"call" é a ligação de WhatsApp chegando — a notificação
+// precisa ficar visível até alguém agir (não some sozinha enquanto toca) e
+// ganha atalhos de Atender/Recusar. Atender/Recusar de verdade (SDP/áudio)
+// só acontece na aba focada — o service worker não tem microfone — aqui só
+// foca/abre a aba; quem realmente atende é o <IncomingCallRinger />.
 self.addEventListener('push', (event) => {
   let data = { title: 'AF CRM', body: 'Nova mensagem recebida.', url: '/inbox' };
   try {
@@ -90,14 +95,18 @@ self.addEventListener('push', (event) => {
     // payload não veio em JSON — mantém o fallback acima
   }
 
+  const isCall = data.type === 'call';
+
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
       data: { url: data.url || '/inbox' },
-      tag: data.url || 'af-crm-notification', // notificações da mesma conversa se substituem em vez de empilhar
+      tag: isCall ? `af-crm-call-${data.url || ''}` : (data.url || 'af-crm-notification'),
       renotify: true,
+      requireInteraction: isCall,
+      ...(isCall ? { actions: [{ action: 'answer', title: 'Atender' }, { action: 'reject', title: 'Recusar' }] } : {}),
     })
   );
 });

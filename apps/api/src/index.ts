@@ -29,6 +29,7 @@ import salesBotRoutes from './routes/salesbot';
 import automationRoutes from './routes/automations';
 import pushRoutes from './routes/push';
 import activityRoutes from './routes/activity';
+import callRoutes from './routes/calls';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
 import { autoMergeDuplicatesByPhone } from './services/lead.service';
@@ -86,6 +87,7 @@ app.use('/api/salesbot', salesBotRoutes);
 app.use('/api/automations', automationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/calls', callRoutes);
 
 configureWebPush();
 

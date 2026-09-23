@@ -33,6 +33,9 @@ type PushPayload = {
   title: string;
   body: string;
   leadId?: string;
+  // 'call' faz o service worker manter a notificação visível (requireInteraction)
+  // e mostrar ações de Atender/Recusar — omitido = comportamento normal de mensagem.
+  type?: 'call';
 };
 
 /**
@@ -54,6 +57,7 @@ export async function sendPushToAccount(accountId: string, payload: PushPayload)
       title: payload.title,
       body: payload.body,
       url: payload.leadId ? `/inbox?leadId=${payload.leadId}` : '/inbox',
+      ...(payload.type ? { type: payload.type } : {}),
     });
 
     const results = await Promise.allSettled(
