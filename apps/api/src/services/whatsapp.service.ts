@@ -971,6 +971,14 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         continue;
       }
 
+      // Resposta do cliente a um pedido de permissão pra ligar (Fase 2 da
+      // Calling API) — também chega por aqui (campo `messages`, não
+      // `calls`), como um `interactive` de tipo próprio. Mesmo motivo do
+      // require() tardio usado pros outros services deste arquivo: evita
+      // import circular (whatsapp-calling.service.ts já importa daqui).
+      const { handleCallPermissionReply } = require('./whatsapp-calling.service') as typeof import('./whatsapp-calling.service');
+      if (await handleCallPermissionReply(msg, accountId, io)) continue;
+
       // Processa texto, clique em botão, OU mídia suportada (imagem/áudio/
       // vídeo/documento/sticker). Ignora location, contacts, etc.
       if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo) continue;

@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { getWhatsAppConfig, resolveContactAndLeadByPhone } from './whatsapp.service';
+import { getWhatsAppConfig, resolveContactAndLeadByPhone, listMetaTemplates, sendWhatsAppTemplateMessage, normalizeBrazilianWhatsAppPhone } from './whatsapp.service';
 import { sendPushToAccount } from './push.service';
 
 const prisma = new PrismaClient();
@@ -70,6 +70,182 @@ export async function terminateCall(config: CallCredentials, waCallId: string) {
   return waCallsRequest(config.phoneNumberId, config.accessToken, { call_id: waCallId, action: 'terminate' });
 }
 
+/** Outbound: liga pro cliente. O SDP offer já vem com os candidatos ICE
+ *  coletados (mesma exigência já corrigida no lado inbound — ver
+ *  incoming-call-ringer.tsx). Meta responde com o call_id; a resposta SDP
+ *  (a Meta aceitando a ligação) chega depois, como um novo evento `connect`
+ *  pro MESMO call_id via webhook — ver processIncomingWhatsAppCall. */
+export async function connectCall(config: CallCredentials, toPhone: string, sdpOffer: string) {
+  return waCallsRequest(config.phoneNumberId, config.accessToken, {
+    to: toPhone,
+    action: 'connect',
+    session: { sdp_type: 'offer', sdp: sdpOffer },
+  });
+}
+
+type CallPermissionState = {
+  /** true = pode ligar agora (permanente ou temporária ainda não vencida). */
+  permitted: boolean;
+  /** true = pode mandar um NOVO pedido de permissão agora (dentro do limite
+   *  de 1/24h e 2/7dias da Meta). Default true quando a resposta não vem no
+   *  formato esperado — prefere deixar tentar e a Meta recusar com um erro
+   *  claro, a bloquear silenciosamente por um parsing errado daqui. */
+  canRequest: boolean;
+  raw: any;
+};
+
+/** Consulta ao vivo se o cliente já autorizou receber ligação — fonte de
+ *  verdade é a Meta, não um cache local (o CallPermission salvo no banco é
+ *  só auditoria/histórico, não decide nada aqui). Formato exato da resposta
+ *  ainda não confirmado contra tráfego real (documentação da Meta é vaga
+ *  nos nomes de campo) — por isso o parsing tenta os caminhos mais prováveis
+ *  e sempre loga o corpo cru, pra ajustar rápido se vier diferente. */
+export async function getCallPermissionState(config: CallCredentials, userWaId: string): Promise<CallPermissionState> {
+  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${config.phoneNumberId}/call_permissions?user_wa_id=${encodeURIComponent(userWaId)}`;
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${config.accessToken}` } });
+    const json: any = await res.json().catch(() => ({}));
+    console.log('[Calling] call_permissions raw:', JSON.stringify(json));
+    if (!res.ok || json?.error) {
+      console.error('[Calling] Erro ao consultar call_permissions:', JSON.stringify(json?.error || json));
+      return { permitted: false, canRequest: true, raw: json };
+    }
+    const perm = json?.permission || json;
+    const status = perm?.status as string | undefined;
+    const permitted = status === 'permanent' || status === 'temporary';
+    const actions: any[] = perm?.actions || json?.actions || [];
+    const requestAction = actions.find((a) => a?.action_type === 'send_call_permission_request' || a?.name === 'send_call_permission_request');
+    const canRequest = requestAction ? requestAction.can_perform !== false : true;
+    return { permitted, canRequest, raw: json };
+  } catch (err) {
+    console.error('[Calling] Fetch error em call_permissions:', err);
+    return { permitted: false, canRequest: true, raw: null };
+  }
+}
+
+/** Acha, entre os templates já aprovados da conta, um com o componente
+ *  especial de pedido de permissão de ligação (CALL_PERMISSION_REQUEST) —
+ *  não precisa de um nome fixo, só que exista um aprovado com esse tipo de
+ *  componente (criado via createCallPermissionTemplate, abaixo, ou manual
+ *  no Business Manager). */
+export async function findCallPermissionTemplate(accountId: string, departmentId?: string | null): Promise<{ name: string; language: string } | null> {
+  const templates = await listMetaTemplates(accountId, departmentId);
+  const approved = templates.find((t: any) =>
+    t.status === 'APPROVED' &&
+    Array.isArray(t.components) &&
+    t.components.some((c: any) => c.type === 'CALL_PERMISSION_REQUEST')
+  );
+  return approved ? { name: approved.name, language: approved.language } : null;
+}
+
+/** Cria (na Meta) o template de pedido de permissão de ligação — mesmo
+ *  padrão de createMetaTemplate (whatsapp.service.ts), mas com o componente
+ *  especial CALL_PERMISSION_REQUEST em vez de BUTTONS normal. Fica pendente
+ *  de aprovação como qualquer template novo (pode levar minutos/horas). */
+export async function createCallPermissionTemplate(accountId: string, departmentId: string | null | undefined, bodyText: string): Promise<{ ok: boolean; error?: string }> {
+  const config = await getWhatsAppConfig(accountId, departmentId);
+  if (!config?.accessToken) return { ok: false, error: 'Configure o Access Token primeiro (aba API Oficial).' };
+  if (!config.wabaId) return { ok: false, error: 'Informe o WABA ID em "Ativar recebimento" primeiro.' };
+
+  const res = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${config.wabaId}/message_templates`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'permissao_ligar_af_crm',
+      category: 'UTILITY',
+      language: 'pt_BR',
+      components: [
+        { type: 'BODY', text: bodyText },
+        { type: 'CALL_PERMISSION_REQUEST' },
+      ],
+    }),
+  });
+  const json: any = await res.json().catch(() => ({}));
+  if (!res.ok || json?.error) {
+    const code = json.error?.code ?? res.status;
+    const msg = json.error?.error_user_msg || json.error?.message || 'Erro desconhecido';
+    return { ok: false, error: `${msg} (código: ${code})` };
+  }
+  return { ok: true };
+}
+
+/** Manda o template de pedido de permissão pro cliente — reaproveita
+ *  sendWhatsAppTemplateMessage (whatsapp.service.ts), sem parâmetros de
+ *  corpo (o template de permissão não costuma ter variável). Grava/atualiza
+ *  o CallPermission (auditoria — a decisão de "pode ligar" nunca usa isso,
+ *  sempre consulta getCallPermissionState ao vivo). */
+export async function sendCallPermissionRequest(accountId: string, departmentId: string | null | undefined, contactId: string): Promise<{ ok: boolean; error?: string }> {
+  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+  const phone = contact?.whatsappPhone || contact?.phone;
+  if (!phone) return { ok: false, error: 'Contato sem telefone de WhatsApp' };
+
+  const template = await findCallPermissionTemplate(accountId, departmentId);
+  if (!template) {
+    return { ok: false, error: 'Nenhum template de "pedido de permissão pra ligar" aprovado ainda. Crie um em Configurações → API Oficial.' };
+  }
+
+  const result = await sendWhatsAppTemplateMessage(phone, template.name, template.language, [], accountId, departmentId);
+  if (!result.success) return { ok: false, error: result.error };
+
+  await prisma.callPermission.create({
+    data: { accountId, contactId, status: 'PENDING' },
+  });
+
+  return { ok: true };
+}
+
+/** Trata a resposta do cliente a um pedido de permissão de ligação — chega
+ *  pelo campo `messages` do webhook (não `calls`), como um objeto
+ *  `interactive` do tipo `call_permission_reply`. Chamado de dentro do loop
+ *  de processIncomingWhatsApp (whatsapp.service.ts) via require() tardio
+ *  (mesmo motivo dos outros: evita import circular, esse arquivo já importa
+ *  de lá). Formato exato do payload ainda não confirmado contra tráfego
+ *  real — loga o objeto cru inteiro pra ajustar rápido se vier diferente
+ *  do documentado (`response`: "accept"|"reject", `is_permanent`,
+ *  `expiration_timestamp`).
+ *  Retorna true se tratou a mensagem (quem chama deve dar `continue`, não
+ *  processar como mensagem de texto normal). */
+export async function handleCallPermissionReply(msg: any, accountId: string, io: any): Promise<boolean> {
+  if (msg?.type !== 'interactive' || msg.interactive?.type !== 'call_permission_reply') return false;
+
+  console.log('[Calling] call_permission_reply raw:', JSON.stringify(msg.interactive));
+
+  try {
+    const reply = msg.interactive?.call_permission_reply || msg.interactive;
+    const accepted = reply?.response === 'accept';
+    const isPermanent = !!reply?.is_permanent;
+    const expirationTimestamp = reply?.expiration_timestamp as number | string | undefined;
+
+    const from = msg.from as string;
+    const normalizedFrom = normalizeBrazilianWhatsAppPhone(from);
+    const contact = await prisma.contact.findFirst({
+      where: { accountId, OR: [{ whatsappPhone: normalizedFrom }, { phone: { contains: from.slice(-8) } }] },
+    });
+    if (!contact) {
+      console.warn('[Calling] call_permission_reply de telefone sem Contact:', from);
+      return true;
+    }
+
+    await prisma.callPermission.create({
+      data: {
+        accountId,
+        contactId: contact.id,
+        status: accepted ? 'GRANTED' : 'DENIED',
+        grantedAt: accepted ? new Date() : null,
+        expiresAt: accepted && !isPermanent && expirationTimestamp
+          ? new Date(Number(expirationTimestamp) * 1000)
+          : null,
+      },
+    });
+
+    io.to(`account_${accountId}`).emit(accepted ? 'call_permission_granted' : 'call_permission_denied', { contactId: contact.id });
+  } catch (err) {
+    console.error('[Calling] Erro ao processar call_permission_reply:', err);
+  }
+
+  return true;
+}
+
 /** Webhook handler — campo `calls` (sinalização de chamada). Mesmo padrão dos
  *  irmãos processWhatsAppStatus/processIncomingWhatsApp: no-op silencioso se
  *  a chave esperada não existir no payload (a rota chama os três sempre).
@@ -100,10 +276,21 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
       if (event === 'connect') {
         const existing = await prisma.call.findUnique({ where: { waCallId } });
         if (existing) {
-          // Fase 2 (resposta SDP de uma chamada outbound que nós iniciamos)
-          // vai cair aqui — fora de escopo por ora, só loga pra referência
-          // futura em vez de ignorar silenciosamente.
-          console.log('[Calling] connect repetido pra call_id existente (provável resposta SDP outbound — Fase 2):', waCallId);
+          // Resposta SDP de uma chamada OUTBOUND que nós iniciamos (o
+          // primeiro connect foi o nosso POST; este é a Meta respondendo
+          // com o SDP de resposta pra completar a negociação WebRTC).
+          const sdp = call.session?.sdp as string | undefined;
+          if (existing.direction === 'OUTBOUND' && existing.status !== 'CONNECTED' && sdp) {
+            await prisma.call.update({
+              where: { waCallId },
+              data: { status: 'CONNECTED', connectedAt: new Date() },
+            });
+            if (existing.answeredByUserId) {
+              io.to(`user_${existing.answeredByUserId}`).emit('call_answered', { waCallId, sdp });
+            }
+          } else {
+            console.log('[Calling] connect repetido sem ação clara (dedupe de webhook?):', waCallId, JSON.stringify(call));
+          }
           continue;
         }
 

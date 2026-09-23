@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { getWhatsAppConfig, saveWhatsAppConfig, listMetaTemplates, createMetaTemplate, deleteMetaTemplate } from '../services/whatsapp.service';
+import { createCallPermissionTemplate, findCallPermissionTemplate } from '../services/whatsapp-calling.service';
 
 /** Lê o departmentId de query/body — string vazia ou ausente vira undefined
  *  ("genérica ou a primeira que achar", mesmo comportamento de antes dos
@@ -303,6 +304,28 @@ router.post('/whatsapp/templates', validate(templateSchema), async (req: AuthReq
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Erro ao enviar template para aprovação' });
   }
+});
+
+// GET /api/settings/whatsapp/call-permission-template — se já existe um
+// template APROVADO com o componente de pedido de permissão de ligação.
+router.get('/whatsapp/call-permission-template', async (req: AuthRequest, res: Response) => {
+  try {
+    const template = await findCallPermissionTemplate(req.user!.accountId, readDeptQuery(req));
+    res.json({ template });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao buscar template' });
+  }
+});
+
+const callPermissionTemplateSchema = z.object({ body: z.string().min(1).max(1024) });
+
+// POST /api/settings/whatsapp/call-permission-template — cria o template
+// especial de pedido de permissão de ligação (fica pendente de aprovação da
+// Meta, como qualquer template novo).
+router.post('/whatsapp/call-permission-template', validate(callPermissionTemplateSchema), async (req: AuthRequest, res: Response) => {
+  const result = await createCallPermissionTemplate(req.user!.accountId, readDeptBody(req), req.body.body);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.status(201).json({ ok: true });
 });
 
 // DELETE /api/settings/whatsapp/templates/:name — exclui um template já criado na Meta

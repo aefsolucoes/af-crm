@@ -688,6 +688,15 @@ function ApiOficialTab() {
   const [registering, setRegistering] = useState(false);
   const [wabaId, setWabaId] = useState('');
   const [subscribing, setSubscribing] = useState(false);
+  const [callPermissionTemplate, setCallPermissionTemplate] = useState<{ name: string; language: string } | null | undefined>(undefined);
+  const [callPermissionBody, setCallPermissionBody] = useState('Podemos te ligar pelo WhatsApp pra te ajudar com o seu atendimento?');
+  const [creatingCallTemplate, setCreatingCallTemplate] = useState(false);
+
+  useEffect(() => {
+    api.get('/api/settings/whatsapp/call-permission-template', { params: { departmentId: apiDepartmentId || undefined } })
+      .then(({ data }) => setCallPermissionTemplate(data.template))
+      .catch(() => setCallPermissionTemplate(null));
+  }, [apiDepartmentId]);
 
   useEffect(() => {
     api.get('/api/departments').then(({ data }) => setDepartments(data)).catch(() => {});
@@ -1008,6 +1017,51 @@ function ApiOficialTab() {
                   {subscribing ? 'Ativando...' : 'Ativar recebimento'}
                 </button>
               </div>
+            </div>
+
+            {/* Template de pedido de permissão pra ligar — exigido pela Meta
+                antes do CRM poder ligar pro cliente (aba Chamadas). */}
+            <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-200 space-y-2">
+              <div>
+                <p className="text-sm font-semibold text-emerald-800">Permissão pra ligar (chamadas de voz)</p>
+                <p className="text-xs text-emerald-700 mt-0.5">
+                  Antes do CRM poder ligar pra um cliente, a Meta exige um template especial pedindo permissão. Crie uma vez — depois de aprovado pela Meta, o botão "Ligar" na Inbox já usa ele sozinho.
+                </p>
+              </div>
+              {callPermissionTemplate === undefined ? (
+                <p className="text-xs text-emerald-700">Verificando...</p>
+              ) : callPermissionTemplate ? (
+                <p className="text-xs text-emerald-800">✅ Template "{callPermissionTemplate.name}" aprovado e pronto pra usar.</p>
+              ) : (
+                <div className="space-y-2">
+                  <textarea
+                    value={callPermissionBody}
+                    onChange={(e) => setCallPermissionBody(e.target.value)}
+                    rows={2}
+                    className="w-full px-3 py-2 text-sm border border-emerald-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                    placeholder="Texto que o cliente vai ver junto com o botão de aceitar a ligação"
+                  />
+                  <button
+                    type="button"
+                    disabled={creatingCallTemplate || !callPermissionBody.trim()}
+                    onClick={async () => {
+                      setCreatingCallTemplate(true);
+                      try {
+                        await api.post('/api/settings/whatsapp/call-permission-template', { body: callPermissionBody, departmentId: apiDepartmentId || undefined });
+                        toast('✅ Template enviado pra aprovação da Meta — pode levar de minutos a horas.', 'success');
+                        setCallPermissionTemplate(null);
+                      } catch (err: any) {
+                        toast(`❌ ${err?.response?.data?.error || 'Erro ao criar o template'}`, 'error');
+                      } finally {
+                        setCreatingCallTemplate(false);
+                      }
+                    }}
+                    className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {creatingCallTemplate ? 'Enviando...' : 'Criar template'}
+                  </button>
+                </div>
+              )}
             </div>
           </form>
         )}

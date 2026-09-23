@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -13,6 +13,8 @@ import { AttachmentView } from '@/components/inbox/message-attachment';
 import { MessageTemplate, CATEGORY_META, fillTemplate } from '@/lib/templates';
 import { MessageMenu } from '@/components/inbox/message-menu';
 import { CallHistoryModal } from '@/components/inbox/call-history-modal';
+import { ActiveCallBar } from '@/components/ui/active-call-bar';
+import { waitForIceGatheringComplete } from '@/lib/webrtc';
 import { EmojiPickerButton } from '@/components/inbox/emoji-picker';
 
 // Cor estável por remetente em grupos (estilo WhatsApp: mesma pessoa, mesma cor).
@@ -202,6 +204,125 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   useEffect(() => { setStarred(!!starredProp); }, [leadId, starredProp]);
 
   const [showCallHistory, setShowCallHistory] = useState(false);
+
+  // Ligar pro cliente (Fase 2 da Calling API — o CRM inicia a chamada, não
+  // só recebe). Precisa de permissão do cliente concedida antes (exigência
+  // da Meta) — o fluxo cobre pedir a permissão quando ainda não tem.
+  // Limitação conhecida: se o usuário sair dessa conversa no meio de uma
+  // ligação, a chamada continua do lado da Meta mas essa UI (e o
+  // RTCPeerConnection do navegador) some junto com o componente — mesmo
+  // efeito colateral que os outros listeners por-lead já têm aqui.
+  type CallUiStage = 'idle' | 'checking' | 'need-permission' | 'permission-sent' | 'connecting' | 'connected';
+  const [callUi, setCallUi] = useState<CallUiStage>('idle');
+  const [callMuted, setCallMuted] = useState(false);
+  const [callConnectedAt, setCallConnectedAt] = useState(0);
+  const callPcRef = useRef<RTCPeerConnection | null>(null);
+  const callLocalStreamRef = useRef<MediaStream | null>(null);
+  const callAudioElRef = useRef<HTMLAudioElement | null>(null);
+  const callWaCallIdRef = useRef<string | null>(null);
+
+  function cleanupOutboundCall() {
+    callPcRef.current?.close();
+    callPcRef.current = null;
+    callLocalStreamRef.current?.getTracks().forEach((t) => t.stop());
+    callLocalStreamRef.current = null;
+    if (callAudioElRef.current) callAudioElRef.current.srcObject = null;
+    callWaCallIdRef.current = null;
+  }
+
+  async function handleHangupOutbound() {
+    const waCallId = callWaCallIdRef.current;
+    cleanupOutboundCall();
+    setCallUi('idle');
+    if (waCallId) {
+      try { await api.post(`/api/calls/${waCallId}/terminate`); } catch { /* melhor esforço */ }
+    }
+  }
+
+  async function placeOutboundCall() {
+    setCallUi('connecting');
+    try {
+      const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      callLocalStreamRef.current = localStream;
+
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      callPcRef.current = pc;
+      localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+      pc.ontrack = (event) => {
+        if (callAudioElRef.current) callAudioElRef.current.srcObject = event.streams[0];
+      };
+      pc.onconnectionstatechange = () => {
+        console.log('[Calling] outbound connectionState:', pc.connectionState);
+        if (pc.connectionState === 'connected') {
+          setCallConnectedAt(Date.now());
+          setCallUi('connected');
+        }
+        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          const waCallId = callWaCallIdRef.current;
+          cleanupOutboundCall();
+          setCallUi('idle');
+          if (waCallId) api.post(`/api/calls/${waCallId}/terminate`).catch(() => {});
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceGatheringComplete(pc);
+      const sdp = pc.localDescription?.sdp || offer.sdp;
+
+      const { data } = await api.post('/api/calls/outbound', { leadId, sdpOffer: sdp });
+      if (!data.ok) {
+        cleanupOutboundCall();
+        setCallUi(data.needsPermission ? 'need-permission' : 'idle');
+        if (!data.needsPermission) toast('Não foi possível ligar', 'error');
+        return;
+      }
+      callWaCallIdRef.current = data.waCallId;
+    } catch (err) {
+      console.error('[Calling] Falha ao ligar:', err);
+      cleanupOutboundCall();
+      setCallUi('idle');
+      toast('Não foi possível acessar o microfone', 'error');
+    }
+  }
+
+  async function handleClickLigar() {
+    setCallUi('checking');
+    try {
+      const { data } = await api.get('/api/calls/permission-state', { params: { leadId } });
+      if (data.permitted) await placeOutboundCall();
+      else setCallUi('need-permission');
+    } catch {
+      setCallUi('idle');
+      toast('Não foi possível verificar a permissão de ligação', 'error');
+    }
+  }
+
+  async function handleRequestCallPermission() {
+    try {
+      await api.post('/api/calls/permission-request', { leadId });
+      setCallUi('permission-sent');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não foi possível enviar o pedido de permissão', 'error');
+    }
+  }
+
+  function handleToggleCallMute() {
+    if (!callLocalStreamRef.current) return;
+    const next = !callMuted;
+    callLocalStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = !next; });
+    setCallMuted(next);
+  }
+
+  async function handleRecheckPermission() {
+    try {
+      const { data } = await api.get('/api/calls/permission-state', { params: { leadId } });
+      if (data.permitted) toast('Permissão concedida! Clique em Ligar de novo pra chamar.', 'success');
+      else toast('Ainda sem resposta do cliente.', 'warning');
+    } catch {
+      toast('Não foi possível verificar', 'error');
+    }
+  }
 
   // Link direto pra essa conversa (?leadId=... já é lido pela própria tela
   // da Inbox — apps/web/app/(dashboard)/inbox/page.tsx — e abre direto
@@ -619,6 +740,24 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       setStarredMap(prev => ({ ...prev, [id]: starred }));
     });
 
+    // Resposta SDP da Meta pra uma ligação outbound que a gente iniciou —
+    // só chega pro user_<id> de quem ligou, então não precisa filtrar por
+    // quem mandou (o servidor já mandou só pra nós); filtra só por waCallId
+    // pra ignorar eco de uma ligação anterior já encerrada.
+    socket.on('call_answered', async ({ waCallId, sdp }: { waCallId: string; sdp: string }) => {
+      if (waCallId !== callWaCallIdRef.current || !callPcRef.current) return;
+      try {
+        await callPcRef.current.setRemoteDescription({ type: 'answer', sdp });
+      } catch (err) {
+        console.error('[Calling] Falha ao aplicar resposta SDP:', err);
+      }
+    });
+    socket.on('call_ended', ({ waCallId }: { waCallId: string }) => {
+      if (waCallId !== callWaCallIdRef.current) return;
+      cleanupOutboundCall();
+      setCallUi('idle');
+    });
+
     return () => {
       socket.emit('leave_lead', leadId);
       socket.off('new_message');
@@ -628,6 +767,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       socket.off('message_reaction');
       socket.off('message_pinned');
       socket.off('message_starred');
+      socket.off('call_answered');
+      socket.off('call_ended');
     };
   }, [leadId, onNewMessage]);
 
@@ -1135,6 +1276,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           <Phone size={13} />
           <span className="hidden md:inline">Chamadas</span>
         </button>
+        {callUi === 'idle' && (
+          <button
+            onClick={handleClickLigar}
+            title="Ligar pro cliente pelo WhatsApp"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30"
+          >
+            <Phone size={13} />
+            <span className="hidden md:inline">Ligar</span>
+          </button>
+        )}
+        {callUi === 'checking' && (
+          <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium flex-shrink-0 bg-white/10 text-[#8696a0]">
+            <Loader2 size={13} className="animate-spin" />
+          </span>
+        )}
         <button
           onClick={handleCopyLink}
           title="Copiar link direto pra essa conversa — quem abrir (logado no CRM) cai direto aqui"
@@ -1971,6 +2127,42 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
       {showCallHistory && (
         <CallHistoryModal leadId={leadId} onClose={() => setShowCallHistory(false)} />
+      )}
+
+      <audio ref={callAudioElRef} autoPlay />
+
+      {(callUi === 'need-permission' || callUi === 'permission-sent') && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-4 py-2.5 rounded-xl shadow-lg bg-[#233138] text-[#e9edef] text-sm">
+          {callUi === 'need-permission' ? (
+            <>
+              <span>Esse cliente ainda não autorizou receber ligação.</span>
+              <button onClick={handleRequestCallPermission} className="text-emerald-400 font-medium hover:underline">Pedir permissão</button>
+              <button onClick={() => setCallUi('idle')} className="text-[#8696a0] hover:text-[#e9edef]"><X size={14} /></button>
+            </>
+          ) : (
+            <>
+              <span>Pedido enviado — aguardando o cliente aceitar.</span>
+              <button onClick={handleRecheckPermission} className="text-emerald-400 font-medium hover:underline">Verificar</button>
+              <button onClick={() => setCallUi('idle')} className="text-[#8696a0] hover:text-[#e9edef]"><X size={14} /></button>
+            </>
+          )}
+        </div>
+      )}
+
+      {callUi === 'connecting' && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] px-5 py-3 rounded-full shadow-2xl bg-[#111b21] text-white text-sm">
+          Ligando pra {leadName}…
+        </div>
+      )}
+
+      {callUi === 'connected' && (
+        <ActiveCallBar
+          callerName={leadName}
+          connectedAt={callConnectedAt}
+          muted={callMuted}
+          onToggleMute={handleToggleCallMute}
+          onHangup={handleHangupOutbound}
+        />
       )}
     </div>
   );

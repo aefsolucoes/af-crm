@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { preAcceptCall, acceptCall, rejectCall, terminateCall } from '../services/whatsapp-calling.service';
+import {
+  preAcceptCall, acceptCall, rejectCall, terminateCall,
+  connectCall, getCallPermissionState, sendCallPermissionRequest,
+} from '../services/whatsapp-calling.service';
+import { getWhatsAppConfig, normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -89,6 +93,87 @@ router.post('/:waCallId/terminate', async (req: AuthRequest, res: Response) => {
   if (call.leadId) io.to(`lead:${call.leadId}`).emit('call_ended', { waCallId: call.waCallId, status: updated.status, endReason: updated.endReason });
 
   res.json({ ok: true });
+});
+
+/** Busca o lead com o telefone/setor já resolvidos — usado tanto pelo
+ *  check de permissão quanto pelo disparo da ligação outbound, evita
+ *  repetir a mesma query com o mesmo include duas vezes. */
+async function findLeadWithPhone(leadId: string, accountId: string) {
+  return prisma.lead.findFirst({
+    where: { id: leadId, accountId },
+    include: { contact: true, pipeline: { select: { departmentId: true } } },
+  });
+}
+
+// GET /api/calls/permission-state?leadId= — consulta ao vivo se o cliente já
+// autorizou receber ligação (fonte de verdade é a Meta, não cache local).
+router.get('/permission-state', async (req: AuthRequest, res: Response) => {
+  const leadId = req.query.leadId as string | undefined;
+  if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
+
+  const lead = await findLeadWithPhone(leadId, req.user!.accountId);
+  const phoneRaw = lead?.contact?.whatsappPhone || lead?.contact?.phone;
+  if (!phoneRaw) return res.status(400).json({ error: 'Lead sem telefone de WhatsApp' });
+
+  const config = await getWhatsAppConfig(req.user!.accountId, lead!.pipeline?.departmentId || null);
+  if (!config) return res.status(400).json({ error: 'WhatsApp não configurado' });
+
+  const state = await getCallPermissionState(config, normalizeBrazilianWhatsAppPhone(phoneRaw));
+  res.json({ permitted: state.permitted, canRequest: state.canRequest });
+});
+
+const leadIdSchema = z.object({ leadId: z.string().min(1) });
+
+// POST /api/calls/permission-request — manda o template pra pedir permissão.
+router.post('/permission-request', validate(leadIdSchema), async (req: AuthRequest, res: Response) => {
+  const lead = await findLeadWithPhone(req.body.leadId, req.user!.accountId);
+  if (!lead?.contactId) return res.status(400).json({ error: 'Lead sem contato vinculado' });
+
+  const result = await sendCallPermissionRequest(req.user!.accountId, lead.pipeline?.departmentId || null, lead.contactId);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ ok: true });
+});
+
+const outboundSchema = z.object({ leadId: z.string().min(1), sdpOffer: z.string().min(1) });
+
+// POST /api/calls/outbound — liga pro cliente (exige permissão já concedida).
+router.post('/outbound', validate(outboundSchema), async (req: AuthRequest, res: Response) => {
+  const lead = await findLeadWithPhone(req.body.leadId, req.user!.accountId);
+  const phoneRaw = lead?.contact?.whatsappPhone || lead?.contact?.phone;
+  if (!phoneRaw) return res.status(400).json({ error: 'Lead sem telefone de WhatsApp' });
+
+  const departmentId = lead!.pipeline?.departmentId || null;
+  const config = await getWhatsAppConfig(req.user!.accountId, departmentId);
+  if (!config) return res.status(400).json({ error: 'WhatsApp não configurado' });
+  const phone = normalizeBrazilianWhatsAppPhone(phoneRaw);
+
+  const permState = await getCallPermissionState(config, phone);
+  if (!permState.permitted) return res.json({ ok: false, needsPermission: true });
+
+  const result = await connectCall(config, phone, req.body.sdpOffer);
+  if (!result.ok) return res.status(502).json({ error: result.json?.error?.message || 'Falha ao iniciar a ligação' });
+
+  const waCallId = result.json?.calls?.[0]?.id || result.json?.id;
+  if (!waCallId) {
+    console.error('[Calling] connect ok mas sem call_id reconhecível:', JSON.stringify(result.json));
+    return res.status(502).json({ error: 'A Meta não retornou o identificador da ligação' });
+  }
+
+  const created = await prisma.call.create({
+    data: {
+      accountId: req.user!.accountId,
+      whatsappConfigId: config.id,
+      leadId: req.body.leadId,
+      waCallId,
+      direction: 'OUTBOUND',
+      status: 'CONNECTING',
+      fromPhone: config.phoneNumberId,
+      toPhone: phone,
+      answeredByUserId: req.user!.id,
+    },
+  });
+
+  res.json({ ok: true, waCallId, callId: created.id });
 });
 
 // GET /api/calls/history?leadId=

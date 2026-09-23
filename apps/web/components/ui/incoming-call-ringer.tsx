@@ -6,6 +6,7 @@ import { getSocket } from '@/lib/socket';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { ActiveCallBar } from '@/components/ui/active-call-bar';
+import { waitForIceGatheringComplete } from '@/lib/webrtc';
 
 interface IncomingCallEvent {
   callId: string;
@@ -38,32 +39,6 @@ export function IncomingCallRinger() {
   const ringToneRef = useRef<{ ctx: AudioContext; stop: () => void } | null>(null);
 
   const current = queue[0] || null;
-
-  /** Espera a coleta de candidatos ICE terminar antes de usar o SDP local —
-   *  sem isso, o SDP mandado pra Meta (pre-accept/accept) não tem NENHUM
-   *  candidato ainda (createAnswer()/setLocalDescription() retornam antes da
-   *  coleta assíncrona terminar), a Meta não acha como alcançar nosso
-   *  navegador, a chamada nunca conecta de verdade e cai sozinha pouco
-   *  depois de "atender". Timeout de segurança: em redes que nunca fecham a
-   *  coleta (raro), segue com o que já foi juntado em vez de travar. */
-  const waitForIceGatheringComplete = useCallback((pc: RTCPeerConnection): Promise<void> => {
-    if (pc.iceGatheringState === 'complete') return Promise.resolve();
-    return new Promise((resolve) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        pc.removeEventListener('icegatheringstatechange', check);
-        resolve();
-      };
-      const check = () => {
-        console.log('[Calling] iceGatheringState:', pc.iceGatheringState);
-        if (pc.iceGatheringState === 'complete') finish();
-      };
-      pc.addEventListener('icegatheringstatechange', check);
-      setTimeout(finish, 4000);
-    });
-  }, []);
 
   const stopRingtone = useCallback(() => {
     if (ringToneRef.current) {
@@ -207,7 +182,7 @@ export function IncomingCallRinger() {
       setActive(null);
       try { await api.post(`/api/calls/${call.waCallId}/reject`); } catch { /* melhor esforço */ }
     }
-  }, [current, dismissCurrent, cleanupPeerConnection, endActiveCall, waitForIceGatheringComplete]);
+  }, [current, dismissCurrent, cleanupPeerConnection, endActiveCall]);
 
   const hangup = useCallback(async () => {
     if (!active) return;
