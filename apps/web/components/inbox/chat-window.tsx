@@ -1904,7 +1904,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           <span className="text-xs text-amber-300">Janela de 24h fechada — a API Oficial só deixa reabrir com um template aprovado.</span>
           <button
             type="button"
-            onClick={() => setShowTemplates(true)}
+            onClick={handleOpenTemplates}
             className="flex-shrink-0 text-xs font-medium text-amber-200 bg-amber-700/40 hover:bg-amber-700/60 px-2.5 py-1 rounded-lg transition-colors"
           >
             Usar template
