@@ -110,10 +110,16 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
                 <Shuffle size={12} /> Funil
               </button>
               {onHide && (
+                // Só existe quando InboxLeadPanel abre como popup no celular
+                // (a barra fina de esconder/mostrar do desktop é outro botão,
+                // em inbox/page.tsx). Ícone sozinho ficava discreto demais —
+                // usuário pediu mais visível, igual referência que mandou
+                // (círculo azul preenchido) — aqui funciona como "voltar" da
+                // tela do Card pra conversa.
                 <button
                   onClick={onHide}
-                  className="flex-shrink-0 ml-1 p-1.5 rounded-lg text-af-mid hover:text-white hover:bg-af-mid transition-colors"
-                  title="Esconder dados do cliente"
+                  className="flex-shrink-0 ml-1 w-8 h-8 rounded-full bg-[#3b82f6] hover:bg-[#2563eb] text-white flex items-center justify-center shadow-md transition-colors"
+                  title="Voltar pra conversa"
                 >
                   <PanelRightClose size={16} />
                 </button>
