@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -12,6 +12,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { AttachmentView } from '@/components/inbox/message-attachment';
 import { MessageTemplate, CATEGORY_META, fillTemplate } from '@/lib/templates';
 import { MessageMenu } from '@/components/inbox/message-menu';
+import { CallHistoryModal } from '@/components/inbox/call-history-modal';
 import { EmojiPickerButton } from '@/components/inbox/emoji-picker';
 
 // Cor estável por remetente em grupos (estilo WhatsApp: mesma pessoa, mesma cor).
@@ -199,6 +200,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [starred, setStarred] = useState(!!starredProp);
   const [togglingStar, setTogglingStar] = useState(false);
   useEffect(() => { setStarred(!!starredProp); }, [leadId, starredProp]);
+
+  const [showCallHistory, setShowCallHistory] = useState(false);
 
   // Link direto pra essa conversa (?leadId=... já é lido pela própria tela
   // da Inbox — apps/web/app/(dashboard)/inbox/page.tsx — e abre direto
@@ -1125,6 +1128,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           </button>
         )}
         <button
+          onClick={() => setShowCallHistory(true)}
+          title="Histórico de chamadas de voz com esse cliente"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
+        >
+          <Phone size={13} />
+          <span className="hidden md:inline">Chamadas</span>
+        </button>
+        <button
           onClick={handleCopyLink}
           title="Copiar link direto pra essa conversa — quem abrir (logado no CRM) cai direto aqui"
           className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
@@ -1956,6 +1967,10 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             </div>
           </div>
         </div>
+      )}
+
+      {showCallHistory && (
+        <CallHistoryModal leadId={leadId} onClose={() => setShowCallHistory(false)} />
       )}
     </div>
   );

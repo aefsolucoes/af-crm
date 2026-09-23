@@ -14,6 +14,7 @@ async function waCallsRequest(
   body: Record<string, unknown>
 ): Promise<{ ok: boolean; json: any }> {
   const url = `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/calls`;
+  const action = body.action as string;
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -25,12 +26,13 @@ async function waCallsRequest(
     });
     const json: any = await res.json().catch(() => ({}));
     if (!res.ok || json?.error) {
-      console.error('[Calling] Graph API error:', JSON.stringify(json?.error || json));
+      console.error(`[Calling] Graph API error (action=${action}):`, JSON.stringify(json?.error || json));
       return { ok: false, json };
     }
+    console.log(`[Calling] Graph API ok (action=${action}):`, JSON.stringify(json));
     return { ok: true, json };
   } catch (err) {
-    console.error('[Calling] Fetch error:', err);
+    console.error(`[Calling] Fetch error (action=${action}):`, err);
     return { ok: false, json: { error: { message: 'Falha na conexão com a API de chamadas' } } };
   }
 }

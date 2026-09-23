@@ -39,6 +39,32 @@ export function IncomingCallRinger() {
 
   const current = queue[0] || null;
 
+  /** Espera a coleta de candidatos ICE terminar antes de usar o SDP local —
+   *  sem isso, o SDP mandado pra Meta (pre-accept/accept) não tem NENHUM
+   *  candidato ainda (createAnswer()/setLocalDescription() retornam antes da
+   *  coleta assíncrona terminar), a Meta não acha como alcançar nosso
+   *  navegador, a chamada nunca conecta de verdade e cai sozinha pouco
+   *  depois de "atender". Timeout de segurança: em redes que nunca fecham a
+   *  coleta (raro), segue com o que já foi juntado em vez de travar. */
+  const waitForIceGatheringComplete = useCallback((pc: RTCPeerConnection): Promise<void> => {
+    if (pc.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        pc.removeEventListener('icegatheringstatechange', check);
+        resolve();
+      };
+      const check = () => {
+        console.log('[Calling] iceGatheringState:', pc.iceGatheringState);
+        if (pc.iceGatheringState === 'complete') finish();
+      };
+      pc.addEventListener('icegatheringstatechange', check);
+      setTimeout(finish, 4000);
+    });
+  }, []);
+
   const stopRingtone = useCallback(() => {
     if (ringToneRef.current) {
       ringToneRef.current.stop();
@@ -151,30 +177,37 @@ export function IncomingCallRinger() {
       pc.ontrack = (event) => {
         if (audioElRef.current) audioElRef.current.srcObject = event.streams[0];
       };
+      pc.oniceconnectionstatechange = () => console.log('[Calling] iceConnectionState:', pc.iceConnectionState);
       pc.onconnectionstatechange = () => {
+        console.log('[Calling] connectionState:', pc.connectionState);
         if (pc.connectionState === 'connected' && !acceptSentRef.current) {
           acceptSentRef.current = true;
           api.post(`/api/calls/${call.waCallId}/accept`, { sdpAnswer: pc.localDescription?.sdp })
             .then(() => setActive((a) => (a?.call.waCallId === call.waCallId ? { ...a, stage: 'connected', connectedAt: Date.now() } : a)))
-            .catch(() => endActiveCall(call.waCallId));
+            .catch((err) => { console.error('[Calling] Falha ao confirmar accept:', err); endActiveCall(call.waCallId); });
         }
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
           endActiveCall(call.waCallId);
+          api.post(`/api/calls/${call.waCallId}/terminate`).catch(() => {});
         }
       };
 
       await pc.setRemoteDescription({ type: 'offer', sdp: call.sdp });
       const answerSdp = await pc.createAnswer();
       await pc.setLocalDescription(answerSdp);
+      // Espera juntar TODOS os candidatos ICE antes de mandar o SDP pra Meta
+      // — ver comentário em waitForIceGatheringComplete.
+      await waitForIceGatheringComplete(pc);
+      const localSdp = pc.localDescription?.sdp || answerSdp.sdp;
 
-      await api.post(`/api/calls/${call.waCallId}/pre-accept`, { sdpAnswer: answerSdp.sdp });
+      await api.post(`/api/calls/${call.waCallId}/pre-accept`, { sdpAnswer: localSdp });
     } catch (err) {
       console.error('[Calling] Falha ao atender:', err);
       cleanupPeerConnection();
       setActive(null);
       try { await api.post(`/api/calls/${call.waCallId}/reject`); } catch { /* melhor esforço */ }
     }
-  }, [current, dismissCurrent, cleanupPeerConnection, endActiveCall]);
+  }, [current, dismissCurrent, cleanupPeerConnection, endActiveCall, waitForIceGatheringComplete]);
 
   const hangup = useCallback(async () => {
     if (!active) return;
