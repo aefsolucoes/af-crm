@@ -9,9 +9,8 @@ import { StageGateModal } from '@/components/kanban/stage-gate-modal';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
-import { ExternalLink, Shuffle, ListChecks, LayoutList, PanelRightClose } from 'lucide-react';
+import { Shuffle, ListChecks, LayoutList, PanelRightClose } from 'lucide-react';
 import { LeadTasks } from '@/components/lead/lead-tasks';
-import { LeadDetailModal } from '@/components/kanban/lead-detail-modal';
 
 interface InboxLeadPanelProps {
   lead: LeadDetail;
@@ -32,7 +31,6 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
   const [gateStageName, setGateStageName] = useState('');
   const [pendingStageId, setPendingStageId] = useState<string | null>(null);
   const [showPipelineModal, setShowPipelineModal] = useState(false);
-  const [detailOpen, setDetailOpen] = useState(false);
 
   const cf = ((lead.customFields || {}) as Record<string, string>);
   const p1 = cf.participante_1 || lead.contact?.name || lead.name;
@@ -82,9 +80,6 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
         onCancel={() => { setGateOpen(false); setPendingStageId(null); }}
       />
 
-      {/* ── Modal: Detalhe do cartão (mesmo do Funil) ── */}
-      <LeadDetailModal leadId={detailOpen ? lead.id : null} onClose={() => setDetailOpen(false)} />
-
       {/* ── Modal: Mover para outro funil (compartilhado com o Funil/Kanban) ── */}
       {showPipelineModal && (
         <MovePipelineModal
@@ -113,13 +108,6 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
                 title="Mover para outro funil"
               >
                 <Shuffle size={12} /> Funil
-              </button>
-              <button
-                onClick={() => setDetailOpen(true)}
-                className="flex items-center gap-1 text-xs text-af-mid hover:text-af-dark transition-colors"
-                title="Abrir detalhe do cartão"
-              >
-                Ver lead <ExternalLink size={12} />
               </button>
               {onHide && (
                 <button
