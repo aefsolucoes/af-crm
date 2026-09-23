@@ -1085,13 +1085,16 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       {/* Header — WhatsApp dark */}
       <div className="relative z-10 flex items-center gap-3 px-4 py-3 text-[#e9edef] shadow-md" style={{ backgroundColor: '#202c33' }}>
         {/* Voltar pra lista de conversas — só existe no mobile (desktop mostra
-            a lista sempre ao lado, não precisa de botão pra voltar). */}
+            a lista sempre ao lado, não precisa de botão pra voltar). Ícone
+            sozinho cinza-claro ficava discreto demais no cabeçalho escuro —
+            usuário pediu algo mais visível: círculo azul preenchido, igual a
+            referência que mandou. */}
         <button
           onClick={() => onClose?.()}
           title="Voltar pra lista de conversas"
-          className="md:hidden flex-shrink-0 -ml-1 text-[#8696a0] hover:text-[#e9edef] transition-colors"
+          className="md:hidden flex-shrink-0 w-8 h-8 rounded-full bg-[#3b82f6] hover:bg-[#2563eb] text-white flex items-center justify-center shadow-md transition-colors"
         >
-          <ChevronLeft size={22} />
+          <ChevronLeft size={20} />
         </button>
         <Avatar name={leadName} size="md" />
         <div className="flex-1 min-w-0">
