@@ -53,6 +53,13 @@ interface ChatWindowProps {
   /** Abre o painel de dados do lead/grupo como overlay — só existe no mobile
    *  (no desktop o painel já fica sempre visível ao lado, sem precisar abrir). */
   onOpenInfo?: () => void;
+  /** Setor do funil onde o lead está — cada setor pode ter sua própria API
+   *  Oficial/WABA configurada, com templates aprovados diferentes. Sem isso
+   *  a busca de templates caía sempre no setor "genérico"/primeiro que
+   *  encontrasse, então em outros setores ou dava vazio ou usava token
+   *  errado — "alguns cards" carregavam, outros não, dependendo de qual
+   *  setor "ganhava" o fallback. */
+  departmentId?: string | null;
 }
 
 type AIMode = 'grammar' | 'professional' | 'friendly' | 'fun';
@@ -149,7 +156,7 @@ function lastInboundApiMessage(messages: Message[]): Message | null {
   return latest;
 }
 
-export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo }: ChatWindowProps) {
+export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId }: ChatWindowProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [content, setContent] = useState('');
@@ -840,7 +847,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // não tentou"/null de "tentou e falhou"/erro, com botão de tentar de novo.
   function loadMetaTemplates() {
     setMetaTemplatesError(null);
-    api.get('/api/settings/whatsapp/templates')
+    api.get('/api/settings/whatsapp/templates', { params: departmentId ? { departmentId } : undefined })
       .then(({ data }) => setMetaTemplates((data.templates || []).filter((t: MetaTemplate) => t.status === 'APPROVED')))
       .catch((err) => {
         setMetaTemplates([]);
@@ -914,7 +921,10 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     const body = template.components.find((c) => c.type === 'BODY')?.text || '';
     const vars = extractMetaVariables(body);
     setPendingMetaTemplate(template);
-    setMetaTemplateVars(Object.fromEntries(vars.map((n) => [n, ''])));
+    // {{1}} é sempre o nome do cliente por convenção em todos os templates
+    // daqui — já vem preenchido pra não esquecer (foi exatamente isso que
+    // rejeitou o envio: Meta exige o parâmetro, campo vazio dá erro 131008).
+    setMetaTemplateVars(Object.fromEntries(vars.map((n) => [n, n === 1 ? leadName : ''])));
   }
 
   async function handleSendMetaTemplate() {
