@@ -52,9 +52,9 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
   if (!leadId) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-0 md:p-4 bg-black/40" onClick={onClose}>
       <div
-        className="app-column-surface rounded-2xl shadow-2xl w-full max-w-3xl h-[75vh] flex flex-col overflow-hidden"
+        className="app-column-surface rounded-none md:rounded-2xl shadow-2xl w-full h-full md:max-w-3xl md:h-[75vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Barra de título — estilo janela */}
@@ -84,8 +84,11 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
         ) : (
           <div className="flex-1 flex flex-col overflow-hidden">
             <LeadHeaderTop lead={lead} />
-            <div className="flex flex-1 overflow-hidden">
-              <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+            {/* No mobile os dois lados não cabem um do lado do outro — empilha
+                em coluna (cada metade com seu próprio scroll, igual já era
+                no desktop, só que na vertical em vez de na horizontal). */}
+            <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
+              <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
                 <LeadHeaderActions
                   lead={lead}
                   onStageChange={handleRefresh}
@@ -102,7 +105,7 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
                 />
                 <LeadSidebar lead={lead} onRefresh={handleRefresh} className="w-auto flex-1 border-r-0" />
               </div>
-              <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">
+              <div className="flex-1 md:flex-none md:w-72 min-h-0 flex-shrink-0 border-t md:border-t-0 md:border-l border-af-border overflow-hidden flex flex-col">
                 <LeadMetaPanel lead={lead} onRefresh={handleRefresh} />
                 <div className="flex-1 min-h-0">
                   <LeadTasks
