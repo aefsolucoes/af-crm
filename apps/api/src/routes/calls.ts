@@ -104,4 +104,20 @@ router.get('/history', async (req: AuthRequest, res: Response) => {
   res.json(calls);
 });
 
+// GET /api/calls — histórico da CONTA inteira (aba própria "Chamadas" no
+// menu, separada de dentro de cada conversa). Mesma listagem de sempre,
+// só sem o filtro por lead — últimas 200, mais recente primeiro.
+router.get('/', async (req: AuthRequest, res: Response) => {
+  const calls = await prisma.call.findMany({
+    where: { accountId: req.user!.accountId },
+    orderBy: { startedAt: 'desc' },
+    take: 200,
+    include: {
+      answeredBy: { select: { id: true, name: true } },
+      lead: { select: { id: true, name: true } },
+    },
+  });
+  res.json(calls);
+});
+
 export default router;

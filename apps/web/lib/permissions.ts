@@ -59,6 +59,7 @@ export const ROUTE_PERMISSION: { prefix: string; perm: PermissionKey }[] = [
   { prefix: '/meu-assistente', perm: 'dashboard' },
   { prefix: '/funil', perm: 'funnel_view' },
   { prefix: '/inbox', perm: 'inbox_view' },
+  { prefix: '/chamadas', perm: 'inbox_view' },
   { prefix: '/tarefas', perm: 'tasks' },
   { prefix: '/salesbot', perm: 'salesbot' },
   { prefix: '/templates', perm: 'templates' },

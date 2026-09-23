@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -27,6 +27,7 @@ const NAV: NavItem[] = [
   // aplicado lá dentro em vez de aqui no menu).
   { href: '/funil', label: 'Funil de Vendas', icon: Kanban, perm: 'funnel_view' },
   { href: '/inbox', label: 'Inbox', icon: MessageSquare, perm: 'inbox_view' },
+  { href: '/chamadas', label: 'Chamadas', icon: Phone, perm: 'inbox_view' },
   { href: '/tarefas', label: 'Tarefas', icon: CheckSquare, perm: 'tasks' },
   { href: '/salesbot', label: 'SalesBot', icon: Bot, perm: 'salesbot' },
   { href: '/templates', label: 'Templates', icon: FileText, perm: 'templates' },
