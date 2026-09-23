@@ -60,7 +60,8 @@ const BASE_VARIABLES = [
 ];
 
 interface Stage { id: string; name: string; order: number }
-interface Pipeline { id: string; name: string; stages: Stage[] }
+interface Pipeline { id: string; name: string; stages: Stage[]; department?: { id: string; name: string } | null }
+interface Department { id: string; name: string }
 interface UserOption { id: string; name: string; email: string }
 interface SalesBotOption { id: string; name: string; active: boolean }
 interface MetaTemplate { name: string; status: string; language: string }
@@ -330,36 +331,17 @@ export default function AutomacaoPage() {
                     dois, só dispara dentro dessa janela (horário de Brasília) — e passa a contar por dia de
                     calendário, não 24h corridas (quem entrou de tarde ainda cai no dia seguinte de manhã).
                   </p>
-                  <StageNameSelect
-                    label="Etapa atual (recomendado)"
+                  <DepartmentStageSelect
                     pipelines={pipelines}
-                    value={String(form.triggerConfig.stageName ?? '')}
-                    onChange={(name) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, stageName: name || undefined } })}
-                    allowEmpty
-                    emptyLabel="Qualquer etapa (não recomendado)"
+                    departments={departments}
+                    departmentId={String(form.triggerConfig.departmentId ?? '')}
+                    stageName={String(form.triggerConfig.stageName ?? '')}
+                    onChangeDepartment={(id) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, departmentId: id || undefined } })}
+                    onChangeStage={(name) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, stageName: name || undefined } })}
+                    allowEmptyDepartment
+                    emptyDepartmentLabel="Qualquer setor (não recomendado)"
+                    helperText='Escolha o setor primeiro pra ver só as etapas dele — sem isso, a regra vale pra QUALQUER lead inativo da conta inteira, mesmo de outro setor/produto que não tem nada a ver com esse follow-up.'
                   />
-                  <p className="text-[11px] text-slate-400">
-                    Só considera leads que estão HOJE nessa etapa (em qualquer funil onde o nome bater) — sem isso, a
-                    regra vale pra QUALQUER lead inativo da conta inteira, mesmo de outro setor/etapa que não tem nada
-                    a ver com esse follow-up.
-                  </p>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs font-semibold text-slate-500">Setor específico (opcional — deixe em branco pra qualquer setor)</label>
-                    <select
-                      value={String(form.triggerConfig.departmentId || '')}
-                      onChange={(e) => setForm({ ...form, triggerConfig: { ...form.triggerConfig, departmentId: e.target.value || undefined } })}
-                      className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent bg-white"
-                    >
-                      <option value="">Qualquer setor</option>
-                      {(departments || []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                    </select>
-                    <p className="text-[11px] text-slate-400">
-                      Use isso quando dois setores têm uma etapa com o MESMO NOME (ex.: "Prospecção" existe em Home
-                      Equity e Financiamento Habitacional) — tentar diferenciar só pelo texto da etapa (ex.: digitar
-                      "Prospecção Finan") não funciona, porque esse texto não é o nome real de etapa nenhuma. Crie uma
-                      regra por setor e escolha aqui.
-                    </p>
-                  </div>
                 </div>
               )}
               {form.trigger === 'STAGE_CHANGE' && (
@@ -505,14 +487,15 @@ export default function AutomacaoPage() {
 
                   {action.type === 'move_stage_by_name' && (
                     <div className="space-y-1.5">
-                      <StageNameSelect
+                      <MoveStageByNameFields
                         pipelines={pipelines}
+                        departments={departments}
                         value={String(action.config.stageName || '')}
                         onChange={(name) => updateActionConfig(i, 'stageName', name)}
                       />
                       <p className="text-[11px] text-slate-400">
-                        Move o lead pra essa etapa DENTRO do funil onde ele já está — funciona pra qualquer setor sem
-                        precisar de uma regra por setor (cada lead resolve a etapa certa no próprio funil dele).
+                        Move o lead pra essa etapa DENTRO do funil onde ele já está (o setor acima é só pra achar o
+                        nome certo na lista — quem decide o setor de verdade é o próprio funil onde o lead está).
                       </p>
                     </div>
                   )}
@@ -579,6 +562,28 @@ export default function AutomacaoPage() {
   );
 }
 
+/** Setor + Estágio pra ação "Mover pra etapa (por nome)" — o setor aqui é só
+ *  um filtro local (não é salvo em lugar nenhum, a ação não tem campo de
+ *  setor no banco): ajuda a achar o estágio certo numa lista curta em vez de
+ *  procurar o nome no meio de todos os estágios de todos os setores juntos. */
+function MoveStageByNameFields({
+  pipelines, departments, value, onChange,
+}: { pipelines?: Pipeline[]; departments?: Department[]; value: string; onChange: (name: string) => void }) {
+  const [departmentId, setDepartmentId] = useState('');
+  return (
+    <DepartmentStageSelect
+      pipelines={pipelines}
+      departments={departments}
+      departmentId={departmentId}
+      stageName={value}
+      onChangeDepartment={setDepartmentId}
+      onChangeStage={onChange}
+      allowEmptyDepartment
+      emptyDepartmentLabel="Todos os setores"
+    />
+  );
+}
+
 /** Select de estágio agrupado por funil — usado tanto no gatilho "Mudança de
  *  estágio" quanto na ação "Mover estágio". */
 function StageSelect({
@@ -605,40 +610,61 @@ function StageSelect({
   );
 }
 
-/** Junta os estágios de todos os funis por NOME (deduplicado) — pra escolher
- *  uma etapa "por nome, em qualquer funil" (regras que valem pra vários
- *  setores de uma vez) a partir de uma lista real, em vez de digitar o nome
- *  à mão e torcer pra bater exatamente com o que existe. */
-function distinctStageNames(pipelines?: Pipeline[]): { name: string; pipelineNames: string[] }[] {
-  const byName = new Map<string, Set<string>>();
-  for (const p of pipelines || []) {
-    for (const s of p.stages) {
-      if (!byName.has(s.name)) byName.set(s.name, new Set());
-      byName.get(s.name)!.add(p.name);
-    }
-  }
-  return Array.from(byName.entries())
-    .map(([name, pipelineNames]) => ({ name, pipelineNames: Array.from(pipelineNames) }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+/** Nomes de etapa (deduplicados) dos funis de um setor — ou de todos os
+ *  funis, se nenhum setor foi escolhido ainda (fallback pra quando o setor é
+ *  opcional, ex.: a ação "Mover pra etapa" não trava a regra num setor só). */
+function stageNamesForDepartment(pipelines: Pipeline[] | undefined, departmentId: string): string[] {
+  const relevant = (pipelines || []).filter((p) => !departmentId || p.department?.id === departmentId);
+  return Array.from(new Set(relevant.flatMap((p) => p.stages.map((s) => s.name)))).sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
-function StageNameSelect({
-  pipelines, value, onChange, label, allowEmpty, emptyLabel,
-}: { pipelines?: Pipeline[]; value: string; onChange: (name: string) => void; label?: string; allowEmpty?: boolean; emptyLabel?: string }) {
-  const options = distinctStageNames(pipelines);
+/** Setor → Estágio, igual ao card do lead (Funil de Vendas) — em vez de uma
+ *  lista só com o nome da etapa, que ficava sem jeito de saber "Prospecção"
+ *  de qual setor era (todo funil se chama "Vendas", só o setor muda).
+ *  `departmentId` pode ficar sem persistir em lugar nenhum (a ação "Mover
+ *  pra etapa" não tem campo de setor no banco — aqui ele só filtra a lista
+ *  de estágios, pra ajudar a achar o certo; quem decide o setor de verdade
+ *  é o funil onde o lead já está). */
+function DepartmentStageSelect({
+  pipelines, departments, departmentId, stageName, onChangeDepartment, onChangeStage,
+  allowEmptyDepartment, emptyDepartmentLabel, helperText,
+}: {
+  pipelines?: Pipeline[];
+  departments?: Department[];
+  departmentId: string;
+  stageName: string;
+  onChangeDepartment: (id: string) => void;
+  onChangeStage: (name: string) => void;
+  allowEmptyDepartment?: boolean;
+  emptyDepartmentLabel?: string;
+  helperText?: string;
+}) {
+  const stageOptions = stageNamesForDepartment(pipelines, departmentId);
   return (
-    <div className="flex flex-col gap-1">
-      {label && <label className="text-sm font-medium text-slate-700">{label}</label>}
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent bg-white"
-      >
-        <option value="">{allowEmpty ? (emptyLabel || 'Qualquer etapa') : 'Selecione uma etapa...'}</option>
-        {options.map((o) => (
-          <option key={o.name} value={o.name}>{o.name} — {o.pipelineNames.join(', ')}</option>
-        ))}
-      </select>
+    <div className="grid grid-cols-2 gap-2">
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-semibold text-slate-500">Setor</label>
+        <select
+          value={departmentId}
+          onChange={(e) => { onChangeDepartment(e.target.value); onChangeStage(''); }}
+          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent bg-white"
+        >
+          <option value="">{allowEmptyDepartment ? (emptyDepartmentLabel || 'Qualquer setor') : 'Selecione um setor...'}</option>
+          {(departments || []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+      </div>
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-semibold text-slate-500">Estágio</label>
+        <select
+          value={stageName}
+          onChange={(e) => onChangeStage(e.target.value)}
+          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent bg-white"
+        >
+          <option value="">Selecione um estágio...</option>
+          {stageOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+      </div>
+      {helperText && <p className="col-span-2 text-[11px] text-slate-400">{helperText}</p>}
     </div>
   );
 }
