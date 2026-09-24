@@ -22,6 +22,10 @@ const RATE = 48000;
 const FRAME = 960; // 20ms
 const USER_CHUNK_BYTES = (RATE / 10) * 2; // 100ms por mensagem pro agente
 const RING_TIMEOUT_MS = 75_000;
+const OPENING_SILENCE_MS = 10_000;
+const SILENCE_MARKER = '[silêncio]';
+const SPEECH_RMS = 700;
+const PRE_BUFFER_MAX_BYTES = 4 * RATE * 2; // 4s
 
 type CallConfig = { id: string; phoneNumberId: string; accessToken: string };
 type TranscriptLine = { role: 'IA' | 'Cliente'; text: string };
@@ -51,6 +55,12 @@ interface AiCallSession {
   seq: number;
   ts: number;
   answered: boolean;
+  answeredAt: number;
+  userSpoke: boolean;
+  loudFrames: number;
+  silenceTimer: NodeJS.Timeout | null;
+  preBuffer: Buffer[];
+  preBytes: number;
   ending: boolean;
   ringTimeout: NodeJS.Timeout | null;
   transcript: TranscriptLine[];
@@ -170,7 +180,8 @@ export async function startAiCall(accountId: string, leadId: string, io: any): P
     outQueue: [], outOffset: 0, outBytes: 0,
     pacer: null, pacerStart: 0, sentFrames: 0,
     seq: crypto.randomInt(0, 0xffff), ts: crypto.randomInt(0, 0x7fffffff),
-    answered: false, ending: false, ringTimeout: null,
+    answered: false, answeredAt: 0, userSpoke: false, loudFrames: 0, silenceTimer: null, preBuffer: [], preBytes: 0,
+    ending: false, ringTimeout: null,
     transcript: [],
   };
   sessions.set(waCallId, s);
@@ -197,6 +208,7 @@ export async function handleAiCallAnswer(waCallId: string, sdp: string): Promise
   if (!s) return false;
   if (s.answered || s.ending) return true;
   s.answered = true;
+  s.answeredAt = Date.now();
   if (s.ringTimeout) clearTimeout(s.ringTimeout);
   try {
     await s.pc.setRemoteDescription({ type: 'answer', sdp });
@@ -240,6 +252,25 @@ async function openAgentSocket(s: AiCallSession): Promise<void> {
         const meta = m.conversation_initiation_metadata_event || {};
         s.conversationId = meta.conversation_id || null;
         s.agentReady = true;
+        console.log(`[AI-Call] ${s.waCallId} agente pronto ${((Date.now() - s.answeredAt) / 1000).toFixed(1)}s após atender`);
+        // Áudio que o cliente falou enquanto o agente conectava (o "Alô?"
+        // logo ao atender) -- sem isso ele se perdia.
+        if (s.preBytes) {
+          const pre = Buffer.concat(s.preBuffer);
+          s.preBuffer = []; s.preBytes = 0;
+          for (let i = 0; i < pre.length; i += USER_CHUNK_BYTES) {
+            ws.send(JSON.stringify({ user_audio_chunk: pre.subarray(i, i + USER_CHUNK_BYTES).toString('base64') }));
+          }
+        }
+        // O agente não tem fala de abertura: espera o cliente. Se ele ficar
+        // calado ~10s depois de atender, a IA diz "Alô?" (regra no prompt do
+        // agente -- scripts/elevenlabs-sdr-agent.ts).
+        s.silenceTimer = setTimeout(() => {
+          if (!s.userSpoke && s.ws?.readyState === WebSocket.OPEN) {
+            console.log(`[AI-Call] ${s.waCallId} cliente calado ${((Date.now() - s.answeredAt) / 1000).toFixed(1)}s após atender, IA vai dizer "Alô?"`);
+            s.ws.send(JSON.stringify({ type: 'user_message', text: SILENCE_MARKER }));
+          }
+        }, Math.max(0, OPENING_SILENCE_MS - (Date.now() - s.answeredAt)));
         if (meta.agent_output_audio_format !== 'pcm_48000' || meta.user_input_audio_format !== 'pcm_48000') {
           console.warn(`[AI-Call] ${s.waCallId} formato de áudio inesperado:`, JSON.stringify(meta));
         }
@@ -259,9 +290,14 @@ async function openAgentSocket(s: AiCallSession): Promise<void> {
       case 'agent_response':
         if (m.agent_response_event?.agent_response) s.transcript.push({ role: 'IA', text: m.agent_response_event.agent_response });
         break;
-      case 'user_transcript':
-        if (m.user_transcription_event?.user_transcript) s.transcript.push({ role: 'Cliente', text: m.user_transcription_event.user_transcript });
+      case 'user_transcript': {
+        const text = m.user_transcription_event?.user_transcript;
+        if (text && text !== SILENCE_MARKER) {
+          s.userSpoke = true;
+          s.transcript.push({ role: 'Cliente', text });
+        }
         break;
+      }
     }
   });
   ws.on('close', (code) => {
@@ -275,9 +311,27 @@ async function openAgentSocket(s: AiCallSession): Promise<void> {
 }
 
 function onInboundRtp(s: AiCallSession, payload: Buffer): void {
-  if (!s.agentReady || !s.ws || s.ws.readyState !== WebSocket.OPEN || !payload.length) return;
+  if (!s.answered || s.ending || !payload.length) return;
   let pcm: Buffer;
   try { pcm = s.decoder.decode(payload); } catch { return; }
+
+  // Detector simples de voz só pro "Alô?" de abertura: 100ms seguidos com
+  // volume de fala contam como o cliente ter falado (a transcrição da
+  // ElevenLabs chega depois, e o aviso de silêncio não pode atropelar).
+  if (!s.userSpoke) {
+    const samples = new Int16Array(pcm.buffer, pcm.byteOffset, pcm.length / 2);
+    let sum = 0;
+    for (const v of samples) sum += v * v;
+    s.loudFrames = Math.sqrt(sum / Math.max(samples.length, 1)) > SPEECH_RMS ? s.loudFrames + 1 : 0;
+    if (s.loudFrames >= 5) s.userSpoke = true;
+  }
+
+  if (!s.agentReady || !s.ws || s.ws.readyState !== WebSocket.OPEN) {
+    s.preBuffer.push(pcm);
+    s.preBytes += pcm.length;
+    while (s.preBytes > PRE_BUFFER_MAX_BYTES && s.preBuffer.length > 1) s.preBytes -= s.preBuffer.shift()!.length;
+    return;
+  }
   s.inChunks.push(pcm);
   s.inBytes += pcm.length;
   if (s.inBytes >= USER_CHUNK_BYTES) {
@@ -342,6 +396,7 @@ async function endSession(s: AiCallSession, reason: string, terminateOnMeta: boo
   sessions.delete(s.waCallId);
   if (s.ringTimeout) clearTimeout(s.ringTimeout);
   if (s.pacer) clearInterval(s.pacer);
+  if (s.silenceTimer) clearTimeout(s.silenceTimer);
   try { s.ws?.close(); } catch { /* já fechado */ }
   console.log(`[AI-Call] ${s.waCallId} encerrando (${reason}), ${s.transcript.length} falas`);
 
@@ -411,7 +466,7 @@ async function saveCallNote(s: AiCallSession): Promise<void> {
   if (collected.length) lines.push('', 'Dados que o cliente informou:', ...collected);
 
   const transcript: TranscriptLine[] = conv?.transcript?.length
-    ? conv.transcript.filter((t: any) => t.message).map((t: any) => ({ role: t.role === 'agent' ? 'IA' : 'Cliente', text: t.message }))
+    ? conv.transcript.filter((t: any) => t.message && t.message.trim() !== SILENCE_MARKER).map((t: any) => ({ role: t.role === 'agent' ? 'IA' : 'Cliente', text: t.message }))
     : s.transcript;
   if (transcript.length) lines.push('', 'Transcrição:', ...transcript.map((t) => `${t.role}: ${t.text}`));
 
