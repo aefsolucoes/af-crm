@@ -22,7 +22,7 @@ const RATE = 48000;
 const FRAME = 960; // 20ms
 const USER_CHUNK_BYTES = (RATE / 10) * 2; // 100ms por mensagem pro agente
 const RING_TIMEOUT_MS = 75_000;
-const OPENING_SILENCE_MS = 10_000;
+const OPENING_SILENCE_MS = 3_000;
 const SILENCE_MARKER = '[silêncio]';
 const SPEECH_RMS = 700;
 const PRE_BUFFER_MAX_BYTES = 4 * RATE * 2; // 4s
@@ -263,7 +263,7 @@ async function openAgentSocket(s: AiCallSession): Promise<void> {
           }
         }
         // O agente não tem fala de abertura: espera o cliente. Se ele ficar
-        // calado ~10s depois de atender, a IA diz "Alô?" (regra no prompt do
+        // calado ~3s depois de atender, a IA diz "Alô?" (regra no prompt do
         // agente -- scripts/elevenlabs-sdr-agent.ts).
         s.silenceTimer = setTimeout(() => {
           if (!s.userSpoke && s.ws?.readyState === WebSocket.OPEN) {

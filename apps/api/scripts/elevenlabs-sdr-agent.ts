@@ -89,7 +89,7 @@ function body(voiceId: string | null) {
     conversation_config: {
       agent: {
         // Vazio de propósito: a IA espera o cliente falar. Se ele ficar
-        // calado ~10s depois de atender, a ponte (ai-call-bridge.service.ts)
+        // calado ~3s depois de atender, a ponte (ai-call-bridge.service.ts)
         // manda "[silêncio]" e a IA diz só "Alô?" -- o turn_timeout da
         // ElevenLabs não conta no começo da conversa (testado 2026-09-24).
         first_message: '',
