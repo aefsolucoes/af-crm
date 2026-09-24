@@ -9,6 +9,7 @@ import {
   createCallMessage, finalizeCallMessage,
 } from '../services/whatsapp-calling.service';
 import { getWhatsAppConfig, normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
+import { startAiCall } from '../services/ai-call-bridge.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -187,6 +188,17 @@ router.post('/outbound', validate(outboundSchema), async (req: AuthRequest, res:
   await createCallMessage(req.body.leadId, 'OUTBOUND', waCallId, io, req.user!.accountId);
 
   res.json({ ok: true, waCallId, callId: created.id });
+});
+
+// POST /api/calls/ai-outbound — a IA (ElevenLabs) liga pro cliente pelo
+// WhatsApp do CRM. Só com permissão de ligação já concedida pelo cliente.
+// Restrito a ADMIN enquanto está em piloto.
+router.post('/ai-outbound', validate(leadIdSchema), async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores podem usar a ligação da IA por enquanto' });
+  const io = (req as any).app.get('io');
+  const result = await startAiCall(req.user!.accountId, req.body.leadId, io);
+  if (!result.ok) return res.status(result.needsPermission ? 200 : 400).json(result);
+  res.json(result);
 });
 
 // GET /api/calls/history?leadId=

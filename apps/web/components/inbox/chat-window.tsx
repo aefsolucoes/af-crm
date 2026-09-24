@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed, Bot } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -13,6 +13,7 @@ import { AttachmentView } from '@/components/inbox/message-attachment';
 import { MessageTemplate, CATEGORY_META, fillTemplate } from '@/lib/templates';
 import { MessageMenu } from '@/components/inbox/message-menu';
 import { useOutboundCallStore } from '@/store/outbound-call.store';
+import { useAuthStore } from '@/store/auth.store';
 import { EmojiPickerButton } from '@/components/inbox/emoji-picker';
 
 // Cor estável por remetente em grupos (estilo WhatsApp: mesma pessoa, mesma cor).
@@ -267,6 +268,23 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   async function handleClickLigar() {
     await outboundCall.checkAndCall(leadId, leadName);
     refreshCallPermission();
+  }
+
+  const isAdmin = useAuthStore((s) => s.user?.role === 'ADMIN');
+  const [aiCalling, setAiCalling] = useState(false);
+  async function handleAiCall() {
+    if (!window.confirm(`A IA vai ligar agora pra ${leadName} pelo WhatsApp. Continuar?`)) return;
+    setAiCalling(true);
+    try {
+      const { data } = await api.post('/api/calls/ai-outbound', { leadId });
+      if (data.ok) toast('A IA está ligando pro cliente. O resumo da conversa vai pras anotações do card.', 'success');
+      else toast(data.error || 'Não foi possível ligar', data.needsPermission ? 'warning' : 'error');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não foi possível ligar com a IA', 'error');
+    } finally {
+      setAiCalling(false);
+      refreshCallPermission();
+    }
   }
 
   // Link direto pra essa conversa (?leadId=... já é lido pela própria tela
@@ -1322,6 +1340,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             >
               {isThisLeadCalling && outboundCall.stage === 'checking' ? <Loader2 size={13} className="animate-spin" /> : <Phone size={13} />}
             </span>
+          )}
+          {isAdmin && callButtonState === 'permitted' && outboundCall.stage === 'idle' && (
+            <button
+              onClick={handleAiCall}
+              disabled={aiCalling}
+              title="A IA liga pro cliente pelo WhatsApp e salva o resumo nas anotações do card (piloto, só administradores)"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0 bg-violet-500/20 text-violet-300 hover:bg-violet-500/30"
+            >
+              {aiCalling ? <Loader2 size={13} className="animate-spin" /> : <Bot size={13} />}
+              <span className="hidden md:inline">IA liga</span>
+            </button>
           )}
         </div>
       </div>

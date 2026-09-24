@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { getWhatsAppConfig, resolveContactAndLeadByPhone, listMetaTemplates, sendWhatsAppTemplateMessage, normalizeBrazilianWhatsAppPhone } from './whatsapp.service';
 import { sendPushToAccount } from './push.service';
+import { handleAiCallAnswer, handleAiCallEnded } from './ai-call-bridge.service';
 
 const prisma = new PrismaClient();
 
@@ -396,7 +397,9 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
               where: { waCallId },
               data: { status: 'CONNECTED', connectedAt: new Date() },
             });
-            if (existing.answeredByUserId) {
+            if (await handleAiCallAnswer(waCallId, sdp)) {
+              console.log(`[AI-Call] cliente atendeu ${waCallId}, ligando o agente`);
+            } else if (existing.answeredByUserId) {
               console.log(`[Calling] SDP de resposta (outbound) recebido -- repassando pro user_${existing.answeredByUserId}, sdp ${sdp.length} bytes:`, waCallId);
               io.to(`user_${existing.answeredByUserId}`).emit('call_answered', { waCallId, sdp });
             } else {
@@ -470,6 +473,7 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
 
         const durationSec = existing.connectedAt ? Math.max(0, Math.round((updated.endedAt!.getTime() - existing.connectedAt.getTime()) / 1000)) : 0;
         await finalizeCallMessage(waCallId, updated.status, durationSec, io, accountId, existing.leadId);
+        handleAiCallEnded(waCallId);
         continue;
       }
 
