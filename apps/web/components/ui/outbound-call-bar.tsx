@@ -1,0 +1,110 @@
+'use client';
+import { useEffect } from 'react';
+import { X, Phone } from 'lucide-react';
+import { useOutboundCallStore } from '@/store/outbound-call.store';
+import { getSocket } from '@/lib/socket';
+import { Avatar } from '@/components/ui/avatar';
+import { ActiveCallBar } from '@/components/ui/active-call-bar';
+
+/** "5561985243606" → "+55 (61) 98524-3606". */
+function formatPhoneDisplay(phone: string | null | undefined): string {
+  if (!phone) return '';
+  const d = phone.replace(/\D/g, '');
+  if (d.length === 13 && d.startsWith('55')) {
+    return `+55 (${d.slice(2, 4)}) ${d.slice(4, 9)}-${d.slice(9)}`;
+  }
+  return `+${d}`;
+}
+
+/** Ligação FEITA pelo CRM (fluxo outbound) — global, montado uma vez no
+ *  layout do dashboard (igual o <IncomingCallRinger /> já é pro fluxo de
+ *  receber ligação). ACHADO REAL (2026-09-24): antes disso, todo esse
+ *  estado (RTCPeerConnection, nome de quem tá sendo chamado etc.) vivia
+ *  dentro do ChatWindow — trocar de conversa no meio de uma ligação trocava
+ *  o nome mostrado na barra (pegava o da conversa aberta agora, não o de
+ *  quem realmente estava sendo chamado) e, se o usuário saísse da Inbox,
+ *  a ligação em si sumia. Agora é um Zustand store global (store/
+ *  outbound-call.store.ts) — esse componente só monta a UI por cima dele. */
+export function OutboundCallBar() {
+  const { stage, leadName, targetPhone, muted, connectedAt, registerAudioEl, confirmCall, dismiss, requestPermission, recheckPermission, hangup, toggleMute, handleCallAnswered, handleCallEnded } = useOutboundCallStore();
+
+  useEffect(() => {
+    const socket = getSocket();
+    const onAnswered = ({ waCallId, sdp }: { waCallId: string; sdp: string }) => handleCallAnswered(waCallId, sdp);
+    const onEnded = ({ waCallId }: { waCallId: string }) => handleCallEnded(waCallId);
+    socket.on('call_answered', onAnswered);
+    socket.on('call_ended', onEnded);
+    return () => {
+      socket.off('call_answered', onAnswered);
+      socket.off('call_ended', onEnded);
+    };
+  }, [handleCallAnswered, handleCallEnded]);
+
+  return (
+    <>
+      <audio ref={(el) => registerAudioEl(el)} autoPlay />
+
+      {(stage === 'need-permission' || stage === 'permission-sent') && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 px-4 py-2.5 rounded-xl shadow-lg bg-[#233138] text-[#e9edef] text-sm">
+          {stage === 'need-permission' ? (
+            <>
+              <span>Esse cliente ainda não autorizou receber ligação.</span>
+              <button onClick={requestPermission} className="text-emerald-400 font-medium hover:underline">Pedir permissão</button>
+              <button onClick={dismiss} className="text-[#8696a0] hover:text-[#e9edef]"><X size={14} /></button>
+            </>
+          ) : (
+            <>
+              <span>Pedido enviado — aguardando o cliente aceitar.</span>
+              <button onClick={recheckPermission} className="text-emerald-400 font-medium hover:underline">Verificar</button>
+              <button onClick={dismiss} className="text-[#8696a0] hover:text-[#e9edef]"><X size={14} /></button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Popup de confirmação antes de ligar de verdade — estilo WhatsApp. */}
+      {stage === 'confirm' && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/50" onClick={dismiss}>
+          <div
+            className="app-column-surface rounded-2xl shadow-2xl w-full max-w-xs flex flex-col items-center gap-4 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Avatar name={leadName || ''} size="lg" />
+            <div className="text-center">
+              <p className="text-base font-semibold text-[#e9edef]">{leadName}</p>
+              {targetPhone && <p className="text-sm text-[#8696a0] mt-0.5">{formatPhoneDisplay(targetPhone)}</p>}
+              <p className="text-xs text-[#8696a0] mt-2">Ligar pra esse cliente pelo WhatsApp?</p>
+            </div>
+            <div className="flex items-center gap-6 mt-1">
+              <button
+                onClick={dismiss}
+                title="Cancelar"
+                className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/20 text-[#e9edef] flex items-center justify-center transition-colors"
+              >
+                <X size={20} />
+              </button>
+              <button
+                onClick={confirmCall}
+                title="Ligar"
+                className="w-14 h-14 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow-lg transition-colors"
+              >
+                <Phone size={22} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(stage === 'connecting' || stage === 'connected') && (
+        <ActiveCallBar
+          callerName={leadName || ''}
+          connectedAt={connectedAt}
+          connecting={stage === 'connecting'}
+          muted={muted}
+          onToggleMute={toggleMute}
+          onHangup={hangup}
+        />
+      )}
+    </>
+  );
+}

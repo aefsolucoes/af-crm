@@ -8,6 +8,7 @@ import { toast } from '@/components/ui/toast';
 import { GoogleDriveAlert } from '@/components/ui/google-drive-alert';
 import { ContractingLeadAlert } from '@/components/ui/contracting-lead-alert';
 import { IncomingCallRinger } from '@/components/ui/incoming-call-ringer';
+import { OutboundCallBar } from '@/components/ui/outbound-call-bar';
 import { useAuthStore } from '@/store/auth.store';
 import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
@@ -126,6 +127,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <GoogleDriveAlert />
       <ContractingLeadAlert />
       <IncomingCallRinger />
+      <OutboundCallBar />
     </div>
   );
 }
