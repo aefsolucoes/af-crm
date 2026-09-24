@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useLayoutEffect, useRef, useState, Fragment } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
@@ -241,15 +241,33 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // cliente já autorizou, sem precisar clicar pra descobrir. Pedido real do
   // usuário: virou um botão só (cinza = pede permissão ao clicar, verde =
   // liga ao clicar), sem popup intermediário de "pedir permissão".
-  const [callPermitted, setCallPermitted] = useState<boolean | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    setCallPermitted(null);
-    api.get('/api/calls/permission-state', { params: { leadId } })
-      .then(({ data }) => { if (!cancelled) setCallPermitted(!!data.permitted); })
-      .catch(() => { if (!cancelled) setCallPermitted(null); });
-    return () => { cancelled = true; };
+  //
+  // ACHADO REAL (2026-09-24): depois de clicar (pedindo a permissão), o
+  // botão voltava pro MESMO cinza de antes -- não tinha nenhum jeito de
+  // saber, olhando pro CRM, que o pedido já tinha sido mandado ("o pedido
+  // só aparece pro cliente, não aparece pra mim"). Terceiro estado
+  // "pending" (âmbar) resolve isso -- usa o `canRequest` que a Meta já
+  // devolve (false = já tem um pedido recente em aberto).
+  const [callButtonState, setCallButtonState] = useState<'permitted' | 'pending' | 'none' | null>(null);
+  const refreshCallPermission = useCallback(() => {
+    return api.get('/api/calls/permission-state', { params: { leadId } })
+      .then(({ data }) => {
+        setCallButtonState(data.permitted ? 'permitted' : data.canRequest ? 'none' : 'pending');
+      })
+      .catch(() => setCallButtonState(null));
   }, [leadId]);
+  useEffect(() => {
+    setCallButtonState(null);
+    refreshCallPermission();
+  }, [refreshCallPermission]);
+  // Depois do clique (que pode ter só pedido permissão, sem ligar de
+  // verdade), re-consulta pra atualizar a cor do botão na hora -- sem isso
+  // ficava com a MESMA cor de antes do clique, sem nenhum sinal pra quem tá
+  // no CRM de que o pedido já saiu.
+  async function handleClickLigar() {
+    await outboundCall.checkAndCall(leadId, leadName);
+    refreshCallPermission();
+  }
 
   // Link direto pra essa conversa (?leadId=... já é lido pela própria tela
   // da Inbox — apps/web/app/(dashboard)/inbox/page.tsx — e abre direto
@@ -1278,15 +1296,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           </button>
           {outboundCall.stage === 'idle' ? (
             <button
-              onClick={() => outboundCall.checkAndCall(leadId, leadName)}
-              title={callPermitted ? 'Ligar pro cliente pelo WhatsApp' : 'Cliente ainda não autorizou — clique pra pedir permissão'}
+              onClick={handleClickLigar}
+              title={
+                callButtonState === 'permitted' ? 'Ligar pro cliente pelo WhatsApp'
+                : callButtonState === 'pending' ? 'Pedido de permissão já enviado — aguardando o cliente responder (clique pra verificar de novo)'
+                : 'Cliente ainda não autorizou — clique pra pedir permissão'
+              }
               className={cn(
                 'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0',
-                callPermitted ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30' : 'bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15'
+                callButtonState === 'permitted' ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
+                : callButtonState === 'pending' ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
+                : 'bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15'
               )}
             >
-              <Phone size={13} />
-              <span className="hidden md:inline">Ligar</span>
+              {callButtonState === 'pending' ? <Clock size={13} /> : <Phone size={13} />}
+              <span className="hidden md:inline">{callButtonState === 'pending' ? 'Aguardando' : 'Ligar'}</span>
             </button>
           ) : (
             // Já tem uma ligação em curso -- global, pode ser desta conversa
@@ -1455,7 +1479,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                   <div key={msg.id} className={cn('flex mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
                     <button
                       type="button"
-                      onClick={canCallBack ? () => outboundCall.checkAndCall(leadId, leadName) : undefined}
+                      onClick={canCallBack ? handleClickLigar : undefined}
                       title={canCallBack ? 'Ligar de novo' : undefined}
                       disabled={!canCallBack}
                       className={cn(

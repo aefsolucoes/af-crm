@@ -186,6 +186,14 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
       console.warn('[Calling] outbound: call_answered ignorado (waCallId não bate ou sem PC ativo)');
       return;
     }
+    // Para o "tuuu...tuuu..." AQUI, assim que a Meta avisa que o cliente
+    // atendeu -- achado real do usuário: esperar o WebRTC terminar de
+    // negociar (onconnectionstatechange === 'connected', mais abaixo) e só
+    // então parar deixava tocando por mais alguns segundos DEPOIS do
+    // cliente já ter atendido de verdade (ele já tava falando "alô" e o
+    // toque de chamando continuava do nosso lado).
+    stopRingback?.();
+    stopRingback = null;
     try {
       await pc.setRemoteDescription({ type: 'answer', sdp });
       console.log('[Calling] outbound: setRemoteDescription(answer) ok');
