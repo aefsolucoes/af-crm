@@ -35,9 +35,10 @@ function issueTokens(user: User) {
   };
 }
 
-// 1ª etapa: valida e-mail + senha. Se o e-mail estiver configurado, gera um
-// código, envia para o e-mail cadastrado e pede a 2ª etapa. Caso contrário,
-// entra direto (para não trancar ninguém antes do SMTP estar pronto).
+// 1ª etapa: valida e-mail + senha. O código por e-mail só é pedido com
+// LOGIN_EMAIL_CODE=on no Railway -- separado do SMTP de propósito: o time
+// desligou o código (travava o login) mas precisa do SMTP pra mandar e-mail
+// pros clientes (Inbox/Automações).
 export async function loginService(email: string, password: string) {
   // E-mail é sempre guardado em minúsculas na criação; normaliza aqui também
   // para o login não ligar para maiúscula/minúscula (ex.: "Fabio@..." x "fabio@...").
@@ -47,7 +48,7 @@ export async function loginService(email: string, password: string) {
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) throw new Error('Credenciais inválidas');
 
-  if (!isEmailConfigured()) {
+  if (process.env.LOGIN_EMAIL_CODE !== 'on' || !isEmailConfigured()) {
     return issueTokens(user);
   }
 
