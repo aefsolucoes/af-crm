@@ -1157,7 +1157,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           da direita) pra fora da tela — achado real do usuário (2026-09-24).
           Chamadas/Ligar (o par mais novo, de ligação de voz) desce pra uma
           segunda linha, abaixo de Sugerir resposta/Ativar IA. */}
-      <div className="relative z-10 flex flex-col gap-2 px-4 py-3 text-[#e9edef] shadow-md" style={{ backgroundColor: '#202c33' }}>
+      <div className="relative z-10 flex flex-col gap-1.5 px-4 py-2 text-[#e9edef] shadow-md" style={{ backgroundColor: '#202c33' }}>
         <div className="flex items-center gap-3">
           {/* Voltar pra lista de conversas — só existe no mobile (desktop
               mostra a lista sempre ao lado, não precisa de botão pra voltar). */}
@@ -1263,7 +1263,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
       {/* Status do canal — só existe a API Oficial, então é um indicador fixo,
           não mais um seletor (o canal QR/Baileys foi removido do CRM). */}
-      <div className="relative z-10 flex items-center gap-1 px-4 py-2 bg-[#202c33] border-b border-[#222e35] flex-wrap">
+      <div className="relative z-10 flex items-center gap-1 px-4 py-1.5 bg-[#202c33] border-b border-[#222e35] flex-wrap">
         <span
           title={apiActive ? 'API oficial da Meta ativa' : 'API oficial não configurada/inativa'}
           className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-[#8696a0]"
