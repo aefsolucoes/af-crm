@@ -1513,7 +1513,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                     style={{ backgroundColor: isOut ? '#005c4b' : '#202c33' }}
                   >
                     {liveDeleted ? (
-                      <p className="text-sm italic text-[#e9edef]/50 pr-12">🚫 Mensagem apagada</p>
+                      <p className="text-sm italic text-[#e9edef]/50 pr-20">🚫 Mensagem apagada</p>
                     ) : (
                       <>
                         {msg.forwardedFromLeadName && (
@@ -1614,7 +1614,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                             ? (msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '')
                             : msg.content;
                           if (!text) return null;
-                          return <p className="text-sm leading-relaxed whitespace-pre-wrap pr-12">{renderMessageText(text)}</p>;
+                          // pr-20 (não pr-12): o rodapé absoluto (estrela + hora +
+                          // check de status) pode chegar a ~78px de largura numa
+                          // mensagem enviada e marcada com estrela — com pr-12
+                          // (48px) a última linha do texto ficava coberta por
+                          // ele, parecendo "cortado"/duplicado.
+                          return <p className="text-sm leading-relaxed whitespace-pre-wrap pr-20">{renderMessageText(text)}</p>;
                         })()}
                       </>
                     )}
