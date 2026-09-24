@@ -44,6 +44,12 @@ const MOVE_STAGE_RULES = `MOVER O CARD DE ETAPA ("moveToStage") — só estes va
  *  motivo obrigatório quando usado. */
 const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um motivo curto (1 frase, baseado no que o cliente disse) quando ele recusar EXPLICITAMENTE: disser que não quer mais, não tem mais interesse, desistiu, ou pedir pra não ser mais contatado. Deixe null/vazio em todos os outros casos — isso é diferente de só ficar em silêncio (isso é "Lead Sem Retorno", acima), e é definitivo, então só use quando a recusa for clara.`;
 
+/** Diferente de markLost: o negócio continua vivo, só a INSISTÊNCIA
+ *  automática (lembrete periódico) deve parar — um humano assume esse
+ *  cliente a partir daqui. Ex.: cliente irritado com o lembrete repetido de
+ *  documento, mas ainda quer seguir com o negócio. */
+const STOP_FOLLOWUP_RULES = `PARAR LEMBRETE AUTOMÁTICO ("stopFollowUp": true) — quando o cliente reclamar de estar recebendo cobranças/lembretes repetidos (ex.: sobre documentos pendentes), ficar visivelmente irritado ou pedir explicitamente pra parar de insistir, MAS sem recusar o negócio em si (se ele recusar o negócio de verdade, isso é "markLost", acima, não isto). Use false em todos os outros casos.`;
+
 function buildFillFieldsRules(camposTexto: string): string {
   return `PREENCHER DADOS DO CARD ("extractedFields") — um objeto com os campos abaixo que o cliente mencionar CLARAMENTE na conversa (nunca invente, deduza ou arredonde um valor que ele não disse). Use só chaves desta lista, ou {} se nada novo foi mencionado:
 ${camposTexto}`;
@@ -51,7 +57,7 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente>", "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | null>", "markLost": "<motivo curto, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
+{"reply": "<mensagem para o cliente>", "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
 
 export interface AiAutoReplyResult {
   reply: string;
@@ -61,6 +67,11 @@ export interface AiAutoReplyResult {
   moveToStage?: string | null;
   /** Motivo da perda, se a IA identificou uma recusa explícita — aplicar via applyAiExtractedActions (marca status LOST, não é etapa). */
   markLost?: string | null;
+  /** true = cliente pediu pra parar de receber lembrete automático (ex.:
+   *  cobrança repetida de documento), sem recusar o negócio em si — aplicar
+   *  via applyAiExtractedActions (marca uma tag que os gatilhos de
+   *  inatividade recorrente já sabem excluir). */
+  stopFollowUp?: boolean;
   /** Campos do card que a IA extraiu da conversa — aplicar via applyAiExtractedActions. */
   extractedFields?: Record<string, string> | null;
 }
@@ -94,6 +105,8 @@ ${HANDOFF_RULES}
 ${MOVE_STAGE_RULES}
 
 ${MARK_LOST_RULES}
+
+${STOP_FOLLOWUP_RULES}
 
 ${buildFillFieldsRules(camposTexto)}
 
@@ -161,6 +174,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         handoff: parsed.handoff === true,
         moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
         markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
+        stopFollowUp: parsed.stopFollowUp === true,
         extractedFields,
       };
     }

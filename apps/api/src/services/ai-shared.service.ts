@@ -209,7 +209,17 @@ export interface AiExtractedAction {
   /** Motivo da perda, se a IA decidiu marcar o lead como Perdido — string
    *  não-vazia = marca; ausente/vazio = não mexe no status. */
   markLost?: string | null;
+  /** true = cliente pediu pra parar de receber lembrete automático (sem
+   *  recusar o negócio) — marca STOP_FOLLOWUP_TAG, que os gatilhos de
+   *  inatividade recorrente (excludeTag) já sabem respeitar. */
+  stopFollowUp?: boolean;
 }
+
+/** Tag usada pra excluir o lead de lembretes automáticos recorrentes
+ *  (automation.service.ts, checkInactivityAutomations → cfg.excludeTag) —
+ *  nome em texto legível de propósito, aparece como tag normal na tela do
+ *  card, igual "Site"/"Campanha". */
+export const STOP_FOLLOWUP_TAG = 'Pediu pra parar lembretes';
 
 /** Aplica o que a IA de auto-resposta decidiu (opcional): mover o card pra
  *  uma das etapas permitidas, preencher campos que o cliente mencionou na
@@ -226,9 +236,24 @@ export async function applyAiExtractedActions(
   try {
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
-      select: { id: true, name: true, pipelineId: true, customFields: true },
+      select: { id: true, name: true, pipelineId: true, customFields: true, tags: true },
     });
     if (!lead) return;
+
+    // Cliente pediu pra parar de receber lembrete automático (sem recusar o
+    // negócio) — marca a tag que os gatilhos de inatividade recorrente
+    // (excludeTag) já sabem respeitar, e deixa registrado pra um humano ver.
+    if (action.stopFollowUp) {
+      const tags = Array.from(new Set([...(lead.tags || []), STOP_FOLLOWUP_TAG]));
+      await prisma.lead.update({ where: { id: lead.id }, data: { tags } });
+      await prisma.note.create({
+        data: { leadId: lead.id, content: 'A IA identificou que o cliente pediu pra parar de receber os lembretes automáticos — os envios recorrentes foram pausados pra esse lead. O negócio continua ativo, só não insiste mais sozinho.', type: 'COMMENT' },
+      }).catch(() => {});
+      logActivity({
+        accountId, userId: null, userName: 'Assistente IA', action: 'lead_tag_added',
+        leadId: lead.id, leadName: lead.name, summary: 'pausou os lembretes automáticos a pedido do cliente',
+      });
+    }
 
     // Marcar como Perdido — separado de moveToStage de propósito: é o
     // STATUS do lead (Aberto/Ganho/Perdido), não a etapa do funil, e exige

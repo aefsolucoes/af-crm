@@ -1164,7 +1164,7 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 
     const genResult = await generateAiAutoReply(accountId, leadId, incomingText);
     if (!genResult) return;
-    const { reply, handoff, moveToStage, markLost, extractedFields } = genResult;
+    const { reply, handoff, moveToStage, markLost, stopFollowUp, extractedFields } = genResult;
 
     const result = await sendWhatsAppMessage(phone, reply, accountId, departmentId);
     if (!result.success) {
@@ -1181,8 +1181,8 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 
     // Mover etapa / marcar Perdido / preencher dados do card — independente
     // do handoff (pode marcar Perdido no mesmo turno em que encerra, por ex.).
-    if (moveToStage || markLost || (extractedFields && Object.keys(extractedFields).length)) {
-      await applyAiExtractedActions(accountId, leadId, { moveToStage, markLost, extractedFields }, io);
+    if (moveToStage || markLost || stopFollowUp || (extractedFields && Object.keys(extractedFields).length)) {
+      await applyAiExtractedActions(accountId, leadId, { moveToStage, markLost, stopFollowUp, extractedFields }, io);
     }
 
     if (handoff) await handleAiHandoffCloudApi(leadId, io);

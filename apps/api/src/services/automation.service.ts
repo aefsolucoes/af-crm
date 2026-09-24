@@ -464,12 +464,24 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
       // abaixo, separado — stageName continua só pra etapa em si.
       const stageNamePattern = norm(String(cfg.stageName || ''));
       const departmentId = cfg.departmentId ? String(cfg.departmentId) : null;
+      // Repete mesmo com o lead calado (ex.: lembrete de documento a cada N
+      // dias) — sem isso, o dedupe abaixo (baseado em lastMsgAt) só dispara
+      // UMA vez por período de silêncio, e só libera de novo depois que o
+      // lead manda uma mensagem nova. Com essa flag, o dedupe passa a ser
+      // "já disparei nos últimos N dias", não "já disparei desde a última
+      // mensagem dele" — dispara de novo mesmo que ele nunca responda.
+      const repeatEveryDays = cfg.repeatEveryDays === true;
+      // Exclui lead com essa tag (ex.: "Pediu pra parar lembretes", marcada
+      // pela IA quando o cliente reage mal a ser cobrado) — mesmo padrão de
+      // onlySiteLeads, só que de exclusão em vez de inclusão.
+      const excludeTag = cfg.excludeTag ? String(cfg.excludeTag) : null;
 
       const threshold = new Date(Date.now() - days * 86_400_000);
       const leads = await prisma.lead.findMany({
         where: {
           accountId: rule.accountId, status: 'OPEN', archived: false, isGroup: false, messages: { some: {} },
           ...(cfg.onlySiteLeads ? { tags: { has: 'Site' } } : {}),
+          ...(excludeTag ? { NOT: { tags: { has: excludeTag } } } : {}),
         },
         select: {
           id: true,
@@ -496,13 +508,17 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;
         if (!eligible) continue;
         countEligible++;
-        const already = await prisma.automationLog.findFirst({ where: { ruleId: rule.id, leadId: lead.id, createdAt: { gt: lastMsgAt } } });
+        const already = await prisma.automationLog.findFirst({
+          where: repeatEveryDays
+            ? { ruleId: rule.id, leadId: lead.id, createdAt: { gt: new Date(Date.now() - days * 86_400_000) } }
+            : { ruleId: rule.id, leadId: lead.id, createdAt: { gt: lastMsgAt } },
+        });
         if (already) { countAlready++; continue; }
         countExecuted++;
         await executeRuleForLead(rule, lead.id, io, {}).catch((err) => console.error('[Automation] Falha (inatividade)', rule.id, err));
       }
 
-      console.log(`[Automation][inatividade] "${rule.name}" (${rule.id}): ${leads.length} leads na base (OPEN${cfg.onlySiteLeads ? '+Site' : ''}) → ${countStage} bateram etapa "${cfg.stageName || '(qualquer)'}" → ${countDept} bateram setor${departmentId ? '' : ' (qualquer, sem filtro)'} → ${countEligible} elegíveis por tempo (${days}d) → ${countExecuted} executados (${countAlready} já tinham disparado antes).`);
+      console.log(`[Automation][inatividade] "${rule.name}" (${rule.id}): ${leads.length} leads na base (OPEN${cfg.onlySiteLeads ? '+Site' : ''}${excludeTag ? `, sem tag "${excludeTag}"` : ''}) → ${countStage} bateram etapa "${cfg.stageName || '(qualquer)'}" → ${countDept} bateram setor${departmentId ? '' : ' (qualquer, sem filtro)'} → ${countEligible} elegíveis por tempo (${days}d${repeatEveryDays ? ', repete mesmo calado' : ''}) → ${countExecuted} executados (${countAlready} já tinham disparado antes).`);
     } catch (err) {
       console.error('[Automation] Erro em checkInactivityAutomations (regra ' + rule.id + '):', err);
     }
