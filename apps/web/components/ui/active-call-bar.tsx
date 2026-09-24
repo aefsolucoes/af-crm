@@ -1,8 +1,37 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { Mic, MicOff, PhoneOff } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Mic, MicOff, PhoneOff, Volume2, Ear } from 'lucide-react';
 
-/** Barra de ligação em andamento — puramente visual, sem lógica de WebRTC.
+/** Troca a saída de áudio entre viva-voz (alto-falante) e fone de ouvido
+ *  (auricular) -- só existe em celular (o botão que chama isso é `md:hidden`
+ *  no JSX abaixo). Achado real do usuário: em celular a ligação SEMPRE saía
+ *  no viva-voz, sem opção de usar o fone/auricular como uma ligação normal.
+ *
+ *  Não existe uma API padrão da Web pra "forçar auricular" -- só dá pra
+ *  ESCOLHER entre os dispositivos de saída de áudio que o navegador expõe
+ *  (HTMLMediaElement.setSinkId, ainda sem suporte no Safari/iOS -- funciona
+ *  em Chrome/Android). Por isso: se o navegador não suporta, o botão nem
+ *  aparece (feature-detect); se suporta mas os rótulos dos dispositivos não
+ *  derem pra identificar qual é qual, tenta o 2º dispositivo da lista como
+ *  aproximação (normalmente o auricular vem depois do alto-falante). */
+async function pickAudioOutputDeviceId(wantSpeaker: boolean): Promise<string | null> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const outputs = devices.filter((d) => d.kind === 'audiooutput');
+    if (!outputs.length) return null;
+    const bySpeakerLabel = outputs.find((d) => /speaker|alto.?falante|viva.?voz/i.test(d.label));
+    const byEarpieceLabel = outputs.find((d) => /earpiece|receiver|fone|auricular/i.test(d.label));
+    if (wantSpeaker) return bySpeakerLabel?.deviceId ?? outputs[0]?.deviceId ?? null;
+    return byEarpieceLabel?.deviceId ?? outputs[1]?.deviceId ?? outputs[0]?.deviceId ?? null;
+  } catch (err) {
+    console.error('[Calling] Falha ao listar saídas de áudio:', err);
+    return null;
+  }
+}
+
+/** Barra de ligação em andamento — puramente visual, sem lógica de WebRTC
+ *  (exceto o botão de viva-voz/fone, que mexe direto no elemento <audio>
+ *  via ref, já que a saída de áudio é uma propriedade do próprio elemento).
  *  Usada pelo ringer (chamada recebida) e pelo fluxo de ligação feita pelo
  *  CRM (mesma UI pros dois casos). Mostrada tanto em "conectando" (tocando/
  *  negociando) quanto em "conectado" -- silenciar e desligar precisam estar
@@ -16,6 +45,7 @@ export function ActiveCallBar({
   muted,
   onToggleMute,
   onHangup,
+  audioElRef,
 }: {
   callerName: string;
   connectedAt: number; // Date.now() de quando conectou (ignorado se connecting)
@@ -23,8 +53,26 @@ export function ActiveCallBar({
   muted: boolean;
   onToggleMute: () => void;
   onHangup: () => void;
+  /** Elemento <audio> de verdade tocando a ligação — só usado pelo botão de
+   *  viva-voz/fone (celular). Sem isso, o botão não aparece. */
+  audioElRef?: React.RefObject<HTMLAudioElement | null>;
 }) {
   const [elapsed, setElapsed] = useState(0);
+  const [onSpeaker, setOnSpeaker] = useState(true); // viva-voz é o padrão atual do navegador
+  const supportsSinkId = typeof window !== 'undefined' && !!(HTMLMediaElement.prototype as any).setSinkId;
+  async function toggleSpeaker() {
+    const audioEl = audioElRef?.current as any;
+    if (!audioEl?.setSinkId) return;
+    const next = !onSpeaker;
+    const deviceId = await pickAudioOutputDeviceId(next);
+    if (deviceId === null) return;
+    try {
+      await audioEl.setSinkId(deviceId);
+      setOnSpeaker(next);
+    } catch (err) {
+      console.error('[Calling] Falha ao trocar saída de áudio:', err);
+    }
+  }
 
   useEffect(() => {
     if (connecting) return;
@@ -43,6 +91,15 @@ export function ActiveCallBar({
         <span className="text-sm font-medium">{callerName}</span>
         <span className="text-xs text-emerald-400">{connecting ? 'Conectando…' : `${mm}:${ss}`}</span>
       </div>
+      {supportsSinkId && audioElRef && (
+        <button
+          onClick={toggleSpeaker}
+          title={onSpeaker ? 'Usar fone/auricular' : 'Usar viva-voz'}
+          className="md:hidden w-9 h-9 rounded-full flex items-center justify-center transition-colors bg-white/10 hover:bg-white/20"
+        >
+          {onSpeaker ? <Volume2 size={16} /> : <Ear size={16} />}
+        </button>
+      )}
       <button
         onClick={onToggleMute}
         title={muted ? 'Ativar microfone' : 'Mudo'}

@@ -3,7 +3,7 @@ import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { waitForIceGatheringComplete } from '@/lib/webrtc';
 
-export type OutboundCallStage = 'idle' | 'checking' | 'need-permission' | 'permission-sent' | 'confirm' | 'connecting' | 'connected';
+export type OutboundCallStage = 'idle' | 'checking' | 'confirm' | 'connecting' | 'connected';
 
 /** Estado de WebRTC (RTCPeerConnection, MediaStream, o waCallId em curso) —
  *  fica em variáveis de módulo, não dentro do Zustand: nunca é lido de forma
@@ -39,8 +39,6 @@ interface OutboundCallState {
   registerAudioEl: (el: HTMLAudioElement | null) => void;
   checkAndCall: (leadId: string, leadName: string) => Promise<void>;
   confirmCall: () => Promise<void>;
-  requestPermission: () => Promise<void>;
-  recheckPermission: () => Promise<void>;
   dismiss: () => void;
   hangup: () => Promise<void>;
   toggleMute: () => void;
@@ -58,41 +56,32 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
 
   registerAudioEl: (el) => { audioEl = el; },
 
+  // Botão único (pedido real do usuário 2026-09-24): sem popup intermediário
+  // de "pedir permissão" -- o botão "Ligar" já nasce verde/cinza (cor vem de
+  // uma checagem própria no ChatWindow, ao abrir a conversa) e, se ainda não
+  // tem permissão, clicar já PEDE a permissão na hora, sem diálogo no meio.
   checkAndCall: async (leadId, leadName) => {
     if (get().stage !== 'idle') return; // já tem uma ligação em curso (qualquer conversa)
     set({ stage: 'checking', leadId, leadName });
     try {
       const { data } = await api.get('/api/calls/permission-state', { params: { leadId } });
-      set({ targetPhone: data.phone || null });
-      // Não liga direto -- mostra o popup de confirmação (estilo WhatsApp:
-      // "Ligar pra Fulano (número)?") antes de discar de verdade.
-      set({ stage: data.permitted ? 'confirm' : 'need-permission' });
+      if (data.permitted) {
+        // Ainda mostra o popup de confirmação (estilo WhatsApp: "Ligar pra
+        // Fulano (número)?") antes de discar de verdade -- só o pedido de
+        // permissão que deixou de ter uma tela própria.
+        set({ targetPhone: data.phone || null, stage: 'confirm' });
+        return;
+      }
+      try {
+        await api.post('/api/calls/permission-request', { leadId });
+        toast('Esse cliente ainda não autorizou ligação — pedido de permissão enviado pra ele.', 'success');
+      } catch (err: any) {
+        toast(err?.response?.data?.error || 'Não foi possível pedir permissão pra ligar', 'error');
+      }
+      set({ stage: 'idle', leadId: null, leadName: null });
     } catch {
       set({ stage: 'idle', leadId: null, leadName: null });
       toast('Não foi possível verificar a permissão de ligação', 'error');
-    }
-  },
-
-  requestPermission: async () => {
-    const { leadId } = get();
-    if (!leadId) return;
-    try {
-      await api.post('/api/calls/permission-request', { leadId });
-      set({ stage: 'permission-sent' });
-    } catch (err: any) {
-      toast(err?.response?.data?.error || 'Não foi possível enviar o pedido de permissão', 'error');
-    }
-  },
-
-  recheckPermission: async () => {
-    const { leadId } = get();
-    if (!leadId) return;
-    try {
-      const { data } = await api.get('/api/calls/permission-state', { params: { leadId } });
-      if (data.permitted) toast('Permissão concedida! Clique em Ligar de novo pra chamar.', 'success');
-      else toast('Ainda sem resposta do cliente.', 'warning');
-    } catch {
-      toast('Não foi possível verificar', 'error');
     }
   },
 
@@ -143,8 +132,16 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
       const { data } = await api.post('/api/calls/outbound', { leadId, sdpOffer: sdp });
       if (!data.ok) {
         cleanup();
-        set({ stage: data.needsPermission ? 'need-permission' : 'idle' });
-        if (!data.needsPermission) toast('Não foi possível ligar', 'error');
+        set({ stage: 'idle', leadId: null, leadName: null });
+        // Raro (janela entre checar e ligar de verdade) -- a permissão que
+        // parecia concedida não valeu mais na hora H. Sem popup: já refaz o
+        // pedido sozinho, igual o botão "Ligar" cinza faria.
+        if (data.needsPermission) {
+          api.post('/api/calls/permission-request', { leadId }).catch(() => {});
+          toast('A permissão pra ligar expirou — pedido novo enviado pro cliente.', 'warning');
+        } else {
+          toast('Não foi possível ligar', 'error');
+        }
         return;
       }
       waCallId = data.waCallId;

@@ -236,6 +236,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const outboundCall = useOutboundCallStore();
   const isThisLeadCalling = outboundCall.leadId === leadId && outboundCall.stage !== 'idle';
 
+  // Estado de permissão pra ligar, checado ao abrir a conversa (não só ao
+  // clicar) -- é o que deixa o botão "Ligar" já nascer verde quando o
+  // cliente já autorizou, sem precisar clicar pra descobrir. Pedido real do
+  // usuário: virou um botão só (cinza = pede permissão ao clicar, verde =
+  // liga ao clicar), sem popup intermediário de "pedir permissão".
+  const [callPermitted, setCallPermitted] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setCallPermitted(null);
+    api.get('/api/calls/permission-state', { params: { leadId } })
+      .then(({ data }) => { if (!cancelled) setCallPermitted(!!data.permitted); })
+      .catch(() => { if (!cancelled) setCallPermitted(null); });
+    return () => { cancelled = true; };
+  }, [leadId]);
+
   // Link direto pra essa conversa (?leadId=... já é lido pela própria tela
   // da Inbox — apps/web/app/(dashboard)/inbox/page.tsx — e abre direto
   // nela). Quem receber o link precisa estar logado no CRM.
@@ -1212,7 +1227,13 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             <Star size={18} className={starred ? 'fill-amber-400' : ''} />
           </button>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Nowrap + rolagem horizontal (não flex-wrap): no celular, os
+            botões de ação quebravam em várias linhas curtas e ficavam
+            minúsculos/espremidos — achado real do usuário ("olha como
+            encolheu"). Rolando de lado em vez de quebrar mantém o tamanho
+            normal dos botões nas telas estreitas; no desktop cabe tudo sem
+            precisar rolar, igual antes. */}
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto scrollbar-none">
           {/* Dados do lead/grupo — no mobile o painel não fica ao lado (não
               cabe), abre como overlay ao tocar aqui. Com texto (não só ícone):
               usuário não estava achando esse botão entre os outros ícones. */}
@@ -1258,8 +1279,11 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           {outboundCall.stage === 'idle' ? (
             <button
               onClick={() => outboundCall.checkAndCall(leadId, leadName)}
-              title="Ligar pro cliente pelo WhatsApp"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30"
+              title={callPermitted ? 'Ligar pro cliente pelo WhatsApp' : 'Cliente ainda não autorizou — clique pra pedir permissão'}
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0',
+                callPermitted ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30' : 'bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15'
+              )}
             >
               <Phone size={13} />
               <span className="hidden md:inline">Ligar</span>

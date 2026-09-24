@@ -1,5 +1,5 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { X, Phone } from 'lucide-react';
 import { useOutboundCallStore } from '@/store/outbound-call.store';
 import { getSocket } from '@/lib/socket';
@@ -26,7 +26,8 @@ function formatPhoneDisplay(phone: string | null | undefined): string {
  *  a ligação em si sumia. Agora é um Zustand store global (store/
  *  outbound-call.store.ts) — esse componente só monta a UI por cima dele. */
 export function OutboundCallBar() {
-  const { stage, leadName, targetPhone, muted, connectedAt, registerAudioEl, confirmCall, dismiss, requestPermission, recheckPermission, hangup, toggleMute, handleCallAnswered, handleCallEnded } = useOutboundCallStore();
+  const { stage, leadName, targetPhone, muted, connectedAt, registerAudioEl, confirmCall, dismiss, hangup, toggleMute, handleCallAnswered, handleCallEnded } = useOutboundCallStore();
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const socket = getSocket();
@@ -42,55 +43,14 @@ export function OutboundCallBar() {
 
   return (
     <>
-      <audio ref={(el) => registerAudioEl(el)} autoPlay />
+      <audio ref={(el) => { audioElRef.current = el; registerAudioEl(el); }} autoPlay />
 
-      {/* Popup de permissão -- estava fixo perto do topo (fixed top-16),
-          sobrepondo os botões do cabeçalho de forma bugada em telas menores
-          (achado real do usuário). Agora é um popup centralizado, mesmo
-          estilo do popup de confirmação de ligar logo abaixo. */}
-      {(stage === 'need-permission' || stage === 'permission-sent') && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/50" onClick={dismiss}>
-          <div
-            className="app-column-surface rounded-2xl shadow-2xl w-full max-w-xs flex flex-col items-center gap-4 p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Avatar name={leadName || ''} size="lg" />
-            <div className="text-center">
-              <p className="text-base font-semibold text-[#e9edef]">{leadName}</p>
-              {stage === 'need-permission' ? (
-                <p className="text-sm text-[#8696a0] mt-2">Esse cliente ainda não autorizou receber ligação pelo WhatsApp.</p>
-              ) : (
-                <p className="text-sm text-[#8696a0] mt-2">Pedido de permissão enviado — aguardando o cliente aceitar.</p>
-              )}
-            </div>
-            <div className="flex items-center gap-3 w-full mt-1">
-              <button
-                onClick={dismiss}
-                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium bg-white/10 hover:bg-white/20 text-[#e9edef] transition-colors"
-              >
-                Fechar
-              </button>
-              {stage === 'need-permission' ? (
-                <button
-                  onClick={requestPermission}
-                  className="flex-1 px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white transition-colors"
-                >
-                  Pedir permissão
-                </button>
-              ) : (
-                <button
-                  onClick={recheckPermission}
-                  className="flex-1 px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white transition-colors"
-                >
-                  Verificar
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Popup de confirmação antes de ligar de verdade — estilo WhatsApp. */}
+      {/* Popup de confirmação antes de ligar de verdade — estilo WhatsApp.
+          Não tem mais popup de "pedir permissão" (achado real do usuário
+          2026-09-24): o botão "Ligar" do cabeçalho já pede a permissão
+          direto ao clicar quando ainda não tem, sem diálogo no meio -- só
+          quando JÁ está permitido é que chega aqui, pra confirmar antes de
+          discar de verdade. */}
       {stage === 'confirm' && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/50" onClick={dismiss}>
           <div
@@ -131,6 +91,7 @@ export function OutboundCallBar() {
           muted={muted}
           onToggleMute={toggleMute}
           onHangup={hangup}
+          audioElRef={audioElRef}
         />
       )}
     </>
