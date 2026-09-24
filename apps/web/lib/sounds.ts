@@ -65,10 +65,19 @@ export function playSoundOnce(key: SoundKey) {
  *  confirmação nenhuma de que a chamada realmente estava em curso do outro
  *  lado. Não é um dos sons configuráveis em SOUND_OPTIONS de propósito: é o
  *  mesmo som sempre, igual o "tuuu" de qualquer telefone, não faz sentido
- *  deixar escolher. Cadência aproximada de toque de chamada (1s de tom,
- *  ~3s de silêncio, repete) -- não precisa ser idêntica ao padrão de
- *  telefonia de verdade, só reconhecível como "chamando". Retorna uma
- *  função de parar (chamada tanto ao atender quanto ao desistir/desligar). */
+ *  deixar escolher.
+ *
+ *  425Hz, 1s de tom / 4s de silêncio -- cadência real do toque de chamada
+ *  usado no Brasil e na maior parte da América Latina (padrão inspirado na
+ *  ETSI, confirmado via pesquisa, não chute).
+ *
+ *  ACHADO REAL (2026-09-24): a 1ª versão usava um `exponentialRampToValueAtTime`
+ *  decaindo o volume ao longo do 1s inteiro -- soava como um "bipe"
+ *  sintetizado desmanchando, não como um tom de telefone de verdade (que
+ *  mantém volume CONSTANTE durante o "tuuu" e só corta no fim, sem
+ *  desvanecer). Agora sustenta o volume cheio o tempo todo, com só um
+ *  ataque/corte de ~12ms nas pontas (evita o "clique" de ligar/desligar o
+ *  oscilador de repente, sem soar como um efeito eletrônico). */
 export function startRingbackTone(): () => void {
   let stopped = false;
   let ctx: AudioContext | null = null;
@@ -86,10 +95,16 @@ export function startRingbackTone(): () => void {
     osc.connect(gain); gain.connect(ctx.destination);
     osc.type = 'sine';
     osc.frequency.setValueAtTime(425, ctx.currentTime);
-    gain.gain.setValueAtTime(0.25, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 1);
+    const t = ctx.currentTime;
+    const attack = 0.012;
+    const release = 0.012;
+    const dur = 1;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.22, t + attack);
+    gain.gain.setValueAtTime(0.22, t + dur - release);
+    gain.gain.linearRampToValueAtTime(0, t + dur);
+    osc.start(t);
+    osc.stop(t + dur);
   };
   playCycle();
   const id = setInterval(playCycle, 4000);
