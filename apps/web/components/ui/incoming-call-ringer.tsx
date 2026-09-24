@@ -7,6 +7,7 @@ import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { ActiveCallBar } from '@/components/ui/active-call-bar';
 import { waitForIceGatheringComplete } from '@/lib/webrtc';
+import { playTone, SoundKey } from '@/lib/sounds';
 
 interface IncomingCallEvent {
   callId: string;
@@ -51,27 +52,16 @@ export function IncomingCallRinger() {
   const startRingtone = useCallback(() => {
     stopRingtone();
     try {
+      const key = (localStorage.getItem('af_call_ringtone') as SoundKey) || 'whatsapp';
+      if (key === 'none') return;
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
       const ctx = new AudioCtx();
       let stopped = false;
-      const playCycle = () => {
-        if (stopped) return;
-        [0, 0.5].forEach((offset) => {
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain); gain.connect(ctx.destination);
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(950, ctx.currentTime + offset);
-          gain.gain.setValueAtTime(0.35, ctx.currentTime + offset);
-          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + offset + 0.4);
-          osc.start(ctx.currentTime + offset);
-          osc.stop(ctx.currentTime + offset + 0.4);
-        });
-      };
+      const playCycle = () => { if (!stopped) playTone(key, ctx); };
       playCycle();
       const id = setInterval(playCycle, 1600);
-      ringToneRef.current = { ctx, stop: () => clearInterval(id) };
+      ringToneRef.current = { ctx, stop: () => { stopped = true; clearInterval(id); } };
     } catch {
       // fallback silencioso
     }

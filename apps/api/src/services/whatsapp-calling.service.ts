@@ -196,23 +196,42 @@ export async function sendCallPermissionRequest(accountId: string, departmentId:
 
 /** Trata a resposta do cliente a um pedido de permissão de ligação — chega
  *  pelo campo `messages` do webhook (não `calls`), como um objeto
- *  `interactive` do tipo `call_permission_reply`. Chamado de dentro do loop
- *  de processIncomingWhatsApp (whatsapp.service.ts) via require() tardio
- *  (mesmo motivo dos outros: evita import circular, esse arquivo já importa
- *  de lá). Formato exato do payload ainda não confirmado contra tráfego
- *  real — loga o objeto cru inteiro pra ajustar rápido se vier diferente
- *  do documentado (`response`: "accept"|"reject", `is_permanent`,
- *  `expiration_timestamp`).
+ *  `interactive`. Chamado de dentro do loop de processIncomingWhatsApp
+ *  (whatsapp.service.ts) via require() tardio (mesmo motivo dos outros:
+ *  evita import circular, esse arquivo já importa de lá).
+ *
+ *  Incidente real (2026-09-24): o primeiro teste com um aceite de verdade
+ *  não deixou NENHUM rastro nos logs — o match exato por
+ *  `type === 'call_permission_reply'` provavelmente não bate com o nome
+ *  real que a Meta usa (documentação é vaga nos nomes de campo), e como o
+ *  log só disparava DEPOIS do match, a mensagem sumia em silêncio (nem
+ *  virava texto normal nem deixava pista nenhuma). Corrigido em duas
+ *  frentes: (1) loga QUALQUER `interactive` não reconhecido, sempre, antes
+ *  de decidir se é isso ou não; (2) o match agora é tolerante (qualquer
+ *  `type` contendo "call_permission", em vez do nome exato) — ajustar pro
+ *  nome certo assim que o log real aparecer.
  *  Retorna true se tratou a mensagem (quem chama deve dar `continue`, não
  *  processar como mensagem de texto normal). */
 export async function handleCallPermissionReply(msg: any, accountId: string, io: any): Promise<boolean> {
-  if (msg?.type !== 'interactive' || msg.interactive?.type !== 'call_permission_reply') return false;
+  if (msg?.type !== 'interactive') return false;
+
+  const interactiveType = String(msg.interactive?.type || '');
+  const looksLikeCallPermission = /call_permission/i.test(interactiveType) || msg.interactive?.call_permission_reply;
+
+  // Sempre loga um `interactive` que a gente não processa em nenhum outro
+  // lugar (botão de resposta rápida já é tratado antes, no loop principal)
+  // — mesmo se não bater com "call_permission", ajuda a identificar o nome
+  // real do campo na próxima resposta de permissão.
+  if (!looksLikeCallPermission) {
+    console.log('[Calling] interactive não reconhecido (pode ser call_permission_reply com nome diferente):', JSON.stringify(msg.interactive));
+    return false;
+  }
 
   console.log('[Calling] call_permission_reply raw:', JSON.stringify(msg.interactive));
 
   try {
     const reply = msg.interactive?.call_permission_reply || msg.interactive;
-    const accepted = reply?.response === 'accept';
+    const accepted = reply?.response === 'accept' || reply?.status === 'accept' || reply?.action === 'accept';
     const isPermanent = !!reply?.is_permanent;
     const expirationTimestamp = reply?.expiration_timestamp as number | string | undefined;
 

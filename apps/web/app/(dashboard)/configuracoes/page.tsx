@@ -3,9 +3,10 @@ import { useState, useEffect, useRef } from 'react';
 import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2, Globe, KeyRound, Sparkles } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2, Globe, KeyRound, Sparkles, PhoneCall } from 'lucide-react';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { usePushSubscription } from '@/hooks/use-push-subscription';
+import { SoundKey, SOUND_OPTIONS, playSoundOnce } from '@/lib/sounds';
 
 // ── Notificação push (chega no celular com o app fechado/em 2º plano) ──────
 function PushNotificationCard() {
@@ -80,74 +81,87 @@ interface WAConfig {
   webhookUrl: string;
 }
 
-// ─── Definições de sons ───────────────────────────────────────────────────────
-type SoundKey = 'whatsapp' | 'ding' | 'pop' | 'chime' | 'bell' | 'soft' | 'alert' | 'none';
+// ─── Cartão de escolha de som (reaproveitado pra notificação de mensagem E
+// pro toque de chamada — mesma UI, "chave" de localStorage diferente) ──────
+function SoundPickerCard({
+  title, subtitle, storageKey, gradientClass, icon,
+}: {
+  title: string;
+  subtitle: string;
+  storageKey: string;
+  gradientClass: string;
+  icon: React.ReactNode;
+}) {
+  const [selected, setSelected] = useState<SoundKey>(
+    () => (typeof window !== 'undefined' ? (localStorage.getItem(storageKey) as SoundKey) || 'whatsapp' : 'whatsapp')
+  );
 
-const SOUNDS: { key: SoundKey; label: string; emoji: string; desc: string }[] = [
-  { key: 'whatsapp', label: 'WhatsApp',   emoji: '💬', desc: 'Três dings descendentes' },
-  { key: 'ding',     label: 'Ding',       emoji: '🔔', desc: 'Um toque limpo e suave' },
-  { key: 'pop',      label: 'Pop',        emoji: '🫧', desc: 'Som curto estilo bolha' },
-  { key: 'chime',    label: 'Chime',      emoji: '🎵', desc: 'Dois tons harmônicos' },
-  { key: 'bell',     label: 'Sino',       emoji: '🔕', desc: 'Sino metálico curto' },
-  { key: 'soft',     label: 'Suave',      emoji: '🌙', desc: 'Tom suave e discreto' },
-  { key: 'alert',    label: 'Alerta',     emoji: '⚡', desc: 'Toque de atenção' },
-  { key: 'none',     label: 'Sem som',    emoji: '🔇', desc: 'Desativar notificação sonora' },
-];
+  return (
+    <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
+      <div className={`flex items-center gap-3 px-6 py-4 border-b border-af-border bg-gradient-to-r ${gradientClass}`}>
+        <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">{icon}</div>
+        <div>
+          <h2 className="text-white font-bold text-base">{title}</h2>
+          <p className="text-white/70 text-xs">{subtitle}</p>
+        </div>
+      </div>
 
-function playSound(key: SoundKey) {
-  if (key === 'none') return;
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
+      <div className="px-6 py-5 space-y-3">
+        <p className="text-xs text-slate-500">
+          Clique em <strong>▶ Ouvir</strong> para testar cada som, depois clique em <strong>Usar este</strong> para salvar.
+        </p>
 
-    const tone = (freq: number, start: number, dur: number, vol: number, type: OscillatorType = 'sine') => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.type = type;
-      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
-      gain.gain.setValueAtTime(vol, ctx.currentTime + start);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
-      osc.start(ctx.currentTime + start);
-      osc.stop(ctx.currentTime + start + dur);
-    };
+        <div className="grid grid-cols-1 gap-2">
+          {SOUND_OPTIONS.map(s => (
+            <div
+              key={s.key}
+              className={`flex items-center gap-3 p-3.5 rounded-xl border transition-all ${
+                selected === s.key ? 'border-violet-400 bg-violet-50' : 'border-af-border hover:border-violet-200 hover:bg-slate-50'
+              }`}
+            >
+              <span className="text-2xl w-8 text-center flex-shrink-0">{s.emoji}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-slate-800">{s.label}</p>
+                <p className="text-xs text-slate-400">{s.desc}</p>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {s.key !== 'none' && (
+                  <button
+                    onClick={() => playSoundOnce(s.key)}
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs border border-af-border rounded-lg hover:bg-slate-100 text-slate-600 transition-colors"
+                  >
+                    ▶ Ouvir
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    setSelected(s.key);
+                    localStorage.setItem(storageKey, s.key);
+                    toast(`Som "${s.label}" salvo!`);
+                  }}
+                  className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                    selected === s.key ? 'bg-violet-600 text-white' : 'border border-violet-200 text-violet-600 hover:bg-violet-50'
+                  }`}
+                >
+                  {selected === s.key ? (<><CheckCircle2 size={11} /> Selecionado</>) : 'Usar este'}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
 
-    if (key === 'whatsapp') {
-      tone(1200, 0.00, 0.15, 0.4);
-      tone(1000, 0.18, 0.15, 0.3);
-      tone(800,  0.36, 0.20, 0.2);
-    } else if (key === 'ding') {
-      tone(880, 0, 0.5, 0.4);
-    } else if (key === 'pop') {
-      tone(600, 0.00, 0.04, 0.5, 'square');
-      tone(400, 0.04, 0.08, 0.3, 'sine');
-    } else if (key === 'chime') {
-      tone(523, 0.00, 0.3, 0.35);   // Dó
-      tone(659, 0.15, 0.3, 0.30);   // Mi
-      tone(784, 0.30, 0.4, 0.25);   // Sol
-    } else if (key === 'bell') {
-      tone(987,  0.00, 0.05, 0.5, 'square');
-      tone(1174, 0.00, 0.40, 0.3, 'sine');
-      tone(987,  0.05, 0.35, 0.2, 'sine');
-    } else if (key === 'soft') {
-      tone(440, 0.0, 0.6, 0.2);
-      tone(550, 0.1, 0.5, 0.15);
-    } else if (key === 'alert') {
-      tone(1000, 0.00, 0.10, 0.5, 'square');
-      tone(1200, 0.12, 0.10, 0.5, 'square');
-      tone(1000, 0.24, 0.10, 0.4, 'square');
-    }
-
-    setTimeout(() => ctx.close().catch(() => {}), 1200);
-  } catch { /* silencioso */ }
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-2">
+          <p className="text-xs text-amber-700">
+            <strong>💡 Dica:</strong> Se o som não tocar, clique em qualquer lugar da página primeiro. Navegadores bloqueiam áudio até haver interação do usuário.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function ConfiguracoesPage() {
   const [tab, setTab] = useState<Tab>('api');
-  const [selectedSound, setSelectedSound] = useState<SoundKey>(
-    () => (typeof window !== 'undefined' ? (localStorage.getItem('af_notification_sound') as SoundKey) || 'whatsapp' : 'whatsapp')
-  );
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -196,77 +210,21 @@ export default function ConfiguracoesPage() {
           {/* ── Sons Tab ── */}
           {tab === 'sons' && (
             <div className="space-y-6">
-            <PushNotificationCard />
-            <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
-              <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border bg-gradient-to-r from-violet-600 to-indigo-600">
-                <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
-                  <Volume2 size={22} className="text-white" />
-                </div>
-                <div>
-                  <h2 className="text-white font-bold text-base">Notificações Sonoras</h2>
-                  <p className="text-white/70 text-xs">Escolha o som para novas mensagens do WhatsApp</p>
-                </div>
-              </div>
-
-              <div className="px-6 py-5 space-y-3">
-                <p className="text-xs text-slate-500">
-                  Clique em <strong>▶ Ouvir</strong> para testar cada som, depois clique em <strong>Usar este som</strong> para salvar.
-                </p>
-
-                <div className="grid grid-cols-1 gap-2">
-                  {SOUNDS.map(s => (
-                    <div
-                      key={s.key}
-                      className={`flex items-center gap-3 p-3.5 rounded-xl border transition-all ${
-                        selectedSound === s.key
-                          ? 'border-violet-400 bg-violet-50'
-                          : 'border-af-border hover:border-violet-200 hover:bg-slate-50'
-                      }`}
-                    >
-                      <span className="text-2xl w-8 text-center flex-shrink-0">{s.emoji}</span>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-slate-800">{s.label}</p>
-                        <p className="text-xs text-slate-400">{s.desc}</p>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        {s.key !== 'none' && (
-                          <button
-                            onClick={() => playSound(s.key)}
-                            className="flex items-center gap-1 px-3 py-1.5 text-xs border border-af-border rounded-lg hover:bg-slate-100 text-slate-600 transition-colors"
-                          >
-                            ▶ Ouvir
-                          </button>
-                        )}
-                        <button
-                          onClick={() => {
-                            setSelectedSound(s.key);
-                            localStorage.setItem('af_notification_sound', s.key);
-                            toast(`Som "${s.label}" salvo!`);
-                          }}
-                          className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
-                            selectedSound === s.key
-                              ? 'bg-violet-600 text-white'
-                              : 'border border-violet-200 text-violet-600 hover:bg-violet-50'
-                          }`}
-                        >
-                          {selectedSound === s.key ? (
-                            <><CheckCircle2 size={11} /> Selecionado</>
-                          ) : (
-                            'Usar este'
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-2">
-                  <p className="text-xs text-amber-700">
-                    <strong>💡 Dica:</strong> Se o som não tocar, clique em qualquer lugar da página primeiro. Navegadores bloqueiam áudio até haver interação do usuário.
-                  </p>
-                </div>
-              </div>
-            </div>
+              <PushNotificationCard />
+              <SoundPickerCard
+                title="Notificações Sonoras"
+                subtitle="Escolha o som para novas mensagens do WhatsApp"
+                storageKey="af_notification_sound"
+                gradientClass="from-violet-600 to-indigo-600"
+                icon={<Volume2 size={22} className="text-white" />}
+              />
+              <SoundPickerCard
+                title="Toque de Chamada"
+                subtitle="Escolha o som que toca quando uma ligação chega (em loop até atender)"
+                storageKey="af_call_ringtone"
+                gradientClass="from-emerald-600 to-teal-600"
+                icon={<PhoneCall size={22} className="text-white" />}
+              />
             </div>
           )}
 

@@ -980,8 +980,16 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       if (await handleCallPermissionReply(msg, accountId, io)) continue;
 
       // Processa texto, clique em botão, OU mídia suportada (imagem/áudio/
-      // vídeo/documento/sticker). Ignora location, contacts, etc.
-      if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo) continue;
+      // vídeo/documento/sticker). Ignora location, contacts, etc. — mas
+      // loga o que for descartado por tipo desconhecido (não 'text'), pra
+      // não repetir o incidente do call_permission_reply que sumia sem
+      // nenhum rastro por causa de um match exato que não bateu.
+      if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo) {
+        if (msg.type && msg.type !== 'unknown') {
+          console.log(`[WhatsApp] Mensagem tipo="${msg.type}" descartada (não tratada):`, JSON.stringify(msg));
+        }
+        continue;
+      }
 
       const from = msg.from as string; // e.g. "5561999990001"
       const text = mediaInfo
