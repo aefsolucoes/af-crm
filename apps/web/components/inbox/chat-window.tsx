@@ -2028,7 +2028,16 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                 da tela no iPhone, mesmo com min-w-0 direto nele — testado e
                 confirmado funcionando no Chrome, mas não no Safari real).
                 Envolver numa div própria com flex-1 min-w-0 contorna a
-                falha, deixando o textarea só com w-full dentro dela. */}
+                falha, deixando o textarea só com w-full dentro dela. ACHADO
+                REAL (2026-09-24): mesmo com esse contorno, o botão de
+                Enviar ainda sumia da tela no iPhone -- a barra tinha
+                botões demais (emoji, anexo, campo, templates, IA,
+                enviar/mic) pro espaço real de um celular, então mesmo o
+                textarea encolhendo direito não sobrava largura garantida
+                pro botão de Enviar (o mais importante de todos). Templates
+                e IA (a de reescrever o rascunho, não a de auto-resposta —
+                essa continua no cabeçalho) somem no celular pra abrir
+                espaço; continuam disponíveis no computador. */}
             <div className="flex-1 min-w-0">
               <textarea
                 ref={inputRef}
@@ -2040,7 +2049,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                 spellCheck
                 lang="pt-BR"
                 className="w-full resize-none px-4 py-2.5 text-sm bg-[#2a3942] rounded-3xl border-none outline-none text-[#e9edef] placeholder-[#8696a0] scrollbar-thin max-h-32"
-                style={{ lineHeight: '1.4' }}
+                style={{ lineHeight: '1.4', minWidth: 0 }}
               />
             </div>
             {/* Templates toggle button */}
@@ -2049,7 +2058,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               onClick={handleOpenTemplates}
               title="Templates prontos"
               className={cn(
-                'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
+                'hidden md:flex flex-shrink-0 w-10 h-10 rounded-full items-center justify-center transition-all',
                 showTemplates ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
               )}
             >
@@ -2061,7 +2070,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               onClick={() => { setShowAI(v => !v); setShowTemplates(false); }}
               title="Assistente IA"
               className={cn(
-                'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all',
+                'hidden md:flex flex-shrink-0 w-10 h-10 rounded-full items-center justify-center transition-all',
                 showAI ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
               )}
             >
