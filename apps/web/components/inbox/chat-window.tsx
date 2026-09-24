@@ -248,9 +248,19 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
       callPcRef.current = pc;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+      console.log('[Calling] outbound: microfone ok, tracks locais:', localStream.getAudioTracks().map((t) => ({ label: t.label, enabled: t.enabled, muted: t.muted, readyState: t.readyState })));
       pc.ontrack = (event) => {
-        if (callAudioElRef.current) callAudioElRef.current.srcObject = event.streams[0];
+        console.log('[Calling] outbound ontrack: stream remoto recebido', event.streams[0]?.id, event.track.kind, event.track.readyState, event.track.muted);
+        if (callAudioElRef.current) {
+          callAudioElRef.current.srcObject = event.streams[0];
+          callAudioElRef.current.play().then(
+            () => console.log('[Calling] outbound: audio.play() ok'),
+            (err) => console.error('[Calling] outbound: audio.play() falhou:', err)
+          );
+        }
       };
+      pc.oniceconnectionstatechange = () => console.log('[Calling] outbound iceConnectionState:', pc.iceConnectionState);
+      pc.onicegatheringstatechange = () => console.log('[Calling] outbound iceGatheringState (offer):', pc.iceGatheringState);
       pc.onconnectionstatechange = () => {
         console.log('[Calling] outbound connectionState:', pc.connectionState);
         if (pc.connectionState === 'connected') {
@@ -746,9 +756,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     // quem mandou (o servidor já mandou só pra nós); filtra só por waCallId
     // pra ignorar eco de uma ligação anterior já encerrada.
     socket.on('call_answered', async ({ waCallId, sdp }: { waCallId: string; sdp: string }) => {
-      if (waCallId !== callWaCallIdRef.current || !callPcRef.current) return;
+      console.log('[Calling] outbound: call_answered recebido do socket', waCallId, 'esperado:', callWaCallIdRef.current, 'sdp bytes:', sdp?.length);
+      if (waCallId !== callWaCallIdRef.current || !callPcRef.current) {
+        console.warn('[Calling] outbound: call_answered ignorado (waCallId não bate ou sem PC ativo)');
+        return;
+      }
       try {
         await callPcRef.current.setRemoteDescription({ type: 'answer', sdp });
+        console.log('[Calling] outbound: setRemoteDescription(answer) ok');
       } catch (err) {
         console.error('[Calling] Falha ao aplicar resposta SDP:', err);
       }

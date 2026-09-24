@@ -322,7 +322,10 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
               data: { status: 'CONNECTED', connectedAt: new Date() },
             });
             if (existing.answeredByUserId) {
+              console.log(`[Calling] SDP de resposta (outbound) recebido -- repassando pro user_${existing.answeredByUserId}, sdp ${sdp.length} bytes:`, waCallId);
               io.to(`user_${existing.answeredByUserId}`).emit('call_answered', { waCallId, sdp });
+            } else {
+              console.warn('[Calling] SDP de resposta (outbound) recebido mas sem answeredByUserId -- ninguém vai receber:', waCallId);
             }
           } else {
             console.log('[Calling] connect repetido sem ação clara (dedupe de webhook?):', waCallId, JSON.stringify(call));
