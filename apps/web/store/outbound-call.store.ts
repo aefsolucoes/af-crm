@@ -200,6 +200,15 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
     } catch (err) {
       console.error('[Calling] Falha ao aplicar resposta SDP:', err);
     }
+    // Marca "connected" aqui, não esperando o RTCPeerConnection confirmar
+    // sozinho via onconnectionstatechange -- achado real do usuário
+    // (2026-09-24): no iPhone/Safari esse evento às vezes nunca reporta
+    // "connected", mesmo com o áudio já fluindo de verdade (cliente atendeu,
+    // ligação nativa do sistema já com cronômetro correndo), deixando a
+    // barra travada em "Conectando..." pelo resto da chamada. A Meta já
+    // confirmou que o cliente atendeu -- esse sinal de negócio é mais
+    // confiável que o estado local do WebRTC nesse navegador.
+    set({ connectedAt: Date.now(), stage: 'connected' });
   },
 
   handleCallEnded: (endedWaCallId) => {
