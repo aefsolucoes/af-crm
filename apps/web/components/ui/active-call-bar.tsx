@@ -3,17 +3,23 @@ import { useEffect, useState } from 'react';
 import { Mic, MicOff, PhoneOff } from 'lucide-react';
 
 /** Barra de ligação em andamento — puramente visual, sem lógica de WebRTC.
- *  Usada pelo ringer (chamada recebida) e, futuramente, pelo fluxo de
- *  ligação feita pelo CRM (mesma UI pros dois casos). */
+ *  Usada pelo ringer (chamada recebida) e pelo fluxo de ligação feita pelo
+ *  CRM (mesma UI pros dois casos). Mostrada tanto em "conectando" (tocando/
+ *  negociando) quanto em "conectado" -- silenciar e desligar precisam estar
+ *  disponíveis o tempo todo, não só depois que a Meta confirma o estado
+ *  "connected" do RTCPeerConnection (esse evento pode demorar ou nem bater
+ *  exatamente com o áudio já estar fluindo de verdade). */
 export function ActiveCallBar({
   callerName,
   connectedAt,
+  connecting,
   muted,
   onToggleMute,
   onHangup,
 }: {
   callerName: string;
-  connectedAt: number; // Date.now() de quando conectou
+  connectedAt: number; // Date.now() de quando conectou (ignorado se connecting)
+  connecting?: boolean;
   muted: boolean;
   onToggleMute: () => void;
   onHangup: () => void;
@@ -21,11 +27,12 @@ export function ActiveCallBar({
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
+    if (connecting) return;
     const tick = () => setElapsed(Math.floor((Date.now() - connectedAt) / 1000));
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [connectedAt]);
+  }, [connectedAt, connecting]);
 
   const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
   const ss = String(elapsed % 60).padStart(2, '0');
@@ -34,7 +41,7 @@ export function ActiveCallBar({
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-4 px-5 py-3 rounded-full shadow-2xl bg-[#111b21] text-white">
       <div className="flex flex-col leading-tight">
         <span className="text-sm font-medium">{callerName}</span>
-        <span className="text-xs text-emerald-400">{mm}:{ss}</span>
+        <span className="text-xs text-emerald-400">{connecting ? 'Conectando…' : `${mm}:${ss}`}</span>
       </div>
       <button
         onClick={onToggleMute}

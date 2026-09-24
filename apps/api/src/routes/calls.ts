@@ -118,8 +118,13 @@ router.get('/permission-state', async (req: AuthRequest, res: Response) => {
   const config = await getWhatsAppConfig(req.user!.accountId, lead!.pipeline?.departmentId || null);
   if (!config) return res.status(400).json({ error: 'WhatsApp não configurado' });
 
-  const state = await getCallPermissionState(config, normalizeBrazilianWhatsAppPhone(phoneRaw));
-  res.json({ permitted: state.permitted, canRequest: state.canRequest });
+  const phone = normalizeBrazilianWhatsAppPhone(phoneRaw);
+  const state = await getCallPermissionState(config, phone);
+  // Manda o telefone junto -- o popup de confirmação ("Ligar pra Fulano
+  // (61 98524-3606)?", estilo WhatsApp) usa isso pra mostrar pra quem vai
+  // ligar antes de discar de verdade, sem precisar resolver o telefone de
+  // novo no frontend.
+  res.json({ permitted: state.permitted, canRequest: state.canRequest, phone });
 });
 
 const leadIdSchema = z.object({ leadId: z.string().min(1) });

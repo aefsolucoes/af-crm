@@ -25,6 +25,18 @@ function groupSenderColor(name: string): string {
   return SENDER_COLORS[h % SENDER_COLORS.length];
 }
 
+/** "5561985243606" → "+55 (61) 98524-3606" -- exibido no popup de
+ *  confirmação antes de ligar. Fora do padrão BR (11 dígitos locais),
+ *  devolve só com "+" na frente em vez de tentar adivinhar o formato. */
+function formatPhoneDisplay(phone: string | null | undefined): string {
+  if (!phone) return '';
+  const d = phone.replace(/\D/g, '');
+  if (d.length === 13 && d.startsWith('55')) {
+    return `+55 (${d.slice(2, 4)}) ${d.slice(4, 9)}-${d.slice(9)}`;
+  }
+  return `+${d}`;
+}
+
 const CHANNEL_ICONS: Record<Channel, string> = {
   WHATSAPP: '📱',
   INSTAGRAM: '📸',
@@ -212,8 +224,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // ligação, a chamada continua do lado da Meta mas essa UI (e o
   // RTCPeerConnection do navegador) some junto com o componente — mesmo
   // efeito colateral que os outros listeners por-lead já têm aqui.
-  type CallUiStage = 'idle' | 'checking' | 'need-permission' | 'permission-sent' | 'connecting' | 'connected';
+  type CallUiStage = 'idle' | 'checking' | 'need-permission' | 'permission-sent' | 'confirm' | 'connecting' | 'connected';
   const [callUi, setCallUi] = useState<CallUiStage>('idle');
+  const [callTargetPhone, setCallTargetPhone] = useState<string | null>(null);
   const [callMuted, setCallMuted] = useState(false);
   const [callConnectedAt, setCallConnectedAt] = useState(0);
   const callPcRef = useRef<RTCPeerConnection | null>(null);
@@ -300,7 +313,10 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     setCallUi('checking');
     try {
       const { data } = await api.get('/api/calls/permission-state', { params: { leadId } });
-      if (data.permitted) await placeOutboundCall();
+      setCallTargetPhone(data.phone || null);
+      // Não liga direto — mostra o popup de confirmação (estilo WhatsApp:
+      // "Ligar pra Fulano (número)?") antes de discar de verdade.
+      if (data.permitted) setCallUi('confirm');
       else setCallUi('need-permission');
     } catch {
       setCallUi('idle');
@@ -2197,16 +2213,46 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         </div>
       )}
 
-      {callUi === 'connecting' && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] px-5 py-3 rounded-full shadow-2xl bg-[#111b21] text-white text-sm">
-          Ligando pra {leadName}…
+      {/* Popup de confirmação antes de ligar de verdade — estilo WhatsApp
+          (mostra pra quem vai ligar antes de discar, em vez de ligar direto
+          ao clicar em "Ligar"). */}
+      {callUi === 'confirm' && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/50" onClick={() => setCallUi('idle')}>
+          <div
+            className="app-column-surface rounded-2xl shadow-2xl w-full max-w-xs flex flex-col items-center gap-4 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Avatar name={leadName} size="lg" />
+            <div className="text-center">
+              <p className="text-base font-semibold text-[#e9edef]">{leadName}</p>
+              {callTargetPhone && <p className="text-sm text-[#8696a0] mt-0.5">{formatPhoneDisplay(callTargetPhone)}</p>}
+              <p className="text-xs text-[#8696a0] mt-2">Ligar pra esse cliente pelo WhatsApp?</p>
+            </div>
+            <div className="flex items-center gap-6 mt-1">
+              <button
+                onClick={() => setCallUi('idle')}
+                title="Cancelar"
+                className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/20 text-[#e9edef] flex items-center justify-center transition-colors"
+              >
+                <X size={20} />
+              </button>
+              <button
+                onClick={placeOutboundCall}
+                title="Ligar"
+                className="w-14 h-14 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow-lg transition-colors"
+              >
+                <Phone size={22} />
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {callUi === 'connected' && (
+      {(callUi === 'connecting' || callUi === 'connected') && (
         <ActiveCallBar
           callerName={leadName}
           connectedAt={callConnectedAt}
+          connecting={callUi === 'connecting'}
           muted={callMuted}
           onToggleMute={handleToggleCallMute}
           onHangup={handleHangupOutbound}

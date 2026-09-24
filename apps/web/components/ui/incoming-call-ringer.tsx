@@ -229,16 +229,11 @@ export function IncomingCallRinger() {
         </div>
       )}
 
-      {active && active.stage === 'connecting' && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] px-5 py-3 rounded-full shadow-2xl bg-[#111b21] text-white text-sm">
-          Conectando com {active.call.leadName}…
-        </div>
-      )}
-
-      {active && active.stage === 'connected' && (
+      {active && (
         <ActiveCallBar
           callerName={active.call.leadName}
           connectedAt={active.connectedAt}
+          connecting={active.stage === 'connecting'}
           muted={active.muted}
           onToggleMute={toggleMute}
           onHangup={hangup}
