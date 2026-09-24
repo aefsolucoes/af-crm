@@ -1,4 +1,37 @@
+import { PrismaClient } from '@prisma/client';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES } from './ai-shared.service';
+
+const prisma = new PrismaClient();
+
+// Mensagem que é só confirmação/encerramento ("ok", "beleza", "tá bom",
+// "obrigada", 👍). Achado real (2026-09-24): a IA respondia cada "ok" com
+// outra confirmação ("Perfeito! Vou seguir...", "Show! Assim que sair..."),
+// num pingue-pongue sem fim com o cliente.
+const ACK_CORE = new Set([
+  'ok', 'okay', 'oks', 'okk', 'okey', 'blz', 'beleza', 'bom', 'certo', 'certinho', 'combinado', 'perfeito', 'show',
+  'otimo', 'obrigado', 'obrigada', 'obg', 'brigado', 'brigada', 'valeu', 'vlw', 'entendi', 'entendido', 'joia',
+  'fechado', 'tranquilo', 'aguardo', 'aguardando', 'top', 'massa', 'legal', 'maravilha', 'certeza', 'demais',
+]);
+const ACK_FILLERS = new Set(['ta', 'tudo', 'bem', 'e', 'entao', 'muito', 'pela', 'atencao', 'fico', 'no', 'vou', 'aguardar', 'de', 'boa', 'ai', 'sim', 'mesmo', 'mt', 'mto']);
+
+export function isAcknowledgmentOnly(text: string): boolean {
+  if (text.includes('?')) return false;
+  const norm = text.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const tokens = norm.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+  if (!tokens.length) return /\p{Extended_Pictographic}/u.test(text);
+  if (tokens.length > 6) return false;
+  return tokens.every((t) => ACK_CORE.has(t) || ACK_FILLERS.has(t)) && tokens.some((t) => ACK_CORE.has(t));
+}
+
+// "…te chamo por aqui, tá bom?" termina com "?" mas não espera resposta de
+// verdade — só uma pergunta real deixa o "ok" do cliente valer como um "sim".
+function hasRealQuestion(text: string): boolean {
+  const withoutTag = text
+    .trim()
+    .replace(/\b(tudo\s+(bem|bom|certo|joia)|td\s+bem|como\s+vai|como\s+voc[eê]\s+est[aá])\s*\?+/gi, '')
+    .replace(/[\s,.!]*(t[aá]\s*bom|ok|certo|beleza|combinado|pode ser|tudo bem|blz|fechado)\s*\?+[\s!.]*$/i, '');
+  return withoutTag.includes('?');
+}
 
 /**
  * Assistente de IA que conversa DIRETO com o cliente pelo WhatsApp (ligado por
@@ -50,6 +83,10 @@ const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um mo
  *  documento, mas ainda quer seguir com o negócio. */
 const STOP_FOLLOWUP_RULES = `PARAR LEMBRETE AUTOMÁTICO ("stopFollowUp": true) — quando o cliente reclamar de estar recebendo cobranças/lembretes repetidos (ex.: sobre documentos pendentes), ficar visivelmente irritado ou pedir explicitamente pra parar de insistir, MAS sem recusar o negócio em si (se ele recusar o negócio de verdade, isso é "markLost", acima, não isto). Use false em todos os outros casos.`;
 
+const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
+- Se o "ok" responder uma pergunta sua de sim/não (ex.: "posso te mandar a lista de documentos?"), trate como "sim" e siga normalmente, com noReply false.
+- Nunca repita uma confirmação que você já deu na conversa (ex.: dizer de novo "vou seguir com a análise e te retorno").`;
+
 function buildFillFieldsRules(camposTexto: string): string {
   return `PREENCHER DADOS DO CARD ("extractedFields") — um objeto com os campos abaixo que o cliente mencionar CLARAMENTE na conversa (nunca invente, deduza ou arredonde um valor que ele não disse). Use só chaves desta lista, ou {} se nada novo foi mencionado:
 ${camposTexto}`;
@@ -57,10 +94,12 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente>", "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
 
 export interface AiAutoReplyResult {
   reply: string;
+  /** true = cliente só confirmou/encerrou ("ok", "beleza") — não mandar nada (reply vem vazio). */
+  noReply?: boolean;
   /** true = cliente pediu atendimento humano (ou pergunta fora do escopo deste setor/produto) — quem chamou deve desligar o Lead.aiAutoReplyActive e avisar o colaborador responsável. */
   handoff: boolean;
   /** Etapa pra mover o card, se a IA identificou uma mudança — aplicar via applyAiExtractedActions (ai-shared.service.ts), que valida contra a lista permitida. */
@@ -88,6 +127,18 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
   if (!apiKey || !incomingText.trim()) return null;
 
   try {
+    if (isAcknowledgmentOnly(incomingText)) {
+      const lastOut = await prisma.message.findFirst({
+        where: { leadId, direction: 'OUTBOUND', callWaCallId: null, deleted: false },
+        orderBy: { createdAt: 'desc' },
+        select: { content: true },
+      });
+      if (!lastOut || !hasRealQuestion(lastOut.content)) {
+        console.log(`[AI Auto-reply] cliente só confirmou ("${incomingText.trim().slice(0, 40)}") — sem resposta`);
+        return { reply: '', handoff: false, noReply: true };
+      }
+    }
+
     const ctx = await buildSharedAiContext(accountId, leadId, incomingText, {
       historyTake: 12,
       historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' },
@@ -107,6 +158,8 @@ ${MOVE_STAGE_RULES}
 ${MARK_LOST_RULES}
 
 ${STOP_FOLLOWUP_RULES}
+
+${NO_REPLY_RULES}
 
 ${buildFillFieldsRules(camposTexto)}
 
@@ -165,10 +218,21 @@ function parseReply(raw: string): AiAutoReplyResult {
 
   try {
     const parsed = JSON.parse(match[0]);
+    const extractedFields = parsed?.extractedFields && typeof parsed.extractedFields === 'object' && !Array.isArray(parsed.extractedFields)
+      ? parsed.extractedFields
+      : null;
+    if (parsed && parsed.noReply === true) {
+      return {
+        reply: '',
+        noReply: true,
+        handoff: false,
+        moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
+        markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
+        stopFollowUp: parsed.stopFollowUp === true,
+        extractedFields,
+      };
+    }
     if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
-      const extractedFields = parsed.extractedFields && typeof parsed.extractedFields === 'object' && !Array.isArray(parsed.extractedFields)
-        ? parsed.extractedFields
-        : null;
       return {
         reply: parsed.reply.trim(),
         handoff: parsed.handoff === true,

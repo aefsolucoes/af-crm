@@ -302,6 +302,12 @@ async function executeStepsFrom(
         continue;
       }
 
+      if (genResult.noReply) {
+        await logStep(run.id, step, { ok: true, reason: 'cliente só confirmou — sem resposta' });
+        currentId = nextDefaultId;
+        continue;
+      }
+
       const sendResult = await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: run.leadId, content: genResult.reply, io: io as any });
       await logStep(run.id, step, { ok: sendResult.success, handoff: genResult.handoff, error: sendResult.success ? undefined : sendResult.error });
       if (!sendResult.success) { await finishRun(run.id, 'ERROR', `Falha ao enviar mensagem: ${sendResult.error}`); return; }

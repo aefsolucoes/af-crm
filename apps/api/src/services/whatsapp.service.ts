@@ -1166,6 +1166,13 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     if (!genResult) return;
     const { reply, handoff, moveToStage, markLost, stopFollowUp, extractedFields } = genResult;
 
+    if (genResult.noReply) {
+      if (moveToStage || markLost || stopFollowUp || (extractedFields && Object.keys(extractedFields).length)) {
+        await applyAiExtractedActions(accountId, leadId, { moveToStage, markLost, stopFollowUp, extractedFields }, io);
+      }
+      return;
+    }
+
     const result = await sendWhatsAppMessage(phone, reply, accountId, departmentId);
     if (!result.success) {
       console.error('[WhatsApp] Resposta de IA falhou ao enviar:', result.error);
