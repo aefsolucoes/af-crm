@@ -73,6 +73,9 @@ export async function createMessage(data: {
   replyToExternalId?: string;
   replyToContent?: string;
   replyToSender?: string;
+  templateName?: string;
+  templateLanguage?: string;
+  templateParams?: string[];
 }) {
   return prisma.message.create({
     data: data as any,
@@ -310,6 +313,9 @@ export async function sendOutboundWhatsAppTemplate(params: {
     sentByUserId: userId,
     externalId: result.externalId,
     status: 'SENT',
+    templateName,
+    templateLanguage: language,
+    templateParams: bodyParams,
   });
 
   if (io) {
@@ -318,6 +324,38 @@ export async function sendOutboundWhatsAppTemplate(params: {
   }
 
   return { success: true, message };
+}
+
+/** Reenvia o MESMO template de uma mensagem que já foi enviada antes (falhou
+ *  ou não) — usado pelo botão "Tentar de novo" numa mensagem com status
+ *  FAILED. Precisa que a mensagem original tenha sido um envio de template
+ *  pela Inbox (templateName preenchido); mensagens de texto/mídia comuns não
+ *  têm como reenviar "o mesmo template" porque não são um template. */
+export async function retryTemplateMessage(params: {
+  accountId: string;
+  messageId: string;
+  userId?: string;
+  io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
+}): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string; code?: string }> {
+  const { accountId, messageId, userId, io } = params;
+
+  const original = await prisma.message.findFirst({
+    where: { id: messageId, lead: { accountId } },
+    select: { leadId: true, templateName: true, templateLanguage: true, templateParams: true, content: true },
+  });
+  if (!original) return { success: false, error: 'Mensagem não encontrada' };
+  if (!original.templateName) return { success: false, error: 'Essa mensagem não foi um template — não dá pra reenviar "o mesmo template".' };
+
+  return sendOutboundWhatsAppTemplate({
+    accountId,
+    leadId: original.leadId,
+    templateName: original.templateName,
+    language: original.templateLanguage || 'pt_BR',
+    bodyParams: Array.isArray(original.templateParams) ? (original.templateParams as string[]) : [],
+    previewText: original.content,
+    userId,
+    io,
+  });
 }
 
 /** Envia um e-mail de follow-up (automações) e grava na própria conversa do

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone, deleteMessage, reactToMessage, setMessagePinned, setMessageStarred, getScopeNumberIds } from '../services/message.service';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, retryTemplateMessage, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone, deleteMessage, reactToMessage, setMessagePinned, setMessageStarred, getScopeNumberIds } from '../services/message.service';
 import { downloadDriveFile } from '../services/google.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { runAutomations } from '../services/automation.service';
@@ -268,6 +268,24 @@ router.post('/send-template', async (req: AuthRequest, res: Response) => {
     logClientReply(req, leadId);
   } catch {
     res.status(500).json({ error: 'Erro ao enviar o template' });
+  }
+});
+
+// Reenvia o MESMO template de uma mensagem já enviada (botão "Tentar de
+// novo" numa mensagem com status FAILED) — não reabre o seletor de
+// template, usa exatamente o mesmo nome/idioma/variáveis de antes.
+router.post('/:id/retry-template', async (req: AuthRequest, res: Response) => {
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para enviar mensagens.' });
+    const io = req.app.get('io');
+    const result = await retryTemplateMessage({
+      accountId: req.user!.accountId, messageId: req.params.id, userId: req.user!.id, io,
+    });
+    if (!result.success) return res.status(400).json({ error: result.error, code: (result as any).code });
+    res.status(201).json(result.message);
+  } catch {
+    res.status(500).json({ error: 'Erro ao reenviar o template' });
   }
 });
 

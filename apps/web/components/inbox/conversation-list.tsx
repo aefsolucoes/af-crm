@@ -3,20 +3,13 @@ import { Conversation } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatDateTime } from '@/lib/utils';
 import { useState, useRef, useLayoutEffect } from 'react';
-import { Search, X, BadgeCheck, AlertCircle, RefreshCw, Star } from 'lucide-react';
+import { Search, X, AlertCircle, RefreshCw, Star } from 'lucide-react';
 
 /** true se a conversa é um grupo do WhatsApp (só existiam pelo canal QR,
  *  removido do CRM — grupos ficam de fora da Inbox, mas o Lead/Message
  *  continuam no banco intactos, sem nenhuma exclusão de dado). */
 function isGroupConversation(c: Conversation): boolean {
   return c.isGroup === true || !!c.contact?.whatsappPhone?.endsWith('@g.us');
-}
-
-/** true se a conversa é da API Oficial (Meta Cloud API) — mensagens têm id `wamid.*`
- *  e não carregam whatsappNumberId (que só existe nos números conectados por QR code). */
-function isApiConversation(c: Conversation): boolean {
-  const ext = c.messages?.[0]?.externalId;
-  return typeof ext === 'string' && ext.startsWith('wamid');
 }
 
 /** minúsculo e sem acento — pra "Mônica" achar "Monica" e vice-versa. */
@@ -81,8 +74,8 @@ interface ConversationListProps {
   onRetry?: () => void;
 }
 
-// 'ALL' | 'API' — conversas de grupo nunca aparecem em nenhuma aba (ver isGroupConversation).
-type Filter = 'ALL' | 'API';
+// 'ALL' | 'UNREAD' — conversas de grupo nunca aparecem em nenhuma aba (ver isGroupConversation).
+type Filter = 'ALL' | 'UNREAD';
 
 export function ConversationList({ conversations, selectedId, onSelect, loading, loadError, onRetry }: ConversationListProps) {
   const [filter, setFilter] = useState<Filter>('ALL');
@@ -107,7 +100,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
     scrollTopRef.current = e.currentTarget.scrollTop;
   }
 
-  const apiCount = conversations.filter((c) => !isGroupConversation(c) && isApiConversation(c)).length;
+  const unreadCount = conversations.filter((c) => !isGroupConversation(c) && c._count.messages > 0).length;
 
   const q = search.trim();
 
@@ -122,8 +115,8 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
       // dava acesso a grupos, foi removido do CRM).
       if (isGroupConversation(c)) return false;
       if (filter === 'ALL') return true;
-      // aba da API Oficial (Meta Cloud API)
-      return isApiConversation(c);
+      // aba de não lidas — mesmo critério do badge (contagem de mensagens não lidas)
+      return c._count.messages > 0;
     })
     .sort((a, b) => {
       // Estrela primeiro: cliente marcado como importante fica fixo no topo
@@ -170,12 +163,8 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
           <button onClick={() => setFilter('ALL')} className={chip(filter === 'ALL')}>
             Todas
           </button>
-          <button
-            onClick={() => setFilter('API')}
-            title="Conversas do WhatsApp API oficial (Meta Cloud API)"
-            className={cn(chip(filter === 'API'), 'flex items-center gap-1')}
-          >
-            <BadgeCheck size={12} /> API Oficial{apiCount > 0 ? ` (${apiCount})` : ''}
+          <button onClick={() => setFilter('UNREAD')} className={chip(filter === 'UNREAD')}>
+            Não lidas{unreadCount > 0 ? ` (${unreadCount})` : ''}
           </button>
         </div>
       </div>

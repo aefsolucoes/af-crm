@@ -193,6 +193,11 @@ export interface Message {
   pinned?: boolean;
   pinnedAt?: string | null;
   starred?: boolean;
+  /** Preenchido só quando esta mensagem foi um template Meta enviado pela
+   *  Inbox — permite reenviar o MESMO template (botão "Tentar de novo"). */
+  templateName?: string | null;
+  templateLanguage?: string | null;
+  templateParams?: string[] | null;
 }
 
 export interface Conversation {

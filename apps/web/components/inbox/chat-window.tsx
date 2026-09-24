@@ -456,6 +456,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [pendingMetaTemplate, setPendingMetaTemplate] = useState<MetaTemplate | null>(null);
   const [metaTemplateVars, setMetaTemplateVars] = useState<Record<number, string>>({});
   const [sendingTemplate, setSendingTemplate] = useState(false);
+  const [retryingTemplateId, setRetryingTemplateId] = useState<string | null>(null);
   // Resposta rápida COM botão — não dá pra só "encher a caixa de texto e
   // deixar editar livre" como as sem botão fazem, porque o botão tem que ir
   // junto na MESMA mensagem. Segue o mesmo modelo do template Meta: mostra
@@ -1098,6 +1099,22 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     }
   }
 
+  // "Tentar de novo" numa mensagem de template que falhou — reenvia o MESMO
+  // template (nome/idioma/variáveis), sem reabrir o seletor nem pedir pra
+  // preencher tudo de novo.
+  async function handleRetryTemplate(messageId: string) {
+    setRetryingTemplateId(messageId);
+    try {
+      const { data } = await api.post(`/api/messages/${messageId}/retry-template`);
+      onNewMessage(data);
+      toast('Template reenviado!');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao reenviar o template', 'error');
+    } finally {
+      setRetryingTemplateId(null);
+    }
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1607,6 +1624,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                           <span key={idx} className="text-xs bg-black/25 rounded-full px-1.5 py-0.5">{r.emoji}</span>
                         ))}
                       </div>
+                    )}
+                    {isOut && liveStatus === 'FAILED' && msg.templateName && (
+                      <button
+                        type="button"
+                        onClick={() => handleRetryTemplate(msg.id)}
+                        disabled={retryingTemplateId === msg.id}
+                        className="mt-1.5 flex items-center gap-1.5 text-xs font-medium text-red-300 hover:text-red-200 disabled:opacity-50 transition-colors"
+                      >
+                        {retryingTemplateId === msg.id ? <Loader2 size={12} className="animate-spin" /> : <AlertCircle size={12} />}
+                        {retryingTemplateId === msg.id ? 'Reenviando...' : 'Tentar de novo'}
+                      </button>
                     )}
                     <div className="absolute bottom-2 right-3 flex items-center gap-1">
                       {liveStarred && <Star size={10} className="text-[#ffc107] fill-current" />}
