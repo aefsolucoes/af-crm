@@ -44,21 +44,49 @@ export function OutboundCallBar() {
     <>
       <audio ref={(el) => registerAudioEl(el)} autoPlay />
 
+      {/* Popup de permissão -- estava fixo perto do topo (fixed top-16),
+          sobrepondo os botões do cabeçalho de forma bugada em telas menores
+          (achado real do usuário). Agora é um popup centralizado, mesmo
+          estilo do popup de confirmação de ligar logo abaixo. */}
       {(stage === 'need-permission' || stage === 'permission-sent') && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 px-4 py-2.5 rounded-xl shadow-lg bg-[#233138] text-[#e9edef] text-sm">
-          {stage === 'need-permission' ? (
-            <>
-              <span>Esse cliente ainda não autorizou receber ligação.</span>
-              <button onClick={requestPermission} className="text-emerald-400 font-medium hover:underline">Pedir permissão</button>
-              <button onClick={dismiss} className="text-[#8696a0] hover:text-[#e9edef]"><X size={14} /></button>
-            </>
-          ) : (
-            <>
-              <span>Pedido enviado — aguardando o cliente aceitar.</span>
-              <button onClick={recheckPermission} className="text-emerald-400 font-medium hover:underline">Verificar</button>
-              <button onClick={dismiss} className="text-[#8696a0] hover:text-[#e9edef]"><X size={14} /></button>
-            </>
-          )}
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/50" onClick={dismiss}>
+          <div
+            className="app-column-surface rounded-2xl shadow-2xl w-full max-w-xs flex flex-col items-center gap-4 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Avatar name={leadName || ''} size="lg" />
+            <div className="text-center">
+              <p className="text-base font-semibold text-[#e9edef]">{leadName}</p>
+              {stage === 'need-permission' ? (
+                <p className="text-sm text-[#8696a0] mt-2">Esse cliente ainda não autorizou receber ligação pelo WhatsApp.</p>
+              ) : (
+                <p className="text-sm text-[#8696a0] mt-2">Pedido de permissão enviado — aguardando o cliente aceitar.</p>
+              )}
+            </div>
+            <div className="flex items-center gap-3 w-full mt-1">
+              <button
+                onClick={dismiss}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium bg-white/10 hover:bg-white/20 text-[#e9edef] transition-colors"
+              >
+                Fechar
+              </button>
+              {stage === 'need-permission' ? (
+                <button
+                  onClick={requestPermission}
+                  className="flex-1 px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white transition-colors"
+                >
+                  Pedir permissão
+                </button>
+              ) : (
+                <button
+                  onClick={recheckPermission}
+                  className="flex-1 px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white transition-colors"
+                >
+                  Verificar
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
