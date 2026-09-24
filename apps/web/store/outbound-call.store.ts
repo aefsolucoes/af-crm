@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { waitForIceGatheringComplete } from '@/lib/webrtc';
+import { startRingbackTone } from '@/lib/sounds';
 
 export type OutboundCallStage = 'idle' | 'checking' | 'confirm' | 'connecting' | 'connected';
 
@@ -14,6 +15,11 @@ let pc: RTCPeerConnection | null = null;
 let localStream: MediaStream | null = null;
 let waCallId: string | null = null;
 let audioEl: HTMLAudioElement | null = null;
+// Toque de "chamando" (tuuu... tuuu...) enquanto o cliente ainda não
+// atendeu -- achado real do usuário: sem esse som, ligar parecia
+// travado/mudo, sem confirmação nenhuma de que a chamada estava tocando do
+// outro lado de verdade.
+let stopRingback: (() => void) | null = null;
 
 function cleanup() {
   pc?.close();
@@ -22,6 +28,8 @@ function cleanup() {
   localStream = null;
   if (audioEl) audioEl.srcObject = null;
   waCallId = null;
+  stopRingback?.();
+  stopRingback = null;
 }
 
 interface OutboundCallState {
@@ -91,6 +99,7 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
     const { leadId } = get();
     if (!leadId) return;
     set({ stage: 'connecting' });
+    stopRingback = startRingbackTone();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStream = stream;
@@ -114,6 +123,8 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
       conn.onconnectionstatechange = () => {
         console.log('[Calling] outbound connectionState:', conn.connectionState);
         if (conn.connectionState === 'connected') {
+          stopRingback?.();
+          stopRingback = null;
           set({ connectedAt: Date.now(), stage: 'connected' });
         }
         if (conn.connectionState === 'failed' || conn.connectionState === 'closed') {

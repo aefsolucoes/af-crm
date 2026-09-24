@@ -58,3 +58,44 @@ export function playSoundOnce(key: SoundKey) {
     // fallback silencioso
   }
 }
+
+/** Toque de "chamando" (tuuu... tuuu...) enquanto uma ligação OUTBOUND está
+ *  tocando do lado do cliente, antes de atender -- achado real do usuário:
+ *  sem nenhum som nesse meio tempo, ligar parecia travado/mudo, sem
+ *  confirmação nenhuma de que a chamada realmente estava em curso do outro
+ *  lado. Não é um dos sons configuráveis em SOUND_OPTIONS de propósito: é o
+ *  mesmo som sempre, igual o "tuuu" de qualquer telefone, não faz sentido
+ *  deixar escolher. Cadência aproximada de toque de chamada (1s de tom,
+ *  ~3s de silêncio, repete) -- não precisa ser idêntica ao padrão de
+ *  telefonia de verdade, só reconhecível como "chamando". Retorna uma
+ *  função de parar (chamada tanto ao atender quanto ao desistir/desligar). */
+export function startRingbackTone(): () => void {
+  let stopped = false;
+  let ctx: AudioContext | null = null;
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return () => {};
+    ctx = new AudioCtx();
+  } catch {
+    return () => {};
+  }
+  const playCycle = () => {
+    if (stopped || !ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(425, ctx.currentTime);
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 1);
+  };
+  playCycle();
+  const id = setInterval(playCycle, 4000);
+  return () => {
+    stopped = true;
+    clearInterval(id);
+    ctx?.close().catch(() => {});
+  };
+}

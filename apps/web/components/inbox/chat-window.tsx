@@ -1982,6 +1982,37 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         </div>
       )}
 
+      {/* Templates/IA no celular: em vez de sumir (ficava só no computador),
+          ganham uma linha própria ACIMA da barra de digitar -- pedido real
+          do usuário. Assim continuam acessíveis no celular sem competir
+          espaço com o campo de texto/botão de Enviar (o mais importante). */}
+      {!recording && (
+        <div className="flex md:hidden items-center gap-2 px-3 pt-2 bg-[#202c33]">
+          <button
+            type="button"
+            onClick={handleOpenTemplates}
+            title="Templates prontos"
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
+              showTemplates ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
+            )}
+          >
+            <FileText size={14} /> Templates
+          </button>
+          <button
+            type="button"
+            onClick={() => { setShowAI(v => !v); setShowTemplates(false); }}
+            title="Assistente IA"
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
+              showAI ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
+            )}
+          >
+            <Sparkles size={14} /> IA
+          </button>
+        </div>
+      )}
+
       {/* Input bar */}
       <form
         onSubmit={handleSend}
