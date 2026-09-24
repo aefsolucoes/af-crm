@@ -12,7 +12,6 @@ import { Avatar } from '@/components/ui/avatar';
 import { AttachmentView } from '@/components/inbox/message-attachment';
 import { MessageTemplate, CATEGORY_META, fillTemplate } from '@/lib/templates';
 import { MessageMenu } from '@/components/inbox/message-menu';
-import { CallHistoryModal } from '@/components/inbox/call-history-modal';
 import { useOutboundCallStore } from '@/store/outbound-call.store';
 import { EmojiPickerButton } from '@/components/inbox/emoji-picker';
 
@@ -220,8 +219,6 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [starred, setStarred] = useState(!!starredProp);
   const [togglingStar, setTogglingStar] = useState(false);
   useEffect(() => { setStarred(!!starredProp); }, [leadId, starredProp]);
-
-  const [showCallHistory, setShowCallHistory] = useState(false);
 
   // Ligar pro cliente (Fase 2 da Calling API — o CRM inicia a chamada, não
   // só recebe) — estado global (store/outbound-call.store.ts), não mais
@@ -1150,103 +1147,96 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         </div>
       )}
 
-      {/* Header — WhatsApp dark. Uma linha só, com quebra automática
-          (flex-wrap) em vez de duas linhas fixas: no computador cabe tudo
-          numa linha; só quando a tela é estreita demais pra caber (celular)
-          é que Chamadas/Ligar (por estarem por último) descem sozinhos pra
-          uma segunda linha. Duas linhas fixas sempre (mesmo com espaço
-          sobrando no desktop) era o problema — achado real do usuário
-          (2026-09-24): a ideia era só pro celular, não pro computador. */}
-      <div className="relative z-10 flex flex-wrap items-center gap-2 px-4 py-2 text-[#e9edef] shadow-md" style={{ backgroundColor: '#202c33' }}>
-        {/* Voltar pra lista de conversas — só existe no mobile (desktop
-            mostra a lista sempre ao lado, não precisa de botão pra voltar). */}
-        <button
-          onClick={() => onClose?.()}
-          title="Voltar pra lista de conversas"
-          className="md:hidden flex-shrink-0 -ml-1 text-[#8696a0] hover:text-[#e9edef] transition-colors"
-        >
-          <ChevronLeft size={22} />
-        </button>
-        <Avatar name={leadName} size="md" />
-        <div className="flex-1 min-w-[80px]">
-          <p className="text-sm font-semibold truncate">{leadName}</p>
-          <p className="text-xs opacity-80">
-            {CHANNEL_ICONS[channel]} {CHANNEL_LABELS[channel]}
-          </p>
+      {/* Header — WhatsApp dark. Nome numa linha própria (nunca disputa
+          espaço com os botões, então nunca trunca) e os botões numa segunda
+          linha, com quebra automática (flex-wrap) entre eles — pedido real
+          do usuário (2026-09-24): antes o nome e os botões dividiam a mesma
+          linha e o nome cortava (truncate) quando os botões não cabiam. */}
+      <div className="relative z-10 flex flex-col gap-2 px-4 py-2 text-[#e9edef] shadow-md" style={{ backgroundColor: '#202c33' }}>
+        <div className="flex items-center gap-3">
+          {/* Voltar pra lista de conversas — só existe no mobile (desktop
+              mostra a lista sempre ao lado, não precisa de botão pra voltar). */}
+          <button
+            onClick={() => onClose?.()}
+            title="Voltar pra lista de conversas"
+            className="md:hidden flex-shrink-0 -ml-1 text-[#8696a0] hover:text-[#e9edef] transition-colors"
+          >
+            <ChevronLeft size={22} />
+          </button>
+          <Avatar name={leadName} size="md" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold truncate">{leadName}</p>
+            <p className="text-xs opacity-80">
+              {CHANNEL_ICONS[channel]} {CHANNEL_LABELS[channel]}
+            </p>
+          </div>
+          <button
+            onClick={handleToggleStar}
+            disabled={togglingStar}
+            title={starred ? 'Desmarcar como importante' : 'Marcar como importante'}
+            className={cn(
+              'flex items-center justify-center w-8 h-8 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0',
+              starred ? 'text-amber-400 hover:bg-white/10' : 'text-[#8696a0] hover:text-[#e9edef] hover:bg-white/10'
+            )}
+          >
+            <Star size={18} className={starred ? 'fill-amber-400' : ''} />
+          </button>
         </div>
-        <button
-          onClick={handleToggleStar}
-          disabled={togglingStar}
-          title={starred ? 'Desmarcar como importante' : 'Marcar como importante'}
-          className={cn(
-            'flex items-center justify-center w-8 h-8 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0',
-            starred ? 'text-amber-400 hover:bg-white/10' : 'text-[#8696a0] hover:text-[#e9edef] hover:bg-white/10'
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Dados do lead/grupo — no mobile o painel não fica ao lado (não
+              cabe), abre como overlay ao tocar aqui. Com texto (não só ícone):
+              usuário não estava achando esse botão entre os outros ícones. */}
+          {onOpenInfo && (
+            <button
+              onClick={onOpenInfo}
+              title="Ver dados do cliente"
+              className="md:hidden flex-shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold bg-white/15 text-[#e9edef] hover:bg-white/25 transition-colors"
+            >
+              <Info size={15} />
+              Card
+            </button>
           )}
-        >
-          <Star size={18} className={starred ? 'fill-amber-400' : ''} />
-        </button>
-        {/* Dados do lead/grupo — no mobile o painel não fica ao lado (não
-            cabe), abre como overlay ao tocar aqui. Com texto (não só ícone):
-            usuário não estava achando esse botão entre os outros ícones. */}
-        {onOpenInfo && (
           <button
-            onClick={onOpenInfo}
-            title="Ver dados do cliente"
-            className="md:hidden flex-shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold bg-white/15 text-[#e9edef] hover:bg-white/25 transition-colors"
+            onClick={handleCopyLink}
+            title="Copiar link direto pra essa conversa — quem abrir (logado no CRM) cai direto aqui"
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
           >
-            <Info size={15} />
-            Card
+            <Link2 size={13} />
+            Copiar link
           </button>
-        )}
-        <button
-          onClick={handleCopyLink}
-          title="Copiar link direto pra essa conversa — quem abrir (logado no CRM) cai direto aqui"
-          className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
-        >
-          <Link2 size={13} />
-          Copiar link
-        </button>
-        <button
-          onClick={() => handleSuggestReply()}
-          disabled={suggesting}
-          title="Sugerir uma resposta pra você usar — nunca envia sozinha"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
-        >
-          {suggesting ? <Loader2 size={13} className="animate-spin" /> : <Lightbulb size={13} />}
-          <span className="hidden md:inline">Sugerir resposta</span>
-        </button>
-        <button
-          onClick={handleToggleAi}
-          disabled={togglingAi}
-          title={aiActive ? 'IA está respondendo esse cliente sozinha — clique para desligar' : 'Ativar a IA para responder esse cliente sozinha'}
-          className={cn(
-            'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0',
-            aiActive ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30' : 'bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15'
-          )}
-        >
-          <Sparkles size={13} />
-          <span className="hidden md:inline">{aiActive ? 'IA ativa' : 'Ativar IA'}</span>
-        </button>
-        <button
-          onClick={() => setShowCallHistory(true)}
-          title="Histórico de chamadas de voz com esse cliente"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
-        >
-          <Phone size={13} />
-          <span className="hidden md:inline">Chamadas</span>
-        </button>
-        {outboundCall.stage === 'idle' ? (
           <button
-            onClick={() => outboundCall.checkAndCall(leadId, leadName)}
-            title="Ligar pro cliente pelo WhatsApp"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30"
+            onClick={() => handleSuggestReply()}
+            disabled={suggesting}
+            title="Sugerir uma resposta pra você usar — nunca envia sozinha"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
           >
-            <Phone size={13} />
-            <span className="hidden md:inline">Ligar</span>
+            {suggesting ? <Loader2 size={13} className="animate-spin" /> : <Lightbulb size={13} />}
+            <span className="hidden md:inline">Sugerir resposta</span>
           </button>
-        ) : (
-          // Já tem uma ligação em curso -- global, pode ser desta conversa
-          // ou de outra (só dá pra ligar uma de cada vez). O popup/barra
+          <button
+            onClick={handleToggleAi}
+            disabled={togglingAi}
+            title={aiActive ? 'IA está respondendo esse cliente sozinha — clique para desligar' : 'Ativar a IA para responder esse cliente sozinha'}
+            className={cn(
+              'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0',
+              aiActive ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30' : 'bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15'
+            )}
+          >
+            <Sparkles size={13} />
+            <span className="hidden md:inline">{aiActive ? 'IA ativa' : 'Ativar IA'}</span>
+          </button>
+          {outboundCall.stage === 'idle' ? (
+            <button
+              onClick={() => outboundCall.checkAndCall(leadId, leadName)}
+              title="Ligar pro cliente pelo WhatsApp"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30"
+            >
+              <Phone size={13} />
+              <span className="hidden md:inline">Ligar</span>
+            </button>
+          ) : (
+            // Já tem uma ligação em curso -- global, pode ser desta conversa
+            // ou de outra (só dá pra ligar uma de cada vez). O popup/barra
             // fixa (OutboundCallBar, no layout) já mostra todo o controle.
             <span
               title={isThisLeadCalling ? 'Ligação em andamento' : 'Já tem outra ligação em andamento'}
@@ -1255,6 +1245,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               {isThisLeadCalling && outboundCall.stage === 'checking' ? <Loader2 size={13} className="animate-spin" /> : <Phone size={13} />}
             </span>
           )}
+        </div>
       </div>
 
       {/* Status do canal — só existe a API Oficial, então é um indicador fixo,
@@ -2122,9 +2113,6 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         </div>
       )}
 
-      {showCallHistory && (
-        <CallHistoryModal leadId={leadId} onClose={() => setShowCallHistory(false)} />
-      )}
       {/* Popup de confirmação, barra de "conectando/conectado", pedido de
           permissão e o <audio> da ligação outbound agora são globais —
           <OutboundCallBar />, montado no layout do dashboard, não mais
