@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { X, Phone } from 'lucide-react';
 import { useOutboundCallStore } from '@/store/outbound-call.store';
 import { getSocket } from '@/lib/socket';
@@ -27,7 +27,6 @@ function formatPhoneDisplay(phone: string | null | undefined): string {
  *  outbound-call.store.ts) — esse componente só monta a UI por cima dele. */
 export function OutboundCallBar() {
   const { stage, leadName, targetPhone, muted, connectedAt, registerAudioEl, confirmCall, dismiss, hangup, toggleMute, handleCallAnswered, handleCallEnded } = useOutboundCallStore();
-  const audioElRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const socket = getSocket();
@@ -43,7 +42,7 @@ export function OutboundCallBar() {
 
   return (
     <>
-      <audio ref={(el) => { audioElRef.current = el; registerAudioEl(el); }} autoPlay />
+      <audio ref={(el) => registerAudioEl(el)} autoPlay />
 
       {/* Popup de confirmação antes de ligar de verdade — estilo WhatsApp.
           Não tem mais popup de "pedir permissão" (achado real do usuário
@@ -53,8 +52,15 @@ export function OutboundCallBar() {
           discar de verdade. */}
       {stage === 'confirm' && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/50" onClick={dismiss}>
+          {/* Fundo escuro sólido, NÃO app-column-surface -- essa classe é
+              translúcida sobre a cor de fundo customizável da Inbox
+              (--app-column-bg-rgb, BRANCA por padrão), então o texto claro
+              deste popup (pensado pra fundo escuro) ficava ilegível/invisível
+              em cima dela -- achado real do usuário (o "X" de cancelar
+              sumia). Um popup de confirmação precisa de contraste garantido,
+              não pode depender do tema/wallpaper de quem está usando. */}
           <div
-            className="app-column-surface rounded-2xl shadow-2xl w-full max-w-xs flex flex-col items-center gap-4 p-6"
+            className="bg-[#233138] rounded-2xl shadow-2xl w-full max-w-xs flex flex-col items-center gap-4 p-6"
             onClick={(e) => e.stopPropagation()}
           >
             <Avatar name={leadName || ''} size="lg" />
@@ -91,7 +97,6 @@ export function OutboundCallBar() {
           muted={muted}
           onToggleMute={toggleMute}
           onHangup={hangup}
-          audioElRef={audioElRef}
         />
       )}
     </>

@@ -237,7 +237,6 @@ export function IncomingCallRinger() {
           muted={active.muted}
           onToggleMute={toggleMute}
           onHangup={hangup}
-          audioElRef={audioElRef}
         />
       )}
     </>

@@ -1,43 +1,24 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
-import { Mic, MicOff, PhoneOff, Volume2, Ear } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Mic, MicOff, PhoneOff } from 'lucide-react';
 
-/** Troca a saída de áudio entre viva-voz (alto-falante) e fone de ouvido
- *  (auricular) -- só existe em celular (o botão que chama isso é `md:hidden`
- *  no JSX abaixo). Achado real do usuário: em celular a ligação SEMPRE saía
- *  no viva-voz, sem opção de usar o fone/auricular como uma ligação normal.
- *
- *  Não existe uma API padrão da Web pra "forçar auricular" -- só dá pra
- *  ESCOLHER entre os dispositivos de saída de áudio que o navegador expõe
- *  (HTMLMediaElement.setSinkId, ainda sem suporte no Safari/iOS -- funciona
- *  em Chrome/Android). Por isso: se o navegador não suporta, o botão nem
- *  aparece (feature-detect); se suporta mas os rótulos dos dispositivos não
- *  derem pra identificar qual é qual, tenta o 2º dispositivo da lista como
- *  aproximação (normalmente o auricular vem depois do alto-falante). */
-async function pickAudioOutputDeviceId(wantSpeaker: boolean): Promise<string | null> {
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const outputs = devices.filter((d) => d.kind === 'audiooutput');
-    if (!outputs.length) return null;
-    const bySpeakerLabel = outputs.find((d) => /speaker|alto.?falante|viva.?voz/i.test(d.label));
-    const byEarpieceLabel = outputs.find((d) => /earpiece|receiver|fone|auricular/i.test(d.label));
-    if (wantSpeaker) return bySpeakerLabel?.deviceId ?? outputs[0]?.deviceId ?? null;
-    return byEarpieceLabel?.deviceId ?? outputs[1]?.deviceId ?? outputs[0]?.deviceId ?? null;
-  } catch (err) {
-    console.error('[Calling] Falha ao listar saídas de áudio:', err);
-    return null;
-  }
-}
-
-/** Barra de ligação em andamento — puramente visual, sem lógica de WebRTC
- *  (exceto o botão de viva-voz/fone, que mexe direto no elemento <audio>
- *  via ref, já que a saída de áudio é uma propriedade do próprio elemento).
+/** Barra de ligação em andamento — puramente visual, sem lógica de WebRTC.
  *  Usada pelo ringer (chamada recebida) e pelo fluxo de ligação feita pelo
  *  CRM (mesma UI pros dois casos). Mostrada tanto em "conectando" (tocando/
  *  negociando) quanto em "conectado" -- silenciar e desligar precisam estar
  *  disponíveis o tempo todo, não só depois que a Meta confirma o estado
  *  "connected" do RTCPeerConnection (esse evento pode demorar ou nem bater
- *  exatamente com o áudio já estar fluindo de verdade). */
+ *  exatamente com o áudio já estar fluindo de verdade).
+ *
+ *  Não tem mais botão de trocar pra fone/auricular (tentado e removido em
+ *  2026-09-24): usava HTMLMediaElement.setSinkId escolhendo o dispositivo de
+ *  saída "na tentativa" (rótulo do device, sem garantia entre aparelhos) --
+ *  usuário reportou que DEPOIS dessa mudança o áudio parou de sair também no
+ *  viva-voz (silêncio total, ligando ou recebendo). Sem like ter um celular
+ *  de verdade pra testar, o risco de deixar a ligação muda de novo é maior
+ *  que o ganho do botão -- volta pro comportamento simples de antes (o
+ *  navegador decide a saída sozinho), que já tinha sido confirmado
+ *  funcionando. */
 export function ActiveCallBar({
   callerName,
   connectedAt,
@@ -45,7 +26,6 @@ export function ActiveCallBar({
   muted,
   onToggleMute,
   onHangup,
-  audioElRef,
 }: {
   callerName: string;
   connectedAt: number; // Date.now() de quando conectou (ignorado se connecting)
@@ -53,26 +33,8 @@ export function ActiveCallBar({
   muted: boolean;
   onToggleMute: () => void;
   onHangup: () => void;
-  /** Elemento <audio> de verdade tocando a ligação — só usado pelo botão de
-   *  viva-voz/fone (celular). Sem isso, o botão não aparece. */
-  audioElRef?: React.RefObject<HTMLAudioElement | null>;
 }) {
   const [elapsed, setElapsed] = useState(0);
-  const [onSpeaker, setOnSpeaker] = useState(true); // viva-voz é o padrão atual do navegador
-  const supportsSinkId = typeof window !== 'undefined' && !!(HTMLMediaElement.prototype as any).setSinkId;
-  async function toggleSpeaker() {
-    const audioEl = audioElRef?.current as any;
-    if (!audioEl?.setSinkId) return;
-    const next = !onSpeaker;
-    const deviceId = await pickAudioOutputDeviceId(next);
-    if (deviceId === null) return;
-    try {
-      await audioEl.setSinkId(deviceId);
-      setOnSpeaker(next);
-    } catch (err) {
-      console.error('[Calling] Falha ao trocar saída de áudio:', err);
-    }
-  }
 
   useEffect(() => {
     if (connecting) return;
@@ -86,31 +48,28 @@ export function ActiveCallBar({
   const ss = String(elapsed % 60).padStart(2, '0');
 
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-4 px-5 py-3 rounded-full shadow-2xl bg-[#111b21] text-white">
-      <div className="flex flex-col leading-tight">
-        <span className="text-sm font-medium">{callerName}</span>
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-4 px-5 py-3 rounded-full shadow-2xl bg-[#111b21] text-white max-w-[calc(100vw-2rem)]">
+      {/* max-w-[120px] truncate: nome comprido (empresa+pessoa, comum aqui)
+          estourava a largura da barra e quebrava em 2-3 linhas, deixando a
+          pilula inteira gigante e torta -- achado real do usuário ("continua
+          encolhido", se referindo ao resultado esquisito, não ao texto em
+          si). Corta com "..." em vez de quebrar linha, mantém a pilula
+          sempre no mesmo formato compacto. */}
+      <div className="flex flex-col leading-tight min-w-0">
+        <span className="text-sm font-medium truncate max-w-[140px]">{callerName}</span>
         <span className="text-xs text-emerald-400">{connecting ? 'Conectando…' : `${mm}:${ss}`}</span>
       </div>
-      {supportsSinkId && audioElRef && (
-        <button
-          onClick={toggleSpeaker}
-          title={onSpeaker ? 'Usar fone/auricular' : 'Usar viva-voz'}
-          className="md:hidden w-9 h-9 rounded-full flex items-center justify-center transition-colors bg-white/10 hover:bg-white/20"
-        >
-          {onSpeaker ? <Volume2 size={16} /> : <Ear size={16} />}
-        </button>
-      )}
       <button
         onClick={onToggleMute}
         title={muted ? 'Ativar microfone' : 'Mudo'}
-        className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${muted ? 'bg-amber-500 hover:bg-amber-600' : 'bg-white/10 hover:bg-white/20'}`}
+        className={`flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-colors ${muted ? 'bg-amber-500 hover:bg-amber-600' : 'bg-white/10 hover:bg-white/20'}`}
       >
         {muted ? <MicOff size={16} /> : <Mic size={16} />}
       </button>
       <button
         onClick={onHangup}
         title="Desligar"
-        className="w-9 h-9 rounded-full flex items-center justify-center bg-red-600 hover:bg-red-700 transition-colors"
+        className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center bg-red-600 hover:bg-red-700 transition-colors"
       >
         <PhoneOff size={16} />
       </button>
