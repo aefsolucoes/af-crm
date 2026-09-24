@@ -4,6 +4,7 @@ import http from 'http';
 import cors from 'cors';
 import { setupWebSocket } from './websocket';
 import { startMessageWorker } from './workers/message.worker';
+import { probeUdpEgress } from './services/ai-call-bridge.service';
 
 import authRoutes from './routes/auth';
 import leadRoutes from './routes/leads';
@@ -207,6 +208,7 @@ try {
 
 httpServer.listen(PORT, () => {
   console.log(`🚀 API AF CRM rodando em http://localhost:${PORT}`);
+  probeUdpEgress().catch(() => {});
 
   // Válvula de segurança do disco: arquiva no Drive só os anexos com 30+ dias,
   // numa pasta técnica separada — nunca mexe na organização manual do usuário.
