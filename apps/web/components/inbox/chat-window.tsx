@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -35,6 +35,17 @@ function formatPhoneDisplay(phone: string | null | undefined): string {
     return `+55 (${d.slice(2, 4)}) ${d.slice(4, 9)}-${d.slice(9)}`;
   }
   return `+${d}`;
+}
+
+/** 125 → "2 minutos" / 45 → "45 segundos" -- rótulo do card de ligação na
+ *  conversa (espelha formatCallDuration do backend, sem importar do server). */
+function formatCallDurationDisplay(sec: number): string {
+  if (sec < 60) return `${sec} segundo${sec === 1 ? '' : 's'}`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} minuto${min === 1 ? '' : 's'}`;
+  const h = Math.floor(min / 60);
+  const restMin = min % 60;
+  return `${h}h ${String(restMin).padStart(2, '0')}min`;
 }
 
 const CHANNEL_ICONS: Record<Channel, string> = {
@@ -173,6 +184,14 @@ function lastInboundApiMessage(messages: Message[]): Message | null {
 
 export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId }: ChatWindowProps) {
   const router = useRouter();
+  // O listener de socket que atualiza o card de ligação (mais abaixo) roda
+  // dentro de um useEffect que só depende de [leadId, onNewMessage] (não
+  // re-registra a cada mensagem nova, evita duplicar listener) — por isso
+  // não pode fechar sobre `messages` direto (ficaria com a lista "congelada"
+  // do momento em que a conversa abriu). Esse ref sempre aponta pra versão
+  // mais atual, sem precisar re-registrar nada.
+  const messagesRef = useRef(messages);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
   const queryClient = useQueryClient();
   const [content, setContent] = useState('');
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
@@ -659,6 +678,10 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const [reactionsMap, setReactionsMap] = useState<Record<string, { emoji: string; fromMe: boolean; at: string }[]>>({});
   const [pinnedMap, setPinnedMap] = useState<Record<string, boolean>>({});
   const [starredMap, setStarredMap] = useState<Record<string, boolean>>({});
+  // Card de ligação de voz na conversa: estado ao vivo (troca "Chamando..."
+  // pelo resultado final quando a ligação termina) — mesmo padrão dos maps
+  // acima, indexado por ID da mensagem (não pelo waCallId).
+  const [callStateMap, setCallStateMap] = useState<Record<string, { status: string; durationSec?: number }>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -789,6 +812,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       cleanupOutboundCall();
       setCallUi('idle');
     });
+    // Card de ligação na conversa: troca "Chamando..." pelo resultado final
+    // (duração, perdida, recusada...) assim que a ligação termina de
+    // verdade — sem isso ficava preso em "Chamando..." pra sempre até
+    // recarregar a página.
+    socket.on('call_message_updated', ({ waCallId, callStatus, callDurationSec }: { waCallId: string; callStatus: string; callDurationSec: number }) => {
+      const msg = messagesRef.current.find((m) => m.callWaCallId === waCallId);
+      if (msg) setCallStateMap((prev) => ({ ...prev, [msg.id]: { status: callStatus, durationSec: callDurationSec } }));
+    });
 
     return () => {
       socket.emit('leave_lead', leadId);
@@ -801,6 +832,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       socket.off('message_starred');
       socket.off('call_answered');
       socket.off('call_ended');
+      socket.off('call_message_updated');
     };
   }, [leadId, onNewMessage]);
 
@@ -1488,6 +1520,52 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               // ── Mensagem WhatsApp ──────────────────────────────────────
               const msg = item.data;
               const isOut = msg.direction === 'OUTBOUND';
+
+              // Ligação de voz (Calling API) — card próprio, igual ao
+              // WhatsApp de verdade, em vez do balão de texto normal.
+              // Clicar num card de ligação já ENCERRADA (não numa que ainda
+              // está tocando) liga de novo pro mesmo cliente.
+              if (msg.callWaCallId) {
+                const live = callStateMap[msg.id];
+                const status = live?.status ?? msg.callStatus ?? 'RINGING';
+                const durationSec = live?.durationSec ?? msg.callDurationSec ?? 0;
+                const isFinal = status !== 'RINGING' && status !== 'CONNECTING' && status !== 'CONNECTED';
+                const isBad = status === 'MISSED' || status === 'REJECTED' || status === 'FAILED';
+                const label = !isFinal
+                  ? 'Chamando…'
+                  : status === 'MISSED' ? 'Perdida'
+                  : status === 'REJECTED' ? 'Recusada'
+                  : status === 'FAILED' ? 'Falhou'
+                  : durationSec > 0 ? formatCallDurationDisplay(durationSec) : 'Encerrada';
+                const CallIcon = isBad ? PhoneMissed : isOut ? PhoneOutgoing : PhoneIncoming;
+                const canCallBack = isFinal && callUi === 'idle';
+                return (
+                  <div key={msg.id} className={cn('flex mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
+                    <button
+                      type="button"
+                      onClick={canCallBack ? handleClickLigar : undefined}
+                      title={canCallBack ? 'Ligar de novo' : undefined}
+                      disabled={!canCallBack}
+                      className={cn(
+                        'flex items-center gap-2.5 max-w-xs lg:max-w-md px-3.5 py-2.5 rounded-2xl shadow-sm text-left transition-colors',
+                        canCallBack && 'hover:brightness-110 cursor-pointer',
+                        !canCallBack && 'cursor-default',
+                      )}
+                      style={{ backgroundColor: isOut ? '#005c4b' : '#202c33' }}
+                    >
+                      <span className={cn('flex items-center justify-center w-8 h-8 rounded-full flex-shrink-0', isBad ? 'bg-red-500/20' : 'bg-white/10')}>
+                        <CallIcon size={15} className={isBad ? 'text-red-400' : 'text-[#e9edef]'} />
+                      </span>
+                      <span className="flex flex-col leading-tight min-w-0">
+                        <span className="text-sm font-medium text-[#e9edef]">Ligação de voz</span>
+                        <span className={cn('text-xs', isBad ? 'text-red-400' : 'text-[#8696a0]')}>{label}</span>
+                      </span>
+                      <span className="text-[10px] text-[#e9edef]/50 flex-shrink-0 self-end ml-1">{time}</span>
+                    </button>
+                  </div>
+                );
+              }
+
               const prevItem = items[i - 1];
               const prevIsMsg = prevItem?.kind === 'message';
               const showTail = !prevIsMsg || (prevItem.data as Message).direction !== msg.direction;

@@ -416,6 +416,17 @@ model Message {
   templateName          String?
   templateLanguage      String?
   templateParams        Json?
+  // Preenchido quando esta "mensagem" na verdade representa uma ligação de
+  // voz (Calling API) — pra aparecer dentro da própria conversa, igual no
+  // WhatsApp de verdade, em vez de só na aba separada "Chamadas". direction
+  // (já existe acima) já diz se foi o cliente ligando ou o CRM ligando.
+  // callStatus espelha o Call.status (RINGING/CONNECTED/ENDED/MISSED/
+  // REJECTED/FAILED) -- atualizado ao vivo (via socket) quando a ligação
+  // termina, pra trocar "Chamando..." pela duração final sem precisar
+  // recarregar a conversa.
+  callWaCallId          String?             @unique
+  callStatus            String?
+  callDurationSec       Int?
   attachments           MessageAttachment[]
   createdAt             DateTime            @default(now())
   // Preenchido quando esta mensagem foi ENCAMINHADA de outra conversa. Guarda

@@ -39,6 +39,81 @@ async function waCallsRequest(
 
 type CallCredentials = { phoneNumberId: string; accessToken: string };
 
+/** Formata "11 minutos"/"45 segundos"/"1h 05min" pro texto que fica salvo
+ *  na mensagem (aparece em notificação, prévia da lista de conversas etc. —
+ *  o rótulo bonito com ícone é só visual no frontend). */
+function formatCallDuration(sec: number): string {
+  if (sec < 60) return `${sec} segundo${sec === 1 ? '' : 's'}`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} minuto${min === 1 ? '' : 's'}`;
+  const h = Math.floor(min / 60);
+  const restMin = min % 60;
+  return `${h}h ${String(restMin).padStart(2, '0')}min`;
+}
+
+/** Cria a "mensagem" que representa a ligação dentro da própria conversa —
+ *  igual ao WhatsApp de verdade (a ligação some da aba separada "Chamadas"
+ *  e some só como um card na Inbox se você não abrir a conversa; aqui ela
+ *  aparece nas duas). Chamado tanto pro inbound (webhook `connect`) quanto
+ *  pro outbound (POST /api/calls/outbound), sempre no estado inicial
+ *  RINGING -- finalizeCallMessage atualiza pro estado final depois.
+ *  Sem leadId não tem pra quem emitir/salvar -- é um no-op silencioso (a
+ *  Call em si já foi salva por quem chamou essa função, o registro
+ *  principal não se perde). */
+export async function createCallMessage(leadId: string | null, direction: 'INBOUND' | 'OUTBOUND', waCallId: string, io: any, accountId: string): Promise<void> {
+  if (!leadId) return;
+  try {
+    const message = await prisma.message.create({
+      data: {
+        content: '📞 Ligação de voz',
+        direction,
+        channel: 'WHATSAPP',
+        leadId,
+        callWaCallId: waCallId,
+        callStatus: 'RINGING',
+        status: 'DELIVERED',
+      },
+      include: { attachments: true },
+    });
+    if (io) {
+      io.to(`lead:${leadId}`).emit('new_message', message);
+      io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
+    }
+  } catch (err) {
+    console.error('[Calling] Falha ao criar mensagem de ligação:', err);
+  }
+}
+
+/** Atualiza a mensagem da ligação pro estado final (encerrada/perdida/
+ *  recusada/falhou) com a duração, e avisa quem estiver com a conversa
+ *  aberta via socket pra trocar "Chamando..." pelo resultado final sem
+ *  precisar recarregar. Usa updateMany (não update) porque nem toda Call
+ *  necessariamente tem uma Message vinculada (ex.: ligações de teste de
+ *  antes dessa migration) -- updateMany simplesmente não acha nada e segue
+ *  a vida, em vez de derrubar quem chamou com um erro "record not found". */
+export async function finalizeCallMessage(waCallId: string, status: string, durationSec: number, io: any, accountId: string, leadId: string | null): Promise<void> {
+  try {
+    const content = status === 'ENDED' && durationSec > 0
+      ? `📞 Ligação de voz — ${formatCallDuration(durationSec)}`
+      : status === 'MISSED' ? '📞 Ligação de voz perdida'
+      : status === 'REJECTED' ? '📞 Ligação de voz recusada'
+      : status === 'FAILED' ? '📞 Falha na ligação de voz'
+      : '📞 Ligação de voz encerrada';
+
+    const { count } = await prisma.message.updateMany({
+      where: { callWaCallId: waCallId },
+      data: { callStatus: status, callDurationSec: durationSec, content },
+    });
+    if (count > 0 && io) {
+      const payload = { waCallId, callStatus: status, callDurationSec: durationSec, content };
+      if (leadId) io.to(`lead:${leadId}`).emit('call_message_updated', payload);
+      io.to(`account_${accountId}`).emit('call_message_updated', payload);
+    }
+  } catch (err) {
+    console.error('[Calling] Falha ao finalizar mensagem de ligação:', err);
+  }
+}
+
 /** Inbound: estabelece a mídia antes de formalizar a atendida (opcional, mas
  *  recomendado pela Meta pra reduzir o tempo até o áudio conectar). Recebe o
  *  config já resolvido (não accountId/departmentId) — o Call já sabe exatamente
@@ -370,6 +445,7 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
         if (leadId) io.to(`lead:${leadId}`).emit('incoming_call', payload);
 
         sendPushToAccount(accountId, { title: 'Ligação recebida', body: leadName, leadId: leadId || undefined, type: 'call' }).catch(() => {});
+        await createCallMessage(leadId, 'INBOUND', waCallId, io, accountId);
         continue;
       }
 
@@ -391,6 +467,9 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
         const payload = { waCallId, status: updated.status, endReason };
         io.to(`account_${accountId}`).emit('call_ended', payload);
         if (existing.leadId) io.to(`lead:${existing.leadId}`).emit('call_ended', payload);
+
+        const durationSec = existing.connectedAt ? Math.max(0, Math.round((updated.endedAt!.getTime() - existing.connectedAt.getTime()) / 1000)) : 0;
+        await finalizeCallMessage(waCallId, updated.status, durationSec, io, accountId, existing.leadId);
         continue;
       }
 

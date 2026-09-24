@@ -198,6 +198,11 @@ export interface Message {
   templateName?: string | null;
   templateLanguage?: string | null;
   templateParams?: string[] | null;
+  /** Preenchido quando esta mensagem representa uma ligação de voz (Calling
+   *  API) — aparece como um card de ligação na conversa em vez de texto. */
+  callWaCallId?: string | null;
+  callStatus?: string | null;
+  callDurationSec?: number | null;
 }
 
 export interface Conversation {

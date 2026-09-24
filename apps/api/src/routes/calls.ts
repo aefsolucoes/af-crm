@@ -6,6 +6,7 @@ import { validate } from '../middleware/validate';
 import {
   preAcceptCall, acceptCall, rejectCall, terminateCall,
   connectCall, getCallPermissionState, sendCallPermissionRequest, pickRealPhone,
+  createCallMessage, finalizeCallMessage,
 } from '../services/whatsapp-calling.service';
 import { getWhatsAppConfig, normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 
@@ -73,6 +74,7 @@ router.post('/:waCallId/reject', async (req: AuthRequest, res: Response) => {
   const io = (req as any).app.get('io');
   io.to(`account_${req.user!.accountId}`).emit('call_ended', { waCallId: call.waCallId, status: 'REJECTED', endReason: 'rejected_by_agent' });
   if (call.leadId) io.to(`lead:${call.leadId}`).emit('call_ended', { waCallId: call.waCallId, status: 'REJECTED', endReason: 'rejected_by_agent' });
+  await finalizeCallMessage(call.waCallId, 'REJECTED', 0, io, req.user!.accountId, call.leadId);
 
   res.json({ ok: true });
 });
@@ -91,6 +93,9 @@ router.post('/:waCallId/terminate', async (req: AuthRequest, res: Response) => {
   const io = (req as any).app.get('io');
   io.to(`account_${req.user!.accountId}`).emit('call_ended', { waCallId: call.waCallId, status: updated.status, endReason: updated.endReason });
   if (call.leadId) io.to(`lead:${call.leadId}`).emit('call_ended', { waCallId: call.waCallId, status: updated.status, endReason: updated.endReason });
+
+  const durationSec = call.connectedAt ? Math.max(0, Math.round((updated.endedAt!.getTime() - call.connectedAt.getTime()) / 1000)) : 0;
+  await finalizeCallMessage(call.waCallId, updated.status, durationSec, io, req.user!.accountId, call.leadId);
 
   res.json({ ok: true });
 });
@@ -177,6 +182,9 @@ router.post('/outbound', validate(outboundSchema), async (req: AuthRequest, res:
       answeredByUserId: req.user!.id,
     },
   });
+
+  const io = (req as any).app.get('io');
+  await createCallMessage(req.body.leadId, 'OUTBOUND', waCallId, io, req.user!.accountId);
 
   res.json({ ok: true, waCallId, callId: created.id });
 });
