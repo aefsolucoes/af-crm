@@ -5,7 +5,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import {
   preAcceptCall, acceptCall, rejectCall, terminateCall,
-  connectCall, getCallPermissionState, sendCallPermissionRequest,
+  connectCall, getCallPermissionState, sendCallPermissionRequest, pickRealPhone,
 } from '../services/whatsapp-calling.service';
 import { getWhatsAppConfig, normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 
@@ -112,7 +112,7 @@ router.get('/permission-state', async (req: AuthRequest, res: Response) => {
   if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
 
   const lead = await findLeadWithPhone(leadId, req.user!.accountId);
-  const phoneRaw = lead?.contact?.whatsappPhone || lead?.contact?.phone;
+  const phoneRaw = pickRealPhone(lead?.contact);
   if (!phoneRaw) return res.status(400).json({ error: 'Lead sem telefone de WhatsApp' });
 
   const config = await getWhatsAppConfig(req.user!.accountId, lead!.pipeline?.departmentId || null);
@@ -139,7 +139,7 @@ const outboundSchema = z.object({ leadId: z.string().min(1), sdpOffer: z.string(
 // POST /api/calls/outbound — liga pro cliente (exige permissão já concedida).
 router.post('/outbound', validate(outboundSchema), async (req: AuthRequest, res: Response) => {
   const lead = await findLeadWithPhone(req.body.leadId, req.user!.accountId);
-  const phoneRaw = lead?.contact?.whatsappPhone || lead?.contact?.phone;
+  const phoneRaw = pickRealPhone(lead?.contact);
   if (!phoneRaw) return res.status(400).json({ error: 'Lead sem telefone de WhatsApp' });
 
   const departmentId = lead!.pipeline?.departmentId || null;

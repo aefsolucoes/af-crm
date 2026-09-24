@@ -169,6 +169,23 @@ export async function createCallPermissionTemplate(accountId: string, department
   return { ok: true };
 }
 
+/** `Contact.whatsappPhone` às vezes é um identificador `@lid` (Baileys/Meta
+ *  — ver [[whatsapp-lid-baileys7]] na memória do projeto) em vez de um
+ *  telefone de verdade, quando a última mensagem desse contato chegou por
+ *  um canal que só identifica por @lid. Um @lid nunca serve pra Graph API
+ *  (nem pra mandar mensagem, nem pra Calling) — incidente real
+ *  (2026-09-24): o botão "Ligar" e o pedido de permissão usavam
+ *  `whatsappPhone || phone` cegamente, então quando `whatsappPhone` virava
+ *  um @lid, a Meta era consultada por um número bogus e sempre dizia
+ *  "no_permission" mesmo com o cliente já tendo aceitado de verdade no
+ *  telefone certo. Prefere `whatsappPhone` normalmente (mais confiável
+ *  quando é telefone de verdade), mas pula pro `phone` se for @lid. */
+export function pickRealPhone(contact: { whatsappPhone?: string | null; phone?: string | null } | null | undefined): string | null {
+  const wa = contact?.whatsappPhone;
+  if (wa && !wa.includes('@lid')) return wa;
+  return contact?.phone || null;
+}
+
 /** Manda o template de pedido de permissão pro cliente — reaproveita
  *  sendWhatsAppTemplateMessage (whatsapp.service.ts), sem parâmetros de
  *  corpo (o template de permissão não costuma ter variável). Grava/atualiza
@@ -176,7 +193,7 @@ export async function createCallPermissionTemplate(accountId: string, department
  *  sempre consulta getCallPermissionState ao vivo). */
 export async function sendCallPermissionRequest(accountId: string, departmentId: string | null | undefined, contactId: string): Promise<{ ok: boolean; error?: string }> {
   const contact = await prisma.contact.findUnique({ where: { id: contactId } });
-  const phone = contact?.whatsappPhone || contact?.phone;
+  const phone = pickRealPhone(contact);
   if (!phone) return { ok: false, error: 'Contato sem telefone de WhatsApp' };
 
   const template = await findCallPermissionTemplate(accountId, departmentId);
