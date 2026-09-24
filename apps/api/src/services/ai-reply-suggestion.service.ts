@@ -57,25 +57,42 @@ ${OUTPUT_FORMAT}
 
 ${buildContextBlocks(ctx)}`;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-5',
-        max_tokens: 300,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: 'Sugira a próxima resposta.' }],
-      }),
-    });
-    if (!response.ok) {
-      console.error('[AI Suggest-reply] Erro Anthropic:', response.status, (await response.text()).slice(0, 300));
-      return null;
+    // Achado real (2026-09-24): "às vezes" a sugestão falhava com o erro
+    // genérico "sem histórico ou IA indisponível" mesmo numa conversa cheia
+    // de mensagens -- confirmado via log que a chamada de verdade batia na
+    // Anthropic (~5s, tempo de round-trip real), só que às vezes ela volta
+    // 200 OK só que sem nenhum bloco de texto usável (raw vazio), e esse
+    // caminho não logava nada, então não dava pra saber a causa real na
+    // próxima vez que acontecesse. Uma segunda tentativa automática (sem
+    // pedir pro usuário clicar de novo) resolve a maior parte dos casos
+    // transitórios sozinha; se as duas falharem, agora fica registrado o
+    // motivo de verdade (status, stop_reason, tipos de bloco devolvidos).
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-5',
+          max_tokens: 300,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: 'Sugira a próxima resposta.' }],
+        }),
+      });
+      if (!response.ok) {
+        console.error(`[AI Suggest-reply] Erro Anthropic (tentativa ${attempt}/2):`, response.status, (await response.text()).slice(0, 300));
+        if (attempt === 2) return null;
+        continue;
+      }
+      const data = await response.json() as { content: { type: string; text?: string }[]; stop_reason?: string };
+      const raw = data.content?.find((b) => b.type === 'text')?.text?.trim() || '';
+      if (!raw) {
+        console.error(`[AI Suggest-reply] Resposta sem texto usável (tentativa ${attempt}/2): stop_reason=${data.stop_reason}, blocos=${JSON.stringify(data.content?.map((b) => b.type))}`);
+        if (attempt === 2) return null;
+        continue;
+      }
+      return { suggestion: raw };
     }
-    const data = await response.json() as { content: { type: string; text?: string }[] };
-    const raw = data.content?.find((b) => b.type === 'text')?.text?.trim() || '';
-    if (!raw) return null;
-
-    return { suggestion: raw };
+    return null;
   } catch (err) {
     console.error('[AI Suggest-reply] Erro ao gerar sugestão:', err);
     return null;
