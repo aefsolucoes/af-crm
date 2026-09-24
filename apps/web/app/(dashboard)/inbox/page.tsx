@@ -1,7 +1,7 @@
 'use client';
 import { useState, useCallback, useEffect, useMemo, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { ConversationList } from '@/components/inbox/conversation-list';
 import { ChatWindow } from '@/components/inbox/chat-window';
@@ -33,8 +33,14 @@ async function fetchConversations(): Promise<Conversation[]> {
   return data;
 }
 
-async function fetchMessages(leadId: string): Promise<Message[]> {
-  const { data } = await api.get(`/api/messages?leadId=${leadId}`);
+// Histórico paginado (achado real 2026-09-24: buscar a conversa inteira de
+// uma vez travava o celular em conversas longas — sem contagem, sem
+// virtualização, cada tecla digitada redesenhava milhares de balões).
+// `before` = createdAt da mensagem mais antiga já carregada, pra pedir a
+// leva anterior a ela. Sem `before`, vem a mais recente.
+const MESSAGES_PAGE_SIZE = 50;
+async function fetchMessages(leadId: string, before?: string): Promise<Message[]> {
+  const { data } = await api.get('/api/messages', { params: { leadId, limit: MESSAGES_PAGE_SIZE, ...(before ? { before } : {}) } });
   return data;
 }
 
@@ -118,11 +124,27 @@ function InboxPageInner() {
       .catch(() => {});
   }, [selectedId, queryClient]);
 
-  const { data: messages } = useQuery({
+  const {
+    data: messagesPages,
+    fetchNextPage: fetchOlderMessages,
+    hasNextPage: hasOlderMessages,
+    isFetchingNextPage: loadingOlderMessages,
+  } = useInfiniteQuery({
     queryKey: ['messages', selectedId],
-    queryFn: () => fetchMessages(selectedId!),
+    queryFn: ({ pageParam }) => fetchMessages(selectedId!, pageParam),
     enabled: !!selectedId,
+    initialPageParam: undefined as string | undefined,
+    // Cada página vem em ordem cronológica (mais antiga primeiro) — se a
+    // leva veio "cheia" (bateu o tamanho da página), pode ter mais antes
+    // dela; usa a mensagem mais antiga DESSA leva como cursor da próxima.
+    getNextPageParam: (lastPage) => (lastPage.length === MESSAGES_PAGE_SIZE ? lastPage[0]?.createdAt : undefined),
   });
+  // pages[0] = leva mais recente, pages[1] = leva anterior a essa, etc. —
+  // junta da mais antiga pra mais nova, pra ficar na ordem de exibição.
+  const messages = useMemo(
+    () => (messagesPages ? messagesPages.pages.slice().reverse().flat() : undefined),
+    [messagesPages]
+  );
 
   const { data: lead, refetch: refetchLead } = useQuery({
     queryKey: ['lead', selectedId],
@@ -190,6 +212,9 @@ function InboxPageInner() {
               onNewMessage={handleNewMessage}
               onClose={() => { setSelectedId(null); setShowMobileInfo(false); }}
               onOpenInfo={() => setShowMobileInfo(true)}
+              hasOlderMessages={hasOlderMessages}
+              loadingOlderMessages={loadingOlderMessages}
+              onLoadOlderMessages={fetchOlderMessages}
             />
             {/* Painel de dados: desktop mostra sempre ao lado; mobile só como
                 overlay sob demanda (botão "i" no cabeçalho do chat). A barra

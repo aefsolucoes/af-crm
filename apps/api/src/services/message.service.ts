@@ -22,8 +22,16 @@ function plainPhone(contact?: { phone?: string | null; whatsappPhone?: string | 
  * Mensagens de uma conversa. Confere que o lead é da conta e (se o usuário
  * for de setor(es) específico(s)) de algum deles — senão devolve null, como
  * se a conversa não existisse pra quem está pedindo.
+ *
+ * Paginado (achado real 2026-09-24: sem limite, uma conversa com meses de
+ * histórico mandava milhares de mensagens de uma vez — travava o celular do
+ * usuário, e travamento forte o bastante fazia o próprio SO matar a aba,
+ * parecendo "o CRM reiniciou sozinho"). `before` = cursor (createdAt de uma
+ * mensagem já carregada) pra pedir a leva ANTERIOR a ela — sem `before`,
+ * devolve as `limit` mais recentes. Sempre em ordem cronológica (mais antiga
+ * primeiro), igual antes — só o TAMANHO do retorno mudou.
  */
-export async function getMessages(leadId: string, accountId: string, scopeDepartmentIds: string[] = [], scopeNumberIds: string[] | null = null) {
+export async function getMessages(leadId: string, accountId: string, scopeDepartmentIds: string[] = [], scopeNumberIds: string[] | null = null, limit = 50, before?: Date) {
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
     include: { pipeline: { select: { departmentId: true } } },
@@ -48,9 +56,14 @@ export async function getMessages(leadId: string, accountId: string, scopeDepart
     }
   }
 
-  return prisma.message.findMany({
-    where: { leadId },
-    orderBy: { createdAt: 'asc' },
+  // Busca as mais recentes primeiro (desc, com limit) pra pegar exatamente a
+  // LEVA certa mesmo numa conversa gigante, depois inverte pra ordem
+  // cronológica de exibição — mesmo truque já usado em checkInactivityAutomations
+  // pra pegar só a última mensagem sem escanear tudo.
+  const rows = await prisma.message.findMany({
+    where: { leadId, ...(before ? { createdAt: { lt: before } } : {}) },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
     include: {
       attachments: {
         select: { id: true, fileName: true, mimeType: true, driveFileId: true },
@@ -59,6 +72,7 @@ export async function getMessages(leadId: string, accountId: string, scopeDepart
       sentBy: { select: { id: true, name: true } },
     },
   });
+  return rows.reverse();
 }
 
 export async function createMessage(data: {

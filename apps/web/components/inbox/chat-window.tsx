@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState, Fragment } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
@@ -72,6 +72,13 @@ interface ChatWindowProps {
    *  errado — "alguns cards" carregavam, outros não, dependendo de qual
    *  setor "ganhava" o fallback. */
   departmentId?: string | null;
+  /** Paginação do histórico (achado real 2026-09-24: buscar a conversa
+   *  inteira de uma vez travava o celular em conversas longas). `messages`
+   *  aqui já vem só com a leva mais recente + o que foi carregado a mais
+   *  clicando "Carregar mensagens anteriores". */
+  hasOlderMessages?: boolean;
+  loadingOlderMessages?: boolean;
+  onLoadOlderMessages?: () => void;
 }
 
 type AIMode = 'grammar' | 'professional' | 'friendly' | 'fun';
@@ -168,7 +175,7 @@ function lastInboundApiMessage(messages: Message[]): Message | null {
   return latest;
 }
 
-export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId }: ChatWindowProps) {
+export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId, hasOlderMessages, loadingOlderMessages, onLoadOlderMessages }: ChatWindowProps) {
   const router = useRouter();
   // O listener de socket que atualiza o card de ligação (mais abaixo) roda
   // dentro de um useEffect que só depende de [leadId, onNewMessage] (não
@@ -576,6 +583,29 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   function jumpToBottom() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }
+
+  // "Carregar mensagens anteriores" — o histórico agora vem paginado (ver
+  // comentário em ChatWindowProps). Sem compensar a rolagem, inserir
+  // conteúdo mais antigo ACIMA do que já está na tela faz a rolagem "pular"
+  // (o navegador não preserva sozinho o que estava visível quando o
+  // conteúdo de cima cresce) — guarda a altura/posição de ANTES de pedir a
+  // leva nova, e reaplica depois que ela entra no DOM, na mesma técnica
+  // padrão de "manter a leitura no lugar" ao paginar pra cima.
+  const pendingOlderLoadRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  function handleLoadOlderMessages() {
+    const container = scrollContainerRef.current;
+    if (container) pendingOlderLoadRef.current = { scrollHeight: container.scrollHeight, scrollTop: container.scrollTop };
+    onLoadOlderMessages?.();
+  }
+  useLayoutEffect(() => {
+    const pending = pendingOlderLoadRef.current;
+    const container = scrollContainerRef.current;
+    if (pending && container) {
+      container.scrollTop = container.scrollHeight - pending.scrollHeight + pending.scrollTop;
+      pendingOlderLoadRef.current = null;
+    }
+  }, [messages]);
+
   useEffect(() => {
     const isNewConversation = lastLeadIdRef.current !== leadId;
 
@@ -1307,6 +1337,18 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
       {/* Timeline unificado: mensagens + eventos de fluxo */}
       <div ref={scrollContainerRef} onScroll={handleScroll} className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
+        {hasOlderMessages && (
+          <div className="flex justify-center pb-3">
+            <button
+              onClick={handleLoadOlderMessages}
+              disabled={loadingOlderMessages}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-[#202c33] text-[#8696a0] hover:text-[#e9edef] hover:bg-[#2a3942] transition-colors disabled:opacity-60"
+            >
+              {loadingOlderMessages ? <Loader2 size={12} className="animate-spin" /> : null}
+              {loadingOlderMessages ? 'Carregando...' : 'Carregar mensagens anteriores'}
+            </button>
+          </div>
+        )}
         {grouped.length === 0 && (
           // Lead novo (ex.: veio do formulário do site) sem nenhuma mensagem
           // ainda — sem isso ficava um vazio preto enorme, parecendo quebrado

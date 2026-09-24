@@ -133,12 +133,17 @@ const messageSchema = z.object({
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {
-  const { leadId } = req.query;
+  const { leadId, limit, before } = req.query;
   const scopeDepartmentIds = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
   const scopeNumberIds = await getScopeNumberIds(req.user!.accountId, req.user!.id, req.user!.role);
   if (leadId) {
     try {
-      const messages = await getMessages(leadId as string, req.user!.accountId, scopeDepartmentIds, scopeNumberIds);
+      // Paginado (ver comentário em getMessages) — `limit` e `before`
+      // opcionais, default cobre o caso de sempre (conversa aberta pela
+      // primeira vez, sem cursor).
+      const parsedLimit = limit ? Math.min(Math.max(Number(limit) || 50, 1), 200) : 50;
+      const parsedBefore = before ? new Date(String(before)) : undefined;
+      const messages = await getMessages(leadId as string, req.user!.accountId, scopeDepartmentIds, scopeNumberIds, parsedLimit, parsedBefore);
       if (messages === null) { res.status(404).json({ error: 'Conversa não encontrada' }); return; }
       res.json(messages);
     } catch {
