@@ -32,6 +32,7 @@ model Account {
   knowledgeEntries   KnowledgeEntry[]
   assistantQuestions AssistantQuestion[]
   assistantMemories  AssistantMemory[]
+  aiTeamQuestions    AiTeamQuestion[]
   messageTemplates   MessageTemplate[]
   departments        Department[]
   automationRules    AutomationRule[]
@@ -252,6 +253,7 @@ model Lead {
   messages           Message[]
   assistantQuestions AssistantQuestion[]
   calls              Call[]
+  aiTeamQuestions    AiTeamQuestion[]
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
 }
@@ -280,6 +282,37 @@ model AssistantQuestion {
   answeredAt    DateTime?
 
   @@index([accountId, targetUserId, answered])
+}
+
+// Dúvida que a IA de atendimento não soube responder sozinha e perguntou pra
+// equipe pelo balão "Dúvidas da IA" — o colaborador responde ali, a IA
+// repassa ao cliente pelo WhatsApp e, se a resposta for regra geral (vale pra
+// outros clientes), guarda na Base de Conhecimento (knowledgeEntryId) — é
+// assim que ela vai aprendendo. status: OPEN | ANSWERED | DISMISSED.
+model AiTeamQuestion {
+  id               String    @id @default(cuid())
+  accountId        String
+  account          Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  leadId           String
+  lead             Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  // Setor do funil do card quando a dúvida nasceu — decide quem vê no balão.
+  departmentId     String?
+  question         String    @db.Text
+  clientMessage    String?   @db.Text
+  status           String    @default("OPEN")
+  answer           String?   @db.Text
+  answeredByUserId String?
+  answeredByName   String?
+  answeredAt       DateTime?
+  // O que a IA mandou pro cliente a partir da resposta (ou o erro, se falhou).
+  sentReply        String?   @db.Text
+  sendError        String?
+  knowledgeEntryId String?
+  knowledgeTitle   String?
+  createdAt        DateTime  @default(now())
+
+  @@index([accountId, status])
+  @@index([leadId])
 }
 
 // Coisas que um colaborador pediu pro assistente "lembrar" (ex.: "lembra que

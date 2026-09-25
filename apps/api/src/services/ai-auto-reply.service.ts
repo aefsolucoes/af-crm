@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES } from './ai-shared.service';
+import { teamQuestionsContext } from './ai-team-question.service';
 
 const prisma = new PrismaClient();
 
@@ -59,11 +60,21 @@ const SAFETY_RULES = `- Nunca peça senha, número de cartão ou qualquer dado s
 const HANDOFF_RULES = `
 ENCERRAR E CHAMAR UM HUMANO ("handoff": true) sempre que:
 - o cliente pedir, de qualquer forma, para falar com uma pessoa/atendente/humano/alguém da equipe;
-- o cliente parecer insatisfeito, impaciente, ou trouxer um problema fora do comum que você não consegue resolver com o material disponível;
-- a pergunta do cliente for GENUINAMENTE sobre um produto ou assunto fora do escopo de atendimento deste chat (ver acima) — nesse caso não tente responder por conta própria, mesmo que ache que sabe a resposta;
-- REALMENTE não houver nenhum material nem contexto que sustente uma resposta séria pra pergunta do cliente (isso é a EXCEÇÃO, não o padrão — não use por cautela);
-- Home Equity, na hora dos documentos do imóvel, o cliente ainda estiver em dúvida sobre a situação do imóvel (regra em DOCUMENTOS, abaixo).
-Quando marcar "handoff": true, a "reply" ainda deve ser uma mensagem curta e natural avisando o cliente que alguém da equipe vai continuar o atendimento a partir daqui (no caso da dúvida do imóvel, basta dizer que você vai verificar e já retorna) — nunca deixe o campo "reply" vazio. Preencha também "handoffReason" com o motivo em poucas palavras (vai pro aviso da equipe).`;
+- o cliente parecer insatisfeito ou impaciente, ou reclamar do atendimento;
+- a pergunta do cliente for GENUINAMENTE sobre um produto ou assunto fora do escopo de atendimento deste chat (ver acima) — nesse caso não tente responder por conta própria, mesmo que ache que sabe a resposta.
+Falta de informação NÃO é motivo de handoff — pra isso existe "askTeam" (abaixo).
+Quando marcar "handoff": true, a "reply" ainda deve ser uma mensagem curta e natural avisando o cliente que alguém da equipe vai continuar o atendimento a partir daqui — nunca deixe o campo "reply" vazio. Preencha também "handoffReason" com o motivo em poucas palavras (vai pro aviso da equipe).`;
+
+// Pedido do Fabio (2026-09-25): em vez de só encerrar quando não sabe, a IA
+// pergunta pra equipe no balão "Dúvidas da IA" — o colaborador responde lá,
+// a resposta volta pro cliente e, se for regra geral, vira Base de
+// Conhecimento (ver ai-team-question.service.ts).
+const ASK_TEAM_RULES = `PERGUNTAR PRA EQUIPE ("askTeam") — quando o cliente trouxer uma dúvida que você não consegue responder com segurança (não está no material, depende da situação específica dele, ou é um caso que alguma regra aqui manda verificar):
+- NÃO invente e NÃO encerre o atendimento. Na "reply", diga em uma frase que vai verificar e já retorna (ex.: "Vou verificar isso pra você e já te retorno.").
+- Em "askTeam", escreva a pergunta pra equipe: curta, direta e com o contexto que a equipe precisa pra responder sem abrir a conversa (produto, o que o cliente disse, o que exatamente você precisa saber). Ex.: "Cliente de Home Equity diz que o imóvel é só de escritura, sem matrícula no cartório. Dá pra seguir ou precisa de outro imóvel?"
+- A resposta da equipe é repassada ao cliente automaticamente — você não precisa fazer mais nada.
+- Se a mesma dúvida já está com a equipe (ver "DÚVIDAS DESTE CLIENTE QUE VOCÊ JÁ LEVOU PRA EQUIPE"), não pergunte de novo: diga ao cliente que ainda está verificando, com "askTeam": null.
+- Nos outros casos, "askTeam": null. Não use por cautela quando o material responde.`;
 
 /** Só estes valores são aceitos em "moveToStage" — usuário definiu esse
  *  alcance explicitamente: a IA NUNCA move sozinha pra etapas que fecham
@@ -122,7 +133,7 @@ DOCUMENTOS: quando for a hora de pedir a documentação — pré-análise já ap
 - Se a conversa JÁ TEM uma lista de documentos enviada pela equipe, use a MESMA lista (não mande outra diferente) — só lembre o que falta dela.
 - Senão, Home Equity pessoa física: mande a Resposta Rápida "Documentos Home Equity", fiel ao conteúdo, sem texto em volta. Financiamento Habitacional: a lista do perfil de renda do cliente. PJ: "Documentos comprador PJ" (regra acima).
 - Antes da pré-análise aprovada, não peça documentos (a proposta vem primeiro).
-- HOME EQUITY — DOCUMENTOS DO IMÓVEL: se, na hora dos documentos do imóvel (certidão de ônus reais, CND de IPTU), o cliente ainda estiver em dúvida sobre a situação do imóvel (não sabe se tem matrícula, se está registrado ou regularizado, se a certidão vai sair), não tente resolver nem explicar por conta própria: diga em uma frase que vai verificar isso e já retorna (ex.: "Vou verificar isso pra você e já te retorno.") e marque "handoff": true com "handoffReason": "dúvida sobre a situação do imóvel".
+- HOME EQUITY — DOCUMENTOS DO IMÓVEL: se, na hora dos documentos do imóvel (certidão de ônus reais, CND de IPTU), o cliente ainda estiver em dúvida sobre a situação do imóvel (não sabe se tem matrícula, se está registrado ou regularizado, se a certidão vai sair), não tente resolver nem explicar por conta própria: diga em uma frase que vai verificar isso e já retorna (ex.: "Vou verificar isso pra você e já te retorno.") e leve a dúvida pra equipe em "askTeam", com o que o cliente disse sobre o imóvel.
 - Durante a pré-análise, se o cliente perguntar do resultado: diga que a análise está em andamento e que avisa por aqui assim que sair — nunca adiante aprovação.`;
 
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
@@ -136,7 +147,7 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
 
 export interface AiAutoReplyResult {
   reply: string;
@@ -146,6 +157,8 @@ export interface AiAutoReplyResult {
   handoff: boolean;
   /** Motivo do handoff em poucas palavras (vai pra nota do card e pro aviso da equipe). */
   handoffReason?: string | null;
+  /** Pergunta pra equipe (balão "Dúvidas da IA") — a IA disse ao cliente que vai verificar; quem chamou cria a AiTeamQuestion (ai-team-question.service.ts). */
+  askTeam?: string | null;
   /** Etapa pra mover o card, se a IA identificou uma mudança — aplicar via applyAiExtractedActions (ai-shared.service.ts), que valida contra a lista permitida. */
   moveToStage?: string | null;
   /** Motivo da perda, se a IA identificou uma recusa explícita — aplicar via applyAiExtractedActions (marca status LOST, não é etapa). */
@@ -192,12 +205,15 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
     if (!ctx) return null;
 
     const camposTexto = await buildFillableFieldsText(accountId);
+    const duvidasEquipe = await teamQuestionsContext(leadId);
 
     const systemPrompt = `${ROLE_FRAMING}
 
 ${CORE_RULES}
 ${SAFETY_RULES}
 ${HANDOFF_RULES}
+
+${ASK_TEAM_RULES}
 
 ${MOVE_STAGE_RULES}
 
@@ -213,7 +229,9 @@ ${buildFillFieldsRules(camposTexto)}
 
 ${OUTPUT_FORMAT}
 
-${buildContextBlocks(ctx)}`;
+${buildContextBlocks(ctx)}${duvidasEquipe ? `
+
+${duvidasEquipe}` : ''}`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -286,6 +304,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         reply: parsed.reply.trim(),
         handoff: parsed.handoff === true,
         handoffReason: parsed.handoff === true && typeof parsed.handoffReason === 'string' && parsed.handoffReason.trim() ? parsed.handoffReason.trim().slice(0, 200) : null,
+        askTeam: parsed.handoff !== true && typeof parsed.askTeam === 'string' && parsed.askTeam.trim() && parsed.askTeam.trim().toLowerCase() !== 'null' ? parsed.askTeam.trim().slice(0, 1000) : null,
         moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
         markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
         stopFollowUp: parsed.stopFollowUp === true,

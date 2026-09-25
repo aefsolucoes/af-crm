@@ -41,15 +41,17 @@ type PushPayload = {
 /**
  * Dispara push para todos os dispositivos de todos os usuários da conta —
  * mesmo escopo do evento `new_notification` (conta inteira, sem filtro por
- * setor). Fire-and-forget: nunca deve travar o fluxo de mensagem que chamou.
+ * setor), ou só pra `onlyUserIds` quando vier. Fire-and-forget: nunca deve
+ * travar o fluxo de mensagem que chamou.
  * Autolimpa subscriptions que o provedor devolveu como expiradas (410/404).
  */
-export async function sendPushToAccount(accountId: string, payload: PushPayload) {
+export async function sendPushToAccount(accountId: string, payload: PushPayload, onlyUserIds?: string[]) {
   if (!configured) return;
+  if (onlyUserIds && !onlyUserIds.length) return;
 
   try {
     const subs = await prisma.pushSubscription.findMany({
-      where: { user: { accountId } },
+      where: { user: { accountId }, ...(onlyUserIds ? { userId: { in: onlyUserIds } } : {}) },
     });
     if (!subs.length) return;
 

@@ -8,7 +8,13 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
  *  Recebida", e avisa o time do setor com o popup `contracting_lead` — o
  *  mesmo destino e aviso de quando alguém move o card pra "Fechado" na tela
  *  (PATCH /api/leads/:id/stage). Usado quando a IA confere que a
- *  documentação chegou completa. Retorna null se o funil não existir. */
+ *  documentação chegou completa. Retorna null se o funil não existir.
+ *
+ *  Antes de migrar, o card PASSA pela etapa "Fechado" do funil de vendas
+ *  (com a mesma anotação `Estágio: "..." → "Fechado"` que a tela grava): é
+ *  por essa anotação que o Dashboard conta a conversão (GET
+ *  /api/reports/documentacao) — pular o Fechado fazia a venda sumir da conta
+ *  (achado do Fabio, 2026-09-25). */
 export async function moveLeadToContracting(accountId: string, leadId: string, io: Io, reason: string): Promise<{ pipelineName: string; stageName: string } | null> {
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -28,6 +34,23 @@ export async function moveLeadToContracting(accountId: string, leadId: string, i
   });
   const stage = pipeline?.stages.find((s) => s.name === 'Documentação Recebida') || pipeline?.stages[0];
   if (!pipeline || !stage) return null;
+
+  const fechado = await prisma.stage.findFirst({ where: { pipelineId: lead.pipelineId, name: 'Fechado' }, select: { id: true } });
+  if (fechado && lead.stageId !== fechado.id) {
+    const from = await prisma.stage.findUnique({ where: { id: lead.stageId }, select: { name: true } });
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: {
+        stageId: fechado.id,
+        notes: { create: { content: `Estágio: "${from?.name || '—'}" → "Fechado" — por Assistente IA (${reason})`, type: 'STAGE_CHANGE' } },
+      },
+    });
+    const { logActivity } = require('./activity.service') as typeof import('./activity.service');
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_stage_changed', leadId, leadName: lead.name, summary: `moveu de "${from?.name || '—'}" para "Fechado"` });
+    // Automações de "entrou em Fechado" (se alguém criar) disparam igual à tela.
+    const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
+    await runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId, io, context: { newStageId: fechado.id } }).catch(() => {});
+  }
 
   const moved = await prisma.lead.update({
     where: { id: leadId },

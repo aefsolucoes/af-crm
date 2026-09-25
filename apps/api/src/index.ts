@@ -31,6 +31,7 @@ import automationRoutes from './routes/automations';
 import pushRoutes from './routes/push';
 import activityRoutes from './routes/activity';
 import callRoutes from './routes/calls';
+import aiQuestionRoutes from './routes/ai-questions';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
@@ -91,6 +92,7 @@ app.use('/api/automations', automationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/calls', callRoutes);
+app.use('/api/ai-questions', aiQuestionRoutes);
 
 configureWebPush();
 

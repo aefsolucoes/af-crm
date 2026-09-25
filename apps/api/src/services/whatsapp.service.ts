@@ -1283,6 +1283,12 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     }
 
     if (handoff) await handleAiHandoffCloudApi(leadId, io, genResult.handoffReason);
+    else if (genResult.askTeam) {
+      // A IA disse ao cliente que vai verificar — a dúvida vai pro balão
+      // "Dúvidas da IA" e a resposta da equipe volta pro cliente por lá.
+      const { createAiTeamQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+      await createAiTeamQuestion({ accountId, leadId, question: genResult.askTeam, clientMessage: textToAnswer, io });
+    }
   } catch (err) {
     console.error('[WhatsApp] Erro na resposta automática de IA:', err);
   }

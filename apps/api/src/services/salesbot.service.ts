@@ -319,6 +319,11 @@ async function executeStepsFrom(
         await applyAiExtractedActions(lead.accountId, run.leadId, { moveToStage: genResult.moveToStage, moveReason: genResult.moveReason, markLost: genResult.markLost, stopFollowUp: genResult.stopFollowUp, extractedFields: genResult.extractedFields }, io as any);
       }
 
+      if (!genResult.handoff && genResult.askTeam) {
+        const { createAiTeamQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+        await createAiTeamQuestion({ accountId: lead.accountId, leadId: run.leadId, question: genResult.askTeam, clientMessage: incomingText, io: io as any }).catch(() => {});
+      }
+
       if (genResult.handoff) {
         // A própria IA decidiu que precisa de um humano (pergunta fora do
         // escopo do setor, cliente insatisfeito, pediu atendente) — mesmo
