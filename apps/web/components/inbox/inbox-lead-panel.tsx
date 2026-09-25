@@ -128,7 +128,7 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
             Inbox (achado real 2026-09-25); aparece no desktop e no celular
             (no celular o painel abre pelo botão "Card"). Arquivar não sai
             da Inbox, só atualiza o painel. */}
-        <LeadHeaderActions lead={lead} onStageChange={onRefresh} onArchived={onRefresh} showTags={false} />
+        <LeadHeaderActions lead={lead} onStageChange={onRefresh} onArchived={onRefresh} showTags={false} compact />
 
         {/* ── Seletor de painel: Dados | Atividades ── */}
         <div className="flex border-b border-af-border flex-shrink-0">

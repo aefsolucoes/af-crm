@@ -22,6 +22,9 @@ interface LeadHeaderProps {
   /** false = esconde as etiquetas, mantendo o status (o painel da Inbox já mostra as
    *  tags embaixo, na aba Dados). */
   showTags?: boolean;
+  /** Painel estreito da Inbox: status e ações numa linha só, rótulos curtos
+   *  ("Ganho", "Perdido", "Arquivar") e letra menor. */
+  compact?: boolean;
 }
 
 // Paleta de labels estilo Trello — cor sólida por tag, escolhida por hash do nome
@@ -62,7 +65,7 @@ export function LeadHeaderTop({ lead }: { lead: LeadDetail }) {
 }
 
 /** Linhas 2 e 3: etiquetas + ações de status — ficam acima da aba Dados, na coluna da esquerda */
-export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = true }: LeadHeaderProps) {
+export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = true, compact = false }: LeadHeaderProps) {
   const [tagInput, setTagInput] = useState('');
   const [editingTags, setEditingTags] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -156,16 +159,23 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
     }
   }
 
+  const btn = compact
+    ? 'flex-shrink-0 flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 border rounded-md transition-colors disabled:opacity-50'
+    : 'flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 border rounded-lg transition-colors disabled:opacity-50';
+  const icon = compact ? 11 : 12;
+
   return (
-    <div className="px-4 py-3 bg-white border-b border-af-border space-y-2.5 flex-shrink-0">
+    <div className={compact ? 'px-3 py-2 bg-white border-b border-af-border flex-shrink-0' : 'px-4 py-3 bg-white border-b border-af-border space-y-2.5 flex-shrink-0'}>
+      <div className={compact ? 'flex items-center flex-nowrap gap-1.5 overflow-x-auto scrollbar-none' : 'space-y-2.5'}>
       {/* Tags (estilo label do Trello) + status */}
-      <div className="flex items-center flex-wrap gap-1.5">
+      <div className={compact ? 'contents' : 'flex items-center flex-wrap gap-1.5'}>
         <Badge
           color={lead.status === 'WON' ? '#10b981' : lead.status === 'LOST' ? '#ef4444' : '#6b7280'}
+          className={compact ? 'flex-shrink-0 text-[11px] mr-0.5' : undefined}
         >
           {lead.status === 'WON' ? 'Ganho' : lead.status === 'LOST' ? 'Perdido' : 'Aberto'}
         </Badge>
-        {lead.status === 'LOST' && lead.lostReason && (
+        {lead.status === 'LOST' && lead.lostReason && !compact && (
           <span className="text-xs text-slate-500 italic" title="Motivo da perda">— {lead.lostReason}</span>
         )}
         {showTags && lead.tags.map((tag) => (
@@ -201,48 +211,49 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
       </div>
 
       {/* Ações de status — compactas, em linha */}
-      <div className="flex items-center flex-wrap gap-1.5">
+      <div className={compact ? 'contents' : 'flex items-center flex-wrap gap-1.5'}>
         {lead.status !== 'WON' && !lead.archived && (
           <button
             onClick={() => handleStatusChange('WON')}
-            className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors"
+            className={`${btn} bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200`}
           >
-            <Trophy size={12} /> Marcar Ganho
+            <Trophy size={icon} /> {compact ? 'Ganho' : 'Marcar Ganho'}
           </button>
         )}
         {lead.status !== 'LOST' && !lead.archived && (
           <button
             onClick={() => setShowLostModal(true)}
-            className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 rounded-lg transition-colors"
+            className={`${btn} bg-red-50 text-red-600 hover:bg-red-100 border-red-200`}
           >
-            <XCircle size={12} /> Marcar Perdido
+            <XCircle size={icon} /> {compact ? 'Perdido' : 'Marcar Perdido'}
           </button>
         )}
         {(lead.status === 'WON' || lead.status === 'LOST') && (
           <button
             onClick={() => handleStatusChange('OPEN')}
-            className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 bg-slate-50 text-slate-600 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors"
+            className={`${btn} bg-slate-50 text-slate-600 hover:bg-slate-100 border-slate-200`}
           >
-            <RotateCcw size={12} /> Reabrir
+            <RotateCcw size={icon} /> Reabrir
           </button>
         )}
         {!lead.archived ? (
           <button
             onClick={() => handleArchive(true)}
             disabled={archiving}
-            className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors disabled:opacity-50"
+            className={`${btn} bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200`}
           >
-            <Archive size={12} /> Arquivar lead
+            <Archive size={icon} /> {compact ? 'Arquivar' : 'Arquivar lead'}
           </button>
         ) : (
           <button
             onClick={() => handleArchive(false)}
             disabled={archiving}
-            className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors disabled:opacity-50"
+            className={`${btn} bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200`}
           >
-            <ArchiveRestore size={12} /> Restaurar lead
+            <ArchiveRestore size={icon} /> {compact ? 'Restaurar' : 'Restaurar lead'}
           </button>
         )}
+      </div>
       </div>
 
       <Modal open={showLostModal} onClose={() => setShowLostModal(false)} title="Marcar como Perdido" size="sm">
