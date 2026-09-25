@@ -546,7 +546,7 @@ function escapeHtml(s: string) {
 /** Envia pela caixa escolhida. Resposta (replyToId) mantém a conversa no
  *  mesmo fio (In-Reply-To/References) e herda o card do e-mail original. */
 export async function sendEmailFrom(params: {
-  acc: EmailAccount; userId: string; to: string[]; cc?: string[]; subject: string; body: string;
+  acc: EmailAccount; userId: string | null; to: string[]; cc?: string[]; subject: string; body: string;
   replyToId?: string | null; leadId?: string | null; io: Io;
   attachments?: { filename: string; contentType: string; content: Buffer }[];
 }) {
@@ -564,7 +564,7 @@ export async function sendEmailFrom(params: {
   const body = params.body.replace(/\r/g, '');
   if (!body.trim()) throw new Error('Escreva a mensagem');
 
-  const user = await prisma.user.findUnique({ where: { id: params.userId }, select: { name: true } });
+  const user = params.userId ? await prisma.user.findUnique({ where: { id: params.userId }, select: { name: true } }) : null;
   const parent = params.replyToId ? await prisma.emailMessage.findFirst({ where: { id: params.replyToId, emailAccountId: acc.id } }) : null;
 
   const domain = acc.address.split('@')[1] || 'af-crm.local';
@@ -714,4 +714,52 @@ export async function linkEmailToLead(acc: EmailAccount, msgId: string, leadId: 
   }
   io?.to(`account_${acc.accountId}`).emit('new_notification', { leadId: lead.id }); // Inbox recarrega a conversa
   return { linked: toLink.length, leadName: lead.name };
+}
+
+// ─── Follow-up automático por e-mail ──────────────────────────────────────────
+
+const PRODUCT_SUBJECT: Record<string, string> = {
+  'home equity': 'Seu crédito com garantia de imóvel',
+  'financiamento habitacional': 'Seu financiamento imobiliário',
+  'consórcio': 'Seu consórcio',
+  'consorcio': 'Seu consórcio',
+};
+
+/**
+ * Pedido do Fabio (2026-09-25): o follow-up automático do WhatsApp também vai
+ * por e-mail quando o cliente tem e-mail no card. Sai pela caixa da empresa
+ * (comercial@) — fica em Enviados e na conversa do card, e a resposta do
+ * cliente volta pra lá. Texto = o mesmo do template do WhatsApp, sem a
+ * formatação do WhatsApp (*negrito*, _itálico_). Nunca lança: é um extra.
+ */
+export async function sendFollowUpEmail(params: {
+  accountId: string; leadId: string; to: string; text: string; subject?: string | null; io: Io;
+}): Promise<boolean> {
+  try {
+    const lead = await prisma.lead.findFirst({
+      where: { id: params.leadId, accountId: params.accountId },
+      select: { pipeline: { select: { department: { select: { name: true } } } } },
+    });
+    const dept = (lead?.pipeline?.department?.name || '').toLowerCase();
+    const subject = params.subject?.trim() || PRODUCT_SUBJECT[dept] || 'A&F Soluções Financeiras';
+    const body = params.text
+      .replace(/\*([^*\n]+)\*/g, '$1')
+      .replace(/(^|\s)_([^_\n]+)_(?=\s|$)/g, '$1$2')
+      .replace(/~([^~\n]+)~/g, '$1')
+      .trim();
+    if (!body) return false;
+
+    await ensureCompanyMailbox(params.accountId);
+    const acc = await prisma.emailAccount.findFirst({ where: { accountId: params.accountId, userId: null } });
+    if (acc) {
+      await sendEmailFrom({ acc, userId: null, to: [params.to], subject, body, leadId: params.leadId, io: params.io });
+      return true;
+    }
+    const { sendOutboundEmail } = require('./message.service') as typeof import('./message.service');
+    const r = await sendOutboundEmail({ accountId: params.accountId, leadId: params.leadId, subject, body, io: params.io || undefined });
+    return r.success;
+  } catch (err: any) {
+    console.warn(`[E-mail] Follow-up por e-mail (lead ${params.leadId}) falhou:`, err?.message);
+    return false;
+  }
 }

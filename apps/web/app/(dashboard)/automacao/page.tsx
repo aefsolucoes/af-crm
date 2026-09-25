@@ -431,6 +431,25 @@ export default function AutomacaoPage() {
                         onChange={(e) => updateActionConfig(i, 'bodyParams', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
                         placeholder="Parâmetros do corpo, separados por vírgula (opcional)"
                       />
+                      <label className="flex items-start gap-2 text-xs text-slate-600 pt-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={action.config.alsoEmail === true}
+                          onChange={(e) => updateActionConfig(i, 'alsoEmail', e.target.checked)}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          Também mandar por e-mail quando o cliente tiver e-mail no card
+                          <span className="block text-slate-400">Mesmo texto do template, pela caixa comercial@. A resposta do cliente volta pra conversa do card.</span>
+                        </span>
+                      </label>
+                      {action.config.alsoEmail === true && (
+                        <Input
+                          value={String(action.config.emailSubject || '')}
+                          onChange={(e) => updateActionConfig(i, 'emailSubject', e.target.value)}
+                          placeholder="Assunto do e-mail (opcional — padrão: nome do produto do setor)"
+                        />
+                      )}
                     </div>
                   )}
 

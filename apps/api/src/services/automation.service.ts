@@ -194,6 +194,14 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
         accountId: lead.accountId, leadId: lead.id, templateName, language, bodyParams,
         previewText, io: io as any,
       });
+      // "Também por e-mail": o mesmo texto vai pro e-mail do card, se houver
+      // — mesmo que o WhatsApp tenha falhado (aí o e-mail vale ainda mais).
+      // É um extra: não muda o resultado da ação (não trava as seguintes).
+      const email = lead.contact?.email?.trim();
+      if (action.config.alsoEmail === true && email && !previewText.startsWith('Template "')) {
+        const { sendFollowUpEmail } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+        await sendFollowUpEmail({ accountId: lead.accountId, leadId: lead.id, to: email, text: previewText, subject: action.config.emailSubject ? fillVariables(String(action.config.emailSubject), lead, context) : null, io: io as any });
+      }
       return result.success;
     }
     case 'send_email': {
