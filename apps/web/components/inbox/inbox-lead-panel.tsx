@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
 import { LeadPlacementFields } from '@/components/lead/lead-placement-fields';
+import { LeadHeaderActions } from '@/components/lead/lead-header';
 import { StageGateModal } from '@/components/kanban/stage-gate-modal';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 import api from '@/lib/api';
@@ -121,6 +122,13 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
             </div>
           </div>
         </div>
+
+        {/* Marcar Ganho / Perdido / Reabrir / Arquivar — mesmo bloco do card
+            do Funil. Sem isso não tinha como arquivar ou marcar ganho pela
+            Inbox (achado real 2026-09-25); aparece no desktop e no celular
+            (no celular o painel abre pelo botão "Card"). Arquivar não sai
+            da Inbox, só atualiza o painel. */}
+        <LeadHeaderActions lead={lead} onStageChange={onRefresh} onArchived={onRefresh} showTags={false} />
 
         {/* ── Seletor de painel: Dados | Atividades ── */}
         <div className="flex border-b border-af-border flex-shrink-0">

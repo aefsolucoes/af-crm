@@ -19,6 +19,9 @@ interface LeadHeaderProps {
    *  outro lugar. Quando ausente (uso na página standalone /leads/[id]),
    *  cai no comportamento antigo — vai pro Funil. */
   onArchived?: () => void;
+  /** false = esconde as etiquetas, mantendo o status (o painel da Inbox já mostra as
+   *  tags embaixo, na aba Dados). */
+  showTags?: boolean;
 }
 
 // Paleta de labels estilo Trello — cor sólida por tag, escolhida por hash do nome
@@ -59,7 +62,7 @@ export function LeadHeaderTop({ lead }: { lead: LeadDetail }) {
 }
 
 /** Linhas 2 e 3: etiquetas + ações de status — ficam acima da aba Dados, na coluna da esquerda */
-export function LeadHeaderActions({ lead, onStageChange, onArchived }: LeadHeaderProps) {
+export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = true }: LeadHeaderProps) {
   const [tagInput, setTagInput] = useState('');
   const [editingTags, setEditingTags] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -165,7 +168,7 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived }: LeadHeade
         {lead.status === 'LOST' && lead.lostReason && (
           <span className="text-xs text-slate-500 italic" title="Motivo da perda">— {lead.lostReason}</span>
         )}
-        {lead.tags.map((tag) => (
+        {showTags && lead.tags.map((tag) => (
           <span
             key={tag}
             className="group flex items-center gap-1.5 text-xs font-semibold text-white px-2.5 py-1 rounded-md shadow-sm"
@@ -177,7 +180,7 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived }: LeadHeade
             </button>
           </span>
         ))}
-        {editingTags ? (
+        {!showTags ? null : editingTags ? (
           <div className="flex items-center gap-1">
             <input
               autoFocus
