@@ -83,6 +83,21 @@ const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um mo
  *  documento, mas ainda quer seguir com o negócio. */
 const STOP_FOLLOWUP_RULES = `PARAR LEMBRETE AUTOMÁTICO ("stopFollowUp": true) — quando o cliente reclamar de estar recebendo cobranças/lembretes repetidos (ex.: sobre documentos pendentes), ficar visivelmente irritado ou pedir explicitamente pra parar de insistir, MAS sem recusar o negócio em si (se ele recusar o negócio de verdade, isso é "markLost", acima, não isto). Use false em todos os outros casos.`;
 
+// Pedido do Fabio (2026-09-25): a IA ia fazendo pergunta por pergunta
+// (casa ou apartamento? está quitado? qual valor?) em vez de mandar o
+// formulário, que já pede tudo isso de uma vez.
+const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO:
+- NÃO faça perguntas de qualificação (tipo de imóvel, se está quitado, valor do imóvel, valor do crédito, renda, entrada, idade etc.). O formulário da proposta manual já pede tudo isso.
+- Assim que o cliente responder ou mostrar interesse, mande o link da proposta manual do produto dele e pergunte se ficou alguma dúvida. Use o texto da Resposta Rápida correspondente ("Proposta manual Finan Hab" ou "Proposta manual Home Equity"), acrescentando no final algo como "Se tiver alguma dúvida, é só me falar."
+  - Financiamento pra comprar/construir imóvel: https://aefsolucoesfinanceiras.com.br/proposta-manual
+  - Crédito com garantia de imóvel (Home Equity): https://aefsolucoesfinanceiras.com.br/proposta-manual-home-equity
+- Se o cliente fizer uma pergunta, responda em poucas palavras e, se o link ainda não foi enviado nesta conversa, mande junto.
+- Depois que o link foi enviado, só responda dúvidas — não peça os dados do formulário pela conversa nem reenvie o link a cada mensagem (só se ele pedir ou disser que não achou).
+- Não avalie viabilidade (valor mínimo, percentual do imóvel etc.) antes do formulário preenchido: isso é visto na pré-análise, com os dados do formulário.
+- Se o cliente já disse que preencheu a proposta, não mande o link de novo.
+- Crédito com garantia no nome de EMPRESA (PJ): as condições (taxa e documentação) são diferentes e bem mais complexas que as de pessoa física — nunca use taxa de PF pra PJ. O caminho padrão é pessoa física: na primeira vez que o cliente falar em fazer pela empresa, pergunte em uma frase se ele pode fazer no nome dele (pessoa física), que é mais simples. Só se ele confirmar que precisa mesmo como PJ: não mande o formulário de pessoa física, avise que um consultor vai orientar as condições e a documentação pra empresa e marque "handoff": true.
+- Setores sem proposta manual (ex.: Consórcio): siga normalmente, sem esta regra.`;
+
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
 - Se o "ok" responder uma pergunta sua de sim/não (ex.: "posso te mandar a lista de documentos?"), trate como "sim" e siga normalmente, com noReply false.
 - Nunca repita uma confirmação que você já deu na conversa (ex.: dizer de novo "vou seguir com a análise e te retorno").`;
@@ -158,6 +173,8 @@ ${MOVE_STAGE_RULES}
 ${MARK_LOST_RULES}
 
 ${STOP_FOLLOWUP_RULES}
+
+${FORM_FIRST_RULES}
 
 ${NO_REPLY_RULES}
 
