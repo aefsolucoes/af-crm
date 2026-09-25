@@ -870,6 +870,25 @@ export async function resolveContactAndLeadByPhone(
       });
     }
     leadId = existingLead.id;
+
+    // Formulário completo do site chegando numa conversa que JÁ existe (o
+    // roteamento por campanha abaixo só lê a ficha na 1ª mensagem de um
+    // contato novo): preenche o card com os dados dela, esteja a IA ligada
+    // ou não. Pedido do usuário 2026-09-25.
+    const { parseProposalForm } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
+    const form = parseProposalForm(textForCampaignDetection);
+    if (form) {
+      const fresh = await prisma.lead.findUnique({ where: { id: existingLead.id }, select: { customFields: true, name: true } });
+      await prisma.lead.update({
+        where: { id: existingLead.id },
+        data: { customFields: { ...((fresh?.customFields as any) || {}), ...form.fields } as any },
+      });
+      logActivity({
+        accountId, userId: null, userName: 'Formulário do site', action: 'lead_edited', leadId: existingLead.id, leadName: fresh?.name,
+        summary: `preencheu o card com o formulário do site (${Object.keys(form.fields).join(', ')})`,
+      });
+      console.log(`[Formulário] "${form.label}" preencheu o card ${existingLead.id} (${Object.keys(form.fields).length} campos)`);
+    }
   } else {
     // Lead de campanha (ficha do site preenchida) já nasce no funil/estágio
     // certo, com os campos da ficha pré-preenchidos — em vez da Caixa de

@@ -53,11 +53,29 @@ const HOME_EQUITY_FIELDS: FieldMap = {
   'email': { key: 'email_1', kind: 'text' },
   'celular': { key: 'telefone_1', kind: 'text' },
   'renda bruta': { key: 'renda_1', kind: 'number' },
+  'perfil de renda': { key: 'vinculo_1', kind: 'text' },
   // seção "SIMULAÇÃO — CRÉDITO COM GARANTIA"
   'imovel': { key: 'valor_imovel', kind: 'number' },
   'credito': { key: 'valor_credito', kind: 'number' },
   'prazo': { key: 'prazo_financ', kind: 'text' }, // TEXT: guarda "60 meses" como veio
   '1ª parcela estimada': { key: 'primeira_parcela', kind: 'number' },
+};
+
+// Ficha real (2026-09-25): "Imóvel: Residencial — R$ 500.000,00 (UF: DF)",
+// "Entrada: R$ 100.000,00 | Prazo: 30 anos | SAC". Valor do crédito não vem
+// na ficha (não calcula imóvel - entrada: regra é não inventar dado).
+const HABITACAO_FIELDS: FieldMap = {
+  'nome': { key: 'participante_1', kind: 'text' },
+  'cpf': { key: 'cpf_1', kind: 'text' },
+  'nascimento': { key: 'nascimento_1', kind: 'date' },
+  'e-mail': { key: 'email_1', kind: 'text' },
+  'email': { key: 'email_1', kind: 'text' },
+  'celular': { key: 'telefone_1', kind: 'text' },
+  'renda bruta': { key: 'renda_1', kind: 'number' },
+  'perfil de renda': { key: 'vinculo_1', kind: 'text' },
+  'imovel': { key: 'valor_imovel', kind: 'number' },
+  'entrada': { key: 'valor_entrada', kind: 'number' },
+  'prazo': { key: 'prazo_financ', kind: 'text' },
 };
 
 const CONSORCIO_FIELDS: FieldMap = {
@@ -104,11 +122,7 @@ const CAMPAIGN_SIGNATURES: CampaignSignature[] = [
     departmentName: 'Financiamento Habitacional',
     // Mesmo raciocínio do Home Equity acima — ficha completa já veio.
     stageMarker: 'pre-analise',
-    // Só roteamento por enquanto — pedido não veio com o texto completo da
-    // ficha, então sem mapa de campos (não dá pra adivinhar rótulo sem
-    // exemplo real). Adicionar aqui do mesmo jeito que HOME_EQUITY_FIELDS/
-    // CONSORCIO_FIELDS assim que tiver uma mensagem de exemplo.
-    fields: {},
+    fields: HABITACAO_FIELDS,
   },
 ];
 
@@ -120,6 +134,9 @@ const SKIP_VALUES = new Set(['—', '-', '', 'nao informada', 'nao informado']);
 export function parseMoneyOrNumber(raw: string): string | null {
   let s = raw.trim().toLowerCase();
   const isMil = /\bmil\b/.test(s);
+  // "R$ 1,10 mi" / "1,5 milhão" — o formulário do site abrevia milhões assim
+  // e isso virava 1.1 no card (achado real 2026-09-25).
+  const isMilhao = /\b(mi|milh[aã]o|milh[oõ]es)\b/.test(s);
   s = s.replace(/r\$/g, '').replace(/\bmil\b/g, '').replace(/[^\d.,]/g, '').trim();
   if (!s) return null;
   let n: number;
@@ -128,7 +145,8 @@ export function parseMoneyOrNumber(raw: string): string | null {
   else n = parseFloat(s);
   if (!Number.isFinite(n)) return null;
   if (isMil) n *= 1000;
-  return String(n);
+  else if (isMilhao) n *= 1_000_000;
+  return String(Math.round(n * 100) / 100);
 }
 
 /** Lê "Campo: valor" (pode ter mais de um por linha, separado por " | ") e
@@ -136,7 +154,14 @@ export function parseMoneyOrNumber(raw: string): string | null {
  *  seção (emoji, sem dois-pontos) e placeholder ("—", "não informada"). */
 function parseFicha(text: string, fieldMap: FieldMap): Record<string, string> {
   const out: Record<string, string> = {};
+  // Seção "2º PARTICIPANTE" repete os rótulos (Nome, CPF, Renda bruta...):
+  // dentro dela os campos "_1" viram "_2" — antes sobrescreviam os dados do
+  // participante 1. Qualquer outro cabeçalho de seção (*...* sem ":") sai dela.
+  let secondParticipant = false;
   for (const rawLine of text.split('\n')) {
+    const lineNorm = norm(rawLine.replace(/[*_~`]/g, ''));
+    if (/(2[oº°]|segundo)\s*participante|2[oº°]\s*proponente/.test(lineNorm)) { secondParticipant = true; continue; }
+    if (rawLine.includes('*') && !rawLine.includes(':')) secondParticipant = false;
     for (const part of rawLine.split('|')) {
       const idx = part.indexOf(':');
       if (idx < 1) continue;
@@ -146,11 +171,26 @@ function parseFicha(text: string, fieldMap: FieldMap): Record<string, string> {
       if (SKIP_VALUES.has(norm(value))) continue;
       const field = fieldMap[label];
       if (!field) continue;
+      const key = secondParticipant && field.key.endsWith('_1') ? field.key.replace(/_1$/, '_2') : field.key;
+      if (secondParticipant && key === field.key) continue; // campo sem versão _2 (ex.: valor do imóvel) não vem dessa seção
+      if (key.startsWith('prazo') && !/\d/.test(value)) continue; // "Prazo:  anos" (em branco no site)
       const parsed = field.kind === 'number' ? parseMoneyOrNumber(value) : value;
-      if (parsed !== null && parsed !== '') out[field.key] = parsed;
+      if (parsed !== null && parsed !== '') out[key] = parsed;
     }
   }
   return out;
+}
+
+/** Formulário de proposta COMPLETO do site (marca da campanha + CPF) —
+ *  usado pra preencher o card também quando o cliente já tinha conversa
+ *  aberta (detectCampaignRoute só age na criação de um lead novo). */
+export function parseProposalForm(text: string): { label: string; fields: Record<string, string> } | null {
+  if (!text || !/cpf\s*:/i.test(text)) return null;
+  const normalized = norm(text);
+  const sig = CAMPAIGN_SIGNATURES.find((s) => normalized.includes(s.marker));
+  if (!sig || !Object.keys(sig.fields).length) return null;
+  const fields = parseFicha(text, sig.fields);
+  return Object.keys(fields).length ? { label: sig.label, fields } : null;
 }
 
 export interface CampaignRoute {

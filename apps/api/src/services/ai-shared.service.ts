@@ -297,8 +297,16 @@ export async function applyAiExtractedActions(
       const target = normalize(action.moveToStage);
       const isAllowed = ALLOWED.some((a) => target.includes(a) || a.includes(target));
       if (isAllowed) {
-        const stages = await prisma.stage.findMany({ where: { pipelineId: lead.pipelineId } });
-        const match = stages.find((s) => { const n = normalize(s.name); return n.includes(target) || target.includes(n); });
+        // Nome exato primeiro, depois "começa com" (ex.: "Follow Up Home"),
+        // só então "contém" — e nunca uma etapa de aprovado/fechado: "Pré-
+        // Análise" casava com "Aprovado Pré-Analise" por conter o texto e a
+        // IA movia o card pra aprovado sozinha (achado real 2026-09-25).
+        const stages = (await prisma.stage.findMany({ where: { pipelineId: lead.pipelineId }, orderBy: { order: 'asc' } }))
+          .filter((s) => !/aprovad|fechad|ganh|conclu/.test(normalize(s.name)));
+        const match =
+          stages.find((s) => normalize(s.name) === target) ||
+          stages.find((s) => normalize(s.name).startsWith(target)) ||
+          stages.find((s) => { const n = normalize(s.name); return n.includes(target) || target.includes(n); });
         if (match) {
           const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
           await updateLeadStage(lead.id, accountId, match.id);
