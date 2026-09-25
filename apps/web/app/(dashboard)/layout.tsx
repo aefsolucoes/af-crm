@@ -75,9 +75,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     // ai_handoff — a IA que respondia um cliente sozinha se desligou porque
     // ele pediu atendente (ou saiu do escopo do setor). Toca som E mostra
     // toast, porque exige ação do colaborador (não é só uma pendência).
-    function onAiHandoff({ leadName }: { leadId: string; leadName?: string }) {
+    function onAiHandoff({ leadName, reason }: { leadId: string; leadName?: string; reason?: string | null }) {
       triggerSound();
-      toast(`A IA encerrou o atendimento de ${leadName || 'um cliente'} — o cliente pediu para falar com alguém. Confira a conversa na Inbox.`, 'warning');
+      toast(reason
+        ? `A IA repassou ${leadName || 'um cliente'} pra equipe: ${reason}. Confira a conversa na Inbox.`
+        : `A IA encerrou o atendimento de ${leadName || 'um cliente'} — o cliente pediu para falar com alguém. Confira a conversa na Inbox.`, 'warning');
     }
 
     // contracting_lead — cliente fechado entrou no funil de contratação. Só

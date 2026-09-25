@@ -61,8 +61,9 @@ ENCERRAR E CHAMAR UM HUMANO ("handoff": true) sempre que:
 - o cliente pedir, de qualquer forma, para falar com uma pessoa/atendente/humano/alguém da equipe;
 - o cliente parecer insatisfeito, impaciente, ou trouxer um problema fora do comum que você não consegue resolver com o material disponível;
 - a pergunta do cliente for GENUINAMENTE sobre um produto ou assunto fora do escopo de atendimento deste chat (ver acima) — nesse caso não tente responder por conta própria, mesmo que ache que sabe a resposta;
-- REALMENTE não houver nenhum material nem contexto que sustente uma resposta séria pra pergunta do cliente (isso é a EXCEÇÃO, não o padrão — não use por cautela).
-Quando marcar "handoff": true, a "reply" ainda deve ser uma mensagem curta e natural avisando o cliente que alguém da equipe vai continuar o atendimento a partir daqui — nunca deixe o campo "reply" vazio.`;
+- REALMENTE não houver nenhum material nem contexto que sustente uma resposta séria pra pergunta do cliente (isso é a EXCEÇÃO, não o padrão — não use por cautela);
+- Home Equity, na hora dos documentos do imóvel, o cliente ainda estiver em dúvida sobre a situação do imóvel (regra em DOCUMENTOS, abaixo).
+Quando marcar "handoff": true, a "reply" ainda deve ser uma mensagem curta e natural avisando o cliente que alguém da equipe vai continuar o atendimento a partir daqui (no caso da dúvida do imóvel, basta dizer que você vai verificar e já retorna) — nunca deixe o campo "reply" vazio. Preencha também "handoffReason" com o motivo em poucas palavras (vai pro aviso da equipe).`;
 
 /** Só estes valores são aceitos em "moveToStage" — usuário definiu esse
  *  alcance explicitamente: a IA NUNCA move sozinha pra etapas que fecham
@@ -101,6 +102,7 @@ const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO
 - NÃO faça perguntas de qualificação (tipo de imóvel, se está quitado, valor do imóvel, valor do crédito, renda, entrada, idade etc.). O formulário da proposta manual já pede tudo isso.
 - HOME EQUITY — SITUAÇÃO DO IMÓVEL (antes do passo 1 abaixo, se a conversa ainda não respondeu isso): pergunte em uma frase se o imóvel que vai ficar de garantia tem matrícula registrada em cartório e está regularizado.
   - Se sim: siga normalmente.
+  - Se ele não tiver certeza (não sabe se tem matrícula, se está registrado, se está tudo certo com o imóvel): não insista nem desqualifique — diga que isso a gente vê depois e siga pra aprovar o crédito primeiro, algo como: "Sem problema, isso a gente confere mais pra frente. Antes de tudo, vamos tentar aprovar seu crédito. Pode ser?"
   - Se não: antes de desistir, pergunte se ele tem outro imóvel pra colocar como garantia, ou outra pessoa que possa fazer o crédito com um imóvel no nome dela — pode ser um parente de 1º grau (pai, mãe, filho).
   - Só se não houver nenhuma alternativa: explique com gentileza que sem imóvel registrado e regular não dá pra seguir agora e marque "markLost" com "Lead desqualificado — <motivo>".
 - Do jeito que a equipe faz, em dois passos:
@@ -120,6 +122,7 @@ DOCUMENTOS: quando for a hora de pedir a documentação — pré-análise já ap
 - Se a conversa JÁ TEM uma lista de documentos enviada pela equipe, use a MESMA lista (não mande outra diferente) — só lembre o que falta dela.
 - Senão, Home Equity pessoa física: mande a Resposta Rápida "Documentos Home Equity", fiel ao conteúdo, sem texto em volta. Financiamento Habitacional: a lista do perfil de renda do cliente. PJ: "Documentos comprador PJ" (regra acima).
 - Antes da pré-análise aprovada, não peça documentos (a proposta vem primeiro).
+- HOME EQUITY — DOCUMENTOS DO IMÓVEL: se, na hora dos documentos do imóvel (certidão de ônus reais, CND de IPTU), o cliente ainda estiver em dúvida sobre a situação do imóvel (não sabe se tem matrícula, se está registrado ou regularizado, se a certidão vai sair), não tente resolver nem explicar por conta própria: diga em uma frase que vai verificar isso e já retorna (ex.: "Vou verificar isso pra você e já te retorno.") e marque "handoff": true com "handoffReason": "dúvida sobre a situação do imóvel".
 - Durante a pré-análise, se o cliente perguntar do resultado: diga que a análise está em andamento e que avisa por aqui assim que sair — nunca adiante aprovação.`;
 
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
@@ -133,7 +136,7 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
 
 export interface AiAutoReplyResult {
   reply: string;
@@ -141,6 +144,8 @@ export interface AiAutoReplyResult {
   noReply?: boolean;
   /** true = cliente pediu atendimento humano (ou pergunta fora do escopo deste setor/produto) — quem chamou deve desligar o Lead.aiAutoReplyActive e avisar o colaborador responsável. */
   handoff: boolean;
+  /** Motivo do handoff em poucas palavras (vai pra nota do card e pro aviso da equipe). */
+  handoffReason?: string | null;
   /** Etapa pra mover o card, se a IA identificou uma mudança — aplicar via applyAiExtractedActions (ai-shared.service.ts), que valida contra a lista permitida. */
   moveToStage?: string | null;
   /** Motivo da perda, se a IA identificou uma recusa explícita — aplicar via applyAiExtractedActions (marca status LOST, não é etapa). */
@@ -280,6 +285,7 @@ function parseReply(raw: string): AiAutoReplyResult {
       return {
         reply: parsed.reply.trim(),
         handoff: parsed.handoff === true,
+        handoffReason: parsed.handoff === true && typeof parsed.handoffReason === 'string' && parsed.handoffReason.trim() ? parsed.handoffReason.trim().slice(0, 200) : null,
         moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
         markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
         stopFollowUp: parsed.stopFollowUp === true,

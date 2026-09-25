@@ -1282,26 +1282,31 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
       await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, markLost, stopFollowUp, extractedFields }, io);
     }
 
-    if (handoff) await handleAiHandoffCloudApi(leadId, io);
+    if (handoff) await handleAiHandoffCloudApi(leadId, io, genResult.handoffReason);
   } catch (err) {
     console.error('[WhatsApp] Erro na resposta automática de IA:', err);
   }
 }
 
-/** Cliente pediu atendimento humano (ou saiu do escopo do setor) — desliga a
- *  IA nessa conversa sozinha e avisa o colaborador responsável (som + toast). */
-async function handleAiHandoffCloudApi(leadId: string, io: any) {
+/** Cliente pediu atendimento humano, saiu do escopo do setor ou ficou numa
+ *  dúvida que precisa de gente (ex.: situação do imóvel em Home Equity) —
+ *  desliga a IA nessa conversa e avisa a equipe (som + toast + push). Sem
+ *  responsável no card, o aviso vai pra conta toda, senão ninguém via. */
+async function handleAiHandoffCloudApi(leadId: string, io: any, reason?: string | null) {
   try {
     const lead = await prisma.lead.update({
       where: { id: leadId },
       data: { aiAutoReplyActive: false },
       select: { id: true, name: true, userId: true, accountId: true },
     });
-    await prisma.note.create({ data: { leadId, content: 'Atendimento automático encerrado — cliente pediu atendimento humano (ou pergunta fora do escopo deste chat). Repassado para a equipe.', type: 'COMMENT' } }).catch(() => {});
-    logActivity({ accountId: lead.accountId, userId: null, userName: 'Assistente IA', action: 'ai_handoff', leadId, leadName: lead.name, summary: 'encerrou o atendimento automático e repassou pra equipe' });
+    const motivo = reason || 'cliente pediu atendimento humano (ou pergunta fora do escopo deste chat)';
+    await prisma.note.create({ data: { leadId, content: `Atendimento automático encerrado — ${motivo}. Repassado para a equipe.`, type: 'COMMENT' } }).catch(() => {});
+    logActivity({ accountId: lead.accountId, userId: null, userName: 'Assistente IA', action: 'ai_handoff', leadId, leadName: lead.name, summary: `repassou pra equipe — ${motivo}` });
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(lead.accountId, { title: `${lead.name}: precisa da equipe`, body: reason ? `A IA repassou: ${reason}` : 'A IA repassou a conversa pra equipe', leadId }).catch(() => {});
     if (io) {
       io.to(`lead:${leadId}`).emit('lead_ai_toggled', { leadId, active: false });
-      if (lead.userId) io.to(`user_${lead.userId}`).emit('ai_handoff', { leadId, leadName: lead.name });
+      io.to(lead.userId ? `user_${lead.userId}` : `account_${lead.accountId}`).emit('ai_handoff', { leadId, leadName: lead.name, reason: reason || null });
     }
   } catch (err) {
     console.error('[WhatsApp] Erro ao processar handoff da IA:', err);
