@@ -125,7 +125,7 @@ export function AiQuestionsBubble() {
               <div className="h-full flex flex-col items-center justify-center text-center px-6 text-slate-400">
                 <MessageCircleQuestion size={32} className="mb-2" />
                 <p className="text-sm">Nenhuma dúvida por aqui.</p>
-                <p className="text-xs mt-1">Quando a IA não souber responder um cliente, ela diz que vai verificar e pergunta aqui pra equipe.</p>
+                <p className="text-xs mt-1">Quando a IA não souber responder um cliente, ela diz que vai verificar e pergunta aqui pra equipe — a caixa pra você responder aparece junto de cada dúvida.</p>
               </div>
             )}
 
