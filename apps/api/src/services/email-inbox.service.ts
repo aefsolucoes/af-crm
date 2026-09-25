@@ -30,6 +30,10 @@ type FolderState = { uidValidity: string; lastUid: number };
 const INITIAL_DAYS = 30;
 const INITIAL_LIMIT = 150;
 const TEXT_LIMIT = 200_000;
+// Anexo no envio: o provedor (Titan) aceita ~25 MB por e-mail já codificado
+// (base64 infla ~33%), então 15 MB de arquivo cabe com folga.
+const MAX_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 const HTML_LIMIT = 600_000;
 
 // ─── Credenciais / conexão ────────────────────────────────────────────────
@@ -305,7 +309,13 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   if (folder === 'SENT' && messageId) {
     const mine = await prisma.emailMessage.findFirst({ where: { emailAccountId: acc.id, folder: 'SENT', messageId, uid: null } });
     if (mine) {
-      await prisma.emailMessage.update({ where: { id: mine.id }, data: { uid: msg.uid } }).catch(() => {});
+      // Anexos enviados pelo CRM só ganham o "endereço" (part) pra download
+      // depois que a cópia aparece em Enviados no servidor.
+      const found = walkStructure(msg.bodyStructure, { attachments: [] }).attachments;
+      await prisma.emailMessage.update({
+        where: { id: mine.id },
+        data: { uid: msg.uid, ...(found.length ? { attachments: found as unknown as Prisma.InputJsonValue } : {}) },
+      }).catch(() => {});
       return;
     }
   }
@@ -323,6 +333,7 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   }
   const plain = textBody || (htmlBody ? htmlToText(htmlBody) : '');
   const fresh = stripQuoted(plain) || plain;
+  const attachedNote = parts.attachments.length ? `\n\n📎 ${parts.attachments.map((a) => a.filename).join(', ')}` : '';
 
   const from = addrList(env.from)[0] || null;
   const to = addrList(env.to);
@@ -349,7 +360,7 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   if (leadId) {
     await addToConversation({
       accountId: acc.accountId, leadId, direction: folder === 'INBOX' ? 'INBOUND' : 'OUTBOUND',
-      subject: env.subject || null, body: fresh, messageId, date,
+      subject: env.subject || null, body: `${fresh}${attachedNote}`, messageId, date,
       notify: !opts.initial && folder === 'INBOX', io: opts.io, fromLabel: from?.name || from?.address,
     });
   }
@@ -502,8 +513,13 @@ function escapeHtml(s: string) {
 export async function sendEmailFrom(params: {
   acc: EmailAccount; userId: string; to: string[]; cc?: string[]; subject: string; body: string;
   replyToId?: string | null; leadId?: string | null; io: Io;
+  attachments?: { filename: string; contentType: string; content: Buffer }[];
 }) {
   const { acc, io } = params;
+  const files = (params.attachments || []).filter((f) => f.content?.length);
+  if (files.length > MAX_ATTACHMENTS) throw new Error(`No máximo ${MAX_ATTACHMENTS} anexos por e-mail`);
+  const totalBytes = files.reduce((sum, f) => sum + f.content.length, 0);
+  if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error(`Os anexos passam de ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB — mande em mais de um e-mail ou use um link do Drive`);
   const to = params.to.map((a) => a.trim().toLowerCase()).filter(Boolean);
   const cc = (params.cc || []).map((a) => a.trim().toLowerCase()).filter(Boolean);
   if (!to.length) throw new Error('Informe pelo menos um destinatário');
@@ -535,6 +551,7 @@ export async function sendEmailFrom(params: {
   const mail = {
     from: fromName ? `"${fromName.replace(/"/g, '')}" <${acc.address}>` : acc.address,
     to, cc: cc.length ? cc : undefined, subject, text: `${body}${quoteText}`, html, messageId,
+    attachments: files.length ? files.map((f) => ({ filename: f.filename, content: f.content, contentType: f.contentType || undefined })) : undefined,
     ...(parent?.messageId ? {
       inReplyTo: parent.messageId,
       references: [parent.references, parent.messageId].filter(Boolean).join(' '),
@@ -567,11 +584,13 @@ export async function sendEmailFrom(params: {
       toList: to.map((address) => ({ name: null, address })) as unknown as Prisma.InputJsonValue,
       ccList: cc.map((address) => ({ name: null, address })) as unknown as Prisma.InputJsonValue,
       subject, date: new Date(), snippet: body.replace(/\s+/g, ' ').slice(0, 200), textBody: body, htmlBody: html,
-      attachments: [] as unknown as Prisma.InputJsonValue, seen: true, leadId,
+      attachments: files.map((f) => ({ part: null, filename: f.filename, contentType: f.contentType, size: f.content.length })) as unknown as Prisma.InputJsonValue,
+      seen: true, leadId,
     },
   });
   if (leadId) {
-    await addToConversation({ accountId: acc.accountId, leadId, direction: 'OUTBOUND', subject, body, messageId, date: saved.date, sentByUserId: params.userId, notify: true, io });
+    const attachedNote = files.length ? `\n\n📎 ${files.map((f) => f.filename).join(', ')}` : '';
+    await addToConversation({ accountId: acc.accountId, leadId, direction: 'OUTBOUND', subject, body: `${body}${attachedNote}`, messageId, date: saved.date, sentByUserId: params.userId, notify: true, io });
   }
   return saved;
 }

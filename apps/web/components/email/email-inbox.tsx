@@ -30,7 +30,7 @@ interface Mailbox {
   lastError: string | null;
 }
 interface Addr { name: string | null; address: string }
-interface Attachment { part: string; filename: string; contentType: string; size: number }
+interface Attachment { part: string | null; filename: string; contentType: string; size: number }
 interface EmailSummary {
   id: string;
   folder: 'INBOX' | 'SENT';
@@ -158,6 +158,7 @@ export function EmailInbox() {
 
   async function downloadAttachment(a: Attachment) {
     if (!current || !opened) return;
+    if (!a.part) { toast('O anexo fica disponível aqui em 1 minuto, quando a cópia chegar em Enviados', 'warning'); return; }
     try {
       const { data } = await api.get(`/api/email/accounts/${current.id}/messages/${opened.id}/attachments/${encodeURIComponent(a.part)}`, { responseType: 'blob' });
       const url = URL.createObjectURL(data);
@@ -360,7 +361,7 @@ export function EmailInbox() {
               {!!opened.attachments?.length && (
                 <div className="flex flex-wrap gap-1.5 mt-2.5">
                   {opened.attachments.map((a) => (
-                    <button key={a.part} onClick={() => downloadAttachment(a)} className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 max-w-[240px]">
+                    <button key={`${a.part}-${a.filename}`} onClick={() => downloadAttachment(a)} className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 max-w-[240px]">
                       <Paperclip size={12} className="flex-shrink-0" />
                       <span className="truncate">{a.filename}</span>
                       <span className="text-slate-400 flex-shrink-0">{formatSize(a.size)}</span>

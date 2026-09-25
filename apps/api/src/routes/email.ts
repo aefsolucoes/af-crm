@@ -104,6 +104,11 @@ router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: 
     const saved = await sendEmailFrom({
       acc, userId: req.user!.id, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''),
       replyToId: b.replyToId || null, leadId: b.leadId || null, io: io(req),
+      attachments: (Array.isArray(b.attachments) ? b.attachments : []).map((a: any) => ({
+        filename: String(a?.filename || 'anexo').slice(0, 200),
+        contentType: String(a?.contentType || 'application/octet-stream'),
+        content: Buffer.from(String(a?.dataBase64 || ''), 'base64'),
+      })),
     });
     res.json(saved);
   } catch (err) {
