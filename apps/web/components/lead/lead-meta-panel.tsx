@@ -1,14 +1,13 @@
 'use client';
 import { LeadDetail, Stage, User } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
-import { Shuffle } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { StageGateModal } from '@/components/kanban/stage-gate-modal';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
-import { MovePipelineModal } from './move-pipeline-modal';
+import { LeadPlacementFields } from './lead-placement-fields';
 
 interface LeadMetaPanelProps {
   lead: LeadDetail;
@@ -23,7 +22,6 @@ export function LeadMetaPanel({ lead, onRefresh }: LeadMetaPanelProps) {
   const [gateMissing, setGateMissing] = useState<ValidationField[]>([]);
   const [gateStageName, setGateStageName] = useState('');
   const [pendingStageId, setPendingStageId] = useState<string | null>(null);
-  const [showPipelineModal, setShowPipelineModal] = useState(false);
 
   const { data: users = [] } = useQuery<User[]>({
     queryKey: ['users'],
@@ -101,52 +99,15 @@ export function LeadMetaPanel({ lead, onRefresh }: LeadMetaPanelProps) {
           </div>
         </div>
 
-        {/* Ordem pedida pelo usuário: Setor → Funil → Estágio (igual à
-            Inbox). O setor vem do funil; mudar de setor é mudar de funil. */}
-        {lead.pipeline.department && (
-          <div>
-            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Setor</p>
-            <p className="w-full truncate text-xs font-medium text-slate-700 bg-af-light/50 border border-af-border px-2.5 py-1.5 rounded-lg">
-              {lead.pipeline.department.name}
-            </p>
-          </div>
-        )}
-
-        <div>
-          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Funil atual</p>
-          <button
-            onClick={() => setShowPipelineModal(true)}
-            className="w-full flex items-center justify-between gap-1.5 text-xs font-medium text-slate-700 bg-white border border-af-border hover:border-af-mid px-2.5 py-1.5 rounded-lg transition-colors text-left"
-            title="Mover para outro funil"
-          >
-            <span className="truncate">{lead.pipeline.name}</span>
-            <Shuffle size={13} className="flex-shrink-0 text-slate-400" />
-          </button>
-        </div>
-
-        <div>
-          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Estágio atual</p>
-          <select
-            value={lead.stageId}
-            onChange={(e) => handleStageChange(e.target.value)}
-            disabled={changing}
-            className="w-full text-xs font-medium px-2.5 py-1.5 border border-af-border rounded-lg bg-white text-af-mid focus:outline-none focus:ring-2 focus:ring-af-accent cursor-pointer min-w-0"
-          >
-            {lead.pipeline.stages.map((s: Stage) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {showPipelineModal && (
-        <MovePipelineModal
-          leadId={lead.id}
-          currentPipelineId={lead.pipelineId}
-          onClose={() => setShowPipelineModal(false)}
-          onMoved={() => { setShowPipelineModal(false); onRefresh(); }}
+        {/* Setor → Funil → Estágio — mesmo padrão da Inbox (LeadPlacementFields). */}
+        <LeadPlacementFields
+          lead={lead}
+          onRefresh={onRefresh}
+          onStageChange={handleStageChange}
+          changingStage={changing}
+          layout="stacked"
         />
-      )}
+      </div>
     </>
   );
 }

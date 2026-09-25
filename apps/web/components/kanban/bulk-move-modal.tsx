@@ -12,7 +12,7 @@ interface BulkMoveModalProps {
   onMoved: () => void;
 }
 
-/** "Mover N leads" — versão em massa do MovePipelineModal. Mesma escolha em
+/** "Mover N leads" — versão em massa da troca Setor → Funil → Etapa (um lead só usa LeadPlacementFields, sem janela). Mesma escolha em
  *  3 passos (Setor → Funil → Etapa), mas SEM excluir o funil atual da lista:
  *  o usuário pode querer só trocar de ETAPA dentro do mesmo funil. */
 export function BulkMoveModal({ leadIds, onClose, onMoved }: BulkMoveModalProps) {

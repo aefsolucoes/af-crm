@@ -4,12 +4,12 @@ import { LeadDetail, Stage } from '@/types';
 import { cn } from '@/lib/utils';
 import { Avatar } from '@/components/ui/avatar';
 import { LeadSidebar } from '@/components/lead/lead-sidebar';
-import { MovePipelineModal } from '@/components/lead/move-pipeline-modal';
+import { LeadPlacementFields } from '@/components/lead/lead-placement-fields';
 import { StageGateModal } from '@/components/kanban/stage-gate-modal';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
-import { Shuffle, ListChecks, LayoutList, PanelRightClose } from 'lucide-react';
+import { ListChecks, LayoutList, PanelRightClose } from 'lucide-react';
 import { LeadTasks } from '@/components/lead/lead-tasks';
 
 interface InboxLeadPanelProps {
@@ -30,7 +30,6 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
   const [gateMissing, setGateMissing]     = useState<ValidationField[]>([]);
   const [gateStageName, setGateStageName] = useState('');
   const [pendingStageId, setPendingStageId] = useState<string | null>(null);
-  const [showPipelineModal, setShowPipelineModal] = useState(false);
 
   const cf = ((lead.customFields || {}) as Record<string, string>);
   const p1 = cf.participante_1 || lead.contact?.name || lead.name;
@@ -80,16 +79,6 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
         onCancel={() => { setGateOpen(false); setPendingStageId(null); }}
       />
 
-      {/* ── Modal: Mover para outro funil (compartilhado com o Funil/Kanban) ── */}
-      {showPipelineModal && (
-        <MovePipelineModal
-          leadId={lead.id}
-          currentPipelineId={lead.pipelineId}
-          onClose={() => setShowPipelineModal(false)}
-          onMoved={() => { setShowPipelineModal(false); onRefresh(); }}
-        />
-      )}
-
       <div className={cn('w-96 flex-shrink-0 border-l border-af-border app-column-surface flex flex-col overflow-hidden', className)}>
 
         {/* ── Header do lead ── */}
@@ -102,13 +91,6 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
               {lead.stage.name}
             </span>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowPipelineModal(true)}
-                className="flex items-center gap-1 text-xs text-slate-400 hover:text-af-mid transition-colors"
-                title="Mover para outro funil"
-              >
-                <Shuffle size={12} /> Funil
-              </button>
               {onHide && (
                 // Só existe quando InboxLeadPanel abre como popup no celular
                 // (a barra fina de esconder/mostrar do desktop é outro botão,
@@ -174,48 +156,16 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
         {/* ── Painel: Dados ── */}
         {activePanel === 'dados' && (
           <>
-            {/* Barra de fluxo — Setor, Funil (leva pro modal, evita duas
-                listas diferentes pra mesma ação) e Estágio, nessa ordem. */}
-            <div className="px-3 py-2.5 border-b border-af-border flex-shrink-0 space-y-2">
-              {/* Setor vem do funil (Pipeline.departmentId), não é um campo à
-                  parte do lead — mudar de setor é mudar de funil, no botão
-                  "Funil" abaixo. Só exibe; funil "genérico" (sem setor) não
-                  mostra a linha. */}
-              {lead.pipeline.department && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex-shrink-0 w-14">Setor</span>
-                  <span className="flex-1 min-w-0 truncate text-xs font-semibold text-slate-700 rounded-lg px-2.5 py-1.5 border border-af-border bg-af-light/50">
-                    {lead.pipeline.department.name}
-                  </span>
-                </div>
-              )}
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex-shrink-0 w-14">Funil</span>
-                <button
-                  onClick={() => setShowPipelineModal(true)}
-                  className="flex-1 min-w-0 flex items-center justify-between gap-1 text-xs font-semibold text-slate-700 rounded-lg px-2.5 py-1.5 border border-af-border bg-white hover:border-af-mid transition-colors text-left"
-                  title="Mover para outro funil"
-                >
-                  <span className="truncate">{lead.pipeline.name}</span>
-                  <Shuffle size={12} className="flex-shrink-0 text-slate-400" />
-                </button>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex-shrink-0 w-14">Estágio</span>
-                <select
-                  value={lead.stageId}
-                  disabled={changingStage}
-                  onChange={e => handleStageChange(e.target.value)}
-                  className="flex-1 min-w-0 text-xs font-semibold text-white rounded-lg px-2.5 py-1.5 border-0 focus:outline-none focus:ring-2 focus:ring-af-accent cursor-pointer disabled:opacity-70"
-                  style={{ backgroundColor: lead.stage.color }}
-                >
-                  {lead.pipeline.stages.map((s: Stage) => (
-                    <option key={s.id} value={s.id} style={{ color: '#0f172a', backgroundColor: '#fff' }}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {/* Setor → Funil → Estágio — padrão do CRM pra trocar o lead de
+                lugar (LeadPlacementFields), sem janela. */}
+            <div className="px-3 py-2.5 border-b border-af-border flex-shrink-0">
+              <LeadPlacementFields
+                lead={lead}
+                onRefresh={onRefresh}
+                onStageChange={handleStageChange}
+                changingStage={changingStage}
+                layout="inline"
+              />
             </div>
 
             {/* Campos editáveis — todos os dados */}
