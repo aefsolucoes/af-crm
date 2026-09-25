@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { getWhatsAppConfig, resolveContactAndLeadByPhone, listMetaTemplates, sendWhatsAppTemplateMessage, normalizeBrazilianWhatsAppPhone } from './whatsapp.service';
 import { sendPushToAccount } from './push.service';
-import { handleAiCallAnswer, handleAiCallEnded } from './ai-call-bridge.service';
+import { handleAiCallAnswer, handleAiCallAccepted, handleAiCallEnded } from './ai-call-bridge.service';
 
 const prisma = new PrismaClient();
 
@@ -204,14 +204,16 @@ export async function getCallPermissionState(config: CallCredentials, userWaId: 
  *  não precisa de um nome fixo, só que exista um aprovado com esse tipo de
  *  componente (criado via createCallPermissionTemplate, abaixo, ou manual
  *  no Business Manager). */
-export async function findCallPermissionTemplate(accountId: string, departmentId?: string | null): Promise<{ name: string; language: string } | null> {
+export async function findCallPermissionTemplate(accountId: string, departmentId?: string | null): Promise<{ name: string; language: string; body: string } | null> {
   const templates = await listMetaTemplates(accountId, departmentId);
   const approved = templates.find((t: any) =>
     t.status === 'APPROVED' &&
     Array.isArray(t.components) &&
     t.components.some((c: any) => c.type === 'CALL_PERMISSION_REQUEST')
   );
-  return approved ? { name: approved.name, language: approved.language } : null;
+  if (!approved) return null;
+  const body = approved.components.find((c: any) => c.type === 'BODY')?.text || 'Pedido de permissão pra ligar pelo WhatsApp';
+  return { name: approved.name, language: approved.language, body };
 }
 
 /** Cria (na Meta) o template de pedido de permissão de ligação — mesmo
@@ -267,7 +269,7 @@ export function pickRealPhone(contact: { whatsappPhone?: string | null; phone?: 
  *  corpo (o template de permissão não costuma ter variável). Grava/atualiza
  *  o CallPermission (auditoria — a decisão de "pode ligar" nunca usa isso,
  *  sempre consulta getCallPermissionState ao vivo). */
-export async function sendCallPermissionRequest(accountId: string, departmentId: string | null | undefined, contactId: string): Promise<{ ok: boolean; error?: string }> {
+export async function sendCallPermissionRequest(accountId: string, departmentId: string | null | undefined, contactId: string, leadId?: string, io?: any): Promise<{ ok: boolean; error?: string }> {
   const contact = await prisma.contact.findUnique({ where: { id: contactId } });
   const phone = pickRealPhone(contact);
   if (!phone) return { ok: false, error: 'Contato sem telefone de WhatsApp' };
@@ -278,11 +280,33 @@ export async function sendCallPermissionRequest(accountId: string, departmentId:
   }
 
   const result = await sendWhatsAppTemplateMessage(phone, template.name, template.language, [], accountId, departmentId);
-  if (!result.success) return { ok: false, error: result.error };
+  if (!result.success) {
+    if (/138009/.test(String(result.error))) {
+      return { ok: false, error: 'O WhatsApp já recebeu um pedido de permissão pra esse cliente há pouco (limite: 1 por dia e 2 por semana). Aguarde ele aceitar.' };
+    }
+    return { ok: false, error: result.error };
+  }
 
   await prisma.callPermission.create({
     data: { accountId, contactId, status: 'PENDING' },
   });
+
+  // Registra o pedido na conversa (igual ao envio de template pelas
+  // Automações) -- sem isso, o pedido mandado pelo botão "Ligar" só aparecia
+  // no WhatsApp do cliente, nunca no CRM.
+  if (leadId) {
+    try {
+      const message = await prisma.message.create({
+        data: {
+          content: template.body, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true,
+          externalId: result.externalId, status: 'SENT', templateName: template.name, templateLanguage: template.language,
+        },
+      });
+      io?.to(`lead:${leadId}`).emit('new_message', message);
+    } catch (err) {
+      console.error('[Calling] Falha ao registrar o pedido de permissão na conversa:', err);
+    }
+  }
 
   return { ok: true };
 }
@@ -358,6 +382,25 @@ export async function handleCallPermissionReply(msg: any, accountId: string, io:
   return true;
 }
 
+/** Status de uma ligação que NÓS fizemos: RINGING (celular tocando),
+ *  ACCEPTED (cliente atendeu de verdade), REJECTED (recusou -- o terminate
+ *  vem logo depois e finaliza). Só o ACCEPTED marca a Call como conectada,
+ *  e é ele que para o "tuuu" e começa o cronômetro no CRM / liga a IA. */
+async function handleOutboundCallStatus(st: any, io: any): Promise<void> {
+  const waCallId = st?.id as string | undefined;
+  const status = String(st?.status || '').toUpperCase();
+  if (!waCallId) return;
+  console.log(`[Calling] status ${status} ${waCallId}`);
+  if (status !== 'ACCEPTED') return;
+
+  const existing = await prisma.call.findUnique({ where: { waCallId } });
+  if (!existing || existing.direction !== 'OUTBOUND' || existing.status === 'CONNECTED') return;
+  await prisma.call.update({ where: { waCallId }, data: { status: 'CONNECTED', connectedAt: new Date() } });
+
+  if (handleAiCallAccepted(waCallId)) return;
+  if (existing.answeredByUserId) io.to(`user_${existing.answeredByUserId}`).emit('call_accepted', { waCallId });
+}
+
 /** Webhook handler — campo `calls` (sinalização de chamada). Mesmo padrão dos
  *  irmãos processWhatsAppStatus/processIncomingWhatsApp: no-op silencioso se
  *  a chave esperada não existir no payload (a rota chama os três sempre).
@@ -371,6 +414,13 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
     const entry = body?.entry?.[0];
     const changes = entry?.changes?.[0];
     const value = changes?.value;
+
+    // Status de ligação feita por nós (RINGING/ACCEPTED/REJECTED) chegam
+    // em `statuses` com type "call", no mesmo campo `calls` do webhook.
+    const callStatuses = (value?.statuses || []).filter((st: any) => st?.type === 'call');
+    if (!value?.calls?.length && !callStatuses.length) return;
+
+    for (const st of callStatuses) await handleOutboundCallStatus(st, io);
 
     if (!value?.calls?.length) return;
 
@@ -391,14 +441,14 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
           // Resposta SDP de uma chamada OUTBOUND que nós iniciamos (o
           // primeiro connect foi o nosso POST; este é a Meta respondendo
           // com o SDP de resposta pra completar a negociação WebRTC).
+          // ACHADO REAL (2026-09-25): esse SDP chega quando o celular do
+          // cliente COMEÇA A TOCAR, não quando ele atende -- quem diz que
+          // atendeu é o status ACCEPTED (handleOutboundCallStatus). Aqui só
+          // prepara o áudio; a ligação não conta como conectada ainda.
           const sdp = call.session?.sdp as string | undefined;
-          if (existing.direction === 'OUTBOUND' && existing.status !== 'CONNECTED' && sdp) {
-            await prisma.call.update({
-              where: { waCallId },
-              data: { status: 'CONNECTED', connectedAt: new Date() },
-            });
+          if (existing.direction === 'OUTBOUND' && sdp) {
             if (await handleAiCallAnswer(waCallId, sdp)) {
-              console.log(`[AI-Call] cliente atendeu ${waCallId}, ligando o agente`);
+              console.log(`[AI-Call] SDP de resposta aplicado ${waCallId} (tocando)`);
             } else if (existing.answeredByUserId) {
               console.log(`[Calling] SDP de resposta (outbound) recebido -- repassando pro user_${existing.answeredByUserId}, sdp ${sdp.length} bytes:`, waCallId);
               io.to(`user_${existing.answeredByUserId}`).emit('call_answered', { waCallId, sdp });

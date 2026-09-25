@@ -51,6 +51,7 @@ interface OutboundCallState {
   hangup: () => Promise<void>;
   toggleMute: () => void;
   handleCallAnswered: (waCallId: string, sdp: string) => Promise<void>;
+  handleCallAccepted: (waCallId: string) => void;
   handleCallEnded: (endedWaCallId: string) => void;
 }
 
@@ -78,6 +79,14 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
         // Fulano (número)?") antes de discar de verdade -- só o pedido de
         // permissão que deixou de ter uma tela própria.
         set({ targetPhone: data.phone || null, stage: 'confirm' });
+        return;
+      }
+      // Botão âmbar ("Aguardando"): já tem pedido recente em aberto -- o
+      // clique só re-verifica. Mandar de novo batia no limite da Meta
+      // (1/dia, 2/semana) e mostrava o erro #138009 cru pro usuário.
+      if (data.canRequest === false) {
+        toast('Pedido de permissão já enviado — ainda aguardando o cliente aceitar.', 'warning');
+        set({ stage: 'idle', leadId: null, leadName: null });
         return;
       }
       try {
@@ -121,12 +130,10 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
       conn.oniceconnectionstatechange = () => console.log('[Calling] outbound iceConnectionState:', conn.iceConnectionState);
       conn.onicegatheringstatechange = () => console.log('[Calling] outbound iceGatheringState (offer):', conn.iceGatheringState);
       conn.onconnectionstatechange = () => {
+        // 'connected' aqui NÃO quer dizer que o cliente atendeu: o áudio se
+        // conecta já enquanto o celular dele toca. Quem marca "atendeu" é o
+        // status ACCEPTED da Meta (handleCallAccepted).
         console.log('[Calling] outbound connectionState:', conn.connectionState);
-        if (conn.connectionState === 'connected') {
-          stopRingback?.();
-          stopRingback = null;
-          set({ connectedAt: Date.now(), stage: 'connected' });
-        }
         if (conn.connectionState === 'failed' || conn.connectionState === 'closed') {
           const endedId = waCallId;
           cleanup();
@@ -186,28 +193,22 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
       console.warn('[Calling] outbound: call_answered ignorado (waCallId não bate ou sem PC ativo)');
       return;
     }
-    // Para o "tuuu...tuuu..." AQUI, assim que a Meta avisa que o cliente
-    // atendeu -- achado real do usuário: esperar o WebRTC terminar de
-    // negociar (onconnectionstatechange === 'connected', mais abaixo) e só
-    // então parar deixava tocando por mais alguns segundos DEPOIS do
-    // cliente já ter atendido de verdade (ele já tava falando "alô" e o
-    // toque de chamando continuava do nosso lado).
-    stopRingback?.();
-    stopRingback = null;
+    // Esse SDP chega quando o celular do cliente COMEÇA A TOCAR (achado
+    // real 2026-09-25: parar o "tuuu" e ligar o cronômetro aqui fazia os
+    // dois acontecerem antes do cliente atender). Só prepara o áudio; o
+    // "atendeu" é o status ACCEPTED (handleCallAccepted).
     try {
       await pc.setRemoteDescription({ type: 'answer', sdp });
       console.log('[Calling] outbound: setRemoteDescription(answer) ok');
     } catch (err) {
       console.error('[Calling] Falha ao aplicar resposta SDP:', err);
     }
-    // Marca "connected" aqui, não esperando o RTCPeerConnection confirmar
-    // sozinho via onconnectionstatechange -- achado real do usuário
-    // (2026-09-24): no iPhone/Safari esse evento às vezes nunca reporta
-    // "connected", mesmo com o áudio já fluindo de verdade (cliente atendeu,
-    // ligação nativa do sistema já com cronômetro correndo), deixando a
-    // barra travada em "Conectando..." pelo resto da chamada. A Meta já
-    // confirmou que o cliente atendeu -- esse sinal de negócio é mais
-    // confiável que o estado local do WebRTC nesse navegador.
+  },
+
+  handleCallAccepted: (acceptedWaCallId) => {
+    if (acceptedWaCallId !== waCallId) return;
+    stopRingback?.();
+    stopRingback = null;
     set({ connectedAt: Date.now(), stage: 'connected' });
   },
 

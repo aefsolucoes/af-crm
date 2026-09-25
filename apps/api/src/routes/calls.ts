@@ -140,7 +140,7 @@ router.post('/permission-request', validate(leadIdSchema), async (req: AuthReque
   const lead = await findLeadWithPhone(req.body.leadId, req.user!.accountId);
   if (!lead?.contactId) return res.status(400).json({ error: 'Lead sem contato vinculado' });
 
-  const result = await sendCallPermissionRequest(req.user!.accountId, lead.pipeline?.departmentId || null, lead.contactId);
+  const result = await sendCallPermissionRequest(req.user!.accountId, lead.pipeline?.departmentId || null, lead.contactId, lead.id, (req as any).app.get('io'));
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ ok: true });
 });

@@ -26,19 +26,22 @@ function formatPhoneDisplay(phone: string | null | undefined): string {
  *  a ligação em si sumia. Agora é um Zustand store global (store/
  *  outbound-call.store.ts) — esse componente só monta a UI por cima dele. */
 export function OutboundCallBar() {
-  const { stage, leadName, targetPhone, muted, connectedAt, registerAudioEl, confirmCall, dismiss, hangup, toggleMute, handleCallAnswered, handleCallEnded } = useOutboundCallStore();
+  const { stage, leadName, targetPhone, muted, connectedAt, registerAudioEl, confirmCall, dismiss, hangup, toggleMute, handleCallAnswered, handleCallAccepted, handleCallEnded } = useOutboundCallStore();
 
   useEffect(() => {
     const socket = getSocket();
     const onAnswered = ({ waCallId, sdp }: { waCallId: string; sdp: string }) => handleCallAnswered(waCallId, sdp);
+    const onAccepted = ({ waCallId }: { waCallId: string }) => handleCallAccepted(waCallId);
     const onEnded = ({ waCallId }: { waCallId: string }) => handleCallEnded(waCallId);
     socket.on('call_answered', onAnswered);
+    socket.on('call_accepted', onAccepted);
     socket.on('call_ended', onEnded);
     return () => {
       socket.off('call_answered', onAnswered);
+      socket.off('call_accepted', onAccepted);
       socket.off('call_ended', onEnded);
     };
-  }, [handleCallAnswered, handleCallEnded]);
+  }, [handleCallAnswered, handleCallAccepted, handleCallEnded]);
 
   return (
     <>

@@ -54,6 +54,7 @@ interface AiCallSession {
   sentFrames: number;
   seq: number;
   ts: number;
+  sdpApplied: boolean;
   answered: boolean;
   answeredAt: number;
   userSpoke: boolean;
@@ -180,7 +181,7 @@ export async function startAiCall(accountId: string, leadId: string, io: any): P
     outQueue: [], outOffset: 0, outBytes: 0,
     pacer: null, pacerStart: 0, sentFrames: 0,
     seq: crypto.randomInt(0, 0xffff), ts: crypto.randomInt(0, 0x7fffffff),
-    answered: false, answeredAt: 0, userSpoke: false, loudFrames: 0, silenceTimer: null, preBuffer: [], preBytes: 0,
+    sdpApplied: false, answered: false, answeredAt: 0, userSpoke: false, loudFrames: 0, silenceTimer: null, preBuffer: [], preBytes: 0,
     ending: false, ringTimeout: null,
     transcript: [],
   };
@@ -206,17 +207,29 @@ export async function startAiCall(accountId: string, leadId: string, io: any): P
 export async function handleAiCallAnswer(waCallId: string, sdp: string): Promise<boolean> {
   const s = sessions.get(waCallId);
   if (!s) return false;
-  if (s.answered || s.ending) return true;
-  s.answered = true;
-  s.answeredAt = Date.now();
-  if (s.ringTimeout) clearTimeout(s.ringTimeout);
+  if (s.sdpApplied || s.ending) return true;
+  s.sdpApplied = true;
+  // O SDP chega quando o celular começa a TOCAR: só prepara o áudio. A IA
+  // começa quando a Meta manda o status ACCEPTED (handleAiCallAccepted).
   try {
     await s.pc.setRemoteDescription({ type: 'answer', sdp });
   } catch (err) {
     console.error(`[AI-Call] ${waCallId} SDP de resposta inválido:`, err);
     endSession(s, 'sdp_error', true);
-    return true;
   }
+  return true;
+}
+
+/** Status ACCEPTED da Meta: o cliente atendeu de verdade. Retorna false se a
+ *  ligação não é da IA (segue o fluxo humano). */
+export function handleAiCallAccepted(waCallId: string): boolean {
+  const s = sessions.get(waCallId);
+  if (!s) return false;
+  if (s.answered || s.ending) return true;
+  s.answered = true;
+  s.answeredAt = Date.now();
+  if (s.ringTimeout) clearTimeout(s.ringTimeout);
+  console.log(`[AI-Call] ${waCallId} cliente atendeu, ligando o agente`);
   openAgentSocket(s).catch((err) => {
     console.error(`[AI-Call] ${waCallId} falha ao abrir o agente:`, err);
     endSession(s, 'agent_error', true);
