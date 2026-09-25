@@ -34,6 +34,7 @@ import callRoutes from './routes/calls';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
+import { autoStarBigLeads } from './services/auto-star.service';
 import { autoMergeDuplicatesByPhone } from './services/lead.service';
 import { configureWebPush } from './services/push.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
@@ -248,6 +249,14 @@ httpServer.listen(PORT, () => {
       checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade:', err?.message));
     }, AUTOMATION_INACTIVITY_POLL_MS);
   }, 90 * 1000);
+
+  // Estrela automática em cliente grande (HE > 150 mil, Financiamento > 300 mil).
+  setTimeout(() => {
+    autoStarBigLeads().catch((err) => console.error('[Estrela] Poll (boot):', err?.message));
+    setInterval(() => {
+      autoStarBigLeads().catch((err) => console.error('[Estrela] Poll:', err?.message));
+    }, 5 * 60 * 1000);
+  }, 3 * 60 * 1000);
 
   // Card que entrou em "Documentação Recebida": organiza a pasta do cliente
   // no Drive (LEADS ATIVOS do setor) e grava o link no card.
