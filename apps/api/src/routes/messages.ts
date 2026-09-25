@@ -9,8 +9,15 @@ import { getScopeDepartmentIds } from '../services/department.service';
 import { runAutomations } from '../services/automation.service';
 import { logActivity } from '../services/activity.service';
 import { sendGenericEmail } from '../services/email.service';
+import { PrismaClient } from '@prisma/client';
 
-/** Registro silencioso: "Fulano respondeu <cliente>". Fire-and-forget. */
+const prisma = new PrismaClient();
+
+/** Registro silencioso: "Fulano respondeu <cliente>". Fire-and-forget.
+ *  Também desliga a IA da conversa (pedido do Fabio): alguém do time
+ *  respondeu, então um humano assumiu — a IA não fala por cima dele. As
+ *  automações de etapa (ex.: entrar em Aguardando Documentação) podem
+ *  religar depois. */
 function logClientReply(req: AuthRequest, leadId: string) {
   logActivity({
     accountId: req.user!.accountId,
@@ -20,6 +27,18 @@ function logClientReply(req: AuthRequest, leadId: string) {
     summary: 'respondeu o cliente',
     channel: 'WHATSAPP',
   });
+  turnOffAiOnHumanReply(req, leadId).catch((err) => console.error('[IA] Falha ao desligar a IA após resposta humana:', err));
+}
+
+async function turnOffAiOnHumanReply(req: AuthRequest, leadId: string) {
+  const { count } = await prisma.lead.updateMany({
+    where: { id: leadId, accountId: req.user!.accountId, aiAutoReplyActive: true },
+    data: { aiAutoReplyActive: false },
+  });
+  if (!count) return;
+  const io = (req as any).app.get('io');
+  io?.to(`lead:${leadId}`).emit('lead_ai_toggled', { leadId, active: false });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: 'IA desligada automaticamente: alguém da equipe respondeu o cliente.' } }).catch(() => {});
 }
 
 const router = Router();

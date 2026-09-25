@@ -72,24 +72,37 @@ const MOVE_STAGE_RULES = `MOVER O CARD DE ETAPA ("moveToStage") — só estes va
 - "Follow Up": o cliente demonstrou interesse mas precisa de acompanhamento (disse que vai pensar, pediu pra retornarem depois, ainda não deu informação suficiente pra avançar).
 - "Lead Sem Retorno": o cliente foi ficando em silêncio/enrolando, sem dar uma resposta clara nem positiva nem negativa — NÃO use isso quando o cliente recusar explicitamente (isso é "Perdido", ver regra abaixo).
 - "Pré-Análise": o cliente confirmou que já preencheu a proposta/formulário manual completo, OU você já reuniu nesta conversa todos os dados pessoais necessários pra uma pré-análise (nome, telefone, CPF, renda etc. de todos os participantes). Só use se essa condição foi REALMENTE atendida — não adiante.
-- "Prospecção": raramente necessário (o lead já começa nessa etapa).`;
+- "Prospecção": raramente necessário (o lead já começa nessa etapa).
+- "Venda Futura": o cliente quer seguir, mas não agora — disse que vai deixar pra mais pra frente, pra outro mês/ano, depois de algum evento.
+Sempre que mover de etapa, preencha "moveReason" com o motivo em 1 frase (vai pra uma anotação no card).`;
 
 /** "Perdido" é o STATUS do lead (Aberto/Ganho/Perdido, mesmo botão "Marcar
  *  Perdido" da tela), não uma etapa — por isso é um campo separado, com
  *  motivo obrigatório quando usado. */
-const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um motivo curto (1 frase, baseado no que o cliente disse) quando ele recusar EXPLICITAMENTE: disser que não quer mais, não tem mais interesse, desistiu, ou pedir pra não ser mais contatado. Deixe null/vazio em todos os outros casos — isso é diferente de só ficar em silêncio (isso é "Lead Sem Retorno", acima), e é definitivo, então só use quando a recusa for clara.`;
+const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um motivo curto (1 frase, baseado no que o cliente disse) quando ele recusar EXPLICITAMENTE: disser que não quer mais, não tem mais interesse, desistiu, ou pedir pra não ser mais contatado. Também quando o lead for desqualificado (ex.: imóvel de garantia sem registro/irregular e sem alternativa) — aí o motivo começa com "Lead desqualificado — ". Deixe null/vazio em todos os outros casos — isso é diferente de só ficar em silêncio (isso é "Lead Sem Retorno", acima), e é definitivo, então só use quando a recusa for clara.`;
 
 /** Diferente de markLost: o negócio continua vivo, só a INSISTÊNCIA
  *  automática (lembrete periódico) deve parar — um humano assume esse
  *  cliente a partir daqui. Ex.: cliente irritado com o lembrete repetido de
  *  documento, mas ainda quer seguir com o negócio. */
-const STOP_FOLLOWUP_RULES = `PARAR LEMBRETE AUTOMÁTICO ("stopFollowUp": true) — quando o cliente reclamar de estar recebendo cobranças/lembretes repetidos (ex.: sobre documentos pendentes), ficar visivelmente irritado ou pedir explicitamente pra parar de insistir, MAS sem recusar o negócio em si (se ele recusar o negócio de verdade, isso é "markLost", acima, não isto). Use false em todos os outros casos.`;
+const STOP_FOLLOWUP_RULES = `CLIENTE PEDIU PRA PARAR / NÃO VAI CONTINUAR — pedido do Fabio: entenda o motivo antes de decidir.
+- Se ele pedir pra parar as mensagens/lembretes ou disser que não vai continuar SEM dizer por quê, pergunte o motivo em uma frase, com educação (ex.: "Tudo bem! Posso saber o motivo? Assim eu anoto aqui.") e marque "stopFollowUp": true.
+- Com o motivo (ou se já veio junto):
+  - não quer mais o negócio (desistiu, fechou com outro, não tem interesse) → "markLost" com o motivo;
+  - quer, mas mais pra frente → "moveToStage": "Venda Futura" + "moveReason";
+  - ficou em dúvida, sumiu ou não explicou → "moveToStage": "Lead Sem Retorno" + "moveReason".
+- Nos três casos também marque "stopFollowUp": true (pausa os lembretes automáticos).
+- Use "stopFollowUp": false em todos os outros casos.`;
 
 // Pedido do Fabio (2026-09-25): a IA ia fazendo pergunta por pergunta
 // (casa ou apartamento? está quitado? qual valor?) em vez de mandar o
 // formulário, que já pede tudo isso de uma vez.
 const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO:
 - NÃO faça perguntas de qualificação (tipo de imóvel, se está quitado, valor do imóvel, valor do crédito, renda, entrada, idade etc.). O formulário da proposta manual já pede tudo isso.
+- HOME EQUITY — SITUAÇÃO DO IMÓVEL (antes do passo 1 abaixo, se a conversa ainda não respondeu isso): pergunte em uma frase se o imóvel que vai ficar de garantia tem matrícula registrada em cartório e está regularizado.
+  - Se sim: siga normalmente.
+  - Se não: antes de desistir, pergunte se ele tem outro imóvel pra colocar como garantia, ou outra pessoa que possa fazer o crédito com um imóvel no nome dela — pode ser um parente de 1º grau (pai, mãe, filho).
+  - Só se não houver nenhuma alternativa: explique com gentileza que sem imóvel registrado e regular não dá pra seguir agora e marque "markLost" com "Lead desqualificado — <motivo>".
 - Do jeito que a equipe faz, em dois passos:
   1. Quando o cliente responder ou mostrar interesse (e a proposta ainda não foi oferecida nesta conversa), proponha tentar aprovar o crédito primeiro, curto, algo como: "Antes de tudo, vamos tentar aprovar seu crédito. Pode ser?"
   2. Quando ele concordar (sim, pode, ok, bora...), mande o link da proposta manual do produto dele usando o texto da Resposta Rápida correspondente ("Proposta manual Finan Hab" ou "Proposta manual Home Equity") e termine com algo como "Se tiver alguma dúvida, é só me falar."
@@ -103,7 +116,11 @@ const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO
 - Crédito com garantia no nome de EMPRESA (PJ): as condições (taxa e documentação) são diferentes e bem mais complexas que as de pessoa física — nunca use taxa de PF pra PJ. O caminho padrão é pessoa física: na primeira vez que o cliente falar em fazer pela empresa, pergunte em uma frase se ele pode fazer no nome dele (pessoa física), que é mais simples. Só se ele confirmar que precisa mesmo como PJ: não mande o formulário de pessoa física — no lugar dele, mande a lista de documentos da Resposta Rápida "Documentos comprador PJ" (fiel ao conteúdo) e pergunte se ficou alguma dúvida. Pra PJ essa lista é o primeiro passo (exceção à regra de só pedir documentos depois da pré-análise). Taxa pra PJ só sai na análise: se perguntarem, diga isso, sem citar taxa de PF.
 - Setores sem proposta manual (ex.: Consórcio): siga normalmente, sem esta regra.
 
-DOCUMENTOS DO HOME EQUITY (pessoa física): quando for a hora de pedir a documentação — pré-análise já aprovada (etapa "Aprovado Pré-Analise" ou "Aguardando Documentação") ou o cliente perguntar quais documentos precisa — mande a Resposta Rápida "Documentos Home Equity", fiel ao conteúdo, sem texto em volta. Antes da pré-análise aprovada, não peça documentos (a proposta vem primeiro). Pra PJ vale a lista "Documentos comprador PJ" (regra acima).`;
+DOCUMENTOS: quando for a hora de pedir a documentação — pré-análise já aprovada (etapa "Aprovado Pré-Analise" ou "Aguardando Documentação") ou o cliente perguntar quais documentos precisa:
+- Se a conversa JÁ TEM uma lista de documentos enviada pela equipe, use a MESMA lista (não mande outra diferente) — só lembre o que falta dela.
+- Senão, Home Equity pessoa física: mande a Resposta Rápida "Documentos Home Equity", fiel ao conteúdo, sem texto em volta. Financiamento Habitacional: a lista do perfil de renda do cliente. PJ: "Documentos comprador PJ" (regra acima).
+- Antes da pré-análise aprovada, não peça documentos (a proposta vem primeiro).
+- Durante a pré-análise, se o cliente perguntar do resultado: diga que a análise está em andamento e que avisa por aqui assim que sair — nunca adiante aprovação.`;
 
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
 - Se o "ok" responder uma pergunta sua de sim/não (ex.: "posso te mandar a lista de documentos?"), trate como "sim" e siga normalmente, com noReply false.
@@ -116,7 +133,7 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
 
 export interface AiAutoReplyResult {
   reply: string;
@@ -133,6 +150,8 @@ export interface AiAutoReplyResult {
    *  via applyAiExtractedActions (marca uma tag que os gatilhos de
    *  inatividade recorrente já sabem excluir). */
   stopFollowUp?: boolean;
+  /** Motivo da mudança de etapa (vira anotação no card). */
+  moveReason?: string | null;
   /** Campos do card que a IA extraiu da conversa — aplicar via applyAiExtractedActions. */
   extractedFields?: Record<string, string> | null;
 }
@@ -196,10 +215,10 @@ ${buildContextBlocks(ctx)}`;
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        // 600 não era suficiente quando o card tem muitos campos pra
-        // extrair (extractedFields grande) — o JSON cortava no meio e
-        // quebrava o parser (ver comentário em parseReply). 1024 dá folga.
-        max_tokens: 1024,
+        // O modelo pensa antes de responder e o raciocínio conta nesse
+        // limite: com 1024 às vezes acabava tudo no raciocínio e a resposta
+        // vinha VAZIA (cliente ficava sem resposta, achado 2026-09-25).
+        max_tokens: 4096,
         system: systemPrompt,
         messages: [{ role: 'user', content: incomingText }],
       }),
@@ -253,6 +272,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
         markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
         stopFollowUp: parsed.stopFollowUp === true,
+        moveReason: typeof parsed.moveReason === 'string' && parsed.moveReason.trim() ? parsed.moveReason.trim() : null,
         extractedFields,
       };
     }
@@ -263,6 +283,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
         markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
         stopFollowUp: parsed.stopFollowUp === true,
+        moveReason: typeof parsed.moveReason === 'string' && parsed.moveReason.trim() ? parsed.moveReason.trim() : null,
         extractedFields,
       };
     }

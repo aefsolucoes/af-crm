@@ -34,10 +34,16 @@ export async function moveLeadToContracting(accountId: string, leadId: string, i
     data: {
       pipelineId: pipeline.id,
       stageId: stage.id,
+      // Pedido do Fabio: a IA fica ligada até aqui; em Documentação Recebida
+      // o time humano assume a contratação.
+      aiAutoReplyActive: false,
       notes: { create: { content: `Lead migrado automaticamente para o funil "${pipeline.name}" (${stage.name}) — ${reason}.`, type: 'STAGE_CHANGE' } },
     },
   });
-  if (io) io.to(`account_${accountId}`).emit('lead_moved', { lead: moved });
+  if (io) {
+    io.to(`account_${accountId}`).emit('lead_moved', { lead: moved });
+    io.to(`lead:${leadId}`).emit('lead_ai_toggled', { leadId, active: false });
+  }
 
   if (io) {
     const recipientDeptId = deptId

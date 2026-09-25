@@ -190,11 +190,24 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
         pipeline: { department: { activeLeadsFolderId: { not: null } } },
       },
       select: {
-        id: true, name: true, accountId: true, customFields: true,
+        id: true, name: true, accountId: true, customFields: true, aiAutoReplyActive: true,
         stage: { select: { name: true } },
         pipeline: { select: { department: { select: { activeLeadsFolderId: true } } } },
       },
     });
+
+    // A IA fica ligada até o card chegar aqui (pedido do Fabio) — desliga uma
+    // vez só ao entrar, venha de onde vier (tela, "Fechado", IA); se alguém
+    // religar à mão depois, fica ligada.
+    for (const lead of leads) {
+      if (!norm(lead.stage.name).includes('documentacao recebida')) continue;
+      const cfAi = (lead.customFields || {}) as Record<string, unknown>;
+      if (lead.aiAutoReplyActive && !cfAi._aiOffOnDocsReceived) {
+        await prisma.lead.update({ where: { id: lead.id }, data: { aiAutoReplyActive: false, customFields: { ...cfAi, _aiOffOnDocsReceived: new Date().toISOString() } as any } });
+        lead.customFields = { ...cfAi, _aiOffOnDocsReceived: new Date().toISOString() } as any;
+        console.log(`[DocsRecebidos] IA desligada em ${lead.name} (entrou em Documentação Recebida)`);
+      }
+    }
 
     for (const lead of leads) {
       if (!norm(lead.stage.name).includes('documentacao recebida')) continue;

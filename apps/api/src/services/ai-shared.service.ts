@@ -222,6 +222,8 @@ function normalize(s: string): string {
 
 export interface AiExtractedAction {
   moveToStage?: string | null;
+  /** Motivo da mudança de etapa — vira anotação no card. */
+  moveReason?: string | null;
   extractedFields?: Record<string, string> | null;
   /** Motivo da perda, se a IA decidiu marcar o lead como Perdido — string
    *  não-vazia = marca; ausente/vazio = não mexe no status. */
@@ -293,7 +295,7 @@ export async function applyAiExtractedActions(
     // funil onde o lead já está — mesmo critério de move_stage_by_name em
     // automation.service.ts.
     if (action.moveToStage) {
-      const ALLOWED = ['prospeccao', 'follow up', 'lead sem retorno', 'pre-analise', 'pre analise'];
+      const ALLOWED = ['prospeccao', 'follow up', 'lead sem retorno', 'pre-analise', 'pre analise', 'venda futura'];
       const target = normalize(action.moveToStage);
       const isAllowed = ALLOWED.some((a) => target.includes(a) || a.includes(target));
       if (isAllowed) {
@@ -314,6 +316,9 @@ export async function applyAiExtractedActions(
             accountId, userId: null, userName: 'Assistente IA', action: 'lead_stage_changed',
             leadId: lead.id, leadName: lead.name, summary: `moveu o card pra "${match.name}", com base na conversa`,
           });
+          await prisma.note.create({
+            data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `🤖 IA moveu o card pra "${match.name}"${action.moveReason ? ` — ${action.moveReason}` : ''}` },
+          }).catch(() => {});
           if (io) io.to(`lead:${leadId}`).emit('lead_moved', { leadId, stageId: match.id });
         }
       }

@@ -73,7 +73,9 @@ ${buildContextBlocks(ctx)}`;
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
           model: 'claude-sonnet-5',
-          max_tokens: 300,
+          // 300 acabava no raciocínio do modelo e a sugestão vinha vazia (o
+          // erro intermitente do "Sugerir resposta").
+          max_tokens: 2048,
           system: systemPrompt,
           messages: [{ role: 'user', content: 'Sugira a próxima resposta.' }],
         }),

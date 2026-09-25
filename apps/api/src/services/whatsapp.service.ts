@@ -1254,11 +1254,11 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 
     const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer);
     if (!genResult) return;
-    const { reply, handoff, moveToStage, markLost, stopFollowUp, extractedFields } = genResult;
+    const { reply, handoff, moveToStage, markLost, stopFollowUp, moveReason, extractedFields } = genResult;
 
     if (genResult.noReply) {
       if (moveToStage || markLost || stopFollowUp || (extractedFields && Object.keys(extractedFields).length)) {
-        await applyAiExtractedActions(accountId, leadId, { moveToStage, markLost, stopFollowUp, extractedFields }, io);
+        await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, markLost, stopFollowUp, extractedFields }, io);
       }
       return;
     }
@@ -1279,7 +1279,7 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     // Mover etapa / marcar Perdido / preencher dados do card — independente
     // do handoff (pode marcar Perdido no mesmo turno em que encerra, por ex.).
     if (moveToStage || markLost || stopFollowUp || (extractedFields && Object.keys(extractedFields).length)) {
-      await applyAiExtractedActions(accountId, leadId, { moveToStage, markLost, stopFollowUp, extractedFields }, io);
+      await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, markLost, stopFollowUp, extractedFields }, io);
     }
 
     if (handoff) await handleAiHandoffCloudApi(leadId, io);

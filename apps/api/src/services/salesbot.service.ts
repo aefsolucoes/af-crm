@@ -316,7 +316,7 @@ async function executeStepsFrom(
       // IA" avulso da Inbox já faz (ver whatsapp.service.ts), pra ficar
       // consistente entre os dois jeitos de usar a mesma IA.
       if (genResult.moveToStage || genResult.markLost || genResult.stopFollowUp || (genResult.extractedFields && Object.keys(genResult.extractedFields).length)) {
-        await applyAiExtractedActions(lead.accountId, run.leadId, { moveToStage: genResult.moveToStage, markLost: genResult.markLost, stopFollowUp: genResult.stopFollowUp, extractedFields: genResult.extractedFields }, io as any);
+        await applyAiExtractedActions(lead.accountId, run.leadId, { moveToStage: genResult.moveToStage, moveReason: genResult.moveReason, markLost: genResult.markLost, stopFollowUp: genResult.stopFollowUp, extractedFields: genResult.extractedFields }, io as any);
       }
 
       if (genResult.handoff) {

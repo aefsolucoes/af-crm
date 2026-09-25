@@ -41,7 +41,8 @@ const RULES = `Você confere se um cliente de crédito imobiliário já mandou T
 {"complete": <true ou false>, "listaUsada": "<nome da lista>", "faltando": ["<item que falta>", ...]}
 
 Como decidir:
-1. Escolha a lista certa entre as listas abaixo: Home Equity pessoa física → "Documentos Home Equity"; crédito no nome de empresa (PJ) → "Documentos comprador PJ"; Financiamento Habitacional → a lista do perfil de renda (empresário/autônomo/profissional liberal → empresário; assalariado/CLT → setor privado; servidor público → servidor público).
+0. Se a CONVERSA já tem uma lista de documentos enviada pela equipe pra esse cliente, ELA é a referência (vale mais que as listas abaixo).
+1. Senão, escolha a lista certa entre as listas abaixo: Home Equity pessoa física → "Documentos Home Equity"; crédito no nome de empresa (PJ) → "Documentos comprador PJ"; Financiamento Habitacional → a lista do perfil de renda (empresário/autônomo/profissional liberal → empresário; assalariado/CLT → setor privado; servidor público → servidor público).
 2. Documentos pessoais e de renda valem pra CADA participante listado.
 3. Itens marcados "se usar" ou "se houver" não são obrigatórios.
 4. RG ou CNH servem como documento de identificação; certidão de nascimento ou de casamento servem como comprovante de estado civil.
