@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import net from 'net';
 import { Readable } from 'stream';
 import { PrismaClient, EmailAccount, EmailMessage, Prisma } from '@prisma/client';
 import { ImapFlow, FetchMessageObject, MessageStructureObject } from 'imapflow';
@@ -628,7 +629,15 @@ export async function sendEmailFrom(params: {
   };
 
   const pass = passwordFor(acc);
-  await smtpTransport({ host: acc.smtpHost, port: acc.smtpPort, user: acc.username, pass }).sendMail(mail);
+  try {
+    await smtpTransport({ host: acc.smtpHost, port: acc.smtpPort, user: acc.username, pass }).sendMail(mail);
+  } catch (err: any) {
+    console.warn(`[E-mail] Envio falhou (${acc.address} via ${acc.smtpHost}:${acc.smtpPort}):`, err?.code, err?.message);
+    if (err?.code === 'ETIMEDOUT' || err?.code === 'ECONNECTION' || /timeout/i.test(err?.message || '')) {
+      throw new Error(`O servidor do CRM não conseguiu conectar no envio de e-mail (${acc.smtpHost}:${acc.smtpPort}) — a porta de envio pode estar bloqueada pela hospedagem.`);
+    }
+    throw err;
+  }
   if (params.draftId) removeDraft(acc, params.draftId).catch((err) => console.warn('[E-mail] Apagar rascunho enviado:', err?.message));
 
   // Guarda uma cópia em Enviados no servidor (SMTP não guarda sozinho) —
@@ -884,4 +893,25 @@ export async function saveDraft(params: {
   });
   if (params.draftId) await removeDraft(acc, params.draftId).catch((err) => console.warn('[E-mail] Apagar rascunho anterior:', err?.message));
   return saved;
+}
+
+// ─── Diagnóstico de rede (hospedagem) ─────────────────────────────────────────
+
+
+/** Testa, de dentro do servidor, se as portas de e-mail saem pra internet —
+ *  hospedagens bloqueiam SMTP (587/465) em alguns planos. Só loga. */
+export async function probeMailEgress(): Promise<Record<string, string>> {
+  const host = process.env.SMTP_HOST || 'smtp.titan.email';
+  const imap = process.env.IMAP_HOST || host.replace(/^smtp\./i, 'imap.');
+  const targets: [string, number][] = [[host, 587], [host, 465], [imap, 993]];
+  const out: Record<string, string> = {};
+  await Promise.all(targets.map(([h, port]) => new Promise<void>((resolve) => {
+    const sock = net.connect({ host: h, port, timeout: 8000 });
+    const done = (r: string) => { out[`${h}:${port}`] = r; sock.destroy(); resolve(); };
+    sock.on('connect', () => done('abre'));
+    sock.on('timeout', () => done('TIMEOUT (bloqueada?)'));
+    sock.on('error', (e: any) => done(`erro ${e?.code || e?.message}`));
+  })));
+  console.log('[E-mail] Portas de e-mail saindo do servidor:', JSON.stringify(out));
+  return out;
 }

@@ -33,7 +33,7 @@ import activityRoutes from './routes/activity';
 import callRoutes from './routes/calls';
 import aiQuestionRoutes from './routes/ai-questions';
 import emailRoutes from './routes/email';
-import { syncAllEmailAccounts } from './services/email-inbox.service';
+import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.service';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
@@ -216,6 +216,7 @@ try {
 httpServer.listen(PORT, () => {
   console.log(`🚀 API AF CRM rodando em http://localhost:${PORT}`);
   probeUdpEgress().catch(() => {});
+  probeMailEgress().catch(() => {});
 
   // Válvula de segurança do disco: arquiva no Drive só os anexos com 30+ dias,
   // numa pasta técnica separada — nunca mexe na organização manual do usuário.
