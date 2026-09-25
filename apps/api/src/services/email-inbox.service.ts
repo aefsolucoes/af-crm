@@ -23,7 +23,8 @@ import { companySignatureHtml, companySignatureText } from './email.service';
 const prisma = new PrismaClient();
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
-type Folder = 'INBOX' | 'SENT';
+export type Folder = 'INBOX' | 'SENT' | 'DRAFTS' | 'SPAM' | 'TRASH';
+export const FOLDERS: Folder[] = ['INBOX', 'SENT', 'DRAFTS', 'SPAM', 'TRASH'];
 type Addr = { name?: string; address?: string };
 type FolderState = { uidValidity: string; lastUid: number };
 
@@ -81,12 +82,25 @@ async function withImap<T>(acc: EmailAccount, fn: (client: ImapFlow) => Promise<
   }
 }
 
-async function sentPath(client: ImapFlow): Promise<string | null> {
-  const boxes = await client.list();
-  return boxes.find((b) => b.specialUse === '\\Sent')?.path
-    || boxes.find((b) => /^(sent|enviad|itens enviados|sent items|sent messages)/i.test(b.name))?.path
+const SPECIAL_USE: Record<Folder, string> = { INBOX: '\\Inbox', SENT: '\\Sent', DRAFTS: '\\Drafts', SPAM: '\\Junk', TRASH: '\\Trash' };
+const FOLDER_NAMES: Record<Folder, RegExp> = {
+  INBOX: /^inbox$/i,
+  SENT: /^(sent|enviad|itens enviados|sent items|sent messages)/i,
+  DRAFTS: /^(drafts?|rascunho)/i,
+  SPAM: /^(spam|junk|lixo eletr)/i,
+  TRASH: /^(trash|lixeira|deleted|itens exclu)/i,
+};
+
+/** Caminho da pasta no servidor (pela marca special-use, ou pelo nome). */
+async function folderPath(client: ImapFlow, folder: Folder, boxes?: Awaited<ReturnType<ImapFlow['list']>>): Promise<string | null> {
+  if (folder === 'INBOX') return 'INBOX';
+  const list = boxes || await client.list();
+  return list.find((b) => b.specialUse === SPECIAL_USE[folder])?.path
+    || list.find((b) => FOLDER_NAMES[folder].test(b.name))?.path
     || null;
 }
+
+const sentPath = (client: ImapFlow) => folderPath(client, 'SENT');
 
 /** Caixa da empresa: criada sozinha a partir do SMTP_* do ambiente (a
  *  senha nunca vai pro banco). IMAP deduzido do SMTP (smtp.x → imap.x) ou
@@ -340,9 +354,10 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   const env = msg.envelope || ({} as any);
   const messageId: string | null = env.messageId || null;
 
-  // O que o próprio CRM mandou já está gravado (sem uid) — só completa o uid.
-  if (folder === 'SENT' && messageId) {
-    const mine = await prisma.emailMessage.findFirst({ where: { emailAccountId: acc.id, folder: 'SENT', messageId, uid: null } });
+  // O que o próprio CRM gravou antes do servidor (enviado, rascunho, e-mail
+  // movido sem o uid novo) já está no banco sem uid — só completa o uid.
+  if (messageId) {
+    const mine = await prisma.emailMessage.findFirst({ where: { emailAccountId: acc.id, folder, messageId, uid: null } });
     if (mine) {
       // Anexos enviados pelo CRM só ganham o "endereço" (part) pra download
       // depois que a cópia aparece em Enviados no servidor.
@@ -374,8 +389,10 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   const to = addrList(env.to);
   const cc = addrList(env.cc);
   const date = env.date ? new Date(env.date) : (msg.internalDate ? new Date(msg.internalDate as any) : new Date());
+  // Só Entrada e Enviados vão pra conversa do card (spam/lixeira/rascunho não).
+  const convo = folder === 'INBOX' || folder === 'SENT';
   const counterparts = folder === 'INBOX' ? (from ? [from.address] : []) : [...to, ...cc].map((a) => a.address);
-  const leadId = await findLeadFor(acc.accountId, counterparts, env.inReplyTo || null, opts.ownAddresses);
+  const leadId = convo ? await findLeadFor(acc.accountId, counterparts, env.inReplyTo || null, opts.ownAddresses) : null;
 
   await prisma.emailMessage.create({
     data: {
@@ -387,7 +404,7 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
       snippet: fresh.replace(/\s+/g, ' ').slice(0, 200) || null,
       textBody, htmlBody,
       attachments: parts.attachments as unknown as Prisma.InputJsonValue,
-      seen: folder === 'SENT' || (msg.flags ? msg.flags.has('\\Seen') : false),
+      seen: folder === 'SENT' || folder === 'DRAFTS' || (msg.flags ? msg.flags.has('\\Seen') : false),
       leadId,
     },
   }).catch((err) => { if (err?.code !== 'P2002') throw err; });
@@ -413,6 +430,7 @@ async function syncFolder(acc: EmailAccount, client: ImapFlow, folder: Folder, p
     if (!st || st.uidValidity !== uidValidity) {
       // Primeira vez (ou a pasta foi recriada no servidor): só o recente.
       initial = true;
+      if (st) await prisma.emailMessage.deleteMany({ where: { emailAccountId: acc.id, folder, uid: { not: null } } });
       const since = new Date(Date.now() - INITIAL_DAYS * 24 * 60 * 60 * 1000);
       const found = await client.search({ since }, { uid: true });
       const uids = (Array.isArray(found) ? found : []).slice(-INITIAL_LIMIT);
@@ -440,6 +458,16 @@ async function syncFolder(acc: EmailAccount, client: ImapFlow, folder: Folder, p
         .catch((err) => console.warn(`[E-mail] ${acc.address} ${folder} uid ${msg.uid} ignorado:`, err?.message));
       if (msg.uid > st.lastUid) st.lastUid = msg.uid;
     }
+
+    // Espelha o que saiu da pasta no servidor (apagado/movido no webmail ou
+    // no celular). Se a busca falhar, não mexe em nada — melhor sobrar que sumir.
+    const all = await client.search({ all: true }, { uid: true });
+    if (Array.isArray(all) && (all.length > 0 || box.exists === 0)) {
+      const present = new Set(all);
+      const rows = await prisma.emailMessage.findMany({ where: { emailAccountId: acc.id, folder, uid: { not: null } }, select: { id: true, uid: true } });
+      const gone = rows.filter((r) => !present.has(r.uid!)).map((r) => r.id);
+      if (gone.length) await prisma.emailMessage.deleteMany({ where: { id: { in: gone } } });
+    }
   } finally {
     lock.release();
   }
@@ -451,9 +479,11 @@ export async function syncEmailAccount(acc: EmailAccount, io: Io): Promise<void>
   const ownAddresses = new Set(own.map((o) => o.address.toLowerCase()));
   try {
     await withImap(acc, async (client) => {
-      await syncFolder(acc, client, 'INBOX', 'INBOX', state, ownAddresses, io);
-      const sent = await sentPath(client);
-      if (sent) await syncFolder(acc, client, 'SENT', sent, state, ownAddresses, io);
+      const boxes = await client.list();
+      for (const folder of FOLDERS) {
+        const path = await folderPath(client, folder, boxes);
+        if (path) await syncFolder(acc, client, folder, path, state, ownAddresses, io);
+      }
     });
     await prisma.emailAccount.update({ where: { id: acc.id }, data: { syncState: state as unknown as Prisma.InputJsonValue, lastSyncAt: new Date(), lastError: null } });
   } catch (err: any) {
@@ -513,9 +543,11 @@ export async function openEmailMessage(acc: EmailAccount, id: string) {
   if (!msg) return null;
   if (!msg.seen) {
     await prisma.emailMessage.update({ where: { id }, data: { seen: true } });
-    if (msg.uid && msg.folder === 'INBOX') {
+    if (msg.uid) {
       withImap(acc, async (client) => {
-        const lock = await client.getMailboxLock('INBOX');
+        const path = await folderPath(client, msg.folder as Folder);
+        if (!path) return;
+        const lock = await client.getMailboxLock(path);
         try { await client.messageFlagsAdd(String(msg.uid), ['\\Seen'], { uid: true }); } finally { lock.release(); }
       }).catch((err) => console.warn('[E-mail] Marcar lido no servidor:', err?.message));
     }
@@ -527,7 +559,7 @@ export async function openEmailMessage(acc: EmailAccount, id: string) {
 export async function streamAttachment(acc: EmailAccount, msg: EmailMessage, part: string, onStream: (meta: { filename?: string; contentType?: string }, content: Readable) => Promise<void>) {
   if (!msg.uid) throw new Error('Esse e-mail ainda não sincronizou com o servidor — tente em 1 minuto');
   await withImap(acc, async (client) => {
-    const path = msg.folder === 'SENT' ? await sentPath(client) : 'INBOX';
+    const path = await folderPath(client, msg.folder as Folder);
     if (!path) throw new Error('Pasta não encontrada no servidor');
     const lock = await client.getMailboxLock(path);
     try {
@@ -548,6 +580,8 @@ function escapeHtml(s: string) {
 export async function sendEmailFrom(params: {
   acc: EmailAccount; userId: string | null; to: string[]; cc?: string[]; subject: string; body: string;
   replyToId?: string | null; leadId?: string | null; io: Io;
+  /** Enviando um rascunho: ele sai da pasta Rascunhos depois do envio. */
+  draftId?: string | null;
   attachments?: { filename: string; contentType: string; content: Buffer }[];
 }) {
   const { acc, io } = params;
@@ -595,6 +629,7 @@ export async function sendEmailFrom(params: {
 
   const pass = passwordFor(acc);
   await smtpTransport({ host: acc.smtpHost, port: acc.smtpPort, user: acc.username, pass }).sendMail(mail);
+  if (params.draftId) removeDraft(acc, params.draftId).catch((err) => console.warn('[E-mail] Apagar rascunho enviado:', err?.message));
 
   // Guarda uma cópia em Enviados no servidor (SMTP não guarda sozinho) —
   // em segundo plano: o e-mail já saiu, isso não pode travar a resposta.
@@ -762,4 +797,91 @@ export async function sendFollowUpEmail(params: {
     console.warn(`[E-mail] Follow-up por e-mail (lead ${params.leadId}) falhou:`, err?.message);
     return false;
   }
+}
+
+// ─── Mover / excluir / rascunhos ─────────────────────────────────────────────
+
+/** Move entre pastas no servidor (lixeira, spam, de volta pra Entrada...). */
+export async function moveEmail(acc: EmailAccount, msgId: string, target: Folder) {
+  const msg = await prisma.emailMessage.findFirst({ where: { id: msgId, emailAccountId: acc.id } });
+  if (!msg) throw new Error('E-mail não encontrado');
+  if (msg.folder === target) return msg;
+  if (!msg.uid) throw new Error('Esse e-mail ainda não sincronizou com o servidor — tente em 1 minuto');
+  let newUid: number | null = null;
+  await withImap(acc, async (client) => {
+    const boxes = await client.list();
+    const from = await folderPath(client, msg.folder as Folder, boxes);
+    const to = await folderPath(client, target, boxes);
+    if (!from || !to) throw new Error('Pasta não encontrada no servidor');
+    const lock = await client.getMailboxLock(from);
+    try {
+      const res = await client.messageMove(String(msg.uid), to, { uid: true });
+      if (!res) throw new Error('O servidor não moveu o e-mail');
+      newUid = res.uidMap?.get(msg.uid!) ?? null;
+    } finally {
+      lock.release();
+    }
+  });
+  return prisma.emailMessage.update({ where: { id: msg.id }, data: { folder: target, uid: newUid } });
+}
+
+/** Excluir de vez — só da Lixeira, do Spam ou um rascunho. */
+export async function deleteEmailForever(acc: EmailAccount, msgId: string) {
+  const msg = await prisma.emailMessage.findFirst({ where: { id: msgId, emailAccountId: acc.id } });
+  if (!msg) throw new Error('E-mail não encontrado');
+  if (!['TRASH', 'SPAM', 'DRAFTS'].includes(msg.folder)) throw new Error('Mande pra Lixeira antes de excluir de vez');
+  if (msg.uid) {
+    await withImap(acc, async (client) => {
+      const path = await folderPath(client, msg.folder as Folder);
+      if (!path) return;
+      const lock = await client.getMailboxLock(path);
+      try { await client.messageDelete(String(msg.uid), { uid: true }); } finally { lock.release(); }
+    });
+  }
+  await prisma.emailMessage.delete({ where: { id: msg.id } });
+}
+
+async function removeDraft(acc: EmailAccount, draftId: string) {
+  const draft = await prisma.emailMessage.findFirst({ where: { id: draftId, emailAccountId: acc.id, folder: 'DRAFTS' } });
+  if (draft) await deleteEmailForever(acc, draft.id);
+}
+
+/** Salva (ou atualiza) um rascunho na pasta Rascunhos do servidor — aparece
+ *  também no webmail. Atualizar = grava o novo e apaga o anterior. */
+export async function saveDraft(params: {
+  acc: EmailAccount; to: string[]; cc?: string[]; subject: string; body: string; draftId?: string | null; replyToId?: string | null;
+}) {
+  const { acc } = params;
+  const to = params.to.map((a) => a.trim().toLowerCase()).filter(Boolean);
+  const cc = (params.cc || []).map((a) => a.trim().toLowerCase()).filter(Boolean);
+  const body = params.body.replace(/\r/g, '');
+  const subject = params.subject.trim();
+  if (!to.length && !subject && !body.trim()) throw new Error('Rascunho vazio');
+  const domain = acc.address.split('@')[1] || 'af-crm.local';
+  const messageId = `<${crypto.randomUUID()}@${domain}>`;
+  const parent = params.replyToId ? await prisma.emailMessage.findFirst({ where: { id: params.replyToId, emailAccountId: acc.id } }) : null;
+  const mail = {
+    from: acc.address, to: to.length ? to : undefined, cc: cc.length ? cc : undefined, subject, text: body, messageId,
+    ...(parent?.messageId ? { inReplyTo: parent.messageId, references: [parent.references, parent.messageId].filter(Boolean).join(' ') } : {}),
+  };
+  const raw: Buffer = await new MailComposer(mail as any).compile().build();
+  let uid: number | null = null;
+  await withImap(acc, async (client) => {
+    const path = await folderPath(client, 'DRAFTS');
+    if (!path) throw new Error('A caixa não tem pasta de Rascunhos no servidor');
+    const res = await client.append(path, raw, ['\\Draft', '\\Seen']);
+    uid = res ? res.uid ?? null : null;
+  });
+  const saved = await prisma.emailMessage.create({
+    data: {
+      emailAccountId: acc.id, folder: 'DRAFTS', uid, messageId, inReplyTo: parent?.messageId || null,
+      references: (mail as any).references || null, fromName: null, fromAddress: acc.address,
+      toList: to.map((address) => ({ name: null, address })) as unknown as Prisma.InputJsonValue,
+      ccList: cc.map((address) => ({ name: null, address })) as unknown as Prisma.InputJsonValue,
+      subject: subject || null, date: new Date(), snippet: body.replace(/\s+/g, ' ').slice(0, 200) || null,
+      textBody: body, htmlBody: null, attachments: [] as unknown as Prisma.InputJsonValue, seen: true,
+    },
+  });
+  if (params.draftId) await removeDraft(acc, params.draftId).catch((err) => console.warn('[E-mail] Apagar rascunho anterior:', err?.message));
+  return saved;
 }

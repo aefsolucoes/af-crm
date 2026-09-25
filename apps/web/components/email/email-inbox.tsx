@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Inbox, Send, PenSquare, RefreshCw, Search, Paperclip, Reply, ChevronLeft, Plus, Loader2, AlertTriangle,
-  MessageSquare, Mail, LogOut, Building2, User, PenLine, Link2, Unlink,
+  MessageSquare, Mail, LogOut, Building2, User, PenLine, Link2, Unlink, FileText, ShieldAlert, Trash2, RotateCcw,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import api from '@/lib/api';
@@ -36,7 +36,7 @@ interface Addr { name: string | null; address: string }
 interface Attachment { part: string | null; filename: string; contentType: string; size: number }
 interface EmailSummary {
   id: string;
-  folder: 'INBOX' | 'SENT';
+  folder: Folder;
   fromName: string | null;
   fromAddress: string | null;
   toList: Addr[] | null;
@@ -49,11 +49,19 @@ interface EmailSummary {
 }
 interface EmailFull extends EmailSummary {
   ccList: Addr[] | null;
+  inReplyTo?: string | null;
   textBody: string | null;
   htmlBody: string | null;
 }
 
-type Folder = 'INBOX' | 'SENT';
+type Folder = 'INBOX' | 'SENT' | 'DRAFTS' | 'SPAM' | 'TRASH';
+const FOLDER_LIST: { key: Folder; label: string; icon: typeof Inbox }[] = [
+  { key: 'INBOX', label: 'Entrada', icon: Inbox },
+  { key: 'SENT', label: 'Enviados', icon: Send },
+  { key: 'DRAFTS', label: 'Rascunhos', icon: FileText },
+  { key: 'SPAM', label: 'Spam', icon: ShieldAlert },
+  { key: 'TRASH', label: 'Lixeira', icon: Trash2 },
+];
 
 function shortDate(iso: string) {
   const d = new Date(iso);
@@ -83,7 +91,8 @@ export function EmailInbox() {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
-  const [composer, setComposer] = useState<null | { to?: string; subject?: string; replyToId?: string | null; leadId?: string | null }>(null);
+  const [composer, setComposer] = useState<null | { to?: string; cc?: string; subject?: string; body?: string; replyToId?: string | null; leadId?: string | null; draftId?: string | null }>(null);
+  const [acting, setActing] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [editingSignature, setEditingSignature] = useState<Mailbox | null>(null);
@@ -179,6 +188,54 @@ export function EmailInbox() {
     }
   }
 
+  async function moveTo(target: Folder, okMsg: string) {
+    if (!current || !opened) return;
+    setActing(true);
+    try {
+      await api.post(`/api/email/accounts/${current.id}/messages/${opened.id}/move`, { folder: target });
+      setOpenId(null);
+      queryClient.invalidateQueries({ queryKey: ['email-messages'] });
+      queryClient.invalidateQueries({ queryKey: ['email-accounts'] });
+      toast(okMsg);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui mover', 'error');
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function deleteForever(id: string) {
+    if (!current) return;
+    if (!confirm('Excluir de vez? Não dá pra recuperar depois.')) return;
+    setActing(true);
+    try {
+      await api.delete(`/api/email/accounts/${current.id}/messages/${id}`);
+      setOpenId(null);
+      queryClient.invalidateQueries({ queryKey: ['email-messages'] });
+      toast('Excluído');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui excluir', 'error');
+    } finally {
+      setActing(false);
+    }
+  }
+
+  /** Rascunho abre direto na janela de escrever, pra continuar. */
+  async function openDraft(id: string) {
+    if (!current) return;
+    try {
+      const { data } = await api.get(`/api/email/accounts/${current.id}/messages/${id}`);
+      setComposer({
+        to: (data.toList || []).map((a: Addr) => a.address).join(', '),
+        cc: (data.ccList || []).map((a: Addr) => a.address).join(', '),
+        subject: data.subject || '', body: data.textBody || (data.htmlBody ? data.htmlBody.replace(/<[^>]+>/g, '') : ''),
+        draftId: data.id,
+      });
+    } catch {
+      toast('Não consegui abrir o rascunho', 'error');
+    }
+  }
+
   async function unlink() {
     if (!current || !opened?.lead) return;
     if (!confirm(`Tirar este e-mail da conversa de ${opened.lead.name}?`)) return;
@@ -246,7 +303,7 @@ export function EmailInbox() {
                 )}
               </div>
               <p className="px-2 -mt-0.5 mb-1 text-[11px] text-slate-400 truncate">{m.address}</p>
-              {(['INBOX', 'SENT'] as Folder[]).map((f) => {
+              {FOLDER_LIST.map(({ key: f, label, icon: Icon }) => {
                 const active = current?.id === m.id && folder === f;
                 return (
                   <button
@@ -255,8 +312,8 @@ export function EmailInbox() {
                     className={cn('w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm transition-colors',
                       active ? 'bg-[#2261a8]/10 text-[#2261a8] font-semibold' : 'text-slate-600 hover:bg-slate-100')}
                   >
-                    {f === 'INBOX' ? <Inbox size={14} /> : <Send size={14} />}
-                    {f === 'INBOX' ? 'Entrada' : 'Enviados'}
+                    <Icon size={14} />
+                    {label}
                     {f === 'INBOX' && m.unread > 0 && (
                       <span className="ml-auto text-[10px] font-bold bg-[#2261a8] text-white rounded-full px-1.5 min-w-[18px] text-center">{m.unread}</span>
                     )}
@@ -287,9 +344,9 @@ export function EmailInbox() {
             onChange={(e) => { const [id, f] = e.target.value.split('|'); setMailboxId(id); setFolder(f as Folder); setOpenId(null); }}
             className="flex-1 text-sm px-2 py-1.5 border border-af-border rounded-lg text-slate-700"
           >
-            {mailboxes.flatMap((m) => (['INBOX', 'SENT'] as Folder[]).map((f) => (
+            {mailboxes.flatMap((m) => FOLDER_LIST.map(({ key: f, label }) => (
               <option key={`${m.id}|${f}`} value={`${m.id}|${f}`}>
-                {m.shared ? (m.displayName || 'Empresa') : 'Meu e-mail'} — {f === 'INBOX' ? `Entrada${m.unread ? ` (${m.unread})` : ''}` : 'Enviados'}
+                {m.shared ? (m.displayName || 'Empresa') : 'Meu e-mail'} — {label}{f === 'INBOX' && m.unread ? ` (${m.unread})` : ''}
               </option>
             )))}
           </select>
@@ -314,17 +371,17 @@ export function EmailInbox() {
           {loadingList && <div className="p-6 text-center text-sm text-slate-400"><Loader2 size={16} className="animate-spin inline mr-1.5" />Carregando...</div>}
           {!loadingList && list.length === 0 && (
             <div className="p-8 text-center text-sm text-slate-400">
-              {query ? 'Nada encontrado.' : current?.lastSyncAt ? 'Nenhum e-mail aqui.' : 'Buscando os e-mails pela primeira vez — pode levar um minuto.'}
+              {query ? 'Nada encontrado.' : current?.lastSyncAt ? (folder === 'DRAFTS' ? 'Nenhum rascunho.' : folder === 'TRASH' ? 'Lixeira vazia.' : folder === 'SPAM' ? 'Nenhum spam.' : 'Nenhum e-mail aqui.') : 'Buscando os e-mails pela primeira vez — pode levar um minuto.'}
             </div>
           )}
           {list.map((e) => {
-            const who = folder === 'SENT'
+            const who = folder === 'SENT' || folder === 'DRAFTS'
               ? `Para: ${(e.toList || []).map((a) => a.name || a.address).join(', ') || '—'}`
               : e.fromName || e.fromAddress || '—';
             return (
               <button
                 key={e.id}
-                onClick={() => setOpenId(e.id)}
+                onClick={() => (folder === 'DRAFTS' ? openDraft(e.id) : setOpenId(e.id))}
                 className={cn('w-full text-left px-3 py-2.5 border-b border-slate-100 transition-colors',
                   openId === e.id ? 'bg-[#2261a8]/10' : 'hover:bg-slate-50')}
               >
@@ -372,9 +429,39 @@ export function EmailInbox() {
                 <p className="text-slate-400">{new Date(opened.date).toLocaleString('pt-BR', { dateStyle: 'medium', timeStyle: 'short' })}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2 mt-2.5">
-                <button onClick={reply} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg text-white" style={{ backgroundColor: '#2261a8' }}>
-                  <Reply size={13} /> Responder
-                </button>
+                {opened.folder !== 'TRASH' && (
+                  <button onClick={reply} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg text-white" style={{ backgroundColor: '#2261a8' }}>
+                    <Reply size={13} /> Responder
+                  </button>
+                )}
+                {opened.folder === 'INBOX' && (
+                  <button onClick={() => moveTo('SPAM', 'Movido pro Spam')} disabled={acting} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Marcar como spam">
+                    <ShieldAlert size={13} /> Spam
+                  </button>
+                )}
+                {opened.folder === 'SPAM' && (
+                  <button onClick={() => moveTo('INBOX', 'Voltou pra Entrada')} disabled={acting} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+                    <Inbox size={13} /> Não é spam
+                  </button>
+                )}
+                {opened.folder !== 'TRASH' ? (
+                  <button onClick={() => moveTo('TRASH', 'Movido pra Lixeira')} disabled={acting} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 hover:text-red-600 disabled:opacity-50" title="Mandar pra Lixeira">
+                    <Trash2 size={13} /> Lixeira
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => moveTo(opened.fromAddress === current?.address ? 'SENT' : 'INBOX', 'E-mail restaurado')}
+                      disabled={acting}
+                      className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      <RotateCcw size={13} /> Restaurar
+                    </button>
+                    <button onClick={() => deleteForever(opened.id)} disabled={acting} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50">
+                      <Trash2 size={13} /> Excluir de vez
+                    </button>
+                  </>
+                )}
                 {opened.lead ? (
                   <>
                     <button onClick={() => router.push(`/inbox?leadId=${opened.lead!.id}`)} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100">
@@ -423,11 +510,15 @@ export function EmailInbox() {
           mailboxes={composerMailboxes}
           defaultMailboxId={current.id}
           to={composer.to}
+          cc={composer.cc}
           subject={composer.subject}
+          body={composer.body}
           replyToId={composer.replyToId}
           leadId={composer.leadId}
+          draftId={composer.draftId}
           onClose={() => setComposer(null)}
           onSent={() => queryClient.invalidateQueries({ queryKey: ['email-messages'] })}
+          onDeleteDraft={composer.draftId ? () => { const id = composer.draftId!; setComposer(null); deleteForever(id); } : undefined}
         />
       )}
       {editingSignature && (

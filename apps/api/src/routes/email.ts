@@ -5,6 +5,7 @@ import {
   listVisibleEmailAccounts, getVisibleEmailAccount, connectPersonalMailbox, disconnectPersonalMailbox,
   syncEmailAccount, listEmailMessages, openEmailMessage, streamAttachment, sendEmailFrom,
   updateMailboxSignature, searchLeadsForEmail, linkEmailToLead,
+  moveEmail, deleteEmailForever, saveDraft, FOLDERS, Folder,
 } from '../services/email-inbox.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { PrismaClient } from '@prisma/client';
@@ -73,6 +74,41 @@ router.post('/accounts/:id/messages/:msgId/link', async (req: AuthRequest, res: 
   }
 });
 
+router.post('/accounts/:id/messages/:msgId/move', async (req: AuthRequest, res: Response) => {
+  const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
+  if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
+  const target = String(req.body?.folder || '');
+  if (!(FOLDERS as string[]).includes(target) || target === 'DRAFTS') return res.status(400).json({ error: 'Pasta inválida' });
+  try {
+    res.json(await moveEmail(acc, req.params.msgId, target as Folder));
+  } catch (err) {
+    fail(res, err, 'Não consegui mover o e-mail');
+  }
+});
+
+router.delete('/accounts/:id/messages/:msgId', async (req: AuthRequest, res: Response) => {
+  const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
+  if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
+  try {
+    await deleteEmailForever(acc, req.params.msgId);
+    res.json({ ok: true });
+  } catch (err) {
+    fail(res, err, 'Não consegui excluir');
+  }
+});
+
+router.post('/accounts/:id/drafts', async (req: AuthRequest, res: Response) => {
+  const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
+  if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
+  const b = req.body || {};
+  const list = (v: unknown) => (Array.isArray(v) ? v : String(v || '').split(/[,;]/)).map((x) => String(x).trim()).filter(Boolean);
+  try {
+    res.json(await saveDraft({ acc, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''), draftId: b.draftId || null, replyToId: b.replyToId || null }));
+  } catch (err) {
+    fail(res, err, 'Não consegui salvar o rascunho');
+  }
+});
+
 router.post('/accounts/:id/sync', async (req: AuthRequest, res: Response) => {
   const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
   if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
@@ -87,7 +123,7 @@ router.post('/accounts/:id/sync', async (req: AuthRequest, res: Response) => {
 router.get('/accounts/:id/messages', async (req: AuthRequest, res: Response) => {
   const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
   if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
-  const folder = req.query.folder === 'SENT' ? 'SENT' : 'INBOX';
+  const folder = (FOLDERS as string[]).includes(String(req.query.folder)) ? (req.query.folder as Folder) : 'INBOX';
   res.json(await listEmailMessages(acc.id, folder, { q: req.query.q as string, before: req.query.before as string }));
 });
 
@@ -130,7 +166,7 @@ router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: 
   try {
     const saved = await sendEmailFrom({
       acc, userId: req.user!.id, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''),
-      replyToId: b.replyToId || null, leadId: b.leadId || null, io: io(req),
+      replyToId: b.replyToId || null, leadId: b.leadId || null, io: io(req), draftId: b.draftId || null,
       attachments: (Array.isArray(b.attachments) ? b.attachments : []).map((a: any) => ({
         filename: String(a?.filename || 'anexo').slice(0, 200),
         contentType: String(a?.contentType || 'application/octet-stream'),

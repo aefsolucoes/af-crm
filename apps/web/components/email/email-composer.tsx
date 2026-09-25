@@ -39,12 +39,18 @@ export interface MailboxOption {
  * e mantém o mesmo fio; com leadId, o enviado aparece na conversa do card.
  */
 export function EmailComposer({
-  mailboxes, defaultMailboxId, to = '', subject = '', replyToId = null, leadId = null, onClose, onSent,
+  mailboxes, defaultMailboxId, to = '', cc: initialCc = '', subject = '', body: initialBody = '', replyToId = null, leadId = null, draftId = null,
+  onClose, onSent, onDeleteDraft,
 }: {
   mailboxes: MailboxOption[];
   defaultMailboxId?: string;
   to?: string;
+  cc?: string;
   subject?: string;
+  body?: string;
+  /** Continuando um rascunho: ao enviar ou salvar de novo, o antigo sai de Rascunhos. */
+  draftId?: string | null;
+  onDeleteDraft?: () => void;
   replyToId?: string | null;
   leadId?: string | null;
   onClose: () => void;
@@ -52,10 +58,11 @@ export function EmailComposer({
 }) {
   const [mailboxId, setMailboxId] = useState(defaultMailboxId || mailboxes.find((m) => !m.shared)?.id || mailboxes[0]?.id || '');
   const [toValue, setToValue] = useState(to);
-  const [cc, setCc] = useState('');
-  const [showCc, setShowCc] = useState(false);
+  const [cc, setCc] = useState(initialCc);
+  const [showCc, setShowCc] = useState(!!initialCc);
   const [subjectValue, setSubjectValue] = useState(subject);
-  const [body, setBody] = useState('');
+  const [body, setBody] = useState(initialBody);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [sending, setSending] = useState(false);
   const [files, setFiles] = useState<PickedFile[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -81,7 +88,7 @@ export function EmailComposer({
     setSending(true);
     try {
       await api.post(`/api/email/accounts/${mailboxId}/send`, {
-        to: toValue, cc, subject: subjectValue, body, replyToId, leadId,
+        to: toValue, cc, subject: subjectValue, body, replyToId, leadId, draftId,
         attachments: files.map((f) => ({ filename: f.name, contentType: f.type, dataBase64: f.dataBase64 })),
       });
       toast('E-mail enviado');
@@ -94,10 +101,32 @@ export function EmailComposer({
     }
   }
 
+  async function saveDraft(closeAfter = true) {
+    if (!mailboxId) return;
+    setSavingDraft(true);
+    try {
+      await api.post(`/api/email/accounts/${mailboxId}/drafts`, { to: toValue, cc, subject: subjectValue, body, draftId, replyToId });
+      toast('Rascunho salvo');
+      onSent?.();
+      if (closeAfter) onClose();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui salvar o rascunho', 'error');
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  // Fechar com texto escrito: pergunta se guarda como rascunho (não perde nada).
+  function close() {
+    const changed = body.trim() && (body !== initialBody || toValue !== to || subjectValue !== subject);
+    if (changed && !sending && confirm('Salvar como rascunho antes de fechar?')) { saveDraft(true); return; }
+    onClose();
+  }
+
   const field = 'w-full text-sm px-3 py-2 border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent text-slate-800';
 
   return (
-    <Modal title={replyToId ? 'Responder e-mail' : 'Novo e-mail'} onClose={onClose} onBackdropClick={() => {}} size="lg">
+    <Modal title={draftId ? 'Rascunho' : replyToId ? 'Responder e-mail' : 'Novo e-mail'} onClose={close} onBackdropClick={() => {}} size="lg">
       <div className="space-y-2.5">
         <div className="flex items-center gap-2">
           <label className="w-14 text-xs text-slate-500 flex-shrink-0">De</label>
@@ -165,7 +194,13 @@ export function EmailComposer({
             <Paperclip size={14} /> Anexar
             {files.length > 0 && <span className="text-xs text-slate-400">({formatSize(totalBytes)} de 15 MB)</span>}
           </button>
-          <button onClick={onClose} className="text-sm px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100">Cancelar</button>
+          {onDeleteDraft && (
+            <button onClick={onDeleteDraft} className="text-sm px-3 py-2 rounded-lg text-red-500 hover:bg-red-50" title="Apagar este rascunho">Apagar</button>
+          )}
+          <button onClick={() => saveDraft(true)} disabled={savingDraft || sending || (!body.trim() && !toValue.trim() && !subjectValue.trim())} className="text-sm px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-50">
+            {savingDraft ? 'Salvando...' : 'Salvar rascunho'}
+          </button>
+          <button onClick={close} className="text-sm px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100">Cancelar</button>
           <button
             onClick={send}
             disabled={sending}

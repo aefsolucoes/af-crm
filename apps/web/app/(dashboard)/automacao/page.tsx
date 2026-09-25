@@ -450,6 +450,15 @@ export default function AutomacaoPage() {
                           placeholder="Assunto do e-mail (opcional — padrão: nome do produto do setor)"
                         />
                       )}
+                      {action.config.alsoEmail === true && (
+                        <textarea
+                          value={String(action.config.emailBody || '')}
+                          onChange={(e) => updateActionConfig(i, 'emailBody', e.target.value)}
+                          rows={4}
+                          placeholder="Texto do e-mail (opcional — vazio = mesmo texto do template do WhatsApp). Aceita {{nome}}."
+                          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent resize-y"
+                        />
+                      )}
                     </div>
                   )}
 
