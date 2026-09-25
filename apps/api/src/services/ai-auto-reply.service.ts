@@ -25,11 +25,13 @@ export function isAcknowledgmentOnly(text: string): boolean {
 
 // "…te chamo por aqui, tá bom?" termina com "?" mas não espera resposta de
 // verdade — só uma pergunta real deixa o "ok" do cliente valer como um "sim".
+// "Pode ser?" NÃO entra nessa lista: é o "vamos tentar aprovar seu crédito,
+// pode ser?" da regra do formulário, e o "ok" do cliente ali é um sim.
 function hasRealQuestion(text: string): boolean {
   const withoutTag = text
     .trim()
     .replace(/\b(tudo\s+(bem|bom|certo|joia)|td\s+bem|como\s+vai|como\s+voc[eê]\s+est[aá])\s*\?+/gi, '')
-    .replace(/[\s,.!]*(t[aá]\s*bom|ok|certo|beleza|combinado|pode ser|tudo bem|blz|fechado)\s*\?+[\s!.]*$/i, '');
+    .replace(/[\s,.!]*(t[aá]\s*bom|ok|certo|beleza|combinado|blz|fechado)\s*\?+[\s!.]*$/i, '');
   return withoutTag.includes('?');
 }
 
@@ -88,7 +90,10 @@ const STOP_FOLLOWUP_RULES = `PARAR LEMBRETE AUTOMÁTICO ("stopFollowUp": true) �
 // formulário, que já pede tudo isso de uma vez.
 const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO:
 - NÃO faça perguntas de qualificação (tipo de imóvel, se está quitado, valor do imóvel, valor do crédito, renda, entrada, idade etc.). O formulário da proposta manual já pede tudo isso.
-- Assim que o cliente responder ou mostrar interesse, mande o link da proposta manual do produto dele e pergunte se ficou alguma dúvida. Use o texto da Resposta Rápida correspondente ("Proposta manual Finan Hab" ou "Proposta manual Home Equity"), acrescentando no final algo como "Se tiver alguma dúvida, é só me falar."
+- Do jeito que a equipe faz, em dois passos:
+  1. Quando o cliente responder ou mostrar interesse (e a proposta ainda não foi oferecida nesta conversa), proponha tentar aprovar o crédito primeiro, curto, algo como: "Antes de tudo, vamos tentar aprovar seu crédito. Pode ser?"
+  2. Quando ele concordar (sim, pode, ok, bora...), mande o link da proposta manual do produto dele usando o texto da Resposta Rápida correspondente ("Proposta manual Finan Hab" ou "Proposta manual Home Equity") e termine com algo como "Se tiver alguma dúvida, é só me falar."
+  Se o cliente já pediu pra seguir, pediu o link ou já está pronto pra mandar os dados, pule direto pro passo 2.
   - Financiamento pra comprar/construir imóvel: https://aefsolucoesfinanceiras.com.br/proposta-manual
   - Crédito com garantia de imóvel (Home Equity): https://aefsolucoesfinanceiras.com.br/proposta-manual-home-equity
 - Se o cliente fizer uma pergunta, responda em poucas palavras e, se o link ainda não foi enviado nesta conversa, mande junto.

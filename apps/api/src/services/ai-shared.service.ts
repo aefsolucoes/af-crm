@@ -29,6 +29,7 @@ export const CORE_RULES = `REGRAS OBRIGATÓRIAS:
 - Foco em AVANÇAR o atendimento: entenda a última mensagem/objeção do cliente e responda contornando a objeção, reforçando o benefício certo pra esse cliente, conduzindo a conversa adiante (marcar um próximo passo, pedir um documento, agendar, confirmar interesse) — não só responda, empurre pra frente.
 - Tom natural de conversa do dia a dia, como a pessoa normalmente escreve (ver estilo abaixo) — nunca pareça um roteiro decorado ou um robô. Português do Brasil, sem formalidade excessiva.
 - Sem emoji, a menos que o estilo de escrita abaixo já use.
+- Nada de abrir a mensagem com interjeição ou elogio ("Show", "Perfeito", "Que ótimo", "Ótimo", "Que bom", "Entendi"): vá direto ao ponto, como a equipe faz. Não repita o nome do cliente em toda mensagem e evite pontos de exclamação em sequência.
 - Curto: 1 a 3 frases na maioria das vezes, do tamanho de uma mensagem de WhatsApp real (ou o tamanho da própria Resposta Rápida, quando usar uma).`;
 
 export interface SharedAiContext {
@@ -109,22 +110,33 @@ export async function buildSharedAiContext(
     ? templates.map((t) => `- "${t.name}": ${t.body}`).join('\n')
     : '(nenhuma resposta rápida cadastrada)';
 
-  // Estilo de escrita de quem normalmente atende esse cliente — usa
-  // mensagens reais que ELE mandou (sentByUserId), nunca as da própria IA,
-  // pra imitar só o TOM, nunca o conteúdo/fatos de outra conversa.
+  // Estilo de escrita: mensagens reais que a EQUIPE escreveu à mão
+  // (sentByUserId), nunca as da própria IA — pra imitar só o TOM, nunca o
+  // conteúdo/fatos de outra conversa. Primeiro as do responsável pelo card,
+  // completando com as do resto da equipe: antes eram só as do responsável,
+  // e com um responsável que não escreve (ex.: "Admin AF") a IA ficava sem
+  // exemplo nenhum e caía no "Show! Perfeito! Que ótimo!" genérico.
   let estiloTexto = '(sem exemplos suficientes — escreva de forma natural e não robótica)';
-  if (lead.userId) {
-    const exemplos = await prisma.message.findMany({
-      where: { direction: 'OUTBOUND', sentByUserId: lead.userId },
-      orderBy: { createdAt: 'desc' },
-      take: 30,
-    }).catch(() => []);
-    const escolhidos = exemplos
-      .map((m) => m.content.trim())
-      .filter((c) => c.length >= 8 && c.length <= 300)
-      .slice(0, 6);
-    if (escolhidos.length) estiloTexto = escolhidos.map((c) => `- "${c}"`).join('\n');
-  }
+  const exemplos = await prisma.message.findMany({
+    where: { direction: 'OUTBOUND', channel: 'WHATSAPP', sentByUserId: { not: null } },
+    orderBy: { createdAt: 'desc' },
+    take: 300,
+    select: { content: true, sentByUserId: true },
+  }).catch(() => []);
+  const vistos = new Set<string>();
+  const candidatos = exemplos
+    .map((m) => ({ texto: m.content.trim(), doResponsavel: !!lead.userId && m.sentByUserId === lead.userId }))
+    .filter(({ texto }) => {
+      if (texto.length < 12 || texto.length > 220 || /https?:|📎|📞/.test(texto)) return false;
+      const chave = texto.toLowerCase();
+      if (vistos.has(chave)) return false; // lembretes automáticos repetidos
+      vistos.add(chave);
+      return true;
+    });
+  const escolhidos = [...candidatos.filter((c) => c.doResponsavel), ...candidatos.filter((c) => !c.doResponsavel)]
+    .slice(0, 12)
+    .map((c) => c.texto);
+  if (escolhidos.length) estiloTexto = escolhidos.map((c) => `- "${c}"`).join('\n');
 
   return {
     lead: { id: lead.id, userId: lead.userId, user: lead.user },
@@ -142,8 +154,8 @@ export function buildContextBlocks(ctx: SharedAiContext): string {
   return `--- ESCOPO DE ATENDIMENTO (produto deste chat) ---
 ${ctx.escopoTexto}
 
---- ESTILO DE ESCRITA DE QUEM ATENDE ESTE CLIENTE (${ctx.lead.user?.name || 'sem responsável definido'}) ---
-Imite só o TOM e o jeito de escrever destes exemplos reais que ele(a) já mandou pra outros clientes — NUNCA reaproveite o conteúdo/fatos deles, que são de outras conversas:
+--- ESTILO DE ESCRITA DA EQUIPE (mensagens reais escritas à mão) ---
+Imite o TOM e o jeito de escrever destes exemplos reais que a equipe já mandou pra outros clientes: direto, simples, sem enfeite. NUNCA reaproveite o conteúdo/fatos deles (são de outras conversas) nem copie erros de digitação:
 ${ctx.estiloTexto}
 
 --- BASE DE CONHECIMENTO (material de referência) ---
