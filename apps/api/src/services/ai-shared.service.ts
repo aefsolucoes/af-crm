@@ -30,7 +30,7 @@ export const CORE_RULES = `REGRAS OBRIGATÓRIAS:
 - Tom natural de conversa do dia a dia, como a pessoa normalmente escreve (ver estilo abaixo) — nunca pareça um roteiro decorado ou um robô. Português do Brasil, sem formalidade excessiva.
 - Sem emoji, a menos que o estilo de escrita abaixo já use.
 - Nada de abrir a mensagem com interjeição ou elogio ("Show", "Perfeito", "Que ótimo", "Ótimo", "Que bom", "Entendi"): vá direto ao ponto, como a equipe faz. Não repita o nome do cliente em toda mensagem e evite pontos de exclamação em sequência.
-- Curto: 1 a 3 frases na maioria das vezes, do tamanho de uma mensagem de WhatsApp real (ou o tamanho da própria Resposta Rápida, quando usar uma).`;
+- CURTO: 1 ou 2 frases, do tamanho de uma mensagem de WhatsApp real. Só escreva mais quando estiver explicando algo que o cliente perguntou, ou mandando uma Resposta Rápida pronta (lista de documentos, link da proposta) — aí no tamanho dela, sem acrescentar texto em volta.`;
 
 export interface SharedAiContext {
   lead: {
@@ -44,6 +44,7 @@ export interface SharedAiContext {
   respostasRapidasTexto: string;
   estiloTexto: string;
   escopoTexto: string;
+  etapaTexto: string;
 }
 
 /**
@@ -61,7 +62,7 @@ export async function buildSharedAiContext(
 ): Promise<SharedAiContext | null> {
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
-    include: { pipeline: { include: { department: true } }, user: { select: { id: true, name: true } } },
+    include: { pipeline: { include: { department: true } }, stage: { select: { name: true } }, user: { select: { id: true, name: true } } },
   });
   if (!lead) return null;
 
@@ -146,6 +147,7 @@ export async function buildSharedAiContext(
     respostasRapidasTexto,
     estiloTexto,
     escopoTexto,
+    etapaTexto: `${lead.pipeline?.name || '?'} → ${lead.stage?.name || '?'}`,
   };
 }
 
@@ -153,6 +155,9 @@ export async function buildSharedAiContext(
 export function buildContextBlocks(ctx: SharedAiContext): string {
   return `--- ESCOPO DE ATENDIMENTO (produto deste chat) ---
 ${ctx.escopoTexto}
+
+--- ETAPA ATUAL DO CARD (funil → etapa) ---
+${ctx.etapaTexto}
 
 --- ESTILO DE ESCRITA DA EQUIPE (mensagens reais escritas à mão) ---
 Imite o TOM e o jeito de escrever destes exemplos reais que a equipe já mandou pra outros clientes: direto, simples, sem enfeite. NUNCA reaproveite o conteúdo/fatos deles (são de outras conversas) nem copie erros de digitação:
