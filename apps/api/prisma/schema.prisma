@@ -239,6 +239,10 @@ model Lead {
   // humana antes de enviar) — ligado/desligado por um botão na Inbox. Usa a
   // Base de Conhecimento; nunca inventa valor/prazo/promessa específica.
   aiAutoReplyActive  Boolean             @default(false)
+  // Quando entrou na etapa atual — preenchido por trigger no banco (ver
+  // migration 20260925190000_lead_stage_entered_at), não pelo código. Base
+  // das automações "X dias na etapa" (triggerConfig.minDaysInStage).
+  stageEnteredAt     DateTime?
   tasks              Task[]
   notes              Note[]
   messages           Message[]

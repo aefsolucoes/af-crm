@@ -475,6 +475,13 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
       // pela IA quando o cliente reage mal a ser cobrado) — mesmo padrão de
       // onlySiteLeads, só que de exclusão em vez de inclusão.
       const excludeTag = cfg.excludeTag ? String(cfg.excludeTag) : null;
+      // Só dispara depois de N dias NA ETAPA atual (Lead.stageEnteredAt) —
+      // pedido do usuário: o template de documentação sai 3 dias depois do
+      // card entrar em "Aguardando Documentação", não na hora. Sem isso, um
+      // cliente que já estava calado havia dias recebia o lembrete assim que
+      // o card mudava de etapa.
+      const minDaysInStage = Number(cfg.minDaysInStage || 0);
+      const stageThreshold = new Date(Date.now() - minDaysInStage * 86_400_000);
 
       const threshold = new Date(Date.now() - days * 86_400_000);
       const leads = await prisma.lead.findMany({
@@ -486,6 +493,7 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         select: {
           id: true,
           stage: { select: { name: true } },
+          stageEnteredAt: true,
           pipeline: { select: { departmentId: true } },
           messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { createdAt: true } },
         },
@@ -507,6 +515,7 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         if (!lastMsgAt) continue;
         const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;
         if (!eligible) continue;
+        if (minDaysInStage > 0 && (!lead.stageEnteredAt || lead.stageEnteredAt > stageThreshold)) continue;
         countEligible++;
         const already = await prisma.automationLog.findFirst({
           where: repeatEveryDays
@@ -518,7 +527,7 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         await executeRuleForLead(rule, lead.id, io, {}).catch((err) => console.error('[Automation] Falha (inatividade)', rule.id, err));
       }
 
-      console.log(`[Automation][inatividade] "${rule.name}" (${rule.id}): ${leads.length} leads na base (OPEN${cfg.onlySiteLeads ? '+Site' : ''}${excludeTag ? `, sem tag "${excludeTag}"` : ''}) → ${countStage} bateram etapa "${cfg.stageName || '(qualquer)'}" → ${countDept} bateram setor${departmentId ? '' : ' (qualquer, sem filtro)'} → ${countEligible} elegíveis por tempo (${days}d${repeatEveryDays ? ', repete mesmo calado' : ''}) → ${countExecuted} executados (${countAlready} já tinham disparado antes).`);
+      console.log(`[Automation][inatividade] "${rule.name}" (${rule.id}): ${leads.length} leads na base (OPEN${cfg.onlySiteLeads ? '+Site' : ''}${excludeTag ? `, sem tag "${excludeTag}"` : ''}) → ${countStage} bateram etapa "${cfg.stageName || '(qualquer)'}" → ${countDept} bateram setor${departmentId ? '' : ' (qualquer, sem filtro)'} → ${countEligible} elegíveis por tempo (${days}d${repeatEveryDays ? ', repete mesmo calado' : ''}${minDaysInStage ? `, ${minDaysInStage}d+ na etapa` : ''}) → ${countExecuted} executados (${countAlready} já tinham disparado antes).`);
     } catch (err) {
       console.error('[Automation] Erro em checkInactivityAutomations (regra ' + rule.id + '):', err);
     }
