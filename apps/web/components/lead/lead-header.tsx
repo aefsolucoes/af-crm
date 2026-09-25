@@ -159,65 +159,28 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
     }
   }
 
-  const btn = compact
-    ? 'flex-shrink-0 flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 border rounded-md transition-colors disabled:opacity-50'
-    : 'flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 border rounded-lg transition-colors disabled:opacity-50';
-  const icon = compact ? 11 : 12;
+  // Pedido do Fabio: status + Ganho/Perdido/Arquivar numa linha só, rótulos
+  // curtos — igual em todo lugar (painel da Inbox, card do Funil, página do
+  // lead). `compact` só aperta o respiro lateral (painel estreito da Inbox).
+  const btn = 'flex-shrink-0 flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 border rounded-md transition-colors disabled:opacity-50';
+  const icon = 11;
 
   return (
-    <div className={compact ? 'px-3 py-2 bg-white border-b border-af-border flex-shrink-0' : 'px-4 py-3 bg-white border-b border-af-border space-y-2.5 flex-shrink-0'}>
-      <div className={compact ? 'flex items-center flex-nowrap gap-1.5 overflow-x-auto scrollbar-none' : 'space-y-2.5'}>
-      {/* Tags (estilo label do Trello) + status */}
-      <div className={compact ? 'contents' : 'flex items-center flex-wrap gap-1.5'}>
+    <div className={`${compact ? 'px-3' : 'px-4'} py-2 bg-white border-b border-af-border flex-shrink-0 space-y-1.5`}>
+      {/* Linha 1: status + ações */}
+      <div className="flex items-center flex-nowrap gap-1.5 overflow-x-auto scrollbar-none">
         <Badge
           color={lead.status === 'WON' ? '#10b981' : lead.status === 'LOST' ? '#ef4444' : '#6b7280'}
-          className={compact ? 'flex-shrink-0 text-[11px] mr-0.5' : undefined}
+          className="flex-shrink-0 text-[11px] mr-0.5"
         >
           {lead.status === 'WON' ? 'Ganho' : lead.status === 'LOST' ? 'Perdido' : 'Aberto'}
         </Badge>
-        {lead.status === 'LOST' && lead.lostReason && !compact && (
-          <span className="text-xs text-slate-500 italic" title="Motivo da perda">— {lead.lostReason}</span>
-        )}
-        {showTags && lead.tags.map((tag) => (
-          <span
-            key={tag}
-            className="group flex items-center gap-1.5 text-xs font-semibold text-white px-2.5 py-1 rounded-md shadow-sm"
-            style={{ backgroundColor: tagColor(tag) }}
-          >
-            {tag}
-            <button onClick={() => handleRemoveTag(tag)} className="opacity-0 group-hover:opacity-100 hover:text-slate-900 transition-opacity">
-              <X size={10} />
-            </button>
-          </span>
-        ))}
-        {!showTags ? null : editingTags ? (
-          <div className="flex items-center gap-1">
-            <input
-              autoFocus
-              value={tagInput}
-              onChange={e => setTagInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleAddTag(); if (e.key === 'Escape') { setEditingTags(false); setTagInput(''); } }}
-              placeholder="nova tag"
-              className="text-xs border border-af-border rounded-md px-2 py-1 w-24 focus:outline-none focus:border-af-mid"
-            />
-            <button onClick={handleAddTag} className="text-xs text-af-mid hover:text-af-dark font-medium">+</button>
-            <button onClick={() => { setEditingTags(false); setTagInput(''); }} className="text-xs text-slate-400">✕</button>
-          </div>
-        ) : (
-          <button onClick={() => setEditingTags(true)} className="text-xs text-slate-500 hover:text-af-mid flex items-center gap-1 border border-dashed border-slate-300 hover:border-af-mid rounded-md px-2.5 py-1 transition-colors font-medium">
-            <Plus size={11} /> Etiqueta
-          </button>
-        )}
-      </div>
-
-      {/* Ações de status — compactas, em linha */}
-      <div className={compact ? 'contents' : 'flex items-center flex-wrap gap-1.5'}>
         {lead.status !== 'WON' && !lead.archived && (
           <button
             onClick={() => handleStatusChange('WON')}
             className={`${btn} bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200`}
           >
-            <Trophy size={icon} /> {compact ? 'Ganho' : 'Marcar Ganho'}
+            <Trophy size={icon} /> Ganho
           </button>
         )}
         {lead.status !== 'LOST' && !lead.archived && (
@@ -225,7 +188,7 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
             onClick={() => setShowLostModal(true)}
             className={`${btn} bg-red-50 text-red-600 hover:bg-red-100 border-red-200`}
           >
-            <XCircle size={icon} /> {compact ? 'Perdido' : 'Marcar Perdido'}
+            <XCircle size={icon} /> Perdido
           </button>
         )}
         {(lead.status === 'WON' || lead.status === 'LOST') && (
@@ -242,7 +205,7 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
             disabled={archiving}
             className={`${btn} bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200`}
           >
-            <Archive size={icon} /> {compact ? 'Arquivar' : 'Arquivar lead'}
+            <Archive size={icon} /> Arquivar
           </button>
         ) : (
           <button
@@ -250,11 +213,50 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
             disabled={archiving}
             className={`${btn} bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200`}
           >
-            <ArchiveRestore size={icon} /> {compact ? 'Restaurar' : 'Restaurar lead'}
+            <ArchiveRestore size={icon} /> Restaurar
           </button>
         )}
       </div>
-      </div>
+
+      {lead.status === 'LOST' && lead.lostReason && (
+        <p className="text-[11px] text-slate-500 italic truncate" title={lead.lostReason}>Motivo: {lead.lostReason}</p>
+      )}
+
+      {/* Linha 2: etiquetas (estilo label do Trello) — fora do painel da Inbox */}
+      {showTags && (
+        <div className="flex items-center flex-wrap gap-1">
+          {lead.tags.map((tag) => (
+            <span
+              key={tag}
+              className="group flex items-center gap-1 text-[11px] font-semibold text-white px-2 py-0.5 rounded-md shadow-sm"
+              style={{ backgroundColor: tagColor(tag) }}
+            >
+              {tag}
+              <button onClick={() => handleRemoveTag(tag)} className="opacity-0 group-hover:opacity-100 hover:text-slate-900 transition-opacity">
+                <X size={10} />
+              </button>
+            </span>
+          ))}
+          {editingTags ? (
+            <div className="flex items-center gap-1">
+              <input
+                autoFocus
+                value={tagInput}
+                onChange={e => setTagInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleAddTag(); if (e.key === 'Escape') { setEditingTags(false); setTagInput(''); } }}
+                placeholder="nova tag"
+                className="text-xs border border-af-border rounded-md px-2 py-0.5 w-24 focus:outline-none focus:border-af-mid"
+              />
+              <button onClick={handleAddTag} className="text-xs text-af-mid hover:text-af-dark font-medium">+</button>
+              <button onClick={() => { setEditingTags(false); setTagInput(''); }} className="text-xs text-slate-400">✕</button>
+            </div>
+          ) : (
+            <button onClick={() => setEditingTags(true)} className="text-[11px] text-slate-500 hover:text-af-mid flex items-center gap-1 border border-dashed border-slate-300 hover:border-af-mid rounded-md px-2 py-0.5 transition-colors font-medium">
+              <Plus size={10} /> Etiqueta
+            </button>
+          )}
+        </div>
+      )}
 
       <Modal open={showLostModal} onClose={() => setShowLostModal(false)} title="Marcar como Perdido" size="sm">
         <div className="space-y-3">
