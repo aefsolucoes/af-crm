@@ -307,6 +307,9 @@ model EmailAccount {
   smtpPort    Int            @default(587)
   username    String
   passwordEnc String?
+  // Assinatura em texto (cada linha vira uma linha no e-mail). Null = padrão:
+  // empresa → assinatura institucional; pessoal → nome + A & F.
+  signature   String?        @db.Text
   syncState   Json?
   lastSyncAt  DateTime?
   lastError   String?

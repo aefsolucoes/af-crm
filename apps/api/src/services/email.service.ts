@@ -68,6 +68,12 @@ export function companySignatureHtml(): string {
   return COMPANY_SIGNATURE_HTML;
 }
 
+/** Mesma assinatura em texto — ponto de partida quando alguém vai editar a
+ *  assinatura da caixa comercial@ na página E-mail. */
+export function companySignatureText(): string {
+  return `A & F SOLUÇÕES FINANCEIRAS\nTelefone: ${COMPANY_PHONE}\nSite: ${COMPANY_SITE}\nEndereço: ${COMPANY_ADDRESS}`;
+}
+
 /** E-mail com corpo livre (automações de follow-up) — cada linha em branco
  *  vira um parágrafo, igual quem escreveu enxerga no campo de texto. */
 export async function sendGenericEmail(to: string, subject: string, bodyText: string): Promise<void> {

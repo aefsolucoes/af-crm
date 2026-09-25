@@ -4,8 +4,9 @@ import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Inbox, Send, PenSquare, RefreshCw, Search, Paperclip, Reply, ChevronLeft, Plus, Loader2, AlertTriangle,
-  MessageSquare, Mail, LogOut, Building2, User,
+  MessageSquare, Mail, LogOut, Building2, User, PenLine, Link2, Unlink,
 } from 'lucide-react';
+import { useAuthStore } from '@/store/auth.store';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
@@ -28,6 +29,8 @@ interface Mailbox {
   unread: number;
   lastSyncAt: string | null;
   lastError: string | null;
+  signature: string | null;
+  defaultSignature: string;
 }
 interface Addr { name: string | null; address: string }
 interface Attachment { part: string | null; filename: string; contentType: string; size: number }
@@ -83,6 +86,10 @@ export function EmailInbox() {
   const [composer, setComposer] = useState<null | { to?: string; subject?: string; replyToId?: string | null; leadId?: string | null }>(null);
   const [connecting, setConnecting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [editingSignature, setEditingSignature] = useState<Mailbox | null>(null);
+  const [linking, setLinking] = useState(false);
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'ADMIN';
 
   const { data: mailboxes = [], isLoading: loadingBoxes } = useQuery<Mailbox[]>({
     queryKey: ['email-accounts'],
@@ -172,6 +179,19 @@ export function EmailInbox() {
     }
   }
 
+  async function unlink() {
+    if (!current || !opened?.lead) return;
+    if (!confirm(`Tirar este e-mail da conversa de ${opened.lead.name}?`)) return;
+    try {
+      await api.post(`/api/email/accounts/${current.id}/messages/${opened.id}/link`, { leadId: null });
+      queryClient.invalidateQueries({ queryKey: ['email-message'] });
+      queryClient.invalidateQueries({ queryKey: ['email-messages'] });
+      toast('E-mail desvinculado do card');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui desvincular', 'error');
+    }
+  }
+
   function reply() {
     if (!opened) return;
     const to = opened.folder === 'SENT' ? (opened.toList || []).map((a) => a.address).join(', ') : opened.fromAddress || '';
@@ -179,7 +199,7 @@ export function EmailInbox() {
     setComposer({ to, subject: /^re:/i.test(subj) ? subj : `Re: ${subj}`, replyToId: opened.id, leadId: opened.lead?.id || null });
   }
 
-  const composerMailboxes = useMemo(() => mailboxes.map((m) => ({ id: m.id, address: m.address, displayName: m.displayName, shared: m.shared })), [mailboxes]);
+  const composerMailboxes = useMemo(() => mailboxes.map((m) => ({ id: m.id, address: m.address, displayName: m.displayName, shared: m.shared, signature: m.signature || m.defaultSignature })), [mailboxes]);
 
   if (loadingBoxes) {
     return <div className="flex-1 flex items-center justify-center text-slate-400 text-sm"><Loader2 size={18} className="animate-spin mr-2" /> Carregando caixas...</div>;
@@ -218,8 +238,11 @@ export function EmailInbox() {
               <div className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                 {m.shared ? <Building2 size={11} /> : <User size={11} />}
                 <span className="truncate" title={m.address}>{m.shared ? (m.displayName || 'Empresa') : 'Meu e-mail'}</span>
+                {(!m.shared || isAdmin) && (
+                  <button onClick={() => setEditingSignature(m)} className="ml-auto text-slate-300 hover:text-af-mid" title="Assinatura desta caixa"><PenLine size={11} /></button>
+                )}
                 {!m.shared && (
-                  <button onClick={() => disconnect(m)} className="ml-auto text-slate-300 hover:text-red-500" title="Desconectar"><LogOut size={11} /></button>
+                  <button onClick={() => disconnect(m)} className="text-slate-300 hover:text-red-500" title="Desconectar"><LogOut size={11} /></button>
                 )}
               </div>
               <p className="px-2 -mt-0.5 mb-1 text-[11px] text-slate-400 truncate">{m.address}</p>
@@ -352,9 +375,18 @@ export function EmailInbox() {
                 <button onClick={reply} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg text-white" style={{ backgroundColor: '#2261a8' }}>
                   <Reply size={13} /> Responder
                 </button>
-                {opened.lead && (
-                  <button onClick={() => router.push(`/inbox?leadId=${opened.lead!.id}`)} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100">
-                    <MessageSquare size={13} /> Conversa de {opened.lead.name}
+                {opened.lead ? (
+                  <>
+                    <button onClick={() => router.push(`/inbox?leadId=${opened.lead!.id}`)} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100">
+                      <MessageSquare size={13} /> Conversa de {opened.lead.name}
+                    </button>
+                    <button onClick={unlink} className="flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg text-slate-400 hover:text-red-500" title="Esse e-mail não é desse cliente — tirar da conversa do card">
+                      <Unlink size={12} /> Desvincular
+                    </button>
+                  </>
+                ) : (
+                  <button onClick={() => setLinking(true)} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50" title="Levar esse e-mail (e os próximos desse remetente) pra conversa de um card">
+                    <Link2 size={13} /> Vincular a um card
                   </button>
                 )}
               </div>
@@ -396,6 +428,24 @@ export function EmailInbox() {
           leadId={composer.leadId}
           onClose={() => setComposer(null)}
           onSent={() => queryClient.invalidateQueries({ queryKey: ['email-messages'] })}
+        />
+      )}
+      {editingSignature && (
+        <SignatureModal
+          mailbox={editingSignature}
+          onClose={() => setEditingSignature(null)}
+          onSaved={() => queryClient.invalidateQueries({ queryKey: ['email-accounts'] })}
+        />
+      )}
+      {linking && current && opened && (
+        <LinkLeadModal
+          mailboxId={current.id}
+          email={opened}
+          onClose={() => setLinking(false)}
+          onLinked={() => {
+            queryClient.invalidateQueries({ queryKey: ['email-message'] });
+            queryClient.invalidateQueries({ queryKey: ['email-messages'] });
+          }}
         />
       )}
       {connecting && (
@@ -475,6 +525,146 @@ function ConnectMailboxModal({ onClose, onConnected }: { onClose: () => void; on
           >
             {saving && <Loader2 size={14} className="animate-spin" />} {saving ? 'Testando...' : 'Conectar'}
           </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** Assinatura da caixa — texto simples, cada linha vira uma linha no e-mail
+ *  (a 1ª em destaque). Vazio = volta pra assinatura padrão. */
+function SignatureModal({ mailbox, onClose, onSaved }: { mailbox: Mailbox; onClose: () => void; onSaved: () => void }) {
+  const [text, setText] = useState(mailbox.signature || mailbox.defaultSignature);
+  const [saving, setSaving] = useState(false);
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.put(`/api/email/accounts/${mailbox.id}/signature`, { signature: text });
+      toast('Assinatura salva');
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui salvar', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title={`Assinatura — ${mailbox.address}`} onClose={onClose} size="md">
+      <div className="space-y-3">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={6}
+          className="w-full text-sm px-3 py-2 border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent text-slate-800 resize-y"
+          placeholder={'Seu nome\nCargo\nA & F Soluções Financeiras\n(61) 9 0000-0000'}
+        />
+        <div>
+          <p className="text-[11px] text-slate-400 mb-1.5">Como vai aparecer no e-mail:</p>
+          <div className="border-l-[3px] border-blue-500 pl-3.5">
+            {lines.length ? lines.map((l, i) => (
+              <p key={i} className={i === 0 ? 'text-[13px] font-bold text-[#0d2545] mb-1' : 'text-xs text-slate-500'}>{l}</p>
+            )) : <p className="text-xs text-slate-400">(sem assinatura — usa a padrão)</p>}
+          </div>
+        </div>
+        {mailbox.shared && <p className="text-[11px] text-amber-600">É a caixa da empresa: vale pros e-mails de todo mundo que enviar por ela.</p>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={onClose} className="text-sm px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100">Cancelar</button>
+          <button onClick={save} disabled={saving} className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#2261a8' }}>
+            {saving && <Loader2 size={14} className="animate-spin" />} Salvar
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+interface LeadHit {
+  id: string;
+  name: string;
+  archived: boolean;
+  contact: { email: string | null; phone: string | null; whatsappPhone: string | null } | null;
+  pipeline: { name: string; department: { name: string } | null } | null;
+  stage: { name: string } | null;
+}
+
+/** "Vincular a um card": remetente que o CRM não reconheceu (não tem esse
+ *  e-mail em nenhum contato) → escolhe o card; o e-mail e os outros desse
+ *  remetente entram na conversa do card, e os próximos já caem lá sozinhos. */
+function LinkLeadModal({ mailboxId, email, onClose, onLinked }: { mailboxId: string; email: EmailFull; onClose: () => void; onLinked: () => void }) {
+  const [q, setQ] = useState(email.folder === 'INBOX' ? (email.fromName || '') : '');
+  const [results, setResults] = useState<LeadHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
+  const address = email.folder === 'INBOX' ? email.fromAddress : email.toList?.[0]?.address;
+
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) { setResults([]); return; }
+    setSearching(true);
+    const t = setTimeout(() => {
+      api.get('/api/email/lead-search', { params: { q: term } })
+        .then(({ data }) => setResults(data))
+        .catch(() => setResults([]))
+        .finally(() => setSearching(false));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  async function link(lead: LeadHit) {
+    setSaving(lead.id);
+    try {
+      const { data } = await api.post(`/api/email/accounts/${mailboxId}/messages/${email.id}/link`, { leadId: lead.id });
+      toast(data.linked > 1 ? `${data.linked} e-mails de ${address} foram pra conversa de ${lead.name}` : `E-mail vinculado a ${lead.name}`);
+      onLinked();
+      onClose();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui vincular', 'error');
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <Modal title="Vincular a um card" onClose={onClose} size="md">
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500">
+          O e-mail de <b className="text-slate-700">{address || 'remetente'}</b> vai pra conversa do card escolhido — junto com os outros desse endereço — e os próximos já caem lá sozinhos. Se o contato não tiver e-mail, esse endereço fica salvo nele.
+        </p>
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Nome, e-mail ou telefone do cliente"
+            className="w-full text-sm pl-8 pr-3 py-2 border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent text-slate-800"
+          />
+        </div>
+        <div className="max-h-72 overflow-y-auto -mx-1">
+          {searching && <p className="text-xs text-slate-400 px-1 py-2"><Loader2 size={12} className="animate-spin inline mr-1" />Buscando...</p>}
+          {!searching && q.trim().length >= 2 && results.length === 0 && <p className="text-xs text-slate-400 px-1 py-2">Nenhum card encontrado.</p>}
+          {results.map((l) => (
+            <button
+              key={l.id}
+              onClick={() => link(l)}
+              disabled={!!saving}
+              className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-50 disabled:opacity-50 flex items-center gap-2"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-slate-800 truncate">{l.name}{l.archived && <span className="text-[10px] text-slate-400 ml-1.5">(arquivado)</span>}</p>
+                <p className="text-[11px] text-slate-400 truncate">
+                  {[l.pipeline?.department?.name, l.pipeline?.name, l.stage?.name].filter(Boolean).join(' → ')}
+                  {l.contact?.email ? ` · ${l.contact.email}` : ''}
+                  {l.contact?.whatsappPhone || l.contact?.phone ? ` · ${l.contact.whatsappPhone || l.contact.phone}` : ''}
+                </p>
+              </div>
+              {saving === l.id ? <Loader2 size={14} className="animate-spin text-slate-400" /> : <Link2 size={14} className="text-slate-300" />}
+            </button>
+          ))}
         </div>
       </div>
     </Modal>

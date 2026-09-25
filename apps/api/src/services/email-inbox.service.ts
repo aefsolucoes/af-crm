@@ -5,7 +5,7 @@ import { ImapFlow, FetchMessageObject, MessageStructureObject } from 'imapflow';
 import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer';
 import { sealSecret, openSecret } from '../lib/secret-box';
-import { companySignatureHtml } from './email.service';
+import { companySignatureHtml, companySignatureText } from './email.service';
 
 /**
  * Caixa de e-mail dentro do CRM (pedido do Fabio, 2026-09-24/25): a caixa da
@@ -108,13 +108,31 @@ export async function ensureCompanyMailbox(accountId: string): Promise<void> {
   }).catch(() => {}); // corrida entre dois pedidos: o outro já criou
 }
 
+/** Assinatura padrão (quando a caixa não tem uma própria). */
+function defaultSignature(acc: { userId: string | null }, userName?: string | null): string {
+  return acc.userId ? `${userName || ''}\nA & F Soluções Financeiras`.trim() : companySignatureText();
+}
+
+/** Assinatura em HTML: 1ª linha em destaque, as outras menores — mesmo
+ *  visual da assinatura institucional que já existia. */
+function signatureHtml(text: string): string {
+  const lines = text.replace(/\r/g, '').split('\n').map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return '';
+  const [first, ...rest] = lines;
+  return `<div style="margin:28px 0 0;border-left:3px solid #3b82f6;padding-left:14px">
+    <p style="font-size:13px;font-weight:700;color:#0d2545;margin:0 0 6px">${escapeHtml(first)}</p>
+    ${rest.map((l) => `<p style="font-size:12px;color:#475569;margin:0 0 3px">${escapeHtml(l)}</p>`).join('')}
+  </div>`;
+}
+
 /** Caixas que o usuário enxerga: a da empresa + a dele. */
 export async function listVisibleEmailAccounts(accountId: string, userId: string) {
   await ensureCompanyMailbox(accountId);
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
   const accounts = await prisma.emailAccount.findMany({
     where: { accountId, OR: [{ userId: null }, { userId }] },
     orderBy: [{ userId: 'asc' }, { createdAt: 'asc' }],
-    select: { id: true, userId: true, address: true, displayName: true, imapHost: true, imapPort: true, smtpHost: true, smtpPort: true, lastSyncAt: true, lastError: true },
+    select: { id: true, userId: true, address: true, displayName: true, imapHost: true, imapPort: true, smtpHost: true, smtpPort: true, lastSyncAt: true, lastError: true, signature: true },
   });
   const unread = await prisma.emailMessage.groupBy({
     by: ['emailAccountId'],
@@ -125,7 +143,17 @@ export async function listVisibleEmailAccounts(accountId: string, userId: string
     ...a,
     shared: !a.userId,
     unread: unread.find((u) => u.emailAccountId === a.id)?._count._all || 0,
+    defaultSignature: defaultSignature(a, me?.name),
   }));
+}
+
+/** Pessoal: só o dono edita. Empresa: só admin (vale pra todo mundo). */
+export async function updateMailboxSignature(accountId: string, user: { id: string; role: string }, id: string, signature: string) {
+  const acc = await prisma.emailAccount.findFirst({ where: { id, accountId, OR: [{ userId: null }, { userId: user.id }] } });
+  if (!acc) throw new Error('Caixa não encontrada');
+  if (!acc.userId && user.role !== 'ADMIN') throw new Error('Só o administrador muda a assinatura da caixa da empresa');
+  const text = signature.replace(/\r/g, '').trim().slice(0, 1000);
+  await prisma.emailAccount.update({ where: { id }, data: { signature: text || null } });
 }
 
 export async function getVisibleEmailAccount(accountId: string, userId: string, id: string) {
@@ -266,6 +294,13 @@ async function findLeadFor(accountId: string, addresses: string[], inReplyTo: st
       select: { id: true },
     });
     if (lead) return lead.id;
+    // Remetente que alguém já vinculou a um card na mão ("Vincular a um card").
+    const remembered = await prisma.emailMessage.findFirst({
+      where: { leadId: { not: null }, emailAccount: { accountId }, OR: [{ fromAddress: address }, { folder: 'SENT', toList: { array_contains: [{ address }] } }] },
+      orderBy: { date: 'desc' },
+      select: { leadId: true },
+    });
+    if (remembered?.leadId) return remembered.leadId;
   }
   return null;
 }
@@ -535,9 +570,9 @@ export async function sendEmailFrom(params: {
   const domain = acc.address.split('@')[1] || 'af-crm.local';
   const messageId = `<${crypto.randomUUID()}@${domain}>`;
   const paragraphs = body.split('\n').map((line) => line.trim() ? `<p style="margin:0 0 12px">${escapeHtml(line)}</p>` : '<br>').join('');
-  const signature = acc.userId
-    ? `<p style="margin:24px 0 0;font-size:13px;color:#475569">${escapeHtml(user?.name || '')}<br>A &amp; F Soluções Financeiras</p>`
-    : companySignatureHtml();
+  const signature = acc.signature?.trim()
+    ? signatureHtml(acc.signature)
+    : acc.userId ? signatureHtml(defaultSignature(acc, user?.name)) : companySignatureHtml();
   // Resposta: cita o e-mail original embaixo, como qualquer cliente de e-mail.
   const parentText = parent ? (parent.textBody || (parent.htmlBody ? htmlToText(parent.htmlBody) : '')).slice(0, 5000) : '';
   const quoteHeader = parent ? `Em ${parent.date.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}, ${parent.fromName || parent.fromAddress || ''} escreveu:` : '';
@@ -593,4 +628,90 @@ export async function sendEmailFrom(params: {
     await addToConversation({ accountId: acc.accountId, leadId, direction: 'OUTBOUND', subject, body: `${body}${attachedNote}`, messageId, date: saved.date, sentByUserId: params.userId, notify: true, io });
   }
   return saved;
+}
+
+// ─── Vincular a um card ───────────────────────────────────────────────────────
+
+/** Busca de card pra vincular um e-mail (nome, e-mail ou telefone do contato). */
+export async function searchLeadsForEmail(accountId: string, scopeDepartmentIds: string[], q: string) {
+  const term = q.trim();
+  if (term.length < 2) return [];
+  const digits = term.replace(/\D/g, '');
+  return prisma.lead.findMany({
+    where: {
+      accountId, isGroup: false,
+      ...(scopeDepartmentIds.length ? { pipeline: { OR: [{ departmentId: null }, { departmentId: { in: scopeDepartmentIds } }] } } : {}),
+      OR: [
+        { name: { contains: term, mode: 'insensitive' } },
+        { contact: { email: { contains: term, mode: 'insensitive' } } },
+        ...(digits.length >= 4 ? [{ contact: { whatsappPhone: { contains: digits } } }, { contact: { phone: { contains: digits } } }] : []),
+      ],
+    },
+    orderBy: [{ archived: 'asc' }, { updatedAt: 'desc' }],
+    take: 20,
+    select: {
+      id: true, name: true, archived: true,
+      contact: { select: { email: true, phone: true, whatsappPhone: true } },
+      pipeline: { select: { name: true, department: { select: { name: true } } } },
+      stage: { select: { name: true } },
+    },
+  });
+}
+
+function counterpartOf(msg: EmailMessage): string | null {
+  if (msg.folder === 'INBOX') return msg.fromAddress?.toLowerCase() || null;
+  const to = (msg.toList as unknown as Addr[] | null) || [];
+  return to[0]?.address?.toLowerCase() || null;
+}
+
+/**
+ * Vincula o e-mail (e os outros do mesmo remetente ainda sem card) a um card:
+ * eles entram na conversa do card, o endereço vai pro contato se ele não
+ * tinha e-mail, e os próximos e-mails desse remetente já caem lá sozinhos.
+ * leadId null = desvincular só este e-mail (sai da conversa do card).
+ */
+export async function linkEmailToLead(acc: EmailAccount, msgId: string, leadId: string | null, io: Io) {
+  const msg = await prisma.emailMessage.findFirst({ where: { id: msgId, emailAccountId: acc.id } });
+  if (!msg) throw new Error('E-mail não encontrado');
+
+  if (!leadId) {
+    if (msg.leadId && msg.messageId) {
+      await prisma.message.deleteMany({ where: { leadId: msg.leadId, channel: 'EMAIL', externalId: msg.messageId } });
+      io?.to(`account_${acc.accountId}`).emit('new_notification', { leadId: msg.leadId }); // Inbox recarrega a conversa
+    }
+    await prisma.emailMessage.update({ where: { id: msg.id }, data: { leadId: null } });
+    return { linked: 0 };
+  }
+
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: acc.accountId }, select: { id: true, name: true, contactId: true, contact: { select: { email: true } } } });
+  if (!lead) throw new Error('Card não encontrado');
+  const address = counterpartOf(msg);
+
+  const siblings = address
+    ? await prisma.emailMessage.findMany({
+        where: {
+          leadId: null, emailAccount: { accountId: acc.accountId },
+          OR: [{ fromAddress: address, folder: 'INBOX' }, { folder: 'SENT', toList: { array_contains: [{ address }] } }],
+        },
+        orderBy: { date: 'asc' },
+      })
+    : [];
+  const toLink = [msg, ...siblings.filter((m) => m.id !== msg.id)].sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  for (const m of toLink) {
+    await prisma.emailMessage.update({ where: { id: m.id }, data: { leadId: lead.id } });
+    const plain = m.textBody || (m.htmlBody ? htmlToText(m.htmlBody) : '');
+    const files = ((m.attachments as unknown as { filename: string }[] | null) || []).map((a) => a.filename);
+    await addToConversation({
+      accountId: acc.accountId, leadId: lead.id, direction: m.folder === 'INBOX' ? 'INBOUND' : 'OUTBOUND',
+      subject: m.subject, body: `${stripQuoted(plain) || plain}${files.length ? `\n\n📎 ${files.join(', ')}` : ''}`,
+      messageId: m.messageId, date: m.date, notify: false, io,
+    });
+  }
+
+  if (address && lead.contactId && !lead.contact?.email?.trim()) {
+    await prisma.contact.update({ where: { id: lead.contactId }, data: { email: address } }).catch(() => {});
+  }
+  io?.to(`account_${acc.accountId}`).emit('new_notification', { leadId: lead.id }); // Inbox recarrega a conversa
+  return { linked: toLink.length, leadName: lead.name };
 }

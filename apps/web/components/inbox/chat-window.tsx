@@ -303,7 +303,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       if (!boxes?.length) { toast('Nenhuma caixa de e-mail conectada — conecte na página E-mail', 'warning'); return; }
       const to = lead?.contact?.email || '';
       if (!to) toast('O cliente não tem e-mail no card — digite o e-mail dele (fica salvo no contato)', 'warning');
-      setEmailDraft({ to, mailboxes: boxes });
+      setEmailDraft({ to, mailboxes: boxes.map((b: any) => ({ ...b, signature: b.signature || b.defaultSignature })) });
     } catch {
       toast('Não consegui abrir o e-mail', 'error');
     } finally {

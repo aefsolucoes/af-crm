@@ -4,7 +4,9 @@ import { requirePermission } from '../middleware/permission';
 import {
   listVisibleEmailAccounts, getVisibleEmailAccount, connectPersonalMailbox, disconnectPersonalMailbox,
   syncEmailAccount, listEmailMessages, openEmailMessage, streamAttachment, sendEmailFrom,
+  updateMailboxSignature, searchLeadsForEmail, linkEmailToLead,
 } from '../services/email-inbox.service';
+import { getScopeDepartmentIds } from '../services/department.service';
 import { PrismaClient } from '@prisma/client';
 
 /** Caixa de e-mail do CRM — ver email-inbox.service.ts. Mesma permissão da
@@ -43,6 +45,31 @@ router.delete('/accounts/:id', async (req: AuthRequest, res: Response) => {
     res.json({ ok: true });
   } catch (err) {
     fail(res, err, 'Não consegui desconectar');
+  }
+});
+
+router.put('/accounts/:id/signature', async (req: AuthRequest, res: Response) => {
+  try {
+    await updateMailboxSignature(req.user!.accountId, { id: req.user!.id, role: req.user!.role }, req.params.id, String(req.body?.signature ?? ''));
+    res.json({ ok: true });
+  } catch (err) {
+    fail(res, err, 'Não consegui salvar a assinatura');
+  }
+});
+
+// Busca de card pra "Vincular a um card" (nome, e-mail ou telefone).
+router.get('/lead-search', async (req: AuthRequest, res: Response) => {
+  const scope = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+  res.json(await searchLeadsForEmail(req.user!.accountId, scope, String(req.query.q || '')));
+});
+
+router.post('/accounts/:id/messages/:msgId/link', async (req: AuthRequest, res: Response) => {
+  const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
+  if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
+  try {
+    res.json(await linkEmailToLead(acc, req.params.msgId, req.body?.leadId || null, io(req)));
+  } catch (err) {
+    fail(res, err, 'Não consegui vincular');
   }
 });
 

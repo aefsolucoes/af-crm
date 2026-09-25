@@ -29,6 +29,8 @@ export interface MailboxOption {
   address: string;
   displayName: string | null;
   shared: boolean;
+  /** Assinatura que vai no fim do e-mail (a da caixa ou a padrão). */
+  signature?: string;
 }
 
 /**
@@ -140,8 +142,18 @@ export function EmailComposer({
             ))}
           </div>
         )}
+        {(() => {
+          const sig = mailboxes.find((m) => m.id === mailboxId)?.signature;
+          return sig ? (
+            <div className="border-l-[3px] border-blue-500/70 pl-3 py-0.5">
+              {sig.split('\n').map((l) => l.trim()).filter(Boolean).map((l, i) => (
+                <p key={i} className={i === 0 ? 'text-xs font-semibold text-slate-600' : 'text-[11px] text-slate-400'}>{l}</p>
+              ))}
+            </div>
+          ) : null;
+        })()}
         <p className="text-[11px] text-slate-400">
-          {replyToId ? 'A mensagem original vai citada embaixo. ' : ''}A assinatura entra automaticamente.
+          {replyToId ? 'A mensagem original vai citada embaixo. ' : ''}Assinatura acima entra automaticamente (muda no lápis ao lado da caixa, na página E-mail).
         </p>
         <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
         <div className="flex items-center justify-end gap-2 pt-1">
