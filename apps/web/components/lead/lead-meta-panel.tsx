@@ -101,6 +101,17 @@ export function LeadMetaPanel({ lead, onRefresh }: LeadMetaPanelProps) {
           </div>
         </div>
 
+        {/* Ordem pedida pelo usuário: Setor → Funil → Estágio (igual à
+            Inbox). O setor vem do funil; mudar de setor é mudar de funil. */}
+        {lead.pipeline.department && (
+          <div>
+            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Setor</p>
+            <p className="w-full truncate text-xs font-medium text-slate-700 bg-af-light/50 border border-af-border px-2.5 py-1.5 rounded-lg">
+              {lead.pipeline.department.name}
+            </p>
+          </div>
+        )}
+
         <div>
           <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Funil atual</p>
           <button
