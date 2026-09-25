@@ -1122,6 +1122,12 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
       sendPushToAccount(accountId, { title: profileName || 'Nova mensagem', body: text || '📎 Anexo recebido', leadId }).catch(() => {});
 
+      // Card em "Aguardando Documentação" com a IA ligada: agenda a
+      // conferência de documentos (arquivo OU texto — ex.: "pronto, mandei
+      // tudo"). Ver docs-checker.service.ts.
+      const { scheduleDocsCheck } = require('./docs-checker.service') as typeof import('./docs-checker.service');
+      scheduleDocsCheck(accountId, leadId, io).catch(() => {});
+
       // Gatilho automático (Templates → "Disparar automaticamente") e
       // assistente de IA (Inbox → botão de IA na conversa) — só para texto de
       // verdade, não mídia. Template tem prioridade sobre a resposta de IA.

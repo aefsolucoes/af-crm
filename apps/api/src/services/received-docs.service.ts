@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { organizeReceivedDocsFolder, downloadDriveFileForVision, ReceivedDocFile } from './google.service';
+import { organizeReceivedDocsFolder, downloadDriveFileForVision } from './google.service';
 import { logActivity } from './activity.service';
 
 const prisma = new PrismaClient();
@@ -28,20 +28,39 @@ function folderNameFor(lead: { name: string; customFields: unknown }): string {
 }
 
 const DOC_PROMPT = `Este arquivo foi enviado por um cliente de crédito imobiliário (financiamento ou crédito com garantia de imóvel). Diga qual documento é.
-Responda SOMENTE com o nome do arquivo em CAIXA ALTA, sem extensão e sem acento, de preferência um destes: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU, CERTIDAO DE ONUS, MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE.
+Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU, CERTIDAO DE ONUS, MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE.
 Se for outro documento, use um nome curto que o descreva (até 4 palavras).
+Depois do nome do documento, coloque " | " e o nome completo do titular como aparece no documento (a pessoa a quem ele pertence). Se não aparecer nome de pessoa, escreva só o nome do documento.
+Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
 Se NÃO for documento (foto qualquer, selfie, figurinha, print de conversa), responda IGNORAR.`;
 
-/** Nome do documento lendo o arquivo (Claude com visão). null = não é
- *  documento; undefined = não deu pra ler (mantém o nome original). */
-async function nameDocument(accountId: string, file: ReceivedDocFile): Promise<string | null | undefined> {
+type AttachmentForVision = { id: string; driveFileId: string | null; data?: Uint8Array | null; mimeType: string };
+
+export interface DocInfo { type: string; holder?: string }
+
+const clean = (t: string, max: number) =>
+  t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase().slice(0, max);
+
+/** Tipo do documento e titular lendo o arquivo (Claude com visão) — {type:
+ *  "CNH", holder: "JOAO DA SILVA"}. null = não é documento; undefined = não
+ *  deu pra ler (tipo de arquivo, tamanho ou erro). Lê os bytes do banco se o
+ *  anexo ainda não subiu pro Drive. */
+export async function classifyDocument(accountId: string, att: AttachmentForVision): Promise<DocInfo | null | undefined> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return undefined;
-  const isPdf = file.mimeType === 'application/pdf';
-  const isImage = /^image\//.test(file.mimeType);
+  const isPdf = att.mimeType === 'application/pdf';
+  const isImage = /^image\//.test(att.mimeType);
   if (!isPdf && !isImage) return undefined;
 
-  const { buffer, mimeType } = await downloadDriveFileForVision(accountId, file.driveFileId, file.mimeType);
+  let buffer: Buffer;
+  let mimeType = att.mimeType;
+  if (att.data && att.data.length) {
+    buffer = Buffer.from(att.data);
+  } else if (att.driveFileId) {
+    ({ buffer, mimeType } = await downloadDriveFileForVision(accountId, att.driveFileId, att.mimeType));
+  } else {
+    return undefined;
+  }
   if (buffer.length > MAX_VISION_BYTES) return undefined;
   const mediaType = isPdf ? 'application/pdf' : mimeType;
   if (!isPdf && !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mediaType)) return undefined;
@@ -52,7 +71,7 @@ async function nameDocument(accountId: string, file: ReceivedDocFile): Promise<s
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-haiku-4-5',
-      max_tokens: 40,
+      max_tokens: 80,
       messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source }, { type: 'text', text: DOC_PROMPT }] }],
     }),
   });
@@ -61,27 +80,63 @@ async function nameDocument(accountId: string, file: ReceivedDocFile): Promise<s
     return undefined;
   }
   const data = (await res.json()) as { content: { type: string; text?: string }[] };
-  const answer = (data.content?.find((b) => b.type === 'text')?.text || '')
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .replace(/[^A-Za-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase().slice(0, 40);
-  if (!answer) return undefined;
-  if (answer === 'IGNORAR') return null;
-  return answer;
+  const text = (data.content?.find((b) => b.type === 'text')?.text || '').split('\n')[0];
+  const [typePart, holderPart] = text.split('|');
+  const type = clean(typePart || '', 40);
+  if (!type) return undefined;
+  if (type === 'IGNORAR') return null;
+  const holder = clean(holderPart || '', 60);
+  return holder ? { type, holder } : { type };
+}
+
+export function docLabel(info: DocInfo): string {
+  return info.holder ? `${info.type} ${info.holder.split(' ').slice(0, 2).join(' ')}` : info.type;
+}
+
+/** Documentos já lidos ficam guardados no card (customFields._docInfo, por
+ *  id do anexo, "TIPO|TITULAR" ou "IGNORAR") — a conferência de documentação
+ *  e o organizador de pasta leem cada arquivo uma vez só. */
+export async function getDocInfo(accountId: string, leadId: string, atts: AttachmentForVision[]): Promise<Record<string, DocInfo | null>> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = ((lead?.customFields as Record<string, unknown>) || {});
+  const cache = { ...((cf._docInfo as Record<string, string>) || {}) };
+  let changed = false;
+  for (const att of atts) {
+    if (cache[att.id]) continue;
+    const info = await classifyDocument(accountId, att).catch(() => undefined);
+    if (info === undefined) continue;
+    cache[att.id] = info === null ? 'IGNORAR' : `${info.type}|${info.holder || ''}`;
+    changed = true;
+  }
+  if (changed) {
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const next: Record<string, unknown> = { ...((fresh?.customFields as Record<string, unknown>) || {}), _docInfo: cache };
+    delete next._docTypes;
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: next as any } });
+  }
+  const out: Record<string, DocInfo | null> = {};
+  for (const [id, v] of Object.entries(cache)) {
+    if (v === 'IGNORAR') { out[id] = null; continue; }
+    const [type, holder] = v.split('|');
+    out[id] = holder ? { type, holder } : { type };
+  }
+  return out;
 }
 
 async function organizeLead(lead: {
   id: string; name: string; accountId: string; customFields: unknown; activeLeadsFolderId: string;
 }): Promise<void> {
-  const attachments = await prisma.messageAttachment.findMany({
+  const attachments = (await prisma.messageAttachment.findMany({
     where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'INBOUND' } },
     orderBy: { createdAt: 'asc' },
-    select: { driveFileId: true, fileName: true, mimeType: true },
-  });
-  const files = attachments
-    .filter((a) => !/^(audio|video)\//.test(a.mimeType))
-    .map((a) => ({ driveFileId: a.driveFileId!, fileName: a.fileName, mimeType: a.mimeType }));
+    select: { id: true, driveFileId: true, fileName: true, mimeType: true },
+  })).filter((a) => !/^(audio|video)\//.test(a.mimeType));
+  const files = attachments.map((a) => ({ driveFileId: a.driveFileId!, fileName: a.fileName, mimeType: a.mimeType }));
+  const docInfo = await getDocInfo(lead.accountId, lead.id, attachments);
+  const attIdByDriveId = new Map(attachments.map((a) => [a.driveFileId!, a.id]));
 
-  const cf = { ...((lead.customFields as Record<string, unknown>) || {}) };
+  const freshLead = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
+  const cf = { ...((freshLead?.customFields as Record<string, unknown>) || {}) };
   if (!files.length) {
     cf._driveOrganizedAt = new Date().toISOString();
     await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf as any } });
@@ -94,7 +149,11 @@ async function organizeLead(lead: {
     files,
     clientFolderName,
     activeLeadsFolderId: lead.activeLeadsFolderId,
-    nameFor: (f) => nameDocument(lead.accountId, f).then((n) => (n === undefined ? '' : n)),
+    nameFor: async (f) => {
+      const info = docInfo[attIdByDriveId.get(f.driveFileId) || ''];
+      if (info === null) return null;
+      return info ? docLabel(info) : '';
+    },
   });
 
   cf.link_pasta_drive = result.folderUrl;
