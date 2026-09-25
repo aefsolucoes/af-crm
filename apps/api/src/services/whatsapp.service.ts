@@ -1176,11 +1176,25 @@ async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomin
  *  conversa, Lead.aiAutoReplyActive) — só entra se o gatilho de template
  *  acima não disparou pra essa mensagem. Toda resposta enviada vira uma
  *  Note no card, pra equipe acompanhar/poder desligar se algo sair errado. */
-// A IA espera 2s antes de responder (pedido do usuário 2026-09-25). Se o
-// cliente mandar outra mensagem nesse meio-tempo, só a última responde —
-// e responde a rajada inteira de uma vez (quem manda "Oi" / "tudo bem?" /
-// "queria saber..." em 3 mensagens recebia 3 respostas).
-const AI_REPLY_DELAY_MS = 2000;
+// A IA espera 4s antes de responder, mostrando "digitando..." pro cliente
+// como uma pessoa de verdade (pedido do usuário 2026-09-25). Se o cliente
+// mandar outra mensagem nesse meio-tempo, só a última responde — e responde
+// a rajada inteira de uma vez (quem manda "Oi" / "tudo bem?" / "queria
+// saber..." em 3 mensagens recebia 3 respostas).
+const AI_REPLY_DELAY_MS = 4000;
+
+/** "digitando..." no WhatsApp do cliente (também marca a mensagem como
+ *  lida). Some sozinho em até 25s ou quando a resposta é enviada. */
+async function sendTypingIndicator(accountId: string, departmentId: string | null | undefined, wamid: string): Promise<void> {
+  const config = await getWhatsAppConfig(accountId, departmentId);
+  if (!config?.accessToken || !config.phoneNumberId) return;
+  const res = await fetch(`https://graph.facebook.com/v20.0/${config.phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', status: 'read', message_id: wamid, typing_indicator: { type: 'text' } }),
+  });
+  if (!res.ok) console.warn('[WhatsApp] "digitando..." não foi aceito pela Meta:', res.status, (await res.text()).slice(0, 200));
+}
 
 async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
   try {
@@ -1188,9 +1202,15 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     if (!lead?.aiAutoReplyActive) return;
 
     const latestInbound = () => prisma.message.findFirst({
-      where: { leadId, direction: 'INBOUND' }, orderBy: { createdAt: 'desc' }, select: { id: true },
+      where: { leadId, direction: 'INBOUND' }, orderBy: { createdAt: 'desc' }, select: { id: true, externalId: true },
     });
     const mine = await latestInbound();
+    // Confirmação solta ("ok", "beleza") normalmente não tem resposta — sem
+    // "digitando..." aí, senão parece que alguém começou a responder e desistiu.
+    const { isAcknowledgmentOnly } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
+    if (mine?.externalId && !isAcknowledgmentOnly(incomingText)) {
+      sendTypingIndicator(accountId, departmentId, mine.externalId).catch(() => {});
+    }
     await new Promise((r) => setTimeout(r, AI_REPLY_DELAY_MS));
     const latest = await latestInbound();
     if (mine && latest && latest.id !== mine.id) return; // chegou outra mensagem: a resposta sai por ela
