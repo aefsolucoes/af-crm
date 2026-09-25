@@ -33,6 +33,7 @@ import activityRoutes from './routes/activity';
 import callRoutes from './routes/calls';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
+import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { autoMergeDuplicatesByPhone } from './services/lead.service';
 import { configureWebPush } from './services/push.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
@@ -247,6 +248,15 @@ httpServer.listen(PORT, () => {
       checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade:', err?.message));
     }, AUTOMATION_INACTIVITY_POLL_MS);
   }, 90 * 1000);
+
+  // Card que entrou em "Documentação Recebida": organiza a pasta do cliente
+  // no Drive (LEADS ATIVOS do setor) e grava o link no card.
+  setTimeout(() => {
+    organizeReceivedDocsLeads().catch((err) => console.error('[DocsRecebidos] Poll (boot):', err?.message));
+    setInterval(() => {
+      organizeReceivedDocsLeads().catch((err) => console.error('[DocsRecebidos] Poll:', err?.message));
+    }, 2 * 60 * 1000);
+  }, 2 * 60 * 1000);
 
   // Unificação automática de leads duplicados por TELEFONE (pedido real:
   // campanha cria o 1º card pelo webhook do site, cliente preenche a

@@ -325,6 +325,92 @@ export function folderLink(folderId: string): string {
   return `https://drive.google.com/drive/folders/${folderId}`;
 }
 
+export interface ReceivedDocFile { driveFileId: string; fileName: string; mimeType: string }
+
+/**
+ * Organiza a pasta de documentos de um cliente quando o card entra em
+ * "Documentação Recebida": acha a pasta onde os anexos dele já estão (o
+ * auto-upload do WhatsApp cria uma por cliente), renomeia pro nome do cliente,
+ * põe os documentos numa subpasta "COMPRADOR" (renomeados por `nameFor` — a
+ * IA; null = não é documento, fica fora da COMPRADOR) e move a pasta inteira
+ * pra "LEADS ATIVOS" do setor. Só move e renomeia — nunca apaga nada, e o
+ * driveFileId dos anexos continua valendo (o Drive mantém o id ao mover).
+ */
+export async function organizeReceivedDocsFolder(accountId: string, params: {
+  files: ReceivedDocFile[];
+  clientFolderName: string;
+  activeLeadsFolderId: string;
+  nameFor: (file: ReceivedDocFile) => Promise<string | null>;
+}): Promise<{ folderId: string; folderUrl: string; named: { from: string; to: string }[]; ignored: string[] }> {
+  const drive = await getDrive(accountId);
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+
+  const withParents: { file: ReceivedDocFile; parents: string[] }[] = [];
+  for (const f of params.files) {
+    try {
+      const r = await drive.files.get({ fileId: f.driveFileId, fields: 'id, parents, trashed', supportsAllDrives: true });
+      if (!r.data.trashed) withParents.push({ file: f, parents: r.data.parents || [] });
+    } catch {
+      // arquivo apagado/sem acesso — segue com os outros
+    }
+  }
+
+  // Pasta do cliente = onde a maioria dos anexos está. Se já tinham ido pra
+  // uma "COMPRADOR" (organizado antes), a pasta do cliente é a de cima dela.
+  const count = new Map<string, number>();
+  for (const w of withParents) for (const p of w.parents) count.set(p, (count.get(p) || 0) + 1);
+  let clientFolderId = [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  if (clientFolderId) {
+    const meta = await drive.files.get({ fileId: clientFolderId, fields: 'id, name, parents', supportsAllDrives: true });
+    if (/^comprador$/i.test((meta.data.name || '').trim())) clientFolderId = meta.data.parents?.[0] || null;
+  }
+  // Anexos soltos direto na pasta técnica (ou na raiz): cria a pasta do
+  // cliente do zero em vez de renomear a pasta de todo mundo.
+  const sharedFolders = new Set([conn?.whatsappAttachmentsFolderId, conn?.rootFolderId].filter(Boolean) as string[]);
+  if (!clientFolderId || sharedFolders.has(clientFolderId)) {
+    clientFolderId = (await createFolder(accountId, params.clientFolderName, params.activeLeadsFolderId)).id;
+  }
+
+  const current = await drive.files.get({ fileId: clientFolderId, fields: 'parents', supportsAllDrives: true });
+  const oldParents = (current.data.parents || []).filter((p) => p !== params.activeLeadsFolderId).join(',');
+  await drive.files.update({
+    fileId: clientFolderId,
+    addParents: params.activeLeadsFolderId,
+    ...(oldParents ? { removeParents: oldParents } : {}),
+    requestBody: { name: params.clientFolderName },
+    fields: 'id',
+    supportsAllDrives: true,
+  });
+
+  const comprador = await createFolder(accountId, 'COMPRADOR', clientFolderId);
+  const used = new Map<string, number>();
+  const named: { from: string; to: string }[] = [];
+  const ignored: string[] = [];
+  for (const { file, parents } of withParents) {
+    const base = await params.nameFor(file).catch(() => undefined);
+    if (base === null) { ignored.push(file.fileName); continue; }
+    const ext = (file.fileName.match(/\.[a-z0-9]{2,5}$/i)?.[0] || '').toLowerCase();
+    let name = file.fileName;
+    if (base) {
+      const n = (used.get(base) || 0) + 1;
+      used.set(base, n);
+      name = `${base}${n > 1 ? ` ${n}` : ''}${ext}`;
+    }
+    const removeParents = parents.filter((p) => p !== comprador.id).join(',');
+    await drive.files.update({
+      fileId: file.driveFileId,
+      addParents: comprador.id,
+      ...(removeParents ? { removeParents } : {}),
+      requestBody: { name },
+      fields: 'id',
+      supportsAllDrives: true,
+    });
+    named.push({ from: file.fileName, to: name });
+  }
+
+  return { folderId: clientFolderId, folderUrl: folderLink(clientFolderId), named, ignored };
+}
+
 // ─── Base de conhecimento (leitura de documentos da pasta) ──────────────────
 
 /** Tipos de arquivo que sabemos ler para a base de conhecimento. */

@@ -79,6 +79,10 @@ model Department {
   // sozinha, só avisa que vai chamar alguém da equipe. Editável em
   // Configurações → Setores.
   aiScope   String?
+  // Pasta "LEADS ATIVOS" deste setor no Google Drive (id da pasta). Quando um
+  // card do setor entra em "Documentação Recebida", a pasta de documentos do
+  // cliente vai pra cá (received-docs.service.ts).
+  activeLeadsFolderId String?
 
   pipelines        Pipeline[]
   whatsappNumbers  WhatsAppNumber[]
