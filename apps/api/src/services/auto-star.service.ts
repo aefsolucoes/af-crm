@@ -4,7 +4,7 @@ import { logActivity } from './activity.service';
 const prisma = new PrismaClient();
 
 /* Estrela automática (pedido do Fabio): cliente grande sobe pro topo da Inbox
- * e do Funil — Home Equity com crédito acima de R$ 150 mil, Financiamento
+ * e do Funil (só cards do funil de Vendas) — Home Equity com crédito acima de R$ 150 mil, Financiamento
  * Habitacional acima de R$ 300 mil (sem valor do crédito no card, usa imóvel
  * menos entrada: o formulário do Habitacional não traz o valor financiado).
  * Roda por polling porque o valor chega por vários caminhos (formulário, IA,
@@ -45,7 +45,8 @@ export async function autoStarBigLeads(): Promise<void> {
   running = true;
   try {
     const leads = await prisma.lead.findMany({
-      where: { status: 'OPEN', archived: false, isGroup: false, starred: false },
+      // Só o funil de Vendas (pedido do Fabio) — contratação/Perdidos não.
+      where: { status: 'OPEN', archived: false, isGroup: false, starred: false, pipeline: { name: 'Vendas' } },
       select: { id: true, name: true, accountId: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } },
     });
     for (const lead of leads) {
