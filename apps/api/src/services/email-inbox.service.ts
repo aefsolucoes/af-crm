@@ -629,6 +629,9 @@ export async function sendEmailFrom(params: {
   };
 
   const pass = passwordFor(acc);
+  if (smtpBlockedHost && acc.smtpHost.toLowerCase() === smtpBlockedHost) {
+    throw new Error(`O servidor do CRM está sem saída pro envio de e-mail (${acc.smtpHost}, portas 587/465 bloqueadas pela hospedagem) — o e-mail não foi enviado.`);
+  }
   try {
     await smtpTransport({ host: acc.smtpHost, port: acc.smtpPort, user: acc.username, pass }).sendMail(mail);
   } catch (err: any) {
@@ -913,5 +916,11 @@ export async function probeMailEgress(): Promise<Record<string, string>> {
     sock.on('error', (e: any) => done(`erro ${e?.code || e?.message}`));
   })));
   console.log('[E-mail] Portas de e-mail saindo do servidor:', JSON.stringify(out));
+  smtpBlockedHost = out[`${host}:587`] !== 'abre' && out[`${host}:465`] !== 'abre' ? host.toLowerCase() : null;
   return out;
 }
+
+/** Host SMTP cujas portas de envio o último teste achou fechadas (null = ok).
+ *  Com isso o envio falha na hora, em vez de esperar ~45s de timeout — o
+ *  follow-up automático não fica travado esperando. */
+let smtpBlockedHost: string | null = null;

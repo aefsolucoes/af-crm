@@ -217,6 +217,7 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 API AF CRM rodando em http://localhost:${PORT}`);
   probeUdpEgress().catch(() => {});
   probeMailEgress().catch(() => {});
+  setInterval(() => probeMailEgress().catch(() => {}), 30 * 60 * 1000); // reavalia (ex.: plano mudou)
 
   // Válvula de segurança do disco: arquiva no Drive só os anexos com 30+ dias,
   // numa pasta técnica separada — nunca mexe na organização manual do usuário.
