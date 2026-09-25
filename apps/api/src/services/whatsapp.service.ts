@@ -888,6 +888,24 @@ export async function resolveContactAndLeadByPhone(
         summary: `preencheu o card com o formulário do site (${Object.keys(form.fields).join(', ')})`,
       });
       console.log(`[Formulário] "${form.label}" preencheu o card ${existingLead.id} (${Object.keys(form.fields).length} campos)`);
+
+      // E leva pra Pré-Análise (se ainda estava antes dela) — dispara as
+      // automações dessa etapa como se alguém tivesse movido o card (ex.:
+      // mensagem "Recebi sua proposta certinha..." e desligar a IA).
+      const { advanceLeadOnProposalForm } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
+      const moved = await advanceLeadOnProposalForm(accountId, existingLead.id, textForCampaignDetection).catch((err) => {
+        console.error('[Formulário] Falha ao mover pra pré-análise:', err);
+        return null;
+      });
+      if (moved) {
+        logActivity({
+          accountId, userId: null, userName: 'Formulário do site', action: 'lead_stage_changed', leadId: existingLead.id, leadName: fresh?.name,
+          summary: `moveu o card pra "${moved.stageName}" (formulário completo recebido)`,
+        });
+        console.log(`[Formulário] card ${existingLead.id} movido pra "${moved.stageName}"`);
+        const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
+        runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: existingLead.id, io, context: { newStageId: moved.stageId } }).catch(() => {});
+      }
     }
   } else {
     // Lead de campanha (ficha do site preenchida) já nasce no funil/estágio

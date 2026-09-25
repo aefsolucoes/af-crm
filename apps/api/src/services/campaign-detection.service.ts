@@ -193,6 +193,39 @@ export function parseProposalForm(text: string): { label: string; fields: Record
   return Object.keys(fields).length ? { label: sig.label, fields } : null;
 }
 
+/** Formulário completo chegou num lead que JÁ existe: leva o card pra etapa
+ *  de pré-análise do setor do formulário, mas só se ele ainda está ANTES
+ *  dela (Prospecção/Follow Up/Lead Sem Retorno) — nunca volta quem já está
+ *  em Aprovado, Aguardando Documentação, contratação etc. Lead sem setor
+ *  (Caixa de Entrada) vai pro funil do setor do formulário, igual a um
+ *  contato novo. Lead de OUTRO setor fica onde está. */
+export async function advanceLeadOnProposalForm(accountId: string, leadId: string, text: string): Promise<{ stageId: string; stageName: string } | null> {
+  if (!text || !/cpf\s*:/i.test(text)) return null;
+  const sig = CAMPAIGN_SIGNATURES.find((s) => norm(text).includes(s.marker));
+  if (!sig) return null;
+
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    include: { stage: true, pipeline: { include: { department: true, stages: { orderBy: { order: 'asc' } } } } },
+  });
+  if (!lead) return null;
+
+  const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+
+  if (!lead.pipeline.department) {
+    const route = await detectCampaignRoute(accountId, text);
+    if (!route) return null;
+    const moved = await updateLeadStage(lead.id, accountId, route.stageId);
+    return { stageId: route.stageId, stageName: moved.stage.name };
+  }
+
+  if (norm(lead.pipeline.department.name) !== norm(sig.departmentName)) return null;
+  const target = lead.pipeline.stages.find((st) => norm(st.name).includes(sig.stageMarker) && !/aprovad/.test(norm(st.name)));
+  if (!target || lead.stage.order >= target.order) return null;
+  await updateLeadStage(lead.id, accountId, target.id);
+  return { stageId: target.id, stageName: target.name };
+}
+
 export interface CampaignRoute {
   signature: string;
   pipelineId: string;
