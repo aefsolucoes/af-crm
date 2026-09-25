@@ -1176,12 +1176,39 @@ async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomin
  *  conversa, Lead.aiAutoReplyActive) — só entra se o gatilho de template
  *  acima não disparou pra essa mensagem. Toda resposta enviada vira uma
  *  Note no card, pra equipe acompanhar/poder desligar se algo sair errado. */
+// A IA espera 2s antes de responder (pedido do usuário 2026-09-25). Se o
+// cliente mandar outra mensagem nesse meio-tempo, só a última responde —
+// e responde a rajada inteira de uma vez (quem manda "Oi" / "tudo bem?" /
+// "queria saber..." em 3 mensagens recebia 3 respostas).
+const AI_REPLY_DELAY_MS = 2000;
+
 async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
   try {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
     if (!lead?.aiAutoReplyActive) return;
 
-    const genResult = await generateAiAutoReply(accountId, leadId, incomingText);
+    const latestInbound = () => prisma.message.findFirst({
+      where: { leadId, direction: 'INBOUND' }, orderBy: { createdAt: 'desc' }, select: { id: true },
+    });
+    const mine = await latestInbound();
+    await new Promise((r) => setTimeout(r, AI_REPLY_DELAY_MS));
+    const latest = await latestInbound();
+    if (mine && latest && latest.id !== mine.id) return; // chegou outra mensagem: a resposta sai por ela
+
+    const lastOut = await prisma.message.findFirst({
+      where: { leadId, direction: 'OUTBOUND' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true },
+    });
+    const burst = await prisma.message.findMany({
+      where: { leadId, direction: 'INBOUND', ...(lastOut ? { createdAt: { gt: lastOut.createdAt } } : {}) },
+      orderBy: { createdAt: 'desc' }, take: 5, select: { content: true },
+    });
+    const textToAnswer = burst.length > 1 ? burst.reverse().map((m) => m.content).filter(Boolean).join('\n') : incomingText;
+
+    // Ainda ligada? (alguém pode ter desligado a IA nesses 2s)
+    const still = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
+    if (!still?.aiAutoReplyActive) return;
+
+    const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer);
     if (!genResult) return;
     const { reply, handoff, moveToStage, markLost, stopFollowUp, extractedFields } = genResult;
 
