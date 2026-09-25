@@ -32,6 +32,8 @@ import pushRoutes from './routes/push';
 import activityRoutes from './routes/activity';
 import callRoutes from './routes/calls';
 import aiQuestionRoutes from './routes/ai-questions';
+import emailRoutes from './routes/email';
+import { syncAllEmailAccounts } from './services/email-inbox.service';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
@@ -93,6 +95,7 @@ app.use('/api/push', pushRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/calls', callRoutes);
 app.use('/api/ai-questions', aiQuestionRoutes);
+app.use('/api/email', emailRoutes);
 
 configureWebPush();
 
@@ -259,6 +262,16 @@ httpServer.listen(PORT, () => {
       autoStarBigLeads().catch((err) => console.error('[Estrela] Poll:', err?.message));
     }, 5 * 60 * 1000);
   }, 3 * 60 * 1000);
+
+  // Caixa de e-mail do CRM: busca e-mails novos (IMAP) de todas as caixas
+  // conectadas — a da empresa e as pessoais. E-mail de cliente conhecido
+  // também cai na conversa do card.
+  setTimeout(() => {
+    syncAllEmailAccounts(io).catch((err) => console.error('[E-mail] Poll (boot):', err?.message));
+    setInterval(() => {
+      syncAllEmailAccounts(io).catch((err) => console.error('[E-mail] Poll:', err?.message));
+    }, 60 * 1000);
+  }, 75 * 1000);
 
   // Card que entrou em "Documentação Recebida": organiza a pasta do cliente
   // no Drive (LEADS ATIVOS do setor) e grava o link no card.

@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed, Bot } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed, Bot, Mail } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
@@ -15,6 +15,7 @@ import { MessageMenu } from '@/components/inbox/message-menu';
 import { useOutboundCallStore } from '@/store/outbound-call.store';
 import { useAuthStore } from '@/store/auth.store';
 import { EmojiPickerButton } from '@/components/inbox/emoji-picker';
+import { EmailComposer, MailboxOption } from '@/components/email/email-composer';
 
 // Cor estável por remetente em grupos (estilo WhatsApp: mesma pessoa, mesma cor).
 const SENDER_COLORS = ['#e542a3', '#00a884', '#ff7e00', '#6a5cff', '#0ea5e9', '#e0453e', '#7c9c00', '#b26bff'];
@@ -284,6 +285,29 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     } finally {
       setAiCalling(false);
       refreshCallPermission();
+    }
+  }
+
+  // E-mail pro cliente direto da conversa (caixa de e-mail do CRM): abre o
+  // mesmo editor da página E-mail, já com o e-mail do contato. O enviado e a
+  // resposta do cliente aparecem nesta conversa.
+  const [emailDraft, setEmailDraft] = useState<{ to: string; mailboxes: MailboxOption[] } | null>(null);
+  const [openingEmail, setOpeningEmail] = useState(false);
+  async function openEmailComposer() {
+    setOpeningEmail(true);
+    try {
+      const [{ data: lead }, { data: boxes }] = await Promise.all([
+        api.get(`/api/leads/${leadId}`),
+        api.get('/api/email/accounts'),
+      ]);
+      if (!boxes?.length) { toast('Nenhuma caixa de e-mail conectada — conecte na página E-mail', 'warning'); return; }
+      const to = lead?.contact?.email || '';
+      if (!to) toast('O cliente não tem e-mail no card — digite o e-mail dele (fica salvo no contato)', 'warning');
+      setEmailDraft({ to, mailboxes: boxes });
+    } catch {
+      toast('Não consegui abrir o e-mail', 'error');
+    } finally {
+      setOpeningEmail(false);
     }
   }
 
@@ -1284,6 +1308,15 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             </button>
           )}
           <button
+            onClick={openEmailComposer}
+            disabled={openingEmail}
+            title="Mandar um e-mail pra esse cliente — a resposta dele volta pra esta conversa"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
+          >
+            {openingEmail ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
+            <span className="hidden md:inline">E-mail</span>
+          </button>
+          <button
             onClick={handleCopyLink}
             title="Copiar link direto pra essa conversa — quem abrir (logado no CRM) cai direto aqui"
             className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
@@ -1972,6 +2005,15 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
       {/* Aviso: envio falhou por falta de telefone real (contato só tem @lid) —
           cadastra na hora e reenvia sozinho, sem mandar caçar o campo certo. */}
+      {emailDraft && (
+        <EmailComposer
+          mailboxes={emailDraft.mailboxes}
+          to={emailDraft.to}
+          leadId={leadId}
+          onClose={() => setEmailDraft(null)}
+        />
+      )}
+
       {phoneFixKind && (
         <div className="relative z-10 flex items-center gap-2 px-4 py-2 bg-amber-900/40 border-t border-amber-700/40">
           <AlertCircle size={14} className="flex-shrink-0 text-amber-300" />

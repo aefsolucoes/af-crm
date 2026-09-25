@@ -62,6 +62,12 @@ const COMPANY_SIGNATURE_HTML = `
     <p style="font-size:12px;color:#475569;margin:0">Endereço: ${COMPANY_ADDRESS}</p>
   </div>`;
 
+/** Assinatura da empresa (HTML) — reaproveitada pela caixa de e-mail do CRM
+ *  quando o envio sai da caixa comercial@. */
+export function companySignatureHtml(): string {
+  return COMPANY_SIGNATURE_HTML;
+}
+
 /** E-mail com corpo livre (automações de follow-up) — cada linha em branco
  *  vira um parágrafo, igual quem escreveu enxerga no campo de texto. */
 export async function sendGenericEmail(to: string, subject: string, bodyText: string): Promise<void> {

@@ -33,6 +33,7 @@ model Account {
   assistantQuestions AssistantQuestion[]
   assistantMemories  AssistantMemory[]
   aiTeamQuestions    AiTeamQuestion[]
+  emailAccounts      EmailAccount[]
   messageTemplates   MessageTemplate[]
   departments        Department[]
   automationRules    AutomationRule[]
@@ -68,18 +69,18 @@ model ActivityLog {
 // (departmentId não é levado em conta pra ele). Lista editável em
 // Configurações → Departamentos.
 model Department {
-  id        String   @id @default(cuid())
-  accountId String
-  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  name      String
-  order     Int      @default(0)
-  createdAt DateTime @default(now())
+  id                  String   @id @default(cuid())
+  accountId           String
+  account             Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name                String
+  order               Int      @default(0)
+  createdAt           DateTime @default(now())
   // Produtos/linhas que a IA do WhatsApp (Lead.aiAutoReplyActive) atende
   // dentro deste setor — texto livre, ex.: "financiamento habitacional, home
   // equity, financiamento para construção". Fora disso ela não responde
   // sozinha, só avisa que vai chamar alguém da equipe. Editável em
   // Configurações → Setores.
-  aiScope   String?
+  aiScope             String?
   // Pasta "LEADS ATIVOS" deste setor no Google Drive (id da pasta). Quando um
   // card do setor entra em "Documentação Recebida", a pasta de documentos do
   // cliente vai pra cá (received-docs.service.ts).
@@ -175,6 +176,7 @@ model User {
   assistantQuestionsReceived AssistantQuestion[] @relation("AssistantQuestionTarget")
   assistantMemoriesCreated   AssistantMemory[]
   pushSubscriptions          PushSubscription[]
+  emailAccounts              EmailAccount[]
   callsAnswered              Call[]
 }
 
@@ -254,6 +256,7 @@ model Lead {
   assistantQuestions AssistantQuestion[]
   calls              Call[]
   aiTeamQuestions    AiTeamQuestion[]
+  emailMessages      EmailMessage[]
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
 }
@@ -282,6 +285,71 @@ model AssistantQuestion {
   answeredAt    DateTime?
 
   @@index([accountId, targetUserId, answered])
+}
+
+// Caixa de e-mail conectada ao CRM — IMAP pra ler, SMTP pra enviar.
+// userId null = caixa da EMPRESA (comercial@), visível pra equipe toda; a
+// senha vem do ambiente (SMTP_PASS) e nunca é gravada (passwordEnc null).
+// userId preenchido = caixa PESSOAL, só o dono vê; senha criptografada
+// (AES-256-GCM, lib/secret-box.ts). syncState guarda, por pasta, o
+// uidValidity e o último UID já trazido: { INBOX: {...}, SENT: {...} }.
+model EmailAccount {
+  id          String         @id @default(cuid())
+  accountId   String
+  account     Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  address     String
+  displayName String?
+  imapHost    String
+  imapPort    Int            @default(993)
+  smtpHost    String
+  smtpPort    Int            @default(587)
+  username    String
+  passwordEnc String?
+  syncState   Json?
+  lastSyncAt  DateTime?
+  lastError   String?
+  createdAt   DateTime       @default(now())
+  messages    EmailMessage[]
+
+  @@unique([accountId, address])
+  @@index([userId])
+}
+
+// E-mail sincronizado de uma EmailAccount (pasta INBOX ou SENT). Corpo em
+// texto/HTML (anexos NÃO são guardados — só a lista; o download busca no
+// servidor IMAP na hora, pra não encher o disco como no incidente de agosto).
+// leadId = cliente reconhecido pelo e-mail do contato (aí também vira uma
+// mensagem de canal EMAIL na conversa do card).
+model EmailMessage {
+  id             String       @id @default(cuid())
+  emailAccountId String
+  emailAccount   EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+  folder         String
+  uid            Int?
+  messageId      String?
+  inReplyTo      String?
+  references     String?      @db.Text
+  fromName       String?
+  fromAddress    String?
+  toList         Json?
+  ccList         Json?
+  subject        String?
+  date           DateTime
+  snippet        String?
+  textBody       String?      @db.Text
+  htmlBody       String?      @db.Text
+  attachments    Json?
+  seen           Boolean      @default(false)
+  leadId         String?
+  lead           Lead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  createdAt      DateTime     @default(now())
+
+  @@unique([emailAccountId, folder, uid])
+  @@index([emailAccountId, folder, date])
+  @@index([messageId])
+  @@index([leadId])
 }
 
 // Dúvida que a IA de atendimento não soube responder sozinha e perguntou pra
