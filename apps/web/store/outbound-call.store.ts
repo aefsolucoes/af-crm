@@ -81,6 +81,7 @@ interface OutboundCallState {
   toggleMute: () => void;
   handleCallAnswered: (waCallId: string, sdp: string) => Promise<void>;
   handleCallAccepted: (waCallId: string) => void;
+  handleCallRinging: (waCallId: string) => void;
   handleCallEnded: (endedWaCallId: string) => void;
 }
 
@@ -137,7 +138,8 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
     const { leadId } = get();
     if (!leadId) return;
     set({ stage: 'connecting' });
-    stopRingback = startRingbackTone();
+    // O "tum tum" NÃO começa mais aqui: só quando a Meta avisa que o celular
+    // do cliente está tocando (handleCallRinging) — antes tocava 3-5s antes.
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStream = stream;
@@ -192,6 +194,9 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
         return;
       }
       waCallId = data.waCallId;
+      // Reserva: se o aviso de "tocando" não chegar em 6s, toca mesmo assim
+      // (melhor que ficar em silêncio sem saber se está chamando).
+      setTimeout(() => { if (waCallId === data.waCallId && get().stage === 'connecting' && !stopRingback) stopRingback = startRingbackTone(); }, 6000);
       if (diagTimer) clearInterval(diagTimer);
       diagTimer = setInterval(() => sendDiag('tick'), 5000);
     } catch (err) {
@@ -234,6 +239,13 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
     } catch (err) {
       console.error('[Calling] Falha ao aplicar resposta SDP:', err);
     }
+  },
+
+  handleCallRinging: (ringingWaCallId) => {
+    // Pode chegar um instante antes da resposta do POST (waCallId ainda
+    // vazio) — como só existe uma ligação de saída por vez, vale o estágio.
+    if (get().stage !== 'connecting' || (waCallId && ringingWaCallId !== waCallId) || stopRingback) return;
+    stopRingback = startRingbackTone();
   },
 
   handleCallAccepted: (acceptedWaCallId) => {

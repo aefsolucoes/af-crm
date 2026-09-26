@@ -32,13 +32,16 @@ export function OutboundCallBar() {
     const socket = getSocket();
     const onAnswered = ({ waCallId, sdp }: { waCallId: string; sdp: string }) => handleCallAnswered(waCallId, sdp);
     const onAccepted = ({ waCallId }: { waCallId: string }) => handleCallAccepted(waCallId);
+    const onRinging = ({ waCallId }: { waCallId: string }) => useOutboundCallStore.getState().handleCallRinging(waCallId);
     const onEnded = ({ waCallId }: { waCallId: string }) => handleCallEnded(waCallId);
     socket.on('call_answered', onAnswered);
     socket.on('call_accepted', onAccepted);
+    socket.on('call_ringing', onRinging);
     socket.on('call_ended', onEnded);
     return () => {
       socket.off('call_answered', onAnswered);
       socket.off('call_accepted', onAccepted);
+      socket.off('call_ringing', onRinging);
       socket.off('call_ended', onEnded);
     };
   }, [handleCallAnswered, handleCallAccepted, handleCallEnded]);

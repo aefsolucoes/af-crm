@@ -15,13 +15,22 @@ export function waitForIceGatheringComplete(pc: RTCPeerConnection): Promise<void
       if (done) return;
       done = true;
       pc.removeEventListener('icegatheringstatechange', check);
+      pc.removeEventListener('icecandidate', onCandidate);
       resolve();
     };
     const check = () => {
       console.log('[Calling] iceGatheringState:', pc.iceGatheringState);
       if (pc.iceGatheringState === 'complete') finish();
     };
+    // Já tendo o endereço público (candidato "srflx" do STUN), não precisa
+    // esperar o resto: a Meta conecta com ele (e descobre o caminho na hora,
+    // como se viu no diagnóstico — "prflx"). Antes esperava até 4s aqui, o
+    // que atrasava o celular começar a tocar.
+    const onCandidate = (e: RTCPeerConnectionIceEvent) => {
+      if (e.candidate && / typ srflx /.test(` ${e.candidate.candidate} `)) setTimeout(finish, 250);
+    };
     pc.addEventListener('icegatheringstatechange', check);
-    setTimeout(finish, 4000);
+    pc.addEventListener('icecandidate', onCandidate);
+    setTimeout(finish, 2000);
   });
 }

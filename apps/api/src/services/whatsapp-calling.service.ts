@@ -412,6 +412,13 @@ async function handleOutboundCallStatus(st: any, io: any): Promise<void> {
   const status = String(st?.status || '').toUpperCase();
   if (!waCallId) return;
   console.log(`[Calling] status ${status} ${waCallId}`);
+  if (status === 'RINGING') {
+    // Celular do cliente começou a tocar: é aqui que o "tum tum" do CRM
+    // começa (antes começava no clique, 3-5s antes do celular tocar).
+    const ringing = await prisma.call.findUnique({ where: { waCallId }, select: { direction: true, answeredByUserId: true } });
+    if (ringing?.direction === 'OUTBOUND' && ringing.answeredByUserId) io.to(`user_${ringing.answeredByUserId}`).emit('call_ringing', { waCallId });
+    return;
+  }
   if (status !== 'ACCEPTED') return;
 
   const existing = await prisma.call.findUnique({ where: { waCallId } });
