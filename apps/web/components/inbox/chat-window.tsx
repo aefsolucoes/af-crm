@@ -282,6 +282,18 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     setCallButtonState(null);
     refreshCallPermission();
   }, [refreshCallPermission]);
+  // Cliente tocou em "Permitir ligações" com a conversa aberta: o botão fica
+  // verde na hora (antes só mudava ao reabrir a conversa).
+  useEffect(() => {
+    const socket = getSocket();
+    const onPermission = () => { refreshCallPermission(); };
+    socket.on('call_permission_granted', onPermission);
+    socket.on('call_permission_denied', onPermission);
+    return () => {
+      socket.off('call_permission_granted', onPermission);
+      socket.off('call_permission_denied', onPermission);
+    };
+  }, [refreshCallPermission]);
   // Depois do clique (que pode ter só pedido permissão, sem ligar de
   // verdade), re-consulta pra atualizar a cor do botão na hora -- sem isso
   // ficava com a MESMA cor de antes do clique, sem nenhum sinal pra quem tá

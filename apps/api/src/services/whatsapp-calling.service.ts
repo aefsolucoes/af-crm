@@ -92,8 +92,29 @@ export async function createCallMessage(leadId: string | null, direction: 'INBOU
  *  necessariamente tem uma Message vinculada (ex.: ligações de teste de
  *  antes dessa migration) -- updateMany simplesmente não acha nada e segue
  *  a vida, em vez de derrubar quem chamou com um erro "record not found". */
-export async function finalizeCallMessage(waCallId: string, status: string, durationSec: number, io: any, accountId: string, leadId: string | null): Promise<void> {
+export async function finalizeCallMessage(waCallId: string, status: string, durationSec: number, io: any, accountId: string, leadId: string | null, opts: { skipNote?: boolean } = {}): Promise<void> {
   try {
+    // Ligação da EQUIPE também vai pras notas do card (pedido do Fabio 26/09
+    // — a da IA já grava a própria nota com resumo, por isso skipNote). Só
+    // na 1ª finalização (webhook e botão de desligar podem chegar os dois).
+    const before = await prisma.message.findFirst({ where: { callWaCallId: waCallId }, select: { callStatus: true, leadId: true } });
+    const alreadyFinal = !!before?.callStatus && ['ENDED', 'MISSED', 'REJECTED', 'FAILED'].includes(before.callStatus);
+    const noteLeadId = leadId || before?.leadId || null;
+    if (!opts.skipNote && !alreadyFinal && noteLeadId) {
+      const call = await prisma.call.findUnique({ where: { waCallId }, select: { direction: true, answeredBy: { select: { id: true, name: true } } } });
+      const who = call?.answeredBy?.name;
+      const how = call?.direction === 'OUTBOUND'
+        ? `Ligação feita${who ? ` por ${who}` : ''}`
+        : `Ligação recebida do cliente${who ? ` — atendida por ${who}` : ''}`;
+      const result = status === 'ENDED' && durationSec > 0 ? `conversaram ${formatCallDuration(durationSec)}`
+        : status === 'REJECTED' ? 'recusada'
+        : status === 'FAILED' ? 'falhou'
+        : call?.direction === 'OUTBOUND' ? 'não atendida' : 'perdida (ninguém atendeu)';
+      await prisma.note.create({
+        data: { leadId: noteLeadId, type: 'CALL', content: `📞 ${how} pelo WhatsApp — ${result}.`, ...(call?.answeredBy?.id ? { userId: call.answeredBy.id } : {}) },
+      }).catch((err) => console.error('[Calling] Nota da ligação não gravou:', err?.message));
+    }
+
     const content = status === 'ENDED' && durationSec > 0
       ? `📞 Ligação de voz — ${formatCallDuration(durationSec)}`
       : status === 'MISSED' ? '📞 Ligação de voz perdida'

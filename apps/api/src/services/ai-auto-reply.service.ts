@@ -16,7 +16,7 @@ async function callPermissionContext(accountId: string, leadId: string): Promise
       select: { id: true },
     });
     if (!asked) return '';
-    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { departmentId: true } }, contact: { select: { whatsappPhone: true, phone: true } } } });
+    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { departmentId: true } }, contact: { select: { whatsappPhone: true, phone: true } }, user: { select: { name: true } } } });
     const raw = (lead?.contact?.whatsappPhone && !lead.contact.whatsappPhone.includes('@') ? lead.contact.whatsappPhone : lead?.contact?.phone) || '';
     const digits = raw.replace(/\D/g, '');
     if (digits.length < 10) return '';
@@ -25,9 +25,14 @@ async function callPermissionContext(accountId: string, leadId: string): Promise
     const config = await getWhatsAppConfig(accountId, lead?.pipeline?.departmentId);
     if (!config?.phoneNumberId || !config.accessToken) return '';
     const state = await getCallPermissionState({ phoneNumberId: config.phoneNumberId, accessToken: config.accessToken }, normalizeBrazilianWhatsAppPhone(digits));
+    // Quem liga (pedido do Fabio 26/09): a Andreia, a não ser que o responsável
+    // pelo card seja outra pessoa — aí a IA avisa que é essa pessoa.
+    const firstName = (lead?.user?.name || '').trim().split(/\s+/)[0] || '';
+    const caller = firstName && firstName.toLowerCase() !== 'andreia' ? firstName : 'Andreia';
     return state.permitted
       ? `--- LIGAÇÃO PELO WHATSAPP ---
-O cliente JÁ PERMITIU ligações pelo WhatsApp. Se ele quiser ou aceitar uma ligação, pode confirmar que a gente liga por aqui pelo WhatsApp em breve (sem prometer horário).`
+O cliente JÁ PERMITIU ligações pelo WhatsApp. Quem liga pra ele é: ${caller}.
+Se ele quiser ou aceitar uma ligação, confirme dizendo o NOME de quem vai ligar — algo como "${caller} vai te ligar por aqui pelo WhatsApp em breve." (sem prometer horário). Não diga só "a equipe". Nesse caso NÃO desvie pro formulário/link da proposta — a resposta é só a confirmação da ligação.`
       : `--- LIGAÇÃO PELO WHATSAPP ---
 Já pedimos permissão pra ligar pra esse cliente pelo WhatsApp, mas ele AINDA NÃO PERMITIU. Responder "sim" por escrito não vale — sem tocar no botão, a ligação não completa.
 Se ele disser que pode ligar, que quer uma ligação ou responder "sim" ao pedido: NÃO diga que vai ligar. Explique em 1-2 frases que, pra gente conseguir ligar, é só ele tocar em *Permitir ligações* no cartão "pode ligar para você?" aqui na conversa (logo abaixo da nossa mensagem) e escolher *Permitir ligações*.`;

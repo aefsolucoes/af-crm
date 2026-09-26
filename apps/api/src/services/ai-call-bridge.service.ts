@@ -434,7 +434,7 @@ async function finalizeIfStillOpen(s: AiCallSession, reason: string): Promise<vo
   const payload = { waCallId: s.waCallId, status, endReason: `ai_${reason}` };
   s.io?.to(`account_${s.accountId}`).emit('call_ended', payload);
   s.io?.to(`lead:${s.leadId}`).emit('call_ended', payload);
-  await finalizeCallMessage(s.waCallId, status, durationSec, s.io, s.accountId, s.leadId);
+  await finalizeCallMessage(s.waCallId, status, durationSec, s.io, s.accountId, s.leadId, { skipNote: true }); // a IA grava a própria nota (com resumo)
 }
 
 const FIELD_LABELS: Record<string, string> = {
