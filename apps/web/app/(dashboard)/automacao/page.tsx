@@ -431,34 +431,48 @@ export default function AutomacaoPage() {
                         onChange={(e) => updateActionConfig(i, 'bodyParams', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
                         placeholder="Parâmetros do corpo, separados por vírgula (opcional)"
                       />
-                      <label className="flex items-start gap-2 text-xs text-slate-600 pt-1 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={action.config.alsoEmail === true}
-                          onChange={(e) => updateActionConfig(i, 'alsoEmail', e.target.checked)}
-                          className="mt-0.5"
-                        />
-                        <span>
-                          Também mandar por e-mail quando o cliente tiver e-mail no card
-                          <span className="block text-slate-400">Mesmo texto do template, pela caixa comercial@. A resposta do cliente volta pra conversa do card.</span>
-                        </span>
-                      </label>
-                      {action.config.alsoEmail === true && (
-                        <Input
-                          value={String(action.config.emailSubject || '')}
-                          onChange={(e) => updateActionConfig(i, 'emailSubject', e.target.value)}
-                          placeholder="Assunto do e-mail (opcional — padrão: nome do produto do setor)"
-                        />
-                      )}
-                      {action.config.alsoEmail === true && (
-                        <textarea
-                          value={String(action.config.emailBody || '')}
-                          onChange={(e) => updateActionConfig(i, 'emailBody', e.target.value)}
-                          rows={4}
-                          placeholder="Texto do e-mail (opcional — vazio = mesmo texto do template do WhatsApp). Aceita {{nome}}."
-                          className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent resize-y"
-                        />
-                      )}
+                      {/* E-mail pro cliente junto com o template — texto livre (e-mail não
+                          precisa de aprovação da Meta, pedido do Fabio 2026-09-25). */}
+                      <div className={`mt-2 rounded-lg border ${action.config.alsoEmail === true ? 'border-blue-200 bg-blue-50/40' : 'border-af-border'} p-2.5 space-y-2`}>
+                        <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={action.config.alsoEmail === true}
+                            onChange={(e) => updateActionConfig(i, 'alsoEmail', e.target.checked)}
+                            className="mt-1"
+                          />
+                          <span>
+                            <span className="font-medium">📧 Mandar também um e-mail pro cliente</span>
+                            <span className="block text-xs text-slate-400">Só pra quem tem e-mail no card. Sai pela caixa comercial@, com a assinatura dela; a resposta do cliente volta pra conversa do card.</span>
+                          </span>
+                        </label>
+                        {action.config.alsoEmail === true && (
+                          <>
+                            <div>
+                              <label className="text-xs font-medium text-slate-600 mb-1 block">Assunto do e-mail</label>
+                              <Input
+                                value={String(action.config.emailSubject || '')}
+                                onChange={(e) => updateActionConfig(i, 'emailSubject', e.target.value)}
+                                placeholder="Ex.: Sua simulação de crédito com garantia de imóvel"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs font-medium text-slate-600 mb-1 block">Texto do e-mail</label>
+                              <textarea
+                                value={String(action.config.emailBody || '')}
+                                onChange={(e) => updateActionConfig(i, 'emailBody', e.target.value)}
+                                rows={9}
+                                placeholder={'Olá, tudo bem?\n\nEscreva aqui o e-mail que o cliente vai receber...'}
+                                className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent resize-y bg-white"
+                              />
+                              <p className="text-xs text-slate-400 mt-1">
+                                Texto livre — e-mail não precisa de aprovação da Meta. Link colado vira clicável; aceita {'{{nome}}'}.
+                                {!String(action.config.emailBody || '').trim() && ' Em branco, vai o mesmo texto do template do WhatsApp.'}
+                              </p>
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </div>
                   )}
 
