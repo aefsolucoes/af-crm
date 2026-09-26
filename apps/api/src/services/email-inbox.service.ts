@@ -134,12 +134,16 @@ const SIGNATURE_LINK_RE = /([\w.+-]+@[\w-]+(?:\.[\w-]+)+)|(https?:\/\/[^\s<]+|(?
 const LINK_STYLE = 'color:#3b82f6;text-decoration:none';
 
 function linkifySignatureLine(line: string): string {
+  // Linha que fala em WhatsApp: o número abre conversa no WhatsApp (wa.me)
+  // em vez de ligar — o número da API Oficial não recebe ligação comum.
+  const whatsapp = /whats\s*app|wpp|zap/i.test(line);
   return escapeHtml(line).replace(SIGNATURE_LINK_RE, (m, email, url, phone) => {
     if (email) return `<a href="mailto:${email}" style="${LINK_STYLE}">${email}</a>`;
     if (url) return `<a href="${/^https?:/i.test(url) ? url : `https://${url}`}" style="${LINK_STYLE}">${url}</a>`;
     if (phone) {
       const digits = phone.replace(/\D/g, '');
-      return `<a href="tel:+${digits.length <= 11 ? `55${digits}` : digits}" style="${LINK_STYLE}">${phone}</a>`;
+      const full = digits.length <= 11 ? `55${digits}` : digits;
+      return `<a href="${whatsapp ? `https://wa.me/${full}` : `tel:+${full}`}" style="${LINK_STYLE}">${phone}</a>`;
     }
     return m;
   });
