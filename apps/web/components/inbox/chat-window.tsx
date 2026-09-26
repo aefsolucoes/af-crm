@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, Fragment } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
@@ -106,6 +106,15 @@ function extractMetaVariables(text: string): number[] {
   const matches = text.match(/\{\{(\d+)\}\}/g) || [];
   const nums = [...new Set(matches.map((m) => parseInt(m.replace(/\D/g, ''), 10)))];
   return nums.sort((a, b) => a - b);
+}
+
+/** Botões gravados no fim do texto de uma mensagem enviada (template ou
+ *  mensagem com botões): "...\n\n[Tenho interesse]  [Não tenho interesse]".
+ *  Botão de link ("[texto → url]") fica de fora — continua no texto. */
+function splitButtons(content: string): { text: string; buttons: string[] } {
+  const m = content.match(/\n\n((?:\[[^\]\n→]+\]\s*)+)$/);
+  if (!m || m.index === undefined) return { text: content, buttons: [] };
+  return { text: content.slice(0, m.index), buttons: (m[1].match(/\[[^\]]+\]/g) || []).map((x) => x.slice(1, -1).trim()) };
 }
 
 /** Mensagem de canal EMAIL na conversa (caixa de e-mail do CRM): separa o
@@ -298,6 +307,26 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       refreshCallPermission();
     }
   }
+
+  // Botões das mensagens enviadas e qual deles o cliente escolheu (a resposta
+  // do botão chega citando a mensagem — replyToExternalId = wamid dela).
+  const buttonInfo = useMemo(() => {
+    const byWamid = new Map<string, string[]>();
+    const chosen = new Map<string, string>();
+    for (const m of messages) {
+      if (m.direction === 'OUTBOUND' && m.externalId) {
+        const b = splitButtons(m.content || '').buttons;
+        if (b.length) byWamid.set(m.externalId, b);
+      }
+    }
+    for (const m of messages) {
+      const target = (m as any).replyToExternalId as string | undefined;
+      if (m.direction === 'INBOUND' && target && byWamid.get(target)?.some((b) => b.toLowerCase() === (m.content || '').trim().toLowerCase())) {
+        chosen.set(target, (m.content || '').trim());
+      }
+    }
+    return { byWamid, chosen };
+  }, [messages]);
 
   // E-mail pro cliente direto da conversa (caixa de e-mail do CRM): abre o
   // mesmo editor da página E-mail, já com o e-mail do contato. O enviado e a
@@ -1755,7 +1784,40 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                           // mensagem enviada e marcada com estrela — com pr-12
                           // (48px) a última linha do texto ficava coberta por
                           // ele, parecendo "cortado"/duplicado.
-                          return <p className="text-sm leading-relaxed whitespace-pre-wrap pr-20">{renderMessageText(text)}</p>;
+                          // Botões (template/mensagem com botões) desenhados como no
+                          // WhatsApp, e o escolhido pelo cliente marcado; resposta do
+                          // cliente que veio por botão ganha a etiqueta "pelo botão".
+                          const split = msg.channel !== 'EMAIL' && isOut ? splitButtons(text) : { text, buttons: [] as string[] };
+                          const replyTarget = (msg as any).replyToExternalId as string | undefined;
+                          const viaButton = !isOut && !!replyTarget && !!buttonInfo.byWamid.get(replyTarget)?.some((b) => b.toLowerCase() === text.trim().toLowerCase());
+                          const chosen = msg.externalId ? buttonInfo.chosen.get(msg.externalId) : undefined;
+                          return (
+                            <>
+                              {viaButton && (
+                                <p className="flex items-center gap-1 text-[10px] font-semibold text-[#53bdeb] mb-0.5">
+                                  <MousePointerClick size={11} /> Respondeu pelo botão
+                                </p>
+                              )}
+                              {split.text && <p className="text-sm leading-relaxed whitespace-pre-wrap pr-20">{renderMessageText(split.text)}</p>}
+                              {split.buttons.length > 0 && (
+                                <div className="-mx-3 mt-2 mb-4 border-t border-white/10">
+                                  {split.buttons.map((b) => {
+                                    const picked = chosen?.toLowerCase() === b.toLowerCase();
+                                    return (
+                                      <div
+                                        key={b}
+                                        className={cn('flex items-center justify-center gap-1.5 py-1.5 text-[13px] font-medium border-b border-white/10 last:border-b-0',
+                                          picked ? 'text-emerald-300 bg-emerald-500/10' : 'text-[#53bdeb]')}
+                                      >
+                                        <Reply size={13} /> {b}
+                                        {picked && <span className="ml-1 text-[10px] font-semibold rounded-full bg-emerald-500/20 px-1.5 py-px">✓ cliente escolheu</span>}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </>
+                          );
                         })()}
                       </>
                     )}
