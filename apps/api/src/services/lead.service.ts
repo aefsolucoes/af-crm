@@ -256,6 +256,16 @@ export async function mergeLeadPair(
       prisma.message.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
       prisma.task.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
       prisma.note.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      // Tudo que aponta pro card também vai junto — anexos (Drive/docs),
+      // ligações, e-mails, dúvidas da IA, comissão e histórico de automação
+      // (sem isso ficavam órfãos ou eram apagados junto com o source).
+      prisma.messageAttachment.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      prisma.call.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      prisma.emailMessage.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      prisma.aiTeamQuestion.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      prisma.assistantQuestion.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      prisma.commissionSuggestion.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      prisma.automationLog.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
       prisma.lead.update({
         where: { id: keepId },
         data: {

@@ -1190,8 +1190,10 @@ async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string
     if (!/^(sim,?\s*)?tenho interesse\b/i.test(text.trim())) return false;
     const lead = await prisma.lead.findFirst({
       where: { id: leadId, accountId },
-      select: { stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } },
+      select: { stage: { select: { name: true } }, pipeline: { select: { name: true, department: { select: { name: true } } } } },
     });
+    // Card já em contratação / concluído / perdidos: proposta não faz sentido.
+    if (/contrata|conclu|perdid/i.test(lead?.pipeline?.name || '')) return false;
     const dept = (lead?.pipeline?.department?.name || '').toLowerCase();
     const quickReplyName = dept.includes('home equity') ? 'Proposta manual Home Equity' : dept.includes('habitacional') ? 'Proposta manual Finan Hab' : null;
     if (!quickReplyName) return false;
