@@ -790,6 +790,16 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   useEffect(() => {
     const socket = getSocket();
     socket.emit('join_lead', leadId);
+    // Reconectou (servidor reiniciou num deploy, Wi-Fi oscilou, notebook
+    // dormiu): o servidor esquece a sala da conversa — a lista (sala da
+    // conta, automática) voltava a atualizar, mas a conversa aberta ficava
+    // sem mensagem nova até recarregar (Fabio 26/09: "chega na Inbox, mas
+    // não chega na conversa"). Reentra na sala e busca o que chegou no meio.
+    const onReconnect = () => {
+      socket.emit('join_lead', leadId);
+      queryClient.invalidateQueries({ queryKey: ['messages', leadId] });
+    };
+    socket.on('connect', onReconnect);
 
     socket.on('new_message', (msg: Message) => {
       if (msg.leadId === leadId) onNewMessage(msg);
@@ -838,6 +848,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
     return () => {
       socket.emit('leave_lead', leadId);
+      socket.off('connect', onReconnect);
       socket.off('new_message');
       socket.off('message_status');
       socket.off('lead_ai_toggled');
@@ -847,7 +858,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       socket.off('message_starred');
       socket.off('call_message_updated');
     };
-  }, [leadId, onNewMessage]);
+  }, [leadId, onNewMessage, queryClient]);
 
   // Fora da janela de 24h, a API Oficial rejeita texto livre — só um template
   // aprovado reabre a conversa. Trava ANTES de tentar (a Meta ia recusar de
