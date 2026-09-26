@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useAuthStore } from '@/store/auth.store';
@@ -130,6 +131,9 @@ export default function LoginPage() {
                   Entrar
                 </Button>
               </form>
+              <div className="text-center mt-4">
+                <Link href="/esqueci-senha" className="text-sm text-af-accent font-medium hover:underline">Esqueci minha senha</Link>
+              </div>
             </>
           ) : (
             <>

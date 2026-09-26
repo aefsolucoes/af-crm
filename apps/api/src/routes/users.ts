@@ -152,6 +152,7 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
     if (password) {
       if (password.length < 6) return res.status(400).json({ error: 'A senha deve ter pelo menos 6 caracteres' });
       data.password = await bcrypt.hash(password, 10);
+      data.passwordChangedAt = new Date(); // sessões abertas com a senha antiga caem
     }
     if (role && VALID_ROLES.includes(role as Role)) {
       // Não deixar rebaixar o último admin (evita conta sem administrador).

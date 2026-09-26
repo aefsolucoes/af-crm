@@ -177,7 +177,7 @@ export default function UsuariosPage() {
     <div className="flex flex-col h-full">
       <Topbar title="Usuários" subtitle="Gerencie a equipe, funções e o número de WhatsApp de cada um" />
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         {/* Stats */}
         <div className="grid grid-cols-3 gap-4 mb-6">
           {[
@@ -203,15 +203,17 @@ export default function UsuariosPage() {
         </div>
 
         {/* Table */}
-        <div className="bg-white rounded-xl border border-af-border overflow-hidden">
+        {/* No celular Setor/WhatsApp somem e a tabela rola de lado se precisar —
+            antes a coluna Ações (editar/excluir) ficava cortada fora da tela. */}
+        <div className="bg-white rounded-xl border border-af-border overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-af-light border-b border-af-border">
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Usuário</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Função</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Setor</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">WhatsApp</th>
-                {canManage && <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Ações</th>}
+                <th className="text-left px-3 sm:px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Usuário</th>
+                <th className="hidden sm:table-cell text-left px-3 sm:px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Função</th>
+                <th className="hidden md:table-cell text-left px-3 sm:px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Setor</th>
+                <th className="hidden md:table-cell text-left px-3 sm:px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">WhatsApp</th>
+                {canManage && <th className="text-left px-3 sm:px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Ações</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-af-border">
@@ -226,24 +228,25 @@ export default function UsuariosPage() {
                   const deptNames = departmentNames(u.departmentIds || []);
                   return (
                     <tr key={u.id} className="hover:bg-af-light transition-colors">
-                      <td className="px-4 py-3">
+                      <td className="px-3 sm:px-4 py-3">
                         <div className="flex items-center gap-3">
                           <Avatar name={u.name} size="sm" />
-                          <div>
+                          <div className="min-w-0">
                             <p className="font-medium text-slate-900">
                               {u.name}
                               {u.id === me?.id && <span className="ml-2 text-xs text-af-accent font-normal">(você)</span>}
                             </p>
-                            <p className="text-xs text-slate-500">{u.email}</p>
+                            <p className="text-xs text-slate-500 truncate max-w-[180px] sm:max-w-none" title={u.email}>{u.email}</p>
+                            <span className={`sm:hidden inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 mt-1 rounded-full font-medium ${rm.color}`}>{rm.icon} {rm.label}</span>
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="hidden sm:table-cell px-3 sm:px-4 py-3">
                         <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full font-medium ${rm.color}`}>
                           {rm.icon} {rm.label}
                         </span>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="hidden md:table-cell px-3 sm:px-4 py-3">
                         {u.role === 'ADMIN' ? (
                           <span className="text-xs text-slate-400">Todos</span>
                         ) : deptNames ? (
@@ -254,7 +257,7 @@ export default function UsuariosPage() {
                           <span className="text-xs text-amber-500">Sem setor</span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="hidden md:table-cell px-3 sm:px-4 py-3">
                         {labels.length ? (
                           <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
                             <Smartphone size={13} className="text-af-accent" /> {labels.join(', ')}
@@ -264,7 +267,7 @@ export default function UsuariosPage() {
                         )}
                       </td>
                       {canManage && (
-                        <td className="px-4 py-3">
+                        <td className="px-3 sm:px-4 py-3">
                           <div className="flex items-center gap-1">
                             <button onClick={() => openEdit(u)} className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors" title="Editar">
                               <Edit2 size={14} />

@@ -1,8 +1,8 @@
 import { PrismaClient, User } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { randomInt } from 'crypto';
-import { isEmailConfigured, sendLoginCodeEmail } from './email.service';
+import { randomInt, randomBytes, createHash } from 'crypto';
+import { isEmailConfigured, sendLoginCodeEmail, sendPasswordResetEmail } from './email.service';
 import { effectivePermissions } from '../lib/permissions';
 
 const prisma = new PrismaClient();
@@ -111,10 +111,54 @@ export async function refreshService(token: string) {
   if (!user || user.accountId !== payload.accountId) {
     throw new Error('Usuário não encontrado ou removido');
   }
+  // Senha trocada depois que essa sessão começou: a sessão antiga cai.
+  const issuedAt = (payload as { iat?: number }).iat;
+  if (user.passwordChangedAt && issuedAt && issuedAt * 1000 < user.passwordChangedAt.getTime() - 1000) {
+    throw new Error('Senha alterada — entre de novo');
+  }
   const accessToken = jwt.sign(
     { id: user.id, accountId: user.accountId, role: user.role },
     process.env.JWT_SECRET!,
     { expiresIn: '1h' }
   );
   return { accessToken };
+}
+
+// ─── Esqueci minha senha ─────────────────────────────────────────────────────
+
+const RESET_TTL_MS = 30 * 60 * 1000;
+const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
+
+/**
+ * Manda o link de redefinição pro e-mail do usuário. Responde igual exista
+ * ou não o e-mail (não dá pra descobrir quem tem conta). No máximo 1 link por
+ * minuto por usuário; o link novo invalida o anterior.
+ */
+export async function requestPasswordReset(email: string, frontendUrl: string): Promise<void> {
+  const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
+  if (!user) return;
+  if (user.passwordResetExpiresAt && user.passwordResetExpiresAt.getTime() - RESET_TTL_MS > Date.now() - 60_000) return;
+  if (!isEmailConfigured()) throw new Error('O envio de e-mail do CRM não está configurado — peça pra um administrador trocar sua senha em Usuários.');
+
+  const token = randomBytes(32).toString('hex');
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordResetHash: hashToken(token), passwordResetExpiresAt: new Date(Date.now() + RESET_TTL_MS) },
+  });
+  const link = `${frontendUrl.replace(/\/$/, '')}/redefinir-senha?token=${token}`;
+  await sendPasswordResetEmail(user.email, user.name, link);
+}
+
+export async function resetPasswordWithToken(token: string, newPassword: string): Promise<void> {
+  if (!token) throw new Error('Link inválido');
+  if (!newPassword || newPassword.length < 8) throw new Error('A senha nova precisa ter pelo menos 8 caracteres');
+  const user = await prisma.user.findFirst({ where: { passwordResetHash: hashToken(token), passwordResetExpiresAt: { gt: new Date() } } });
+  if (!user) throw new Error('Esse link expirou ou já foi usado — peça um novo em "Esqueci minha senha".');
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      password: await bcrypt.hash(newPassword, 10),
+      passwordResetHash: null, passwordResetExpiresAt: null, passwordChangedAt: new Date(),
+    },
+  });
 }

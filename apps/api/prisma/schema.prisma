@@ -165,6 +165,12 @@ model User {
   // de propósito — mesmo padrão de Lead.tags/FieldDefinition.options, não
   // precisa de metadado por vínculo (ver department.service.ts).
   departmentIds              String[]            @default([])
+  // "Esqueci minha senha": hash (sha256) do token do link mandado por e-mail
+  // + validade. passwordChangedAt derruba sessões antigas (refresh token
+  // emitido antes da troca de senha deixa de valer).
+  passwordResetHash          String?
+  passwordResetExpiresAt     DateTime?
+  passwordChangedAt          DateTime?
   // Link do Projeto pessoal do colaborador no Claude (claude.ai) — cada
   // operador pode ter um assistente próprio, configurado por fora do CRM.
   // A aba "Meu Assistente" só abre esse link numa aba nova; nada roda de

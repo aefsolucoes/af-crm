@@ -129,3 +129,31 @@ export async function sendLoginCodeEmail(to: string, name: string, code: string)
 </div>`,
   });
 }
+
+/** Link de "Esqueci minha senha" — vale 30 minutos, uso único. */
+export async function sendPasswordResetEmail(to: string, name: string, link: string): Promise<void> {
+  const transporter = getTransporter();
+  if (!transporter) throw new Error('E-mail não configurado');
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const firstName = (name || '').split(' ')[0] || 'olá';
+
+  await transporter.sendMail({
+    from: `AF CRM <${from}>`,
+    to,
+    subject: 'Redefinir sua senha do AF CRM',
+    text: `Olá ${firstName}, recebemos um pedido pra redefinir a sua senha do AF CRM. Pra criar uma senha nova, abra este link (vale por 30 minutos): ${link}\n\nSe não foi você, ignore este e-mail — sua senha continua a mesma.`,
+    html: `
+<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:440px;margin:0 auto;padding:24px;color:#1e293b">
+  <div style="text-align:center;margin-bottom:24px">
+    <div style="display:inline-block;background:#0d2545;color:#fff;font-weight:800;padding:10px 16px;border-radius:10px;font-size:18px">A&amp;F</div>
+  </div>
+  <h2 style="font-size:18px;color:#0d2545;margin:0 0 8px">Redefinir sua senha</h2>
+  <p style="font-size:14px;color:#475569;margin:0 0 20px">Olá ${firstName}, recebemos um pedido pra redefinir a sua senha do AF CRM. Clique no botão abaixo pra criar uma senha nova:</p>
+  <div style="text-align:center;margin-bottom:20px">
+    <a href="${link}" style="display:inline-block;background:#2261a8;color:#fff;font-weight:600;text-decoration:none;padding:12px 22px;border-radius:10px;font-size:15px">Criar senha nova</a>
+  </div>
+  <p style="font-size:13px;color:#64748b;margin:0 0 6px">O link vale por <b>30 minutos</b> e só pode ser usado uma vez.</p>
+  <p style="font-size:12px;color:#94a3b8;margin:16px 0 0">Se não foi você que pediu, ignore este e-mail — sua senha continua a mesma.</p>
+</div>`,
+  });
+}
