@@ -288,15 +288,22 @@ async function loadChunks(accountId: string): Promise<CachedChunk[]> {
   return chunks;
 }
 
+// Entradas manuais relidas do banco a cada 5 min: correção de regra feita
+// fora da tela (direto no banco / outra instância) não ficava valendo até o
+// servidor reiniciar (achado 26/09, regra da restrição no nome).
+const ENTRY_CACHE_TTL_MS = 5 * 60 * 1000;
+const entryCacheAt = new Map<string, number>();
+
 async function loadEntries(accountId: string): Promise<CachedEntry[]> {
   const cached = entryCache.get(accountId);
-  if (cached) return cached;
+  if (cached && Date.now() - (entryCacheAt.get(accountId) || 0) < ENTRY_CACHE_TTL_MS) return cached;
   const rows = await prisma.knowledgeEntry.findMany({
     where: { accountId },
     select: { title: true, content: true, embedding: true, departmentId: true },
   });
   const entries = rows.map((r) => ({ content: `${r.title}: ${r.content}`, fileName: r.title, embedding: r.embedding, departmentId: r.departmentId }));
   entryCache.set(accountId, entries);
+  entryCacheAt.set(accountId, Date.now());
   return entries;
 }
 
