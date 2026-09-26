@@ -1182,8 +1182,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
 }
 
 /** Clique em "Tenho interesse" (botão de template): manda o texto da Resposta
- *  Rápida da proposta manual do setor do CARD. Não manda se o link já foi
- *  mandado nessa conversa ou se o card já passou da prospecção (proposta já
+ *  Rápida da proposta manual do setor do CARD. Não manda se o link já saiu
+ *  nas últimas 12h ou se o card já passou da prospecção (proposta já
  *  chegou) — aí segue o fluxo normal (IA etc.). */
 async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string, text: string, io: any): Promise<boolean> {
   try {
@@ -1202,7 +1202,12 @@ async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string
     const qr = await prisma.messageTemplate.findFirst({ where: { accountId, name: quickReplyName }, select: { body: true } });
     const url = qr?.body.match(/https?:\/\/\S+/)?.[0];
     if (!qr || !url) return false;
-    const already = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: url } }, select: { id: true } });
+    // Só não repete se o link saiu há pouco (clique duplo). Link mandado
+    // semanas atrás não impede: o cliente clicou "Tenho interesse" AGORA.
+    const already = await prisma.message.findFirst({
+      where: { leadId, direction: 'OUTBOUND', content: { contains: url }, createdAt: { gte: new Date(Date.now() - 12 * 60 * 60 * 1000) } },
+      select: { id: true },
+    });
     if (already) return false;
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const sent = await sendOutboundWhatsApp({ accountId, leadId, content: qr.body.trim(), io });
