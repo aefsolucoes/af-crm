@@ -6,15 +6,16 @@ import { logActivity } from './activity.service';
  * follow-up) — pedido do Fabio 26/09:
  *  1. o card vai pra Perdido na hora (sai do funil ativo → funil "Perdidos");
  *  2. a gente pergunta o motivo, na frase que ele mesmo usa com cliente;
- *  3. a resposta do cliente vira o motivo da perda no card.
- * O marcador "(motivo ainda não informado)" no lostReason é o que diz que
- * ainda estamos esperando essa resposta.
+ *  3. o motivo entra na hora com o que já temos (o botão que ele tocou) —
+ *     "não precisa esperar a cliente responder"; se ele responder a pergunta,
+ *     a resposta complementa o motivo e vira nota no card.
  */
 
 const prisma = new PrismaClient();
 
 const NO_INTEREST_RE = /^n[ãa]o,?\s*(tenho\s+(mais\s+)?interesse|obrigad[oa])\b/i;
-const PENDING_REASON = '(motivo ainda não informado)';
+// Trecho da pergunta do motivo (a mesma frase que o Fabio usa à mão).
+const REASON_QUESTION_MARK = 'motivo do seu desinteresse';
 
 function firstName(lead: { name: string; customFields: unknown }): string {
   const cf = (lead.customFields || {}) as Record<string, unknown>;
@@ -35,7 +36,7 @@ export async function handleNoInterestButton(accountId: string, leadId: string, 
   if (/contrata|conclu/i.test(lead.pipeline?.name || '')) return false;
 
   const button = text.trim();
-  const lostReason = `Tocou em "${button}" ${PENDING_REASON}`;
+  const lostReason = `Cliente tocou em "${button}"`;
   const { updateLead } = require('./lead.service') as typeof import('./lead.service');
   const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
   await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io);
@@ -74,24 +75,35 @@ async function summarizeReason(answer: string): Promise<string> {
   }
 }
 
-/** Mensagem do cliente num card Perdido que ainda espera o motivo: vira o
- *  motivo da perda (e nota no card). Não responde nada ao cliente. */
+/** Primeira resposta do cliente (card Perdido) depois da pergunta do motivo
+ *  — nossa ou do time, mesma frase: complementa o motivo da perda e vira
+ *  nota no card. Não responde nada ao cliente. */
 export async function maybeCaptureLostReason(accountId: string, leadId: string, text: string, io: any): Promise<void> {
   if (!text.trim()) return;
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId, status: 'LOST' }, select: { id: true, name: true, lostReason: true } });
-  if (!lead?.lostReason?.includes(PENDING_REASON)) return;
+  if (!lead) return;
+  const lastOut = await prisma.message.findFirst({
+    where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP' },
+    orderBy: { createdAt: 'desc' },
+    select: { content: true, createdAt: true },
+  });
+  if (!lastOut?.content?.includes(REASON_QUESTION_MARK)) return;
+  if (Date.now() - lastOut.createdAt.getTime() > 7 * 24 * 60 * 60 * 1000) return;
+  // Só a PRIMEIRA resposta depois da pergunta (a atual já está gravada).
+  const answers = await prisma.message.count({ where: { leadId, direction: 'INBOUND', createdAt: { gt: lastOut.createdAt } } });
+  if (answers > 1) return;
   const motivo = await summarizeReason(text);
   const voltou = /VOLTOU A TER INTERESSE/i.test(motivo);
-  const button = lead.lostReason.match(/"([^"]+)"/)?.[1] || 'Não tenho interesse';
+  const base = (lead.lostReason || 'Sem interesse').replace(/\s+—\s+motivo:.*$/i, '');
   await prisma.lead.update({
     where: { id: lead.id },
     data: {
-      lostReason: voltou ? `Tocou em "${button}", mas depois disse que quer seguir` : `${button} — ${motivo}`,
+      lostReason: voltou ? `${base} — depois disse que quer seguir` : `${base} — motivo: ${motivo}`,
       notes: {
         create: {
           type: 'COMMENT',
           content: voltou
-            ? `⚠️ O cliente tinha tocado em "${button}", mas respondeu que quer seguir: "${text.trim().slice(0, 300)}". Vale reabrir o card.`
+            ? `⚠️ O cliente estava sem interesse, mas respondeu que quer seguir: "${text.trim().slice(0, 300)}". Vale reabrir o card.`
             : `Motivo do desinteresse (resposta do cliente): ${motivo}\n"${text.trim().slice(0, 300)}"`,
         },
       },
