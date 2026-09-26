@@ -2,8 +2,10 @@
 import { Conversation } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { cn, formatDateTime } from '@/lib/utils';
-import { useState, useRef, useLayoutEffect } from 'react';
-import { Search, X, AlertCircle, RefreshCw, Star } from 'lucide-react';
+import { useState, useRef, useLayoutEffect, useEffect, useCallback } from 'react';
+import { Search, X, AlertCircle, RefreshCw, Star, Phone } from 'lucide-react';
+import api from '@/lib/api';
+import { getSocket } from '@/lib/socket';
 
 /** true se a conversa é um grupo do WhatsApp (só existiam pelo canal QR,
  *  removido do CRM — grupos ficam de fora da Inbox, mas o Lead/Message
@@ -74,12 +76,35 @@ interface ConversationListProps {
   onRetry?: () => void;
 }
 
-// 'ALL' | 'UNREAD' — conversas de grupo nunca aparecem em nenhuma aba (ver isGroupConversation).
-type Filter = 'ALL' | 'UNREAD';
+// 'ALL' | 'UNREAD' | 'CALL' — conversas de grupo nunca aparecem em nenhuma aba (ver isGroupConversation).
+// CALL = clientes que permitiram ligação pelo WhatsApp (pedido do Fabio 26/09).
+type Filter = 'ALL' | 'UNREAD' | 'CALL';
 
 export function ConversationList({ conversations, selectedId, onSelect, loading, loadError, onRetry }: ConversationListProps) {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [search, setSearch] = useState('');
+
+  // Quem permitiu ligação: confirmado ao vivo na Meta pelo servidor; atualiza
+  // quando alguém toca em "Permitir ligações" e a cada 2 min (permissão vence).
+  const [callPermitted, setCallPermitted] = useState<Set<string>>(new Set());
+  const loadCallPermitted = useCallback((fresh = false) => {
+    api.get('/api/calls/permitted-leads', { params: fresh ? { fresh: 1 } : {} })
+      .then(({ data }) => setCallPermitted(new Set<string>(data.leadIds || [])))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    loadCallPermitted();
+    const timer = setInterval(() => loadCallPermitted(), 120_000);
+    const socket = getSocket();
+    const onChange = () => setTimeout(() => loadCallPermitted(true), 1500);
+    socket.on('call_permission_granted', onChange);
+    socket.on('call_permission_denied', onChange);
+    return () => {
+      clearInterval(timer);
+      socket.off('call_permission_granted', onChange);
+      socket.off('call_permission_denied', onChange);
+    };
+  }, [loadCallPermitted]);
 
   // Trava a rolagem da lista: quando chega/sai mensagem, a conversa envolvida
   // reordena pra posição 0 normalmente (igual antes) — mas a TELA do usuário
@@ -101,6 +126,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
   }
 
   const unreadCount = conversations.filter((c) => !isGroupConversation(c) && c._count.messages > 0).length;
+  const callCount = conversations.filter((c) => !isGroupConversation(c) && callPermitted.has(c.id)).length;
 
   const q = search.trim();
 
@@ -115,6 +141,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
       // dava acesso a grupos, foi removido do CRM).
       if (isGroupConversation(c)) return false;
       if (filter === 'ALL') return true;
+      if (filter === 'CALL') return callPermitted.has(c.id);
       // aba de não lidas — mesmo critério do badge (contagem de mensagens não lidas)
       return c._count.messages > 0;
     })
@@ -165,6 +192,9 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
           </button>
           <button onClick={() => setFilter('UNREAD')} className={chip(filter === 'UNREAD')}>
             Não lidas{unreadCount > 0 ? ` (${unreadCount})` : ''}
+          </button>
+          <button onClick={() => setFilter('CALL')} className={cn(chip(filter === 'CALL'), 'inline-flex items-center gap-1')} title="Clientes que permitiram ligação pelo WhatsApp">
+            <Phone size={11} /> Permitiram ligar{callCount > 0 ? ` (${callCount})` : ''}
           </button>
         </div>
       </div>

@@ -133,6 +133,47 @@ router.get('/permission-state', async (req: AuthRequest, res: Response) => {
   res.json({ permitted: state.permitted, canRequest: state.canRequest, phone });
 });
 
+// GET /api/calls/permitted-leads — cards cujo cliente PERMITIU ligação pelo
+// WhatsApp (aba "Permitiram ligar" da Inbox, pedido do Fabio 26/09).
+// Candidatos = quem tocou em "Permitir" (registro local do webhook); cada um
+// é confirmado ao vivo na Meta (permissão temporária vence), com cache curto.
+const permittedCache = new Map<string, { at: number; leadIds: string[] }>();
+router.get('/permitted-leads', async (req: AuthRequest, res: Response) => {
+  const accountId = req.user!.accountId;
+  const cached = permittedCache.get(accountId);
+  if (cached && !req.query.fresh && Date.now() - cached.at < 60_000) return res.json({ leadIds: cached.leadIds });
+
+  // Última resposta de cada contato (PENDING = pedido novo, não é resposta).
+  const rows = await prisma.callPermission.findMany({
+    where: { accountId, status: { not: 'PENDING' } },
+    orderBy: { requestedAt: 'desc' },
+    select: { contactId: true, status: true, expiresAt: true },
+  });
+  const latest = new Map<string, { status: string; expiresAt: Date | null }>();
+  for (const r of rows) if (!latest.has(r.contactId)) latest.set(r.contactId, r);
+  const contactIds = [...latest].filter(([, r]) => r.status === 'GRANTED' && (!r.expiresAt || r.expiresAt > new Date())).map(([id]) => id).slice(0, 60);
+
+  const leads = await prisma.lead.findMany({
+    where: { accountId, contactId: { in: contactIds } },
+    select: { id: true, contactId: true, pipeline: { select: { departmentId: true } }, contact: { select: { whatsappPhone: true, phone: true } } },
+  });
+  const byContact = new Map<string, typeof leads>();
+  for (const l of leads) if (l.contactId) byContact.set(l.contactId, [...(byContact.get(l.contactId) || []), l]);
+
+  const leadIds: string[] = [];
+  await Promise.all([...byContact.values()].map(async (group) => {
+    const first = group[0];
+    const phoneRaw = pickRealPhone(first.contact);
+    if (!phoneRaw) return;
+    const config = await getWhatsAppConfig(accountId, first.pipeline?.departmentId || null);
+    if (!config?.phoneNumberId || !config.accessToken) return;
+    const state = await getCallPermissionState(config, normalizeBrazilianWhatsAppPhone(phoneRaw));
+    if (state.permitted) leadIds.push(...group.map((l) => l.id));
+  }));
+  permittedCache.set(accountId, { at: Date.now(), leadIds });
+  res.json({ leadIds });
+});
+
 // POST /api/calls/:waCallId/diag — diagnóstico da ligação mandado pelo
 // navegador (recebendo áudio? atraso? som tocando?) — só loga, pra achar
 // problema de áudio sem precisar do console do navegador do usuário.
