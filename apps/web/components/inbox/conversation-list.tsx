@@ -156,7 +156,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
 
   const chip = (active: boolean) =>
     cn(
-      'px-2.5 py-1 text-xs rounded-full transition-colors',
+      'px-2.5 py-1 text-xs rounded-full transition-colors flex-shrink-0',
       active ? 'bg-[#00a884] text-[#111b21] font-medium' : 'bg-[#202c33] text-[#8696a0] hover:bg-[#2a3942]'
     );
 
@@ -186,7 +186,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
 
       {/* Channel filter */}
       <div className="px-3 py-3 border-b border-[#222e35]">
-        <div className={cn('flex gap-1 flex-wrap', q && 'opacity-40 pointer-events-none')}>
+        <div className={cn('flex gap-1 flex-nowrap whitespace-nowrap', q && 'opacity-40 pointer-events-none')}>
           <button onClick={() => setFilter('ALL')} className={chip(filter === 'ALL')}>
             Todas
           </button>
@@ -194,7 +194,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
             Não lidas{unreadCount > 0 ? ` (${unreadCount})` : ''}
           </button>
           <button onClick={() => setFilter('CALL')} className={cn(chip(filter === 'CALL'), 'inline-flex items-center gap-1')} title="Clientes que permitiram ligação pelo WhatsApp">
-            <Phone size={11} /> Permitiram ligar{callCount > 0 ? ` (${callCount})` : ''}
+            <Phone size={11} /> Permitiram{callCount > 0 ? ` (${callCount})` : ''}
           </button>
         </div>
       </div>
