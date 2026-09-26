@@ -1053,6 +1053,23 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         continue;
       }
 
+      // Resposta/clique num botão de uma mensagem NOSSA: vai pro card da
+      // mensagem respondida (a Meta manda o wamid dela em context.id). O
+      // telefone sozinho pode achar outro card do mesmo número (contato
+      // duplicado, card antigo arquivado) — foi o que aconteceu no teste do
+      // "Tenho interesse" em 26/09: o clique caiu no card arquivado.
+      const repliedWamid = msg.context?.id as string | undefined;
+      if (repliedWamid) {
+        const replied = await prisma.message.findFirst({
+          where: { externalId: repliedWamid, direction: 'OUTBOUND', lead: { accountId } },
+          select: { leadId: true },
+        });
+        if (replied && replied.leadId !== leadId) {
+          console.log(`[WhatsApp] Resposta à mensagem ${repliedWamid} → card ${replied.leadId} (telefone apontava ${leadId})`);
+          leadId = replied.leadId;
+        }
+      }
+
       // ── Avoid duplicate messages ────────────────────────────────────────
       const existing = await prisma.message.findFirst({ where: { externalId } });
       if (existing) continue;
