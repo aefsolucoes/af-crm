@@ -1161,7 +1161,14 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         // "Tenho interesse" no botão do template de boas-vindas → link da
         // proposta manual do produto do card (pedido do Fabio 26/09). Quando
         // manda, nada mais responde essa mensagem (nem a IA).
-        const interestHandled = msg.type === 'button' && await maybeSendProposalLinkOnInterest(accountId, leadId, text, io);
+        // "Não tenho interesse" no botão → Perdido + pergunta o motivo; a
+        // resposta seguinte do cliente vira o motivo no card (no-interest.service).
+        const noInterest = require('./no-interest.service') as typeof import('./no-interest.service');
+        if (msg.type !== 'button') await noInterest.maybeCaptureLostReason(accountId, leadId, text, io).catch((e) => console.error('[Sem interesse] captura do motivo falhou:', e?.message));
+        const interestHandled = msg.type === 'button' && (
+          await maybeSendProposalLinkOnInterest(accountId, leadId, text, io) ||
+          await noInterest.handleNoInterestButton(accountId, leadId, text, io).catch((e) => { console.error('[Sem interesse] falhou:', e?.message); return false; })
+        );
         const { maybeSalesBotStep } = require('./salesbot.service') as typeof import('./salesbot.service');
         const botHandled = interestHandled || await maybeSalesBotStep(accountId, leadId, text, io);
         if (!botHandled) {

@@ -10,6 +10,7 @@ import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { normalizeClientName } from '../lib/text';
 import { runAutomations } from '../services/automation.service';
 import { logActivity } from '../services/activity.service';
+import { MONTH_NAMES_PT, currentMonthNamePT, getOrCreateNamedPipeline, moveLeadToPerdidos } from '../services/named-pipeline.service';
 
 /** Formata um telefone BR (com DDI 55) pra exibição. */
 function formatPhoneDisplay(e164Digits: string): string {
@@ -37,16 +38,6 @@ router.use(async (req: AuthRequest, res: Response, next) => {
   }
 });
 
-const MONTH_NAMES_PT = [
-  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
-];
-
-/** Nome do mês atual no fuso de Brasília, independente do fuso do servidor. */
-function currentMonthNamePT(): string {
-  const idx = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', month: 'numeric' }).format(new Date()), 10) - 1;
-  return MONTH_NAMES_PT[idx];
-}
 
 /** Converte um valor de campo do cadastro (customFields) para número. Aceita
  *  tanto o formato "puro" já normalizado pelo front ("500000") quanto, por
@@ -63,92 +54,11 @@ function parseFieldNumber(raw: unknown): number {
   return parseFloat(cleaned) || 0;
 }
 
-/** Fila de criação por (conta+nome+setor) — o "achar ou criar" abaixo não é
- *  atômico: dois PUTs marcando leads como Ganho/Perdido quase juntos podiam
- *  criar dois funis "Concluído"/"Perdidos" duplicados — mesma classe de
- *  corrida já corrigida em createFolder (google.service.ts) e
- *  getOrCreateInboxPipeline (department.service.ts). */
-const namedPipelineLocks = new Map<string, Promise<unknown>>();
-
-/** Funil com um estágio por mês do ano (pra saber quantos entraram em cada
- *  mês) — usado tanto por "Concluído" (leads Ganho) quanto "Perdidos" (leads
- *  Perdido). Cria sozinho na primeira vez que precisar, sem exigir
- *  configuração manual antes. Um por departamento — cada setor tem o seu. */
-async function getOrCreateNamedPipeline(
-  accountId: string,
-  name: string,
-  departmentId: string | null | undefined,
-  stageColor: string,
-  /** Etapas do funil na criação. Sem isso, cria um estágio por mês (uso de
-   *  "Concluído"/"Perdidos"). Com isso, cria exatamente essas (ex.: as 7 de
-   *  "Em contratação"). Ignorado se o funil já existir. */
-  stageDefs?: { name: string; order: number; color: string }[],
-) {
-  const key = `${accountId}::${name}::${departmentId ?? ''}`;
-  const run = async () => {
-    const existing = await prisma.pipeline.findFirst({
-      where: { accountId, name, departmentId: departmentId ?? null },
-      include: { stages: { orderBy: { order: 'asc' } } },
-      orderBy: { id: 'asc' },
-    });
-    if (existing) return existing;
-
-    const created = await prisma.pipeline.create({
-      data: {
-        name,
-        accountId,
-        departmentId: departmentId ?? null,
-        stages: {
-          create: stageDefs
-            ? stageDefs.map((s) => ({ name: s.name, order: s.order, color: s.color }))
-            : MONTH_NAMES_PT.map((n, i) => ({ name: n, order: i + 1, color: stageColor })),
-        },
-      },
-      include: { stages: { orderBy: { order: 'asc' } } },
-    });
-
-    // Auto-cura da corrida entre PROCESSOS (a trava por chave acima só vale
-    // dentro de um processo; num redeploy do Railway dois processos podem
-    // criar o mesmo funil ao mesmo tempo — foi o que gerou dois "Perdidos"
-    // no Home Equity). Se sobrou mais de um com esse nome/setor, fica com o
-    // de id mais antigo e apaga os outros que estiverem VAZIOS.
-    const all = await prisma.pipeline.findMany({
-      where: { accountId, name, departmentId: departmentId ?? null },
-      include: { _count: { select: { leads: true } } },
-      orderBy: { id: 'asc' },
-    });
-    if (all.length > 1) {
-      const keep = all[0];
-      for (const extra of all.slice(1)) {
-        if (extra._count.leads === 0) {
-          await prisma.stage.deleteMany({ where: { pipelineId: extra.id } }).catch(() => {});
-          await prisma.pipeline.delete({ where: { id: extra.id } }).catch(() => {});
-        }
-      }
-      if (keep.id !== created.id) {
-        return prisma.pipeline.findUniqueOrThrow({ where: { id: keep.id }, include: { stages: { orderBy: { order: 'asc' } } } });
-      }
-    }
-    return created;
-  };
-  const previous = namedPipelineLocks.get(key) || Promise.resolve();
-  const result = previous.then(run);
-  // guarda uma cópia que nunca rejeita — senão uma falha travaria a fila pra
-  // sempre esperando uma promise rejeitada que ninguém mais trata.
-  namedPipelineLocks.set(key, result.catch(() => undefined));
-  return result as ReturnType<typeof run>;
-}
 
 async function getOrCreateConcluidoPipeline(accountId: string, departmentId?: string | null) {
   return getOrCreateNamedPipeline(accountId, 'Concluído', departmentId, '#10b981');
 }
 
-/** Funil "Perdidos" — pra onde vão os leads marcados como Perdido, do mesmo
- *  jeito que "Concluído" já faz com Ganho (usuário pediu: card sumia dentro
- *  do funil ativo, só com uma etiqueta, difícil de achar depois). */
-async function getOrCreatePerdidosPipeline(accountId: string, departmentId?: string | null) {
-  return getOrCreateNamedPipeline(accountId, 'Perdidos', departmentId, '#ef4444');
-}
 
 /** Etapas do funil de contratação (mesmas do "Em contratação" criado em
  *  POST /api/pipelines/setup) — usadas pra criar o "Em contratação Home
@@ -529,31 +439,11 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
         // Antes o card só ganhava uma etiqueta e continuava perdido de vista no
         // funil ativo — usuário pediu pra sumir de lá, igual já acontece com Ganho.
         if (req.body.status === 'LOST') {
-          const perdidos = await getOrCreatePerdidosPipeline(req.user!.accountId, before?.pipeline?.departmentId ?? null);
-          const mesAtual = currentMonthNamePT();
-          const targetStage = perdidos.stages.find((s) => s.name === mesAtual) || perdidos.stages[0];
-          if (targetStage) {
-            const motivo = typeof req.body.lostReason === 'string' ? req.body.lostReason.trim() : '';
-            const movedLead = await prisma.lead.update({
-              where: { id: req.params.id },
-              data: {
-                pipelineId: perdidos.id,
-                stageId: targetStage.id,
-                notes: {
-                  create: {
-                    content: motivo
-                      ? `Lead migrado automaticamente para o funil "Perdidos" (${targetStage.name}) ao ser marcado como Perdido — por ${userName}. Motivo: ${motivo}`
-                      : `Lead migrado automaticamente para o funil "Perdidos" (${targetStage.name}) ao ser marcado como Perdido — por ${userName}.`,
-                    type: 'STAGE_CHANGE',
-                    userId: req.user!.id,
-                  },
-                },
-              },
-            });
-            const io = (req as any).app.get('io');
-            if (io) io.to(`account_${req.user!.accountId}`).emit('lead_moved', { lead: movedLead });
-            console.log(`[Auto-migração] Lead "${movedLead.name}" marcado como Perdido → funil Perdidos (${targetStage.name})`);
-          }
+          await moveLeadToPerdidos({
+            accountId: req.user!.accountId, leadId: req.params.id, departmentId: before?.pipeline?.departmentId ?? null,
+            byName: userName, userId: req.user!.id, motivo: typeof req.body.lostReason === 'string' ? req.body.lostReason : '',
+            io: (req as any).app.get('io'),
+          });
         }
       }
       if (req.body.userId && before?.userId !== req.body.userId) {
