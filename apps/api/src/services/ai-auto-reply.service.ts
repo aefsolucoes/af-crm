@@ -2,6 +2,40 @@ import { PrismaClient } from '@prisma/client';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES } from './ai-shared.service';
 import { teamQuestionsContext } from './ai-team-question.service';
 
+/**
+ * Pedido de permissão pra LIGAR pelo WhatsApp (template com o cartão "pode
+ * ligar para você?"). Responder "sim" por escrito NÃO dá a permissão — o
+ * cliente tem que tocar em "Permitir ligações" no cartão. Pedido do Fabio
+ * (26/09): a IA dizia "vamos te ligar" pra quem só escreveu "sim". Aqui a IA
+ * recebe a situação REAL (consulta na Meta), só quando a conversa tem o pedido.
+ */
+async function callPermissionContext(accountId: string, leadId: string): Promise<string> {
+  try {
+    const asked = await prisma.message.findFirst({
+      where: { leadId, direction: 'OUTBOUND', OR: [{ templateName: { contains: 'permissao_ligar' } }, { content: { contains: 'Podemos te ligar pelo WhatsApp' } }] },
+      select: { id: true },
+    });
+    if (!asked) return '';
+    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { departmentId: true } }, contact: { select: { whatsappPhone: true, phone: true } } } });
+    const raw = (lead?.contact?.whatsappPhone && !lead.contact.whatsappPhone.includes('@') ? lead.contact.whatsappPhone : lead?.contact?.phone) || '';
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length < 10) return '';
+    const { getWhatsAppConfig, normalizeBrazilianWhatsAppPhone } = require('./whatsapp.service') as typeof import('./whatsapp.service');
+    const { getCallPermissionState } = require('./whatsapp-calling.service') as typeof import('./whatsapp-calling.service');
+    const config = await getWhatsAppConfig(accountId, lead?.pipeline?.departmentId);
+    if (!config?.phoneNumberId || !config.accessToken) return '';
+    const state = await getCallPermissionState({ phoneNumberId: config.phoneNumberId, accessToken: config.accessToken }, normalizeBrazilianWhatsAppPhone(digits));
+    return state.permitted
+      ? `--- LIGAÇÃO PELO WHATSAPP ---
+O cliente JÁ PERMITIU ligações pelo WhatsApp. Se ele quiser ou aceitar uma ligação, pode confirmar que a gente liga por aqui pelo WhatsApp em breve (sem prometer horário).`
+      : `--- LIGAÇÃO PELO WHATSAPP ---
+Já pedimos permissão pra ligar pra esse cliente pelo WhatsApp, mas ele AINDA NÃO PERMITIU. Responder "sim" por escrito não vale — sem tocar no botão, a ligação não completa.
+Se ele disser que pode ligar, que quer uma ligação ou responder "sim" ao pedido: NÃO diga que vai ligar. Explique em 1-2 frases que, pra gente conseguir ligar, é só ele tocar em *Permitir ligações* no cartão "pode ligar para você?" aqui na conversa (logo abaixo da nossa mensagem) e escolher *Permitir ligações*.`;
+  } catch {
+    return '';
+  }
+}
+
 const prisma = new PrismaClient();
 
 // Mensagem que é só confirmação/encerramento ("ok", "beleza", "tá bom",
@@ -206,6 +240,7 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
 
     const camposTexto = await buildFillableFieldsText(accountId);
     const duvidasEquipe = await teamQuestionsContext(leadId);
+    const ligacao = await callPermissionContext(accountId, leadId);
 
     const systemPrompt = `${ROLE_FRAMING}
 
@@ -231,7 +266,9 @@ ${OUTPUT_FORMAT}
 
 ${buildContextBlocks(ctx)}${duvidasEquipe ? `
 
-${duvidasEquipe}` : ''}`;
+${duvidasEquipe}` : ''}${ligacao ? `
+
+${ligacao}` : ''}`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
