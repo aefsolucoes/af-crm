@@ -322,8 +322,9 @@ async function findLeadFor(accountId: string, addresses: string[], inReplyTo: st
     const parent = await prisma.emailMessage.findFirst({ where: { messageId: inReplyTo, leadId: { not: null }, emailAccount: { accountId } }, select: { leadId: true } });
     if (parent?.leadId) return parent.leadId;
   }
+  const { SITE_FORM_SENDERS } = require('./site-proposal-email.service') as typeof import('./site-proposal-email.service');
   for (const address of addresses) {
-    if (!address || ownAddresses.has(address)) continue;
+    if (!address || ownAddresses.has(address) || SITE_FORM_SENDERS.has(address)) continue;
     const lead = await prisma.lead.findFirst({
       where: { accountId, isGroup: false, contact: { email: { equals: address, mode: 'insensitive' } } },
       orderBy: [{ archived: 'asc' }, { updatedAt: 'desc' }],
@@ -416,7 +417,7 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   const counterparts = folder === 'INBOX' ? (from ? [from.address] : []) : [...to, ...cc].map((a) => a.address);
   const leadId = convo ? await findLeadFor(acc.accountId, counterparts, env.inReplyTo || null, opts.ownAddresses) : null;
 
-  await prisma.emailMessage.create({
+  const row = await prisma.emailMessage.create({
     data: {
       emailAccountId: acc.id, folder, uid: msg.uid, messageId, inReplyTo: env.inReplyTo || null,
       references: parseReferences(msg.headers as Buffer | undefined),
@@ -429,7 +430,15 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
       seen: folder === 'SENT' || folder === 'DRAFTS' || (msg.flags ? msg.flags.has('\\Seen') : false),
       leadId,
     },
-  }).catch((err) => { if (err?.code !== 'P2002') throw err; });
+  }).catch((err) => { if (err?.code !== 'P2002') throw err; return null; });
+
+  // Proposta preenchida no site (FormSubmit) → vai pro card do cliente.
+  const { SITE_FORM_SENDERS, handleSiteProposalEmail } = require('./site-proposal-email.service') as typeof import('./site-proposal-email.service');
+  if (row && folder === 'INBOX' && from && SITE_FORM_SENDERS.has(from.address)) {
+    const fresh = !opts.initial && Date.now() - date.getTime() < 48 * 60 * 60 * 1000;
+    await handleSiteProposalEmail(acc.accountId, row, opts.io, fresh).catch((err) => console.warn('[Proposta e-mail] falhou:', err?.message));
+    return;
+  }
 
   if (leadId) {
     await addToConversation({
@@ -755,9 +764,13 @@ export async function linkEmailToLead(acc: EmailAccount, msgId: string, leadId: 
 
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: acc.accountId }, select: { id: true, name: true, contactId: true, contact: { select: { email: true } } } });
   if (!lead) throw new Error('Card não encontrado');
+  const { SITE_FORM_SENDERS } = require('./site-proposal-email.service') as typeof import('./site-proposal-email.service');
+  // Formulário do site manda de um endereço só pra todos os clientes: aí
+  // vincula só este e-mail, nunca "todos desse remetente".
   const address = counterpartOf(msg);
+  const isFormSender = !!address && SITE_FORM_SENDERS.has(address);
 
-  const siblings = address
+  const siblings = address && !isFormSender
     ? await prisma.emailMessage.findMany({
         where: {
           leadId: null, emailAccount: { accountId: acc.accountId },
@@ -779,7 +792,7 @@ export async function linkEmailToLead(acc: EmailAccount, msgId: string, leadId: 
     });
   }
 
-  if (address && lead.contactId && !lead.contact?.email?.trim()) {
+  if (address && !isFormSender && lead.contactId && !lead.contact?.email?.trim()) {
     await prisma.contact.update({ where: { id: lead.contactId }, data: { email: address } }).catch(() => {});
   }
   io?.to(`account_${acc.accountId}`).emit('new_notification', { leadId: lead.id }); // Inbox recarrega a conversa
