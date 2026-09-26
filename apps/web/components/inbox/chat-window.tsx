@@ -111,6 +111,10 @@ function extractMetaVariables(text: string): number[] {
 /** Botões gravados no fim do texto de uma mensagem enviada (template ou
  *  mensagem com botões): "...\n\n[Tenho interesse]  [Não tenho interesse]".
  *  Botão de link ("[texto → url]") fica de fora — continua no texto. */
+function isCallPermissionMessage(m: { templateName?: string | null; content?: string | null }) {
+  return /^permissao_ligar/.test(m.templateName || '') || /^Podemos te ligar pelo WhatsApp/.test(m.content || '');
+}
+
 function splitButtons(content: string): { text: string; buttons: string[] } {
   const m = content.match(/\n\n((?:\[[^\]\n→]+\]\s*)+)$/);
   if (!m || m.index === undefined) return { text: content, buttons: [] };
@@ -319,6 +323,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       refreshCallPermission();
     }
   }
+
+  // Pedido de permissão pra ligar (template com o cartão "Permitir ligações"):
+  // desenhado na bolha como o cliente vê no celular; o último pedido mostra
+  // a situação atual (aguardando / permitiu) — pedido do Fabio 26/09.
+  const lastPermissionMsgId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.direction === 'OUTBOUND' && isCallPermissionMessage(m)) return m.id;
+    }
+    return null;
+  }, [messages]);
 
   // Botões das mensagens enviadas e qual deles o cliente escolheu (a resposta
   // do botão chega citando a mensagem — replyToExternalId = wamid dela).
@@ -1826,6 +1841,21 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                                       </div>
                                     );
                                   })}
+                                </div>
+                              )}
+                              {isOut && isCallPermissionMessage(msg) && (
+                                <div className="-mx-3 mt-2 mb-4 border-t border-white/10">
+                                  <div className="flex items-center justify-center gap-1.5 py-1.5 text-[13px] font-medium text-[#53bdeb]">
+                                    <Phone size={13} /> Permitir ligações
+                                  </div>
+                                  {msg.id === lastPermissionMsgId && callButtonState && (
+                                    <p className={cn('text-center text-[11px] font-semibold pb-1',
+                                      callButtonState === 'permitted' ? 'text-emerald-300' : callButtonState === 'pending' ? 'text-amber-300' : 'text-white/50')}>
+                                      {callButtonState === 'permitted' ? '✓ Cliente permitiu as ligações'
+                                        : callButtonState === 'pending' ? 'Aguardando o cliente tocar em "Permitir ligações"'
+                                        : 'Cliente ainda não permitiu'}
+                                    </p>
+                                  )}
                                 </div>
                               )}
                             </>

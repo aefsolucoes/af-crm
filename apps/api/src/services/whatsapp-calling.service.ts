@@ -211,8 +211,11 @@ export async function getCallPermissionState(config: CallCredentials, userWaId: 
     const status = perm?.status as string | undefined;
     const permitted = status === 'permanent' || status === 'temporary';
     const actions: any[] = perm?.actions || json?.actions || [];
-    const requestAction = actions.find((a) => a?.action_type === 'send_call_permission_request' || a?.name === 'send_call_permission_request');
-    const canRequest = requestAction ? requestAction.can_perform !== false : true;
+    // Formato real da Meta (log 26/09): { action_name, can_perform_action:false,
+    // limits:[...] } — lia action_type/can_perform, então o pedido já enviado
+    // nunca aparecia como "aguardando" (botão não ficava amarelo).
+    const requestAction = actions.find((a) => [a?.action_name, a?.action_type, a?.name].includes('send_call_permission_request'));
+    const canRequest = requestAction ? (requestAction.can_perform_action ?? requestAction.can_perform) !== false : true;
     return { permitted, canRequest, raw: json };
   } catch (err) {
     console.error('[Calling] Fetch error em call_permissions:', err);
