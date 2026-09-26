@@ -188,6 +188,8 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
         const bodyComponent = tpl?.components?.find((c: any) => c.type === 'BODY');
         if (bodyComponent?.text) {
           previewText = String(bodyComponent.text).replace(/\{\{(\d+)\}\}/g, (_m: string, n: string) => bodyParams[Number(n) - 1] ?? `{{${n}}}`);
+          const buttonTexts = (tpl?.components?.find((c: any) => c.type === 'BUTTONS')?.buttons || []).map((b: any) => b.text).filter(Boolean);
+          if (buttonTexts.length) previewText += `\n\n${buttonTexts.map((t: string) => `[${t}]`).join('  ')}`;
         }
       } catch { /* fica com o rótulo genérico */ }
       const result = await sendOutboundWhatsAppTemplate({
@@ -201,7 +203,7 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       const customBody = action.config.emailBody ? fillVariables(String(action.config.emailBody), lead, context).trim() : '';
       if (action.config.alsoEmail === true && email && (customBody || !previewText.startsWith('Template "'))) {
         const { sendFollowUpEmail } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-        await sendFollowUpEmail({ accountId: lead.accountId, leadId: lead.id, to: email, text: customBody || previewText, subject: action.config.emailSubject ? fillVariables(String(action.config.emailSubject), lead, context) : null, io: io as any });
+        await sendFollowUpEmail({ accountId: lead.accountId, leadId: lead.id, to: email, text: customBody || previewText.replace(/\n\n(\[[^\]]+\]\s*)+$/, ''), subject: action.config.emailSubject ? fillVariables(String(action.config.emailSubject), lead, context) : null, io: io as any });
       }
       return result.success;
     }

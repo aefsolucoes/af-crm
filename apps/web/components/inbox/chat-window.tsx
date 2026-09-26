@@ -1086,7 +1086,11 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     const body = pendingMetaTemplate.components.find((c) => c.type === 'BODY')?.text || '';
     const varNums = extractMetaVariables(body);
     const bodyParams = varNums.map((n) => metaTemplateVars[n] || '');
-    const previewText = fillMetaTemplate(body, metaTemplateVars);
+    // Botões do template (ex.: [Tenho interesse] [Não tenho interesse]) também
+    // aparecem na conversa — antes só o texto ficava registrado.
+    const buttonTexts = ((pendingMetaTemplate.components.find((c) => c.type === 'BUTTONS') as any)?.buttons || [])
+      .map((b: { text?: string }) => b.text).filter(Boolean) as string[];
+    const previewText = fillMetaTemplate(body, metaTemplateVars) + (buttonTexts.length ? `\n\n${buttonTexts.map((t) => `[${t}]`).join('  ')}` : '');
     setSendingTemplate(true);
     try {
       const { data } = await api.post('/api/messages/send-template', {

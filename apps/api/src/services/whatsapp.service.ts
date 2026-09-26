@@ -978,8 +978,13 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       // Clique em botão de resposta rápida (ex.: Sim/Não do SalesBot) — antes
       // disto, uma resposta assim era descartada inteira (nem virava Message),
       // por não ser nem "text" nem mídia suportada.
+      // Botão de TEMPLATE (ex.: "Tenho interesse" das boas-vindas) chega como
+      // type "button" — era descartado inteiro até 26/09 (229 boas-vindas e só
+      // 1 resposta registrada).
       const buttonReplyTitle: string | undefined = msg.type === 'interactive'
         ? (msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title)
+        : msg.type === 'button'
+        ? (msg.button?.text || msg.button?.payload)
         : undefined;
 
       // Reação (emoji) do cliente numa mensagem existente — não vira Message
@@ -1136,8 +1141,12 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         // andamento (ou dispara um novo por palavra-chave), template/IA não
         // entram em cima da mesma mensagem (mesma regra de exclusividade que
         // já existe entre template e IA logo abaixo).
+        // "Tenho interesse" no botão do template de boas-vindas → link da
+        // proposta manual do produto do card (pedido do Fabio 26/09). Quando
+        // manda, nada mais responde essa mensagem (nem a IA).
+        const interestHandled = msg.type === 'button' && await maybeSendProposalLinkOnInterest(accountId, leadId, text, io);
         const { maybeSalesBotStep } = require('./salesbot.service') as typeof import('./salesbot.service');
-        const botHandled = await maybeSalesBotStep(accountId, leadId, text, io);
+        const botHandled = interestHandled || await maybeSalesBotStep(accountId, leadId, text, io);
         if (!botHandled) {
           const templateDisparou = await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
           if (!templateDisparou) {
@@ -1152,6 +1161,37 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
     }
   } catch (err) {
     console.error('[WhatsApp] Process incoming error:', err);
+  }
+}
+
+/** Clique em "Tenho interesse" (botão de template): manda o texto da Resposta
+ *  Rápida da proposta manual do setor do CARD. Não manda se o link já foi
+ *  mandado nessa conversa ou se o card já passou da prospecção (proposta já
+ *  chegou) — aí segue o fluxo normal (IA etc.). */
+async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string, text: string, io: any): Promise<boolean> {
+  try {
+    if (!/^(sim,?\s*)?tenho interesse\b/i.test(text.trim())) return false;
+    const lead = await prisma.lead.findFirst({
+      where: { id: leadId, accountId },
+      select: { stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } },
+    });
+    const dept = (lead?.pipeline?.department?.name || '').toLowerCase();
+    const quickReplyName = dept.includes('home equity') ? 'Proposta manual Home Equity' : dept.includes('habitacional') ? 'Proposta manual Finan Hab' : null;
+    if (!quickReplyName) return false;
+    const stage = (lead?.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (/pre-analise|aprovad|aguardando|document|fechad|contrata|venda futura/.test(stage)) return false;
+    const qr = await prisma.messageTemplate.findFirst({ where: { accountId, name: quickReplyName }, select: { body: true } });
+    const url = qr?.body.match(/https?:\/\/\S+/)?.[0];
+    if (!qr || !url) return false;
+    const already = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: url } }, select: { id: true } });
+    if (already) return false;
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    const sent = await sendOutboundWhatsApp({ accountId, leadId, content: qr.body.trim(), io });
+    if (sent.success) console.log(`[WhatsApp] "Tenho interesse" → link da proposta (${quickReplyName}) pro lead ${leadId}`);
+    return sent.success;
+  } catch (err) {
+    console.error('[WhatsApp] Erro ao mandar link da proposta:', err);
+    return false;
   }
 }
 
