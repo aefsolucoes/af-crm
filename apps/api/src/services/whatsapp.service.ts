@@ -1205,7 +1205,9 @@ async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string
     // Só não repete se o link saiu há pouco (clique duplo). Link mandado
     // semanas atrás não impede: o cliente clicou "Tenho interesse" AGORA.
     const already = await prisma.message.findFirst({
-      where: { leadId, direction: 'OUTBOUND', content: { contains: url }, createdAt: { gte: new Date(Date.now() - 12 * 60 * 60 * 1000) } },
+      // Só WhatsApp: o e-mail de boas-vindas também leva o link e travava o
+      // envio (Luiz Carlos 26/09 tocou "Tenho interesse" e não recebeu nada).
+      where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', content: { contains: url }, createdAt: { gte: new Date(Date.now() - 12 * 60 * 60 * 1000) } },
       select: { id: true },
     });
     if (already) return false;

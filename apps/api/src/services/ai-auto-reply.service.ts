@@ -30,15 +30,21 @@ async function callPermissionContext(accountId: string, leadId: string): Promise
     // pelo card seja outra pessoa — aí a IA avisa que é essa pessoa.
     const firstName = (lead?.user?.name || '').trim().split(/\s+/)[0] || '';
     const caller = firstName && firstName.toLowerCase() !== 'andreia' ? firstName : 'Andreia';
+    // Achado real (Luiz Carlos 26/09): ele tocou "Tenho interesse" na
+    // boas-vindas e contou que tem restrição; como a última mensagem nossa
+    // era o pedido de ligação, a IA achou que era "sim, pode ligar",
+    // respondeu só sobre o botão de permitir e ainda moveu o card.
+    const onlyWhenAboutCall = `
+IMPORTANTE: este bloco só vale quando a mensagem do cliente for sobre a LIGAÇÃO (ex.: "pode ligar", "me liga", "que horas vocês ligam", ou um "sim" solto logo depois do pedido de ligação). "Tenho interesse", "Não tenho interesse", "Quero mais informações" e parecidos são os botões da mensagem de boas-vindas/follow-up — são sobre o CRÉDITO, não sobre a ligação. Se o cliente falar de outro assunto (interesse, restrição no nome, dúvida, valores), responda a ESSE assunto normalmente e NÃO mencione a ligação nem o botão de permitir.`;
     return state.permitted
       ? `--- LIGAÇÃO PELO WHATSAPP ---
 O cliente JÁ PERMITIU ligações pelo WhatsApp.${caller === 'Andreia'
   ? ` Quem liga é você (você fala como a Andreia): se ele quiser ou aceitar uma ligação, confirme em PRIMEIRA PESSOA, algo como "Vou te ligar por aqui pelo WhatsApp em breve." — nunca "a Andreia vai te ligar".`
   : ` Quem liga pra ele é ${caller}: se ele quiser ou aceitar uma ligação, confirme dizendo o nome, algo como "${caller} vai te ligar por aqui pelo WhatsApp em breve."`}
-Sem prometer horário nem imediatismo (nada de "agora", "já", "só um instante" — "em breve" basta) e sem dizer só "a equipe". Nesse caso NÃO desvie pro formulário/link da proposta — a resposta é só a confirmação da ligação.`
+Sem prometer horário nem imediatismo (nada de "agora", "já", "só um instante" — "em breve" basta) e sem dizer só "a equipe". Nesse caso NÃO desvie pro formulário/link da proposta — a resposta é só a confirmação da ligação.${onlyWhenAboutCall}`
       : `--- LIGAÇÃO PELO WHATSAPP ---
 Já pedimos permissão pra ligar pra esse cliente pelo WhatsApp, mas ele AINDA NÃO PERMITIU. Responder "sim" por escrito não vale — sem tocar no botão, a ligação não completa.
-Se ele disser que pode ligar, que quer uma ligação ou responder "sim" ao pedido: NÃO diga que vai ligar. Explique em 1-2 frases que, pra gente conseguir ligar, é só ele tocar em *Permitir ligações* no cartão "pode ligar para você?" aqui na conversa (logo abaixo da nossa mensagem) e escolher *Permitir ligações*.`;
+Se ele disser que pode ligar, que quer uma ligação ou responder "sim" ao pedido: NÃO diga que vai ligar. Explique em 1-2 frases que, pra gente conseguir ligar, é só ele tocar em *Permitir ligações* no cartão "pode ligar para você?" aqui na conversa (logo abaixo da nossa mensagem) e escolher *Permitir ligações*.${onlyWhenAboutCall}`;
   } catch {
     return '';
   }
@@ -123,7 +129,7 @@ const ASK_TEAM_RULES = `PERGUNTAR PRA EQUIPE ("askTeam") — quando o cliente tr
  *  negócio (Fechado, Aprovado etc.), só pra estas de andamento. "Perdido"
  *  não é etapa — é status, tratado separado em MARK_LOST_RULES. */
 const MOVE_STAGE_RULES = `MOVER O CARD DE ETAPA ("moveToStage") — só estes valores são aceitos, escolha no máximo um, ou null se não for o caso (a maioria das mensagens não muda de etapa):
-- "Follow Up": o cliente demonstrou interesse mas precisa de acompanhamento (disse que vai pensar, pediu pra retornarem depois, ainda não deu informação suficiente pra avançar).
+- "Follow Up": o PRÓPRIO CLIENTE adiou — disse que vai pensar, que vai conversar com alguém, pediu pra retornarem depois. NÃO use só porque ele disse que tem interesse, nem porque estamos esperando algo (ele preencher a proposta, permitir a ligação, mandar dado) — nesses casos o card fica onde está (null).
 - "Lead Sem Retorno": o cliente foi ficando em silêncio/enrolando, sem dar uma resposta clara nem positiva nem negativa — NÃO use isso quando o cliente recusar explicitamente (isso é "Perdido", ver regra abaixo).
 - "Pré-Análise": o cliente confirmou que já preencheu a proposta/formulário manual completo, OU você já reuniu nesta conversa todos os dados pessoais necessários pra uma pré-análise (nome, telefone, CPF, renda etc. de todos os participantes). Só use se essa condição foi REALMENTE atendida — não adiante.
 - "Prospecção": raramente necessário (o lead já começa nessa etapa).
