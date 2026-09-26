@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { buildSharedAiContext, buildContextBlocks, CORE_RULES } from './ai-shared.service';
+import { buildSharedAiContext, buildContextBlocks, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 
 const prisma = new PrismaClient();
 
@@ -92,7 +92,7 @@ ${buildContextBlocks(ctx)}`;
         if (attempt === 2) return null;
         continue;
       }
-      return { suggestion: raw };
+      return { suggestion: stripOpeningInterjection(raw) };
     }
     return null;
   } catch (err) {

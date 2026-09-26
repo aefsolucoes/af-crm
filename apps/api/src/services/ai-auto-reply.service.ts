@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES } from './ai-shared.service';
+import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 import { teamQuestionsContext } from './ai-team-question.service';
 import { callSummaryContext } from './call-recording.service';
 
@@ -161,16 +161,19 @@ const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO
 - NÃO faça perguntas de qualificação (tipo de imóvel, se está quitado, valor do imóvel, valor do crédito, renda, entrada, idade etc.). O formulário da proposta manual já pede tudo isso.
 - HOME EQUITY — SITUAÇÃO DO IMÓVEL (antes do passo 1 abaixo, se a conversa ainda não respondeu isso): pergunte em uma frase se o imóvel que vai ficar de garantia tem matrícula registrada em cartório e está regularizado.
   - Se sim: siga normalmente.
-  - Se ele não tiver certeza (não sabe se tem matrícula, se está registrado, se está tudo certo com o imóvel): não insista nem desqualifique — diga que isso a gente vê depois e siga pra aprovar o crédito primeiro, algo como: "Sem problema, isso a gente confere mais pra frente. Antes de tudo, vamos tentar aprovar seu crédito. Pode ser?"
+  - Se ele não tiver certeza (não sabe se tem matrícula, se está registrado, se está tudo certo com o imóvel): não insista nem desqualifique — diga que isso a gente vê depois e siga pro passo 1, algo como: "Sem problema, isso a gente confere mais pra frente." + a pergunta do passo 1.
   - Se não: antes de desistir, pergunte se ele tem outro imóvel pra colocar como garantia, ou outra pessoa que possa fazer o crédito com um imóvel no nome dela — pode ser um parente de 1º grau (pai, mãe, filho).
   - Só se não houver nenhuma alternativa: explique com gentileza que sem imóvel registrado e regular não dá pra seguir agora e marque "markLost" com "Lead desqualificado — <motivo>".
-- Do jeito que a equipe faz, em dois passos:
-  1. Quando o cliente responder ou mostrar interesse (e a proposta ainda não foi oferecida nesta conversa), proponha tentar aprovar o crédito primeiro, curto, algo como: "Antes de tudo, vamos tentar aprovar seu crédito. Pode ser?"
-  2. Quando ele concordar (sim, pode, ok, bora...), mande o link da proposta manual do produto dele usando o texto da Resposta Rápida correspondente ("Proposta manual Finan Hab" ou "Proposta manual Home Equity") e termine com algo como "Se tiver alguma dúvida, é só me falar."
-  Se o cliente já pediu pra seguir, pediu o link ou já está pronto pra mandar os dados, pule direto pro passo 2.
+- Do jeito que a equipe faz (pedido do Fabio 26/09):
+  1. Quando o cliente responder ou mostrar interesse (e isso ainda não foi perguntado nesta conversa), pergunte em UMA frase curta o que ele prefere — tirar dúvidas, fazer uma simulação ou já ir pra aprovação do crédito. Algo como: "Você quer tirar alguma dúvida, fazer uma simulação ou já seguirmos pra aprovação do seu crédito?"
+  2. Conforme a escolha:
+     - Dúvidas: responda em poucas palavras (Base de Conhecimento) e, quando a dúvida estiver resolvida, ofereça seguir pra aprovação ("Quer que eu já te mande o link pra gente tentar aprovar?").
+     - Simulação: mande o link do simulador do produto dele e diga que, depois de simular, é só preencher a proposta que a gente já faz a pré-análise. Financiamento pra comprar/construir: https://aefsolucoesfinanceiras.com.br/simulador.html — Crédito com garantia de imóvel (Home Equity): https://aefsolucoesfinanceiras.com.br/servicos/simulador-home-equity.html. Não faça a simulação você mesmo (sem calcular parcela, taxa ou valor aprovado).
+     - Aprovação (ou sim, pode, bora, "quero aprovar"): mande o link da proposta manual do produto dele usando o texto da Resposta Rápida correspondente ("Proposta manual Finan Hab" ou "Proposta manual Home Equity") e termine com algo como "Se tiver alguma dúvida, é só me falar."
+  Se o cliente já pediu pra seguir, pediu o link ou já está pronto pra mandar os dados, pule a pergunta e mande direto o link da proposta.
   - Financiamento pra comprar/construir imóvel: https://aefsolucoesfinanceiras.com.br/proposta-manual
   - Crédito com garantia de imóvel (Home Equity): https://aefsolucoesfinanceiras.com.br/proposta-manual-home-equity
-- Se o cliente fizer uma pergunta, responda em poucas palavras e, se o link ainda não foi enviado nesta conversa, mande junto.
+- Se o cliente fizer uma pergunta, responda em poucas palavras; se o link da proposta ainda não foi enviado, termine oferecendo seguir pra aprovação.
 - Depois que o link foi enviado, só responda dúvidas — não peça os dados do formulário pela conversa nem reenvie o link a cada mensagem (só se ele pedir ou disser que não achou).
 - Não avalie viabilidade (valor mínimo, percentual do imóvel etc.) antes do formulário preenchido: isso é visto na pré-análise, com os dados do formulário.
 - Se o cliente já disse que preencheu a proposta, não mande o link de novo.
@@ -355,7 +358,7 @@ function parseReply(raw: string): AiAutoReplyResult {
     }
     if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
       return {
-        reply: parsed.reply.trim(),
+        reply: stripOpeningInterjection(parsed.reply.trim()),
         handoff: parsed.handoff === true,
         handoffReason: parsed.handoff === true && typeof parsed.handoffReason === 'string' && parsed.handoffReason.trim() ? parsed.handoffReason.trim().slice(0, 200) : null,
         askTeam: parsed.handoff !== true && typeof parsed.askTeam === 'string' && parsed.askTeam.trim() && parsed.askTeam.trim().toLowerCase() !== 'null' ? parsed.askTeam.trim().slice(0, 1000) : null,
@@ -375,7 +378,7 @@ function parseReply(raw: string): AiAutoReplyResult {
   if (replyMatch) {
     try {
       const reply = (JSON.parse(`"${replyMatch[1]}"`) as string).trim();
-      if (reply) return { reply, handoff: false };
+      if (reply) return { reply: stripOpeningInterjection(reply), handoff: false };
     } catch {
       // segue pro fallback genérico abaixo
     }

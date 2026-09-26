@@ -32,6 +32,20 @@ export const CORE_RULES = `REGRAS OBRIGATÓRIAS:
 - Nada de abrir a mensagem com interjeição ou elogio ("Show", "Perfeito", "Que ótimo", "Ótimo", "Que bom", "Entendi"): vá direto ao ponto, como a equipe faz. Não repita o nome do cliente em toda mensagem e evite pontos de exclamação em sequência.
 - CURTO: 1 ou 2 frases, do tamanho de uma mensagem de WhatsApp real. Só escreva mais quando estiver explicando algo que o cliente perguntou, ou mandando uma Resposta Rápida pronta (lista de documentos, link da proposta) — aí no tamanho dela, sem acrescentar texto em volta.`;
 
+/** Corta interjeição/elogio no começo da resposta ("Show, então vamos
+ *  seguir..." → "Então vamos seguir..."). A regra acima já pede isso, mas o
+ *  modelo às vezes imita o "Show" das mensagens da equipe (exemplos de estilo)
+ *  — Fabio 26/09: "a IA continua usando: SHOW". Filtro fixo, não depende do modelo. */
+export function stripOpeningInterjection(text: string): string {
+  // ", Jaime." colado na interjeição sai junto ("Que ótimo, Jaime. Vamos lá." → "Vamos lá.").
+  const re = /^\s*(show( de bola)?|perfeito|(que )?[oó]timo|que bom|maravilha|excelente|top|beleza|massa|legal|entendi|certo|combinado)(\s*,\s*[\p{L}]+)?\s*[!.…]+\s*|^\s*(show( de bola)?|perfeito|(que )?[oó]timo|que bom|maravilha|excelente|top|beleza|massa|legal|entendi|certo|combinado)\s*[!,.…]+\s*/iu;
+  let out = text;
+  for (let i = 0; i < 3 && re.test(out); i++) out = out.replace(re, '');
+  out = out.trim();
+  if (!out) return text.trim();
+  return out === text.trim() ? out : out.charAt(0).toUpperCase() + out.slice(1);
+}
+
 export interface SharedAiContext {
   lead: {
     id: string;
@@ -283,6 +297,11 @@ export async function applyAiExtractedActions(
     if (action.markLost && action.markLost.trim()) {
       const { updateLead } = require('./lead.service') as typeof import('./lead.service');
       await updateLead(lead.id, accountId, { status: 'LOST', lostReason: action.markLost.trim() }, io);
+      // Igual ao botão "Marcar Perdido": sai do funil ativo pro "Perdidos"
+      // (antes o card marcado pela IA ficava parado na Prospecção).
+      const pipe = await prisma.pipeline.findUnique({ where: { id: lead.pipelineId }, select: { departmentId: true } });
+      const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+      await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: pipe?.departmentId, byName: 'Assistente IA', userId: null, motivo: action.markLost.trim(), io });
       logActivity({
         accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed',
         leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: "${action.markLost.trim()}"`,
@@ -294,7 +313,9 @@ export async function applyAiExtractedActions(
     // tratado acima como status, não como etapa). Resolve o nome DENTRO do
     // funil onde o lead já está — mesmo critério de move_stage_by_name em
     // automation.service.ts.
-    if (action.moveToStage) {
+    // Perdido já levou o card pro funil "Perdidos" — mover etapa aqui (no funil
+    // antigo) traria ele de volta pro funil ativo.
+    if (action.moveToStage && !(action.markLost && action.markLost.trim())) {
       const ALLOWED = ['prospeccao', 'follow up', 'lead sem retorno', 'pre-analise', 'pre analise', 'venda futura'];
       const target = normalize(action.moveToStage);
       const isAllowed = ALLOWED.some((a) => target.includes(a) || a.includes(target));
