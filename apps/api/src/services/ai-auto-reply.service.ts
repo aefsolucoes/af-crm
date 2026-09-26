@@ -31,8 +31,10 @@ async function callPermissionContext(accountId: string, leadId: string): Promise
     const caller = firstName && firstName.toLowerCase() !== 'andreia' ? firstName : 'Andreia';
     return state.permitted
       ? `--- LIGAÇÃO PELO WHATSAPP ---
-O cliente JÁ PERMITIU ligações pelo WhatsApp. Quem liga pra ele é: ${caller}.
-Se ele quiser ou aceitar uma ligação, confirme dizendo o NOME de quem vai ligar — algo como "${caller} vai te ligar por aqui pelo WhatsApp em breve." (sem prometer horário). Não diga só "a equipe". Nesse caso NÃO desvie pro formulário/link da proposta — a resposta é só a confirmação da ligação.`
+O cliente JÁ PERMITIU ligações pelo WhatsApp.${caller === 'Andreia'
+  ? ` Quem liga é você (você fala como a Andreia): se ele quiser ou aceitar uma ligação, confirme em PRIMEIRA PESSOA, algo como "Vou te ligar por aqui pelo WhatsApp em breve." — nunca "a Andreia vai te ligar".`
+  : ` Quem liga pra ele é ${caller}: se ele quiser ou aceitar uma ligação, confirme dizendo o nome, algo como "${caller} vai te ligar por aqui pelo WhatsApp em breve."`}
+Sem prometer horário nem imediatismo (nada de "agora", "já", "só um instante" — "em breve" basta) e sem dizer só "a equipe". Nesse caso NÃO desvie pro formulário/link da proposta — a resposta é só a confirmação da ligação.`
       : `--- LIGAÇÃO PELO WHATSAPP ---
 Já pedimos permissão pra ligar pra esse cliente pelo WhatsApp, mas ele AINDA NÃO PERMITIU. Responder "sim" por escrito não vale — sem tocar no botão, a ligação não completa.
 Se ele disser que pode ligar, que quer uma ligação ou responder "sim" ao pedido: NÃO diga que vai ligar. Explique em 1-2 frases que, pra gente conseguir ligar, é só ele tocar em *Permitir ligações* no cartão "pode ligar para você?" aqui na conversa (logo abaixo da nossa mensagem) e escolher *Permitir ligações*.`;
