@@ -99,10 +99,15 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
     data: {
       ...data,
       ...(data.name !== undefined ? { name: normalizeClientName(data.name) } : {}),
-      ...(deactivatingAi ? { aiAutoReplyActive: false } : {}),
+      // Perdido também perde a estrela (pedido do Fabio 26/09) — a estrela
+      // fixa o cliente no topo da Inbox/Kanban e perdido não é prioridade.
+      ...(deactivatingAi ? { aiAutoReplyActive: false, starred: false } : {}),
     } as any,
   });
-  if (deactivatingAi) io?.to(`lead:${id}`).emit('lead_ai_toggled', { leadId: id, active: false });
+  if (deactivatingAi) {
+    io?.to(`lead:${id}`).emit('lead_ai_toggled', { leadId: id, active: false });
+    io?.to(`account_${accountId}`).emit('lead_starred', { leadId: id, starred: false });
+  }
   return lead;
 }
 
