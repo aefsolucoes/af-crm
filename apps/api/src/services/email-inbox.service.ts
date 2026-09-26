@@ -128,6 +128,23 @@ function defaultSignature(acc: { userId: string | null }, userName?: string | nu
   return acc.userId ? `${userName || ''}\nA & F Soluções Financeiras`.trim() : companySignatureText();
 }
 
+/** Site, e-mail e telefone da assinatura viram link clicável (pedido do
+ *  Fabio). Mesma regra no preview do front (lib/signature-links.ts). */
+const SIGNATURE_LINK_RE = /([\w.+-]+@[\w-]+(?:\.[\w-]+)+)|(https?:\/\/[^\s<]+|(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|br|io|app|site|online)(?:\.br)?(?:\/[^\s<]*)?)|(\(?\d{2}\)?\s?\d[\d.\s-]{7,}\d)/gi;
+const LINK_STYLE = 'color:#3b82f6;text-decoration:none';
+
+function linkifySignatureLine(line: string): string {
+  return escapeHtml(line).replace(SIGNATURE_LINK_RE, (m, email, url, phone) => {
+    if (email) return `<a href="mailto:${email}" style="${LINK_STYLE}">${email}</a>`;
+    if (url) return `<a href="${/^https?:/i.test(url) ? url : `https://${url}`}" style="${LINK_STYLE}">${url}</a>`;
+    if (phone) {
+      const digits = phone.replace(/\D/g, '');
+      return `<a href="tel:+${digits.length <= 11 ? `55${digits}` : digits}" style="${LINK_STYLE}">${phone}</a>`;
+    }
+    return m;
+  });
+}
+
 /** Assinatura em HTML: 1ª linha em destaque, as outras menores — mesmo
  *  visual da assinatura institucional que já existia. */
 function signatureHtml(text: string): string {
@@ -136,7 +153,7 @@ function signatureHtml(text: string): string {
   const [first, ...rest] = lines;
   return `<div style="margin:28px 0 0;border-left:3px solid #3b82f6;padding-left:14px">
     <p style="font-size:13px;font-weight:700;color:#0d2545;margin:0 0 6px">${escapeHtml(first)}</p>
-    ${rest.map((l) => `<p style="font-size:12px;color:#475569;margin:0 0 3px">${escapeHtml(l)}</p>`).join('')}
+    ${rest.map((l) => `<p style="font-size:12px;color:#475569;margin:0 0 3px">${linkifySignatureLine(l)}</p>`).join('')}
   </div>`;
 }
 

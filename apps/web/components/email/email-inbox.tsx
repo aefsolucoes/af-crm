@@ -13,6 +13,7 @@ import { toast } from '@/components/ui/toast';
 import { Modal } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
 import { EmailComposer } from './email-composer';
+import { signatureLineHtml } from '@/lib/signature-links';
 
 /**
  * Caixa de e-mail do CRM (backend: email-inbox.service.ts). A caixa da
@@ -657,9 +658,12 @@ function SignatureModal({ mailbox, onClose, onSaved }: { mailbox: Mailbox; onClo
           <p className="text-[11px] text-slate-400 mb-1.5">Como vai aparecer no e-mail:</p>
           <div className="border-l-[3px] border-blue-500 pl-3.5">
             {lines.length ? lines.map((l, i) => (
-              <p key={i} className={i === 0 ? 'text-[13px] font-bold text-[#0d2545] mb-1' : 'text-xs text-slate-500'}>{l}</p>
+              i === 0
+                ? <p key={i} className="text-[13px] font-bold text-[#0d2545] mb-1">{l}</p>
+                : <p key={i} className="text-xs text-slate-500" dangerouslySetInnerHTML={{ __html: signatureLineHtml(l) }} />
             )) : <p className="text-xs text-slate-400">(sem assinatura — usa a padrão)</p>}
           </div>
+          <p className="text-[11px] text-slate-400 mt-1.5">Site, e-mail e telefone viram link sozinhos.</p>
         </div>
         {mailbox.shared && <p className="text-[11px] text-amber-600">É a caixa da empresa: vale pros e-mails de todo mundo que enviar por ela.</p>}
         <div className="flex justify-end gap-2 pt-1">

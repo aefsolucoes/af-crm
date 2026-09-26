@@ -4,6 +4,7 @@ import { Send, Loader2, Paperclip, X } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
+import { signatureLineHtml } from '@/lib/signature-links';
 
 // Mesmo limite do servidor (email-inbox.service.ts): cabe no ~25 MB do provedor.
 const MAX_FILES = 10;
@@ -176,7 +177,9 @@ export function EmailComposer({
           return sig ? (
             <div className="border-l-[3px] border-blue-500/70 pl-3 py-0.5">
               {sig.split('\n').map((l) => l.trim()).filter(Boolean).map((l, i) => (
-                <p key={i} className={i === 0 ? 'text-xs font-semibold text-slate-600' : 'text-[11px] text-slate-400'}>{l}</p>
+                i === 0
+                  ? <p key={i} className="text-xs font-semibold text-slate-600">{l}</p>
+                  : <p key={i} className="text-[11px] text-slate-400" dangerouslySetInnerHTML={{ __html: signatureLineHtml(l) }} />
               ))}
             </div>
           ) : null;
