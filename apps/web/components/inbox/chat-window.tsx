@@ -108,6 +108,17 @@ function extractMetaVariables(text: string): number[] {
   return nums.sort((a, b) => a - b);
 }
 
+/** Mensagem de canal EMAIL na conversa (caixa de e-mail do CRM): separa o
+ *  assunto (1ª linha "📧 ...", "📋 Proposta..." ou "🔔 Simulação...") do corpo,
+ *  pra mostrar num balão próprio com a faixa "por e-mail" — pedido do Fabio
+ *  (26/09): tem que dar pra saber de cara que foi por e-mail. */
+function splitEmailContent(content: string): { subject: string; body: string; fromSiteForm: boolean } {
+  const [first, ...rest] = content.split('\n');
+  const fromSiteForm = /^(📋|🔔)/.test(first);
+  const subject = first.replace(/^📧\s*/, '').trim();
+  return { subject, body: rest.join('\n').replace(/^\n+/, ''), fromSiteForm };
+}
+
 function fillMetaTemplate(text: string, vars: Record<number, string>): string {
   return text.replace(/\{\{(\d+)\}\}/g, (_, n) => vars[parseInt(n, 10)] || `{{${n}}}`);
 }
@@ -1621,12 +1632,24 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                       showTail && isOut  ? 'rounded-br-sm' : '',
                       showTail && !isOut ? 'rounded-bl-sm' : '',
                     )}
-                    style={{ backgroundColor: isOut ? '#005c4b' : '#202c33' }}
+                    style={{ backgroundColor: msg.channel === 'EMAIL' ? (isOut ? '#1d3b5c' : '#243044') : isOut ? '#005c4b' : '#202c33' }}
                   >
                     {liveDeleted ? (
                       <p className="text-sm italic text-[#e9edef]/50 pr-20">🚫 Mensagem apagada</p>
                     ) : (
                       <>
+                        {msg.channel === 'EMAIL' && (() => {
+                          const e = splitEmailContent(msg.content);
+                          return (
+                            <div className="-mx-3 -mt-2 mb-2 px-3 pt-2 pb-1.5 rounded-t-2xl bg-black/25 border-b border-white/10">
+                              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-sky-300">
+                                <Mail size={12} />
+                                {isOut ? 'Enviado por e-mail' : e.fromSiteForm ? 'Recebido por e-mail · formulário do site' : 'Recebido por e-mail'}
+                              </p>
+                              {e.subject && <p className="text-[13px] font-semibold text-[#e9edef] mt-0.5 pr-6">{e.subject.replace(/^(📋|🔔)\s*/, '')}</p>}
+                            </div>
+                          );
+                        })()}
                         {msg.forwardedFromLeadName && (
                           <p className="text-[10px] italic text-[#e9edef]/55 mb-0.5 flex items-center gap-1">
                             <Forward size={10} /> Encaminhada de {msg.forwardedFromLeadName}
@@ -1721,7 +1744,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                           const hasAtt = !!(msg.attachments && msg.attachments.length > 0);
                           const hasContactCard = !!(msg.sharedContactName || msg.sharedContactPhone);
                           if (hasContactCard) return null;
-                          const text = hasAtt
+                          const text = msg.channel === 'EMAIL'
+                            ? splitEmailContent(msg.content).body
+                            : hasAtt
                             ? (msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '')
                             : msg.content;
                           if (!text) return null;
