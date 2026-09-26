@@ -133,6 +133,14 @@ router.get('/permission-state', async (req: AuthRequest, res: Response) => {
   res.json({ permitted: state.permitted, canRequest: state.canRequest, phone });
 });
 
+// POST /api/calls/:waCallId/diag — diagnóstico da ligação mandado pelo
+// navegador (recebendo áudio? atraso? som tocando?) — só loga, pra achar
+// problema de áudio sem precisar do console do navegador do usuário.
+router.post('/:waCallId/diag', async (req: AuthRequest, res: Response) => {
+  console.log(`[Calling][diag] ${req.params.waCallId.slice(-12)} user=${req.user!.id.slice(-6)}:`, JSON.stringify(req.body || {}).slice(0, 1500));
+  res.json({ ok: true });
+});
+
 const leadIdSchema = z.object({ leadId: z.string().min(1) });
 
 // POST /api/calls/permission-request — manda o template pra pedir permissão.

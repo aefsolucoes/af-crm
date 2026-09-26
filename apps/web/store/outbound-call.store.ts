@@ -20,8 +20,37 @@ let audioEl: HTMLAudioElement | null = null;
 // travado/mudo, sem confirmação nenhuma de que a chamada estava tocando do
 // outro lado de verdade.
 let stopRingback: (() => void) | null = null;
+// Diagnóstico (26/09, "tá com delay e não escutamos quem atende"): durante a
+// ligação manda pro servidor, a cada 5s, se está chegando áudio do cliente,
+// o atraso da rede e se o <audio> está tocando.
+let diagTimer: ReturnType<typeof setInterval> | null = null;
+
+async function sendDiag(tag: string) {
+  if (!pc || !waCallId) return;
+  try {
+    const stats = await pc.getStats();
+    const out: Record<string, unknown> = { tag, ice: pc.iceConnectionState, conn: pc.connectionState };
+    const byId = new Map<string, any>();
+    stats.forEach((r: any) => byId.set(r.id, r));
+    stats.forEach((r: any) => {
+      if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+        out.inbound = { packets: r.packetsReceived, lost: r.packetsLost, jitterMs: Math.round((r.jitter || 0) * 1000), level: r.audioLevel, energy: r.totalAudioEnergy, jbDelayMs: r.jitterBufferEmittedCount ? Math.round((r.jitterBufferDelay / r.jitterBufferEmittedCount) * 1000) : undefined };
+      }
+      if (r.type === 'outbound-rtp' && r.kind === 'audio') out.outbound = { packets: r.packetsSent };
+      if (r.type === 'candidate-pair' && (r.nominated || r.selected) && r.state === 'succeeded') {
+        out.rttMs = r.currentRoundTripTime !== undefined ? Math.round(r.currentRoundTripTime * 1000) : undefined;
+        out.local = byId.get(r.localCandidateId)?.candidateType;
+        out.remote = byId.get(r.remoteCandidateId)?.candidateType;
+        out.protocol = byId.get(r.localCandidateId)?.protocol;
+      }
+    });
+    if (audioEl) out.audio = { paused: audioEl.paused, muted: audioEl.muted, volume: audioEl.volume, hasStream: !!audioEl.srcObject, readyState: audioEl.readyState };
+    api.post(`/api/calls/${encodeURIComponent(waCallId)}/diag`, out).catch(() => {});
+  } catch { /* diagnóstico nunca atrapalha a ligação */ }
+}
 
 function cleanup() {
+  if (diagTimer) { clearInterval(diagTimer); diagTimer = null; }
   pc?.close();
   pc = null;
   localStream?.getTracks().forEach((t) => t.stop());
@@ -122,8 +151,8 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
         if (audioEl) {
           audioEl.srcObject = event.streams[0];
           audioEl.play().then(
-            () => console.log('[Calling] outbound: audio.play() ok'),
-            (err) => console.error('[Calling] outbound: audio.play() falhou:', err)
+            () => { console.log('[Calling] outbound: audio.play() ok'); sendDiag('play-ok'); },
+            (err) => { console.error('[Calling] outbound: audio.play() falhou:', err); sendDiag(`play-falhou: ${err?.name || err}`); }
           );
         }
       };
@@ -163,6 +192,8 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
         return;
       }
       waCallId = data.waCallId;
+      if (diagTimer) clearInterval(diagTimer);
+      diagTimer = setInterval(() => sendDiag('tick'), 5000);
     } catch (err) {
       console.error('[Calling] Falha ao ligar:', err);
       cleanup();
