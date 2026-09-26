@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
+import { signatureLineHtml } from '@/lib/signature-links';
 import { Plus, Trash2, Edit2, Zap, ToggleLeft, ToggleRight, Clock, GitBranch, MessageSquare, ArrowRight } from 'lucide-react';
 
 type TriggerType = 'NEW_LEAD' | 'STAGE_CHANGE' | 'TAG_ADDED' | 'INACTIVITY' | 'MESSAGE_RECEIVED' | 'FORM_SUBMITTED';
@@ -108,6 +109,17 @@ export default function AutomacaoPage() {
     throwOnError: false,
   });
   const templates = templatesData?.templates || [];
+  // Assinatura da caixa comercial@ — é ela que vai no fim do e-mail que a
+  // automação manda (mostrada embaixo do texto, pra não esquecer que vai).
+  const { data: mailboxes } = useQuery({
+    queryKey: ['email-accounts'],
+    queryFn: async () => (await api.get('/api/email/accounts')).data as { shared: boolean; signature: string | null; defaultSignature: string }[],
+    retry: false,
+  });
+  const companySignature = (() => {
+    const m = mailboxes?.find((b) => b.shared);
+    return (m?.signature || m?.defaultSignature || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  })();
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof EMPTY_FORM) => (await api.post('/api/automations', data)).data,
@@ -470,6 +482,19 @@ export default function AutomacaoPage() {
                                 {!String(action.config.emailBody || '').trim() && ' Em branco, vai o mesmo texto do template do WhatsApp.'}
                               </p>
                             </div>
+                            {companySignature.length > 0 && (
+                              <div>
+                                <p className="text-xs font-medium text-slate-600 mb-1">Assinatura (entra embaixo, sozinha)</p>
+                                <div className="border-l-[3px] border-blue-500 pl-3 py-0.5 bg-white rounded-r">
+                                  {companySignature.map((l, k) => (
+                                    k === 0
+                                      ? <p key={k} className="text-xs font-bold text-[#0d2545]">{l}</p>
+                                      : <p key={k} className="text-[11px] text-slate-500" dangerouslySetInnerHTML={{ __html: signatureLineHtml(l) }} />
+                                  ))}
+                                </div>
+                                <p className="text-[11px] text-slate-400 mt-1">Pra mudar: página E-mail → lápis ao lado da caixa Comercial.</p>
+                              </div>
+                            )}
                           </>
                         )}
                       </div>
