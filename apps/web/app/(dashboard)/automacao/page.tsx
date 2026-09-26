@@ -318,9 +318,9 @@ export default function AutomacaoPage() {
                     />
                     Só leads vindos do formulário do site
                   </label>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 gap-2 items-end">
                     <Input
-                      label="Só enviar a partir de (hora)"
+                      label="Das (hora)"
                       type="number"
                       min={0}
                       max={23}

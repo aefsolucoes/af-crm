@@ -28,7 +28,9 @@ export function Modal({ open = true, onClose, onBackdropClick, title, children, 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onBackdropClick || onClose} />
-      <div className={cn('relative bg-white rounded-xl shadow-2xl w-full max-h-[90vh] flex flex-col', sizes[size])}>
+      {/* dvh = altura VISÍVEL da tela: no iPhone "vh" conta a área embaixo das
+          barras do navegador e o rodapé da janela ficava escondido. */}
+      <div className={cn('relative bg-white rounded-xl shadow-2xl w-full modal-max-h flex flex-col', sizes[size])}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-af-border flex-shrink-0">
           <h2 className="text-base font-semibold text-slate-900">{title}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">

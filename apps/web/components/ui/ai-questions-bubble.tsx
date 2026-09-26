@@ -108,7 +108,7 @@ export function AiQuestionsBubble() {
   return (
     <>
       {open && (
-        <div className="fixed z-[95] bottom-20 right-4 md:right-5 w-[400px] max-w-[calc(100vw-2rem)] h-[600px] max-h-[calc(100vh-7rem)] flex flex-col rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="fixed z-40 bottom-20 right-4 md:right-5 w-[400px] max-w-[calc(100vw-2rem)] h-[600px] max-h-[calc(100vh-7rem)] flex flex-col rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden">
           <div className="flex items-center gap-2.5 px-4 py-3 text-white" style={{ backgroundColor: '#2261a8' }}>
             <Bot size={20} className="flex-shrink-0" />
             <div className="min-w-0 flex-1">
@@ -229,7 +229,7 @@ export function AiQuestionsBubble() {
       <button
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          'fixed z-[95] bottom-4 right-4 md:bottom-5 md:right-5 w-[52px] h-[52px] rounded-full text-white shadow-lg flex items-center justify-center hover:brightness-110 transition',
+          'fixed z-40 bottom-4 right-4 md:bottom-5 md:right-5 w-[52px] h-[52px] rounded-full text-white shadow-lg flex items-center justify-center hover:brightness-110 transition',
           hideOnMobile && !open && 'hidden md:flex',
           pending.length > 0 && !open && 'animate-pulse',
         )}

@@ -96,3 +96,11 @@ body {
   background: var(--af-border);
   border-radius: 2px;
 }
+
+/* Janela (Modal): altura máxima pela área VISÍVEL da tela (dvh) — no iPhone
+   "vh" conta a parte embaixo das barras do navegador e o rodapé sumia.
+   90vh fica de reserva pra navegador que não conhece dvh. */
+.modal-max-h {
+  max-height: 90vh;
+  max-height: calc(100dvh - 2rem);
+}
