@@ -131,14 +131,19 @@ async function createLeadInPreAnalysis(accountId: string, department: string, na
  */
 export async function handleSiteProposalEmail(accountId: string, email: EmailMessage, io: Io, fresh: boolean): Promise<string | null> {
   if (!email.fromAddress || !SITE_FORM_SENDERS.has(email.fromAddress.toLowerCase())) return null;
-  // Só proposta preenchida ("🏠 Proposta Manual" / "🏠 Nova Proposta"). O
-  // aviso "🔔 Lead — ... (sem proposta ainda)" é só simulação — o webhook do
-  // site já cria o card. (Bug de 26/09: "sem proposta" casava com "proposta".)
+  // "🏠 Proposta Manual/Nova Proposta" = proposta preenchida (fluxo completo).
+  // "🔔 Lead — ... (sem proposta ainda)" = só simulou: o webhook do site já
+  // cria o card e manda as boas-vindas — aqui só VINCULA o e-mail ao card e
+  // mostra na conversa (pedido do Fabio 26/09), sem mexer em etapa/campos.
+  // (Bug de 26/09: "sem proposta" casava com "proposta" e moveu 1 card.)
   const subject = email.subject || '';
-  if (!subject.startsWith('🏠') || /sem proposta/i.test(subject)) return null;
+  const isProposal = subject.startsWith('🏠') && !/sem proposta/i.test(subject);
+  const isLeadNotice = !isProposal && (subject.startsWith('🔔') || /sem proposta/i.test(subject));
+  if (!isProposal && !isLeadNotice) return null;
   const pairs = parseFormPairs(email.htmlBody || '');
   const product = productOf(pairs, email.subject || '');
   if (!pairs.length || !product) return null;
+  if (isLeadNotice) return linkLeadNotice(accountId, email, pairs, product.label);
 
   const get = (...labels: string[]) => pairs.find(([k]) => labels.includes(norm(k)))?.[1] || '';
   const name = get('nome completo', 'nome');
@@ -209,5 +214,29 @@ export async function handleSiteProposalEmail(accountId: string, email: EmailMes
     sendPushToAccount(accountId, { title: `📋 Proposta do site — ${lead?.name || 'cliente'}`, body: product.label, leadId }).catch(() => {});
   }
   console.log(`[Proposta e-mail] ${email.subject} → card ${leadId}${created ? ' (criado)' : ''}${fresh ? ' (nova)' : ''}`);
+  return leadId;
+}
+
+/** Aviso de simulação do site ("🔔 Lead — ... (sem proposta ainda)"): só
+ *  liga o e-mail ao card do cliente e mostra na conversa. Sem card ainda (o
+ *  webhook do site é quem cria), deixa só na caixa de e-mail. */
+async function linkLeadNotice(accountId: string, email: EmailMessage, pairs: [string, string][], productLabel: string): Promise<string | null> {
+  const get = (...labels: string[]) => pairs.find(([k]) => labels.includes(norm(k)))?.[1] || '';
+  const leadId = await findLead(accountId, get('whatsapp', 'celular', 'telefone'), get('cpf'), get('e-mail', 'email').toLowerCase());
+  if (!leadId) return null;
+  await prisma.emailMessage.update({ where: { id: email.id }, data: { leadId } });
+  const already = email.messageId
+    ? await prisma.message.findFirst({ where: { leadId, channel: 'EMAIL', externalId: email.messageId }, select: { id: true } })
+    : null;
+  if (!already) {
+    const body = pairs.filter(([k]) => norm(k) !== 'produto').map(([k, v]) => `${k}: ${v}`).join('\n');
+    await prisma.message.create({
+      data: {
+        content: `🔔 Simulação no site (ainda sem proposta) — ${productLabel}\n\n${body}`,
+        direction: 'INBOUND', channel: 'EMAIL', leadId, externalId: email.messageId || undefined, status: 'SENT',
+        read: true, createdAt: email.date,
+      },
+    });
+  }
   return leadId;
 }
