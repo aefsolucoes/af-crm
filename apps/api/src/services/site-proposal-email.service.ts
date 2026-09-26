@@ -131,7 +131,11 @@ async function createLeadInPreAnalysis(accountId: string, department: string, na
  */
 export async function handleSiteProposalEmail(accountId: string, email: EmailMessage, io: Io, fresh: boolean): Promise<string | null> {
   if (!email.fromAddress || !SITE_FORM_SENDERS.has(email.fromAddress.toLowerCase())) return null;
-  if (!/^🏠|proposta/i.test(email.subject || '')) return null; // "🔔 Lead (sem proposta)" o webhook do site já trata
+  // Só proposta preenchida ("🏠 Proposta Manual" / "🏠 Nova Proposta"). O
+  // aviso "🔔 Lead — ... (sem proposta ainda)" é só simulação — o webhook do
+  // site já cria o card. (Bug de 26/09: "sem proposta" casava com "proposta".)
+  const subject = email.subject || '';
+  if (!subject.startsWith('🏠') || /sem proposta/i.test(subject)) return null;
   const pairs = parseFormPairs(email.htmlBody || '');
   const product = productOf(pairs, email.subject || '');
   if (!pairs.length || !product) return null;
