@@ -660,6 +660,11 @@ model Call {
   connectedAt      DateTime?
   endedAt          DateTime?
   endReason        String?
+  // Gravação de ligação da EQUIPE feita pelo CRM, transcrita (ElevenLabs,
+  // separando quem fala) e resumida — vira nota no card e material pra IA
+  // aprender o jeito da equipe (pedido do Fabio 26/09). Áudio não é guardado.
+  transcript       String?        @db.Text
+  summary          String?        @db.Text
   createdAt        DateTime       @default(now())
 
   @@index([accountId])

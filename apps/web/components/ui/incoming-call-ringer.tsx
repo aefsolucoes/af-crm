@@ -8,6 +8,7 @@ import { useAuthStore } from '@/store/auth.store';
 import { ActiveCallBar } from '@/components/ui/active-call-bar';
 import { waitForIceGatheringComplete } from '@/lib/webrtc';
 import { playTone, SoundKey } from '@/lib/sounds';
+import { startCallRecording } from '@/lib/call-recorder';
 
 interface IncomingCallEvent {
   callId: string;
@@ -35,6 +36,8 @@ export function IncomingCallRinger() {
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const stopRecordingRef = useRef<(() => void) | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const acceptSentRef = useRef(false);
   const ringToneRef = useRef<{ ctx: AudioContext; stop: () => void } | null>(null);
@@ -76,6 +79,9 @@ export function IncomingCallRinger() {
   const cleanupPeerConnection = useCallback(() => {
     pcRef.current?.close();
     pcRef.current = null;
+    stopRecordingRef.current?.();
+    stopRecordingRef.current = null;
+    remoteStreamRef.current = null;
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
     if (audioElRef.current) audioElRef.current.srcObject = null;
@@ -140,6 +146,7 @@ export function IncomingCallRinger() {
 
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
       pc.ontrack = (event) => {
+        remoteStreamRef.current = event.streams[0] || null;
         if (audioElRef.current) audioElRef.current.srcObject = event.streams[0];
       };
       pc.oniceconnectionstatechange = () => console.log('[Calling] iceConnectionState:', pc.iceConnectionState);
@@ -148,7 +155,12 @@ export function IncomingCallRinger() {
         if (pc.connectionState === 'connected' && !acceptSentRef.current) {
           acceptSentRef.current = true;
           api.post(`/api/calls/${call.waCallId}/accept`, { sdpAnswer: pc.localDescription?.sdp })
-            .then(() => setActive((a) => (a?.call.waCallId === call.waCallId ? { ...a, stage: 'connected', connectedAt: Date.now() } : a)))
+            .then(() => {
+              if (localStreamRef.current && remoteStreamRef.current && !stopRecordingRef.current) {
+                stopRecordingRef.current = startCallRecording(localStreamRef.current, remoteStreamRef.current, call.waCallId);
+              }
+              setActive((a) => (a?.call.waCallId === call.waCallId ? { ...a, stage: 'connected', connectedAt: Date.now() } : a));
+            })
             .catch((err) => { console.error('[Calling] Falha ao confirmar accept:', err); endActiveCall(call.waCallId); });
         }
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {

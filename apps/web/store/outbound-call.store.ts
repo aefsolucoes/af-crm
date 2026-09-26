@@ -3,6 +3,7 @@ import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { waitForIceGatheringComplete } from '@/lib/webrtc';
 import { startRingbackTone } from '@/lib/sounds';
+import { startCallRecording } from '@/lib/call-recorder';
 
 export type OutboundCallStage = 'idle' | 'checking' | 'confirm' | 'connecting' | 'connected';
 
@@ -24,6 +25,9 @@ let stopRingback: (() => void) | null = null;
 // ligação manda pro servidor, a cada 5s, se está chegando áudio do cliente,
 // o atraso da rede e se o <audio> está tocando.
 let diagTimer: ReturnType<typeof setInterval> | null = null;
+// Gravação (os dois lados) — começa quando o cliente atende, para ao desligar.
+let remoteStream: MediaStream | null = null;
+let stopRecording: (() => void) | null = null;
 
 async function sendDiag(tag: string) {
   if (!pc || !waCallId) return;
@@ -51,6 +55,9 @@ async function sendDiag(tag: string) {
 
 function cleanup() {
   if (diagTimer) { clearInterval(diagTimer); diagTimer = null; }
+  stopRecording?.();
+  stopRecording = null;
+  remoteStream = null;
   pc?.close();
   pc = null;
   localStream?.getTracks().forEach((t) => t.stop());
@@ -150,6 +157,7 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
       console.log('[Calling] outbound: microfone ok, tracks locais:', stream.getAudioTracks().map((t) => ({ label: t.label, enabled: t.enabled, muted: t.muted, readyState: t.readyState })));
       conn.ontrack = (event) => {
         console.log('[Calling] outbound ontrack: stream remoto recebido', event.streams[0]?.id, event.track.kind, event.track.readyState, event.track.muted);
+        remoteStream = event.streams[0] || null;
         if (audioEl) {
           audioEl.srcObject = event.streams[0];
           audioEl.play().then(
@@ -252,6 +260,7 @@ export const useOutboundCallStore = create<OutboundCallState>((set, get) => ({
     if (acceptedWaCallId !== waCallId) return;
     stopRingback?.();
     stopRingback = null;
+    if (localStream && remoteStream && waCallId && !stopRecording) stopRecording = startCallRecording(localStream, remoteStream, waCallId);
     set({ connectedAt: Date.now(), stage: 'connected' });
   },
 

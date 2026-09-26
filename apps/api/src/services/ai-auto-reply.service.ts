@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES } from './ai-shared.service';
 import { teamQuestionsContext } from './ai-team-question.service';
+import { callSummaryContext } from './call-recording.service';
 
 /**
  * Pedido de permissão pra LIGAR pelo WhatsApp (template com o cartão "pode
@@ -248,6 +249,7 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
     const camposTexto = await buildFillableFieldsText(accountId);
     const duvidasEquipe = await teamQuestionsContext(leadId);
     const ligacao = await callPermissionContext(accountId, leadId);
+    const conversasPorTelefone = await callSummaryContext(leadId).catch(() => '');
 
     const systemPrompt = `${ROLE_FRAMING}
 
@@ -275,7 +277,9 @@ ${buildContextBlocks(ctx)}${duvidasEquipe ? `
 
 ${duvidasEquipe}` : ''}${ligacao ? `
 
-${ligacao}` : ''}`;
+${ligacao}` : ''}${conversasPorTelefone ? `
+
+${conversasPorTelefone}` : ''}`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',

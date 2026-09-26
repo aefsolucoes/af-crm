@@ -57,7 +57,10 @@ export function ActiveCallBar({
           sempre no mesmo formato compacto. */}
       <div className="flex flex-col leading-tight min-w-0">
         <span className="text-sm font-medium truncate max-w-[140px]">{callerName}</span>
-        <span className="text-xs text-emerald-400">{connecting ? 'Conectando…' : `${mm}:${ss}`}</span>
+        {/* Ligação conectada é gravada e transcrita (vira nota no card e treino da IA). */}
+        <span className="text-xs text-emerald-400">
+          {connecting ? 'Conectando…' : <><span className="text-red-400">● Gravando</span> · {mm}:{ss}</>}
+        </span>
       </div>
       <button
         onClick={onToggleMute}

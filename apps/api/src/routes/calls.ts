@@ -141,6 +141,19 @@ router.post('/:waCallId/diag', async (req: AuthRequest, res: Response) => {
   res.json({ ok: true });
 });
 
+// POST /api/calls/:waCallId/recording — áudio da ligação (gravado no
+// navegador) pra transcrever e resumir; responde na hora e processa depois.
+router.post('/:waCallId/recording', async (req: AuthRequest, res: Response) => {
+  const audioBase64 = String(req.body?.audioBase64 || '');
+  if (!audioBase64) return res.status(400).json({ error: 'audioBase64 é obrigatório' });
+  res.status(202).json({ ok: true });
+  const { processCallRecording } = require('../services/call-recording.service') as typeof import('../services/call-recording.service');
+  processCallRecording({
+    accountId: req.user!.accountId, waCallId: req.params.waCallId, userId: req.user!.id,
+    audio: Buffer.from(audioBase64, 'base64'), mimeType: String(req.body?.mimeType || 'audio/webm'),
+  }).catch((err) => console.error('[Gravação] falhou:', err?.message));
+});
+
 const leadIdSchema = z.object({ leadId: z.string().min(1) });
 
 // POST /api/calls/permission-request — manda o template pra pedir permissão.
