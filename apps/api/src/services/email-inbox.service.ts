@@ -625,7 +625,9 @@ export async function sendEmailFrom(params: {
 
   const domain = acc.address.split('@')[1] || 'af-crm.local';
   const messageId = `<${crypto.randomUUID()}@${domain}>`;
-  const paragraphs = body.split('\n').map((line) => line.trim() ? `<p style="margin:0 0 12px">${escapeHtml(line)}</p>` : '<br>').join('');
+  // Link no texto (ex.: link da proposta) vira clicável em qualquer leitor.
+  const linkUrls = (html: string) => html.replace(/(https?:\/\/[^\s<]+)/g, `<a href="$1" style="${LINK_STYLE}">$1</a>`);
+  const paragraphs = body.split('\n').map((line) => line.trim() ? `<p style="margin:0 0 12px">${linkUrls(escapeHtml(line))}</p>` : '<br>').join('');
   const signature = acc.signature?.trim()
     ? signatureHtml(acc.signature)
     : acc.userId ? signatureHtml(defaultSignature(acc, user?.name)) : companySignatureHtml();
