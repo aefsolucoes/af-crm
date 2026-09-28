@@ -1034,7 +1034,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       }
 
       const from = msg.from as string; // e.g. "5561999990001"
-      const text = mediaInfo
+      let text = mediaInfo
         ? `📎 ${mediaInfo.fileName}${mediaInfo.caption ? ` — ${mediaInfo.caption}` : ''}`
         : buttonReplyTitle || (msg.text?.body as string) || '';
       const externalId = msg.id as string;
@@ -1078,6 +1078,18 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       let mediaBuffer: Buffer | null = null;
       if (mediaInfo && config?.accessToken) {
         mediaBuffer = await downloadCloudApiMedia(mediaInfo.mediaId, config.accessToken);
+      }
+
+      // ── Áudio do cliente: transcreve (fica embaixo do áudio na conversa,
+      // igual legenda) e a IA responde o que foi falado. Fabio 28/09.
+      let voiceTranscript: string | null = null;
+      if (msg.type === 'audio' && mediaBuffer && mediaInfo) {
+        const { transcribeVoiceNote } = require('./speech-to-text.service') as typeof import('./speech-to-text.service');
+        voiceTranscript = await transcribeVoiceNote(mediaBuffer, mediaInfo.mimeType);
+        if (voiceTranscript) {
+          text = `📎 ${mediaInfo.fileName} — 🎤 ${voiceTranscript}`;
+          console.log(`[Transcrição] áudio de ${from}: ${voiceTranscript.length} caracteres`);
+        }
       }
 
       // ── Citação (cliente respondeu citando uma mensagem, dele ou nossa) ──
@@ -1153,7 +1165,10 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       // Gatilho automático (Templates → "Disparar automaticamente") e
       // assistente de IA (Inbox → botão de IA na conversa) — só para texto de
       // verdade, não mídia. Template tem prioridade sobre a resposta de IA.
-      if ((msg.type === 'text' || buttonReplyTitle) && text) {
+      const textForFlow = text;
+      if ((msg.type === 'text' || buttonReplyTitle || voiceTranscript) && text) {
+        // Áudio transcrito: o fluxo (IA, SalesBot, gatilhos) recebe o que foi falado.
+        const text = voiceTranscript ? `(áudio) ${voiceTranscript}` : textForFlow;
         // SalesBot tem prioridade — se uma resposta continua um fluxo em
         // andamento (ou dispara um novo por palavra-chave), template/IA não
         // entram em cima da mesma mensagem (mesma regra de exclusividade que
@@ -1348,7 +1363,8 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
       where: { leadId, direction: 'INBOUND', ...(lastOut ? { createdAt: { gt: lastOut.createdAt } } : {}) },
       orderBy: { createdAt: 'desc' }, take: 5, select: { content: true },
     });
-    const textToAnswer = burst.length > 1 ? burst.reverse().map((m) => m.content).filter(Boolean).join('\n') : incomingText;
+    const { voiceNoteForAi } = require('./speech-to-text.service') as typeof import('./speech-to-text.service');
+    const textToAnswer = burst.length > 1 ? burst.reverse().map((m) => voiceNoteForAi(m.content || '')).filter(Boolean).join('\n') : incomingText;
 
     // Ainda ligada? (alguém pode ter desligado a IA nesses 2s)
     const still = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });

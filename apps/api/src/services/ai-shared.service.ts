@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { voiceNoteForAi } from './speech-to-text.service';
 import { searchKnowledge } from './knowledge.service';
 import { parseMoneyOrNumber } from './campaign-detection.service';
 import { logActivity } from './activity.service';
@@ -93,7 +94,7 @@ export async function buildSharedAiContext(
   });
   const ordered = recent.reverse();
   const historicoTexto = ordered.length
-    ? ordered.map((m) => `${m.direction === 'INBOUND' ? inboundLabel : outboundLabel}: ${m.content}`).join('\n')
+    ? ordered.map((m) => `${m.direction === 'INBOUND' ? inboundLabel : outboundLabel}: ${voiceNoteForAi(m.content)}`).join('\n')
     : '(sem histórico anterior)';
 
   // Escopo de produtos deste setor — trata o setor do CARD como o produto
