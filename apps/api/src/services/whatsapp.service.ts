@@ -1169,8 +1169,14 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
           await maybeSendProposalLinkOnInterest(accountId, leadId, text, io) ||
           await noInterest.handleNoInterestButton(accountId, leadId, text, io).catch((e) => { console.error('[Sem interesse] falhou:', e?.message); return false; })
         );
+        // Proposta do site que chega pelo WhatsApp DEPOIS do e-mail da mesma
+        // proposta: o e-mail já levou o card pra Pré-Análise e a automação
+        // já mandou o "Recebi sua proposta" — a IA respondia de novo
+        // (Alexandre Barutti 27/09: duas confirmações seguidas).
+        const formAlreadyAcknowledged = await isSiteFormAlreadyAcknowledged(leadId, text);
+        if (formAlreadyAcknowledged) console.log(`[Formulário] ${leadId}: proposta pelo WhatsApp já confirmada (chegou antes por e-mail) — sem resposta`);
         const { maybeSalesBotStep } = require('./salesbot.service') as typeof import('./salesbot.service');
-        const botHandled = interestHandled || await maybeSalesBotStep(accountId, leadId, text, io);
+        const botHandled = interestHandled || formAlreadyAcknowledged || await maybeSalesBotStep(accountId, leadId, text, io);
         if (!botHandled) {
           const templateDisparou = await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
           if (!templateDisparou) {
@@ -1185,6 +1191,29 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
     }
   } catch (err) {
     console.error('[WhatsApp] Process incoming error:', err);
+  }
+}
+
+/** true = a mensagem é o formulário de proposta do site e a MESMA proposta
+ *  já chegou por e-mail (últimas 6h) e já foi respondida pelo WhatsApp depois
+ *  disso — não precisa de outra resposta. */
+async function isSiteFormAlreadyAcknowledged(leadId: string, text: string): Promise<boolean> {
+  try {
+    const { parseProposalForm } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
+    if (!parseProposalForm(text) && !/preenchi a proposta\b[\s\S]*\bno site/i.test(text)) return false;
+    const email = await prisma.message.findFirst({
+      where: { leadId, direction: 'INBOUND', channel: 'EMAIL', content: { startsWith: '📋 Proposta preenchida no site' }, createdAt: { gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+    if (!email) return false;
+    const ack = await prisma.message.findFirst({
+      where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', createdAt: { gte: email.createdAt } },
+      select: { id: true },
+    });
+    return !!ack;
+  } catch {
+    return false;
   }
 }
 
