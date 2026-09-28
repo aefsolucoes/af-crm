@@ -399,8 +399,16 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   let textBody: string | null = null;
   let htmlBody: string | null = null;
   try {
-    if (parts.text) textBody = await readStream((await client.download(String(msg.uid), parts.text, { uid: true, maxBytes: TEXT_LIMIT })).content, TEXT_LIMIT);
-    if (parts.html) htmlBody = await readStream((await client.download(String(msg.uid), parts.html, { uid: true, maxBytes: HTML_LIMIT })).content, HTML_LIMIT);
+    // imapflow 2.1+ tipa o conteúdo como opcional (parte inexistente) — o
+    // deploy de 27/09 quebrou no build por isso.
+    if (parts.text) {
+      const dl = await client.download(String(msg.uid), parts.text, { uid: true, maxBytes: TEXT_LIMIT });
+      if (dl?.content) textBody = await readStream(dl.content, TEXT_LIMIT);
+    }
+    if (parts.html) {
+      const dl = await client.download(String(msg.uid), parts.html, { uid: true, maxBytes: HTML_LIMIT });
+      if (dl?.content) htmlBody = await readStream(dl.content, HTML_LIMIT);
+    }
   } catch (err: any) {
     console.warn(`[E-mail] ${acc.address} uid ${msg.uid}: corpo não baixou:`, err?.message);
   }
@@ -594,8 +602,9 @@ export async function streamAttachment(acc: EmailAccount, msg: EmailMessage, par
     if (!path) throw new Error('Pasta não encontrada no servidor');
     const lock = await client.getMailboxLock(path);
     try {
-      const { meta, content } = await client.download(String(msg.uid), part, { uid: true });
-      await onStream({ filename: meta.filename, contentType: meta.contentType }, content);
+      const dl = await client.download(String(msg.uid), part, { uid: true });
+      if (!dl?.content) throw new Error('Anexo não encontrado no servidor de e-mail');
+      await onStream({ filename: dl.meta?.filename, contentType: dl.meta?.contentType }, dl.content);
     } finally {
       lock.release();
     }
