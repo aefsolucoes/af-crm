@@ -73,6 +73,34 @@ const ACK_CORE = new Set([
 ]);
 const ACK_FILLERS = new Set(['ta', 'tudo', 'bem', 'e', 'entao', 'muito', 'pela', 'atencao', 'fico', 'no', 'vou', 'aguardar', 'de', 'boa', 'ai', 'sim', 'mesmo', 'mt', 'mto']);
 
+// Despedida/agradecimento do cliente ("Ok. Boa tarde.", "Obrigado", "Tchau")
+// — Fabio 28/09: fechar com "Boa tarde! Disponha." em vez de ficar calada.
+// "ok"/"beleza" sozinho continua sem resposta (anti pingue-pongue), e um
+// "Boa tarde" solto não conta (pode ser o cliente puxando conversa).
+const CLOSING_WORDS = new Set(['tarde', 'noite', 'dia', 'tchau', 'ate', 'mais', 'logo', 'breve', 'amanha', 'abraco', 'abracos', 'agradeco', 'grato', 'grata', 'obrigadao', 'igualmente', 'pra', 'voce', 'vc', 'tb', 'tambem', 'por', 'enquanto']);
+const ACK_WORDS = new Set(['ok', 'okay', 'oks', 'okk', 'okey', 'blz', 'beleza', 'certo', 'certinho', 'combinado', 'perfeito', 'show', 'otimo', 'entendi', 'entendido', 'joia', 'fechado', 'tranquilo', 'aguardo', 'aguardando', 'top', 'legal', 'maravilha']);
+
+function greetingNow(): string {
+  const h = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hourCycle: 'h23' }).format(new Date()), 10);
+  return h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+}
+
+/** Texto de fechamento se a mensagem for despedida/agradecimento; senão null. */
+export function farewellReply(text: string): string | null {
+  if (text.includes('?')) return null;
+  const norm = text.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const tokens = norm.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+  if (!tokens.length || tokens.length > 8) return null;
+  if (!tokens.every((t) => ACK_CORE.has(t) || ACK_FILLERS.has(t) || CLOSING_WORDS.has(t))) return null;
+  const thanks = /\b(obrigad[oa]s?|obrigadao|obg|brigad[oa]|valeu|vlw|agradeco|grat[oa])\b/.test(norm);
+  const bye = /\b(tchau|ate (mais|logo|breve|amanha)|abracos?|por enquanto)\b/.test(norm);
+  const greet = norm.match(/\b(bom dia|boa tarde|boa noite)\b/)?.[1];
+  const ack = tokens.some((t) => ACK_WORDS.has(t)) || /\b(ta bom|ta certo|tudo bem)\b/.test(norm);
+  if (!(thanks || bye || (greet && ack))) return null;
+  const saud = greet ? greet.charAt(0).toUpperCase() + greet.slice(1) : greetingNow();
+  return thanks ? `Disponha! ${saud}.` : `${saud}! Disponha.`;
+}
+
 export function isAcknowledgmentOnly(text: string): boolean {
   if (text.includes('?')) return false;
   const norm = text.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
@@ -254,6 +282,21 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
   if (!apiKey || !incomingText.trim()) return null;
 
   try {
+    const closing = farewellReply(incomingText);
+    if (closing) {
+      const lastOut = await prisma.message.findFirst({
+        where: { leadId, direction: 'OUTBOUND', callWaCallId: null, deleted: false },
+        orderBy: { createdAt: 'desc' },
+        select: { content: true },
+      });
+      // Nossa última mensagem fez uma pergunta de verdade: o "ok, obrigado"
+      // pode ser a resposta — segue o fluxo normal. Já fechamos: não repete.
+      if (!lastOut || !hasRealQuestion(lastOut.content)) {
+        if (lastOut && /disponha/i.test(lastOut.content)) return { reply: '', handoff: false, noReply: true };
+        console.log(`[AI Auto-reply] cliente encerrou ("${incomingText.trim().slice(0, 40)}") — fechando com "${closing}"`);
+        return { reply: closing, handoff: false };
+      }
+    }
     if (isAcknowledgmentOnly(incomingText)) {
       const lastOut = await prisma.message.findFirst({
         where: { leadId, direction: 'OUTBOUND', callWaCallId: null, deleted: false },
