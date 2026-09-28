@@ -158,6 +158,34 @@ router.get('/accounts/:id/messages/:msgId/attachments/:part', async (req: AuthRe
   }
 });
 
+// POST /api/email/suggest-reply — "Sugerir resposta" na janela de e-mail:
+// só devolve um texto sugerido (a pessoa revisa e envia).
+router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
+  const { replyToId, leadId, subject, to, draft } = (req.body || {}) as { replyToId?: string; leadId?: string; subject?: string; to?: string; draft?: string };
+  let replyTo: any = null;
+  if (replyToId) {
+    replyTo = await prisma.emailMessage.findUnique({
+      where: { id: replyToId },
+      select: { emailAccountId: true, fromName: true, fromAddress: true, subject: true, date: true, textBody: true, htmlBody: true, leadId: true },
+    });
+    if (!replyTo || !(await getVisibleEmailAccount(req.user!.accountId, req.user!.id, replyTo.emailAccountId))) {
+      return res.status(404).json({ error: 'E-mail não encontrado' });
+    }
+  }
+  if (leadId && !(await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true } }))) {
+    return res.status(404).json({ error: 'Card não encontrado' });
+  }
+  try {
+    const { generateEmailReplySuggestion } = require('../services/ai-email-suggestion.service') as typeof import('../services/ai-email-suggestion.service');
+    const suggestion = await generateEmailReplySuggestion({ accountId: req.user!.accountId, replyTo, leadId, subject, to, draft });
+    if (!suggestion) return res.status(422).json({ error: 'Não consegui gerar uma sugestão agora — tente de novo.' });
+    res.json({ suggestion });
+  } catch (err: any) {
+    console.error('[E-mail] Erro ao sugerir resposta:', err?.message);
+    res.status(500).json({ error: 'Erro ao gerar sugestão' });
+  }
+});
+
 router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: AuthRequest, res: Response) => {
   const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
   if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });

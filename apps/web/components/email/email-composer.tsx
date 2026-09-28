@@ -1,6 +1,6 @@
 'use client';
 import { useRef, useState } from 'react';
-import { Send, Loader2, Paperclip, X } from 'lucide-react';
+import { Send, Loader2, Paperclip, X, Lightbulb } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
@@ -66,6 +66,20 @@ export function EmailComposer({
   const [savingDraft, setSavingDraft] = useState(false);
   const [sending, setSending] = useState(false);
   const [files, setFiles] = useState<PickedFile[]>([]);
+  // "Sugerir resposta" (igual ao da conversa): a IA sugere, a pessoa revisa e clica "Usar".
+  const [suggestion, setSuggestion] = useState<string | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
+  async function suggest() {
+    setSuggesting(true);
+    try {
+      const { data } = await api.post('/api/email/suggest-reply', { replyToId, leadId, subject: subjectValue, to: toValue, draft: body });
+      setSuggestion(data.suggestion || null);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui gerar uma sugestão agora', 'error');
+    } finally {
+      setSuggesting(false);
+    }
+  }
   const fileInput = useRef<HTMLInputElement>(null);
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
 
@@ -152,6 +166,17 @@ export function EmailComposer({
           <label className="w-14 text-xs text-slate-500 flex-shrink-0">Assunto</label>
           <input value={subjectValue} onChange={(e) => setSubjectValue(e.target.value)} className={field} />
         </div>
+        {suggestion && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+            <div className="flex items-center gap-2 mb-1.5">
+              <Lightbulb size={13} className="text-amber-600" />
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">Sugestão — revise antes de mandar</span>
+              <button onClick={() => { setBody(suggestion); setSuggestion(null); }} className="ml-auto text-xs px-2.5 py-1 rounded-md text-white font-medium" style={{ backgroundColor: '#2261a8' }}>Usar</button>
+              <button onClick={() => setSuggestion(null)} className="text-slate-400 hover:text-slate-600" title="Descartar"><X size={14} /></button>
+            </div>
+            <p className="text-sm text-slate-700 whitespace-pre-wrap max-h-60 overflow-y-auto">{suggestion}</p>
+          </div>
+        )}
         <textarea
           autoFocus={!!replyToId || !!to}
           value={body}
@@ -188,14 +213,22 @@ export function EmailComposer({
           {replyToId ? 'A mensagem original vai citada embaixo. ' : ''}Assinatura acima entra automaticamente (muda no lápis ao lado da caixa, na página E-mail).
         </p>
         <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
-        <div className="flex items-center justify-end gap-2 pt-1">
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
           <button
             onClick={() => fileInput.current?.click()}
             disabled={sending}
-            className="mr-auto flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+            className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
           >
             <Paperclip size={14} /> Anexar
             {files.length > 0 && <span className="text-xs text-slate-400">({formatSize(totalBytes)} de 15 MB)</span>}
+          </button>
+          <button
+            onClick={suggest}
+            disabled={suggesting || sending}
+            title={body.trim() ? 'A IA melhora/completa o que você já escreveu' : replyToId ? 'A IA sugere uma resposta pra esse e-mail' : 'A IA sugere um e-mail com base no card e na conversa'}
+            className="mr-auto flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {suggesting ? <Loader2 size={14} className="animate-spin" /> : <Lightbulb size={14} />} <span className="hidden sm:inline">Sugerir resposta</span>
           </button>
           {onDeleteDraft && (
             <button onClick={onDeleteDraft} className="text-sm px-3 py-2 rounded-lg text-red-500 hover:bg-red-50" title="Apagar este rascunho">Apagar</button>
