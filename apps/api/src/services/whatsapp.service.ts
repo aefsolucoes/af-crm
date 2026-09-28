@@ -1384,6 +1384,19 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
       await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, markLost, stopFollowUp, extractedFields }, io);
     }
 
+    // Cliente pediu pra ligar e ainda não autorizou: manda o pedido de
+    // permissão logo depois da explicação da IA (o pedido saiu da boas-vindas
+    // — Fabio 27/09: "só manda se o cliente pedir pra ligar").
+    if (genResult.requestCallPermission) {
+      const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { contactId: true } });
+      if (lead?.contactId) {
+        const { sendCallPermissionRequest } = require('./whatsapp-calling.service') as typeof import('./whatsapp-calling.service');
+        const perm = await sendCallPermissionRequest(accountId, departmentId, lead.contactId, leadId, io).catch((e: any) => ({ ok: false, error: e?.message }));
+        console.log(`[Calling] Pedido de permissão (cliente pediu ligação) lead ${leadId}: ${perm.ok ? 'enviado' : 'não enviado — ' + perm.error}`);
+        if (!perm.ok) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `O cliente pediu uma ligação, mas o pedido de permissão pelo WhatsApp não saiu: ${perm.error}` } }).catch(() => {});
+      }
+    }
+
     if (handoff) await handleAiHandoffCloudApi(leadId, io, genResult.handoffReason);
     else if (genResult.askTeam) {
       // A IA disse ao cliente que vai verificar — a dúvida vai pro balão

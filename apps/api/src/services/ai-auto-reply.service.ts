@@ -10,13 +10,19 @@ import { callSummaryContext } from './call-recording.service';
  * (26/09): a IA dizia "vamos te ligar" pra quem só escreveu "sim". Aqui a IA
  * recebe a situação REAL (consulta na Meta), só quando a conversa tem o pedido.
  */
-async function callPermissionContext(accountId: string, leadId: string): Promise<string> {
+// Cliente falando de ligação ("pode me ligar?", "me liga", "prefiro por telefone").
+const TALKS_ABOUT_CALL_RE = /\b(me\s+)?lig(a|ar|ue|uem|am|ando|a[çc][aã]o|a[çc][oõ]es)\b|telefon|\bchamada/i;
+
+async function callPermissionContext(accountId: string, leadId: string, incomingText: string): Promise<string> {
   try {
     const asked = await prisma.message.findFirst({
       where: { leadId, direction: 'OUTBOUND', OR: [{ templateName: { contains: 'permissao_ligar' } }, { content: { contains: 'Podemos te ligar pelo WhatsApp' } }] },
       select: { id: true },
     });
-    if (!asked) return '';
+    // O pedido de permissão não vai mais na boas-vindas (Fabio 27/09: "só
+    // manda se o cliente pedir pra ligar") — sem pedido na conversa, este
+    // bloco só entra quando o cliente fala em ligação.
+    if (!asked && !TALKS_ABOUT_CALL_RE.test(incomingText)) return '';
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { departmentId: true } }, contact: { select: { whatsappPhone: true, phone: true } }, user: { select: { name: true } } } });
     const raw = (lead?.contact?.whatsappPhone && !lead.contact.whatsappPhone.includes('@') ? lead.contact.whatsappPhone : lead?.contact?.phone) || '';
     const digits = raw.replace(/\D/g, '');
@@ -36,6 +42,10 @@ async function callPermissionContext(accountId: string, leadId: string): Promise
     // respondeu só sobre o botão de permitir e ainda moveu o card.
     const onlyWhenAboutCall = `
 IMPORTANTE: este bloco só vale quando a mensagem do cliente for sobre a LIGAÇÃO (ex.: "pode ligar", "me liga", "que horas vocês ligam", ou um "sim" solto logo depois do pedido de ligação). "Tenho interesse", "Não tenho interesse", "Quero mais informações" e parecidos são os botões da mensagem de boas-vindas/follow-up — são sobre o CRÉDITO, não sobre a ligação. Se o cliente falar de outro assunto (interesse, restrição no nome, dúvida, valores), responda a ESSE assunto normalmente e NÃO mencione a ligação nem o botão de permitir.`;
+    if (!state.permitted && (!asked || state.canRequest)) {
+      return `--- LIGAÇÃO PELO WHATSAPP ---
+O cliente ainda NÃO autorizou ligação pelo WhatsApp${asked ? ' (o pedido anterior não está mais valendo)' : ''}. Se ele pedir ou aceitar uma ligação: marque "requestCallPermission": true — o CRM manda, logo depois da sua mensagem, o pedido de permissão (cartão com o botão *Permitir ligações*). Na sua resposta, em 1-2 frases, diga que vai chegar aqui na conversa um pedido pra liberar a ligação e que é só ele tocar em *Permitir ligações* — sem dizer que já vai ligar e sem prometer horário.${onlyWhenAboutCall}`;
+    }
     return state.permitted
       ? `--- LIGAÇÃO PELO WHATSAPP ---
 O cliente JÁ PERMITIU ligações pelo WhatsApp.${caller === 'Andreia'
@@ -198,7 +208,7 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "requestCallPermission": <true ou false — true só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>}`;
 
 export interface AiAutoReplyResult {
   reply: string;
@@ -210,6 +220,8 @@ export interface AiAutoReplyResult {
   handoffReason?: string | null;
   /** Pergunta pra equipe (balão "Dúvidas da IA") — a IA disse ao cliente que vai verificar; quem chamou cria a AiTeamQuestion (ai-team-question.service.ts). */
   askTeam?: string | null;
+  /** true = cliente pediu/aceitou ligação e ainda não autorizou — quem chamou manda o pedido de permissão (template "Permitir ligações") logo depois da resposta. */
+  requestCallPermission?: boolean;
   /** Etapa pra mover o card, se a IA identificou uma mudança — aplicar via applyAiExtractedActions (ai-shared.service.ts), que valida contra a lista permitida. */
   moveToStage?: string | null;
   /** Motivo da perda, se a IA identificou uma recusa explícita — aplicar via applyAiExtractedActions (marca status LOST, não é etapa). */
@@ -257,7 +269,7 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
 
     const camposTexto = await buildFillableFieldsText(accountId);
     const duvidasEquipe = await teamQuestionsContext(leadId);
-    const ligacao = await callPermissionContext(accountId, leadId);
+    const ligacao = await callPermissionContext(accountId, leadId, incomingText);
     const conversasPorTelefone = await callSummaryContext(leadId).catch(() => '');
 
     const systemPrompt = `${ROLE_FRAMING}
@@ -359,6 +371,7 @@ function parseReply(raw: string): AiAutoReplyResult {
     if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
       return {
         reply: stripOpeningInterjection(parsed.reply.trim()),
+        requestCallPermission: parsed.requestCallPermission === true,
         handoff: parsed.handoff === true,
         handoffReason: parsed.handoff === true && typeof parsed.handoffReason === 'string' && parsed.handoffReason.trim() ? parsed.handoffReason.trim().slice(0, 200) : null,
         askTeam: parsed.handoff !== true && typeof parsed.askTeam === 'string' && parsed.askTeam.trim() && parsed.askTeam.trim().toLowerCase() !== 'null' ? parsed.askTeam.trim().slice(0, 1000) : null,
