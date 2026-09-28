@@ -26,12 +26,18 @@ const SELECT = {
   lead: { select: { name: true } },
 } as const;
 
+/** Por enquanto TODO MUNDO da conta recebe e enxerga todas as dúvidas
+ *  (Fabio 28/09: "por enquanto, manda as dúvidas para todos. Mais pra frente
+ *  ajusto para encaminhar para cada usuário"). false = volta pro filtro por
+ *  setor do card (abaixo). */
+export const AI_QUESTIONS_FOR_EVERYONE = true;
+
 /** Quem enxerga a dúvida: admin, quem não tem setor definido (enxerga tudo,
  *  mesma regra do resto do CRM) e quem é do setor do card. */
 async function recipientsFor(accountId: string, departmentId: string | null): Promise<string[]> {
   const users = await prisma.user.findMany({ where: { accountId }, select: { id: true, role: true, departmentIds: true } });
   return users
-    .filter((u) => u.role === 'ADMIN' || !u.departmentIds.length || !departmentId || u.departmentIds.includes(departmentId))
+    .filter((u) => AI_QUESTIONS_FOR_EVERYONE || u.role === 'ADMIN' || !u.departmentIds.length || !departmentId || u.departmentIds.includes(departmentId))
     .map((u) => u.id);
 }
 
