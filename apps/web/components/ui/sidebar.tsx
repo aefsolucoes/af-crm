@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { useInboxSectorStore, InboxSector } from '@/store/inbox-sector.store';
+import { useFunilSectorStore } from '@/store/funil-sector.store';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
@@ -90,19 +91,66 @@ function InboxSectorLinks({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+/** Subitens do Funil de Vendas — Caixa de Entrada + os setores do usuário
+ *  (admin/sem setor vê todos), sem números (Fabio 28/09: "apenas os funis"). */
+function FunilSectorLinks({ onNavigate }: { onNavigate?: () => void }) {
+  const pathname = usePathname();
+  const current = useFunilSectorStore((s) => s.department);
+  const me = useAuthStore((s) => s.user);
+  const { data: departments } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ['departments'],
+    queryFn: async () => (await api.get('/api/departments')).data,
+  });
+  const all = departments || [];
+  const scoped = me?.role === 'ADMIN' || !me?.departmentIds?.length ? all : all.filter((d) => me.departmentIds!.includes(d.id));
+  const items = ['Caixa de Entrada', ...scoped.map((d) => d.name).sort((a, b) => a.localeCompare(b, 'pt-BR'))];
+  return (
+    <div className="ml-5 pl-3 border-l border-af-blue space-y-0.5 pb-1">
+      {items.map((name) => {
+        const active = pathname.startsWith('/funil') && current === name;
+        return (
+          <Link
+            key={name}
+            href={`/funil?dep=${encodeURIComponent(name)}`}
+            onClick={onNavigate}
+            className={cn(
+              'flex items-center px-2.5 py-1.5 rounded-md text-[13px] transition-colors truncate',
+              active ? 'bg-af-blue text-white font-medium' : 'text-slate-400 hover:bg-af-blue hover:text-white'
+            )}
+          >
+            <span className="truncate">{name}</span>
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+// Itens do menu que abrem/fecham uma lista embaixo em vez de navegar.
+const EXPANDABLE = ['/funil', '/inbox'];
+function SubLinks({ href, onNavigate }: { href: string; onNavigate?: () => void }) {
+  return href === '/inbox' ? <InboxSectorLinks onNavigate={onNavigate} /> : <FunilSectorLinks onNavigate={onNavigate} />;
+}
+
 export function Sidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
   const { collapsed, toggle, init, mobileOpen, closeMobile } = useSidebarStore();
   const router = useRouter();
-  // Celular: tocar em "Inbox" abre/fecha a lista de funis no próprio menu
-  // (sem navegar nem fechar o menu) — Fabio 28/09.
-  const [mobileInboxOpen, setMobileInboxOpen] = useState(false);
-  useEffect(() => { if (mobileOpen) setMobileInboxOpen(pathname.startsWith('/inbox')); }, [mobileOpen, pathname]);
-  // Computador: mesmo comportamento (clicar em "Inbox" abre/fecha os funis);
-  // já começa aberto quando se está na Inbox.
-  const [desktopInboxOpen, setDesktopInboxOpen] = useState(false);
-  useEffect(() => { if (pathname.startsWith('/inbox')) setDesktopInboxOpen(true); }, [pathname]);
+  // "Inbox" e "Funil de Vendas": clicar abre/fecha a lista de setores no
+  // próprio menu, sem navegar (Fabio 28/09) — computador e celular; já vem
+  // aberto na seção em que a pessoa está.
+  const [desktopOpenSections, setDesktopOpenSections] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const cur = EXPANDABLE.find((h) => pathname.startsWith(h));
+    if (cur) setDesktopOpenSections((st) => ({ ...st, [cur]: true }));
+  }, [pathname]);
+  const [mobileOpenSections, setMobileOpenSections] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const cur = EXPANDABLE.find((h) => pathname.startsWith(h));
+    setMobileOpenSections(cur ? { [cur]: true } : {});
+  }, [mobileOpen, pathname]);
 
   // Mostra no menu só o que o usuário tem permissão de acessar. O filtro por
   // setor pro item "Funil de Vendas" saiu daqui — agora é o seletor de setor
@@ -185,9 +233,9 @@ export function Sidebar() {
           const active = pathname.startsWith(href);
           return (
             <Fragment key={href}>
-            {href === '/inbox' && !collapsed ? (
+            {EXPANDABLE.includes(href) && !collapsed ? (
               <button
-                onClick={() => setDesktopInboxOpen((v) => !v)}
+                onClick={() => setDesktopOpenSections((st) => ({ ...st, [href]: !st[href] }))}
                 className={cn(
                   'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
                   active ? 'bg-af-mid text-white' : 'text-slate-300 hover:bg-af-blue hover:text-white'
@@ -195,7 +243,7 @@ export function Sidebar() {
               >
                 <Icon size={17} className="flex-shrink-0" />
                 {label}
-                <ChevronDown size={15} className={cn('ml-auto transition-transform', desktopInboxOpen && 'rotate-180')} />
+                <ChevronDown size={15} className={cn('ml-auto transition-transform', desktopOpenSections[href] && 'rotate-180')} />
               </button>
             ) : (
               <Link
@@ -213,7 +261,7 @@ export function Sidebar() {
                 {!collapsed && label}
               </Link>
             )}
-            {href === '/inbox' && desktopInboxOpen && !collapsed && <InboxSectorLinks />}
+            {EXPANDABLE.includes(href) && desktopOpenSections[href] && !collapsed && <SubLinks href={href} />}
             </Fragment>
           );
         })}
@@ -272,9 +320,9 @@ export function Sidebar() {
               const active = pathname.startsWith(href);
               return (
                 <Fragment key={href}>
-                {href === '/inbox' ? (
+                {EXPANDABLE.includes(href) ? (
                   <button
-                    onClick={() => setMobileInboxOpen((v) => !v)}
+                    onClick={() => setMobileOpenSections((st) => ({ ...st, [href]: !st[href] }))}
                     className={cn(
                       'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
                       active ? 'bg-af-mid text-white' : 'text-slate-300 hover:bg-af-blue hover:text-white'
@@ -282,7 +330,7 @@ export function Sidebar() {
                   >
                     <Icon size={17} className="flex-shrink-0" />
                     {label}
-                    <ChevronDown size={15} className={cn('ml-auto transition-transform', mobileInboxOpen && 'rotate-180')} />
+                    <ChevronDown size={15} className={cn('ml-auto transition-transform', mobileOpenSections[href] && 'rotate-180')} />
                   </button>
                 ) : (
                   <Link
@@ -296,7 +344,7 @@ export function Sidebar() {
                     {label}
                   </Link>
                 )}
-                {href === '/inbox' && mobileInboxOpen && <InboxSectorLinks onNavigate={closeMobile} />}
+                {EXPANDABLE.includes(href) && mobileOpenSections[href] && <SubLinks href={href} onNavigate={closeMobile} />}
                 </Fragment>
               );
             })}

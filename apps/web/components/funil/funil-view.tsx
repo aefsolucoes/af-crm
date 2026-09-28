@@ -16,6 +16,7 @@ import { Plus, RefreshCw, Search, X, Pencil, Trash2, FolderPlus, GitMerge, Archi
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
+import { useFunilSectorStore } from '@/store/funil-sector.store';
 
 // Ordem fixa dos pipelines dentro de cada setor
 const PIPELINE_ORDER = ['Caixa de Entrada', 'Vendas', 'Em contratação', 'Follow Up'];
@@ -96,13 +97,26 @@ export function FunilView() {
     try { localStorage.setItem(selectedDeptKey, name); } catch { /* indisponível — segue sem persistir */ }
   }
   useEffect(() => {
-    if (!availableDepartments.length) return;
+    // Espera a lista de setores chegar — antes dela só existe a Caixa de
+    // Entrada, e o setor pedido pelo menu (?dep=) era trocado por ela.
+    if (!departments || !availableDepartments.length) return;
     const stillExists = availableDepartments.some((d) => d.name === selectedDepartmentName);
     if (!selectedDepartmentName || !stillExists) {
       setSelectedDepartmentName(availableDepartments[0].name);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableDepartments]);
+
+  // O setor agora é escolhido no menu lateral (Funil de Vendas → setores,
+  // Fabio 28/09) via ?dep=Nome — acompanha a troca sem recarregar a página.
+  const depParam = searchParams?.get('dep') || '';
+  useEffect(() => {
+    if (depParam && depParam !== selectedDepartmentName) setSelectedDepartmentName(depParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [depParam]);
+  const setMenuDepartment = useFunilSectorStore((s) => s.setDepartment);
+  useEffect(() => { setMenuDepartment(selectedDepartmentName); }, [selectedDepartmentName, setMenuDepartment]);
+  useEffect(() => () => setMenuDepartment(''), [setMenuDepartment]);
 
   const departmentName = selectedDepartmentName;
   const title = 'Funil de Vendas';
@@ -371,21 +385,8 @@ export function FunilView() {
 
       <div className="flex items-center justify-between px-6 py-3 app-topbar-surface border-b gap-4">
         <div className="flex items-center gap-3 flex-1">
-          {/* Seletor de setor — só aparece se o colaborador tem acesso a mais
-              de um (senão é ruído: um dropdown com uma opção só). Antes cada
-              setor era um item de menu separado ("Funil de Vendas
-              Habitação", "...Consórcio", "...Home Equity"); agora é um item
-              só, com esse seletor escolhendo qual ver. */}
-          {availableDepartments.length > 1 && (
-            <select
-              value={departmentName}
-              onChange={e => setSelectedDepartmentName(e.target.value)}
-              className="text-sm border border-af-border rounded-lg px-3 py-1.5 bg-white text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-af-accent flex-shrink-0"
-            >
-              {availableDepartments.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
-            </select>
-          )}
-
+          {/* O seletor de setor saiu daqui (Fabio 28/09): agora é o menu
+              lateral — "Funil de Vendas" abre a lista de setores. */}
           {/* Seletor de pipeline (oculto durante busca) */}
           {!search.trim() && pipeline && (
             <div className="flex items-center gap-1 flex-shrink-0">
