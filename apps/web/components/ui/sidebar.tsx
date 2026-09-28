@@ -260,7 +260,7 @@ export function Sidebar() {
                   <Icon size={17} className="flex-shrink-0" />
                   {label}
                 </Link>
-                {href === '/inbox' && <InboxSectorLinks onNavigate={closeMobile} />}
+                {href === '/inbox' && active && <InboxSectorLinks onNavigate={closeMobile} />}
                 </Fragment>
               );
             })}
