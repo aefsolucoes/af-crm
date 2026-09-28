@@ -1232,42 +1232,43 @@ async function isSiteFormAlreadyAcknowledged(leadId: string, text: string): Prom
   }
 }
 
-/** Clique em "Tenho interesse" (botão de template): manda o texto da Resposta
- *  Rápida da proposta manual do setor do CARD. Não manda se o link já saiu
- *  nas últimas 12h ou se o card já passou da prospecção (proposta já
- *  chegou) — aí segue o fluxo normal (IA etc.). */
+/** Clique em "Tenho interesse" (botão de template) — Fabio 28/09: em vez de
+ *  mandar o link da proposta direto, pergunta o que o cliente prefere: tirar
+ *  dúvidas, fazer uma nova simulação ou já seguir pra aprovação. A resposta
+ *  dele vai pra IA (FORM_FIRST_RULES em ai-auto-reply): dúvida → responde;
+ *  simulação → link do simulador do site; aprovação → link da proposta.
+ *  Só nos setores com proposta manual (Habitacional / Home Equity) e com o
+ *  card ainda antes da pré-análise — fora disso segue o fluxo normal (IA). */
+export const INTEREST_OPTIONS_MARK = 'quer fazer uma nova simulação';
 async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string, text: string, io: any): Promise<boolean> {
   try {
     if (!/^(sim,?\s*)?tenho interesse\b/i.test(text.trim())) return false;
     const lead = await prisma.lead.findFirst({
       where: { id: leadId, accountId },
-      select: { stage: { select: { name: true } }, pipeline: { select: { name: true, department: { select: { name: true } } } } },
+      select: { name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { name: true, department: { select: { name: true } } } } },
     });
-    // Card já em contratação / concluído / perdidos: proposta não faz sentido.
+    // Card já em contratação / concluído / perdidos: não faz sentido.
     if (/contrata|conclu|perdid/i.test(lead?.pipeline?.name || '')) return false;
     const dept = (lead?.pipeline?.department?.name || '').toLowerCase();
-    const quickReplyName = dept.includes('home equity') ? 'Proposta manual Home Equity' : dept.includes('habitacional') ? 'Proposta manual Finan Hab' : null;
-    if (!quickReplyName) return false;
+    if (!dept.includes('home equity') && !dept.includes('habitacional')) return false;
     const stage = (lead?.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
     if (/pre-analise|aprovad|aguardando|document|fechad|contrata|venda futura/.test(stage)) return false;
-    const qr = await prisma.messageTemplate.findFirst({ where: { accountId, name: quickReplyName }, select: { body: true } });
-    const url = qr?.body.match(/https?:\/\/\S+/)?.[0];
-    if (!qr || !url) return false;
-    // Só não repete se o link saiu há pouco (clique duplo). Link mandado
-    // semanas atrás não impede: o cliente clicou "Tenho interesse" AGORA.
+    // Clique repetido: já perguntou há pouco — não pergunta de novo.
     const already = await prisma.message.findFirst({
-      // Só WhatsApp: o e-mail de boas-vindas também leva o link e travava o
-      // envio (Luiz Carlos 26/09 tocou "Tenho interesse" e não recebeu nada).
-      where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', content: { contains: url }, createdAt: { gte: new Date(Date.now() - 12 * 60 * 60 * 1000) } },
+      where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', content: { contains: INTEREST_OPTIONS_MARK }, createdAt: { gte: new Date(Date.now() - 12 * 60 * 60 * 1000) } },
       select: { id: true },
     });
-    if (already) return false;
+    if (already) return true;
+    const cf = (lead?.customFields || {}) as Record<string, unknown>;
+    const raw = String(cf.participante_1 || lead?.name || '').trim().split(/\s+/)[0] || '';
+    const nome = raw && !raw.startsWith('+') ? raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase() : '';
+    const content = `${nome ? `${nome}, você` : 'Você'} tem alguma dúvida de como funciona, ${INTEREST_OPTIONS_MARK} ou já quer seguir pra aprovação do seu crédito?`;
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-    const sent = await sendOutboundWhatsApp({ accountId, leadId, content: qr.body.trim(), io });
-    if (sent.success) console.log(`[WhatsApp] "Tenho interesse" → link da proposta (${quickReplyName}) pro lead ${leadId}`);
+    const sent = await sendOutboundWhatsApp({ accountId, leadId, content, io });
+    if (sent.success) console.log(`[WhatsApp] "Tenho interesse" → pergunta dúvidas/simulação/aprovação pro lead ${leadId}`);
     return sent.success;
   } catch (err) {
-    console.error('[WhatsApp] Erro ao mandar link da proposta:', err);
+    console.error('[WhatsApp] Erro ao responder "Tenho interesse":', err);
     return false;
   }
 }
