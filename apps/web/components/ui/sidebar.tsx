@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, Fragment } from 'react';
+import { useEffect, useState, Fragment } from 'react';
 import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
@@ -9,7 +9,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -95,6 +95,10 @@ export function Sidebar() {
   const { user, logout } = useAuthStore();
   const { collapsed, toggle, init, mobileOpen, closeMobile } = useSidebarStore();
   const router = useRouter();
+  // Celular: tocar em "Inbox" abre/fecha a lista de funis no próprio menu
+  // (sem navegar nem fechar o menu) — Fabio 28/09.
+  const [mobileInboxOpen, setMobileInboxOpen] = useState(false);
+  useEffect(() => { if (mobileOpen) setMobileInboxOpen(pathname.startsWith('/inbox')); }, [mobileOpen, pathname]);
 
   // Mostra no menu só o que o usuário tem permissão de acessar. O filtro por
   // setor pro item "Funil de Vendas" saiu daqui — agora é o seletor de setor
@@ -250,17 +254,31 @@ export function Sidebar() {
               const active = pathname.startsWith(href);
               return (
                 <Fragment key={href}>
-                <Link
-                  href={href}
-                  className={cn(
-                    'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-                    active ? 'bg-af-mid text-white' : 'text-slate-300 hover:bg-af-blue hover:text-white'
-                  )}
-                >
-                  <Icon size={17} className="flex-shrink-0" />
-                  {label}
-                </Link>
-                {href === '/inbox' && active && <InboxSectorLinks onNavigate={closeMobile} />}
+                {href === '/inbox' ? (
+                  <button
+                    onClick={() => setMobileInboxOpen((v) => !v)}
+                    className={cn(
+                      'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                      active ? 'bg-af-mid text-white' : 'text-slate-300 hover:bg-af-blue hover:text-white'
+                    )}
+                  >
+                    <Icon size={17} className="flex-shrink-0" />
+                    {label}
+                    <ChevronDown size={15} className={cn('ml-auto transition-transform', mobileInboxOpen && 'rotate-180')} />
+                  </button>
+                ) : (
+                  <Link
+                    href={href}
+                    className={cn(
+                      'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                      active ? 'bg-af-mid text-white' : 'text-slate-300 hover:bg-af-blue hover:text-white'
+                    )}
+                  >
+                    <Icon size={17} className="flex-shrink-0" />
+                    {label}
+                  </Link>
+                )}
+                {href === '/inbox' && mobileInboxOpen && <InboxSectorLinks onNavigate={closeMobile} />}
                 </Fragment>
               );
             })}
