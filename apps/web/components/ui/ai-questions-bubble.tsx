@@ -52,6 +52,12 @@ export function AiQuestionsBubble() {
   const [open, setOpen] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  // Popup no meio da tela pra dúvida nova (Fabio 28/09: "senão a gente acaba
+  // passando batido"). Fechar esconde só as dúvidas que estavam no popup —
+  // continuam no balão; dúvida nova abre o popup de novo.
+  const [popupDismissed, setPopupDismissed] = useState<Set<string>>(() => {
+    try { return new Set<string>(JSON.parse(sessionStorage.getItem('af_ai_questions_popup_closed') || '[]')); } catch { return new Set<string>(); }
+  });
 
   const { data: questions = [] } = useQuery<AiQuestion[]>({
     queryKey: ['ai-questions'],
@@ -60,6 +66,14 @@ export function AiQuestionsBubble() {
     refetchInterval: 60_000,
   });
   const pending = questions.filter((q) => q.status === 'OPEN');
+  const popupQuestions = pending.filter((q) => !popupDismissed.has(q.id));
+  const showPopup = popupQuestions.length > 0 && !open;
+  function closePopup() {
+    const next = new Set(popupDismissed);
+    popupQuestions.forEach((q) => next.add(q.id));
+    setPopupDismissed(next);
+    try { sessionStorage.setItem('af_ai_questions_popup_closed', JSON.stringify(Array.from(next))); } catch { /* sem storage: só não lembra no recarregar */ }
+  }
 
   useEffect(() => {
     const socket = getSocket();
@@ -69,7 +83,7 @@ export function AiQuestionsBubble() {
       if (!data?.isNew) return;
       const saved = (typeof window !== 'undefined' && localStorage.getItem('af_notification_sound')) || 'whatsapp';
       if (saved !== 'none') playSoundOnce(saved as SoundKey);
-      toast(`A IA tem uma dúvida sobre ${data.leadName || 'um cliente'} — veja no balão de Dúvidas da IA.`, 'warning');
+      // O popup abre sozinho (dúvida nova não está entre as fechadas).
     }
     function onUpdated() { queryClient.invalidateQueries({ queryKey: ['ai-questions'] }); }
     socket.on('ai_team_question', onNew);
@@ -99,6 +113,102 @@ export function AiQuestionsBubble() {
     }
   }
 
+  function renderQuestion(q: AiQuestion) {
+    return (
+    <div key={q.id} className={cn('rounded-xl border bg-white p-3', q.status === 'OPEN' ? 'border-amber-300' : 'border-slate-200 opacity-90')}>
+      <div className="flex items-center gap-2 mb-2">
+        <button
+          onClick={() => { setOpen(false); closePopup(); router.push(`/inbox?leadId=${q.leadId}`); }}
+          className="text-sm font-semibold text-slate-800 hover:text-[#2261a8] truncate text-left"
+          title="Abrir conversa"
+        >
+          {q.lead.name}
+        </button>
+        <span className="text-[11px] text-slate-400 flex-shrink-0">{timeAgo(q.createdAt)}</span>
+        <span className={cn('ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0',
+          q.status === 'OPEN' ? 'bg-amber-100 text-amber-700' : q.status === 'ANSWERED' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
+          {q.status === 'OPEN' ? 'Aguardando' : q.status === 'ANSWERED' ? 'Respondida' : 'Assumida'}
+        </span>
+      </div>
+
+      {q.clientMessage && (
+        <p className="text-xs text-slate-500 border-l-2 border-slate-200 pl-2 mb-2 line-clamp-3 whitespace-pre-line">Cliente: {q.clientMessage}</p>
+      )}
+
+      <div className="flex gap-2">
+        <div className="w-6 h-6 rounded-full bg-[#2261a8]/10 text-[#2261a8] flex items-center justify-center flex-shrink-0"><Bot size={13} /></div>
+        <div className="text-sm text-slate-700 bg-slate-100 rounded-xl rounded-tl-sm px-3 py-2 whitespace-pre-line">{q.question}</div>
+      </div>
+
+      {q.answer && (
+        <div className="flex justify-end mt-2">
+          <div className="max-w-[85%] text-sm text-white rounded-xl rounded-tr-sm px-3 py-2 whitespace-pre-line" style={{ backgroundColor: '#2261a8' }}>
+            {q.answer}
+            {q.answeredByName && <span className="block text-[10px] text-white/70 mt-0.5 text-right">{q.answeredByName}</span>}
+          </div>
+        </div>
+      )}
+
+      {q.status === 'ANSWERED' && q.sentReply && (
+        <p className="text-xs text-slate-500 mt-2"><span className="font-medium text-emerald-700">Enviado ao cliente:</span> “{q.sentReply}”</p>
+      )}
+      {q.status === 'DISMISSED' && (
+        <p className="text-xs text-slate-500 mt-2">{q.answeredByName || 'Alguém da equipe'} assumiu a conversa — a IA foi desligada nesse card.</p>
+      )}
+      {q.knowledgeTitle && (
+        <div className="flex items-center gap-1.5 mt-1.5 text-xs text-[#2261a8]">
+          <BookOpen size={12} className="flex-shrink-0" />
+          <span className="truncate">Aprendi: {q.knowledgeTitle}</span>
+          <button
+            onClick={() => act(q, 'forget')}
+            disabled={busy === `${q.id}:forget`}
+            className="ml-auto flex items-center gap-0.5 text-slate-400 hover:text-red-500 flex-shrink-0"
+            title="Não era regra geral — tirar da Base de Conhecimento"
+          >
+            <Undo2 size={11} /> desfazer
+          </button>
+        </div>
+      )}
+
+      {q.status === 'OPEN' && (
+        <div className="mt-2.5">
+          {q.sendError && (
+            <p className="text-xs text-red-600 mb-1.5">Não foi pro cliente: {q.sendError}. Responda pela Inbox ou tente de novo.</p>
+          )}
+          <textarea
+            value={drafts[q.id] || ''}
+            onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); act(q, 'answer'); }
+            }}
+            rows={2}
+            placeholder="Responda aqui — a IA passa pro cliente"
+            className="w-full text-sm rounded-lg border border-slate-200 px-2.5 py-1.5 resize-none focus:outline-none focus:border-[#2261a8] text-slate-800"
+          />
+          <div className="flex items-center justify-end gap-2 mt-1.5">
+            <button
+              onClick={() => act(q, 'dismiss')}
+              disabled={!!busy}
+              className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
+              title="Fecha a dúvida, desliga a IA nesse card e abre a conversa pra você falar direto"
+            >
+              <Hand size={12} /> Eu assumo
+            </button>
+            <button
+              onClick={() => act(q, 'answer')}
+              disabled={!!busy || !(drafts[q.id] || '').trim()}
+              className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50"
+              style={{ backgroundColor: '#2261a8' }}
+            >
+              {busy === `${q.id}:answer` ? <><Loader2 size={12} className="animate-spin" /> Passando pro cliente...</> : <><Send size={12} /> Responder</>}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+    );
+  }
+
   if (!user) return null;
 
   // No celular, dentro da Inbox o botão cobriria o campo de digitar/enviar.
@@ -107,6 +217,30 @@ export function AiQuestionsBubble() {
 
   return (
     <>
+      {showPopup && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4" onClick={closePopup}>
+          <div className="w-[480px] max-w-full max-h-[85vh] modal-max-h flex flex-col rounded-2xl bg-white shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2.5 px-4 py-3 text-white" style={{ backgroundColor: '#2261a8' }}>
+              <Bot size={20} className="flex-shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold leading-tight">{popupQuestions.length > 1 ? `A IA tem ${popupQuestions.length} dúvidas` : 'A IA tem uma dúvida'}</p>
+                <p className="text-[11px] text-white/75 leading-tight">Ela disse ao cliente que ia verificar — responda e ela repassa</p>
+              </div>
+              <button onClick={closePopup} className="p-1 rounded-md hover:bg-white/15" aria-label="Fechar" title="Fechar (a dúvida continua no balão)">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto bg-slate-50 p-3 space-y-3">
+              {popupQuestions.map((q) => renderQuestion(q))}
+            </div>
+            <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-t border-slate-200 bg-white">
+              <span className="text-[11px] text-slate-400">Fechando, a dúvida continua no balão azul (canto da tela).</span>
+              <button onClick={closePopup} className="text-sm px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-100 flex-shrink-0">Responder depois</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {open && (
         <div className="fixed z-40 bottom-20 right-4 md:right-5 w-[400px] max-w-[calc(100vw-2rem)] h-[600px] max-h-[calc(100vh-7rem)] flex flex-col rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden">
           <div className="flex items-center gap-2.5 px-4 py-3 text-white" style={{ backgroundColor: '#2261a8' }}>
@@ -129,99 +263,7 @@ export function AiQuestionsBubble() {
               </div>
             )}
 
-            {ordered.map((q) => (
-              <div key={q.id} className={cn('rounded-xl border bg-white p-3', q.status === 'OPEN' ? 'border-amber-300' : 'border-slate-200 opacity-90')}>
-                <div className="flex items-center gap-2 mb-2">
-                  <button
-                    onClick={() => { setOpen(false); router.push(`/inbox?leadId=${q.leadId}`); }}
-                    className="text-sm font-semibold text-slate-800 hover:text-[#2261a8] truncate text-left"
-                    title="Abrir conversa"
-                  >
-                    {q.lead.name}
-                  </button>
-                  <span className="text-[11px] text-slate-400 flex-shrink-0">{timeAgo(q.createdAt)}</span>
-                  <span className={cn('ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0',
-                    q.status === 'OPEN' ? 'bg-amber-100 text-amber-700' : q.status === 'ANSWERED' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
-                    {q.status === 'OPEN' ? 'Aguardando' : q.status === 'ANSWERED' ? 'Respondida' : 'Assumida'}
-                  </span>
-                </div>
-
-                {q.clientMessage && (
-                  <p className="text-xs text-slate-500 border-l-2 border-slate-200 pl-2 mb-2 line-clamp-3 whitespace-pre-line">Cliente: {q.clientMessage}</p>
-                )}
-
-                <div className="flex gap-2">
-                  <div className="w-6 h-6 rounded-full bg-[#2261a8]/10 text-[#2261a8] flex items-center justify-center flex-shrink-0"><Bot size={13} /></div>
-                  <div className="text-sm text-slate-700 bg-slate-100 rounded-xl rounded-tl-sm px-3 py-2 whitespace-pre-line">{q.question}</div>
-                </div>
-
-                {q.answer && (
-                  <div className="flex justify-end mt-2">
-                    <div className="max-w-[85%] text-sm text-white rounded-xl rounded-tr-sm px-3 py-2 whitespace-pre-line" style={{ backgroundColor: '#2261a8' }}>
-                      {q.answer}
-                      {q.answeredByName && <span className="block text-[10px] text-white/70 mt-0.5 text-right">{q.answeredByName}</span>}
-                    </div>
-                  </div>
-                )}
-
-                {q.status === 'ANSWERED' && q.sentReply && (
-                  <p className="text-xs text-slate-500 mt-2"><span className="font-medium text-emerald-700">Enviado ao cliente:</span> “{q.sentReply}”</p>
-                )}
-                {q.status === 'DISMISSED' && (
-                  <p className="text-xs text-slate-500 mt-2">{q.answeredByName || 'Alguém da equipe'} assumiu a conversa — a IA foi desligada nesse card.</p>
-                )}
-                {q.knowledgeTitle && (
-                  <div className="flex items-center gap-1.5 mt-1.5 text-xs text-[#2261a8]">
-                    <BookOpen size={12} className="flex-shrink-0" />
-                    <span className="truncate">Aprendi: {q.knowledgeTitle}</span>
-                    <button
-                      onClick={() => act(q, 'forget')}
-                      disabled={busy === `${q.id}:forget`}
-                      className="ml-auto flex items-center gap-0.5 text-slate-400 hover:text-red-500 flex-shrink-0"
-                      title="Não era regra geral — tirar da Base de Conhecimento"
-                    >
-                      <Undo2 size={11} /> desfazer
-                    </button>
-                  </div>
-                )}
-
-                {q.status === 'OPEN' && (
-                  <div className="mt-2.5">
-                    {q.sendError && (
-                      <p className="text-xs text-red-600 mb-1.5">Não foi pro cliente: {q.sendError}. Responda pela Inbox ou tente de novo.</p>
-                    )}
-                    <textarea
-                      value={drafts[q.id] || ''}
-                      onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); act(q, 'answer'); }
-                      }}
-                      rows={2}
-                      placeholder="Responda aqui — a IA passa pro cliente"
-                      className="w-full text-sm rounded-lg border border-slate-200 px-2.5 py-1.5 resize-none focus:outline-none focus:border-[#2261a8] text-slate-800"
-                    />
-                    <div className="flex items-center justify-end gap-2 mt-1.5">
-                      <button
-                        onClick={() => act(q, 'dismiss')}
-                        disabled={!!busy}
-                        className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
-                        title="Fecha a dúvida, desliga a IA nesse card e abre a conversa pra você falar direto"
-                      >
-                        <Hand size={12} /> Eu assumo
-                      </button>
-                      <button
-                        onClick={() => act(q, 'answer')}
-                        disabled={!!busy || !(drafts[q.id] || '').trim()}
-                        className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50"
-                        style={{ backgroundColor: '#2261a8' }}
-                      >
-                        {busy === `${q.id}:answer` ? <><Loader2 size={12} className="animate-spin" /> Passando pro cliente...</> : <><Send size={12} /> Responder</>}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
+            {ordered.map((q) => renderQuestion(q))}
           </div>
         </div>
       )}
