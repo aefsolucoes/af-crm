@@ -99,6 +99,10 @@ export function Sidebar() {
   // (sem navegar nem fechar o menu) — Fabio 28/09.
   const [mobileInboxOpen, setMobileInboxOpen] = useState(false);
   useEffect(() => { if (mobileOpen) setMobileInboxOpen(pathname.startsWith('/inbox')); }, [mobileOpen, pathname]);
+  // Computador: mesmo comportamento (clicar em "Inbox" abre/fecha os funis);
+  // já começa aberto quando se está na Inbox.
+  const [desktopInboxOpen, setDesktopInboxOpen] = useState(false);
+  useEffect(() => { if (pathname.startsWith('/inbox')) setDesktopInboxOpen(true); }, [pathname]);
 
   // Mostra no menu só o que o usuário tem permissão de acessar. O filtro por
   // setor pro item "Funil de Vendas" saiu daqui — agora é o seletor de setor
@@ -181,21 +185,35 @@ export function Sidebar() {
           const active = pathname.startsWith(href);
           return (
             <Fragment key={href}>
-            <Link
-              href={href}
-              title={collapsed ? label : undefined}
-              className={cn(
-                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-                collapsed && 'justify-center px-0',
-                active
-                  ? 'bg-af-mid text-white'
-                  : 'text-slate-300 hover:bg-af-blue hover:text-white'
-              )}
-            >
-              <Icon size={17} className="flex-shrink-0" />
-              {!collapsed && label}
-            </Link>
-            {href === '/inbox' && active && !collapsed && <InboxSectorLinks />}
+            {href === '/inbox' && !collapsed ? (
+              <button
+                onClick={() => setDesktopInboxOpen((v) => !v)}
+                className={cn(
+                  'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                  active ? 'bg-af-mid text-white' : 'text-slate-300 hover:bg-af-blue hover:text-white'
+                )}
+              >
+                <Icon size={17} className="flex-shrink-0" />
+                {label}
+                <ChevronDown size={15} className={cn('ml-auto transition-transform', desktopInboxOpen && 'rotate-180')} />
+              </button>
+            ) : (
+              <Link
+                href={href}
+                title={collapsed ? label : undefined}
+                className={cn(
+                  'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                  collapsed && 'justify-center px-0',
+                  active
+                    ? 'bg-af-mid text-white'
+                    : 'text-slate-300 hover:bg-af-blue hover:text-white'
+                )}
+              >
+                <Icon size={17} className="flex-shrink-0" />
+                {!collapsed && label}
+              </Link>
+            )}
+            {href === '/inbox' && desktopInboxOpen && !collapsed && <InboxSectorLinks />}
             </Fragment>
           );
         })}
