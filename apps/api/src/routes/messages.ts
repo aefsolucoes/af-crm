@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, retryTemplateMessage, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone, deleteMessage, reactToMessage, setMessagePinned, setMessageStarred, getScopeNumberIds } from '../services/message.service';
+import { getMessages, createMessage, getConversations, sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, retryTemplateMessage, markConversationRead, getAttachment, sendOutboundMedia, forwardMessage, findOrCreateLeadByPhone, deleteMessage, reactToMessage, setMessagePinned, setMessageStarred, getScopeNumberIds, getInboxSectors } from '../services/message.service';
 import { downloadDriveFile } from '../services/google.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { runAutomations } from '../services/automation.service';
@@ -179,6 +179,19 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // Serve os bytes de um anexo (imagem/documento) recebido no WhatsApp
+// GET /api/messages/inbox-sectors — abas por funil da Inbox (menu lateral)
+// com o número de conversas não lidas de cada uma.
+router.get('/inbox-sectors', async (req: AuthRequest, res: Response) => {
+  try {
+    const scopeDepartmentIds = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+    const scopeNumberIds = await getScopeNumberIds(req.user!.accountId, req.user!.id, req.user!.role);
+    res.json(await getInboxSectors(req.user!.accountId, scopeDepartmentIds, scopeNumberIds));
+  } catch (err: any) {
+    console.error('[Inbox] setores:', err?.message);
+    res.status(500).json({ error: 'Erro ao buscar os funis da Inbox' });
+  }
+});
+
 router.get('/attachment/:id', async (req: AuthRequest, res: Response) => {
   try {
     const att = await getAttachment(req.params.id, req.user!.accountId);

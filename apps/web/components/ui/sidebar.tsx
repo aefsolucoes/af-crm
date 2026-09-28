@@ -1,6 +1,10 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, Fragment } from 'react';
 import Link from 'next/link';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import api from '@/lib/api';
+import { getSocket } from '@/lib/socket';
+import { useInboxSectorStore, InboxSector } from '@/store/inbox-sector.store';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
@@ -38,6 +42,53 @@ const NAV: NavItem[] = [
   { href: '/importar', label: 'Importar', icon: Upload, perm: 'funnel_manage' },
   { href: '/configuracoes', label: 'Configurações', icon: Settings, perm: 'settings' },
 ];
+
+/** Subitens da Inbox — um por funil (setor) que o usuário enxerga + Caixa
+ *  de Entrada, com o número de conversas não lidas (Fabio 28/09). */
+function InboxSectorLinks({ onNavigate }: { onNavigate?: () => void }) {
+  const pathname = usePathname();
+  const sector = useInboxSectorStore((s) => s.sector);
+  const queryClient = useQueryClient();
+  const { data: sectors } = useQuery<InboxSector[]>({
+    queryKey: ['inbox-sectors'],
+    queryFn: async () => (await api.get('/api/messages/inbox-sectors')).data,
+    refetchInterval: 30000,
+  });
+  useEffect(() => {
+    const socket = getSocket();
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (t) return;
+      t = setTimeout(() => { t = null; queryClient.invalidateQueries({ queryKey: ['inbox-sectors'] }); }, 800);
+    };
+    socket.on('new_notification', refresh);
+    return () => { if (t) clearTimeout(t); socket.off('new_notification', refresh); };
+  }, [queryClient]);
+  if (!sectors?.length) return null;
+  return (
+    <div className="ml-5 pl-3 border-l border-af-blue space-y-0.5 pb-1">
+      {sectors.map((s) => {
+        const active = pathname.startsWith('/inbox') && sector === s.key;
+        return (
+          <Link
+            key={s.key}
+            href={s.key === 'all' ? '/inbox' : `/inbox?setor=${s.key}`}
+            onClick={onNavigate}
+            className={cn(
+              'flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[13px] transition-colors',
+              active ? 'bg-af-blue text-white font-medium' : 'text-slate-400 hover:bg-af-blue hover:text-white'
+            )}
+          >
+            <span className="truncate flex-1">{s.label}</span>
+            {s.unread > 0 && (
+              <span className="flex-shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-white text-[10px] font-semibold flex items-center justify-center">{s.unread}</span>
+            )}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -125,8 +176,8 @@ export function Sidebar() {
         {nav.map(({ href, label, icon: Icon }) => {
           const active = pathname.startsWith(href);
           return (
+            <Fragment key={href}>
             <Link
-              key={href}
               href={href}
               title={collapsed ? label : undefined}
               className={cn(
@@ -140,6 +191,8 @@ export function Sidebar() {
               <Icon size={17} className="flex-shrink-0" />
               {!collapsed && label}
             </Link>
+            {href === '/inbox' && active && !collapsed && <InboxSectorLinks />}
+            </Fragment>
           );
         })}
       </nav>
@@ -196,8 +249,8 @@ export function Sidebar() {
             {nav.map(({ href, label, icon: Icon }) => {
               const active = pathname.startsWith(href);
               return (
+                <Fragment key={href}>
                 <Link
-                  key={href}
                   href={href}
                   className={cn(
                     'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
@@ -207,6 +260,8 @@ export function Sidebar() {
                   <Icon size={17} className="flex-shrink-0" />
                   {label}
                 </Link>
+                {href === '/inbox' && <InboxSectorLinks onNavigate={closeMobile} />}
+                </Fragment>
               );
             })}
           </nav>

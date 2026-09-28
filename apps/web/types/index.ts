@@ -228,6 +228,8 @@ export interface Conversation {
   // um card aparecer em TODAS as abas de número que ele já passou, não só a
   // do contato mais recente.
   usedNumberIds?: string[];
+  /** Setor do card (null = Caixa de Entrada) — abas por funil da Inbox. */
+  pipeline?: { departmentId: string | null } | null;
 }
 
 export interface SalesBot {

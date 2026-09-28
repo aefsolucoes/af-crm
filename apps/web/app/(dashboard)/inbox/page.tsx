@@ -11,6 +11,7 @@ import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { PanelRightOpen, PanelRightClose } from 'lucide-react';
 import { useIsMobile } from '@/hooks/use-media-query';
+import { useInboxSectorStore, InboxSector } from '@/store/inbox-sector.store';
 
 // Lembra se o painel de dados do cliente/grupo deve ficar escondido — pra
 // quem prefere mais espaço pra conversa e não quer reesconder toda vez.
@@ -60,6 +61,16 @@ export default function InboxPage() {
 function InboxPageInner() {
   const searchParams = useSearchParams();
   const leadIdParam = searchParams.get('leadId');
+  // Aba de funil escolhida no menu lateral (?setor=id do setor | none = Caixa de Entrada).
+  const sector = searchParams.get('setor') || 'all';
+  const setSector = useInboxSectorStore((s) => s.setSector);
+  useEffect(() => { setSector(sector); }, [sector, setSector]);
+  useEffect(() => () => setSector('all'), [setSector]);
+  const { data: sectors } = useQuery<InboxSector[]>({
+    queryKey: ['inbox-sectors'],
+    queryFn: async () => (await api.get('/api/messages/inbox-sectors')).data,
+  });
+  const sectorLabel = sector === 'all' ? null : sectors?.find((s) => s.key === sector)?.label || null;
   const [selectedId, setSelectedId] = useState<string | null>(leadIdParam);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [hideLeadPanel, setHideLeadPanel] = useState(readHideLeadPanel);
@@ -120,7 +131,10 @@ function InboxPageInner() {
   useEffect(() => {
     if (!selectedId) return;
     api.post('/api/messages/read', { leadId: selectedId })
-      .then(() => queryClient.invalidateQueries({ queryKey: ['conversations'] }))
+      .then(() => {
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+        queryClient.invalidateQueries({ queryKey: ['inbox-sectors'] });
+      })
       .catch(() => {});
   }, [selectedId, queryClient]);
 
@@ -175,6 +189,12 @@ function InboxPageInner() {
   );
 
   const selectedConv = conversations?.find((c) => c.id === selectedId);
+  // Só as conversas do funil escolhido no menu lateral (setor do card).
+  const sectorConversations = useMemo(() => {
+    const all = conversations || [];
+    if (sector === 'all') return all;
+    return all.filter((c) => (c.pipeline?.departmentId ?? null) === (sector === 'none' ? null : sector));
+  }, [conversations, sector]);
   const cf = ((lead as any)?.customFields || {}) as Record<string, string>;
   const displayName = cf.participante_1 || lead?.contact?.name || lead?.name || '';
 
@@ -186,11 +206,11 @@ function InboxPageInner() {
 
   return (
     <div className="flex flex-col h-full">
-      <Topbar title="Inbox" subtitle="Mensagens unificadas" />
+      <Topbar title={sectorLabel ? `Inbox · ${sectorLabel}` : 'Inbox'} subtitle={sectorLabel ? `Só os clientes do funil ${sectorLabel}` : 'Mensagens unificadas'} />
       <div className="flex flex-1 overflow-hidden relative">
         {showList && (
           <ConversationList
-            conversations={conversations || []}
+            conversations={sectorConversations}
             selectedId={selectedId || undefined}
             onSelect={(id) => { setSelectedId(id); setLocalMessages([]); setShowMobileInfo(false); }}
             loading={loadingConvs}

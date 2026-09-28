@@ -646,6 +646,8 @@ export async function getConversations(accountId: string, scopeDepartmentIds: st
     include: {
       contact: true,
       whatsappNumber: { select: { id: true, label: true, phone: true } },
+      // Setor do card — abas por funil da Inbox (menu lateral, Fabio 28/09).
+      pipeline: { select: { departmentId: true } },
       messages: {
         orderBy: { createdAt: 'desc' },
         take: 1,
@@ -704,6 +706,54 @@ export async function getConversations(accountId: string, scopeDepartmentIds: st
     const tb = b.messages[0]?.createdAt?.getTime() ?? b.updatedAt.getTime();
     return tb - ta;
   });
+}
+
+/** Abas por funil da Inbox (menu lateral): os setores que o usuário enxerga
+ *  + "Caixa de Entrada" (lead sem setor), com quantas conversas não lidas
+ *  cada um tem — mesmo critério do "Não lidas" da Inbox (conversa com
+ *  mensagem recebida não lida, sem grupo/Status, respeitando setor e
+ *  números de WhatsApp do usuário). Consulta leve: só os leads com não lida. */
+export async function getInboxSectors(accountId: string, scopeDepartmentIds: string[] = [], scopeNumberIds: string[] | null = null) {
+  const departments = await prisma.department.findMany({
+    where: { accountId, ...(scopeDepartmentIds.length ? { id: { in: scopeDepartmentIds } } : {}) },
+    select: { id: true, name: true },
+    orderBy: { name: 'asc' },
+  });
+  const unreadLeads = await prisma.lead.findMany({
+    where: {
+      accountId,
+      isGroup: false,
+      messages: { some: { read: false, direction: 'INBOUND' } },
+      OR: [
+        { contactId: null },
+        { contact: { whatsappPhone: null } },
+        { contact: { NOT: { whatsappPhone: { endsWith: '@broadcast' } } } },
+      ],
+      ...(scopeDepartmentIds.length ? { pipeline: { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } } : {}),
+    },
+    select: { id: true, contact: { select: { whatsappPhone: true } }, pipeline: { select: { departmentId: true } } },
+  });
+  let leads = unreadLeads.filter((l) => !l.contact?.whatsappPhone?.endsWith('@g.us'));
+  if (scopeNumberIds && leads.length) {
+    const usage = await prisma.message.groupBy({ by: ['leadId', 'whatsappNumberId'], where: { leadId: { in: leads.map((l) => l.id) }, channel: 'WHATSAPP' } });
+    const used = new Map<string, { numbers: string[]; api: boolean }>();
+    for (const row of usage) {
+      const u = used.get(row.leadId) || { numbers: [], api: false };
+      if (row.whatsappNumberId) u.numbers.push(row.whatsappNumberId); else u.api = true;
+      used.set(row.leadId, u);
+    }
+    leads = leads.filter((l) => {
+      const u = used.get(l.id);
+      if (!u || (!u.numbers.length && !u.api)) return true;
+      return u.numbers.some((id) => scopeNumberIds.includes(id)) || (u.api && scopeNumberIds.includes('API'));
+    });
+  }
+  const count = (depId: string | null) => leads.filter((l) => (l.pipeline?.departmentId ?? null) === depId).length;
+  return [
+    { key: 'all', label: 'Todas as conversas', unread: leads.length },
+    ...departments.map((d) => ({ key: d.id, label: d.name, unread: count(d.id) })),
+    { key: 'none', label: 'Caixa de Entrada', unread: count(null) },
+  ];
 }
 
 /** Busca um anexo (com bytes) garantindo que pertence à conta. */
