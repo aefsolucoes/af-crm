@@ -40,7 +40,7 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
     // Conhecimento (o que o vendedor está tentando responder/contornar
     // agora). Busca leve só pra achar esse foco e confirmar que existe
     // histórico; buildSharedAiContext monta o resto formatado.
-    const recent = await prisma.message.findMany({ where: { leadId }, orderBy: { createdAt: 'desc' }, take: 12 });
+    const recent = await prisma.message.findMany({ where: { leadId, channel: { not: 'EMAIL' } }, orderBy: { createdAt: 'desc' }, take: 12 });
     if (!recent.length) return null;
     const lastClientMsg = recent.find((m) => m.direction === 'INBOUND')?.content || '';
 

@@ -84,8 +84,10 @@ export async function buildSharedAiContext(
   const inboundLabel = opts.historyRoleLabels?.inbound ?? 'Cliente';
   const outboundLabel = opts.historyRoleLabels?.outbound ?? 'Atendente';
 
+  // Só a conversa (WhatsApp etc.) — e-mails ficam de fora do que a IA lê
+  // (Fabio 27/09: "a IA não precisa levar em consideração os e-mails").
   const recent = await prisma.message.findMany({
-    where: { leadId },
+    where: { leadId, channel: { not: 'EMAIL' } },
     orderBy: { createdAt: 'desc' },
     take: historyTake,
   });
