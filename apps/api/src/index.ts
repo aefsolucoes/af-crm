@@ -284,15 +284,6 @@ httpServer.listen(PORT, () => {
     }, 2 * 60 * 1000);
   }, 2 * 60 * 1000);
 
-  // Bom dia das 08h pra quem falou com a assistente virtual à noite
-  // (morning-greeting.service.ts) — roda a cada 5 min, só age entre 08h e 10h.
-  setTimeout(() => {
-    const { sendMorningGreetings } = require('./services/morning-greeting.service') as typeof import('./services/morning-greeting.service');
-    const run = () => sendMorningGreetings(io).catch((err: any) => console.error('[Bom dia] Poll:', err?.message));
-    run();
-    setInterval(run, 5 * 60 * 1000);
-  }, 90 * 1000);
-
   // Unificação automática de leads duplicados por TELEFONE (pedido real:
   // campanha cria o 1º card pelo webhook do site, cliente preenche a
   // proposta e manda pelo WhatsApp, criava um 2º card — causa raiz já

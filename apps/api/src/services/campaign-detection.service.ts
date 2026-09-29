@@ -78,6 +78,25 @@ const HABITACAO_FIELDS: FieldMap = {
   'prazo': { key: 'prazo_financ', kind: 'text' },
 };
 
+// Formulário da PROPOSTA MANUAL (links /proposta-manual e
+// /proposta-manual-home-equity que a IA manda) — cabeçalho e rótulos
+// diferentes da proposta do simulador ("📋 Proposta manual — ...", "Cliente:",
+// "Valor do imóvel (garantia):"...). Não era reconhecido: 12 propostas desde
+// 11/09 ficaram sem mover o card sozinho (Elisete 29/09).
+const HOME_EQUITY_MANUAL_FIELDS: FieldMap = {
+  ...HOME_EQUITY_FIELDS,
+  'cliente': { key: 'participante_1', kind: 'text' },
+  'valor do imovel (garantia)': { key: 'valor_imovel', kind: 'number' },
+  'credito desejado': { key: 'valor_credito', kind: 'number' },
+};
+const HABITACAO_MANUAL_FIELDS: FieldMap = {
+  ...HABITACAO_FIELDS,
+  'cliente': { key: 'participante_1', kind: 'text' },
+  'valor de compra e venda': { key: 'valor_imovel', kind: 'number' },
+  'valor de entrada': { key: 'valor_entrada', kind: 'number' },
+  'valor financiado': { key: 'valor_credito', kind: 'number' },
+};
+
 const CONSORCIO_FIELDS: FieldMap = {
   'nome': { key: 'participante_1', kind: 'text' },
   'cpf': { key: 'cpf_1', kind: 'text' },
@@ -91,6 +110,20 @@ const CONSORCIO_FIELDS: FieldMap = {
 };
 
 const CAMPAIGN_SIGNATURES: CampaignSignature[] = [
+  {
+    label: 'Home Equity — Proposta manual',
+    marker: 'proposta manual — credito com garantia de imovel',
+    departmentName: 'Home Equity',
+    stageMarker: 'pre-analise',
+    fields: HOME_EQUITY_MANUAL_FIELDS,
+  },
+  {
+    label: 'Financiamento Habitacional — Proposta manual',
+    marker: 'proposta manual — financiamento habitacional',
+    departmentName: 'Financiamento Habitacional',
+    stageMarker: 'pre-analise',
+    fields: HABITACAO_MANUAL_FIELDS,
+  },
   {
     label: 'Home Equity — Crédito com Garantia de Imóvel',
     marker: 'proposta de credito com garantia de imovel',

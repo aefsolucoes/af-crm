@@ -158,6 +158,7 @@ const HANDOFF_RULES = `
 ESTE É UM WHATSAPP ÚNICO: quem atende o cliente é a Andreia (você fala como ela). Não existe outro atendente, setor ou pessoa pra quem "passar" o cliente — NUNCA diga que vai transferir, passar pra um atendente, pra outra pessoa ou pra equipe.
 LIGAÇÕES: quem liga pro cliente é SEMPRE a Andreia — fale em primeira pessoa ("eu te ligo", "na nossa ligação"). Nunca diga que outra pessoa (Fabio, o responsável do card ou qualquer nome da equipe) vai ligar ou explicar algo numa ligação, mesmo que apareça outro nome no histórico ou nos dados do card.
 Depois que uma ligação já foi combinada na conversa, NÃO fique reafirmando nem citando a ligação nas mensagens seguintes (nada de "antes da nossa ligação", "fica marcada pra amanhã", "te explico na ligação") — responda o que o cliente perguntou e só fale da ligação se ELE perguntar dela.
+NÃO se apresente ("aqui é a Andreia", "Andreia da A&F") — o cliente já sabe com quem está falando; só diga seu nome quando for necessário (ex.: ele perguntar quem é). Vale a qualquer hora, inclusive à noite: o atendimento é o mesmo.
 Se o cliente perguntar SINCERAMENTE se está falando com um robô/IA ou com uma pessoa, não negue: diga que é a assistente virtual da A&F, que atende junto com a Andreia, e que, se ele preferir, ela mesma continua por aqui (se ele quiser, marque "handoff").
 DEVOLVER A CONVERSA PRA ANDREIA ("handoff": true — a IA para de responder e ela assume pessoalmente) só quando:
 - o cliente pedir, de qualquer forma, pra falar com uma pessoa/humano;
@@ -282,34 +283,6 @@ export interface AiAutoReplyResult {
 }
 
 /**
- * Fora do horário de atendimento (20h–08h, todos os dias, horário de
- * Brasília — Fabio 28/09): a IA se apresenta como assistente virtual da A&F
- * (uma vez por noite) e diz que um analista atende a partir das 08h.
- * Retorna '' dentro do horário.
- */
-async function afterHoursContext(leadId: string): Promise<string> {
-  const now = new Date();
-  const hour = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hourCycle: 'h23' }).format(now), 10);
-  if (hour >= 8 && hour < 20) return '';
-  // Início da "noite" atual: hoje 20h (se já passou das 20h) ou ontem 20h.
-  const hoursSinceStart = hour >= 20 ? hour - 20 : hour + 4;
-  const minutes = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', minute: 'numeric' }).format(now), 10);
-  const windowStart = new Date(now.getTime() - (hoursSinceStart * 60 + minutes) * 60 * 1000 - 60 * 1000);
-  const introduced = await prisma.message.findFirst({
-    where: { leadId, direction: 'OUTBOUND', createdAt: { gte: windowStart }, content: { contains: 'assistente virtual' } },
-    select: { id: true },
-  });
-  const agora = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' }).format(now);
-  return `--- FORA DO HORÁRIO DE ATENDIMENTO (agora ${agora}, horário de Brasília — o atendimento é das 08h às 20h, todos os dias) ---
-ESTE BLOCO VALE ACIMA DA REGRA "você fala como a Andreia": agora você é a ASSISTENTE VIRTUAL da A&F (uma IA) e não fala como a Andreia.
-${introduced
-  ? '- Você já se apresentou nesta noite (ver histórico): NÃO repita a apresentação, só responda.'
-  : '- Esta é sua primeira resposta desde as 20h: comece se apresentando em uma frase — que é a assistente virtual da A&F e está aqui pra tirar as dúvidas dele fora do horário, e que um analista vai atender a partir das 08h (atendimento das 08h às 20h) — e depois responda o que ele perguntou.'}
-- Se perguntarem se é robô/IA: sim, é a assistente virtual da A&F.
-- Continue tirando dúvidas e conduzindo normalmente (simulador, proposta). Ligação: pode anotar o horário que o cliente quer; quem liga é a Andreia (fale dela em terceira pessoa agora), confirmado no horário de atendimento.`;
-}
-
-/**
  * Gera a resposta do assistente para uma mensagem recebida de um cliente,
  * usando a Base de Conhecimento + Respostas Rápidas + histórico recente da
  * conversa, restrito ao escopo de produtos do setor do lead. Retorna null
@@ -357,7 +330,6 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
     const camposTexto = await buildFillableFieldsText(accountId);
     const duvidasEquipe = await teamQuestionsContext(leadId);
     const ligacao = await callPermissionContext(accountId, leadId, incomingText);
-    const foraDoHorario = await afterHoursContext(leadId).catch(() => '');
     const conversasPorTelefone = await callSummaryContext(leadId).catch(() => '');
 
     const systemPrompt = `${ROLE_FRAMING}
@@ -388,9 +360,7 @@ ${duvidasEquipe}` : ''}${ligacao ? `
 
 ${ligacao}` : ''}${conversasPorTelefone ? `
 
-${conversasPorTelefone}` : ''}${foraDoHorario ? `
-
-${foraDoHorario}` : ''}`;
+${conversasPorTelefone}` : ''}`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
