@@ -22,7 +22,11 @@ async function callPermissionContext(accountId: string, leadId: string, incoming
     // O pedido de permissão não vai mais na boas-vindas (Fabio 27/09: "só
     // manda se o cliente pedir pra ligar") — sem pedido na conversa, este
     // bloco só entra quando o cliente fala em ligação.
-    if (!asked && !TALKS_ABOUT_CALL_RE.test(incomingText)) return '';
+    const lastOut = await prisma.message.findFirst({
+      where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { content: true },
+    });
+    const weAskedAboutCall = /\blig(ar|a[çc][aã]o|o)\b|hor[áa]rio/i.test(lastOut?.content || '');
+    if (!asked && !TALKS_ABOUT_CALL_RE.test(incomingText) && !weAskedAboutCall) return '';
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { departmentId: true } }, contact: { select: { whatsappPhone: true, phone: true } }, user: { select: { name: true } } } });
     const raw = (lead?.contact?.whatsappPhone && !lead.contact.whatsappPhone.includes('@') ? lead.contact.whatsappPhone : lead?.contact?.phone) || '';
     const digits = raw.replace(/\D/g, '');
@@ -41,17 +45,24 @@ async function callPermissionContext(accountId: string, leadId: string, incoming
     // respondeu só sobre o botão de permitir e ainda moveu o card.
     const onlyWhenAboutCall = `
 IMPORTANTE: este bloco só vale quando a mensagem do cliente for sobre a LIGAÇÃO (ex.: "pode ligar", "me liga", "que horas vocês ligam", ou um "sim" solto logo depois do pedido de ligação). "Tenho interesse", "Não tenho interesse", "Quero mais informações" e parecidos são os botões da mensagem de boas-vindas/follow-up — são sobre o CRÉDITO, não sobre a ligação. Se o cliente falar de outro assunto (interesse, restrição no nome, dúvida, valores), responda a ESSE assunto normalmente e NÃO mencione a ligação nem o botão de permitir.`;
-    if (!state.permitted && (!asked || state.canRequest)) {
-      return `--- LIGAÇÃO PELO WHATSAPP ---
-O cliente ainda NÃO autorizou ligação pelo WhatsApp${asked ? ' (o pedido anterior não está mais valendo)' : ''}. Se ele pedir ou aceitar uma ligação: marque "requestCallPermission": true — o CRM manda, logo depois da sua mensagem, o pedido de permissão (cartão com o botão *Permitir ligações*). Na sua resposta, em 1-2 frases, diga que vai chegar aqui na conversa um pedido pra liberar a ligação e que é só ele tocar em *Permitir ligações* — sem dizer que já vai ligar e sem prometer horário.${onlyWhenAboutCall}`;
-    }
-    return state.permitted
-      ? `--- LIGAÇÃO PELO WHATSAPP ---
-O cliente JÁ PERMITIU ligações pelo WhatsApp. Quem liga é você (você fala como a Andreia): se ele quiser ou aceitar uma ligação, confirme em PRIMEIRA PESSOA, algo como "Vou te ligar por aqui pelo WhatsApp em breve." — nunca "a Andreia vai te ligar" e nunca cite outra pessoa da equipe (nem o responsável do card) como quem vai ligar.
-Sem prometer horário nem imediatismo (nada de "agora", "já", "só um instante" — "em breve" basta) e sem dizer só "a equipe". Nesse caso NÃO desvie pro formulário/link da proposta — a resposta é só a confirmação da ligação.${onlyWhenAboutCall}`
-      : `--- LIGAÇÃO PELO WHATSAPP ---
-Já pedimos permissão pra ligar pra esse cliente pelo WhatsApp, mas ele AINDA NÃO PERMITIU. Responder "sim" por escrito não vale — sem tocar no botão, a ligação não completa.
-Se ele disser que pode ligar, que quer uma ligação ou responder "sim" ao pedido: NÃO diga que vai ligar. Explique em 1-2 frases que, pra gente conseguir ligar, é só ele tocar em *Permitir ligações* no cartão "pode ligar para você?" aqui na conversa (logo abaixo da nossa mensagem) e escolher *Permitir ligações*.${onlyWhenAboutCall}`;
+    const agora = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date());
+    const situacao = state.permitted
+      ? 'O cliente JÁ autorizou ligação pelo WhatsApp.'
+      : asked && !state.canRequest
+      ? 'Já mandamos o pedido de permissão de ligação e ele AINDA NÃO tocou em *Permitir ligações*. Se ele falar da ligação já combinada, explique em 1-2 frases que, pra ligação completar, é só tocar em *Permitir ligações* no cartão "pode ligar para você?" aqui na conversa. Responder "sim" por escrito não vale.'
+      : 'O cliente ainda não autorizou ligação pelo WhatsApp — o pedido de permissão é mandado pelo CRM DEPOIS que a Andreia confirmar o horário (não mande nem cite isso agora).';
+    // Fabio 28/09: "sempre verificar se a Andreia consegue fazer a ligação;
+    // se sim, agendar um horário com o cliente" — a IA pega o horário e o CRM
+    // abre o popup pra equipe (createCallRequest); confirmado, o CRM avisa o
+    // cliente, manda o pedido de permissão e cria a tarefa da Andreia.
+    return `--- LIGAÇÃO PELO WHATSAPP ---
+${situacao}
+AGENDAR A LIGAÇÃO — quem liga é você (fala como a Andreia), mas o horário SEMPRE é confirmado antes com a agenda dela. Se o cliente pedir ou aceitar uma ligação:
+- Se ele ainda não disse quando: pergunte em uma frase o melhor dia/horário (ex.: "Claro! Qual o melhor horário pra eu te ligar?").
+- Quando ele disser o horário (ou "agora"): responda curto que vai confirmar (ex.: "Anotado, já te confirmo o horário.") — SEM prometer que liga nesse horário — e preencha "callRequest": {"when": "<dia e horário como combinado, ex.: amanhã (29/09) às 10h>", "isoDateTime": "<a mesma data/hora em ISO com fuso -03:00, calculada a partir de agora>"}.
+- Se já existe um pedido de ligação aguardando confirmação (ver DÚVIDAS DESTE CLIENTE), não abra outro: diga que já já confirma — a não ser que ele tenha mudado o horário (aí preencha "callRequest" com o novo).
+- "callRequest": null em todos os outros casos.
+Agora: ${agora} (horário de Brasília).${onlyWhenAboutCall}`;
   } catch {
     return '';
   }
@@ -240,7 +251,7 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "requestCallPermission": <true ou false — true só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>}`;
 
 export interface AiAutoReplyResult {
   reply: string;
@@ -252,8 +263,8 @@ export interface AiAutoReplyResult {
   handoffReason?: string | null;
   /** Pergunta pra equipe (balão "Dúvidas da IA") — a IA disse ao cliente que vai verificar; quem chamou cria a AiTeamQuestion (ai-team-question.service.ts). */
   askTeam?: string | null;
-  /** true = cliente pediu/aceitou ligação e ainda não autorizou — quem chamou manda o pedido de permissão (template "Permitir ligações") logo depois da resposta. */
-  requestCallPermission?: boolean;
+  /** Cliente quer ligação nesse horário — quem chamou abre o pedido pra Andreia confirmar (createCallRequest). */
+  callRequest?: { when: string; isoDateTime: string | null } | null;
   /** Etapa pra mover o card, se a IA identificou uma mudança — aplicar via applyAiExtractedActions (ai-shared.service.ts), que valida contra a lista permitida. */
   moveToStage?: string | null;
   /** Motivo da perda, se a IA identificou uma recusa explícita — aplicar via applyAiExtractedActions (marca status LOST, não é etapa). */
@@ -418,7 +429,9 @@ function parseReply(raw: string): AiAutoReplyResult {
     if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
       return {
         reply: stripOpeningInterjection(parsed.reply.trim()),
-        requestCallPermission: parsed.requestCallPermission === true,
+        callRequest: parsed.callRequest && typeof parsed.callRequest === 'object' && typeof parsed.callRequest.when === 'string' && parsed.callRequest.when.trim()
+          ? { when: parsed.callRequest.when.trim(), isoDateTime: typeof parsed.callRequest.isoDateTime === 'string' ? parsed.callRequest.isoDateTime : null }
+          : null,
         handoff: parsed.handoff === true,
         handoffReason: parsed.handoff === true && typeof parsed.handoffReason === 'string' && parsed.handoffReason.trim() ? parsed.handoffReason.trim().slice(0, 200) : null,
         askTeam: parsed.handoff !== true && typeof parsed.askTeam === 'string' && parsed.askTeam.trim() && parsed.askTeam.trim().toLowerCase() !== 'null' ? parsed.askTeam.trim().slice(0, 1000) : null,

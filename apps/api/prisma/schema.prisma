@@ -386,6 +386,11 @@ model AiTeamQuestion {
   sendError        String?
   knowledgeEntryId String?
   knowledgeTitle   String?
+  // "QUESTION" (dúvida) | "CALL_REQUEST" (cliente quer ligação — a Andreia
+  // confirma o horário ou propõe outro; Fabio 28/09).
+  kind             String    @default("QUESTION")
+  callWhen         String?   // horário como o cliente pediu ("amanhã às 10h")
+  callAt           DateTime? // o mesmo horário em data/hora (vira a tarefa)
   createdAt        DateTime  @default(now())
 
   @@index([accountId, status])

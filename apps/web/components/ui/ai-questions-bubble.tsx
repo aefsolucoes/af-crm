@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { MessageCircleQuestion, Bot, BookOpen, Send, X, Hand, Undo2, Loader2 } from 'lucide-react';
+import { MessageCircleQuestion, Bot, BookOpen, Send, X, Hand, Undo2, Loader2, Phone, Check, Clock } from 'lucide-react';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { playSoundOnce, SoundKey } from '@/lib/sounds';
@@ -33,6 +33,9 @@ interface AiQuestion {
   knowledgeTitle: string | null;
   createdAt: string;
   lead: { name: string };
+  /** CALL_REQUEST = cliente quer ligação — a Andreia confirma o horário ou propõe outro. */
+  kind?: 'QUESTION' | 'CALL_REQUEST';
+  callWhen?: string | null;
 }
 
 function timeAgo(iso: string) {
@@ -94,13 +97,14 @@ export function AiQuestionsBubble() {
     };
   }, [queryClient]);
 
-  async function act(q: AiQuestion, action: 'answer' | 'dismiss' | 'forget') {
+  async function act(q: AiQuestion, action: 'answer' | 'dismiss' | 'forget' | 'confirm-call' | 'propose-call') {
     const answer = (drafts[q.id] || '').trim();
-    if (action === 'answer' && !answer) return;
+    if ((action === 'answer' || action === 'propose-call') && !answer) return;
     setBusy(`${q.id}:${action}`);
     try {
-      await api.post(`/api/ai-questions/${q.id}/${action}`, action === 'answer' ? { answer } : {});
-      if (action === 'answer') setDrafts((d) => ({ ...d, [q.id]: '' }));
+      await api.post(`/api/ai-questions/${q.id}/${action}`, action === 'answer' ? { answer } : action === 'propose-call' ? { time: answer } : {});
+      if (action === 'answer' || action === 'propose-call') setDrafts((d) => ({ ...d, [q.id]: '' }));
+      if (action === 'confirm-call') toast('Ligação confirmada com o cliente — tarefa criada pra Andreia.', 'success');
       if (action === 'dismiss') {
         setOpen(false);
         router.push(`/inbox?leadId=${q.leadId}`);
@@ -127,7 +131,7 @@ export function AiQuestionsBubble() {
         <span className="text-[11px] text-slate-400 flex-shrink-0">{timeAgo(q.createdAt)}</span>
         <span className={cn('ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0',
           q.status === 'OPEN' ? 'bg-amber-100 text-amber-700' : q.status === 'ANSWERED' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
-          {q.status === 'OPEN' ? 'Aguardando' : q.status === 'ANSWERED' ? 'Respondida' : 'Assumida'}
+          {q.status === 'OPEN' ? 'Aguardando' : q.status === 'ANSWERED' ? (q.kind === 'CALL_REQUEST' ? 'Resolvido' : 'Respondida') : 'Assumida'}
         </span>
       </div>
 
@@ -135,10 +139,18 @@ export function AiQuestionsBubble() {
         <p className="text-xs text-slate-500 border-l-2 border-slate-200 pl-2 mb-2 line-clamp-3 whitespace-pre-line">Cliente: {q.clientMessage}</p>
       )}
 
+      {q.kind === 'CALL_REQUEST' ? (
+        <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2">
+          <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700"><Phone size={12} /> Pedido de ligação</p>
+          <p className="text-sm text-slate-800 mt-0.5">Quer receber ligação <b>{q.callWhen}</b>.</p>
+          {q.status === 'OPEN' && <p className="text-sm text-slate-600">A Andreia consegue ligar nesse horário?</p>}
+        </div>
+      ) : (
       <div className="flex gap-2">
         <div className="w-6 h-6 rounded-full bg-[#2261a8]/10 text-[#2261a8] flex items-center justify-center flex-shrink-0"><Bot size={13} /></div>
         <div className="text-sm text-slate-700 bg-slate-100 rounded-xl rounded-tl-sm px-3 py-2 whitespace-pre-line">{q.question}</div>
       </div>
+      )}
 
       {q.answer && (
         <div className="flex justify-end mt-2">
@@ -170,7 +182,46 @@ export function AiQuestionsBubble() {
         </div>
       )}
 
-      {q.status === 'OPEN' && (
+      {q.status === 'OPEN' && q.kind === 'CALL_REQUEST' && (
+        <div className="mt-2.5 space-y-2">
+          {q.sendError && (
+            <p className="text-xs text-red-600">Não foi pro cliente: {q.sendError}. Responda pela Inbox ou tente de novo.</p>
+          )}
+          <button
+            onClick={() => act(q, 'confirm-call')}
+            disabled={!!busy}
+            className="w-full flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg text-white font-medium disabled:opacity-50 bg-emerald-600 hover:bg-emerald-700"
+            title="Avisa o cliente, manda o pedido de permissão de ligação (se precisar) e cria a tarefa da Andreia"
+          >
+            {busy === `${q.id}:confirm-call` ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Sim, confirmar {q.callWhen}
+          </button>
+          <div className="flex gap-1.5">
+            <input
+              value={drafts[q.id] || ''}
+              onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); act(q, 'propose-call'); } }}
+              placeholder="Não consegue? Outro horário (ex.: amanhã às 14h)"
+              className="flex-1 min-w-0 text-sm rounded-lg border border-slate-200 px-2.5 py-1.5 focus:outline-none focus:border-[#2261a8] text-slate-800"
+            />
+            <button
+              onClick={() => act(q, 'propose-call')}
+              disabled={!!busy || !(drafts[q.id] || '').trim()}
+              className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-white font-medium disabled:opacity-50 flex-shrink-0"
+              style={{ backgroundColor: '#2261a8' }}
+              title="Manda pro cliente: 'Nesse horário não vou conseguir. Pode ser ...?'"
+            >
+              {busy === `${q.id}:propose-call` ? <Loader2 size={12} className="animate-spin" /> : <Clock size={12} />} Propor
+            </button>
+          </div>
+          <div className="flex justify-end">
+            <button onClick={() => act(q, 'dismiss')} disabled={!!busy} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100" title="Fecha o pedido, desliga a IA nesse card e abre a conversa pra você falar direto">
+              <Hand size={12} /> Eu assumo
+            </button>
+          </div>
+        </div>
+      )}
+
+      {q.status === 'OPEN' && q.kind !== 'CALL_REQUEST' && (
         <div className="mt-2.5">
           {q.sendError && (
             <p className="text-xs text-red-600 mb-1.5">Não foi pro cliente: {q.sendError}. Responda pela Inbox ou tente de novo.</p>
@@ -223,7 +274,11 @@ export function AiQuestionsBubble() {
             <div className="flex items-center gap-2.5 px-4 py-3 text-white" style={{ backgroundColor: '#2261a8' }}>
               <Bot size={20} className="flex-shrink-0" />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold leading-tight">{popupQuestions.length > 1 ? `A IA tem ${popupQuestions.length} dúvidas` : 'A IA tem uma dúvida'}</p>
+                <p className="text-sm font-semibold leading-tight">
+                  {popupQuestions.every((q) => q.kind === 'CALL_REQUEST')
+                    ? (popupQuestions.length > 1 ? `${popupQuestions.length} pedidos de ligação` : 'Pedido de ligação')
+                    : popupQuestions.length > 1 ? `A IA tem ${popupQuestions.length} pendências` : 'A IA tem uma dúvida'}
+                </p>
                 <p className="text-[11px] text-white/75 leading-tight">Ela disse ao cliente que ia verificar — responda e ela repassa</p>
               </div>
               <button onClick={closePopup} className="p-1 rounded-md hover:bg-white/15" aria-label="Fechar" title="Fechar (a dúvida continua no balão)">

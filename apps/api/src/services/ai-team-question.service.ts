@@ -22,7 +22,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 const SELECT = {
   id: true, leadId: true, departmentId: true, question: true, clientMessage: true, status: true,
   answer: true, answeredByName: true, answeredAt: true, sentReply: true, sendError: true,
-  knowledgeEntryId: true, knowledgeTitle: true, createdAt: true,
+  knowledgeEntryId: true, knowledgeTitle: true, createdAt: true, kind: true, callWhen: true, callAt: true,
   lead: { select: { name: true } },
 } as const;
 
@@ -63,7 +63,7 @@ export async function createAiTeamQuestion(params: {
   // A IA às vezes reformula a mesma dúvida a cada mensagem do cliente — se
   // já tem uma aberta pra esse card, soma o contexto novo nela em vez de
   // abrir outra (o colaborador responde uma vez só).
-  const open = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, status: 'OPEN' }, orderBy: { createdAt: 'desc' } });
+  const open = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, status: 'OPEN', kind: 'QUESTION' }, orderBy: { createdAt: 'desc' } });
   const saved = open
     ? await prisma.aiTeamQuestion.update({
         where: { id: open.id },
@@ -112,10 +112,14 @@ export async function teamQuestionsContext(leadId: string): Promise<string> {
     where: { leadId, OR: [{ status: 'OPEN' }, { status: 'ANSWERED', answeredAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }] },
     orderBy: { createdAt: 'desc' },
     take: 5,
-    select: { status: true, question: true, answer: true },
+    select: { status: true, question: true, answer: true, kind: true, callWhen: true },
   });
   if (!rows.length) return '';
-  const lines = rows.map((r) => r.status === 'OPEN'
+  const lines = rows.map((r) => r.kind === 'CALL_REQUEST'
+    ? (r.status === 'OPEN'
+      ? `- LIGAÇÃO: o cliente pediu ligação (${r.callWhen}) e você ainda está confirmando o horário — se ele perguntar, diga que já já confirma; não prometa o horário.`
+      : `- LIGAÇÃO: ${r.answer}`)
+    : r.status === 'OPEN'
     ? `- AINDA SEM RESPOSTA: ${r.question}`
     : `- Pergunta: ${r.question}\n  Resposta da equipe: ${r.answer}`);
   return `--- DÚVIDAS DESTE CLIENTE QUE VOCÊ JÁ LEVOU PRA EQUIPE ---
@@ -269,5 +273,127 @@ export async function forgetAiTeamKnowledge(params: { accountId: string; questio
     where: { id: q.id }, data: { knowledgeEntryId: null, knowledgeTitle: null }, select: SELECT,
   });
   emitTo(params.io, await recipientsFor(params.accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+  return updated;
+}
+
+// ───────────────────────── Pedido de ligação ─────────────────────────
+// Fabio 28/09: "sempre verificar se a Andreia consegue fazer a ligação; se
+// sim, agendar o horário com o cliente". A IA pega o horário que o cliente
+// quer e abre o popup pra todos; confirmar manda a confirmação, o pedido de
+// permissão de ligação (se ainda não autorizou) e cria a tarefa da Andreia.
+
+/** Cliente quer ligação no horário `when` — abre (ou atualiza) o popup. */
+export async function createCallRequest(params: {
+  accountId: string; leadId: string; when: string; callAt?: Date | null; clientMessage?: string | null; io?: Io;
+}) {
+  const { accountId, leadId, io } = params;
+  const when = params.when.trim().slice(0, 120);
+  if (!when) return null;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead) return null;
+  const departmentId = lead.pipeline?.departmentId ?? null;
+  const question = `Quer receber ligação ${when}. A Andreia consegue ligar nesse horário?`;
+  const callAt = params.callAt && !isNaN(params.callAt.getTime()) ? params.callAt : null;
+  const open = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, status: 'OPEN', kind: 'CALL_REQUEST' } });
+  const changed = !open || open.callWhen !== when;
+  const saved = open
+    ? await prisma.aiTeamQuestion.update({ where: { id: open.id }, data: { question, callWhen: when, callAt, clientMessage: params.clientMessage?.slice(0, 2000) || open.clientMessage }, select: SELECT })
+    : await prisma.aiTeamQuestion.create({ data: { accountId, leadId, departmentId, kind: 'CALL_REQUEST', question, callWhen: when, callAt, clientMessage: params.clientMessage?.slice(0, 2000) || null }, select: SELECT });
+  const userIds = await recipientsFor(accountId, departmentId);
+  // Horário novo/alterado reabre o popup pra todo mundo (isNew).
+  emitTo(io, userIds, 'ai_team_question', { id: saved.id, leadId, leadName: lead.name, question, isNew: changed });
+  if (changed) {
+    await prisma.note.create({ data: { leadId, type: 'CALL', content: `📞 Cliente pediu ligação ${when} — aguardando a Andreia confirmar o horário.` } }).catch(() => {});
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(accountId, { title: `Pedido de ligação — ${lead.name}`, body: `Quer receber ligação ${when}. A Andreia consegue?`, leadId }, userIds).catch(() => {});
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_team_question', leadId, leadName: lead.name, summary: `cliente pediu ligação ${when}` });
+  }
+  return saved;
+}
+
+/** "Sim, a Andreia consegue": confirma com o cliente, manda o pedido de
+ *  permissão de ligação (se ainda não autorizou) e cria a tarefa da Andreia. */
+export async function confirmCallRequest(params: { accountId: string; questionId: string; userId: string; io?: Io }) {
+  const { accountId, questionId, userId, io } = params;
+  if (answering.has(questionId)) throw new Error('Alguém já está respondendo esse pedido');
+  answering.add(questionId);
+  try {
+    const q = await prisma.aiTeamQuestion.findFirst({ where: { id: questionId, accountId, kind: 'CALL_REQUEST' } });
+    if (!q) throw new Error('Pedido de ligação não encontrado');
+    if (q.status !== 'OPEN') throw new Error('Esse pedido já foi resolvido');
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+    const lead = await prisma.lead.findFirst({ where: { id: q.leadId, accountId }, select: { name: true, contactId: true, pipeline: { select: { departmentId: true } }, contact: { select: { whatsappPhone: true, phone: true } } } });
+    if (!lead) throw new Error('Card não encontrado');
+
+    const reply = `Combinado! Te ligo ${q.callWhen} por aqui pelo WhatsApp.`;
+    const sent = await sendOutboundWhatsApp({ accountId, leadId: q.leadId, content: reply, io: io || undefined });
+    if (!sent.success) {
+      const updated = await prisma.aiTeamQuestion.update({ where: { id: q.id }, data: { sendError: sent.error }, select: SELECT });
+      emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+      return updated;
+    }
+
+    // Pedido de permissão só agora, com o horário confirmado (Fabio 28/09).
+    let permissionNote = '';
+    try {
+      const calling = require('./whatsapp-calling.service') as typeof import('./whatsapp-calling.service');
+      const wa = require('./whatsapp.service') as typeof import('./whatsapp.service');
+      const phoneRaw = calling.pickRealPhone(lead.contact);
+      const config = await wa.getWhatsAppConfig(accountId, lead.pipeline?.departmentId ?? null);
+      const state = phoneRaw && config?.phoneNumberId && config.accessToken
+        ? await calling.getCallPermissionState({ phoneNumberId: config.phoneNumberId, accessToken: config.accessToken } as any, wa.normalizeBrazilianWhatsAppPhone(phoneRaw))
+        : null;
+      if (state?.permitted) permissionNote = 'cliente já tinha autorizado ligação';
+      else if (lead.contactId) {
+        const perm = await calling.sendCallPermissionRequest(accountId, lead.pipeline?.departmentId ?? null, lead.contactId, q.leadId, io);
+        permissionNote = perm.ok ? 'pedido de permissão de ligação enviado' : `pedido de permissão NÃO saiu: ${perm.error}`;
+      }
+    } catch (err: any) {
+      permissionNote = `pedido de permissão NÃO saiu: ${err?.message}`;
+    }
+
+    // Tarefa pra Andreia (quem liga) — se não achar, fica com quem confirmou.
+    const andreia = await prisma.user.findFirst({ where: { accountId, name: { startsWith: 'Andreia', mode: 'insensitive' } }, select: { id: true } });
+    const dueAt = q.callAt || new Date(Date.now() + 60 * 60 * 1000);
+    await prisma.task.create({ data: { title: `📞 Ligar para ${lead.name} — ${q.callWhen}`, dueAt, userId: andreia?.id || userId, leadId: q.leadId } }).catch((err) => console.error('[Ligação] tarefa não criada:', err?.message));
+
+    const updated = await prisma.aiTeamQuestion.update({
+      where: { id: q.id },
+      data: { status: 'ANSWERED', answer: `Confirmado: a Andreia liga ${q.callWhen}.`, answeredByUserId: userId, answeredByName: user?.name || null, answeredAt: new Date(), sentReply: reply, sendError: null },
+      select: SELECT,
+    });
+    await prisma.note.create({ data: { leadId: q.leadId, type: 'CALL', content: `📞 Ligação agendada ${q.callWhen} (confirmada por ${user?.name || 'alguém da equipe'}) — tarefa criada pra Andreia; ${permissionNote || 'permissão não verificada'}.` } }).catch(() => {});
+    logActivity({ accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: `confirmou ligação ${q.callWhen}` });
+    emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+    return updated;
+  } finally {
+    answering.delete(questionId);
+  }
+}
+
+/** A Andreia não consegue no horário do cliente: propõe outro. A resposta do
+ *  cliente volta pra IA, que abre um novo pedido com o horário combinado. */
+export async function proposeCallTime(params: { accountId: string; questionId: string; userId: string; time: string; io?: Io }) {
+  const { accountId, questionId, userId, io } = params;
+  const time = params.time.trim().slice(0, 120);
+  if (!time) throw new Error('Escreva o horário que a Andreia consegue');
+  const q = await prisma.aiTeamQuestion.findFirst({ where: { id: questionId, accountId, kind: 'CALL_REQUEST' } });
+  if (!q) throw new Error('Pedido de ligação não encontrado');
+  if (q.status !== 'OPEN') throw new Error('Esse pedido já foi resolvido');
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+  const reply = `Nesse horário não vou conseguir. Pode ser ${time}?`;
+  const sent = await sendOutboundWhatsApp({ accountId, leadId: q.leadId, content: reply, io: io || undefined });
+  if (!sent.success) {
+    const updated = await prisma.aiTeamQuestion.update({ where: { id: q.id }, data: { sendError: sent.error }, select: SELECT });
+    emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+    return updated;
+  }
+  const updated = await prisma.aiTeamQuestion.update({
+    where: { id: q.id },
+    data: { status: 'ANSWERED', answer: `A Andreia não consegue ${q.callWhen}; propôs ${time} (esperando o cliente).`, answeredByUserId: userId, answeredByName: user?.name || null, answeredAt: new Date(), sentReply: reply, sendError: null },
+    select: SELECT,
+  });
+  await prisma.note.create({ data: { leadId: q.leadId, type: 'CALL', content: `📞 ${user?.name || 'Equipe'} propôs outro horário pra ligação: ${time} (cliente tinha pedido ${q.callWhen}).` } }).catch(() => {});
+  emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
   return updated;
 }
