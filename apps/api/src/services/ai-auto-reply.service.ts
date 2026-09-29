@@ -32,10 +32,9 @@ async function callPermissionContext(accountId: string, leadId: string, incoming
     const config = await getWhatsAppConfig(accountId, lead?.pipeline?.departmentId);
     if (!config?.phoneNumberId || !config.accessToken) return '';
     const state = await getCallPermissionState({ phoneNumberId: config.phoneNumberId, accessToken: config.accessToken }, normalizeBrazilianWhatsAppPhone(digits));
-    // Quem liga (pedido do Fabio 26/09): a Andreia, a não ser que o responsável
-    // pelo card seja outra pessoa — aí a IA avisa que é essa pessoa.
-    const firstName = (lead?.user?.name || '').trim().split(/\s+/)[0] || '';
-    const caller = firstName && firstName.toLowerCase() !== 'andreia' ? firstName : 'Andreia';
+    // Quem liga é SEMPRE a Andreia (Fabio 28/09: a IA disse "o Fabio te
+    // liga" porque ele era o responsável do card — errado) — e a IA fala
+    // como ela, em primeira pessoa.
     // Achado real (Luiz Carlos 26/09): ele tocou "Tenho interesse" na
     // boas-vindas e contou que tem restrição; como a última mensagem nossa
     // era o pedido de ligação, a IA achou que era "sim, pode ligar",
@@ -48,9 +47,7 @@ O cliente ainda NÃO autorizou ligação pelo WhatsApp${asked ? ' (o pedido ante
     }
     return state.permitted
       ? `--- LIGAÇÃO PELO WHATSAPP ---
-O cliente JÁ PERMITIU ligações pelo WhatsApp.${caller === 'Andreia'
-  ? ` Quem liga é você (você fala como a Andreia): se ele quiser ou aceitar uma ligação, confirme em PRIMEIRA PESSOA, algo como "Vou te ligar por aqui pelo WhatsApp em breve." — nunca "a Andreia vai te ligar".`
-  : ` Quem liga pra ele é ${caller}: se ele quiser ou aceitar uma ligação, confirme dizendo o nome, algo como "${caller} vai te ligar por aqui pelo WhatsApp em breve."`}
+O cliente JÁ PERMITIU ligações pelo WhatsApp. Quem liga é você (você fala como a Andreia): se ele quiser ou aceitar uma ligação, confirme em PRIMEIRA PESSOA, algo como "Vou te ligar por aqui pelo WhatsApp em breve." — nunca "a Andreia vai te ligar" e nunca cite outra pessoa da equipe (nem o responsável do card) como quem vai ligar.
 Sem prometer horário nem imediatismo (nada de "agora", "já", "só um instante" — "em breve" basta) e sem dizer só "a equipe". Nesse caso NÃO desvie pro formulário/link da proposta — a resposta é só a confirmação da ligação.${onlyWhenAboutCall}`
       : `--- LIGAÇÃO PELO WHATSAPP ---
 Já pedimos permissão pra ligar pra esse cliente pelo WhatsApp, mas ele AINDA NÃO PERMITIU. Responder "sim" por escrito não vale — sem tocar no botão, a ligação não completa.
@@ -148,6 +145,7 @@ const SAFETY_RULES = `- Nunca peça senha, número de cartão ou qualquer dado s
 // (a IA disse "vou te passar pra um atendente" sobre garantia de veículo).
 const HANDOFF_RULES = `
 ESTE É UM WHATSAPP ÚNICO: quem atende o cliente é a Andreia (você fala como ela). Não existe outro atendente, setor ou pessoa pra quem "passar" o cliente — NUNCA diga que vai transferir, passar pra um atendente, pra outra pessoa ou pra equipe.
+LIGAÇÕES: quem liga pro cliente é SEMPRE a Andreia — fale em primeira pessoa ("eu te ligo", "na nossa ligação"). Nunca diga que outra pessoa (Fabio, o responsável do card ou qualquer nome da equipe) vai ligar ou explicar algo numa ligação, mesmo que apareça outro nome no histórico ou nos dados do card.
 DEVOLVER A CONVERSA PRA ANDREIA ("handoff": true — a IA para de responder e ela assume pessoalmente) só quando:
 - o cliente pedir, de qualquer forma, pra falar com uma pessoa/humano;
 - o cliente parecer insatisfeito ou impaciente, ou reclamar do atendimento.
