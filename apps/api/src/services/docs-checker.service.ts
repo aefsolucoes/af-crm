@@ -130,7 +130,7 @@ ${history}`;
   return { leadName: lead.name, complete: verdict.complete === true, listaUsada: verdict.listaUsada, faltando: verdict.faltando || [], receivedText };
 }
 
-async function checkDocsComplete(accountId: string, leadId: string, io: Io): Promise<void> {
+export async function checkDocsComplete(accountId: string, leadId: string, io: Io): Promise<void> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
   if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return;
 
