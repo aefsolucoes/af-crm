@@ -200,34 +200,52 @@ router.get('/monthly', async (req: AuthRequest, res: Response) => {
     const lostAt = new Map<string, Date>();
     for (const n of lostNotes) if (!lostAt.has(n.leadId) || n.createdAt > lostAt.get(n.leadId)!) lostAt.set(n.leadId, n.createdAt);
 
-    const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) || 0) + 1);
-    const cEntered = new Map<string, number>();
-    const cApproved = new Map<string, number>();
-    const cDocs = new Map<string, number>();
-    const cLost = new Map<string, number>();
-    for (const l of created) bump(cEntered, monthKey(l.createdAt));
+    // Guarda QUEM entra em cada número (Fabio 30/09: passar o mouse e ver os
+    // clientes com valores).
+    const push = (m: Map<string, string[]>, k: string, id: string) => m.set(k, [...(m.get(k) || []), id]);
+    const cEntered = new Map<string, string[]>();
+    const cApproved = new Map<string, string[]>();
+    const cDocs = new Map<string, string[]>();
+    const cLost = new Map<string, string[]>();
+    for (const l of created) push(cEntered, monthKey(l.createdAt), l.id);
     if (mode === 'event') {
-      for (const d of approvedAt.values()) bump(cApproved, monthKey(d));
-      for (const d of entries.values()) bump(cDocs, monthKey(d));
-      for (const d of lostAt.values()) bump(cLost, monthKey(d));
+      for (const [id, d] of approvedAt) push(cApproved, monthKey(d), id);
+      for (const [id, d] of entries) push(cDocs, monthKey(d), id);
+      for (const [id, d] of lostAt) push(cLost, monthKey(d), id);
     } else {
       for (const l of created) {
         const k = monthKey(l.createdAt);
-        if (approvedAt.has(l.id)) bump(cApproved, k);
-        if (entries.has(l.id)) bump(cDocs, k);
-        if (l.status === 'LOST') bump(cLost, k);
+        if (approvedAt.has(l.id)) push(cApproved, k, l.id);
+        if (entries.has(l.id)) push(cDocs, k, l.id);
+        if (l.status === 'LOST') push(cLost, k, l.id);
       }
     }
+    const monthKeys = new Set(starts.map(monthKey));
+    const ids = new Set<string>();
+    for (const m of [cEntered, cApproved, cDocs, cLost]) for (const [k, list] of m) if (monthKeys.has(k)) list.forEach((id) => ids.add(id));
+    const info = new Map<string, { id: string; name: string; value: number }>();
+    for (const l of await prisma.lead.findMany({ where: { id: { in: [...ids] } }, select: { id: true, name: true, value: true, customFields: true } })) {
+      const cf = (l.customFields || {}) as Record<string, unknown>;
+      // Gravado de vários jeitos: "400000", "400.000", "400.000,00", "1508.38".
+      const raw = String(cf.valor_credito ?? '').replace(/[^\d.,]/g, '');
+      const credito = !raw ? 0
+        : /,\d{1,2}$/.test(raw) ? Number(raw.replace(/\./g, '').replace(',', '.'))
+        : /^\d{1,3}(\.\d{3})+$/.test(raw) ? Number(raw.replace(/\./g, ''))
+        : Number(raw.replace(/,/g, '')) || 0;
+      info.set(l.id, { id: l.id, name: String(cf.participante_1 || l.name || '').trim() || l.name, value: credito || Number(l.value) || 0 });
+    }
+    const people = (list?: string[]) => (list || []).map((id) => info.get(id)).filter(Boolean).sort((a, b) => b!.value - a!.value) as { id: string; name: string; value: number }[];
 
     const rows = starts.map((d) => {
       const k = monthKey(d);
       return {
         month: k,
         label: d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'America/Sao_Paulo' }),
-        entered: cEntered.get(k) || 0,
-        approved: cApproved.get(k) || 0,
-        docsSent: cDocs.get(k) || 0,
-        lost: cLost.get(k) || 0,
+        entered: cEntered.get(k)?.length || 0,
+        approved: cApproved.get(k)?.length || 0,
+        docsSent: cDocs.get(k)?.length || 0,
+        lost: cLost.get(k)?.length || 0,
+        people: { entered: people(cEntered.get(k)), approved: people(cApproved.get(k)), docsSent: people(cDocs.get(k)), lost: people(cLost.get(k)) },
       };
     }).reverse();
     res.json({ rows, mode, historySince: '2026-08-31' });

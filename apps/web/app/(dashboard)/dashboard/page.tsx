@@ -102,16 +102,6 @@ export default function DashboardPage() {
     },
   });
 
-  // Relatório Documentação Enviada (etapa "Fechado" no funil Vendas)
-  const [docFrom, setDocFrom] = useState(defaultFrom());
-  const [docTo, setDocTo] = useState(defaultTo());
-  const { data: documentacao, isLoading: loadingDocumentacao, refetch: refetchDocumentacao } = useQuery({
-    queryKey: ['reports-documentacao', docFrom, docTo],
-    queryFn: async () => {
-      const { data } = await api.get(`/api/reports/documentacao?from=${docFrom}&to=${docTo}`);
-      return data as { leads: any[]; total: number; totalValue: number; missingStage?: boolean };
-    },
-  });
 
   const isLoading = loadingSummary || loadingConversion;
 
@@ -385,89 +375,6 @@ export default function DashboardPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
-          )}
-        </div>
-
-        {/* ── Relatório: Documentação Enviada ── */}
-        <div className="bg-white rounded-xl border border-af-border shadow-sm overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-af-border">
-            <div className="flex items-center gap-2">
-              <FileCheck size={16} className="text-af-mid" />
-              <h3 className="text-sm font-semibold text-slate-700">Documentação Enviada — por período</h3>
-            </div>
-            <div className="flex items-center gap-2">
-              <Calendar size={13} className="text-slate-400" />
-              <input
-                type="date" value={docFrom} onChange={e => setDocFrom(e.target.value)}
-                className="text-xs px-2 py-1 border border-af-border rounded-lg focus:outline-none focus:ring-1 focus:ring-af-accent"
-              />
-              <span className="text-xs text-slate-400">até</span>
-              <input
-                type="date" value={docTo} onChange={e => setDocTo(e.target.value)}
-                className="text-xs px-2 py-1 border border-af-border rounded-lg focus:outline-none focus:ring-1 focus:ring-af-accent"
-              />
-              <button
-                onClick={() => refetchDocumentacao()}
-                className="text-xs px-3 py-1 bg-af-mid text-white rounded-lg hover:bg-af-dark"
-              >
-                Filtrar
-              </button>
-            </div>
-          </div>
-
-          {/* KPIs do período */}
-          {!loadingDocumentacao && documentacao && !documentacao.missingStage && (
-            <div className="grid grid-cols-2 gap-px bg-af-border border-b border-af-border">
-              <div className="bg-white px-5 py-3 text-center">
-                <p className="text-2xl font-bold text-slate-900">{documentacao.total}</p>
-                <p className="text-xs text-slate-500 mt-0.5">clientes com documentação enviada</p>
-              </div>
-              <div className="bg-white px-5 py-3 text-center">
-                <p className="text-2xl font-bold text-af-mid">{formatCurrency(documentacao.totalValue)}</p>
-                <p className="text-xs text-slate-500 mt-0.5">em crédito total</p>
-              </div>
-            </div>
-          )}
-
-          {/* Cards */}
-          {loadingDocumentacao ? (
-            <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {[1, 2, 3].map(i => <Skeleton key={i} className="h-28" />)}
-            </div>
-          ) : documentacao?.missingStage ? (
-            <div className="flex flex-col items-center justify-center py-10 px-6 text-center gap-1">
-              <p className="text-sm text-slate-500">A etapa <strong>"Fechado"</strong> não foi encontrada no funil <strong>Vendas</strong>.</p>
-              <p className="text-xs text-slate-400">Verifique se o funil "Vendas" tem uma etapa chamada exatamente "Fechado".</p>
-            </div>
-          ) : documentacao?.leads.length === 0 ? (
-            <div className="flex items-center justify-center py-10 text-slate-400 text-sm">
-              Nenhum cliente enviou documentação neste período
-            </div>
-          ) : (
-            <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {documentacao?.leads.map((lead: any) => {
-                const finalidade = lead.customFields?.finalidade as string | undefined;
-                return (
-                  <div key={lead.id} className="border border-af-border rounded-xl p-4">
-                    <p className="text-sm font-semibold text-slate-800 truncate">
-                      {(lead.customFields as any)?.participante_1 || lead.name}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      {lead.contact?.phone || lead.contact?.email || '—'} · {lead.user?.name || '—'}
-                    </p>
-                    {finalidade && (
-                      <span className={cn('inline-block mt-2 text-xs font-medium px-2 py-0.5 rounded-full', FINALIDADE_COLORS[finalidade] || 'bg-slate-100 text-slate-600')}>
-                        {finalidade}
-                      </span>
-                    )}
-                    <div className="flex items-center justify-between mt-3 pt-2 border-t border-af-border">
-                      <span className="text-sm font-bold text-af-mid">{lead.value ? formatCurrency(lead.value) : '—'}</span>
-                      <span className="text-xs text-slate-400">{formatDate(lead.enteredAt)}</span>
-                    </div>
-                  </div>
-                );
-              })}
             </div>
           )}
         </div>

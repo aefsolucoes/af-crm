@@ -1,9 +1,10 @@
 'use client';
 import { useState } from 'react';
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { CalendarRange } from 'lucide-react';
 import api from '@/lib/api';
-import { cn } from '@/lib/utils';
+import { cn, formatCurrency } from '@/lib/utils';
 import { Skeleton } from '@/components/ui/skeleton';
 
 /**
@@ -11,7 +12,41 @@ import { Skeleton } from '@/components/ui/skeleton';
  * na pré-análise, mandaram a documentação e foram perdidos. Só cards num
  * setor — a Caixa de Entrada (corretores etc.) fica de fora.
  */
-interface Row { month: string; label: string; entered: number; approved: number; docsSent: number; lost: number }
+interface Person { id: string; name: string; value: number }
+interface Row {
+  month: string; label: string; entered: number; approved: number; docsSent: number; lost: number;
+  people?: { entered: Person[]; approved: Person[]; docsSent: Person[]; lost: Person[] };
+}
+
+/** Número com a lista dos clientes ao passar o mouse (nome, valor, total) —
+ *  clicar no nome abre a conversa. Fabio 30/09. */
+function NumberCell({ n, people, className }: { n: number; people?: Person[]; className?: string }) {
+  if (!n || !people?.length) return <td className={cn('py-2 px-3 text-right', className)}>{n}</td>;
+  const total = people.reduce((sum, p) => sum + (p.value || 0), 0);
+  return (
+    <td className={cn('py-2 px-3 text-right', className)}>
+      <span className="relative inline-block group">
+        <span className="cursor-help underline decoration-dotted underline-offset-4">{n}</span>
+        <span className="hidden group-hover:block absolute right-0 top-full z-30 pt-1">
+          <span className="block w-80 max-w-[80vw] text-left bg-white border border-af-border rounded-lg shadow-xl">
+            <span className="flex items-center justify-between px-3 py-2 border-b border-af-border text-xs text-slate-500">
+              <span>{n} cliente{n === 1 ? '' : 's'}</span>
+              <span className="font-semibold text-slate-700">Total {formatCurrency(total)}</span>
+            </span>
+            <span className="block max-h-64 overflow-y-auto py-1">
+              {people.map((p) => (
+                <Link key={p.id} href={`/inbox?leadId=${p.id}`} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs hover:bg-slate-50">
+                  <span className="truncate text-slate-700 font-normal">{p.name}</span>
+                  <span className="flex-shrink-0 text-slate-500 font-normal">{p.value ? formatCurrency(p.value) : '—'}</span>
+                </Link>
+              ))}
+            </span>
+          </span>
+        </span>
+      </span>
+    </td>
+  );
+}
 
 export function MonthlyReport() {
   const [mode, setMode] = useState<'event' | 'cohort'>('event');
@@ -58,7 +93,7 @@ export function MonthlyReport() {
       </div>
 
       {isLoading ? <Skeleton className="h-48" /> : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto md:overflow-visible">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-slate-500 border-b border-af-border">
@@ -74,10 +109,10 @@ export function MonthlyReport() {
               {(data?.rows || []).map((r) => (
                 <tr key={r.month} className="border-b border-af-border/60 last:border-b-0">
                   <td className="py-2 pr-3 text-slate-700 capitalize">{r.label}</td>
-                  <td className="py-2 px-3 text-right font-semibold text-slate-800">{r.entered}</td>
-                  <td className="py-2 px-3 text-right text-slate-700">{r.approved}</td>
-                  <td className="py-2 px-3 text-right text-emerald-700 font-medium">{r.docsSent}</td>
-                  <td className="py-2 px-3 text-right text-red-600">{r.lost}</td>
+                  <NumberCell n={r.entered} people={r.people?.entered} className="font-semibold text-slate-800" />
+                  <NumberCell n={r.approved} people={r.people?.approved} className="text-slate-700" />
+                  <NumberCell n={r.docsSent} people={r.people?.docsSent} className="text-emerald-700 font-medium" />
+                  <NumberCell n={r.lost} people={r.people?.lost} className="text-red-600" />
                   <td className="py-2 pl-3 text-right text-slate-600">{pct(r.docsSent, r.entered)}</td>
                 </tr>
               ))}
@@ -90,7 +125,7 @@ export function MonthlyReport() {
           ? 'Cada número no mês em que aconteceu. '
           : 'Dos clientes que entraram em cada mês, quantos já foram aprovados, mandaram a documentação ou foram perdidos (até hoje). '}
         Aprovado = foi pra "Aprovado Pré-Análise"/"Aguardando Documentação"; documentação = foi pra "Fechado"/contratação.
-        A Caixa de Entrada (corretores etc.) não entra. Aprovados, documentação e perdidos só existem no histórico a partir de 31/08/2026.
+        Passe o mouse num número pra ver os clientes e os valores (valor do crédito do card; sem ele, o valor da venda). A Caixa de Entrada (corretores etc.) não entra. Aprovados, documentação e perdidos só existem no histórico a partir de 31/08/2026.
       </p>
     </div>
   );
