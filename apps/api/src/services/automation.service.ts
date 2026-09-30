@@ -211,8 +211,18 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       const subject = fillVariables(String(action.config.subject || ''), lead, context);
       const body = fillVariables(String(action.config.body || ''), lead, context);
       if (!subject.trim() || !body.trim()) return false;
-      const result = await sendOutboundEmail({ accountId: lead.accountId, leadId: lead.id, subject, body, io: io as any });
-      return result.success;
+      const email = lead.contact?.email?.trim();
+      if (!email) return false;
+      // "Uma vez por cliente" (ex.: e-mail "Sua pré-análise foi aprovada" ao
+      // entrar em Aguardando Documentação — card que volta pra etapa não recebe de novo).
+      if (action.config.oncePerLead === true) {
+        const already = await prisma.message.findFirst({ where: { leadId: lead.id, direction: 'OUTBOUND', channel: 'EMAIL', content: { startsWith: `📧 ${subject.trim()}` } }, select: { id: true } });
+        if (already) return true;
+      }
+      // Pela caixa do comercial@ (assinatura, cópia em Enviados e na conversa
+      // do card); sem caixa configurada, cai no envio simples.
+      const { sendFollowUpEmail } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+      return sendFollowUpEmail({ accountId: lead.accountId, leadId: lead.id, to: email, text: body, subject, io: io as any });
     }
     case 'assign_agent': {
       const mode = String(action.config.mode || 'specific');
