@@ -47,11 +47,16 @@ router.get('/summary', async (req: AuthRequest, res: Response) => {
     const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
     const deptFilter = pipelineDeptFilter(scopeDepartmentIds);
     const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    // Início do mês no horário de Brasília (servidor em UTC).
+    const [smY, smM] = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit' }).format(now).split('-');
+    const startOfMonth = new Date(`${smY}-${smM}-01T00:00:00-03:00`);
 
+    // Leads = só cards num setor — Caixa de Entrada (corretores, não
+    // triados) fica de fora, igual ao relatório mensal (Fabio 30/09).
+    const clientFilter: Prisma.PipelineWhereInput = { AND: [deptFilter, { departmentId: { not: null } }] };
     const [totalLeads, newLeads, wonLeads, allLeads] = await Promise.all([
-      prisma.lead.count({ where: { accountId, pipeline: deptFilter } }),
-      prisma.lead.count({ where: { accountId, createdAt: { gte: startOfMonth }, pipeline: deptFilter } }),
+      prisma.lead.count({ where: { accountId, pipeline: clientFilter } }),
+      prisma.lead.count({ where: { accountId, createdAt: { gte: startOfMonth }, pipeline: clientFilter } }),
       prisma.lead.findMany({ where: { accountId, status: 'WON', pipeline: { name: 'Concluído', ...deptFilter } }, select: { value: true } }),
       prisma.lead.findMany({ where: { accountId, pipeline: { name: 'Concluído', ...deptFilter } }, select: { value: true, status: true, createdAt: true } }),
     ]);
