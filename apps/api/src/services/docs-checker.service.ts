@@ -8,8 +8,9 @@ const prisma = new PrismaClient();
 
 /* A IA confere se a documentação chegou completa (pedido do Fabio: a skill só
  * roda o crédito; documentação é da IA do CRM). Card em "Aguardando
- * Documentação" com a IA ligada: a cada mensagem do cliente, espera ele parar
- * de mandar arquivo, lê o que chegou (cache em customFields._docInfo, o
+ * Documentação" (IA ligada ou não): a cada DOCUMENTO que o cliente manda
+ * (foto/arquivo — não roda de tempos em tempos, pra não gastar crédito),
+ * espera ele parar de mandar arquivo, lê o que chegou (cache em customFields._docInfo, o
  * mesmo do organizador de pasta), compara com a lista de documentos certa
  * (Respostas Rápidas "Documentos ...") e, se estiver completo, leva o card pra
  * "Documentação Recebida" e avisa o cliente. Incompleto: não faz nada — a IA
@@ -136,8 +137,6 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
 
   const verdict = await evaluateDocs(accountId, leadId);
   if (!verdict) return;
-  // Marca até quando já conferiu (a repescagem só volta se chegar arquivo novo).
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...(((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as any) || {}), _docsCheckedAt: new Date().toISOString() } as any } }).catch(() => {});
   const { receivedText } = verdict;
   if (!verdict.complete) {
     console.log(`[Docs] ${lead.name} (${leadId}): ainda falta — ${verdict.faltando.join('; ') || 'sem detalhe'}`);
@@ -185,22 +184,3 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   console.log(`[Docs] ${lead.name} (${leadId}): documentação completa → ${moved.pipelineName} / ${moved.stageName}`);
 }
 
-/** Repescagem (a cada 30 min): card em "Aguardando Documentação" com arquivo
- *  que chegou depois da última conferência — confere de novo. Cobre a IA fora
- *  do ar (ex.: crédito da Anthropic acabou em 29/09) e cliente que mandou
- *  tudo e não escreveu mais nada. */
-export async function sweepAwaitingDocs(io: Io): Promise<void> {
-  const leads = await prisma.lead.findMany({
-    where: { status: 'OPEN', stage: { name: { contains: 'Aguardando Documenta', mode: 'insensitive' } } },
-    select: { id: true, accountId: true, customFields: true },
-  });
-  for (const l of leads) {
-    const checkedAt = ((l.customFields || {}) as Record<string, unknown>)._docsCheckedAt as string | undefined;
-    const fresh = await prisma.messageAttachment.findFirst({
-      where: { leadId: l.id, ...(checkedAt ? { createdAt: { gt: new Date(checkedAt) } } : {}) },
-      select: { id: true },
-    });
-    if (!fresh) continue;
-    await checkDocsComplete(l.accountId, l.id, io).catch((err) => console.error(`[Docs] Repescagem ${l.id}:`, err?.message || err));
-  }
-}
