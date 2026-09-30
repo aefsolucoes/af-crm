@@ -11,6 +11,7 @@ import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download, AlertCirc
 import { Skeleton } from '@/components/ui/skeleton';
 import { MorningReport } from '@/components/dashboard/morning-report';
 import { NotesBoard } from '@/components/dashboard/notes-board';
+import { MonthlyReport } from '@/components/dashboard/monthly-report';
 import { useState } from 'react';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement,
@@ -187,6 +188,8 @@ export default function DashboardPage() {
             </>
           )}
         </div>
+
+        <MonthlyReport />
 
         {/* Charts row 1 */}
         <div className="grid grid-cols-3 gap-4">

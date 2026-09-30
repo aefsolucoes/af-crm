@@ -19,15 +19,25 @@ function pipelineDeptFilter(scopeDepartmentIds: string[]): Prisma.PipelineWhereI
  *  migração pro funil de contratação (a mais antiga). */
 const CONTRACT_PIPELINE: Prisma.PipelineWhereInput = { OR: [{ name: { startsWith: 'Em contrata' } }, { name: 'Concluído' }] };
 async function contractEntries(accountId: string, deptFilter: Prisma.PipelineWhereInput): Promise<Map<string, Date>> {
+  // Entrada na contratação: foi pra "Fechado", migração automática ou
+  // movido pra "Em contratação…" (Fabio 30/09: quem foi direto pra contratação
+  // também conta). "Movido do funil "Em contratação" para …" é SAÍDA — não conta.
   const notes = await prisma.note.findMany({
     where: {
-      OR: [{ content: { contains: '→ "Fechado"' } }, { content: { contains: 'funil "Em contrata' } }],
+      OR: [{ content: { contains: '→ "Fechado"' } }, { content: { contains: 'para o funil "Em contrata' } }, { content: { contains: 'para "Em contrata' } }],
       lead: { is: { accountId, pipeline: deptFilter } },
     },
     select: { leadId: true, createdAt: true },
   });
   const first = new Map<string, Date>();
   for (const n of notes) if (!first.has(n.leadId) || n.createdAt < first.get(n.leadId)!) first.set(n.leadId, n.createdAt);
+  // Quem está na contratação/concluído sem nota (movido antes do histórico
+  // existir): usa a data em que entrou na etapa atual.
+  const semNota = await prisma.lead.findMany({
+    where: { accountId, id: { notIn: [...first.keys()] }, pipeline: { AND: [deptFilter, CONTRACT_PIPELINE] } },
+    select: { id: true, stageEnteredAt: true, createdAt: true },
+  });
+  for (const l of semNota) first.set(l.id, l.stageEnteredAt || l.createdAt);
   return first;
 }
 
@@ -128,6 +138,102 @@ router.get('/conversion', async (req: AuthRequest, res: Response) => {
     res.json({ stages: stages.map((s) => ({ name: s.name, count: s._count.leads, color: s.color })), topAgents, weeklyData });
   } catch {
     res.status(500).json({ error: 'Erro ao gerar relatório de conversão' });
+  }
+});
+
+// GET /api/reports/monthly?months=6&departmentId=&mode=event|cohort —
+// relatório mensal (Fabio 30/09): clientes que ENTRARAM, foram APROVADOS
+// (pré-análise), MANDARAM A DOCUMENTAÇÃO (Fechado/contratação) e foram
+// PERDIDOS. Só conta card que está num setor — a Caixa de Entrada fica de fora
+// (corretor que fala com a gente fica lá e não é cliente).
+//  - event: cada coisa no mês em que aconteceu.
+//  - cohort: dos que ENTRARAM no mês, quantos já foram aprovados / mandaram a
+//    documentação / foram perdidos (a qualquer tempo).
+// Aprovado/documentação/perdido vêm do histórico de mudanças de etapa do card,
+// que existe desde 31/08/2026.
+router.get('/monthly', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const scopeDepartmentIds = await getScopeDepartmentIds(accountId, req.user!.id, req.user!.role);
+    const scope = pipelineDeptFilter(scopeDepartmentIds);
+    const dept = req.query.departmentId ? String(req.query.departmentId) : '';
+    const deptFilter: Prisma.PipelineWhereInput = { AND: [scope, dept ? { departmentId: dept } : { departmentId: { not: null } }] };
+    const months = Math.min(Math.max(Number(req.query.months) || 6, 1), 24);
+    const mode = req.query.mode === 'cohort' ? 'cohort' : 'event';
+
+    // Meses no horário de Brasília (o servidor roda em UTC, 3h à frente).
+    const monthKey = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit' }).format(d);
+    const [cy, cm] = monthKey(new Date()).split('-').map(Number);
+    const starts: Date[] = [];
+    for (let i = months - 1; i >= 0; i--) {
+      const y = cy + Math.floor((cm - 1 - i) / 12);
+      const m = ((cm - 1 - i) % 12 + 12) % 12 + 1;
+      starts.push(new Date(`${y}-${String(m).padStart(2, '0')}-01T00:00:00-03:00`));
+    }
+    const from = starts[0];
+
+    const leadScope = { accountId, pipeline: deptFilter };
+    const [created, approvalNotes, entries, lostNotes] = await Promise.all([
+      prisma.lead.findMany({ where: { ...leadScope, createdAt: { gte: from } }, select: { id: true, createdAt: true, status: true } }),
+      prisma.note.findMany({
+        where: { OR: [{ content: { contains: '→ "Aprovado Pr' } }, { content: { contains: '→ "Aguardando Documenta' } }], lead: { is: leadScope } },
+        select: { leadId: true, createdAt: true },
+      }),
+      contractEntries(accountId, deptFilter),
+      prisma.note.findMany({
+        where: { OR: [{ content: { contains: 'funil "Perdidos"' } }, { content: { contains: 'Status alterado para "Perdido"' } }], lead: { is: { ...leadScope, status: 'LOST' } } },
+        select: { leadId: true, createdAt: true },
+      }),
+    ]);
+    // Aprovado = primeira aprovação registrada; quem foi direto pra
+    // contratação sem essa nota conta como aprovado na entrada da contratação.
+    const approvedAt = new Map<string, Date>();
+    for (const n of approvalNotes) if (!approvedAt.has(n.leadId) || n.createdAt < approvedAt.get(n.leadId)!) approvedAt.set(n.leadId, n.createdAt);
+    for (const [leadId, d] of entries) if (!approvedAt.has(leadId) || d < approvedAt.get(leadId)!) approvedAt.set(leadId, d);
+    // Está hoje em etapa de aprovado sem registro (movido antes do histórico):
+    // usa a data em que entrou na etapa atual.
+    const approvedNow = await prisma.lead.findMany({
+      where: { ...leadScope, id: { notIn: [...approvedAt.keys()] }, stage: { OR: [{ name: { startsWith: 'Aprovado Pr' } }, { name: { startsWith: 'Aguardando Documenta' } }] } },
+      select: { id: true, stageEnteredAt: true, createdAt: true },
+    });
+    for (const l of approvedNow) approvedAt.set(l.id, l.stageEnteredAt || l.createdAt);
+    const lostAt = new Map<string, Date>();
+    for (const n of lostNotes) if (!lostAt.has(n.leadId) || n.createdAt > lostAt.get(n.leadId)!) lostAt.set(n.leadId, n.createdAt);
+
+    const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) || 0) + 1);
+    const cEntered = new Map<string, number>();
+    const cApproved = new Map<string, number>();
+    const cDocs = new Map<string, number>();
+    const cLost = new Map<string, number>();
+    for (const l of created) bump(cEntered, monthKey(l.createdAt));
+    if (mode === 'event') {
+      for (const d of approvedAt.values()) bump(cApproved, monthKey(d));
+      for (const d of entries.values()) bump(cDocs, monthKey(d));
+      for (const d of lostAt.values()) bump(cLost, monthKey(d));
+    } else {
+      for (const l of created) {
+        const k = monthKey(l.createdAt);
+        if (approvedAt.has(l.id)) bump(cApproved, k);
+        if (entries.has(l.id)) bump(cDocs, k);
+        if (l.status === 'LOST') bump(cLost, k);
+      }
+    }
+
+    const rows = starts.map((d) => {
+      const k = monthKey(d);
+      return {
+        month: k,
+        label: d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'America/Sao_Paulo' }),
+        entered: cEntered.get(k) || 0,
+        approved: cApproved.get(k) || 0,
+        docsSent: cDocs.get(k) || 0,
+        lost: cLost.get(k) || 0,
+      };
+    }).reverse();
+    res.json({ rows, mode, historySince: '2026-08-31' });
+  } catch (err: any) {
+    console.error('[Relatório mensal]', err?.message);
+    res.status(500).json({ error: 'Erro ao gerar o relatório mensal' });
   }
 });
 
