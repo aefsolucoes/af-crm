@@ -13,6 +13,24 @@ function pipelineDeptFilter(scopeDepartmentIds: string[]): Prisma.PipelineWhereI
   return scopeDepartmentIds.length ? { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } : {};
 }
 
+/** Conversão do Fabio: cliente que ENVIOU A DOCUMENTAÇÃO (foi pra "Fechado"
+ *  → funil de contratação) — não o status "Ganho". Estar em "Em contratação"
+ *  ou "Concluído" conta; a data de entrada vem da nota de "Fechado" ou da
+ *  migração pro funil de contratação (a mais antiga). */
+const CONTRACT_PIPELINE: Prisma.PipelineWhereInput = { OR: [{ name: { startsWith: 'Em contrata' } }, { name: 'Concluído' }] };
+async function contractEntries(accountId: string, deptFilter: Prisma.PipelineWhereInput): Promise<Map<string, Date>> {
+  const notes = await prisma.note.findMany({
+    where: {
+      OR: [{ content: { contains: '→ "Fechado"' } }, { content: { contains: 'funil "Em contrata' } }],
+      lead: { is: { accountId, pipeline: deptFilter } },
+    },
+    select: { leadId: true, createdAt: true },
+  });
+  const first = new Map<string, Date>();
+  for (const n of notes) if (!first.has(n.leadId) || n.createdAt < first.get(n.leadId)!) first.set(n.leadId, n.createdAt);
+  return first;
+}
+
 router.get('/summary', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
@@ -29,7 +47,21 @@ router.get('/summary', async (req: AuthRequest, res: Response) => {
     ]);
 
     const totalRevenue = wonLeads.reduce((sum, l) => sum + (l.value || 0), 0);
-    const conversionRate = totalLeads > 0 ? (wonLeads.length / totalLeads) * 100 : 0;
+
+    // Documentação enviada (conversão) e perdidos — total e no mês.
+    const [docsSent, lost, entries, lostNotes] = await Promise.all([
+      prisma.lead.count({ where: { accountId, pipeline: { AND: [deptFilter, CONTRACT_PIPELINE] } } }),
+      prisma.lead.count({ where: { accountId, status: 'LOST', pipeline: deptFilter } }),
+      contractEntries(accountId, deptFilter),
+      prisma.note.findMany({
+        where: { content: { contains: 'funil "Perdidos"' }, createdAt: { gte: startOfMonth }, lead: { is: { accountId, status: 'LOST', pipeline: deptFilter } } },
+        select: { leadId: true },
+        distinct: ['leadId'],
+      }),
+    ]);
+    const docsSentMonth = [...entries.values()].filter((d) => d >= startOfMonth).length;
+    const lostMonth = lostNotes.length;
+    const conversionRate = totalLeads > 0 ? (docsSent / totalLeads) * 100 : 0;
 
     // Monthly revenue for last 6 months
     const monthlyRevenue = [];
@@ -45,7 +77,7 @@ router.get('/summary', async (req: AuthRequest, res: Response) => {
       });
     }
 
-    res.json({ totalRevenue, newLeads, conversionRate: Math.round(conversionRate), totalLeads, monthlyRevenue });
+    res.json({ totalRevenue, newLeads, conversionRate: Math.round(conversionRate * 10) / 10, totalLeads, monthlyRevenue, docsSent, docsSentMonth, lost, lostMonth });
   } catch {
     res.status(500).json({ error: 'Erro ao gerar relatório' });
   }
@@ -77,19 +109,19 @@ router.get('/conversion', async (req: AuthRequest, res: Response) => {
       revenue: u.leads.reduce((s, l) => s + (l.value || 0), 0),
     })).sort((a, b) => b.revenue - a.revenue);
 
-    // Weekly conversion for last 8 weeks
+    // Conversão semanal (8 semanas): clientes que enviaram a documentação
+    // na semana ÷ leads novos da semana.
     const now = new Date();
+    const entries = await contractEntries(accountId, deptFilter);
     const weeklyData = [];
     for (let i = 7; i >= 0; i--) {
-      const start = new Date(now.getTime() - i * 7 * 86400000);
-      const end = new Date(now.getTime() - (i - 1) * 7 * 86400000);
-      const [total, won] = await Promise.all([
-        prisma.lead.count({ where: { accountId, createdAt: { gte: start, lt: end }, pipeline: deptFilter } }),
-        prisma.lead.count({ where: { accountId, status: 'WON', createdAt: { gte: start, lt: end }, pipeline: deptFilter } }),
-      ]);
+      const start = new Date(now.getTime() - (i + 1) * 7 * 86400000);
+      const end = new Date(now.getTime() - i * 7 * 86400000);
+      const total = await prisma.lead.count({ where: { accountId, createdAt: { gte: start, lt: end }, pipeline: deptFilter } });
+      const converted = [...entries.values()].filter((d) => d >= start && d < end).length;
       weeklyData.push({
         week: `S${8 - i}`,
-        rate: total > 0 ? Math.round((won / total) * 100) : 0,
+        rate: total > 0 ? Math.round((converted / total) * 1000) / 10 : 0,
       });
     }
 

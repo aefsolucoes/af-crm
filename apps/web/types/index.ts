@@ -245,6 +245,11 @@ export interface ReportSummary {
   conversionRate: number;
   totalLeads: number;
   monthlyRevenue: { month: string; revenue: number }[];
+  /** Clientes que enviaram a documentação (Em contratação + Concluído) — a conversão. */
+  docsSent?: number;
+  docsSentMonth?: number;
+  lost?: number;
+  lostMonth?: number;
 }
 
 export interface ReportConversion {

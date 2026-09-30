@@ -7,7 +7,7 @@ import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { ReportSummary, ReportConversion, Task, Conversation } from '@/types';
 import api from '@/lib/api';
 import { formatCurrency, formatDate, isOverdue, cn } from '@/lib/utils';
-import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download, AlertCircle, MessageCircle, Plus, Inbox, FileCheck, Palette } from 'lucide-react';
+import { TrendingUp, Users, Target, Clock, Trophy, Calendar, Download, AlertCircle, MessageCircle, Plus, Inbox, FileCheck, Palette, XCircle } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MorningReport } from '@/components/dashboard/morning-report';
 import { NotesBoard } from '@/components/dashboard/notes-board';
@@ -171,14 +171,18 @@ export default function DashboardPage() {
         </div>
 
         {/* KPIs de performance */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Conversão = cliente que enviou a documentação (foi pra "Fechado" →
+            contratação) — pedido do Fabio; não é o status "Ganho". */}
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
           {isLoading ? (
-            [1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-28" />)
+            [1, 2, 3, 4, 5, 6].map((i) => <Skeleton key={i} className="h-28" />)
           ) : (
             <>
-              <KpiCard title="Receita Total" value={formatCurrency(summary?.totalRevenue)} subtitle="Leads ganhos" icon={TrendingUp} color="#10b981" />
               <KpiCard title="Novos Leads" value={String(summary?.newLeads || 0)} subtitle="Este mês" icon={Users} color="#2261a8" />
-              <KpiCard title="Conversão" value={`${summary?.conversionRate || 0}%`} subtitle="Taxa geral" icon={Target} color="#8b5cf6" />
+              <KpiCard title="Documentação enviada" value={String(summary?.docsSent || 0)} subtitle={`${summary?.docsSentMonth || 0} este mês · em contratação/concluídos`} icon={FileCheck} color="#10b981" />
+              <KpiCard title="Perdidos" value={String(summary?.lost || 0)} subtitle={`${summary?.lostMonth || 0} este mês`} icon={XCircle} color="#ef4444" />
+              <KpiCard title="Conversão" value={`${String(summary?.conversionRate || 0).replace('.', ',')}%`} subtitle="Documentação enviada ÷ total de leads" icon={Target} color="#8b5cf6" />
+              <KpiCard title="Receita Total" value={formatCurrency(summary?.totalRevenue)} subtitle="Leads ganhos" icon={TrendingUp} color="#10b981" />
               <KpiCard title="Total de Leads" value={String(summary?.totalLeads || 0)} subtitle="Na base" icon={Clock} color="#f59e0b" />
             </>
           )}
