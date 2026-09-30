@@ -89,7 +89,13 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
   return holder ? { type, holder } : { type };
 }
 
+/** Documento do imóvel (vai pra subpasta IMOVEL; sem nome de pessoa no arquivo). */
+export function isPropertyDocType(type: string): boolean {
+  return /IMOVEL|MATRICULA|ONUS|IPTU|ESCRITURA|HABITE|PLANTA|LAUDO|AVALIACAO|VISTORIA|CONDOMINIO|ITBI|COMPRA E VENDA|PROMESSA|VINTENARIA|INTEIRO TEOR|MEMORIAL|AVERBACAO|REGISTRO DE IMOVEIS/.test(type);
+}
+
 export function docLabel(info: DocInfo): string {
+  if (isPropertyDocType(info.type)) return info.type;
   return info.holder ? `${info.type} ${info.holder.split(' ').slice(0, 2).join(' ')}` : info.type;
 }
 
@@ -154,6 +160,10 @@ async function organizeLead(lead: {
       if (info === null) return null;
       return info ? docLabel(info) : '';
     },
+    isPropertyDoc: async (f) => {
+      const info = docInfo[attIdByDriveId.get(f.driveFileId) || ''];
+      return !!info && isPropertyDocType(info.type);
+    },
   });
 
   cf.link_pasta_drive = result.folderUrl;
@@ -165,8 +175,11 @@ async function organizeLead(lead: {
     `📁 Pasta organizada no Drive: ${clientFolderName} (em LEADS ATIVOS)`,
     result.folderUrl,
     '',
-    `Documentos na subpasta COMPRADOR (${result.named.length}):`,
-    ...result.named.map((n) => `• ${n.to}`),
+    `Documentos na subpasta COMPRADOR (${result.named.filter((n) => n.folder === 'COMPRADOR').length}):`,
+    ...result.named.filter((n) => n.folder === 'COMPRADOR').map((n) => `• ${n.to}`),
+    ...(result.named.some((n) => n.folder === 'IMOVEL')
+      ? ['', `Documentos do imóvel na subpasta IMOVEL (${result.named.filter((n) => n.folder === 'IMOVEL').length}):`, ...result.named.filter((n) => n.folder === 'IMOVEL').map((n) => `• ${n.to}`)]
+      : []),
   ];
   if (result.ignored.length) lines.push('', `Não são documentos, ficaram fora da COMPRADOR: ${result.ignored.join(', ')}`);
   await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: lines.join('\n') } });

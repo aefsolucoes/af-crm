@@ -341,7 +341,10 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   clientFolderName: string;
   activeLeadsFolderId: string;
   nameFor: (file: ReceivedDocFile) => Promise<string | null>;
-}): Promise<{ folderId: string; folderUrl: string; named: { from: string; to: string }[]; ignored: string[] }> {
+  /** Documento do imóvel (matrícula, ônus, IPTU...) vai pra subpasta IMOVEL
+   *  em vez de COMPRADOR (Fabio 30/09). */
+  isPropertyDoc?: (file: ReceivedDocFile) => Promise<boolean>;
+}): Promise<{ folderId: string; folderUrl: string; named: { from: string; to: string; folder: 'COMPRADOR' | 'IMOVEL' }[]; ignored: string[] }> {
   const drive = await getDrive(accountId);
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
 
@@ -362,7 +365,7 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   let clientFolderId = [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   if (clientFolderId) {
     const meta = await drive.files.get({ fileId: clientFolderId, fields: 'id, name, parents', supportsAllDrives: true });
-    if (/^comprador$/i.test((meta.data.name || '').trim())) clientFolderId = meta.data.parents?.[0] || null;
+    if (/^(comprador|imovel|imóvel)$/i.test((meta.data.name || '').trim())) clientFolderId = meta.data.parents?.[0] || null;
   }
   // Anexos soltos direto na pasta técnica (ou na raiz): cria a pasta do
   // cliente do zero em vez de renomear a pasta de todo mundo.
@@ -383,8 +386,9 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   });
 
   const comprador = await createFolder(accountId, 'COMPRADOR', clientFolderId);
+  let imovel: { id: string } | null = null; // só cria se tiver documento do imóvel
   const used = new Map<string, number>();
-  const named: { from: string; to: string }[] = [];
+  const named: { from: string; to: string; folder: 'COMPRADOR' | 'IMOVEL' }[] = [];
   const ignored: string[] = [];
   for (const { file, parents } of withParents) {
     const base = await params.nameFor(file).catch(() => undefined);
@@ -396,16 +400,19 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
       used.set(base, n);
       name = `${base}${n > 1 ? ` ${n}` : ''}${ext}`;
     }
-    const removeParents = parents.filter((p) => p !== comprador.id).join(',');
+    const property = params.isPropertyDoc ? await params.isPropertyDoc(file).catch(() => false) : false;
+    if (property && !imovel) imovel = await createFolder(accountId, 'IMOVEL', clientFolderId);
+    const target = property && imovel ? imovel.id : comprador.id;
+    const removeParents = parents.filter((p) => p !== target).join(',');
     await drive.files.update({
       fileId: file.driveFileId,
-      addParents: comprador.id,
+      addParents: target,
       ...(removeParents ? { removeParents } : {}),
       requestBody: { name },
       fields: 'id',
       supportsAllDrives: true,
     });
-    named.push({ from: file.fileName, to: name });
+    named.push({ from: file.fileName, to: name, folder: property ? 'IMOVEL' : 'COMPRADOR' });
   }
 
   return { folderId: clientFolderId, folderUrl: folderLink(clientFolderId), named, ignored };
