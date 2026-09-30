@@ -1211,6 +1211,16 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
               await maybeAiAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
             }
           }
+        } else if (formAlreadyAcknowledged) {
+          // Proposta já confirmada ("Recebi sua proposta…"): a IA só confere os
+          // números e, se algo não fecha (ex.: saldo devedor = valor do imóvel),
+          // pergunta se o preenchimento está correto — Fabio 30/09 (Mayara).
+          // Espera a automação da Pré-Análise mandar o "Recebi…" e ligar a IA.
+          const reviewText = `[PROPOSTA RECEBIDA]\n${text}`;
+          setTimeout(() => {
+            maybeAiAutoReplyCloudApi(accountId, leadId, reviewText, from, io, departmentId)
+              .catch((e: any) => console.error('[Formulário] Conferência da proposta falhou:', e?.message));
+          }, 8000);
         }
       }
     }

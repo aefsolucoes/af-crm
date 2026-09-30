@@ -243,6 +243,13 @@ DOCUMENTOS: quando for a hora de pedir a documentação — pré-análise já ap
 - HOME EQUITY — DOCUMENTOS DO IMÓVEL: se, na hora dos documentos do imóvel (certidão de ônus reais, CND de IPTU), o cliente ainda estiver em dúvida sobre a situação do imóvel (não sabe se tem matrícula, se está registrado ou regularizado, se a certidão vai sair), não tente resolver nem explicar por conta própria: não responda sobre isso ("noReply": true, sem "vou verificar") e leve a dúvida pra equipe em "askTeam", com o que o cliente disse sobre o imóvel.
 - Durante a pré-análise, se o cliente perguntar do resultado: diga que a análise está em andamento e que avisa por aqui assim que sair — nunca adiante aprovação.`;
 
+// Proposta recém-chegada (Fabio 30/09, Mayara: imóvel de R$ 180 mil com
+// R$ 180 mil de saldo devedor — a IA já podia ter questionado).
+const PROPOSAL_REVIEW_RULES = `PROPOSTA RECEBIDA — quando a mensagem começar com "[PROPOSTA RECEBIDA]", é o formulário que o cliente acabou de enviar; o CRM JÁ confirmou o recebimento ("Recebi sua proposta... vou fazer a pré-análise") — não repita isso nem agradeça de novo.
+- Confira os números com os critérios da Base de Conhecimento (ex.: Home Equity — crédito mínimo de R$ 50 mil; saldo devedor / valor que falta pra quitar comparado com 60% do valor do imóvel; restrição no nome no Financiamento Habitacional; renda muito baixa pro valor pedido).
+- Se algum dado indicar que a operação não fecha, ou parecer erro de preenchimento (ex.: saldo devedor igual ou maior que o valor do imóvel, crédito abaixo do mínimo, valor fora de escala), pergunte ao cliente em 1-2 frases SE O PREENCHIMENTO ESTÁ CORRETO, citando o dado — ex.: "Vi que você colocou que o imóvel vale R$ 180 mil e que faltam R$ 180 mil pra quitar. O preenchimento está correto?". Se ajudar, explique o critério em poucas palavras. NUNCA diga que foi reprovado nem que não dá.
+- Se estiver tudo coerente, "noReply": true (a pré-análise segue normal).`;
+
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
 - Se o "ok" responder uma pergunta sua de sim/não (ex.: "posso te mandar a lista de documentos?"), trate como "sim" e siga normalmente, com noReply false.
 - Nunca repita uma confirmação que você já deu na conversa (ex.: dizer de novo "vou seguir com a análise e te retorno").`;
@@ -348,6 +355,8 @@ ${MARK_LOST_RULES}
 ${STOP_FOLLOWUP_RULES}
 
 ${FORM_FIRST_RULES}
+
+${PROPOSAL_REVIEW_RULES}
 
 ${NO_REPLY_RULES}
 
