@@ -514,7 +514,7 @@ export default function AutomacaoPage() {
                         showMensagemRecebida={form.trigger === 'MESSAGE_RECEIVED'}
                       />
                       <p className="text-xs text-slate-400">
-                        Vai pro e-mail cadastrado no card do cliente. Sem e-mail cadastrado (ou se o envio falhar), as ações seguintes desta regra não rodam pra esse lead — evita mover estágio/gravar nota como se tivesse enviado quando não enviou.
+                        Sai pelo e-mail do comercial@ (com a assinatura) pro e-mail cadastrado no card do cliente e aparece na conversa dele. Sem e-mail cadastrado (ou se o envio falhar), as ações seguintes desta regra não rodam pra esse lead — evita mover estágio/gravar nota como se tivesse enviado quando não enviou.
                       </p>
                     </div>
                   )}
