@@ -5,6 +5,7 @@ import { Topbar } from '@/components/ui/topbar';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
+import { Pipeline } from '@/types';
 import { Upload, FileSpreadsheet, ArrowRight, ArrowLeft, AlertTriangle, CheckCircle2, X, Users, Building2 } from 'lucide-react';
 
 type Step = 'upload' | 'mapping' | 'review' | 'done';
@@ -61,9 +62,26 @@ export default function ImportarPage() {
   // de um setor (ex: importar uma leva de Consórcio separada de Financiamento).
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
   const [departmentId, setDepartmentId] = useState('');
+  // Funil + estágio de destino (Fabio 30/09) e a etiqueta dos importados.
+  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
+  const [pipelineId, setPipelineId] = useState('');
+  const [stageId, setStageId] = useState('');
+  const [tag, setTag] = useState('Kommo');
   useEffect(() => {
     api.get('/api/departments').then(({ data }) => setDepartments(data)).catch(() => {});
+    api.get('/api/pipelines').then(({ data }) => setPipelines(data)).catch(() => {});
   }, []);
+  const pipelineOptions = pipelines.filter((p) => (departmentId ? p.department?.id === departmentId : !p.department));
+  const stageOptions = [...(pipelines.find((p) => p.id === pipelineId)?.stages || [])].sort((a, b) => a.order - b.order);
+  // Troca de setor/funil: cai no primeiro funil/estágio da nova escolha.
+  useEffect(() => {
+    if (!pipelineOptions.some((p) => p.id === pipelineId)) setPipelineId(pipelineOptions[0]?.id || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [departmentId, pipelines]);
+  useEffect(() => {
+    if (!stageOptions.some((st) => st.id === stageId)) setStageId(stageOptions[0]?.id || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pipelineId, pipelines]);
 
   function resetAll() {
     setStep('upload');
@@ -169,6 +187,9 @@ export default function ImportarPage() {
       const { data } = await api.post('/api/import/commit', {
         rows: reviewRows.map(({ idx, duplicateOf, ...rest }) => rest),
         departmentId: departmentId || undefined,
+        pipelineId: pipelineId || undefined,
+        stageId: stageId || undefined,
+        tag: tag.trim() || undefined,
       });
       setResult({ created: data.created, skipped: data.skipped });
       setStep('done');
@@ -285,22 +306,50 @@ export default function ImportarPage() {
                     <span>Linhas com um possível cliente já cadastrado (mesmo telefone ou CPF) vêm marcadas como &quot;Pular&quot; por padrão. Desmarque para importar mesmo assim.</span>
                   </div>
                 )}
-                {departments.length > 0 && (
-                  <div className="flex items-center gap-2 pt-1">
-                    <Building2 size={14} className="text-slate-400 flex-shrink-0" />
-                    <label className="text-xs text-slate-500 flex-shrink-0">Importar para o setor:</label>
-                    <select
-                      value={departmentId}
-                      onChange={(e) => setDepartmentId(e.target.value)}
-                      className="text-xs border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent"
-                    >
-                      <option value="">Caixa de Entrada geral (sem setor)</option>
-                      {departments.map((d) => (
-                        <option key={d.id} value={d.id}>{d.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <Building2 size={14} className="text-slate-400 flex-shrink-0" />
+                  <label className="text-xs text-slate-500 flex-shrink-0">Importar para:</label>
+                  <select
+                    value={departmentId}
+                    onChange={(e) => setDepartmentId(e.target.value)}
+                    title="Setor"
+                    className="text-xs border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent"
+                  >
+                    <option value="">Caixa de Entrada (sem setor)</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={pipelineId}
+                    onChange={(e) => setPipelineId(e.target.value)}
+                    title="Funil"
+                    className="text-xs border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent"
+                  >
+                    {pipelineOptions.length === 0 && <option value="">Funil padrão</option>}
+                    {pipelineOptions.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={stageId}
+                    onChange={(e) => setStageId(e.target.value)}
+                    title="Estágio"
+                    className="text-xs border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent"
+                  >
+                    {stageOptions.length === 0 && <option value="">Primeiro estágio</option>}
+                    {stageOptions.map((st) => (
+                      <option key={st.id} value={st.id}>{st.name}</option>
+                    ))}
+                  </select>
+                  <label className="text-xs text-slate-500 flex-shrink-0 ml-1">Etiqueta:</label>
+                  <input
+                    value={tag}
+                    onChange={(e) => setTag(e.target.value)}
+                    placeholder="Kommo"
+                    className="w-32 text-xs border border-af-border rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-af-accent"
+                  />
+                </div>
               </div>
               <div className="max-h-[420px] overflow-y-auto scrollbar-thin border-t border-af-border">
                 <table className="w-full text-sm">

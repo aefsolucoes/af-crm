@@ -104,11 +104,27 @@ router.post('/commit', async (req: AuthRequest, res: Response) => {
       if (!dept) return res.status(400).json({ error: 'Departamento inválido' });
     }
 
-    const pipeline = await getOrCreateWhatsAppPipeline(accountId, departmentId);
-    if (!pipeline.stages.length) {
-      return res.status(500).json({ error: 'Não foi possível encontrar/criar um estágio de destino para os leads importados' });
+    // Funil + estágio escolhidos na tela (Fabio 30/09: lista do Kommo pra
+    // remarketing). Sem escolha: primeiro estágio da Caixa de Entrada do setor.
+    let pipelineId: string;
+    let stageId: string;
+    if (req.body.stageId) {
+      const stage = await prisma.stage.findFirst({
+        where: { id: String(req.body.stageId), pipeline: { accountId, ...(req.body.pipelineId ? { id: String(req.body.pipelineId) } : {}) } },
+        select: { id: true, pipelineId: true },
+      });
+      if (!stage) return res.status(400).json({ error: 'Funil/estágio inválido' });
+      pipelineId = stage.pipelineId;
+      stageId = stage.id;
+    } else {
+      const pipeline = await getOrCreateWhatsAppPipeline(accountId, departmentId);
+      if (!pipeline.stages.length) {
+        return res.status(500).json({ error: 'Não foi possível encontrar/criar um estágio de destino para os leads importados' });
+      }
+      pipelineId = pipeline.id;
+      stageId = pipeline.stages[0].id;
     }
-    const stageId = pipeline.stages[0].id;
+    const tag = typeof req.body.tag === 'string' && req.body.tag.trim() ? req.body.tag.trim().slice(0, 40) : 'Kommo';
 
     let created = 0;
     let skipped = 0;
@@ -136,12 +152,12 @@ router.post('/commit', async (req: AuthRequest, res: Response) => {
         data: {
           name: nome,
           accountId,
-          pipelineId: pipeline.id,
+          pipelineId,
           stageId,
           userId,
           contactId: contact.id,
           status: 'OPEN',
-          tags: ['Kommo'],
+          tags: [tag],
           customFields: customFields as any,
         },
       });
