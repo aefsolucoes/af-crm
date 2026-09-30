@@ -151,9 +151,11 @@ export function LeadDetailModal({ leadId, onClose }: LeadDetailModalProps) {
                 <LeadHeaderActions lead={lead} onStageChange={handleRefresh} onArchived={handleArchived} />
                 <LeadSidebar lead={lead} onRefresh={handleRefresh} className="w-auto flex-1 border-r-0" />
               </div>
-              <div className="w-72 flex-shrink-0 border-l border-af-border overflow-hidden flex flex-col">
+              {/* Coluna rola inteira quando o painel de cima + tarefas/notas
+                  não cabem na altura do modal (antes cortava o Salvar da nota). */}
+              <div className="w-72 flex-shrink-0 border-l border-af-border overflow-y-auto scrollbar-thin flex flex-col">
                 <LeadMetaPanel lead={lead} onRefresh={handleRefresh} />
-                <div className="flex-1 min-h-0">
+                <div className="flex-1 min-h-[380px]">
                   <LeadTasks tasks={lead.tasks} notes={lead.notes} leadId={lead.id} onRefresh={handleRefresh} />
                 </div>
               </div>

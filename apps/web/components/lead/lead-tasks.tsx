@@ -195,6 +195,7 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
             </Button>
           </div>
 
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
           {showTaskForm && (
             <form onSubmit={handleCreateTask} className="px-4 py-3 bg-af-light border-b border-af-border space-y-2">
               <input
@@ -216,7 +217,7 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
             </form>
           )}
 
-          <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div>
             {pending.map(task => {
               const overdue = isOverdue(task.dueAt);
               return (
@@ -271,6 +272,7 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
               </div>
             )}
           </div>
+          </div>
         </div>
       )}
 
@@ -285,6 +287,10 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
             </Button>
           </div>
 
+          {/* Formulário e lista rolam juntos — antes o formulário ficava fora
+              da rolagem e, com a coluna curta (Detalhe do Lead no Funil), o
+              botão Salvar ficava escondido embaixo (Fabio 30/09). */}
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
           {showNoteForm && (
             <div className="px-4 py-3 bg-af-light border-b border-af-border space-y-2">
               <div className="flex gap-1.5 flex-wrap">
@@ -303,9 +309,11 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
                 ))}
               </div>
               <textarea
+                autoFocus
                 value={noteContent}
                 onChange={e => setNoteContent(e.target.value)}
-                placeholder="Escreva sua nota aqui..."
+                onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleAddNote(); } }}
+                placeholder="Escreva sua nota aqui... (Ctrl/⌘ + Enter salva)"
                 className="w-full px-3 py-2 text-xs border border-af-border rounded-lg bg-white resize-none focus:outline-none focus:ring-2 focus:ring-af-accent"
                 rows={4}
               />
@@ -316,7 +324,7 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-3 space-y-3">
+          <div className="px-4 py-3 space-y-3">
             {manualNotes.map(note => (
               <div key={note.id} className="group bg-white border border-af-border rounded-xl p-3 shadow-sm">
                 <div className="flex items-center justify-between mb-2">
@@ -403,6 +411,7 @@ export function LeadTasks({ tasks, notes, leadId, onRefresh }: LeadTasksProps) {
                 <span>Nenhuma nota</span>
               </div>
             )}
+          </div>
           </div>
         </div>
       )}
