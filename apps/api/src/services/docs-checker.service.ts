@@ -27,8 +27,11 @@ function norm(s: string): string {
 type Io = Parameters<typeof moveLeadToContracting>[2];
 
 export async function scheduleDocsCheck(accountId: string, leadId: string, io: Io): Promise<void> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, stage: { select: { name: true } } } });
-  if (!lead?.aiAutoReplyActive || !norm(lead.stage.name).includes('aguardando documentacao')) return;
+  // Roda com a IA ligada OU desligada (Fabio 29/09: o Ângelo mandou os
+  // documentos depois que ele respondeu pela Inbox — a IA estava desligada,
+  // ninguém conferiu, o card não andou e a pasta no Drive não foi criada).
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { stage: { select: { name: true } } } });
+  if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return;
   const previous = pending.get(leadId);
   if (previous) clearTimeout(previous);
   pending.set(leadId, setTimeout(() => {
@@ -128,14 +131,26 @@ ${history}`;
 }
 
 async function checkDocsComplete(accountId: string, leadId: string, io: Io): Promise<void> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, stage: { select: { name: true } } } });
-  if (!lead || !lead.aiAutoReplyActive || !norm(lead.stage.name).includes('aguardando documentacao')) return;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
+  if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return;
 
   const verdict = await evaluateDocs(accountId, leadId);
   if (!verdict) return;
+  // Marca até quando já conferiu (a repescagem só volta se chegar arquivo novo).
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...(((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as any) || {}), _docsCheckedAt: new Date().toISOString() } as any } }).catch(() => {});
   const { receivedText } = verdict;
   if (!verdict.complete) {
     console.log(`[Docs] ${lead.name} (${leadId}): ainda falta — ${verdict.faltando.join('; ') || 'sem detalhe'}`);
+    // IA desligada: quem conversa é a equipe — deixa no card o que falta
+    // (só quando a lista muda, pra não encher de nota a cada arquivo).
+    if (!lead.aiAutoReplyActive && verdict.faltando.length) {
+      const resumo = verdict.faltando.join('; ');
+      const cf = (lead.customFields || {}) as Record<string, unknown>;
+      if (cf._docsFaltando !== resumo) {
+        await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docsFaltando: resumo } as any } });
+        await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA conferiu os documentos recebidos (lista "${verdict.listaUsada || '?'}"). Ainda falta:\n- ${verdict.faltando.join('\n- ')}` } }).catch(() => {});
+      }
+    }
     return;
   }
 
@@ -144,8 +159,12 @@ async function checkDocsComplete(accountId: string, leadId: string, io: Io): Pro
     console.warn(`[Docs] ${lead.name} (${leadId}): documentação completa, mas o funil de contratação do setor não foi encontrado`);
     return;
   }
-  const sent = await sendOutboundWhatsApp({ accountId, leadId, content: DOCS_COMPLETE_MESSAGE, io: io || undefined });
-  if (!sent.success) console.error(`[Docs] ${lead.name}: aviso ao cliente não foi enviado:`, sent.error);
+  // Com a IA desligada a equipe está conversando com o cliente — não manda
+  // o aviso automático por cima dela.
+  const sent = lead.aiAutoReplyActive
+    ? await sendOutboundWhatsApp({ accountId, leadId, content: DOCS_COMPLETE_MESSAGE, io: io || undefined })
+    : { success: false, error: 'IA desligada no card (a equipe avisa o cliente)' };
+  if (!sent.success && lead.aiAutoReplyActive) console.error(`[Docs] ${lead.name}: aviso ao cliente não foi enviado:`, sent.error);
 
   await prisma.note.create({
     data: {
@@ -155,7 +174,7 @@ async function checkDocsComplete(accountId: string, leadId: string, io: Io): Pro
         `🤖 A IA conferiu a documentação (lista "${verdict.listaUsada || '?'}") e considerou completa:`,
         receivedText,
         '',
-        `Card movido para "${moved.pipelineName}" (${moved.stageName}).${sent.success ? ' Cliente avisado de que o banco pode pedir algum documento a mais.' : ''}`,
+        `Card movido para "${moved.pipelineName}" (${moved.stageName}).${sent.success ? ' Cliente avisado de que o banco pode pedir algum documento a mais.' : lead.aiAutoReplyActive ? '' : ' Cliente NÃO foi avisado automaticamente (IA desligada no card) — avise pela conversa.'}`,
       ].join('\n'),
     },
   });
@@ -164,4 +183,24 @@ async function checkDocsComplete(accountId: string, leadId: string, io: Io): Pro
     summary: `conferiu a documentação completa e moveu pra "${moved.stageName}" (${moved.pipelineName})`,
   });
   console.log(`[Docs] ${lead.name} (${leadId}): documentação completa → ${moved.pipelineName} / ${moved.stageName}`);
+}
+
+/** Repescagem (a cada 30 min): card em "Aguardando Documentação" com arquivo
+ *  que chegou depois da última conferência — confere de novo. Cobre a IA fora
+ *  do ar (ex.: crédito da Anthropic acabou em 29/09) e cliente que mandou
+ *  tudo e não escreveu mais nada. */
+export async function sweepAwaitingDocs(io: Io): Promise<void> {
+  const leads = await prisma.lead.findMany({
+    where: { status: 'OPEN', stage: { name: { contains: 'Aguardando Documenta', mode: 'insensitive' } } },
+    select: { id: true, accountId: true, customFields: true },
+  });
+  for (const l of leads) {
+    const checkedAt = ((l.customFields || {}) as Record<string, unknown>)._docsCheckedAt as string | undefined;
+    const fresh = await prisma.messageAttachment.findFirst({
+      where: { leadId: l.id, ...(checkedAt ? { createdAt: { gt: new Date(checkedAt) } } : {}) },
+      select: { id: true },
+    });
+    if (!fresh) continue;
+    await checkDocsComplete(l.accountId, l.id, io).catch((err) => console.error(`[Docs] Repescagem ${l.id}:`, err?.message || err));
+  }
 }

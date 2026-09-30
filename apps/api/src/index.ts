@@ -284,6 +284,14 @@ httpServer.listen(PORT, () => {
     }, 2 * 60 * 1000);
   }, 2 * 60 * 1000);
 
+  // Repescagem da conferência de documentos (docs-checker.service.ts).
+  setTimeout(() => {
+    const { sweepAwaitingDocs } = require('./services/docs-checker.service') as typeof import('./services/docs-checker.service');
+    const run = () => sweepAwaitingDocs(io).catch((err: any) => console.error('[Docs] Repescagem:', err?.message));
+    run();
+    setInterval(run, 30 * 60 * 1000);
+  }, 3 * 60 * 1000);
+
   // Unificação automática de leads duplicados por TELEFONE (pedido real:
   // campanha cria o 1º card pelo webhook do site, cliente preenche a
   // proposta e manda pelo WhatsApp, criava um 2º card — causa raiz já
