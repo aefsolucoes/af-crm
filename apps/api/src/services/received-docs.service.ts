@@ -28,7 +28,7 @@ function folderNameFor(lead: { name: string; customFields: unknown }): string {
 }
 
 const DOC_PROMPT = `Este arquivo foi enviado por um cliente de crédito imobiliário (financiamento ou crédito com garantia de imóvel). Diga qual documento é.
-Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU, CERTIDAO DE ONUS, MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE.
+Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU, CERTIDAO DE ONUS, MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE, SIMULACAO.
 Se for outro documento, use um nome curto que o descreva (até 4 palavras).
 Depois do nome do documento, coloque " | " e o nome completo do titular como aparece no documento (a pessoa a quem ele pertence). Se não aparecer nome de pessoa, escreva só o nome do documento.
 Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
@@ -94,6 +94,30 @@ export function isPropertyDocType(type: string): boolean {
   return /IMOVEL|MATRICULA|ONUS|IPTU|ESCRITURA|HABITE|PLANTA|LAUDO|AVALIACAO|VISTORIA|CONDOMINIO|ITBI|COMPRA E VENDA|PROMESSA|VINTENARIA|INTEIRO TEOR|MEMORIAL|AVERBACAO|REGISTRO DE IMOVEIS/.test(type);
 }
 
+// Arquivo de simulação que a equipe manda pro cliente ("simulacao CAIXA.pdf",
+// "EVOLUCAO_PARCELAS_INTER_...pdf") — vai pra pasta principal, nome original.
+const SIMULATION_FILE_RE = /simula|evolu[cç][aã]o[ _-]*(das[ _-]*)?parcelas/i;
+
+// VENDEDOR só recebe documento pessoal (identificação, estado civil,
+// residência, certidões/procuração) — renda é sempre do comprador — e nunca
+// quando o "titular" é empresa/banco (ex.: extrato em nome da financeira).
+const SELLER_DOC_RE = /\b(RG|CNH|CPF|IDENTIDADE|CERTIDAO DE NASCIMENTO|CERTIDAO DE CASAMENTO|CERTIDAO NEGATIVA|CERTIDAO DE DEBITOS?|COMPROVANTE DE RESIDENCIA|PROCURACAO|PACTO ANTENUPCIAL|AVERBACAO DE DIVORCIO)\b/;
+const COMPANY_RE = /\b(S ?A|LTDA|EIRELI|ME|BANCO|CREDITO|FINANCIAMENTO|INVESTIMENTO|CAIXA ECONOMICA|COOPERATIVA|CONDOMINIO|PREFEITURA|CARTORIO)\b/;
+
+/** O titular do documento é um dos compradores do card? Mesmo primeiro nome
+ *  ou mesmo último sobrenome de um participante (cobre cônjuge/família).
+ *  Sem participante conhecido, assume que sim. */
+function isBuyerHolder(holder: string | undefined, buyers: string[]): boolean {
+  if (!holder || !buyers.length) return true;
+  const h = clean(holder, 80).split(' ').filter(Boolean);
+  if (!h.length) return true;
+  return buyers.some((b) => {
+    const w = clean(b, 80).split(' ').filter(Boolean);
+    if (!w.length) return false;
+    return h[0] === w[0] || (h[h.length - 1].length > 2 && h[h.length - 1] === w[w.length - 1]);
+  });
+}
+
 export function docLabel(info: DocInfo): string {
   if (isPropertyDocType(info.type)) return info.type;
   return info.holder ? `${info.type} ${info.holder.split(' ').slice(0, 2).join(' ')}` : info.type;
@@ -137,9 +161,24 @@ async function organizeLead(lead: {
     orderBy: { createdAt: 'asc' },
     select: { id: true, driveFileId: true, fileName: true, mimeType: true },
   })).filter((a) => !/^(audio|video)\//.test(a.mimeType));
-  const files = attachments.map((a) => ({ driveFileId: a.driveFileId!, fileName: a.fileName, mimeType: a.mimeType }));
+  // Simulações que a equipe mandou pro cliente também vão pra pasta (raiz).
+  const sentSimulations = (await prisma.messageAttachment.findMany({
+    where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'OUTBOUND' } },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, driveFileId: true, fileName: true, mimeType: true },
+  })).filter((a) => SIMULATION_FILE_RE.test(a.fileName));
+  const simulationDriveIds = new Set(sentSimulations.map((a) => a.driveFileId!));
+  const files = [...attachments, ...sentSimulations].map((a) => ({ driveFileId: a.driveFileId!, fileName: a.fileName, mimeType: a.mimeType }));
   const docInfo = await getDocInfo(lead.accountId, lead.id, attachments);
   const attIdByDriveId = new Map(attachments.map((a) => [a.driveFileId!, a.id]));
+
+  // Financiamento Habitacional tem VENDEDOR: documento pessoal de quem não é
+  // comprador do card (Fabio 30/09). Home Equity: só COMPRADOR + IMOVEL.
+  const dept = await prisma.lead.findUnique({ where: { id: lead.id }, select: { pipeline: { select: { department: { select: { name: true } } } } } });
+  const isHab = /habitacional/i.test(dept?.pipeline?.department?.name || '');
+  const cfLead = (lead.customFields || {}) as Record<string, unknown>;
+  const buyers = [cfLead.participante_1, cfLead.participante_2, ...String(lead.name || '').split('/')]
+    .map((x) => String(x || '').trim()).filter((x) => x && !x.startsWith('+'));
 
   const freshLead = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
   const cf = { ...((freshLead?.customFields as Record<string, unknown>) || {}) };
@@ -160,9 +199,14 @@ async function organizeLead(lead: {
       if (info === null) return null;
       return info ? docLabel(info) : '';
     },
-    isPropertyDoc: async (f) => {
+    folderFor: async (f) => {
+      if (simulationDriveIds.has(f.driveFileId) || SIMULATION_FILE_RE.test(f.fileName)) return 'RAIZ';
       const info = docInfo[attIdByDriveId.get(f.driveFileId) || ''];
-      return !!info && isPropertyDocType(info.type);
+      if (!info) return 'COMPRADOR';
+      if (/SIMULACAO/.test(info.type)) return 'RAIZ';
+      if (isPropertyDocType(info.type)) return 'IMOVEL';
+      if (isHab && SELLER_DOC_RE.test(info.type) && !COMPANY_RE.test(info.holder || '') && !isBuyerHolder(info.holder, buyers)) return 'VENDEDOR';
+      return 'COMPRADOR';
     },
   });
 
@@ -175,11 +219,12 @@ async function organizeLead(lead: {
     `📁 Pasta organizada no Drive: ${clientFolderName} (em LEADS ATIVOS)`,
     result.folderUrl,
     '',
-    `Documentos na subpasta COMPRADOR (${result.named.filter((n) => n.folder === 'COMPRADOR').length}):`,
-    ...result.named.filter((n) => n.folder === 'COMPRADOR').map((n) => `• ${n.to}`),
-    ...(result.named.some((n) => n.folder === 'IMOVEL')
-      ? ['', `Documentos do imóvel na subpasta IMOVEL (${result.named.filter((n) => n.folder === 'IMOVEL').length}):`, ...result.named.filter((n) => n.folder === 'IMOVEL').map((n) => `• ${n.to}`)]
-      : []),
+    ...(['COMPRADOR', 'VENDEDOR', 'IMOVEL', 'RAIZ'] as const).flatMap((f) => {
+      const list = result.named.filter((n) => n.folder === f);
+      if (!list.length) return [];
+      const title = f === 'RAIZ' ? `Simulações na pasta principal (${list.length}):` : `Subpasta ${f} (${list.length}):`;
+      return ['', title, ...list.map((n) => `• ${n.to}`)];
+    }),
   ];
   if (result.ignored.length) lines.push('', `Não são documentos, ficaram fora da COMPRADOR: ${result.ignored.join(', ')}`);
   await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: lines.join('\n') } });
