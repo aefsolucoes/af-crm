@@ -212,7 +212,17 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
     for (const lead of leads) {
       if (!norm(lead.stage.name).includes('documentacao recebida')) continue;
       const cf = (lead.customFields || {}) as Record<string, string>;
-      if (cf.link_pasta_drive || cf._driveOrganizedAt) continue;
+      if (cf.link_pasta_drive || cf._driveOrganizedAt) {
+        // Link colocado à mão: não mexe. Pasta montada antes (ex.: sob demanda,
+        // com documentação ainda incompleta): reorganiza só se chegou
+        // documento novo depois — senão os que faltavam ficavam fora da pasta.
+        if (!cf._driveOrganizedAt) continue;
+        const novo = await prisma.messageAttachment.findFirst({
+          where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(cf._driveOrganizedAt) } },
+          select: { id: true },
+        });
+        if (!novo) continue;
+      }
       if (cf._driveOrganizeFailedAt && Date.now() - new Date(cf._driveOrganizeFailedAt).getTime() < RETRY_AFTER_FAILURE_MS) continue;
 
       try {
@@ -228,4 +238,18 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
   } finally {
     running = false;
   }
+}
+
+/** Monta/atualiza a pasta do cliente no Drive agora, em qualquer etapa
+ *  (Fabio 30/09: "pode fazer a pasta do Ângelo" — documentação ainda
+ *  incompleta). Mesmo resultado do organizador automático. */
+export async function organizeLeadDocsNow(leadId: string): Promise<void> {
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: { id: true, name: true, accountId: true, customFields: true, pipeline: { select: { department: { select: { activeLeadsFolderId: true } } } } },
+  });
+  const folder = lead?.pipeline?.department?.activeLeadsFolderId;
+  if (!lead) throw new Error('Card não encontrado');
+  if (!folder) throw new Error('O setor desse card não tem a pasta LEADS ATIVOS configurada no Drive');
+  await organizeLead({ id: lead.id, name: lead.name, accountId: lead.accountId, customFields: lead.customFields, activeLeadsFolderId: folder });
 }
