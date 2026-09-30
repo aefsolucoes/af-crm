@@ -238,8 +238,8 @@ const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO
 DOCUMENTOS: quando for a hora de pedir a documentação — pré-análise já aprovada (etapa "Aprovado Pré-Analise" ou "Aguardando Documentação") ou o cliente perguntar quais documentos precisa:
 - Se a conversa JÁ TEM uma lista de documentos enviada pela equipe, use a MESMA lista (não mande outra diferente) — só lembre o que falta dela.
 - Senão, Home Equity pessoa física: mande a Resposta Rápida "Documentos Home Equity", fiel ao conteúdo, sem texto em volta. Financiamento Habitacional: a lista do perfil de renda do cliente. PJ: "Documentos comprador PJ" (regra acima).
-- Antes da pré-análise aprovada, não peça documentos (a proposta vem primeiro).
-- HOME EQUITY — DOCUMENTOS DO IMÓVEL: se, na hora dos documentos do imóvel (certidão de ônus reais, CND de IPTU), o cliente ainda estiver em dúvida sobre a situação do imóvel (não sabe se tem matrícula, se está registrado ou regularizado, se a certidão vai sair), não tente resolver nem explicar por conta própria: diga em uma frase que vai verificar isso e já retorna (ex.: "Vou verificar isso pra você e já te retorno.") e leve a dúvida pra equipe em "askTeam", com o que o cliente disse sobre o imóvel.
+- Antes da pré-análise aprovada, não peça documentos (a proposta vem primeiro). Se o card AINDA NÃO foi aprovado (etapa antes de "Aprovado Pré-Analise"/"Aguardando Documentação" — ex.: Prospecção, Follow Up, Pré-Análise) e o cliente perguntar quais documentos precisa: mande só a LISTA, SEM a frase de parabéns/aprovação que abre a Resposta Rápida, e diga em uma frase que a documentação entra depois da pré-análise aprovada — o primeiro passo é a proposta (mande o link se ele ainda não preencheu). NUNCA diga que foi aprovado ("Parabéns", "foi aprovado") se a etapa não é de aprovado.
+- HOME EQUITY — DOCUMENTOS DO IMÓVEL: se, na hora dos documentos do imóvel (certidão de ônus reais, CND de IPTU), o cliente ainda estiver em dúvida sobre a situação do imóvel (não sabe se tem matrícula, se está registrado ou regularizado, se a certidão vai sair), não tente resolver nem explicar por conta própria: não responda sobre isso ("noReply": true, sem "vou verificar") e leve a dúvida pra equipe em "askTeam", com o que o cliente disse sobre o imóvel.
 - Durante a pré-análise, se o cliente perguntar do resultado: diga que a análise está em andamento e que avisa por aqui assim que sair — nunca adiante aprovação.`;
 
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
@@ -383,7 +383,13 @@ ${conversasPorTelefone}` : ''}`;
     const raw = data.content?.find((b) => b.type === 'text')?.text?.trim() || '';
     if (!raw) return null;
 
-    return parseReply(raw);
+    const result = parseReply(raw);
+    // Trava: card que ainda não foi aprovado nunca recebe "parabéns, foi
+    // aprovado" (Berenice 30/09: pediu a lista de documentos na Prospecção e
+    // a IA mandou a Resposta Rápida inteira, que abre com a frase de aprovação).
+    const aprovado = /aprovad|aguardando document|document|contrata|conclu|fechad/i.test(ctx.etapaTexto.split('→').pop() || '');
+    if (!aprovado && result.reply) result.reply = stripApprovalClaims(result.reply);
+    return result;
   } catch (err) {
     console.error('[AI Auto-reply] Erro ao gerar resposta:', err);
     return null;
@@ -403,6 +409,18 @@ ${conversasPorTelefone}` : ''}`;
  *  cru. moveToStage/extractedFields são sempre opcionais e validados de
  *  verdade só em applyAiExtractedActions — aqui só extrai o que veio, sem
  *  confiar cegamente no formato. */
+/** Tira frases de "parabéns / foi aprovado" (Resposta Rápida de documentos
+ *  usada antes da aprovação). */
+export function stripApprovalClaims(text: string): string {
+  const out = text
+    .split('\n')
+    .map((line) => line.replace(/[^.!?\n]*(parab[ée]ns|foi aprovad|aprovad[oa] na pr[ée]-?\s?an[áa]lise)[^.!?\n]*[.!?]?\s*/gi, ''))
+    .join('\n')
+    .replace(/^\s+/, '')
+    .replace(/\n{3,}/g, '\n\n');
+  return out.trim() ? out.charAt(0).toUpperCase() + out.slice(1) : text;
+}
+
 function parseReply(raw: string): AiAutoReplyResult {
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) {
