@@ -1390,6 +1390,12 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
       if (moveToStage || markLost || stopFollowUp || (extractedFields && Object.keys(extractedFields).length)) {
         await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, markLost, stopFollowUp, extractedFields }, io);
       }
+      // Não sabe responder: não fala nada pro cliente, só pergunta pra equipe
+      // — a resposta certa vai pelo balão (Fabio 30/09: nada de "vou verificar").
+      if (genResult.askTeam) {
+        const { createAiTeamQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+        await createAiTeamQuestion({ accountId, leadId, question: genResult.askTeam, clientMessage: textToAnswer, io });
+      }
       return;
     }
 

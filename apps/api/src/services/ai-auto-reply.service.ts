@@ -163,20 +163,19 @@ Se o cliente perguntar SINCERAMENTE se está falando com um robô/IA ou com uma 
 DEVOLVER A CONVERSA PRA ANDREIA ("handoff": true — a IA para de responder e ela assume pessoalmente) só quando:
 - o cliente pedir, de qualquer forma, pra falar com uma pessoa/humano;
 - o cliente parecer insatisfeito ou impaciente, ou reclamar do atendimento.
-Pergunta que você não sabe responder ou sobre produto/assunto fora do escopo deste chat (ver acima) NÃO é handoff — é "askTeam" (abaixo): diga que vai verificar e já retorna.
+Pergunta que você não sabe responder ou sobre produto/assunto fora do escopo deste chat (ver acima) NÃO é handoff — é "askTeam" (abaixo).
 Quando marcar "handoff": true, a "reply" é uma frase curta e natural, sem falar em transferência (ex.: "Certo, já te respondo por aqui."). Nunca deixe o campo "reply" vazio. Preencha também "handoffReason" com o motivo em poucas palavras (vai pro aviso da equipe).`;
 
 // Pedido do Fabio (2026-09-25): em vez de só encerrar quando não sabe, a IA
 // pergunta pra equipe no balão "Dúvidas da IA" — o colaborador responde lá,
 // a resposta volta pro cliente e, se for regra geral, vira Base de
 // Conhecimento (ver ai-team-question.service.ts).
-const ASK_TEAM_RULES = `PERGUNTAR PRA EQUIPE ("askTeam") — quando o cliente trouxer uma dúvida que você não consegue responder com segurança (não está no material, depende da situação específica dele, é sobre outro produto/serviço fora do escopo deste chat — ex.: "vocês fazem com garantia de veículo?" — ou é um caso que alguma regra aqui manda verificar):
+const ASK_TEAM_RULES = `PERGUNTAR PRA EQUIPE ("askTeam") — quando você NÃO tem como responder com certeza (não está no material, depende da situação específica dele, é sobre outro produto/serviço fora do escopo deste chat — ex.: "vocês fazem com garantia de veículo?" —, é pedido de simulação/valor de parcela, ou é um caso que alguma regra aqui manda verificar):
+- NÃO responda o cliente: "noReply": true e "reply" vazio. NUNCA mande "vou verificar", "deixa eu confirmar", "já te retorno" nem nada parecido (Fabio 30/09: fica chato e parece que a gente não sabe nada). A equipe responde no balão do CRM e aí o CRM manda a resposta certa pro cliente.
 - NÃO invente e NÃO encerre o atendimento.
-- Antes de perguntar pra equipe, veja se o material responde pelo menos o GERAL (o produto, a regra, como costuma funcionar). Se responde, responda o geral com segurança e deixe só o detalhe do caso dele pra confirmar (ex.: "Dá sim, depende da margem do imóvel. Confirmo no seu caso e te falo."). Só use "askTeam" sem responder nada quando o material não der base nenhuma.
-- NÃO pareça que não sabe de nada (Fabio 28/09: "vai pensar que não sabe de nada"): nada de ficar repetindo "vou verificar". NUNCA repita uma frase que já está no histórico da conversa — se você já disse que ia verificar algo, diga de outro jeito, curto e natural (ex.: "Deixa eu confirmar esse ponto e te falo.", "Esse detalhe eu confirmo e já te respondo.", "Te confirmo isso em seguida."), de preferência junto com o que você já sabe. Sem citar equipe, atendente ou outra pessoa (é você mesma quem confirma).
-- Em "askTeam", escreva a pergunta pra equipe: curta, direta e com o contexto que a equipe precisa pra responder sem abrir a conversa (produto, o que o cliente disse, o que exatamente você precisa saber). Ex.: "Cliente de Home Equity diz que o imóvel é só de escritura, sem matrícula no cartório. Dá pra seguir ou precisa de outro imóvel?"
-- A resposta da equipe é repassada ao cliente automaticamente — você não precisa fazer mais nada.
-- Se a mesma dúvida já está com a equipe (ver "DÚVIDAS DESTE CLIENTE QUE VOCÊ JÁ LEVOU PRA EQUIPE"), não pergunte de novo: diga ao cliente que ainda está verificando, com "askTeam": null.
+- Se a mensagem tiver uma parte que você sabe responder COM CERTEZA e outra que não, responda só a parte que sabe (sem citar a outra, sem "vou verificar") e mande a outra em "askTeam".
+- Em "askTeam", escreva a pergunta pra equipe: curta, direta e com o contexto que a equipe precisa pra responder sem abrir a conversa (produto, o que o cliente disse, o que exatamente você precisa saber). Ex.: "Cliente de Home Equity diz que o imóvel é só de escritura, sem matrícula no cartório. Dá pra seguir ou precisa de outro imóvel?" / "Cliente de Home Equity pediu simulação de R$ 50 mil em 60 meses — qual fica a parcela?"
+- Se a mesma dúvida já está com a equipe (ver "DÚVIDAS DESTE CLIENTE QUE VOCÊ JÁ LEVOU PRA EQUIPE"), não pergunte de novo e não responda nada sobre ela ("noReply": true, "askTeam": null) — a resposta chega pelo balão.
 - Nos outros casos, "askTeam": null. Não use por cautela quando o material responde.`;
 
 /** Só estes valores são aceitos em "moveToStage" — usuário definiu esse
@@ -223,7 +222,8 @@ const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO
   1. Quando o cliente responder ou mostrar interesse (e isso ainda não foi perguntado nesta conversa), pergunte em UMA frase curta o que ele prefere — tirar dúvidas de como funciona, fazer uma nova simulação ou já seguir pra aprovação do crédito. Algo como: "Você tem alguma dúvida de como funciona, quer fazer uma nova simulação ou já quer seguir pra aprovação do seu crédito?" (Quando o cliente toca no botão "Tenho interesse", o CRM já manda essa pergunta sozinho — aí você só trata a resposta dele no passo 2.)
   2. Conforme a escolha:
      - Dúvidas: responda em poucas palavras (Base de Conhecimento) e, quando a dúvida estiver resolvida, ofereça seguir pra aprovação ("Quer que eu já te mande o link pra gente tentar aprovar?").
-     - Simulação: mande o link do simulador do produto dele e diga que, depois de simular, é só preencher a proposta que a gente já faz a pré-análise. Financiamento pra comprar/construir: https://aefsolucoesfinanceiras.com.br/simulador.html — Crédito com garantia de imóvel (Home Equity): https://aefsolucoesfinanceiras.com.br/servicos/simulador-home-equity.html. Não faça a simulação você mesmo (sem calcular parcela, taxa ou valor aprovado).
+     - Simulação: mande o link do simulador do produto dele e diga que, depois de simular, é só preencher a proposta que a gente já faz a pré-análise. Financiamento pra comprar/construir: https://aefsolucoesfinanceiras.com.br/simulador.html — Crédito com garantia de imóvel (Home Equity): https://aefsolucoesfinanceiras.com.br/servicos/simulador-home-equity.html. Você mesma não calcula parcela, taxa nem valor aprovado.
+  - A A&F FAZ SIMULAÇÃO (a equipe roda nos bancos): NUNCA diga que não faz simulação ou que "não é algo que eu calculo por aqui". Cliente que já passou da proposta (pré-análise, aprovado, documentação) e pede valor de parcela ou simulação com outro prazo/valor/banco: é pedido de simulação pra equipe — "askTeam" com os dados (produto, valor, prazo, banco) e "noReply": true.
      - Aprovação (ou sim, pode, bora, "quero aprovar"): mande o link da proposta manual do produto dele usando o texto da Resposta Rápida correspondente ("Proposta manual Finan Hab" ou "Proposta manual Home Equity") e termine com algo como "Se tiver alguma dúvida, é só me falar."
   Se o cliente já pediu pra seguir, pediu o link ou já está pronto pra mandar os dados, pule a pergunta e mande direto o link da proposta.
   - Financiamento pra comprar/construir imóvel: https://aefsolucoesfinanceiras.com.br/proposta-manual
@@ -421,6 +421,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         reply: '',
         noReply: true,
         handoff: false,
+        askTeam: typeof parsed.askTeam === 'string' && parsed.askTeam.trim() && parsed.askTeam.trim().toLowerCase() !== 'null' ? parsed.askTeam.trim().slice(0, 1000) : null,
         moveToStage: typeof parsed.moveToStage === 'string' && parsed.moveToStage.trim() ? parsed.moveToStage.trim() : null,
         markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
         stopFollowUp: parsed.stopFollowUp === true,

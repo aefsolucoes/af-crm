@@ -124,7 +124,7 @@ export async function teamQuestionsContext(leadId: string): Promise<string> {
     : `- Pergunta: ${r.question}\n  Resposta da equipe: ${r.answer}`);
   return `--- DÚVIDAS DESTE CLIENTE QUE VOCÊ JÁ LEVOU PRA EQUIPE ---
 ${lines.join('\n')}
-Se o cliente voltar num assunto ainda sem resposta, diga que ainda está verificando (não abra outra pergunta nem invente). Respostas da equipe valem como verdade pra este cliente.`;
+Se o cliente voltar num assunto ainda sem resposta, não responda nada sobre ele ("noReply": true) — a resposta chega pelo balão; não abra outra pergunta nem invente. Se ele trouxer outro assunto, responda o outro. Respostas da equipe valem como verdade pra este cliente.`;
 }
 
 export async function composeClientReply(accountId: string, leadId: string, question: string, answer: string) {
