@@ -60,6 +60,8 @@ export interface SharedAiContext {
   estiloTexto: string;
   escopoTexto: string;
   etapaTexto: string;
+  /** Campo "Instituição" do card — o banco em que o processo está seguindo. */
+  bancoTexto: string | null;
 }
 
 /**
@@ -111,6 +113,20 @@ export async function buildSharedAiContext(
   // manuais da Base de Conhecimento (sempre incluídas, escopadas por
   // setor) — ver searchKnowledge em knowledge.service.ts.
   const hits = focusText.trim() ? await searchKnowledge(accountId, focusText, 5, department?.id) : [];
+  // Regras do banco do card entram sempre, mesmo que a mensagem não cite o
+  // banco ("Ele é financiado." não puxava a regra do Santander pela busca).
+  const banco = String(((lead.customFields as any) || {}).instituicao || '').trim();
+  if (banco) {
+    const doBanco = await prisma.knowledgeEntry.findMany({
+      where: { accountId, title: { contains: banco, mode: 'insensitive' }, ...(department?.id ? { OR: [{ departmentId: department.id }, { departmentId: null }] } : {}) },
+      select: { title: true, content: true },
+      take: 5,
+    }).catch(() => []);
+    for (const e of doBanco) {
+      const content = `${e.title}: ${e.content}`;
+      if (!hits.some((h) => h.content === content)) hits.push({ content, fileName: e.title, score: 1 });
+    }
+  }
   const contextoTexto = hits.length
     ? hits.map((h, i) => `[${i + 1}] ${h.content}`).join('\n\n')
     : '(nenhum material relevante encontrado na Base de Conhecimento para esta pergunta — se a dúvida depender de um fato específico, não invente)';
@@ -165,6 +181,9 @@ export async function buildSharedAiContext(
     estiloTexto,
     escopoTexto,
     etapaTexto: `${lead.pipeline?.name || '?'} → ${lead.stage?.name || '?'}`,
+    // Sem o banco a IA dizia que imóvel financiado "não impede" pra um
+    // cliente aprovado no Santander, que só aceita quitado (Cláudio, 01/10).
+    bancoTexto: String(((lead.customFields as any) || {}).instituicao || '').trim() || null,
   };
 }
 
@@ -185,7 +204,10 @@ ${ctx.escopoTexto}
 
 --- ETAPA ATUAL DO CARD (funil → etapa) ---
 ${ctx.etapaTexto}
-
+${ctx.bancoTexto ? `
+--- BANCO DESTE CARD (campo Instituição — o banco em que o processo do cliente está seguindo) ---
+${ctx.bancoTexto}. Quando o cliente trouxer algo que depende do banco (ex.: imóvel financiado/com saldo devedor, conta, forma de pagamento), responda pela regra DESTE banco na Base de Conhecimento — nunca diga que "não impede" ou "dá pra fazer" de forma genérica se a regra deste banco diz o contrário.
+` : ''}
 --- ESTILO DE ESCRITA DA EQUIPE (mensagens reais escritas à mão) ---
 Imite o TOM e o jeito de escrever destes exemplos reais que a equipe já mandou pra outros clientes: direto, simples, sem enfeite. NUNCA reaproveite o conteúdo/fatos deles (são de outras conversas) nem copie erros de digitação:
 ${ctx.estiloTexto}
