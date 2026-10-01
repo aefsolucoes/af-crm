@@ -179,6 +179,45 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // Serve os bytes de um anexo (imagem/documento) recebido no WhatsApp
+// GET /api/messages/search?q= — conversas que têm o texto (ou o número, sem
+// pontuação: CPF, telefone) em alguma mensagem. A Inbox junta com a busca por
+// nome/telefone/CPF do card (Fabio 01/10). Devolve o trecho achado.
+router.get('/search', async (req: AuthRequest, res: Response) => {
+  try {
+    const q = String(req.query.q || '').trim().slice(0, 100);
+    const digits = q.replace(/\D/g, '');
+    const isNumber = digits.length >= 6 && /^[\d\s.\-/()]+$/.test(q);
+    if (q.length < 3) return res.json([]);
+    const rows: { leadId: string; content: string }[] = isNumber
+      ? await prisma.$queryRawUnsafe(
+          `SELECT DISTINCT ON (m."leadId") m."leadId", m.content FROM "Message" m JOIN "Lead" l ON l.id = m."leadId"
+           WHERE l."accountId" = $1 AND m.deleted = false AND regexp_replace(m.content, '\\D', '', 'g') LIKE $2
+           ORDER BY m."leadId", m."createdAt" DESC LIMIT 100`,
+          req.user!.accountId, `%${digits}%`)
+      : await prisma.$queryRawUnsafe(
+          `SELECT DISTINCT ON (m."leadId") m."leadId", m.content FROM "Message" m JOIN "Lead" l ON l.id = m."leadId"
+           WHERE l."accountId" = $1 AND m.deleted = false AND m.content ILIKE $2
+           ORDER BY m."leadId", m."createdAt" DESC LIMIT 100`,
+          req.user!.accountId, `%${q.replace(/[%_\\]/g, (c) => '\\' + c)}%`);
+    const snippet = (content: string) => {
+      const text = content.replace(/\s+/g, ' ');
+      let i = isNumber ? -1 : text.toLowerCase().indexOf(q.toLowerCase());
+      if (isNumber) {
+        // acha a posição do número no texto original (com pontuação)
+        let acc = '';
+        for (let k = 0; k < text.length && i < 0; k++) { if (/\d/.test(text[k])) { acc += text[k]; if (acc.endsWith(digits)) i = k; } }
+        if (i >= 0) i = Math.max(0, i - 15);
+      }
+      const start = Math.max(0, (i < 0 ? 0 : i) - 30);
+      return (start > 0 ? '…' : '') + text.slice(start, start + 110) + (text.length > start + 110 ? '…' : '');
+    };
+    res.json(rows.map((r) => ({ leadId: r.leadId, snippet: snippet(r.content) })));
+  } catch (err: any) {
+    console.error('[Inbox] busca nas mensagens:', err?.message);
+    res.status(500).json({ error: 'Erro ao buscar nas mensagens' });
+  }
+});
+
 // GET /api/messages/inbox-sectors — abas por funil da Inbox (menu lateral)
 // com o número de conversas não lidas de cada uma.
 router.get('/inbox-sectors', async (req: AuthRequest, res: Response) => {

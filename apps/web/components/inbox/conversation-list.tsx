@@ -139,11 +139,27 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
 
   const q = search.trim();
 
+  // Busca também DENTRO das mensagens (Fabio 01/10) — no servidor, com uma
+  // pausa enquanto a pessoa digita; o trecho achado aparece na prévia.
+  const [msgHits, setMsgHits] = useState<Map<string, string>>(new Map());
+  const [searchingMsgs, setSearchingMsgs] = useState(false);
+  useEffect(() => {
+    if (q.length < 3) { setMsgHits(new Map()); setSearchingMsgs(false); return; }
+    setSearchingMsgs(true);
+    const t = setTimeout(() => {
+      api.get('/api/messages/search', { params: { q } })
+        .then(({ data }) => setMsgHits(new Map((data as { leadId: string; snippet: string }[]).map((h) => [h.leadId, h.snippet]))))
+        .catch(() => setMsgHits(new Map()))
+        .finally(() => setSearchingMsgs(false));
+    }, 450);
+    return () => clearTimeout(t);
+  }, [q]);
+
   const filtered = conversations
     .filter((c) => {
       // Busca por nome ou número — vale sobre qualquer filtro.
       if (q) {
-        return matchesSearch(c, q); // ao buscar, ignora as abas e procura em tudo
+        return matchesSearch(c, q) || msgHits.has(c.id); // ao buscar, ignora as abas e procura em tudo (card + mensagens)
       }
       // Grupos do WhatsApp nunca aparecem na Inbox (o dado continua no banco,
       // só não tem mais como abrir pela tela — o canal QR/Baileys, único que
@@ -191,6 +207,9 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
             </button>
           )}
         </div>
+        {q.length >= 3 && searchingMsgs && (
+          <p className="text-[11px] text-[#8696a0] mt-1 px-1">Buscando também dentro das mensagens…</p>
+        )}
       </div>
 
       {/* Channel filter */}
@@ -264,7 +283,9 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
                   </span>
                   {lastMsg && <span className={cn('text-xs flex-shrink-0 ml-1', unread > 0 ? 'text-[#00a884]' : 'text-[#8696a0]')}>{formatDateTime(lastMsg.createdAt)}</span>}
                 </div>
-                {lastMsg && (
+                {q && msgHits.has(conv.id) && !matchesSearch(conv, q) ? (
+                  <p className="text-xs text-[#e9edef]/80 truncate mt-0.5">🔎 {msgHits.get(conv.id)}</p>
+                ) : lastMsg && (
                   <p className="text-xs text-[#8696a0] truncate mt-0.5">{lastMsg.content}</p>
                 )}
               </div>
