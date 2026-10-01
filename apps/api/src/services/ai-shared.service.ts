@@ -169,8 +169,18 @@ export async function buildSharedAiContext(
 }
 
 /** Monta os blocos de contexto no MESMO formato/ordem pras duas IAs. */
+/** Data de hoje no horário de Brasília. Sem isso o modelo usa a própria
+ *  noção de ano e chamou a admissão de 21/05/2026 de "data futura" pra uma
+ *  cliente em 01/10/2026 (Déborah, Fabio 01/10). */
+export function todayContextLine(): string {
+  const hoje = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
+  return `DATA DE HOJE: ${hoje} (horário de Brasília). Use sempre esta data pra saber se uma data é passada, futura ou recente — nunca a sua própria ideia de ano.`;
+}
+
 export function buildContextBlocks(ctx: SharedAiContext): string {
-  return `--- ESCOPO DE ATENDIMENTO (produto deste chat) ---
+  return `--- ${todayContextLine()} ---
+
+--- ESCOPO DE ATENDIMENTO (produto deste chat) ---
 ${ctx.escopoTexto}
 
 --- ETAPA ATUAL DO CARD (funil → etapa) ---

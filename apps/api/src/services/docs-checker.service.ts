@@ -3,6 +3,7 @@ import { getDocInfo } from './received-docs.service';
 import { moveLeadToContracting } from './contracting.service';
 import { sendOutboundWhatsApp } from './message.service';
 import { logActivity } from './activity.service';
+import { todayContextLine } from './ai-shared.service';
 
 const prisma = new PrismaClient();
 
@@ -101,7 +102,8 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
     where: { leadId, callWaCallId: null }, orderBy: { createdAt: 'desc' }, take: 25, select: { content: true, direction: true },
   })).reverse().map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Atendente'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 200)}`).join('\n');
 
-  const prompt = `Setor/produto: ${lead.pipeline.department?.name || '?'}
+  const prompt = `${todayContextLine()}
+Setor/produto: ${lead.pipeline.department?.name || '?'}
 Participantes:
 ${participants}
 
