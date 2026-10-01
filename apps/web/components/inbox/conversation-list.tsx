@@ -19,7 +19,8 @@ function normalizeSearch(s: string): string {
   return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
-/** Busca avançada da Inbox: não precisa ser o nome/número exato.
+/** Busca avançada da Inbox: não precisa ser o nome/número exato. Também
+ *  acha pelo CPF dos participantes do card.
  *  - Nome: quebra o texto digitado em palavras — cada palavra precisa
  *    aparecer em algum lugar do nome OU dos participantes do card (não
  *    precisa ser a frase inteira nem estar na ordem certa: "silva monica"
@@ -35,6 +36,14 @@ function matchesSearch(c: Conversation, query: string): boolean {
   const q = normalizeSearch(query.trim());
   const qDigits = query.replace(/\D/g, '');
   if (!q && !qDigits) return true;
+
+  // CPF (Fabio 01/10): 11 dígitos, com ou sem pontuação — compara com o CPF
+  // dos participantes do card (vem da proposta). Parcial a partir de 6 dígitos.
+  if (qDigits.length >= 6) {
+    const cf = c.customFields || {};
+    const cpfs = [cf.cpf_1, cf.cpf_2].filter((v): v is string => !!v).map((v) => String(v).replace(/\D/g, ''));
+    if (cpfs.some((cpf) => cpf.includes(qDigits))) return true;
+  }
 
   if (qDigits.length >= 4) {
     const cf = c.customFields || {};
@@ -169,7 +178,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Pesquisar"
+            placeholder="Pesquisar nome, telefone ou CPF"
             className="w-full pl-8 pr-8 py-2 text-sm rounded-lg bg-[#202c33] text-[#e9edef] placeholder-[#8696a0] border border-transparent focus:outline-none focus:border-[#00a884]/40"
           />
           {search && (
