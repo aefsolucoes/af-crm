@@ -111,7 +111,8 @@ export async function listMetaTemplates(accountId: string, departmentId?: string
     const msg = j.error?.error_user_msg || j.error?.message || 'Erro desconhecido';
     throw new Error(`${msg} (código: ${code})`);
   }
-  return j.data || [];
+  // Em ordem alfabética (Fabio 05/10) — a Meta devolve do mais novo pro mais antigo.
+  return (j.data || []).sort((a: any, b: any) => String(a.name).localeCompare(String(b.name), 'pt-BR', { sensitivity: 'base', numeric: true }));
 }
 
 /** Botões de um template MARKETING/UTILITY (AUTHENTICATION tem o próprio

@@ -450,7 +450,7 @@ export default function TemplatesPage() {
     const matchSearch = t.name.toLowerCase().includes(search.toLowerCase()) || t.body.toLowerCase().includes(search.toLowerCase());
     const matchCat = filterCategory === 'all' || t.category === filterCategory;
     return matchSearch && matchCat;
-  });
+  }).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base', numeric: true }));
 
   const variables = extractVariables(form.body);
 

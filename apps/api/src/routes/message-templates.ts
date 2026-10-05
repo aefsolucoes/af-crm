@@ -52,8 +52,9 @@ router.get('/', async (req: AuthRequest, res: Response) => {
         accountId,
         ...(scopeDepartmentIds.length ? { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } : {}),
       },
-      orderBy: { createdAt: 'asc' },
     });
+    // Em ordem alfabética (Fabio 05/10) — no JS pra não depender da collation do banco.
+    templates.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base', numeric: true }));
     res.json(templates);
   } catch {
     res.status(500).json({ error: 'Erro ao buscar templates' });
