@@ -9,6 +9,11 @@ import { logActivity } from './activity.service';
  *  3. o motivo entra na hora com o que já temos (o botão que ele tocou) —
  *     "não precisa esperar a cliente responder"; se ele responder a pergunta,
  *     a resposta complementa o motivo e vira nota no card.
+ *
+ * Home Equity (Fabio 06/10): em vez de Perdido, o card vai pro estágio
+ * "Remarketing" do setor e fica aberto pra receber o remarketing depois.
+ * Quem já está no Remarketing e diz não de novo (no próprio remarketing) vai
+ * pra Perdido — senão ficaria num ciclo sem fim. Outros setores: Perdido.
  */
 
 const prisma = new PrismaClient();
@@ -16,6 +21,24 @@ const prisma = new PrismaClient();
 const NO_INTEREST_RE = /^n[ãa]o,?\s*(tenho\s+(mais\s+)?interesse|obrigad[oa])\b/i;
 // Trecho da pergunta do motivo (a mesma frase que o Fabio usa à mão).
 const REASON_QUESTION_MARK = 'motivo do seu desinteresse';
+
+function normalize(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+/** Estágio "Remarketing" do setor do card, se o card é de Home Equity e ainda
+ *  não está nele; senão null (segue pra Perdido). */
+async function remarketingStageFor(accountId: string, lead: { stageId: string | null; pipeline: { department: { id: string; name: string } | null } | null }) {
+  const dep = lead.pipeline?.department;
+  if (!dep || !/home equity/.test(normalize(dep.name))) return null;
+  const stages = await prisma.stage.findMany({
+    where: { pipeline: { accountId, departmentId: dep.id } },
+    select: { id: true, name: true, pipelineId: true },
+  });
+  const st = stages.find((s) => normalize(s.name) === 'remarketing');
+  if (!st || st.id === lead.stageId) return null;
+  return st;
+}
 
 function firstName(lead: { name: string; customFields: unknown }): string {
   const cf = (lead.customFields || {}) as Record<string, unknown>;
@@ -28,26 +51,57 @@ export async function handleNoInterestButton(accountId: string, leadId: string, 
   if (!NO_INTEREST_RE.test(text.trim())) return false;
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
-    select: { id: true, name: true, status: true, customFields: true, pipeline: { select: { name: true, departmentId: true } } },
+    select: {
+      id: true, name: true, status: true, customFields: true, stageId: true, stage: { select: { name: true } },
+      pipeline: { select: { name: true, departmentId: true, department: { select: { id: true, name: true } } } },
+    },
   });
   if (!lead) return false;
   if (lead.status === 'LOST') return true; // clique repetido
+  // Clique repetido logo depois de já ter tratado (a última mensagem nossa é
+  // a pergunta do motivo): sem isso o 2º clique tiraria do Remarketing pra Perdido.
+  const lastOut = await prisma.message.findFirst({
+    where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP' },
+    orderBy: { createdAt: 'desc' },
+    select: { content: true },
+  });
+  if (lastOut?.content?.includes(REASON_QUESTION_MARK)) return true;
   // Card já em contratação/concluído: botão antigo clicado fora de hora — deixa pro time.
   if (/contrata|conclu/i.test(lead.pipeline?.name || '')) return false;
 
   const button = text.trim();
   const lostReason = `Cliente tocou em "${button}"`;
-  const { updateLead } = require('./lead.service') as typeof import('./lead.service');
-  const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
-  await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io);
-  await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io });
-  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: cliente tocou em "${button}"` });
+  const remarketing = await remarketingStageFor(accountId, lead);
+  let destino = 'Perdido';
+  if (remarketing) {
+    // Fica aberto, mas com a IA desligada (igual ao Perdido): a resposta do
+    // motivo não deve virar conversa de venda.
+    const moved = await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        stageId: remarketing.id,
+        pipelineId: remarketing.pipelineId,
+        aiAutoReplyActive: false,
+        lostReason,
+        notes: { create: { type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${remarketing.name}" — por Assistente IA (cliente tocou em "${button}")` } },
+      },
+    });
+    io?.to(`account_${accountId}`).emit('lead_moved', { lead: moved });
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: `moveu o card pro Remarketing: cliente tocou em "${button}"` });
+    destino = 'Remarketing';
+  } else {
+    const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+    const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+    await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io);
+    await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io });
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: cliente tocou em "${button}"` });
+  }
 
   const nome = firstName(lead);
   const pergunta = `Tudo bem${nome ? `, ${nome}` : ''}, obrigado pelo retorno. Só pra gente melhorar: o motivo do seu desinteresse foi algo específico? O produto não era o que você procurava, as taxas não ficaram boas ou ficou faltando alguma opção de banco?`;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const sent = await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: pergunta, io });
-  console.log(`[Sem interesse] ${lead.name}: Perdido + pergunta do motivo ${sent.success ? 'enviada' : 'FALHOU'}`);
+  console.log(`[Sem interesse] ${lead.name}: ${destino} + pergunta do motivo ${sent.success ? 'enviada' : 'FALHOU'}`);
   return true;
 }
 
@@ -75,12 +129,12 @@ async function summarizeReason(answer: string): Promise<string> {
   }
 }
 
-/** Primeira resposta do cliente (card Perdido) depois da pergunta do motivo
+/** Primeira resposta do cliente (card Perdido ou no Remarketing) depois da pergunta do motivo
  *  — nossa ou do time, mesma frase: complementa o motivo da perda e vira
  *  nota no card. Não responde nada ao cliente. */
 export async function maybeCaptureLostReason(accountId: string, leadId: string, text: string, io: any): Promise<void> {
   if (!text.trim()) return;
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId, status: 'LOST' }, select: { id: true, name: true, lostReason: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, lostReason: true } });
   if (!lead) return;
   const lastOut = await prisma.message.findFirst({
     where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP' },
@@ -103,7 +157,7 @@ export async function maybeCaptureLostReason(accountId: string, leadId: string, 
         create: {
           type: 'COMMENT',
           content: voltou
-            ? `⚠️ O cliente estava sem interesse, mas respondeu que quer seguir: "${text.trim().slice(0, 300)}". Vale reabrir o card.`
+            ? `⚠️ O cliente estava sem interesse, mas respondeu que quer seguir: "${text.trim().slice(0, 300)}". Vale retomar o atendimento.`
             : `Motivo do desinteresse (resposta do cliente): ${motivo}\n"${text.trim().slice(0, 300)}"`,
         },
       },
