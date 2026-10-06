@@ -7,7 +7,7 @@ import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
-import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck, Zap, Building2, MousePointerClick } from 'lucide-react';
+import { Plus, Trash2, Edit2, Copy, Search, MessageSquare, Tag, Send, BadgeCheck, Clock, XCircle, ShieldCheck, Zap, Building2, MousePointerClick, Eye } from 'lucide-react';
 import {
   MessageTemplate as LocalTemplate, TemplateCategory as Category, CATEGORY_META,
   extractVariables, fillTemplate,
@@ -39,7 +39,54 @@ interface MetaTemplate {
   category: string;
   language: string;
   rejected_reason?: string;
-  components: { type: string; text?: string }[];
+  components: {
+    type: string;
+    text?: string;
+    format?: string;
+    buttons?: { type: string; text: string; url?: string; phone_number?: string }[];
+    example?: { body_text?: string[][]; header_text?: string[] };
+  }[];
+}
+
+/** Texto do template com as variáveis {{1}}, {{2}}… trocadas pelo exemplo
+ *  cadastrado na Meta, destacadas (no envio entram os dados do cliente). */
+function renderWithExamples(text: string, examples: string[] = []) {
+  return text.split(/(\{\{\s*\d+\s*\}\})/g).map((part, i) => {
+    const m = part.match(/^\{\{\s*(\d+)\s*\}\}$/);
+    if (!m) return <span key={i}>{part}</span>;
+    const ex = examples[Number(m[1]) - 1];
+    return <span key={i} title={`Variável ${part}`} className="bg-emerald-100 text-emerald-800 rounded px-1 font-medium">{ex || part}</span>;
+  });
+}
+
+/** Prévia do template como o cliente vê no WhatsApp: cabeçalho, texto,
+ *  rodapé e os botões embaixo do balão. */
+function MetaTemplatePreview({ t }: { t: MetaTemplate }) {
+  const header = t.components.find((c) => c.type === 'HEADER');
+  const body = t.components.find((c) => c.type === 'BODY');
+  const footer = t.components.find((c) => c.type === 'FOOTER');
+  const buttons = t.components.find((c) => c.type === 'BUTTONS')?.buttons || [];
+  return (
+    <div className="rounded-xl bg-[#efeae2] p-4">
+      <div className="max-w-sm">
+        <div className="bg-white rounded-lg rounded-tl-none shadow-sm px-3 py-2 text-sm text-slate-800">
+          {header && (header.format === 'TEXT' || !header.format) && header.text && (
+            <p className="font-semibold mb-1">{renderWithExamples(header.text, header.example?.header_text)}</p>
+          )}
+          {header && header.format && header.format !== 'TEXT' && (
+            <p className="text-xs text-slate-400 mb-1">[{header.format === 'IMAGE' ? 'imagem' : header.format === 'VIDEO' ? 'vídeo' : 'documento'} no topo]</p>
+          )}
+          <p className="whitespace-pre-wrap leading-relaxed">{renderWithExamples(body?.text || '', body?.example?.body_text?.[0])}</p>
+          {footer?.text && <p className="mt-1 text-xs text-slate-400">{footer.text}</p>}
+        </div>
+        {buttons.map((b, i) => (
+          <div key={i} className="mt-1 bg-white rounded-lg shadow-sm py-2 text-center text-sm font-medium text-sky-600">
+            {b.type === 'URL' ? '🔗 ' : b.type === 'PHONE_NUMBER' ? '📞 ' : ''}{b.text}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 const META_CATEGORY_LABEL: Record<string, string> = { MARKETING: 'Marketing', UTILITY: 'Utilidade', AUTHENTICATION: 'Autenticação' };
 const META_STATUS_META: Record<string, { label: string; color: string; icon: typeof BadgeCheck }> = {
@@ -77,6 +124,7 @@ function WhatsAppTemplatesTab() {
   const [form, setForm] = useState(META_EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [deletingName, setDeletingName] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<MetaTemplate | null>(null);
 
   useEffect(() => {
     if (isAdmin) api.get('/api/departments').then(({ data }) => setDepartments(data)).catch(() => {});
@@ -215,7 +263,7 @@ function WhatsAppTemplatesTab() {
             const body = t.components.find((c) => c.type === 'BODY')?.text || '';
             return (
               <div key={t.name} className="bg-white rounded-xl border border-af-border shadow-sm flex flex-col">
-                <div className="p-4 flex-1">
+                <div className="p-4 flex-1 cursor-pointer" onClick={() => setViewing(t)} title="Ver o template inteiro">
                   <div className="flex items-start justify-between mb-2 gap-2">
                     <h3 className="text-sm font-semibold text-slate-900 truncate">{t.name}</h3>
                     <span className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${st.color}`}>
@@ -230,7 +278,13 @@ function WhatsAppTemplatesTab() {
                     <p className="mt-2 text-xs text-red-500">Motivo: {t.rejected_reason}</p>
                   )}
                 </div>
-                <div className="px-4 py-2.5 border-t border-af-border flex justify-end">
+                <div className="px-4 py-2.5 border-t border-af-border flex justify-between">
+                  <button
+                    onClick={() => setViewing(t)}
+                    className="flex items-center gap-1.5 text-xs text-af-accent hover:bg-slate-50 px-2 py-1 rounded-lg transition-colors"
+                  >
+                    <Eye size={12} /> Ver
+                  </button>
                   <button
                     onClick={() => handleDelete(t.name)}
                     disabled={deletingName === t.name}
@@ -249,6 +303,28 @@ function WhatsAppTemplatesTab() {
             </div>
           )}
         </div>
+      )}
+
+      {viewing && (
+        <Modal title={viewing.name} onClose={() => setViewing(null)}>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-xs">
+              {(() => {
+                const st = META_STATUS_META[viewing.status] || { label: viewing.status, color: 'bg-slate-100 text-slate-500', icon: Clock };
+                const StatusIcon = st.icon;
+                return <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${st.color}`}><StatusIcon size={11} /> {st.label}</span>;
+              })()}
+              <span className="text-slate-400">{META_CATEGORY_LABEL[viewing.category] || viewing.category} · {viewing.language}</span>
+            </div>
+            <MetaTemplatePreview t={viewing} />
+            {bodyVarNumbers(viewing.components.find((c) => c.type === 'BODY')?.text || '').length > 0 && (
+              <p className="text-xs text-slate-400">O que está em verde é variável: no envio entra o dado do cliente (ex.: o nome).</p>
+            )}
+            {viewing.status === 'REJECTED' && viewing.rejected_reason && (
+              <p className="text-xs text-red-500">Motivo da rejeição: {viewing.rejected_reason}</p>
+            )}
+          </div>
+        </Modal>
       )}
 
       {showModal && (
