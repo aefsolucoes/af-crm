@@ -1266,7 +1266,7 @@ async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string
     if (!/^(sim,?\s*)?tenho interesse\b/i.test(text.trim())) return false;
     const lead = await prisma.lead.findFirst({
       where: { id: leadId, accountId },
-      select: { name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { name: true, department: { select: { name: true } } } } },
+      select: { name: true, customFields: true, stageId: true, pipelineId: true, stage: { select: { name: true } }, pipeline: { select: { name: true, department: { select: { name: true } } } } },
     });
     // Card já em contratação / concluído / perdidos: não faz sentido.
     if (/contrata|conclu|perdid/i.test(lead?.pipeline?.name || '')) return false;
@@ -1274,6 +1274,25 @@ async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string
     if (!dept.includes('home equity') && !dept.includes('habitacional')) return false;
     const stage = (lead?.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
     if (/pre-analise|aprovad|aguardando|document|fechad|contrata|venda futura/.test(stage)) return false;
+    // Voltou pelo remarketing (Fabio 06/10): o card sai do Remarketing pra
+    // Prospecção e a IA volta a responder (lá ela fica desligada).
+    if (stage.trim() === 'remarketing' && lead?.pipelineId) {
+      const prospec = (await prisma.stage.findMany({ where: { pipelineId: lead.pipelineId }, orderBy: { order: 'asc' }, select: { id: true, name: true } }))
+        .find((s) => s.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().startsWith('prospec'));
+      const moved = await prisma.lead.update({
+        where: { id: leadId },
+        data: {
+          aiAutoReplyActive: true,
+          ...(prospec ? {
+            stageId: prospec.id,
+            notes: { create: { type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name}" → "${prospec.name}" — por Assistente IA (cliente tocou em "Tenho interesse" no remarketing)` } },
+          } : {}),
+        },
+      });
+      io?.to(`account_${accountId}`).emit('lead_moved', { lead: moved });
+      logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_stage_changed', leadId, leadName: lead.name, summary: `cliente voltou pelo remarketing: card${prospec ? ` pra "${prospec.name}"` : ''} e IA religada` });
+      console.log(`[Remarketing] ${lead.name}: "Tenho interesse" → ${prospec?.name || '(sem Prospecção)'} + IA ligada`);
+    }
     // Clique repetido: já perguntou há pouco — não pergunta de novo.
     const already = await prisma.message.findFirst({
       where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', content: { contains: INTEREST_OPTIONS_MARK }, createdAt: { gte: new Date(Date.now() - 12 * 60 * 60 * 1000) } },
