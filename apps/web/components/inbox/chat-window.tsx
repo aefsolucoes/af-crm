@@ -408,7 +408,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     setTogglingStar(true);
     setStarred(next); // otimista
     try {
-      await api.patch(`/api/leads/${leadId}/star`, { starred: next });
+      const { data } = await api.patch(`/api/leads/${leadId}/star`, { starred: next });
+      // O banco só deixa estrela em Prospecção, Follow Up e Lead Sem Retorno.
+      if (next && data?.starred === false) {
+        setStarred(false);
+        toast('A estrela só fica em cards de Prospecção, Follow Up e Lead Sem Retorno', 'error');
+      }
       queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
       queryClient.invalidateQueries({ queryKey: ['leads'] });

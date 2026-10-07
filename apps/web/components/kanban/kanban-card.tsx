@@ -84,7 +84,12 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
     setStarred(next); // otimista
     setTogglingStar(true);
     try {
-      await api.patch(`/api/leads/${lead.id}/star`, { starred: next });
+      const { data } = await api.patch(`/api/leads/${lead.id}/star`, { starred: next });
+      // O banco só deixa estrela em Prospecção, Follow Up e Lead Sem Retorno.
+      if (next && data?.starred === false) {
+        setStarred(false);
+        toast('A estrela só fica em cards de Prospecção, Follow Up e Lead Sem Retorno', 'error');
+      }
       queryClient.invalidateQueries({ queryKey: ['leads'] });
       queryClient.invalidateQueries({ queryKey: ['leads-all'] });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });

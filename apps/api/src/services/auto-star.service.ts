@@ -46,7 +46,17 @@ export async function autoStarBigLeads(): Promise<void> {
   try {
     const leads = await prisma.lead.findMany({
       // Só o funil de Vendas (pedido do Fabio) — contratação/Perdidos não.
-      where: { status: 'OPEN', archived: false, isGroup: false, starred: false, pipeline: { name: 'Vendas' } },
+      // Só onde a estrela pode ficar (Prospecção/Follow Up/Lead Sem Retorno —
+      // trigger lead_star_only_early_stages): fora disso ela seria apagada
+      // na hora e o card ficaria marcado como "já estrelado" à toa.
+      where: {
+        status: 'OPEN', archived: false, isGroup: false, starred: false, pipeline: { name: 'Vendas' },
+        OR: [
+          { stage: { name: { startsWith: 'prospec', mode: 'insensitive' } } },
+          { stage: { name: { startsWith: 'follow up', mode: 'insensitive' } } },
+          { stage: { name: { startsWith: 'lead sem retorno', mode: 'insensitive' } } },
+        ],
+      },
       select: { id: true, name: true, accountId: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } },
     });
     for (const lead of leads) {
