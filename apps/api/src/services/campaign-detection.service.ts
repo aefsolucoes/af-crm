@@ -232,7 +232,9 @@ export function parseProposalForm(text: string): { label: string; fields: Record
  *  setor (Fabio 06/10: "independente do funil que esteja"). Só não mexe em
  *  quem já está na Pré-Análise ou adiante no processo (Aprovado, Aguardando
  *  Documentação, Fechado, Em contratação, Concluído) — voltar esses apagaria
- *  o andamento; aí só deixa uma nota no card. Perdido volta a ficar aberto.
+ *  o andamento; aí só deixa uma nota no card. Card Perdido reabre sozinho
+ *  (e sai do arquivo), esteja onde estiver, com uma nota própria avisando
+ *  (Fabio 07/10).
  *  Consórcio (sem Pré-Análise) continua com a regra antiga: só avança dentro
  *  do próprio setor, quem está antes da Prospecção. */
 export async function advanceLeadOnProposalForm(accountId: string, leadId: string, text: string): Promise<{ stageId: string; stageName: string } | null> {
@@ -263,7 +265,10 @@ export async function advanceLeadOnProposalForm(accountId: string, leadId: strin
   }
 
   const stageNorm = norm(lead.stage.name);
-  const adiante = /pre-analise|pre analise|aprovad|aguardando|fechad/.test(stageNorm) || /contrata|conclu/.test(norm(lead.pipeline.name));
+  const eraPerdido = lead.status === 'LOST';
+  // Perdido antigo que ficou parado num estágio adiante (antes de existir o
+  // funil Perdidos) também volta: ele não está andando, está perdido.
+  const adiante = !eraPerdido && (/pre-analise|pre analise|aprovad|aguardando|fechad/.test(stageNorm) || /contrata|conclu/.test(norm(lead.pipeline.name)));
   if (adiante) {
     if (!/pre-analise|pre analise/.test(stageNorm) || /aprovad/.test(stageNorm)) {
       await prisma.note.create({
@@ -274,26 +279,34 @@ export async function advanceLeadOnProposalForm(accountId: string, leadId: strin
   }
 
   const route = await detectCampaignRoute(accountId, text);
-  if (!route || route.stageId === lead.stageId) return null;
+  if (!route || (route.stageId === lead.stageId && !eraPerdido)) return null;
   const target = await prisma.stage.findUnique({ where: { id: route.stageId }, include: { pipeline: { select: { name: true } } } });
   if (!target) return null;
   const mesmoFunil = target.pipelineId === lead.pipelineId;
-  const eraPerdido = lead.status === 'LOST';
+  const notes: { type: 'STAGE_CHANGE' | 'DATA_EDIT'; content: string }[] = [];
+  if (target.id !== lead.stageId) {
+    notes.push({
+      type: 'STAGE_CHANGE',
+      content: mesmoFunil
+        ? `Estágio: "${lead.stage.name}" → "${target.name}" — por Formulário do site (proposta preenchida)`
+        : `Movido do funil "${lead.pipeline.name}" para "${target.pipeline.name}" (${target.name}) por Formulário do site — proposta preenchida`,
+    });
+  }
+  if (eraPerdido) {
+    const desde = /perdid/.test(norm(lead.pipeline.name)) && lead.stageEnteredAt
+      ? ` desde ${lead.stageEnteredAt.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}` : '';
+    notes.push({
+      type: 'DATA_EDIT',
+      content: `🔓 Card reaberto automaticamente: o cliente preencheu a proposta e o card foi pra "${target.name}". Estava Perdido${desde}${lead.lostReason ? ` (motivo: ${lead.lostReason})` : ''}${lead.archived ? ' e arquivado' : ''}. Status alterado para "Aberto".`,
+    });
+  }
   await prisma.lead.update({
     where: { id: lead.id },
     data: {
       stageId: target.id,
       pipelineId: target.pipelineId,
-      ...(eraPerdido ? { status: 'OPEN' as const, lostReason: null } : {}),
-      notes: {
-        create: {
-          type: 'STAGE_CHANGE',
-          content: (mesmoFunil
-            ? `Estágio: "${lead.stage.name}" → "${target.name}" — por Formulário do site (proposta preenchida)`
-            : `Movido do funil "${lead.pipeline.name}" para "${target.pipeline.name}" (${target.name}) por Formulário do site — proposta preenchida`)
-            + (eraPerdido ? `. Estava Perdido${lead.lostReason ? ` (${lead.lostReason})` : ''} e voltou a ficar aberto.` : ''),
-        },
-      },
+      ...(eraPerdido ? { status: 'OPEN' as const, archived: false } : {}),
+      notes: { create: notes },
     },
   });
   return { stageId: target.id, stageName: target.name };

@@ -283,8 +283,10 @@ router.post('/bulk-move', async (req: AuthRequest, res: Response) => {
     if (!targetStage) return res.status(400).json({ error: 'Estágio não pertence ao funil escolhido' });
 
     // Só mexe nos leads que são REALMENTE da conta (ignora id inválido/de outra conta em silêncio).
-    const owned = await prisma.lead.findMany({ where: { id: { in: ids }, accountId }, select: { id: true } });
+    const owned = await prisma.lead.findMany({ where: { id: { in: ids }, accountId }, select: { id: true, stageId: true } });
     const ownedIds = owned.map((l) => l.id);
+    // Quem já estava nesse estágio não ganha nota nem automação de novo.
+    const changedIds = owned.filter((l) => l.stageId !== targetStage.id).map((l) => l.id);
     if (!ownedIds.length) return res.status(404).json({ error: 'Nenhum lead válido para mover' });
 
     const result = await prisma.lead.updateMany({
@@ -296,7 +298,7 @@ router.post('/bulk-move', async (req: AuthRequest, res: Response) => {
     (async () => {
       const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário';
       const io = (req as any).app.get('io');
-      for (const id of ownedIds) {
+      for (const id of changedIds) {
         await auditNote(id, req.user!.id, `Movido em massa para o funil "${pipeline.name}" (${targetStage.name}) por ${userName}`, 'STAGE_CHANGE');
         runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: id, io, context: { newStageId: targetStage.id } }).catch(() => {});
       }
@@ -628,6 +630,10 @@ router.patch('/:id/pipeline', async (req: AuthRequest, res: Response) => {
       data: { pipelineId, stageId: targetStageId },
     });
     res.json(lead);
+    // Mesmo funil e mesmo estágio: nada mudou — sem nota e sem rodar as
+    // automações de novo (Jean 07/10: "mover" pro mesmo lugar reenviou o
+    // "Recebi sua proposta" logo depois do aviso de aprovação).
+    if (before?.stageId === targetStageId) return;
 
     // Auditoria
     try {
