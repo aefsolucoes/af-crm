@@ -226,12 +226,15 @@ export function parseProposalForm(text: string): { label: string; fields: Record
   return Object.keys(fields).length ? { label: sig.label, fields } : null;
 }
 
-/** Formulário completo chegou num lead que JÁ existe: leva o card pra etapa
- *  de pré-análise do setor do formulário, mas só se ele ainda está ANTES
- *  dela (Prospecção/Follow Up/Lead Sem Retorno) — nunca volta quem já está
- *  em Aprovado, Aguardando Documentação, contratação etc. Lead sem setor
- *  (Caixa de Entrada) vai pro funil do setor do formulário, igual a um
- *  contato novo. Lead de OUTRO setor fica onde está. */
+/** Formulário completo chegou num lead que JÁ existe: leva o card pra
+ *  Pré-Análise do setor do formulário, venha de onde vier — Prospecção,
+ *  Follow Up, Remarketing, Venda Futura, Perdidos, Caixa de Entrada ou outro
+ *  setor (Fabio 06/10: "independente do funil que esteja"). Só não mexe em
+ *  quem já está na Pré-Análise ou adiante no processo (Aprovado, Aguardando
+ *  Documentação, Fechado, Em contratação, Concluído) — voltar esses apagaria
+ *  o andamento; aí só deixa uma nota no card. Perdido volta a ficar aberto.
+ *  Consórcio (sem Pré-Análise) continua com a regra antiga: só avança dentro
+ *  do próprio setor, quem está antes da Prospecção. */
 export async function advanceLeadOnProposalForm(accountId: string, leadId: string, text: string): Promise<{ stageId: string; stageName: string } | null> {
   if (!text || !/cpf\s*:/i.test(text)) return null;
   const sig = CAMPAIGN_SIGNATURES.find((s) => norm(text).includes(s.marker));
@@ -245,17 +248,54 @@ export async function advanceLeadOnProposalForm(accountId: string, leadId: strin
 
   const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
 
-  if (!lead.pipeline.department) {
-    const route = await detectCampaignRoute(accountId, text);
-    if (!route) return null;
-    const moved = await updateLeadStage(lead.id, accountId, route.stageId);
-    return { stageId: route.stageId, stageName: moved.stage.name };
+  if (sig.stageMarker !== 'pre-analise') {
+    if (!lead.pipeline.department) {
+      const route = await detectCampaignRoute(accountId, text);
+      if (!route) return null;
+      const moved = await updateLeadStage(lead.id, accountId, route.stageId);
+      return { stageId: route.stageId, stageName: moved.stage.name };
+    }
+    if (norm(lead.pipeline.department.name) !== norm(sig.departmentName)) return null;
+    const target = lead.pipeline.stages.find((st) => norm(st.name).includes(sig.stageMarker) && !/aprovad/.test(norm(st.name)));
+    if (!target || lead.stage.order >= target.order) return null;
+    await updateLeadStage(lead.id, accountId, target.id);
+    return { stageId: target.id, stageName: target.name };
   }
 
-  if (norm(lead.pipeline.department.name) !== norm(sig.departmentName)) return null;
-  const target = lead.pipeline.stages.find((st) => norm(st.name).includes(sig.stageMarker) && !/aprovad/.test(norm(st.name)));
-  if (!target || lead.stage.order >= target.order) return null;
-  await updateLeadStage(lead.id, accountId, target.id);
+  const stageNorm = norm(lead.stage.name);
+  const adiante = /pre-analise|pre analise|aprovad|aguardando|fechad/.test(stageNorm) || /contrata|conclu/.test(norm(lead.pipeline.name));
+  if (adiante) {
+    if (!/pre-analise|pre analise/.test(stageNorm) || /aprovad/.test(stageNorm)) {
+      await prisma.note.create({
+        data: { leadId: lead.id, type: 'COMMENT', content: `📋 O cliente preencheu de novo a proposta (${sig.label}), mas o card ficou onde está — já está em "${lead.pipeline.name} → ${lead.stage.name}", adiante da Pré-Análise.` },
+      }).catch(() => {});
+    }
+    return null;
+  }
+
+  const route = await detectCampaignRoute(accountId, text);
+  if (!route || route.stageId === lead.stageId) return null;
+  const target = await prisma.stage.findUnique({ where: { id: route.stageId }, include: { pipeline: { select: { name: true } } } });
+  if (!target) return null;
+  const mesmoFunil = target.pipelineId === lead.pipelineId;
+  const eraPerdido = lead.status === 'LOST';
+  await prisma.lead.update({
+    where: { id: lead.id },
+    data: {
+      stageId: target.id,
+      pipelineId: target.pipelineId,
+      ...(eraPerdido ? { status: 'OPEN' as const, lostReason: null } : {}),
+      notes: {
+        create: {
+          type: 'STAGE_CHANGE',
+          content: (mesmoFunil
+            ? `Estágio: "${lead.stage.name}" → "${target.name}" — por Formulário do site (proposta preenchida)`
+            : `Movido do funil "${lead.pipeline.name}" para "${target.pipeline.name}" (${target.name}) por Formulário do site — proposta preenchida`)
+            + (eraPerdido ? `. Estava Perdido${lead.lostReason ? ` (${lead.lostReason})` : ''} e voltou a ficar aberto.` : ''),
+        },
+      },
+    },
+  });
   return { stageId: target.id, stageName: target.name };
 }
 
