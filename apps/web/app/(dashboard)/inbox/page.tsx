@@ -1,5 +1,5 @@
 'use client';
-import { useState, useCallback, useEffect, useMemo, Suspense } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
@@ -98,31 +98,57 @@ function InboxPageInner() {
   const { data: conversations, isLoading: loadingConvs, isError: convsError, refetch: refetchConvs } = useQuery({
     queryKey: ['conversations'],
     queryFn: fetchConversations,
-    refetchInterval: 30000, // rede de segurança; o tempo real vem pelo socket abaixo
+    refetchInterval: 60000, // rede de segurança; o tempo real vem pelo socket abaixo
     // Blip de rede/servidor não pode zerar a lista: tenta de novo sozinho antes
     // de desistir, e o que já tinha carregado continua na tela enquanto isso.
     retry: 3,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
   });
 
-  // Atualiza a lista de conversas em TEMPO REAL (sem esperar o poll de 30s).
-  // O backend emite 'new_conversation' a cada mensagem nova (recebida ou enviada).
+  // Atualiza a lista de conversas em TEMPO REAL (sem esperar o poll).
+  // Mensagem nova ('new_notification', vem com a própria mensagem): só a
+  // conversa dela muda e sobe pro topo — antes cada mensagem fazia todo
+  // mundo com a Inbox aberta baixar a lista inteira de novo (Fabio 08/10:
+  // "o CRM tá travando"). Conversa que ainda não está na lista (cliente
+  // novo) ou outros eventos: recarrega a lista, agrupando rajadas.
+  const selectedIdRef = useRef<string | null>(selectedId);
+  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
   useEffect(() => {
     const socket = getSocket();
     let t: ReturnType<typeof setTimeout> | null = null;
     const refresh = () => {
       if (t) return; // agrupa rajadas de eventos em 1 atualização
-      t = setTimeout(() => { t = null; queryClient.invalidateQueries({ queryKey: ['conversations'] }); }, 300);
+      t = setTimeout(() => { t = null; queryClient.invalidateQueries({ queryKey: ['conversations'] }); }, 1500);
+    };
+    const onNotification = (payload: { leadId?: string; message?: Message }) => {
+      const msg = payload?.message;
+      if (!payload?.leadId || !msg) { refresh(); return; }
+      let found = false;
+      queryClient.setQueryData<Conversation[]>(['conversations'], (old) => {
+        if (!old) return old;
+        const idx = old.findIndex((c) => c.id === payload.leadId);
+        if (idx === -1) return old;
+        found = true;
+        const conv = old[idx];
+        const countsAsUnread = msg.direction === 'INBOUND' && selectedIdRef.current !== payload.leadId;
+        const updated: Conversation = {
+          ...conv,
+          messages: [{ ...msg, content: String(msg.content || '').slice(0, 160) }],
+          _count: { messages: conv._count.messages + (countsAsUnread ? 1 : 0) },
+        };
+        return [updated, ...old.slice(0, idx), ...old.slice(idx + 1)];
+      });
+      if (!found) refresh();
     };
     socket.on('new_conversation', refresh);
-    socket.on('new_notification', refresh);
+    socket.on('new_notification', onNotification);
     // Outro colaborador marcou/desmarcou um lead como importante — atualiza
     // a estrela na lista pra quem também está com a Inbox aberta.
     socket.on('lead_starred', refresh);
     return () => {
       if (t) clearTimeout(t);
       socket.off('new_conversation', refresh);
-      socket.off('new_notification', refresh);
+      socket.off('new_notification', onNotification);
       socket.off('lead_starred', refresh);
     };
   }, [queryClient]);
@@ -130,9 +156,11 @@ function InboxPageInner() {
   // Ao abrir uma conversa, marca as mensagens como lidas (some o contador azul)
   useEffect(() => {
     if (!selectedId) return;
+    // Zera o contador na hora, sem recarregar a lista inteira.
+    queryClient.setQueryData<Conversation[]>(['conversations'], (old) =>
+      old?.map((c) => (c.id === selectedId && c._count.messages ? { ...c, _count: { messages: 0 } } : c)));
     api.post('/api/messages/read', { leadId: selectedId })
       .then(() => {
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
         queryClient.invalidateQueries({ queryKey: ['inbox-sectors'] });
       })
       .catch(() => {});

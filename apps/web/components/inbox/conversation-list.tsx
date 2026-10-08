@@ -130,14 +130,24 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
     if (listRef.current) listRef.current.scrollTop = scrollTopRef.current;
   });
 
+  // Desenha as conversas aos poucos (80 por vez, mais ao chegar perto do
+  // fim da lista) — eram 1.200+ linhas redesenhadas a cada mensagem nova, o
+  // que pesava principalmente no celular. A busca e os filtros continuam
+  // olhando TODAS as conversas; só a renderização é em partes.
+  const PAGE = 80;
+  const [visibleCount, setVisibleCount] = useState(PAGE);
   function handleListScroll(e: React.UIEvent<HTMLDivElement>) {
-    scrollTopRef.current = e.currentTarget.scrollTop;
+    const el = e.currentTarget;
+    scrollTopRef.current = el.scrollTop;
+    if (el.scrollTop + el.clientHeight > el.scrollHeight - 600) setVisibleCount((v) => v + PAGE);
   }
 
   const unreadCount = conversations.filter((c) => !isGroupConversation(c) && c._count.messages > 0).length;
   const callCount = conversations.filter((c) => !isGroupConversation(c) && callPermitted.has(c.id)).length;
 
   const q = search.trim();
+  // Trocou de aba ou de busca: volta a desenhar do começo.
+  useEffect(() => { setVisibleCount(PAGE); }, [filter, q]);
 
   // Busca também DENTRO das mensagens (Fabio 01/10) — no servidor, com uma
   // pausa enquanto a pessoa digita; o trecho achado aparece na prévia.
@@ -242,7 +252,7 @@ export function ConversationList({ conversations, selectedId, onSelect, loading,
             ))}
           </div>
         )}
-        {filtered.map((conv) => {
+        {filtered.slice(0, visibleCount).map((conv) => {
           const lastMsg = conv.messages[0];
           const unread = conv._count.messages;
           const ch = lastMsg?.channel;

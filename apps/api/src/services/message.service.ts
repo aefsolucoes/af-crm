@@ -624,87 +624,89 @@ export async function getScopeNumberIds(accountId: string, userId: string, role:
 }
 
 export async function getConversations(accountId: string, scopeDepartmentIds: string[] = [], scopeNumberIds: string[] | null = null) {
-  const leads = await prisma.lead.findMany({
-    where: {
-      accountId,
-      messages: { some: {} },
-      // Esconde Status/Stories (status@broadcast) — não são conversas de verdade.
-      // Escrito como OR positivo (em vez de NOT+endsWith) de propósito: NOT sobre
-      // um campo opcional (whatsappPhone) quando o valor é NULL vira NULL em SQL
-      // de 3 valores (nem true nem false), e o Postgres EXCLUI a linha do WHERE —
-      // isso sumia da lista qualquer lead cujo contato não tivesse whatsappPhone
-      // preenchido (ex.: contato criado manualmente, só com telefone comum).
-      OR: [
-        { contactId: null },
-        { contact: { whatsappPhone: null } },
-        { contact: { NOT: { whatsappPhone: { endsWith: '@broadcast' } } } },
-      ],
-      // Mesmo critério do Funil: a conversa "pertence" ao setor do FUNIL do
-      // lead (que casa com o setor do número de WhatsApp, quando veio de lá).
-      ...(scopeDepartmentIds.length ? { pipeline: { OR: [{ departmentId: { in: scopeDepartmentIds } }, { departmentId: null }] } } : {}),
-    },
-    include: {
-      contact: true,
-      whatsappNumber: { select: { id: true, label: true, phone: true } },
-      // Setor do card — abas por funil da Inbox (menu lateral, Fabio 28/09).
-      pipeline: { select: { departmentId: true } },
-      messages: {
-        orderBy: { createdAt: 'desc' },
-        take: 1,
-      },
-      _count: {
-        select: { messages: { where: { read: false, direction: 'INBOUND' } } },
-      },
-    },
-  });
+  // UMA consulta, só com o que a lista da Inbox mostra (Fabio 08/10: "o CRM
+  // tá travando"). Antes era o Lead inteiro + contato + include de
+  // mensagens com take:1 (o Prisma busca TODAS as mensagens e corta em
+  // memória) + contagem — 2,5 a 6 s e 2,8 MB a cada mensagem nova, pra cada
+  // pessoa com a Inbox aberta. Agora a última mensagem vem por LATERAL
+  // (índice leadId+createdAt), a prévia vem cortada e customFields só com as
+  // chaves que a busca da Inbox usa (nome, telefone, CPF dos participantes).
+  // Mesmos filtros de antes: sem Status/Stories (status@broadcast), escopo
+  // de setor do usuário (setor do funil, ou sem setor).
+  const rows = await prisma.$queryRawUnsafe<any[]>(`
+    SELECT l.id, l.name, l."updatedAt", l."isGroup", l.starred, l."whatsappNumberId", l."aiAutoReplyActive",
+           jsonb_strip_nulls(jsonb_build_object(
+             'participante_1', l."customFields"->'participante_1', 'participante_2', l."customFields"->'participante_2',
+             'telefone_1', l."customFields"->'telefone_1', 'telefone_2', l."customFields"->'telefone_2',
+             'cpf_1', l."customFields"->'cpf_1', 'cpf_2', l."customFields"->'cpf_2'
+           )) AS "customFields",
+           p."departmentId",
+           c.id AS c_id, c.name AS c_name, c."whatsappPhone" AS c_wa, c.phone AS c_phone,
+           lm.id AS m_id, lm.content AS m_content, lm."createdAt" AS m_at, lm.channel AS m_channel, lm.direction AS m_direction,
+           COALESCE(u.n, 0)::int AS unread
+      FROM "Lead" l
+      JOIN "Pipeline" p ON p.id = l."pipelineId"
+      LEFT JOIN "Contact" c ON c.id = l."contactId"
+      JOIN LATERAL (
+        SELECT m.id, left(m.content, 160) AS content, m."createdAt", m.channel, m.direction
+          FROM "Message" m WHERE m."leadId" = l.id ORDER BY m."createdAt" DESC LIMIT 1
+      ) lm ON true
+      LEFT JOIN (
+        SELECT "leadId", COUNT(*) AS n FROM "Message" WHERE read = false AND direction = 'INBOUND' GROUP BY "leadId"
+      ) u ON u."leadId" = l.id
+     WHERE l."accountId" = $1
+       AND (c.id IS NULL OR c."whatsappPhone" IS NULL OR c."whatsappPhone" NOT LIKE '%@broadcast')
+       AND ($2::text[] IS NULL OR p."departmentId" IS NULL OR p."departmentId" = ANY($2::text[]))
+     ORDER BY lm."createdAt" DESC`,
+    accountId, scopeDepartmentIds.length ? scopeDepartmentIds : null);
+
   // Todo número de WhatsApp (ou API Oficial, quando whatsappNumberId é null)
-  // que JÁ mandou/recebeu alguma mensagem de cada lead — não só o "último
-  // usado" (lead.whatsappNumberId, que é sobrescrito toda vez que o cliente
-  // fala por um número diferente, ver comentário em getOrCreateLeadForPhone).
-  // Sem isso, a aba de um número "esquecia" o cliente assim que ele mandava
-  // UMA mensagem por outro número — a conversa não sumia de verdade, só a
-  // etiqueta de qual número mudava (bug real reportado: "as conversas do
-  // 3606 sumiram"). GROUP BY em vez de trazer toda mensagem — só as
-  // combinações distintas (leadId, whatsappNumberId). Sem filtrar
-  // whatsappNumberId != null de propósito: uma linha com null identifica
-  // "esse lead já falou pela API Oficial" — usado pro scopeNumberIds abaixo.
-  const numberUsage = await prisma.message.groupBy({
-    by: ['leadId', 'whatsappNumberId'],
-    where: { lead: { accountId }, channel: 'WHATSAPP' },
-  });
+  // que JÁ mandou/recebeu alguma mensagem de cada lead — só precisa disso pra
+  // quem tem restrição por número (Usuários → "Números de WhatsApp que ele
+  // enxerga"); admin pula essa varredura de todas as mensagens.
   const usedNumbersByLead = new Map<string, string[]>();
   const usedApiOficialLeads = new Set<string>();
-  for (const row of numberUsage) {
-    if (row.whatsappNumberId) {
-      const list = usedNumbersByLead.get(row.leadId);
-      if (list) list.push(row.whatsappNumberId);
-      else usedNumbersByLead.set(row.leadId, [row.whatsappNumberId]);
-    } else {
-      usedApiOficialLeads.add(row.leadId);
+  if (scopeNumberIds) {
+    const numberUsage = await prisma.message.groupBy({
+      by: ['leadId', 'whatsappNumberId'],
+      where: { lead: { accountId }, channel: 'WHATSAPP' },
+    });
+    for (const row of numberUsage) {
+      if (row.whatsappNumberId) {
+        const list = usedNumbersByLead.get(row.leadId);
+        if (list) list.push(row.whatsappNumberId);
+        else usedNumbersByLead.set(row.leadId, [row.whatsappNumberId]);
+      } else {
+        usedApiOficialLeads.add(row.leadId);
+      }
     }
   }
 
-  const withUsage = leads.map((lead) => ({ ...lead, usedNumberIds: usedNumbersByLead.get(lead.id) || [] }));
+  const conversations = rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    updatedAt: r.updatedAt as Date,
+    isGroup: r.isGroup as boolean,
+    starred: r.starred as boolean,
+    whatsappNumberId: r.whatsappNumberId as string | null,
+    aiAutoReplyActive: r.aiAutoReplyActive as boolean,
+    customFields: r.customFields as Record<string, string>,
+    pipeline: { departmentId: r.departmentId as string | null },
+    contact: r.c_id ? { id: r.c_id as string, name: r.c_name as string | null, whatsappPhone: r.c_wa as string | null, phone: r.c_phone as string | null } : null,
+    messages: [{ id: r.m_id as string, content: r.m_content as string, createdAt: r.m_at as Date, channel: r.m_channel as string, direction: r.m_direction as string }],
+    _count: { messages: r.unread as number },
+    usedNumberIds: usedNumbersByLead.get(r.id) || [],
+  }));
 
-  // Restrição por número (Usuários → "Números de WhatsApp que ele enxerga"):
-  // um lead que nunca usou WhatsApp (Instagram/Telegram/Webchat/e-mail) passa
-  // direto — a restrição é só sobre canais de WhatsApp, não esconde o resto.
-  const scoped = scopeNumberIds
-    ? withUsage.filter((lead) => {
-        const used = usedNumbersByLead.get(lead.id) || [];
-        const usedApi = usedApiOficialLeads.has(lead.id);
-        if (used.length === 0 && !usedApi) return true;
-        return used.some((id) => scopeNumberIds.includes(id)) || (usedApi && scopeNumberIds.includes('API'));
-      })
-    : withUsage;
-
-  // Ordena pela data da ÚLTIMA MENSAGEM (não pelo updatedAt do lead, que muda
-  // quando se edita dados/estágio). Assim a conversa que recebeu/enviou msg mais
-  // recente fica no topo.
-  return scoped.sort((a, b) => {
-    const ta = a.messages[0]?.createdAt?.getTime() ?? a.updatedAt.getTime();
-    const tb = b.messages[0]?.createdAt?.getTime() ?? b.updatedAt.getTime();
-    return tb - ta;
+  // Restrição por número: um lead que nunca usou WhatsApp
+  // (Instagram/Telegram/Webchat/e-mail) passa direto — a restrição é só
+  // sobre canais de WhatsApp, não esconde o resto.
+  if (!scopeNumberIds) return conversations;
+  return conversations.filter((lead) => {
+    const used = usedNumbersByLead.get(lead.id) || [];
+    const usedApi = usedApiOficialLeads.has(lead.id);
+    if (used.length === 0 && !usedApi) return true;
+    return used.some((id) => scopeNumberIds.includes(id)) || (usedApi && scopeNumberIds.includes('API'));
   });
 }
 
