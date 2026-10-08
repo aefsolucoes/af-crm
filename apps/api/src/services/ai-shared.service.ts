@@ -40,7 +40,7 @@ export const CORE_RULES = `REGRAS OBRIGATÓRIAS:
  *  — Fabio 26/09: "a IA continua usando: SHOW". Filtro fixo, não depende do modelo. */
 export function stripOpeningInterjection(text: string): string {
   // ", Jaime." colado na interjeição sai junto ("Que ótimo, Jaime. Vamos lá." → "Vamos lá.").
-  const re = /^\s*(show( de bola)?|perfeito|(que )?[oó]timo|que bom|maravilha|excelente|top|beleza|massa|legal|entendi|certo|combinado)(\s*,\s*[\p{L}]+)?\s*[!.…]+\s*|^\s*(show( de bola)?|perfeito|(que )?[oó]timo|que bom|maravilha|excelente|top|beleza|massa|legal|entendi|certo|combinado)\s*[!,.…]+\s*/iu;
+  const re = /^\s*(show( de bola)?|perfeito|(que )?[oó]timo|que bom|maravilha|excelente|top|beleza|massa|legal|entendi|certo|combinado|fechado|show de bola)(\s*,\s*[\p{L}]+)?\s*[!.…]+\s*|^\s*(show( de bola)?|perfeito|(que )?[oó]timo|que bom|maravilha|excelente|top|beleza|massa|legal|entendi|certo|combinado|fechado|show de bola)\s*[!,.…]+\s*/iu;
   let out = text;
   for (let i = 0; i < 3 && re.test(out); i++) out = out.replace(re, '');
   out = out.trim();
