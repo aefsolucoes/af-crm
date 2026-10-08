@@ -146,15 +146,19 @@ export async function listAutomationLogs(ruleId: string, accountId: string) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export function fillVariables(text: string, lead: LeadForActions, context?: RunContext): string {
+  // {{nome}} só com nome de verdade — com número/emoji/símbolo fica vazio e a
+  // frase se ajeita ("Oi {{nome}}, tudo bem?" → "Oi, tudo bem?").
+  const { isCallableName } = require('../lib/text') as typeof import('../lib/text');
+  const nomeCru = (lead.contact?.name || lead.name || '').trim();
   const vars: Record<string, string> = {
-    nome: lead.contact?.name || lead.name || '',
+    nome: isCallableName(nomeCru) ? nomeCru : '',
     telefone: lead.contact?.phone || lead.contact?.whatsappPhone || '',
     mensagem_recebida: context?.incomingText || '',
   };
   return text.replace(/\{\{([^}]+)\}\}/g, (_m, key) => {
     const v = vars[String(key).trim()];
     return v !== undefined ? v : `{{${key}}}`;
-  });
+  }).replace(/ +([,!?.])/g, '$1').replace(/ {2,}/g, ' ');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -174,7 +178,8 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       if (!templateName) return false;
       const language = String(action.config.language || 'pt_BR');
       const rawParams = Array.isArray(action.config.bodyParams) ? (action.config.bodyParams as unknown[]).map(String) : [];
-      const bodyParams = rawParams.map((p) => fillVariables(p, lead, context));
+      // Variável de template não pode ir vazia pra Meta: sem nome de verdade, "cliente".
+      const bodyParams = rawParams.map((p) => fillVariables(p, lead, context).trim() || 'cliente');
       // Mostra o texto DE VERDADE que foi mandado (igual o envio manual pela
       // Inbox já faz) — sem isso, a conversa só mostrava 'Template "X"
       // enviado', sem dar pra saber o que o cliente recebeu. Busca o corpo

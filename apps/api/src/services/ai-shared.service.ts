@@ -3,6 +3,7 @@ import { voiceNoteForAi } from './speech-to-text.service';
 import { searchKnowledge } from './knowledge.service';
 import { parseMoneyOrNumber } from './campaign-detection.service';
 import { logActivity } from './activity.service';
+import { callableFirstName, isCallableName, normalizeClientName } from '../lib/text';
 
 const prisma = new PrismaClient();
 
@@ -65,6 +66,8 @@ export interface SharedAiContext {
   bancoTexto: string | null;
   /** Card Perdido: motivo + notas de aprovação/reprovação (regra dos Perdidos). */
   perdidoTexto: string | null;
+  /** Como chamar o cliente — ou aviso de que o nome do card não é nome. */
+  nomeTexto: string;
 }
 
 /**
@@ -188,6 +191,13 @@ export async function buildSharedAiContext(
     // cliente aprovado no Santander, que só aceita quitado (Cláudio, 01/10).
     bancoTexto: String(((lead.customFields as any) || {}).instituicao || '').trim() || null,
     perdidoTexto: lead.status === 'LOST' ? await lostCardContext(lead.id, lead.lostReason) : null,
+    nomeTexto: (() => {
+      const cf = (lead.customFields || {}) as Record<string, unknown>;
+      const nome = callableFirstName(cf.participante_1, lead.name);
+      return nome
+        ? `${nome} (pode chamar pelo nome, sem repetir em toda mensagem).`
+        : `O nome no card ("${String(cf.participante_1 || lead.name || '').slice(0, 40)}") NÃO é um nome de verdade (tem número, emoji ou símbolo). NÃO chame o cliente por esse nome nem por um pedaço dele (Fabio 08/10). Quando for natural na conversa, pergunte como ele se chama; quando ele disser, preencha "participante_1" em "extractedFields" com o nome que ele informou.`;
+    })(),
   };
 }
 
@@ -219,6 +229,9 @@ export function todayContextLine(): string {
 
 export function buildContextBlocks(ctx: SharedAiContext): string {
   return `--- ${todayContextLine()} ---
+
+--- NOME DO CLIENTE ---
+${ctx.nomeTexto}
 
 --- ESCOPO DE ATENDIMENTO (produto deste chat) ---
 ${ctx.escopoTexto}
@@ -328,7 +341,7 @@ export async function applyAiExtractedActions(
   try {
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
-      select: { id: true, name: true, pipelineId: true, customFields: true, tags: true },
+      select: { id: true, name: true, pipelineId: true, customFields: true, tags: true, contactId: true },
     });
     if (!lead) return;
 
@@ -417,7 +430,15 @@ export async function applyAiExtractedActions(
       }
       if (Object.keys(patch).length) {
         const customFields = { ...((lead.customFields as any) || {}), ...patch };
-        await prisma.lead.update({ where: { id: lead.id }, data: { customFields } });
+        // Nome do card era número/emoji e o cliente disse como se chama:
+        // corrige o nome do card e do contato também (Fabio 08/10).
+        const renomear = patch.participante_1 && isCallableName(patch.participante_1) && !isCallableName(lead.name);
+        await prisma.lead.update({ where: { id: lead.id }, data: { customFields, ...(renomear ? { name: normalizeClientName(patch.participante_1) } : {}) } });
+        if (renomear && lead.contactId) {
+          await prisma.contact.update({ where: { id: lead.contactId }, data: { name: normalizeClientName(patch.participante_1) } }).catch(() => {});
+          await prisma.note.create({ data: { leadId: lead.id, type: 'DATA_EDIT', content: `🤖 Nome do card corrigido pela IA: "${lead.name}" → "${normalizeClientName(patch.participante_1)}" (o cliente informou o nome).` } }).catch(() => {});
+          if (io) io.to(`account_${accountId}`).emit("new_conversation", { leadId: lead.id });
+        }
         logActivity({
           accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited',
           leadId: lead.id, leadName: lead.name, summary: `preencheu dados do card a partir da conversa (${Object.keys(patch).join(', ')})`,

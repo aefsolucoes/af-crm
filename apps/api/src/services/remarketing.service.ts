@@ -40,14 +40,9 @@ function norm(s: string): string {
 /** Primeiro nome "apresentável" pro {{1}} — null quando não dá (só emoji, número…). */
 export function remarketingFirstName(lead: { name: string; customFields: unknown; contact?: { name: string | null } | null }): string | null {
   const cf = (lead.customFields || {}) as Cf;
-  for (const raw of [cf.participante_1, lead.name, lead.contact?.name]) {
-    // 1ª palavra com letras ("53999257733 GAUTERIO" → "Gauterio").
-    for (const word of String(raw || '').trim().split(/\s+/)) {
-      const letters = word.replace(/[^\p{L}'-]/gu, '');
-      if (letters.length >= 2) return letters.charAt(0).toUpperCase() + letters.slice(1).toLowerCase();
-    }
-  }
-  return null;
+  // Nome com número/emoji/símbolo não é nome — card fica fora do rodízio ("sem nome").
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  return callableFirstName(cf.participante_1, lead.name, lead.contact?.name);
 }
 
 function hasPhone(contact: { whatsappPhone: string | null; phone: string | null } | null): boolean {

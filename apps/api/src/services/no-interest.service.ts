@@ -45,8 +45,8 @@ async function remarketingStageFor(accountId: string, lead: { stageId: string | 
 
 function firstName(lead: { name: string; customFields: unknown }): string {
   const cf = (lead.customFields || {}) as Record<string, unknown>;
-  const raw = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase() : '';
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  return callableFirstName(cf.participante_1, lead.name) || '';
 }
 
 /** Retorna true se tratou o clique (quem chama não passa pra IA/automação). */

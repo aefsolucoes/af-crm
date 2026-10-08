@@ -1302,8 +1302,8 @@ async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string
     });
     if (already) return true;
     const cf = (lead?.customFields || {}) as Record<string, unknown>;
-    const raw = String(cf.participante_1 || lead?.name || '').trim().split(/\s+/)[0] || '';
-    const nome = raw && !raw.startsWith('+') ? raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase() : '';
+    const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+    const nome = callableFirstName(cf.participante_1, lead?.name) || '';
     const content = `${nome ? `${nome}, você` : 'Você'} tem alguma dúvida de como funciona, ${INTEREST_OPTIONS_MARK} ou já quer seguir pra aprovação do seu crédito?`;
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const sent = await sendOutboundWhatsApp({ accountId, leadId, content, io });
