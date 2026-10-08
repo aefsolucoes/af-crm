@@ -194,7 +194,8 @@ Sempre que mover de etapa, preencha "moveReason" com o motivo em 1 frase (vai pr
 /** "Perdido" é o STATUS do lead (Aberto/Ganho/Perdido, mesmo botão "Marcar
  *  Perdido" da tela), não uma etapa — por isso é um campo separado, com
  *  motivo obrigatório quando usado. */
-const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um motivo curto (1 frase, baseado no que o cliente disse) quando ele recusar EXPLICITAMENTE: disser que não quer mais, não tem mais interesse, desistiu, ou pedir pra não ser mais contatado. Também quando o lead for desqualificado (ex.: imóvel de garantia sem registro/irregular e sem alternativa) — aí o motivo começa com "Lead desqualificado — ". Deixe null/vazio em todos os outros casos — isso é diferente de só ficar em silêncio (isso é "Lead Sem Retorno", acima), e é definitivo, então só use quando a recusa for clara.`;
+const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um motivo curto (1 frase, baseado no que o cliente disse) quando ele recusar EXPLICITAMENTE: disser que não quer mais, não tem mais interesse, desistiu, ou pedir pra não ser mais contatado. Também quando o lead for desqualificado (ex.: imóvel de garantia sem registro/irregular e sem alternativa) — aí o motivo começa com "Lead desqualificado — ". Deixe null/vazio em todos os outros casos — isso é diferente de só ficar em silêncio (isso é "Lead Sem Retorno", acima), e é definitivo, então só use quando a recusa for clara.
+- NÃO DÁ E O CLIENTE ACEITOU (Fabio 08/10, Marcelo: imóvel em usufruto): se a conversa JÁ explicou ao cliente que a operação não é possível com o que ele tem (ex.: imóvel em usufruto, sem matrícula/irregular, financiamento com parcela atrasada que ele não vai regularizar, crédito abaixo do mínimo) e ele só confirma ("ok", "entendi", "tá bom", "que pena", "beleza") sem trazer alternativa (outro imóvel, outra pessoa, regularizar) → "noReply": true e "markLost": "Lead desqualificado — <motivo>".`;
 
 /** Diferente de markLost: o negócio continua vivo, só a INSISTÊNCIA
  *  automática (lembrete periódico) deve parar — um humano assume esse
@@ -305,6 +306,10 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
   if (!apiKey || !incomingText.trim()) return null;
 
   try {
+    // "Ok" depois de a gente explicar que a operação não dá (imóvel em
+    // usufruto, sem matrícula, parcela atrasada…): não é só confirmação — a
+    // IA precisa ver pra marcar Perdido (Fabio 08/10, Marcelo).
+    const NOT_VIABLE_RE = /n[aã]o (é|e|seria|fica) (aceit|poss[ií]vel|vi[aá]vel)|n[aã]o d[aá] (pra|para) (seguir|fazer)|n[aã]o (conseguimos|consegue|vai dar)|precisa(ria)? (estar|ser) [^.]{0,40}(quitad|em dia|regulari|sem usufruto)|sem (matr[ií]cula|registro)/i;
     const closing = farewellReply(incomingText);
     if (closing) {
       const lastOut = await prisma.message.findFirst({
@@ -314,7 +319,7 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
       });
       // Nossa última mensagem fez uma pergunta de verdade: o "ok, obrigado"
       // pode ser a resposta — segue o fluxo normal. Já fechamos: não repete.
-      if (!lastOut || !hasRealQuestion(lastOut.content)) {
+      if ((!lastOut || !hasRealQuestion(lastOut.content)) && !NOT_VIABLE_RE.test(lastOut?.content || '')) {
         if (lastOut && /disponha/i.test(lastOut.content)) return { reply: '', handoff: false, noReply: true };
         console.log(`[AI Auto-reply] cliente encerrou ("${incomingText.trim().slice(0, 40)}") — fechando com "${closing}"`);
         return { reply: closing, handoff: false };
@@ -326,7 +331,7 @@ export async function generateAiAutoReply(accountId: string, leadId: string, inc
         orderBy: { createdAt: 'desc' },
         select: { content: true },
       });
-      if (!lastOut || !hasRealQuestion(lastOut.content)) {
+      if ((!lastOut || !hasRealQuestion(lastOut.content)) && !NOT_VIABLE_RE.test(lastOut?.content || '')) {
         console.log(`[AI Auto-reply] cliente só confirmou ("${incomingText.trim().slice(0, 40)}") — sem resposta`);
         return { reply: '', handoff: false, noReply: true };
       }
@@ -397,6 +402,13 @@ ${conversasPorTelefone}` : ''}`;
     if (!raw) return null;
 
     const result = parseReply(raw);
+    // Quando manda a dúvida pra equipe, a IA não fala nada pro cliente
+    // (Fabio 30/09) — mas às vezes ela escreve "deixa eu confirmar com a
+    // equipe, já te retorno" junto (Marcelo 08/10). Trava fixa: descarta.
+    if (result.askTeam && result.reply && /(vou|deixa eu|deixe-me|deixa eu s[oó]) (verificar|confirmar|checar|conferir|ver)|com a equipe|j[aá] te (retorno|respondo|falo)|te retorno|retorno por aqui/i.test(result.reply)) {
+      result.reply = '';
+      result.noReply = true;
+    }
     // Trava: card que ainda não foi aprovado nunca recebe "parabéns, foi
     // aprovado" (Berenice 30/09: pediu a lista de documentos na Prospecção e
     // a IA mandou a Resposta Rápida inteira, que abre com a frase de aprovação).
