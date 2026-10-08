@@ -495,19 +495,19 @@ export function FunilView() {
       </div>
 
       {!isLoading && pipeline && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-6 py-2 border-b border-af-border text-sm">
-          <span className="text-slate-500">{search.trim() ? 'Valor total da busca:' : 'Valor total do funil:'}</span>
-          <span className="font-semibold text-slate-800">{formatCurrency(funnelTotals.total)}</span>
-          <span className="text-slate-400">·</span>
-          <span className="text-slate-500">{funnelTotals.cards} card{funnelTotals.cards !== 1 ? 's' : ''}</span>
-          {funnelTotals.semValor > 0 && (
-            <>
-              <span className="text-slate-400">·</span>
-              <span className="text-amber-600" title="Cards sem Valor da venda preenchido — o total pode estar abaixo do real">
-                {funnelTotals.semValor} sem valor
+        <div className="px-4 md:px-6 pt-3">
+          {/* Cartão branco, igual ao topo das colunas — no fundo escuro do
+              Funil o texto solto ficava invisível (Fabio 08/10). */}
+          <div className="inline-flex flex-wrap items-baseline gap-x-3 gap-y-1 bg-white rounded-xl border border-af-border shadow-sm px-4 py-2.5">
+            <span className="text-sm font-medium text-slate-600">{search.trim() ? 'Valor total da busca' : 'Valor total do funil'}</span>
+            <span className="text-xl font-bold text-emerald-700">{formatCurrency(funnelTotals.total)}</span>
+            <span className="text-sm text-slate-500">{funnelTotals.cards} card{funnelTotals.cards !== 1 ? 's' : ''}</span>
+            {funnelTotals.semValor > 0 && (
+              <span className="text-sm font-medium text-amber-600" title="Cards sem Valor da venda preenchido — o total pode estar abaixo do real">
+                · {funnelTotals.semValor} sem valor
               </span>
-            </>
-          )}
+            )}
+          </div>
         </div>
       )}
 
