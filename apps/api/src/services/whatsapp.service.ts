@@ -1307,7 +1307,12 @@ async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string
     const content = `${nome ? `${nome}, você` : 'Você'} tem alguma dúvida de como funciona, ${INTEREST_OPTIONS_MARK} ou já quer seguir pra aprovação do seu crédito?`;
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const sent = await sendOutboundWhatsApp({ accountId, leadId, content, io });
-    if (sent.success) console.log(`[WhatsApp] "Tenho interesse" → pergunta dúvidas/simulação/aprovação pro lead ${leadId}`);
+    if (sent.success) {
+      // Quem disse que tem interesse é atendido pela IA dali em diante
+      // (Fabio 08/10) — a resposta dele pra essa pergunta não pode ficar sem retorno.
+      await prisma.lead.update({ where: { id: leadId }, data: { aiAutoReplyActive: true } }).catch(() => {});
+      console.log(`[WhatsApp] "Tenho interesse" → pergunta dúvidas/simulação/aprovação pro lead ${leadId}`);
+    }
     return sent.success;
   } catch (err) {
     console.error('[WhatsApp] Erro ao responder "Tenho interesse":', err);

@@ -117,6 +117,9 @@ export async function startRemarketing(params: { accountId: string; stageIds: st
     await prisma.lead.update({
       where: { id: l.id },
       data: {
+        // IA ligada: quem responder escrevendo (não pelo botão) também é
+        // atendido na hora (Fabio 08/10: "não deixa a IA desligada").
+        aiAutoReplyActive: true,
         customFields: { ...cf, _rmkStartedAt: now, _rmkStageId: l.stageId, _rmkActive: true, _rmkPaused: false, _rmkStep: 0, _rmkFails: 0 },
         notes: { create: { type: 'COMMENT', userId, content: `📣 Entrou no remarketing por WhatsApp (3 mensagens, uma a cada ${INTERVAL_DAYS} dias; sem resposta depois da 3ª, vai pra Perdido) — por ${userName}` } },
       },
