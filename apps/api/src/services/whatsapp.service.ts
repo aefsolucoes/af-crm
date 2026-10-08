@@ -1479,22 +1479,21 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 
 /** Cliente pediu atendimento humano, saiu do escopo do setor ou ficou numa
  *  dúvida que precisa de gente (ex.: situação do imóvel em Home Equity) —
- *  desliga a IA nessa conversa e avisa a equipe (som + toast + push). Sem
- *  responsável no card, o aviso vai pra conta toda, senão ninguém via. */
+ *  avisa a equipe (som + toast + push). A IA NÃO desliga aqui (Fabio 08/10):
+ *  só quando alguém da equipe responde direto. Sem responsável no card, o
+ *  aviso vai pra conta toda, senão ninguém via. */
 async function handleAiHandoffCloudApi(leadId: string, io: any, reason?: string | null) {
   try {
-    const lead = await prisma.lead.update({
+    const lead = await prisma.lead.findUniqueOrThrow({
       where: { id: leadId },
-      data: { aiAutoReplyActive: false },
       select: { id: true, name: true, userId: true, accountId: true },
     });
     const motivo = reason || 'cliente pediu atendimento humano (ou pergunta fora do escopo deste chat)';
-    await prisma.note.create({ data: { leadId, content: `Atendimento automático encerrado — ${motivo}. Repassado para a equipe.`, type: 'COMMENT' } }).catch(() => {});
+    await prisma.note.create({ data: { leadId, content: `A IA pediu ajuda da equipe — ${motivo}. Ela continua ligada até alguém responder o cliente.`, type: 'COMMENT' } }).catch(() => {});
     logActivity({ accountId: lead.accountId, userId: null, userName: 'Assistente IA', action: 'ai_handoff', leadId, leadName: lead.name, summary: `repassou pra equipe — ${motivo}` });
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
     sendPushToAccount(lead.accountId, { title: `${lead.name}: precisa da equipe`, body: reason ? `A IA repassou: ${reason}` : 'A IA repassou a conversa pra equipe', leadId }).catch(() => {});
     if (io) {
-      io.to(`lead:${leadId}`).emit('lead_ai_toggled', { leadId, active: false });
       io.to(lead.userId ? `user_${lead.userId}` : `account_${lead.accountId}`).emit('ai_handoff', { leadId, leadName: lead.name, reason: reason || null });
     }
   } catch (err) {

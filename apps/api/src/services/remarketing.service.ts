@@ -194,6 +194,25 @@ export async function numberQuality(accountId: string): Promise<{ quality: strin
   }
 }
 
+/** Card que respondeu o remarketing → estágio de Prospecção do funil, IA ligada. */
+export async function moveToProspeccao(l: { id: string; accountId: string; name: string; stageId: string; pipelineId: string }, io: any): Promise<boolean> {
+  const stages = await prisma.stage.findMany({ where: { pipelineId: l.pipelineId }, orderBy: { order: 'asc' }, select: { id: true, name: true } });
+  const target = stages.find((s) => norm(s.name).startsWith('prospec'));
+  const current = stages.find((s) => s.id === l.stageId);
+  if (!target || target.id === l.stageId) return false;
+  const moved = await prisma.lead.update({
+    where: { id: l.id },
+    data: {
+      stageId: target.id,
+      aiAutoReplyActive: true,
+      notes: { create: { type: 'STAGE_CHANGE', content: `Estágio: "${current?.name || '?'}" → "${target.name}" — por Remarketing (cliente respondeu a mensagem)` } },
+    },
+  });
+  io?.to(`account_${l.accountId}`).emit('lead_moved', { lead: moved });
+  logActivity({ accountId: l.accountId, userId: null, userName: 'Remarketing', action: 'lead_stage_changed', leadId: l.id, leadName: l.name, summary: `moveu pra "${target.name}": cliente respondeu o remarketing` });
+  return true;
+}
+
 async function endRemarketing(leadId: string, cf: Cf, end: string) {
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _rmkActive: false, _rmkEnd: end } } });
 }
@@ -216,7 +235,7 @@ export async function processRemarketing(io: any): Promise<void> {
   try {
     const leads = await prisma.lead.findMany({
       where: { customFields: { path: ['_rmkActive'], equals: true } },
-      select: { id: true, accountId: true, name: true, status: true, archived: true, stageId: true, customFields: true, contact: { select: { name: true } } },
+      select: { id: true, accountId: true, name: true, status: true, archived: true, stageId: true, pipelineId: true, customFields: true, contact: { select: { name: true } } },
     });
     if (!leads.length) return;
 
@@ -228,7 +247,13 @@ export async function processRemarketing(io: any): Promise<void> {
         where: { leadId: l.id, direction: 'INBOUND', createdAt: { gt: new Date(cf._rmkStartedAt) } },
         select: { id: true },
       });
-      if (replied) { await endRemarketing(l.id, cf, 'respondeu'); continue; }
+      if (replied) {
+        await endRemarketing(l.id, cf, 'respondeu');
+        // Respondeu escrevendo (não pelo botão, que já move): vai pra
+        // Prospecção pra não ficar esquecido no Lead Sem Retorno (Fabio 08/10).
+        if (l.status === 'OPEN' && !l.archived && l.stageId === cf._rmkStageId) await moveToProspeccao(l, io).catch((e) => console.error('[Remarketing] mover pra Prospecção:', e?.message));
+        continue;
+      }
       if (l.status !== 'OPEN' || l.archived) { await endRemarketing(l.id, cf, l.status === 'WON' ? 'ganho' : 'saiu'); continue; }
       if (l.stageId !== cf._rmkStageId) { await endRemarketing(l.id, cf, 'mudou de estágio'); continue; }
       // A Meta recusou a última: cliente bloqueou marketing da empresa

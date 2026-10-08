@@ -57,9 +57,8 @@ export async function moveLeadToContracting(accountId: string, leadId: string, i
     data: {
       pipelineId: pipeline.id,
       stageId: stage.id,
-      // Pedido do Fabio: a IA fica ligada até aqui; em Documentação Recebida
-      // o time humano assume a contratação.
-      aiAutoReplyActive: false,
+      // IA não desliga aqui (Fabio 08/10): só quando alguém da equipe
+      // responder direto o cliente (routes/messages.ts).
       notes: { create: { content: `Lead migrado automaticamente para o funil "${pipeline.name}" (${stage.name}) — ${reason}.`, type: 'STAGE_CHANGE' } },
     },
   });

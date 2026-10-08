@@ -77,14 +77,13 @@ export async function handleNoInterestButton(accountId: string, leadId: string, 
   const remarketing = await remarketingStageFor(accountId, lead);
   let destino = 'Perdido';
   if (remarketing) {
-    // Fica aberto, mas com a IA desligada (igual ao Perdido): a resposta do
-    // motivo não deve virar conversa de venda.
+    // Fica aberto e com a IA ligada (Fabio 08/10: a IA só desliga quando
+    // alguém da equipe responde direto).
     const moved = await prisma.lead.update({
       where: { id: lead.id },
       data: {
         stageId: remarketing.id,
         pipelineId: remarketing.pipelineId,
-        aiAutoReplyActive: false,
         lostReason,
         notes: { create: { type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${remarketing.name}" — por Assistente IA (cliente tocou em "${button}")` } },
       },

@@ -93,6 +93,8 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
   // porque os dois caminhos que marcam Perdido passam por updateLead: o
   // botão manual "Marcar Perdido" e a própria IA quando ela mesma decide
   // marcar (applyAiExtractedActions, ai-shared.service.ts).
+  // A IA NÃO desliga mais no Perdido (Fabio 08/10: "não desliga a IA em
+  // nenhum momento, apenas se alguém responder direto") — só a estrela sai.
   const deactivatingAi = data.status === 'LOST';
   const lead = await prisma.lead.update({
     where: { id },
@@ -101,11 +103,10 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
       ...(data.name !== undefined ? { name: normalizeClientName(data.name) } : {}),
       // Perdido também perde a estrela (pedido do Fabio 26/09) — a estrela
       // fixa o cliente no topo da Inbox/Kanban e perdido não é prioridade.
-      ...(deactivatingAi ? { aiAutoReplyActive: false, starred: false } : {}),
+      ...(deactivatingAi ? { starred: false } : {}),
     } as any,
   });
   if (deactivatingAi) {
-    io?.to(`lead:${id}`).emit('lead_ai_toggled', { leadId: id, active: false });
     io?.to(`account_${accountId}`).emit('lead_starred', { leadId: id, starred: false });
   }
   return lead;
