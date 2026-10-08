@@ -1173,6 +1173,18 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         scheduleDocsCheck(accountId, leadId, io).catch(() => {});
       }
 
+      // Foto/print na conversa de venda (ex.: tela do simulador com erro): a IA
+      // olha a imagem e responde (Fabio 08/10, Marta). Na fase de documentos
+      // quem cuida das fotos é a conferência acima — a IA não entra.
+      if (msg.type === 'image') {
+        const st = await prisma.lead.findUnique({ where: { id: leadId }, select: { stage: { select: { name: true } }, pipeline: { select: { name: true } } } });
+        const fase = `${st?.pipeline?.name || ''} ${st?.stage?.name || ''}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+        if (!/document|contrata|conclu|aprovad/.test(fase)) {
+          maybeAiAutoReplyCloudApi(accountId, leadId, text || '(imagem)', from, io, departmentId)
+            .catch((e) => console.error('[IA] Resposta a imagem falhou:', e?.message));
+        }
+      }
+
       // Gatilho automático (Templates → "Disparar automaticamente") e
       // assistente de IA (Inbox → botão de IA na conversa) — só para texto de
       // verdade, não mídia. Template tem prioridade sobre a resposta de IA.
@@ -1410,16 +1422,24 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     });
     const burst = await prisma.message.findMany({
       where: { leadId, direction: 'INBOUND', ...(lastOut ? { createdAt: { gt: lastOut.createdAt } } : {}) },
-      orderBy: { createdAt: 'desc' }, take: 5, select: { content: true },
+      orderBy: { createdAt: 'desc' }, take: 5,
+      select: { content: true, attachments: { select: { id: true, driveFileId: true, data: true, mimeType: true } } },
     });
     const { voiceNoteForAi } = require('./speech-to-text.service') as typeof import('./speech-to-text.service');
-    const textToAnswer = burst.length > 1 ? burst.reverse().map((m) => voiceNoteForAi(m.content || '')).filter(Boolean).join('\n') : incomingText;
+    // Foto/print sem legenda chega como "📎 foto-123.jpg": pra IA vira "(imagem)".
+    const asText = (m: (typeof burst)[number]) => m.attachments.some((a) => /^image\//.test(a.mimeType)) && /^📎/.test(m.content || '') ? '(imagem)' : voiceNoteForAi(m.content || '');
+    const textToAnswer = burst.length > 1 ? [...burst].reverse().map(asText).filter(Boolean).join('\n') : (burst[0] ? asText(burst[0]) : incomingText) || incomingText;
+    // As imagens da rajada vão junto pra IA ver (até 3, as mais recentes).
+    const { imageSourceForVision } = require('./received-docs.service') as typeof import('./received-docs.service');
+    const images = (await Promise.all(
+      burst.flatMap((m) => m.attachments).filter((a) => /^image\//.test(a.mimeType)).slice(0, 3).map((a) => imageSourceForVision(accountId, a)),
+    )).filter((x): x is NonNullable<typeof x> => !!x).reverse();
 
     // Ainda ligada? (alguém pode ter desligado a IA nesses 2s)
     const still = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
     if (!still?.aiAutoReplyActive) return;
 
-    const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer);
+    const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer, images);
     if (!genResult) return;
     // Chegou outra mensagem enquanto a resposta era gerada (leva alguns
     // segundos): descarta esta — a da mensagem nova responde tudo, com o

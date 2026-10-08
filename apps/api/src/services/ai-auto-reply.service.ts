@@ -301,7 +301,12 @@ export interface AiAutoReplyResult {
  * (não responde) se faltar configuração ou algo der errado — nunca lança erro
  * pro chamador, pra não travar o fluxo de recebimento de mensagem.
  */
-export async function generateAiAutoReply(accountId: string, leadId: string, incomingText: string): Promise<AiAutoReplyResult | null> {
+export async function generateAiAutoReply(
+  accountId: string, leadId: string, incomingText: string,
+  // Fotos/prints que o cliente mandou junto (Fabio 08/10, Marta: print do
+  // simulador e a IA não via nada).
+  images: { type: 'base64'; media_type: string; data: string }[] = [],
+): Promise<AiAutoReplyResult | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !incomingText.trim()) return null;
 
@@ -390,7 +395,15 @@ ${conversasPorTelefone}` : ''}`;
         // vinha VAZIA (cliente ficava sem resposta, achado 2026-09-25).
         max_tokens: 4096,
         system: systemPrompt,
-        messages: [{ role: 'user', content: incomingText }],
+        messages: [{
+          role: 'user',
+          content: images.length
+            ? [
+              ...images.map((source) => ({ type: 'image', source })),
+              { type: 'text', text: `${incomingText}\n\n[O cliente mandou ${images.length > 1 ? 'as imagens acima' : 'a imagem acima'} (foto ou print de tela). Olhe com atenção e responda com base no que aparece nela — nunca diga que não consegue ver imagem.]` },
+            ]
+            : incomingText,
+        }],
       }),
     });
     if (!response.ok) {

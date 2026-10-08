@@ -41,6 +41,24 @@ export interface DocInfo { type: string; holder?: string }
 const clean = (t: string, max: number) =>
   t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase().slice(0, max);
 
+/** Imagem de um anexo pronta pra mandar pro Claude (base64), lendo do banco
+ *  ou do Drive. null se não é imagem suportada, é grande demais ou não deu. */
+export async function imageSourceForVision(accountId: string, att: AttachmentForVision): Promise<{ type: 'base64'; media_type: string; data: string } | null> {
+  if (!/^image\//.test(att.mimeType)) return null;
+  try {
+    let buffer: Buffer;
+    let mimeType = att.mimeType;
+    if (att.data && att.data.length) buffer = Buffer.from(att.data);
+    else if (att.driveFileId) ({ buffer, mimeType } = await downloadDriveFileForVision(accountId, att.driveFileId, att.mimeType));
+    else return null;
+    if (buffer.length > MAX_VISION_BYTES) return null;
+    if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mimeType)) return null;
+    return { type: 'base64', media_type: mimeType, data: buffer.toString('base64') };
+  } catch {
+    return null;
+  }
+}
+
 /** Tipo do documento e titular lendo o arquivo (Claude com visão) — {type:
  *  "CNH", holder: "JOAO DA SILVA"}. null = não é documento; undefined = não
  *  deu pra ler (tipo de arquivo, tamanho ou erro). Lê os bytes do banco se o
