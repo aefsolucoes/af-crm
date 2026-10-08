@@ -13,6 +13,7 @@ import { DuplicatesModal } from '@/components/kanban/duplicates-modal';
 import { Pipeline, Lead, Contact, User } from '@/types';
 import api from '@/lib/api';
 import { Plus, RefreshCw, Search, X, Pencil, Trash2, FolderPlus, GitMerge, Archive, Star } from 'lucide-react';
+import { formatCurrency } from '@/lib/utils';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
@@ -314,6 +315,16 @@ export function FunilView() {
 
   const isLoading = loadingPipelines || (loadingLeads && !search.trim());
 
+  // Valor total do funil (Fabio 08/10): soma do "Valor da venda" dos cards
+  // que estão nas colunas da tela — o mesmo valor somado no topo de cada
+  // coluna, só que de todas juntas. Segue funil, busca e filtro de marcados.
+  const funnelTotals = useMemo(() => {
+    const stageIds = new Set((search.trim() ? sortedPipelines.flatMap(p => p.stages) : pipeline?.stages || []).map(s => s.id));
+    const onBoard = displayLeads.filter(l => stageIds.has(l.stageId));
+    const withValue = onBoard.filter(l => (l.value || 0) > 0);
+    return { total: withValue.reduce((sum, l) => sum + (l.value || 0), 0), cards: onBoard.length, semValor: onBoard.length - withValue.length };
+  }, [displayLeads, pipeline, sortedPipelines, search]);
+
   function handleRefetch() {
     refetch();
     if (search.trim()) refetchAll();
@@ -482,6 +493,23 @@ export function FunilView() {
           </Button>
         </div>
       </div>
+
+      {!isLoading && pipeline && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-6 py-2 border-b border-af-border text-sm">
+          <span className="text-slate-500">{search.trim() ? 'Valor total da busca:' : 'Valor total do funil:'}</span>
+          <span className="font-semibold text-slate-800">{formatCurrency(funnelTotals.total)}</span>
+          <span className="text-slate-400">·</span>
+          <span className="text-slate-500">{funnelTotals.cards} card{funnelTotals.cards !== 1 ? 's' : ''}</span>
+          {funnelTotals.semValor > 0 && (
+            <>
+              <span className="text-slate-400">·</span>
+              <span className="text-amber-600" title="Cards sem Valor da venda preenchido — o total pode estar abaixo do real">
+                {funnelTotals.semValor} sem valor
+              </span>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="flex-1 overflow-hidden py-4">
         {isLoading ? (
