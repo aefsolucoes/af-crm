@@ -10,10 +10,9 @@ import { logActivity } from './activity.service';
  *     "não precisa esperar a cliente responder"; se ele responder a pergunta,
  *     a resposta complementa o motivo e vira nota no card.
  *
- * Home Equity (Fabio 06/10): em vez de Perdido, o card vai pro estágio
- * "Remarketing" do setor e fica aberto pra receber o remarketing depois.
- * Quem já está no Remarketing e diz não de novo (no próprio remarketing) vai
- * pra Perdido — senão ficaria num ciclo sem fim. Outros setores: Perdido.
+ * (De 06/10 a 08/10 o "não" em Home Equity ia pro estágio Remarketing; o
+ * Fabio desfez: "não" sempre vai pra Perdido, venha do boas-vindas, do
+ * follow-up ou do remarketing — remarketing é só pra quem não deu retorno.)
  */
 
 const prisma = new PrismaClient();
@@ -24,23 +23,6 @@ const REASON_QUESTION_MARK = 'motivo do seu desinteresse';
 
 function normalize(s: string): string {
   return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-}
-
-/** Estágio "Remarketing" do setor do card, se o card é de Home Equity e ainda
- *  não está nele; senão null (segue pra Perdido). */
-async function remarketingStageFor(accountId: string, lead: { stageId: string | null; customFields: unknown; pipeline: { department: { id: string; name: string } | null } | null }) {
-  // Disse não pra própria mensagem de remarketing → Perdido (Fabio 06/10).
-  const { wasInRemarketing } = require('./remarketing.service') as typeof import('./remarketing.service');
-  if (wasInRemarketing(lead.customFields)) return null;
-  const dep = lead.pipeline?.department;
-  if (!dep || !/home equity/.test(normalize(dep.name))) return null;
-  const stages = await prisma.stage.findMany({
-    where: { pipeline: { accountId, departmentId: dep.id } },
-    select: { id: true, name: true, pipelineId: true },
-  });
-  const st = stages.find((s) => normalize(s.name) === 'remarketing');
-  if (!st || st.id === lead.stageId) return null;
-  return st;
 }
 
 function firstName(lead: { name: string; customFields: unknown }): string {
@@ -74,36 +56,17 @@ export async function handleNoInterestButton(accountId: string, leadId: string, 
 
   const button = text.trim();
   const lostReason = `Cliente tocou em "${button}"`;
-  const remarketing = await remarketingStageFor(accountId, lead);
-  let destino = 'Perdido';
-  if (remarketing) {
-    // Fica aberto e com a IA ligada (Fabio 08/10: a IA só desliga quando
-    // alguém da equipe responde direto).
-    const moved = await prisma.lead.update({
-      where: { id: lead.id },
-      data: {
-        stageId: remarketing.id,
-        pipelineId: remarketing.pipelineId,
-        lostReason,
-        notes: { create: { type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${remarketing.name}" — por Assistente IA (cliente tocou em "${button}")` } },
-      },
-    });
-    io?.to(`account_${accountId}`).emit('lead_moved', { lead: moved });
-    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: `moveu o card pro Remarketing: cliente tocou em "${button}"` });
-    destino = 'Remarketing';
-  } else {
-    const { updateLead } = require('./lead.service') as typeof import('./lead.service');
-    const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
-    await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io);
-    await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io });
-    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: cliente tocou em "${button}"` });
-  }
+  const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+  const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+  await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io);
+  await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io });
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: cliente tocou em "${button}"` });
 
   const nome = firstName(lead);
   const pergunta = `Tudo bem${nome ? `, ${nome}` : ''}, obrigado pelo retorno. Só pra gente melhorar: o motivo do seu desinteresse foi algo específico? O produto não era o que você procurava, as taxas não ficaram boas ou ficou faltando alguma opção de banco?`;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const sent = await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: pergunta, io });
-  console.log(`[Sem interesse] ${lead.name}: ${destino} + pergunta do motivo ${sent.success ? 'enviada' : 'FALHOU'}`);
+  console.log(`[Sem interesse] ${lead.name}: Perdido + pergunta do motivo ${sent.success ? 'enviada' : 'FALHOU'}`);
   return true;
 }
 

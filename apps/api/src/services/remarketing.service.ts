@@ -72,10 +72,10 @@ function isEligible(l: { name: string; customFields: unknown; contact: { name: s
   return !((l.customFields || {}) as Cf)._rmkStartedAt && hasPhone(l.contact) && !!remarketingFirstName(l);
 }
 
-// Só estágios de quem parou de responder — remarketing ("há um tempo você
-// conversou com a gente…") não faz sentido pra quem está em Pré-Análise,
-// Aguardando Documentação etc.
-const REMARKETING_STAGE_RE = /^(prospec|follow ?up|lead sem retorno|remarketing|venda futura)/;
+// Remarketing é SÓ pra quem não deu retorno (Fabio 08/10: "vamos tratar o
+// remarketing apenas para os clientes que realmente não tivemos retorno") —
+// estágio Lead Sem Retorno. Quem disse "não" vai pra Perdido e não entra.
+const REMARKETING_STAGE_RE = /^lead sem retorno/;
 
 /** Estágios dos funis de Vendas com quantos cards entrariam numa rodada nova. */
 export async function listRemarketingStages(accountId: string) {
