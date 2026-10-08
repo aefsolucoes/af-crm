@@ -37,6 +37,7 @@ const TIER: Record<string, string> = {
 const END_LABEL: Record<string, string> = {
   respondeu: 'Respondeu', perdido: 'Foi pra Perdido', 'mudou de estágio': 'Mudou de estágio', saiu: 'Saiu (Perdido/arquivado)',
   ganho: 'Ganho', 'sem nome': 'Sem nome válido', 'erro no envio': 'Erro no envio',
+  'bloqueou marketing': 'Bloqueou mensagens de marketing', 'sem WhatsApp': 'Número sem WhatsApp',
 };
 
 function fmt(d: string | null): string {

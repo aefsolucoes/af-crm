@@ -228,6 +228,21 @@ export async function processRemarketing(io: any): Promise<void> {
       if (replied) { await endRemarketing(l.id, cf, 'respondeu'); continue; }
       if (l.status !== 'OPEN' || l.archived) { await endRemarketing(l.id, cf, l.status === 'WON' ? 'ganho' : 'saiu'); continue; }
       if (l.stageId !== cf._rmkStageId) { await endRemarketing(l.id, cf, 'mudou de estágio'); continue; }
+      // A Meta recusou a última: cliente bloqueou marketing da empresa
+      // (131050) ou o número não tem WhatsApp (131026) — as próximas também
+      // não chegariam. Outros erros (ex.: 130472, número em "experimento" da
+      // Meta) seguem: a próxima pode passar.
+      if (Number(cf._rmkStep || 0) > 0) {
+        const lastTpl = await prisma.message.findFirst({
+          where: { leadId: l.id, templateName: { in: REMARKETING_TEMPLATES } },
+          orderBy: { createdAt: 'desc' },
+          select: { status: true, statusError: true },
+        });
+        if (lastTpl?.status === 'FAILED' && /131050|131026/.test(lastTpl.statusError || '')) {
+          await endRemarketing(l.id, cf, /131050/.test(lastTpl.statusError || '') ? 'bloqueou marketing' : 'sem WhatsApp');
+          continue;
+        }
+      }
       if (cf._rmkPaused) continue;
       const step = Number(cf._rmkStep || 0);
       const lastAt = cf._rmkLastAt ? new Date(cf._rmkLastAt).getTime() : 0;
