@@ -63,6 +63,8 @@ export interface SharedAiContext {
   etapaTexto: string;
   /** Campo "Instituição" do card — o banco em que o processo está seguindo. */
   bancoTexto: string | null;
+  /** Card Perdido: motivo + notas de aprovação/reprovação (regra dos Perdidos). */
+  perdidoTexto: string | null;
 }
 
 /**
@@ -185,7 +187,25 @@ export async function buildSharedAiContext(
     // Sem o banco a IA dizia que imóvel financiado "não impede" pra um
     // cliente aprovado no Santander, que só aceita quitado (Cláudio, 01/10).
     bancoTexto: String(((lead.customFields as any) || {}).instituicao || '').trim() || null,
+    perdidoTexto: lead.status === 'LOST' ? await lostCardContext(lead.id, lead.lostReason) : null,
   };
+}
+
+/** Perdido que voltou a escrever (Fabio 08/10): a IA precisa saber POR QUE
+ *  ele foi perdido — reprovação/restrição antes muda a conversa. Junta o
+ *  motivo da perda com as notas do card que falam de análise. */
+async function lostCardContext(leadId: string, lostReason: string | null): Promise<string> {
+  const notes = await prisma.note.findMany({ where: { leadId }, orderBy: { createdAt: 'desc' }, take: 60, select: { content: true, createdAt: true } }).catch(() => []);
+  const analise = notes
+    .filter((n) => /aprovad|reprovad|recusad|restri|negad|n[aã]o foi poss|n[aã]o aprov|score|serasa|spc/i.test(n.content) && !/^(Resposta automática da IA|🤖)/.test(n.content))
+    .slice(0, 5)
+    .map((n) => `- ${n.createdAt.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}: ${n.content.replace(/\s+/g, ' ').slice(0, 220)}`);
+  return `Motivo da perda: ${lostReason || '(não informado)'}
+${analise.length ? `Notas do card sobre análise/aprovação:\n${analise.join('\n')}` : 'Nenhuma nota de análise/aprovação no card.'}
+Se o cliente quiser seguir com o crédito/aprovação:
+- Se o motivo e as notas NÃO mostram reprovação, restrição ou crédito negado antes (ex.: sem interesse, sem retorno, taxa, desistiu, não respondeu): atenda normal, como um cliente novo (dúvidas / simulação / proposta).
+- Se mostram reprovação, restrição, crédito negado ou aprovado abaixo do que ele precisava: não prometa nada. Pergunte em 1-2 frases o que mudou desde a última análise (restrição regularizada, renda maior, outro imóvel de garantia, outro participante). Se ele trouxer um fato que pode mudar a aprovação, siga com a proposta e avise a equipe em "askTeam" com o que mudou. Se nada mudou, explique com educação que a análise anterior não aprovou e que dá pra tentar de novo quando essa situação mudar.
+- Nunca repita o motivo interno cru (ex.: "LEAD DESQUALIFICADO", "CLIENTE COM RESTRICAO") — fale com naturalidade.`;
 }
 
 /** Monta os blocos de contexto no MESMO formato/ordem pras duas IAs. */
@@ -205,7 +225,10 @@ ${ctx.escopoTexto}
 
 --- ETAPA ATUAL DO CARD (funil → etapa) ---
 ${ctx.etapaTexto}
-${ctx.bancoTexto ? `
+${ctx.perdidoTexto ? `
+--- ESTE CLIENTE ESTÁ MARCADO COMO PERDIDO (voltou a escrever) ---
+${ctx.perdidoTexto}
+` : ''}${ctx.bancoTexto ? `
 --- BANCO DESTE CARD (campo Instituição — o banco em que o processo do cliente está seguindo) ---
 ${ctx.bancoTexto}. Quando o cliente trouxer algo que depende do banco (ex.: imóvel financiado/com saldo devedor, conta, forma de pagamento), responda pela regra DESTE banco na Base de Conhecimento — nunca diga que "não impede" ou "dá pra fazer" de forma genérica se a regra deste banco diz o contrário.
 ` : ''}
