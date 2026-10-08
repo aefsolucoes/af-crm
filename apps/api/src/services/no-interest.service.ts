@@ -28,7 +28,10 @@ function normalize(s: string): string {
 
 /** Estágio "Remarketing" do setor do card, se o card é de Home Equity e ainda
  *  não está nele; senão null (segue pra Perdido). */
-async function remarketingStageFor(accountId: string, lead: { stageId: string | null; pipeline: { department: { id: string; name: string } | null } | null }) {
+async function remarketingStageFor(accountId: string, lead: { stageId: string | null; customFields: unknown; pipeline: { department: { id: string; name: string } | null } | null }) {
+  // Disse não pra própria mensagem de remarketing → Perdido (Fabio 06/10).
+  const { wasInRemarketing } = require('./remarketing.service') as typeof import('./remarketing.service');
+  if (wasInRemarketing(lead.customFields)) return null;
   const dep = lead.pipeline?.department;
   if (!dep || !/home equity/.test(normalize(dep.name))) return null;
   const stages = await prisma.stage.findMany({

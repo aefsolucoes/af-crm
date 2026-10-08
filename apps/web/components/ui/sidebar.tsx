@@ -10,7 +10,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown, Megaphone,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -38,6 +38,7 @@ const NAV: NavItem[] = [
   { href: '/salesbot', label: 'SalesBot', icon: Bot, perm: 'salesbot' },
   { href: '/templates', label: 'Templates', icon: FileText, perm: 'templates' },
   { href: '/automacao', label: 'Automações', icon: Zap, perm: 'automations' },
+  { href: '/remarketing', label: 'Remarketing', icon: Megaphone, perm: 'automations' },
   { href: '/usuarios', label: 'Usuários', icon: UserCog, perm: 'users' },
   { href: '/financeiro', label: 'Financeiro', icon: Wallet, perm: 'finance' },
   { href: '/importar', label: 'Importar', icon: Upload, perm: 'funnel_manage' },

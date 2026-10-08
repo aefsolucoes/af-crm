@@ -32,12 +32,14 @@ import pushRoutes from './routes/push';
 import activityRoutes from './routes/activity';
 import callRoutes from './routes/calls';
 import aiQuestionRoutes from './routes/ai-questions';
+import remarketingRoutes from './routes/remarketing';
 import emailRoutes from './routes/email';
 import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.service';
 import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { autoStarBigLeads } from './services/auto-star.service';
+import { processRemarketing } from './services/remarketing.service';
 import { autoMergeDuplicatesByPhone } from './services/lead.service';
 import { configureWebPush } from './services/push.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
@@ -95,6 +97,7 @@ app.use('/api/push', pushRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/calls', callRoutes);
 app.use('/api/ai-questions', aiQuestionRoutes);
+app.use('/api/remarketing', remarketingRoutes);
 app.use('/api/email', emailRoutes);
 
 configureWebPush();
@@ -256,6 +259,14 @@ httpServer.listen(PORT, () => {
       checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade:', err?.message));
     }, AUTOMATION_INACTIVITY_POLL_MS);
   }, 90 * 1000);
+
+  // Remarketing por WhatsApp: manda as mensagens do rodízio que venceram
+  // (só 9h–19h, seg–sáb, aos poucos) e encerra quem respondeu.
+  setTimeout(() => {
+    setInterval(() => {
+      processRemarketing(io).catch((err) => console.error('[Remarketing] Poll:', err?.message));
+    }, 60 * 1000);
+  }, 2 * 60 * 1000);
 
   // Estrela automática em cliente grande (HE > 150 mil, Financiamento > 300 mil).
   setTimeout(() => {

@@ -1274,9 +1274,11 @@ async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string
     if (!dept.includes('home equity') && !dept.includes('habitacional')) return false;
     const stage = (lead?.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
     if (/pre-analise|aprovad|aguardando|document|fechad|contrata|venda futura/.test(stage)) return false;
-    // Voltou pelo remarketing (Fabio 06/10): o card sai do Remarketing pra
-    // Prospecção e a IA volta a responder (lá ela fica desligada).
-    if (stage.trim() === 'remarketing' && lead?.pipelineId) {
+    // Voltou pelo remarketing (Fabio 06/10): o card sai do Remarketing — ou
+    // de onde estava quando recebeu a mensagem de remarketing (Lead Sem
+    // Retorno etc., Fabio 07/10) — pra Prospecção e a IA volta a responder.
+    const { wasInRemarketing } = require('./remarketing.service') as typeof import('./remarketing.service');
+    if ((stage.trim() === 'remarketing' || wasInRemarketing(lead?.customFields)) && lead?.pipelineId) {
       const prospec = (await prisma.stage.findMany({ where: { pipelineId: lead.pipelineId }, orderBy: { order: 'asc' }, select: { id: true, name: true } }))
         .find((s) => s.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().startsWith('prospec'));
       const moved = await prisma.lead.update({
