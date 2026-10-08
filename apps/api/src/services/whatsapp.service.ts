@@ -1421,6 +1421,12 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 
     const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer);
     if (!genResult) return;
+    // Chegou outra mensagem enquanto a resposta era gerada (leva alguns
+    // segundos): descarta esta — a da mensagem nova responde tudo, com o
+    // histórico inteiro (Marta 08/10: 3 mensagens seguidas, 3 respostas
+    // repetindo a mesma coisa).
+    const newest = await latestInbound();
+    if (mine && newest && newest.id !== mine.id) return;
     const { reply, handoff, moveToStage, markLost, stopFollowUp, moveReason, extractedFields } = genResult;
 
     if (genResult.noReply) {
