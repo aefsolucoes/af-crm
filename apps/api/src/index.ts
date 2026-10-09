@@ -40,6 +40,7 @@ import { checkInactivityAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { autoStarBigLeads } from './services/auto-star.service';
 import { processRemarketing } from './services/remarketing.service';
+import { processApprovalNotices } from './services/approval-notice.service';
 import { autoMergeDuplicatesByPhone } from './services/lead.service';
 import { configureWebPush } from './services/push.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
@@ -259,6 +260,13 @@ httpServer.listen(PORT, () => {
       checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade:', err?.message));
     }, AUTOMATION_INACTIVITY_POLL_MS);
   }, 90 * 1000);
+
+  // Aviso de crédito aprovado (template) pra quem nunca falou no WhatsApp.
+  setTimeout(() => {
+    setInterval(() => {
+      processApprovalNotices(io).catch((err) => console.error('[Aprovação] Poll:', err?.message));
+    }, 2 * 60 * 1000);
+  }, 150 * 1000);
 
   // Remarketing por WhatsApp: manda as mensagens do rodízio que venceram
   // (só 9h–19h, seg–sáb, aos poucos) e encerra quem respondeu.

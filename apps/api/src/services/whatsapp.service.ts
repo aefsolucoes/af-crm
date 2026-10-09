@@ -1203,7 +1203,9 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         // resposta seguinte do cliente vira o motivo no card (no-interest.service).
         const noInterest = require('./no-interest.service') as typeof import('./no-interest.service');
         if (msg.type !== 'button') await noInterest.maybeCaptureLostReason(accountId, leadId, text, io).catch((e) => console.error('[Sem interesse] captura do motivo falhou:', e?.message));
+        const approvalNotice = require('./approval-notice.service') as typeof import('./approval-notice.service');
         const interestHandled = msg.type === 'button' && (
+          await approvalNotice.maybeSendApprovalOnYes(accountId, leadId, text, io).catch((e) => { console.error('[Aprovação] falhou:', e?.message); return false; }) ||
           await maybeSendProposalLinkOnInterest(accountId, leadId, text, io) ||
           await noInterest.handleNoInterestButton(accountId, leadId, text, io).catch((e) => { console.error('[Sem interesse] falhou:', e?.message); return false; })
         );
