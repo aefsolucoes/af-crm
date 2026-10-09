@@ -1273,6 +1273,9 @@ async function isSiteFormAlreadyAcknowledged(leadId: string, text: string): Prom
  *  Só nos setores com proposta manual (Habitacional / Home Equity) e com o
  *  card ainda antes da pré-análise — fora disso segue o fluxo normal (IA). */
 export const INTEREST_OPTIONS_MARK = 'quer fazer uma nova simulação';
+/** Botões da pergunta das 3 opções (Fabio 09/10: "muitos clientes com
+ *  dificuldade de responder essa pergunta") — título até 20 caracteres. */
+export const INTEREST_OPTION_BUTTONS = ['Tirar dúvidas', 'Nova simulação', 'Seguir pra aprovação'];
 async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string, text: string, io: any): Promise<boolean> {
   try {
     if (!/^(sim,?\s*)?tenho interesse\b/i.test(text.trim())) return false;
@@ -1318,7 +1321,7 @@ async function maybeSendProposalLinkOnInterest(accountId: string, leadId: string
     const nome = callableFirstName(cf.participante_1, lead?.name) || '';
     const content = `${nome ? `${nome}, você` : 'Você'} tem alguma dúvida de como funciona, ${INTEREST_OPTIONS_MARK} ou já quer seguir pra aprovação do seu crédito?`;
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-    const sent = await sendOutboundWhatsApp({ accountId, leadId, content, io });
+    const sent = await sendOutboundWhatsApp({ accountId, leadId, content, buttons: INTEREST_OPTION_BUTTONS, io });
     if (sent.success) {
       // Quem disse que tem interesse é atendido pela IA dali em diante
       // (Fabio 08/10) — a resposta dele pra essa pergunta não pode ficar sem retorno.
@@ -1462,13 +1465,18 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
       return;
     }
 
-    const result = await sendWhatsAppMessage(phone, reply, accountId, departmentId);
+    // A própria IA fez a pergunta das 3 opções: vai com os botões também.
+    const withOptionButtons = reply.includes(INTEREST_OPTIONS_MARK) || /nova simula[cç][aã]o[^?]*aprova[cç][aã]o[^?]*\?/i.test(reply);
+    const result = withOptionButtons
+      ? await sendWhatsAppButtonsMessage(phone, reply, INTEREST_OPTION_BUTTONS, accountId, departmentId)
+      : await sendWhatsAppMessage(phone, reply, accountId, departmentId);
     if (!result.success) {
       console.error('[WhatsApp] Resposta de IA falhou ao enviar:', result.error);
       return;
     }
+    const savedReply = withOptionButtons ? `${reply}\n\n${INTEREST_OPTION_BUTTONS.map((b) => `[${b}]`).join('  ')}` : reply;
     const sent = await prisma.message.create({
-      data: { content: reply, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT' },
+      data: { content: savedReply, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT' },
     });
     if (io) io.to(`lead:${leadId}`).emit('new_message', sent);
     await prisma.note.create({ data: { leadId, content: `Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
