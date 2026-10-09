@@ -42,6 +42,22 @@ async function markGoogleTokenInvalid(accountId: string): Promise<void> {
   }).catch(() => {});
 }
 
+/** Google recusou por falta de permissão do Drive (o token não tem o escopo
+ *  drive — alguém reconectou e desmarcou a caixa do Drive na tela de
+ *  permissões do Google; achado 09/10: nada subia desde 08/10, em silêncio). */
+function isMissingDriveScopeError(err: unknown): boolean {
+  const e = err as any;
+  return /insufficient permission|insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(String(e?.message || ''))
+    || e?.response?.status === 403 && /scope|permission/i.test(JSON.stringify(e?.response?.data || ''));
+}
+
+const DRIVE_SCOPE_MSG = 'O Google conectado está sem a permissão do Google Drive. Reconecte em Configurações → Google Drive e, na tela do Google, deixe MARCADA a caixa de acesso aos arquivos do Google Drive.';
+
+/** Marca a conexão pra reconectar (popup pro admin) quando o erro é falta de permissão do Drive. */
+export async function noteDriveError(accountId: string, err: unknown): Promise<void> {
+  if (isMissingDriveScopeError(err)) await markGoogleTokenInvalid(accountId);
+}
+
 async function clearGoogleTokenInvalid(accountId: string): Promise<void> {
   await prisma.googleConnection.updateMany({
     where: { accountId, tokenInvalid: true },
@@ -65,6 +81,12 @@ export async function handleOAuthCallback(code: string, accountId: string): Prom
   const oauth2 = getOAuthClient();
   const { tokens } = await oauth2.getToken(code);
   oauth2.setCredentials(tokens);
+  // Sem a caixa do Drive marcada na tela do Google, o CRM não consegue subir
+  // nada — recusa aqui, com a explicação, em vez de salvar uma conexão que
+  // falha calada (e sem estragar a conexão que já existia).
+  if (tokens.scope && !/auth\/drive(\s|$)/.test(tokens.scope)) {
+    throw new Error(DRIVE_SCOPE_MSG);
+  }
 
   // Descobre o e-mail da conta conectada
   let email: string | null = null;
@@ -128,8 +150,13 @@ async function getDrive(accountId: string) {
   // só chama o Google quando precisa renovar — que é quando o invalid_grant
   // aparece. Aqui é o ponto único por onde TODA operação de Drive passa.
   try {
-    await oauth2.getAccessToken();
-    if (conn.tokenInvalid) await clearGoogleTokenInvalid(accountId);
+    const { token } = await oauth2.getAccessToken();
+    if (conn.tokenInvalid) {
+      // Só tira o aviso de "reconectar" se o token voltou a ter o Drive.
+      const info: any = token ? await (await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${token}`)).json().catch(() => ({})) : {};
+      if (info?.scope && !/auth\/drive(\s|$)/.test(info.scope)) throw new Error(DRIVE_SCOPE_MSG);
+      await clearGoogleTokenInvalid(accountId);
+    }
   } catch (err) {
     if (isInvalidGrantError(err)) {
       await markGoogleTokenInvalid(accountId);
@@ -148,9 +175,13 @@ export async function checkGoogleConnection(accountId: string): Promise<{ ok: bo
   const conn = await prisma.googleConnection.findUnique({ where: { accountId }, select: { refreshToken: true } });
   if (!conn?.refreshToken) return { ok: false, connected: false };
   try {
-    await getDrive(accountId);
+    const drive = await getDrive(accountId);
+    // Testa o Drive DE VERDADE: o login pode estar válido e mesmo assim sem
+    // permissão do Drive (09/10) — aí o aviso de reconectar tem que aparecer.
+    await drive.about.get({ fields: 'user(emailAddress)' });
     return { ok: true, connected: true };
-  } catch {
+  } catch (err) {
+    await noteDriveError(accountId, err);
     return { ok: false, connected: true };
   }
 }
@@ -845,6 +876,7 @@ export async function autoUploadAttachmentToDrive(accountId: string, leadId: str
   // As 3 tentativas falharam: relança pro .catch() de quem chamou (loga o erro
   // final) — os bytes continuam no banco, e o arquivamento periódico ainda
   // pega esse anexo depois como última rede de segurança.
+  await noteDriveError(accountId, lastErr);
   throw lastErr;
 }
 
