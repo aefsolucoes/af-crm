@@ -1,9 +1,11 @@
-import LeadDetailClient from './lead-detail-client';
+import LeadRedirect from './lead-redirect';
 
 export async function generateStaticParams() {
   return [{ id: 'placeholder' }];
 }
 
-export default function LeadDetailPage({ params }: { params: { id: string } }) {
-  return <LeadDetailClient id={params.id} />;
+// A tela antiga de detalhe do lead foi aposentada (Fabio não usa — 09/10):
+// qualquer link antigo pra /leads/:id abre o card na Inbox.
+export default function LeadDetailPage() {
+  return <LeadRedirect />;
 }

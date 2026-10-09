@@ -88,7 +88,7 @@ export default function TarefasPage() {
                       </span>
                       {task.user && <span>· {task.user.name}</span>}
                       {task.lead && (
-                        <Link href={`/leads/${task.lead.id}`} className="hover:text-af-mid hover:underline">
+                        <Link href={`/inbox?leadId=${task.lead.id}`} className="hover:text-af-mid hover:underline">
                           · {task.lead.name}
                         </Link>
                       )}

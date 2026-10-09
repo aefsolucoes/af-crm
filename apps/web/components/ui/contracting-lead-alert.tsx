@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { Modal } from '@/components/ui/modal';
 import { getSocket } from '@/lib/socket';
 import { FileText, MessageCircle } from 'lucide-react';
+import { LeadDetailModal } from '@/components/kanban/lead-detail-modal';
 
 /**
  * Popup "cliente chegou pra contratação". O backend (PATCH /leads/:id/stage,
@@ -38,19 +39,25 @@ export function ContractingLeadAlert() {
 
   const dismissCurrent = useCallback(() => setQueue((q) => q.slice(1)), []);
 
+  // "Abrir card" abre o mesmo card do Funil (popup), não a tela /leads/:id —
+  // o Fabio não usa aquela tela (09/10).
+  const [cardLeadId, setCardLeadId] = useState<string | null>(null);
   const goToCard = useCallback(() => {
-    if (current) router.push(`/leads/${current.leadId}`);
+    if (current) setCardLeadId(current.leadId);
     dismissCurrent();
-  }, [current, router, dismissCurrent]);
+  }, [current, dismissCurrent]);
 
   const goToChat = useCallback(() => {
     if (current) router.push(`/inbox?leadId=${current.leadId}`);
     dismissCurrent();
   }, [current, router, dismissCurrent]);
 
-  if (!current) return null;
+  const cardModal = <LeadDetailModal leadId={cardLeadId} onClose={() => setCardLeadId(null)} />;
+  if (!current) return cardModal;
 
   return (
+    <>
+    {cardModal}
     <Modal title="Cliente pronto para contratação" onClose={dismissCurrent} size="sm">
       <div className="space-y-3 text-sm text-slate-600">
         <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800">
@@ -80,5 +87,6 @@ export function ContractingLeadAlert() {
         </button>
       </div>
     </Modal>
+    </>
   );
 }

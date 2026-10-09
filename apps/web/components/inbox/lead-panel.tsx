@@ -79,7 +79,7 @@ export function LeadPanel({ lead }: LeadPanelProps) {
       <div className="px-4 py-4 border-b border-af-border bg-af-light/30">
         <div className="flex items-center justify-between mb-3">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Lead</p>
-          <Link href={`/leads/${lead.id}`} className="text-af-mid hover:text-af-dark transition-colors" title="Abrir lead">
+          <Link href={`/inbox?leadId=${lead.id}`} className="text-af-mid hover:text-af-dark transition-colors" title="Abrir lead">
             <ExternalLink size={14} />
           </Link>
         </div>
