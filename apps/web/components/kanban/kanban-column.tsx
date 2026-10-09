@@ -218,7 +218,7 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLead
       <SortableContext items={leads.map((l) => l.id)} strategy={verticalListSortingStrategy}>
         <div
           ref={setNodeRef}
-          className={`flex flex-col gap-2 min-h-[60px] pt-2 flex-1 min-h-0 overflow-y-auto scrollbar-thin transition-colors rounded-xl ${
+          className={`flex flex-col gap-2 min-h-[60px] pt-2 flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-1.5 -mx-1.5 scrollbar-thin transition-colors rounded-xl ${
             isOver ? 'bg-af-light/40' : ''
           }`}
         >
