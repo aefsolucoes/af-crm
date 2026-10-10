@@ -208,7 +208,10 @@ export async function handleSiteProposalEmail(accountId: string, email: EmailMes
       const moved = await advanceLeadOnProposalForm(accountId, leadId, `${marker}\nCPF: ${cpf || '-'}`).catch(() => null);
       movedStageId = moved?.stageId || null;
     }
-    if (movedStageId) runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId, io: io as any, context: { newStageId: movedStageId } }).catch(() => {});
+    // Proposta por E-MAIL não é respondida (Fabio 10/10): as ações internas da
+    // entrada em Pré-Análise rodam (ligar a IA etc.), mas o "Recebi sua
+    // proposta" só sai quando o cliente mandar a proposta pelo WhatsApp.
+    if (movedStageId) runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId, io: io as any, context: { newStageId: movedStageId, skipClientMessages: true } }).catch(() => {});
     if (io && created) io.to(`account_${accountId}`).emit('site_lead_created', { leadId, leadName: lead?.name, department: product.department });
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
     sendPushToAccount(accountId, { title: `📋 Proposta do site — ${lead?.name || 'cliente'}`, body: product.label, leadId }).catch(() => {});

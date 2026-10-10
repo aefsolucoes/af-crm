@@ -48,6 +48,10 @@ export interface RunContext {
    *  uma regra por setor (ex.: template de boas-vindas diferente pra Home
    *  Equity e Financiamento Habitacional, mesmo formulário do site pros dois). */
   departmentId?: string;
+  /** Mudança de etapa causada por uma proposta que chegou por E-MAIL: roda as
+   *  ações internas (ligar IA, tag…) mas NÃO manda nada pro cliente — o "Recebi
+   *  sua proposta" sai só quando a proposta chegar pelo WhatsApp (Fabio 10/10). */
+  skipClientMessages?: boolean;
 }
 
 type LeadForActions = {
@@ -166,6 +170,10 @@ export function fillVariables(text: string, lead: LeadForActions, context?: RunC
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function executeAction(action: AutomationAction, lead: LeadForActions, context: RunContext, io: unknown): Promise<boolean> {
+  if (context.skipClientMessages && ['send_message', 'send_template', 'send_email', 'start_salesbot'].includes(action.type)) {
+    console.log(`[Automation] ação "${action.type}" não enviada: proposta chegou por e-mail — a confirmação sai quando chegar pelo WhatsApp`);
+    return false;
+  }
   switch (action.type) {
     case 'send_message': {
       const content = fillVariables(String(action.config.message || ''), lead, context);

@@ -910,6 +910,16 @@ export async function resolveContactAndLeadByPhone(
         console.log(`[Formulário] card ${existingLead.id} movido pra "${moved.stageName}"`);
         const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
         runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: existingLead.id, io, context: { newStageId: moved.stageId } }).catch(() => {});
+      } else if (await isSiteFormAckPending(existingLead.id, textForCampaignDetection)) {
+        // A proposta chegou ANTES por e-mail (card já na Pré-Análise, sem resposta —
+        // e-mail não é respondido): agora, pelo WhatsApp, sai a confirmação.
+        const nowStage = await prisma.lead.findUnique({ where: { id: existingLead.id }, select: { stageId: true, stage: { select: { name: true } } } });
+        if (nowStage && /pre-?\s?an[aá]lise/i.test(nowStage.stage?.name || '') && !/aprovad/i.test(nowStage.stage?.name || '')) {
+          formAdvanced = true;
+          console.log(`[Formulário] card ${existingLead.id}: proposta chegou pelo WhatsApp depois do e-mail — mandando a confirmação`);
+          const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
+          runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: existingLead.id, io, context: { newStageId: nowStage.stageId } }).catch(() => {});
+        }
       }
     }
   } else {
@@ -1241,6 +1251,29 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
     }
   } catch (err) {
     console.error('[WhatsApp] Process incoming error:', err);
+  }
+}
+
+/** true = a mensagem é o formulário de proposta do site, a MESMA proposta já
+ *  chegou por e-mail (últimas 6h) e AINDA NÃO foi respondida pelo WhatsApp —
+ *  é a hora de mandar o "Recebi sua proposta" (o e-mail não é respondido). */
+async function isSiteFormAckPending(leadId: string, text: string): Promise<boolean> {
+  try {
+    const { parseProposalForm } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
+    if (!parseProposalForm(text) && !/preenchi a proposta\b[\s\S]*\bno site/i.test(text)) return false;
+    const email = await prisma.message.findFirst({
+      where: { leadId, direction: 'INBOUND', channel: 'EMAIL', content: { startsWith: '📋 Proposta preenchida no site' }, createdAt: { gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+    if (!email) return false;
+    const ack = await prisma.message.findFirst({
+      where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', createdAt: { gte: email.createdAt } },
+      select: { id: true },
+    });
+    return !ack;
+  } catch {
+    return false;
   }
 }
 
