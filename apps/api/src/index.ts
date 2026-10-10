@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { installProcessGuards } from './lib/process-guards';
+installProcessGuards(); // antes de tudo: erro de banco/rede momentâneo não derruba mais o servidor
 import express from 'express';
 import http from 'http';
 import cors from 'cors';

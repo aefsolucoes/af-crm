@@ -5,9 +5,8 @@
     "buildCommand": "npm install && npx prisma generate && npm run build"
   },
   "deploy": {
-    "startCommand": "npx prisma generate && npx prisma migrate deploy && node dist/index.js",
+    "startCommand": "npx prisma generate && (for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do npx prisma migrate deploy && exit 0; echo Banco ainda nao responde - tentativa $i de 18 - aguardando 10s; sleep 10; done; exit 1) && node dist/index.js",
     "healthcheckPath": "/health",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 3
+    "restartPolicyType": "ALWAYS"
   }
 }
