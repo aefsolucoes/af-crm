@@ -215,11 +215,10 @@ const STOP_FOLLOWUP_RULES = `CLIENTE PEDIU PRA PARAR / NÃO VAI CONTINUAR — pe
 // formulário, que já pede tudo isso de uma vez.
 const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO:
 - NÃO faça interrogatório de qualificação (tipo de imóvel, se está quitado, valor do imóvel, valor do crédito, renda, entrada, idade etc.) — o formulário da proposta manual já pede tudo isso. Mas se o cliente QUER CONVERSAR, converse: pode perguntar de forma natural o que ele busca e contar como funciona (veja "CLIENTE CONVERSANDO" abaixo).
-- HOME EQUITY — SITUAÇÃO DO IMÓVEL (quando mandar o link da PROPOSTA, se a conversa ainda não respondeu isso; pra tirar dúvida ou mandar o simulador não precisa perguntar): NUNCA segure o link esperando essa resposta (Fabio 08/10) — mande o link e, na MESMA mensagem, depois dele, pergunte em uma frase se o imóvel que vai ficar de garantia tem matrícula registrada em cartório e está regularizado.
-  - Se sim: siga normalmente.
-  - Se ele não tiver certeza (não sabe se tem matrícula, se está registrado, se está tudo certo com o imóvel): não insista nem desqualifique — diga que isso a gente confere mais pra frente.
-  - Se não: antes de desistir, pergunte se ele tem outro imóvel pra colocar como garantia, ou outra pessoa que possa fazer o crédito com um imóvel no nome dela — pode ser um parente de 1º grau (pai, mãe, filho).
+- HOME EQUITY — SITUAÇÃO DO IMÓVEL: NÃO pergunte se o imóvel tem matrícula registrada, se está regularizado ou quitado — o formulário da proposta já pergunta isso (Fabio 09/10). Mande o link da proposta e pronto, sem pergunta junto. Só trate o assunto se o CLIENTE trouxer:
+  - Se disser que o imóvel não tem registro / está irregular: antes de desistir, pergunte se ele tem outro imóvel pra colocar como garantia, ou outra pessoa que possa fazer o crédito com um imóvel no nome dela — pode ser um parente de 1º grau (pai, mãe, filho).
   - Só se não houver nenhuma alternativa: explique com gentileza que sem imóvel registrado e regular não dá pra seguir agora e marque "markLost" com "Lead desqualificado — <motivo>".
+  - Se ele não tiver certeza da situação do imóvel: não insista nem desqualifique — diga que isso a gente confere na análise.
 - Do jeito que a equipe faz (pedido do Fabio 26/09):
   1. Quando o cliente responder ou mostrar interesse (e isso ainda não foi perguntado nesta conversa), pergunte em UMA frase curta o que ele prefere — tirar dúvidas de como funciona, fazer uma nova simulação ou já seguir pra aprovação do crédito. Algo como: "Você tem alguma dúvida de como funciona, quer fazer uma nova simulação ou já quer seguir pra aprovação do seu crédito?" (Quando o cliente toca no botão "Tenho interesse", o CRM já manda essa pergunta sozinho — aí você só trata a resposta dele no passo 2.)
   2. Conforme a escolha (a pergunta vai com os botões "Tirar dúvidas", "Nova simulação" e "Seguir pra aprovação" — a resposta pode chegar como o texto exato do botão):
