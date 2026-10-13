@@ -405,7 +405,7 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
     : (p.scopeDepartmentIds.length ? { departmentId: { in: p.scopeDepartmentIds } } : { departmentId: { not: null } });
   const rows = await db.creditAnalysis.findMany({
     where: { accountId: p.accountId, createdAt: { gte: from }, dryRun: false, status: { not: 'TEST' }, lead: { pipeline: deptWhere } },
-    select: { leadId: true, bank: true, status: true, createdAt: true, finishedAt: true },
+    select: { leadId: true, bank: true, status: true, createdAt: true, finishedAt: true, source: true },
     orderBy: { createdAt: 'asc' },
   });
 
@@ -434,7 +434,7 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
       else if (rep.status === 'REJECTED') b.rejected++;
       else if (PENDING.has(rep.status)) b.pending++;
       else b.failed++;
-      if (decided && decided.finishedAt) {
+      if (decided && decided.finishedAt && list[0].source === 'EXTENSION') { // registro manual não mede tempo (não tem uma solicitação de verdade)
         const minutes = (decided.finishedAt.getTime() - list[0].createdAt.getTime()) / 60_000;
         if (minutes >= 0) mins[bank].push(minutes);
       }
