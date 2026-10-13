@@ -170,7 +170,7 @@ async function noticeClients(accountId: string, io: any) {
     if (!last || Date.now() - last.getTime() < NOTICE_QUIET_MS) continue;
     if (cf._autoNoticeAt && Date.now() - new Date(cf._autoNoticeAt).getTime() < NOTICE_MIN_GAP_MS) continue;
     const preview = await previewApprovalNotice(l.id).catch(() => null);
-    if (!preview) continue; // nenhuma aprovada com valor
+    if (!preview || preview.warnings.length) continue; // nenhuma aprovada com valor, ou ainda faltam as parcelas da nova simulação
     const sig = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${a.holderName || ''}`).sort().join('|');
     if (cf._autoNoticeSig === sig) continue;
     const out = await sendApprovalNoticeNow({ accountId, leadId: l.id, io });

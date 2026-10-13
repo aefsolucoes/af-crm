@@ -105,7 +105,13 @@ export function parseSantanderConditions(text: string): ResultFields {
   const prazo = /prazo\s*(\d+)\s*meses/i.exec(t); if (prazo) out.termMonths = Number(prazo[1]);
   const p1 = /1[ªa]\s*parcela\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (p1) out.firstInstallment = brNumber(p1[1]);
   const pu = /[úu]ltima\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (pu) out.lastInstallment = brNumber(pu[1]);
-  const taxa = /taxa efetiva\s*([\d.,]+\s*%\s*a\.a\.)/i.exec(t); if (taxa) out.rate = taxa[1].replace(/\s+/g, ' ');
+  // Taxa que o cliente vê é a MENSAL: nominal anual ÷ 12 (ex.: 19,80% a.a. → 1,65% a.m.; é a que dá os 21,70% a.a. efetivos).
+  // Sem a nominal, deriva da efetiva anual.
+  const fmt = (n: number) => `${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.m.`;
+  const nominal = /taxa nominal\s*([\d.]+,\d{1,2})\s*%\s*a\.a\./i.exec(t);
+  const efetiva = /taxa efetiva\s*([\d.]+,\d{1,2})\s*%\s*a\.a\./i.exec(t);
+  if (nominal) out.rate = fmt(brNumber(nominal[1]) / 12);
+  else if (efetiva) out.rate = fmt((Math.pow(1 + brNumber(efetiva[1]) / 100, 1 / 12) - 1) * 100);
   return out;
 }
 

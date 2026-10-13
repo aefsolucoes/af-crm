@@ -191,7 +191,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
   return replied === 0;
 }
 
-interface ApprovalOption { instituicao: string; valor: string; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; parcelaMaxima?: string; nome?: string; pedido?: string }
+interface ApprovalOption { instituicao: string; valor: string; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -272,7 +272,6 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
     o.primeiraParcela && `💵 1ª parcela: ${o.primeiraParcela}`,
     o.ultimaParcela && `💵 Última parcela: ${o.ultimaParcela}`,
-    o.parcelaMaxima && !o.primeiraParcela && `💵 Parcela máxima: ${o.parcelaMaxima}`,
   ].filter(Boolean).join('\n');
   const head = options.length > 1 ? `✅ Consegui ${options.length} opções de aprovação pra você escolher!` : '✅ Crédito aprovado!';
   const tail = options.length > 1 ? '👉 Qual dessas opções você prefere? É só me responder por aqui que eu sigo com a que você escolher.' : 'Agora vamos para a próxima etapa do processo!';
@@ -329,8 +328,8 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
       taxa: r.rate || undefined,
       primeiraParcela: money(r.firstInstallment),
       ultimaParcela: money(r.lastInstallment),
-      parcelaMaxima: (/parcela m[aá]xima\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1],
       pedido: /aprovad[oa] a menor/i.test(r.detail || '') ? (/pedido:?\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1] : undefined,
+      incompleta: /aprovad[oa] a menor/i.test(r.detail || '') && !r.firstInstallment,
     }));
   return options.length ? options : null;
 }
@@ -403,15 +402,19 @@ async function awaitingDocsMove(leadId: string): Promise<{ from: string; to: str
 }
 
 /** O que seria enviado: texto com TODAS as opções aprovadas (cada uma com o nome em que saiu, se for o 2º participante) e como vai. */
-export async function previewApprovalNotice(leadId: string): Promise<{ text: string; options: number; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null } | null> {
+export async function previewApprovalNotice(leadId: string): Promise<{ text: string; options: number; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] } | null> {
   const built = await optionsFromAnalyses(leadId).catch(() => null);
   if (!built) return null;
+  // "Aprovado a menor": as parcelas certas são as da NOVA simulação com os valores aprovados (a extensão refaz). Sem elas, não avisa.
+  const warnings = (built.filter((o) => o.incompleta).map((o) => `${o.instituicao}: aprovado a menor — faltam a 1ª e a última parcela (a extensão ainda não refez a simulação com os valores aprovados). Clique em "Conferir" nesse banco e tente de novo.`));
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true } });
-  const text = renderApprovalText(await withHolders(leadId, built));
+  // Já mandamos um resumo antes (ex.: sem as parcelas certas)? Então este é uma ATUALIZAÇÃO, e o texto diz isso.
+  const jaMandou = (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } } })) > 0;
+  const text = `${jaMandou ? '🔄 Atualizei os valores da sua proposta, agora com os números certos:\n\n' : ''}${renderApprovalText(await withHolders(leadId, built))}`;
   const [mode, tpl, already, move] = await Promise.all([
     whatsappWindowOpen(leadId), lead ? docsTemplate(lead.accountId) : null, docsAlreadySent(leadId), awaitingDocsMove(leadId),
   ]);
-  return { text, options: built.length, mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null };
+  return { text, options: built.length, mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
 }
 
 /** Manda a lista de documentos (Resposta rápida) se ainda não foi e se a janela de 24 h estiver aberta. */
@@ -454,6 +457,7 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   const moveStage = p.moveStage !== false;
   const preview = await previewApprovalNotice(p.leadId);
   if (!preview) return { ok: false, error: 'Não há opção aprovada com valor pra avisar o cliente (preencha o resultado da análise).' };
+  if (preview.warnings.length) return { ok: false, error: preview.warnings.join(' ') };
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true } } } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
