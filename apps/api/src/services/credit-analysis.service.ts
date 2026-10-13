@@ -44,6 +44,7 @@ const REPORT_REUSE_MS = 12 * 60 * 60 * 1000; // relatório da extensão continua
 export interface ResultFields {
   proposalNumber?: string | null;
   approvedValue?: number | null;
+  netValue?: number | null;
   termMonths?: number | null;
   rate?: string | null;
   indexer?: string | null;
@@ -51,7 +52,7 @@ export interface ResultFields {
   lastInstallment?: number | null;
   conditions?: string | null;
 }
-const RESULT_KEYS: (keyof ResultFields)[] = ['proposalNumber', 'approvedValue', 'termMonths', 'rate', 'indexer', 'firstInstallment', 'lastInstallment', 'conditions'];
+const RESULT_KEYS: (keyof ResultFields)[] = ['proposalNumber', 'approvedValue', 'netValue', 'termMonths', 'rate', 'indexer', 'firstInstallment', 'lastInstallment', 'conditions'];
 
 const brl = (n: number | null | undefined) => (n == null ? '' : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
 
@@ -60,6 +61,7 @@ function pickResult(input: Record<string, any>): ResultFields {
   const num = (v: any) => { const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(/[^\d.,-]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : null; };
   if ('proposalNumber' in input) out.proposalNumber = input.proposalNumber ? String(input.proposalNumber).slice(0, 40) : null;
   if ('approvedValue' in input) out.approvedValue = num(input.approvedValue);
+  if ('netValue' in input) out.netValue = num(input.netValue);
   if ('termMonths' in input) { const t = num(input.termMonths); out.termMonths = t ? Math.round(t) : null; }
   if ('rate' in input) out.rate = input.rate ? String(input.rate).slice(0, 120) : null;
   if ('indexer' in input) out.indexer = input.indexer ? String(input.indexer).slice(0, 40) : null;
@@ -126,6 +128,7 @@ export function analysisNote(a: { bank: string; status: string; detail?: string 
     const parts = [
       `Banco: ${label}`,
       a.approvedValue ? `Valor aprovado: ${brl(a.approvedValue)}` : '',
+      a.netValue ? `Valor líquido do contrato: ${brl(a.netValue)} (já descontados IOF, tarifa de cadastro e custas)` : '',
       a.termMonths ? `Prazo: ${a.termMonths} meses` : '',
       a.rate ? `Taxa: ${a.rate}${a.indexer && !new RegExp(a.indexer, 'i').test(a.rate) ? ` + ${a.indexer}` : ''}` : (a.indexer ? `Indexador: ${a.indexer}` : ''),
       a.firstInstallment ? `1ª parcela: ${brl(a.firstInstallment)}` : '',

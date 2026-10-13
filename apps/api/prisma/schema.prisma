@@ -1176,6 +1176,7 @@ model CreditAnalysis {
   detail           String?   @db.Text
   proposalNumber   String?
   approvedValue    Float?
+  netValue         Float? // valor LÍQUIDO do contrato (Creditas: já sem IOF/tarifa/custas) — é o que o aviso ao cliente mostra quando existe
   termMonths       Int?
   rate             String?
   indexer          String?

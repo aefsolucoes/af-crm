@@ -28,7 +28,7 @@ export const MANUAL_STATUS = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CH
 
 export interface Analysis {
   id: string; bank: Bank; status: string; detail: string | null; dryRun: boolean; source: string; chosen: boolean;
-  holderName?: string | null; proposalNumber: string | null; approvedValue: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
+  holderName?: string | null; proposalNumber: string | null; approvedValue: number | null; netValue?: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
   firstInstallment: number | null; lastInstallment: number | null; conditions: string | null;
   requestedAt: string; finishedAt: string | null; updatedAt: string; createdAt: string;
 }

@@ -191,7 +191,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
   return replied === 0;
 }
 
-interface ApprovalOption { instituicao: string; valor: string; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
+interface ApprovalOption { instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -266,7 +266,7 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     '📋 Resumo da proposta:',
     `🏦 Instituição: ${o.instituicao}`,
     o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
-    `💰 Valor aprovado: ${o.valor}`,
+    o.liquido ? `💰 Valor líquido: ${o.valor} (já descontados IOF, tarifa de cadastro e custas)` : `💰 Valor aprovado: ${o.valor}`,
     o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
     o.prazo && `📅 Prazo: ${o.prazo}`,
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
@@ -320,10 +320,12 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
   for (const r of rows) byBank.set(r.bank, r);
   const label: Record<string, string> = { INTER: 'Banco Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
   const options = Array.from(byBank.values())
-    .sort((a, b) => (b.approvedValue || 0) - (a.approvedValue || 0))
+    .sort((a, b) => (b.netValue || b.approvedValue || 0) - (a.netValue || a.approvedValue || 0))
     .map((r): ApprovalOption => ({
       instituicao: label[r.bank] || r.bank,
-      valor: money(r.approvedValue) as string,
+      // Creditas: o cliente vê só o valor LÍQUIDO (regra do Fabio) — o total (bruto) não aparece no aviso.
+      valor: money(r.netValue || r.approvedValue) as string,
+      liquido: !!r.netValue,
       prazo: r.termMonths ? `${r.termMonths} meses` : undefined,
       taxa: r.rate || undefined,
       primeiraParcela: money(r.firstInstallment),

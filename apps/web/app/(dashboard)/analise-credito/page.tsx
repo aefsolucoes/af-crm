@@ -378,6 +378,7 @@ export default function AnaliseCreditoPage() {
                                           {(a.status === 'APPROVED' || a.status === 'CONDITIONAL' || (a.status === 'SENT' && !!a.approvedValue)) && (
                                             <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-600">
                                               {a.approvedValue ? <><dt className="text-slate-400">{a.status === 'SENT' ? 'Valor (simulação)' : 'Valor aprovado'}</dt><dd>{formatCurrency(a.approvedValue)}</dd></> : null}
+                                              {a.netValue ? <><dt className="text-slate-400">Valor líquido</dt><dd>{formatCurrency(a.netValue)}</dd></> : null}
                                               {a.termMonths ? <><dt className="text-slate-400">Prazo</dt><dd>{a.termMonths} meses</dd></> : null}
                                               {a.rate ? <><dt className="text-slate-400">Taxa</dt><dd>{a.rate}</dd></> : null}
                                               {a.indexer ? <><dt className="text-slate-400">Indexador</dt><dd>{a.indexer}</dd></> : null}

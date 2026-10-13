@@ -97,6 +97,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
           // "Carta de aprovação": valor, prazo, taxa, parcelas, nº da proposta e em nome de quem saiu (substitui os campos soltos de Financiamento).
           const letter: [string, string][] = approved && a ? ([
             ['Valor aprovado', a.approvedValue ? formatCurrency(a.approvedValue) : ''],
+            ['Valor líquido', a.netValue ? formatCurrency(a.netValue) : ''],
             ['Prazo', a.termMonths ? `${a.termMonths} meses` : ''],
             ['Taxa', a.rate || ''],
             ['1ª parcela', a.firstInstallment ? formatCurrency(a.firstInstallment) : ''],
