@@ -29,10 +29,25 @@ export interface Analysis {
   firstInstallment: number | null; lastInstallment: number | null; conditions: string | null;
   requestedAt: string; finishedAt: string | null; updatedAt: string; createdAt: string;
 }
+export interface OverrideData {
+  valorImovel?: string; valorEmprestimo?: string; renda?: string; prazo?: string; rendaParticipante?: string; inverter?: boolean;
+}
 export interface BoardLead {
   id: string; name: string; stage: string; status: string;
   requested: { creditValue: number; propertyValue: number; term: string | null };
+  card: { name1: string; name2: string; income1: string; income2: string; propertyValue: string; creditValue: string; term: string };
+  overrides: Partial<Record<Bank, OverrideData>>;
+  inPre: boolean; ran: boolean; lastRunAt: string | null;
   latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; chosenId: string | null;
+}
+
+/** Resumo curto dos ajustes de um banco, pra mostrar na linha. */
+export function overrideSummary(o?: OverrideData): string {
+  if (!o) return '';
+  return [
+    o.valorImovel ? `imóvel ${o.valorImovel}` : '', o.valorEmprestimo ? `financ. ${o.valorEmprestimo}` : '', o.renda ? `renda ${o.renda}` : '',
+    o.rendaParticipante ? `renda 2º ${o.rendaParticipante}` : '', o.prazo ? `prazo ${o.prazo}` : '', o.inverter ? 'participantes invertidos' : '',
+  ].filter(Boolean).join(' · ');
 }
 
 export function ago(d: string | null | undefined): string {

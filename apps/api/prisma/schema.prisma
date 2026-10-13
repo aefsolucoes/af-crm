@@ -261,6 +261,7 @@ model Lead {
   notes              Note[]
   messages           Message[]
   creditAnalyses     CreditAnalysis[]
+  creditOverrides    CreditOverride[]
   assistantQuestions AssistantQuestion[]
   calls              Call[]
   aiTeamQuestions    AiTeamQuestion[]
@@ -1191,4 +1192,19 @@ model CreditAnalysis {
 
   @@index([leadId, bank, createdAt])
   @@index([accountId, status])
+}
+
+/// Ajustes de um cliente na análise de crédito (por banco). Ver credit-analysis.service.ts.
+model CreditOverride {
+  id          String   @id @default(cuid())
+  accountId   String
+  leadId      String
+  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  bank        String // INTER | CREDITAS | CREDIMORAR
+  data        Json // { valorImovel, valorEmprestimo, renda, prazo, rendaParticipante, inverter }
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([leadId, bank])
 }

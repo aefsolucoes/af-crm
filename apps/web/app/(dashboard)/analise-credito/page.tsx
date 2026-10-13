@@ -9,8 +9,9 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
-import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, type Bank, type Analysis, type BoardLead } from '@/components/credit/shared';
-import { ChevronDown, ChevronRight, MessageSquare, Play, Plus, Star, Pencil } from 'lucide-react';
+import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead } from '@/components/credit/shared';
+import { AdjustModal } from '@/components/credit/adjust-modal';
+import { ChevronDown, ChevronRight, MessageSquare, Play, Plus, Star, Pencil, SlidersHorizontal, ArrowLeftRight } from 'lucide-react';
 import api from '@/lib/api';
 
 /* Análise de Crédito — ver apps/api/src/services/credit-analysis.service.ts.
@@ -103,6 +104,8 @@ export default function AnaliseCreditoPage() {
   const [open, setOpen] = useState<string | null>(null);
   const [modal, setModal] = useState<{ lead: BoardLead; bank: Bank; analysis?: Analysis } | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const [view, setView] = useState<'pre' | 'ran'>('pre');
+  const [adjust, setAdjust] = useState<BoardLead | null>(null);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['credit-board'] });
 
@@ -121,8 +124,11 @@ export default function AnaliseCreditoPage() {
     if (id) setOpen(id);
   }, []);
 
-  const leads = data?.leads || [];
-  const allSelected = leads.length > 0 && selected.length === leads.length;
+  const allLeads = data?.leads || [];
+  const leads = useMemo(() => (view === 'pre'
+    ? allLeads.filter((l) => l.inPre)
+    : allLeads.filter((l) => l.ran).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime())), [allLeads, view]);
+  const allSelected = leads.length > 0 && leads.every((l) => selected.includes(l.id));
   const offline = useMemo(() => banks.filter((b) => !data?.extensions?.[b]?.online), [banks, data]);
 
   // Clientes que já tiveram proposta enviada de verdade no banco: rodar de novo pode duplicar a proposta.
@@ -149,6 +155,29 @@ export default function AnaliseCreditoPage() {
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao pedir as análises', 'error');
     } finally { setBusy(false); }
+  }
+
+  // Inverte titular e 2º participante nos 3 bancos (vale na próxima análise).
+  async function toggleInvert(l: BoardLead) {
+    const inverted = BANKS.every((b) => l.overrides?.[b.key]?.inverter);
+    try {
+      await api.put('/api/credit-analysis/overrides', { leadId: l.id, banks: BANKS.map((b) => b.key), data: { inverter: !inverted }, merge: true });
+      toast(inverted ? 'Participantes voltaram ao normal' : `Participantes invertidos: ${l.card.name2} passa a ser o titular`, 'success');
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao inverter', 'error');
+    }
+  }
+
+  // "Salvar e rodar de novo" do modal de ajuste.
+  async function runAgain(leadId: string, bks: Bank[]) {
+    try {
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: bks });
+      toast(`${r.created} análise(s) na fila${r.skipped ? ` · ${r.skipped} já estavam rodando` : ''}`, 'success');
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir as análises', 'error');
+    }
   }
 
   async function choose(a: Analysis, lead: BoardLead) {
@@ -207,21 +236,29 @@ export default function AnaliseCreditoPage() {
 
         {/* Quadro */}
         <div className="bg-white rounded-xl border border-af-border overflow-hidden">
-          <div className="px-4 py-3 border-b border-af-border">
-            <h2 className="text-sm font-semibold text-slate-800">Clientes na Pré-Análise <span className="text-slate-400 font-normal">· Home Equity (e quem teve análise nas últimas 3 semanas)</span></h2>
+          <div className="px-4 pt-3 border-b border-af-border flex items-end gap-1">
+            {([['pre', 'Pré-Análise', allLeads.filter((l) => l.inPre).length], ['ran', 'Já rodados', allLeads.filter((l) => l.ran).length]] as const).map(([k, label, n]) => (
+              <button key={k} onClick={() => setView(k)} className={`px-4 py-2 text-sm -mb-px border-b-2 transition-colors ${view === k ? 'border-af-accent text-slate-800 font-medium' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
+                {label} <span className="text-xs text-slate-400">({n})</span>
+              </button>
+            ))}
+            <span className="ml-auto pb-2 text-[11px] text-slate-400 hidden md:block">
+              {view === 'pre' ? 'Home Equity · clientes na etapa Pré-Análise' : 'Home Equity · quem teve análise nos últimos 90 dias — ajuste ou inverta participantes e rode de novo'}
+            </span>
           </div>
           {isLoading ? (
             <div className="p-4"><Skeleton className="h-32" /></div>
           ) : leads.length === 0 ? (
-            <div className="text-center py-10 text-slate-400 text-sm">Nenhum cliente na Pré-Análise agora.</div>
+            <div className="text-center py-10 text-slate-400 text-sm">{view === 'pre' ? 'Nenhum cliente na Pré-Análise agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[760px]">
+              <table className="w-full text-sm min-w-[860px]">
                 <thead>
                   <tr className="text-left text-xs text-slate-400 border-b border-af-border">
-                    <th className="pl-4 pr-2 py-2.5 w-8"><input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? [] : leads.map((l) => l.id))} /></th>
+                    <th className="pl-4 pr-2 py-2.5 w-8"><input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? selected.filter((id) => !leads.some((l) => l.id === id)) : Array.from(new Set([...selected, ...leads.map((l) => l.id)])))} /></th>
                     <th className="px-3 py-2.5 font-medium">Cliente</th>
                     {BANKS.map((b) => <th key={b.key} className="px-3 py-2.5 font-medium">{b.short}</th>)}
+                    <th className="px-3 py-2.5 font-medium">Ajustes</th>
                     <th className="px-3 py-2.5 w-8" />
                   </tr>
                 </thead>
@@ -237,14 +274,30 @@ export default function AnaliseCreditoPage() {
                             <div className="text-[11px] text-slate-400">
                               {l.stage}{l.requested.creditValue ? ` · pediu ${formatCurrency(l.requested.creditValue)}` : ''}{l.requested.term ? ` · ${l.requested.term}` : ''}
                             </div>
+                            {overrideSummary(BANKS.map((b) => l.overrides?.[b.key]).find(Boolean)) && (
+                              <div className="text-[11px] text-amber-600 mt-0.5">✎ {overrideSummary(BANKS.map((b) => l.overrides?.[b.key]).find(Boolean))}</div>
+                            )}
                           </td>
                           {BANKS.map((b) => <td key={b.key} className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}><Badge a={l.latest[b.key]} /></td>)}
+                          <td className="px-3 py-3">
+                            <div className="flex flex-col gap-1.5 items-start">
+                              <button onClick={() => setAdjust(l)} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><SlidersHorizontal size={11} /> Ajustar</button>
+                              {(() => {
+                                const inverted = BANKS.every((b) => l.overrides?.[b.key]?.inverter);
+                                return l.card?.name2 ? (
+                                  <button onClick={() => toggleInvert(l)} title={inverted ? 'Voltar ao titular original' : `${l.card.name2} passa a ser o titular na análise`} className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border ${inverted ? 'border-amber-300 bg-amber-50 text-amber-700' : 'border-af-border text-slate-600 hover:bg-slate-50'}`}>
+                                    <ArrowLeftRight size={11} /> {inverted ? 'Invertido' : 'Inverter'}
+                                  </button>
+                                ) : null;
+                              })()}
+                            </div>
+                          </td>
                           <td className="px-3 py-3 text-slate-400 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}>{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</td>
                         </tr>
                         {expanded && (
                           <tr className="bg-slate-50/60">
                             <td />
-                            <td colSpan={BANKS.length + 2} className="px-3 py-4">
+                            <td colSpan={BANKS.length + 3} className="px-3 py-4">
                               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                                 {BANKS.map((b) => {
                                   const a = l.latest[b.key];
@@ -308,6 +361,7 @@ export default function AnaliseCreditoPage() {
         <p className="text-xs text-slate-400 pb-2">Escolher a proposta é manual por enquanto: preenche o Financiamento do card (instituição, valor, prazo, taxa, parcelas) e cria uma nota.</p>
       </div>
 
+      {adjust && <AdjustModal lead={adjust} onClose={() => setAdjust(null)} onSaved={refresh} onRunAgain={(bks) => runAgain(adjust.id, bks)} />}
       {modal && <ResultModal lead={modal.lead} bank={modal.bank} analysis={modal.analysis} onClose={() => setModal(null)} onSaved={refresh} />}
       {confirm && (
         <Modal title="Enviar propostas aos bancos?" onClose={() => setConfirm(false)}>

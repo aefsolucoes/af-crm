@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
-  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses,
+  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides,
 } from '../services/credit-analysis.service';
 
 /** Aba "Análise de Crédito" — ver credit-analysis.service.ts. As extensões do Chrome entram com o login normal do CRM. */
@@ -32,6 +32,29 @@ router.get('/lead/:leadId', async (req: AuthRequest, res: Response) => {
     if (!out) return res.status(404).json({ error: 'Card não encontrado' });
     res.json({ ...out, extensions: extensionStatus(req.user!.accountId) });
   } catch (err) { fail(res, err, 'Erro ao carregar as análises do card'); }
+});
+
+// Ajuste do cliente pra um banco (a extensão consulta antes de preencher o portal).
+router.get('/overrides', async (req: AuthRequest, res: Response) => {
+  const bank = String(req.query.bank || '').toUpperCase();
+  const leadId = String(req.query.leadId || '');
+  if (!leadId || !BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'leadId e bank são obrigatórios' });
+  try {
+    res.json({ data: await getOverride(prisma, { accountId: req.user!.accountId, leadId, bank }) });
+  } catch (err) { fail(res, err, 'Erro ao buscar o ajuste'); }
+});
+
+// Grava o ajuste (valores, renda, prazo, inverter) nos bancos escolhidos; `merge` soma ao que já existe; vazio apaga.
+router.put('/overrides', async (req: AuthRequest, res: Response) => {
+  const b = req.body || {};
+  const banks = Array.isArray(b.banks) ? (b.banks as unknown[]).map((v) => String(v).toUpperCase()).filter((v) => BANK_KEYS.includes(v)) : [];
+  if (!b.leadId || !banks.length) return res.status(400).json({ error: 'leadId e pelo menos um banco são obrigatórios' });
+  try {
+    const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;
+    const out = await setOverrides(prisma, { accountId: req.user!.accountId, userId: req.user!.id, userName, leadId: String(b.leadId), banks, data: b.data && typeof b.data === 'object' ? b.data : {}, merge: b.merge === true });
+    emit(req, { leadId: String(b.leadId) });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao salvar o ajuste', 400); }
 });
 
 router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));

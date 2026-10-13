@@ -237,7 +237,7 @@ async function expireStuck(db: Db, where: { accountId: string; leadId?: string }
 /** Quadro da aba: clientes do Home Equity em Pré-Análise (e quem teve análise nas últimas 3 semanas) × bancos. */
 export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: string[] }) {
   await expireStuck(db, { accountId: p.accountId });
-  const since = new Date(Date.now() - 21 * 86_400_000);
+  const since = new Date(Date.now() - 90 * 86_400_000);
   const recent = await db.creditAnalysis.findMany({ where: { accountId: p.accountId, createdAt: { gte: since } }, select: { leadId: true } });
   const recentIds = Array.from(new Set(recent.map((r) => r.leadId)));
   const deptScope = p.scopeDepartmentIds.length ? { OR: [{ departmentId: { in: p.scopeDepartmentIds } }, { departmentId: null }] } : {};
@@ -251,9 +251,10 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       id: true, name: true, value: true, status: true, customFields: true,
       stage: { select: { name: true } }, pipeline: { select: { name: true } },
       creditAnalyses: { orderBy: { createdAt: 'desc' }, take: 12 },
+      creditOverrides: { select: { bank: true, data: true } },
     },
     orderBy: { updatedAt: 'desc' },
-    take: 200,
+    take: 300,
   });
   return leads.map((l) => {
     const cf = (l.customFields || {}) as Record<string, any>;
@@ -265,11 +266,84 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       stage: l.stage?.name || '',
       status: l.status,
       requested: { creditValue: Number(cf.valor_credito) || Number(l.value) || 0, propertyValue: Number(cf.valor_imovel) || 0, term: cf.prazo_financ || null },
+      // Dados do card pra mostrar ao lado dos ajustes (a extensão lê a proposta na conversa; o card costuma bater).
+      card: {
+        name1: String(cf.participante_1 || l.name || ''), name2: String(cf.participante_2 || ''),
+        income1: cf.renda_1 ? String(cf.renda_1) : '', income2: cf.renda_2 ? String(cf.renda_2) : '',
+        propertyValue: cf.valor_imovel ? String(cf.valor_imovel) : '', creditValue: cf.valor_credito ? String(cf.valor_credito) : '',
+        term: cf.prazo_financ ? String(cf.prazo_financ) : '',
+      },
+      overrides: Object.fromEntries(l.creditOverrides.map((o) => [o.bank, o.data])),
+      inPre: l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || ''),
+      ran: l.creditAnalyses.length > 0,
+      lastRunAt: l.creditAnalyses[0]?.createdAt || null,
       latest,
       history: l.creditAnalyses,
       chosenId: l.creditAnalyses.find((a) => a.chosen)?.id || null,
     };
   });
+}
+
+// ─── Ajustes do cliente na análise (inverter titular, valores, renda, prazo) ───
+export interface OverrideData {
+  valorImovel?: string; valorEmprestimo?: string; renda?: string; prazo?: string; rendaParticipante?: string; inverter?: boolean;
+}
+const OVERRIDE_TEXT_KEYS = ['valorImovel', 'valorEmprestimo', 'renda', 'prazo', 'rendaParticipante'] as const;
+
+/** Só as chaves conhecidas, texto curto, vazio some. */
+export function cleanOverride(input: Record<string, any> | null | undefined): OverrideData {
+  const out: OverrideData = {};
+  for (const k of OVERRIDE_TEXT_KEYS) {
+    const v = input?.[k];
+    if (v !== undefined && v !== null && String(v).trim() !== '') out[k] = String(v).trim().slice(0, 40);
+  }
+  if (input?.inverter === true) out.inverter = true;
+  return out;
+}
+
+export async function getOverride(db: Db, p: { accountId: string; leadId: string; bank: string }) {
+  const row = await db.creditOverride.findFirst({ where: { accountId: p.accountId, leadId: p.leadId, bank: p.bank } });
+  return row ? (row.data as OverrideData) : null;
+}
+
+const OVERRIDE_LABEL: Record<string, string> = {
+  valorImovel: 'valor do imóvel', valorEmprestimo: 'valor do financiamento', renda: 'renda', prazo: 'prazo', rendaParticipante: 'renda do 2º participante',
+};
+
+/** Grava (ou apaga, se ficar vazio) o ajuste do cliente nos bancos escolhidos. `merge` soma ao que já existe. */
+export async function setOverrides(db: Db, p: { accountId: string; userId?: string; userName?: string; leadId: string; banks: string[]; data: Record<string, any>; merge?: boolean }) {
+  const banks = p.banks.filter((b) => BANK_KEYS.includes(b));
+  if (!banks.length) throw new Error('escolha pelo menos um banco');
+  const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
+  if (!lead) throw new Error('card não encontrado');
+  const touched: string[] = [];
+  for (const bank of banks) {
+    const existing = await db.creditOverride.findFirst({ where: { leadId: p.leadId, bank } });
+    const base = p.merge && existing ? (existing.data as Record<string, any>) : {};
+    const next = cleanOverride({ ...base, ...p.data }); // inverter:false (desfazer) some aqui, só o true é guardado
+    const empty = Object.keys(next).length === 0;
+    if (empty) { if (existing) await db.creditOverride.delete({ where: { id: existing.id } }); continue; }
+    if (existing) await db.creditOverride.update({ where: { id: existing.id }, data: { data: next as any, updatedById: p.userId || null } });
+    else await db.creditOverride.create({ data: { accountId: p.accountId, leadId: p.leadId, bank, data: next as any, updatedById: p.userId || null } });
+    touched.push(bank);
+  }
+  // Nota no card, pra ficar registrado o que foi mudado (sem a palavra "aprov" de propósito: não confunde o aviso de crédito aprovado).
+  const first = touched[0] ? await db.creditOverride.findFirst({ where: { leadId: p.leadId, bank: touched[0] } }) : null;
+  const d = (first?.data || {}) as OverrideData;
+  const parts = [
+    ...OVERRIDE_TEXT_KEYS.filter((k) => d[k]).map((k) => `${OVERRIDE_LABEL[k]}: ${d[k]}`),
+    d.inverter ? 'titular e 2º participante invertidos' : '',
+  ].filter(Boolean);
+  const where = banks.map((b) => BANKS[b].label).join(', ');
+  await db.note.create({
+    data: {
+      leadId: p.leadId, type: 'COMMENT',
+      content: touched.length
+        ? `✏️ Ajuste para a análise de crédito (${where})${p.userName ? ` por ${p.userName}` : ''}: ${parts.join(' · ')}. Vale na próxima vez que a análise rodar.`
+        : `✏️ Ajustes da análise de crédito removidos (${where})${p.userName ? ` por ${p.userName}` : ''}.`,
+    },
+  });
+  return { ok: true, banks: touched };
 }
 
 /** Bloco "Análises de crédito" dentro do card: último resultado de cada banco + histórico. */
