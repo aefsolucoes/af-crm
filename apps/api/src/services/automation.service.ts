@@ -538,7 +538,11 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
       // Conta quantos leads passam em cada filtro, nessa ordem — se o número
       // já zera cedo (ex.: "stage" ou "setor"), o problema é config; se só
       // zera no "eligible"/"already", é timing/dedupe.
-      let countStage = 0, countDept = 0, countEligible = 0, countAlready = 0, countExecuted = 0;
+      let countStage = 0, countDept = 0, countEligible = 0, countAlready = 0, countExecuted = 0, countHeld = 0;
+      // Lembrete de documentação (etapa "Aguardando Documentação"): espera o cliente
+      // RESPONDER ao template de aprovação (Fabio 13/10) — ver isWaitingApprovalReply.
+      const docReminder = stageNamePattern.includes('aguardando document');
+      const { isWaitingApprovalReply } = require('./approval-notice.service') as typeof import('./approval-notice.service');
 
       for (const lead of leads) {
         if (stageNamePattern && !norm(lead.stage?.name || '').includes(stageNamePattern)) continue;
@@ -550,6 +554,7 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;
         if (!eligible) continue;
         if (minDaysInStage > 0 && (!lead.stageEnteredAt || lead.stageEnteredAt > stageThreshold)) continue;
+        if (docReminder && await isWaitingApprovalReply(lead.id)) { countHeld++; continue; }
         countEligible++;
         const already = await prisma.automationLog.findFirst({
           where: repeatEveryDays
@@ -561,7 +566,7 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         await executeRuleForLead(rule, lead.id, io, {}).catch((err) => console.error('[Automation] Falha (inatividade)', rule.id, err));
       }
 
-      console.log(`[Automation][inatividade] "${rule.name}" (${rule.id}): ${leads.length} leads na base (OPEN${cfg.onlySiteLeads ? '+Site' : ''}${excludeTag ? `, sem tag "${excludeTag}"` : ''}) → ${countStage} bateram etapa "${cfg.stageName || '(qualquer)'}" → ${countDept} bateram setor${departmentId ? '' : ' (qualquer, sem filtro)'} → ${countEligible} elegíveis por tempo (${days}d${repeatEveryDays ? ', repete mesmo calado' : ''}${minDaysInStage ? `, ${minDaysInStage}d+ na etapa` : ''}) → ${countExecuted} executados (${countAlready} já tinham disparado antes).`);
+      console.log(`[Automation][inatividade] "${rule.name}" (${rule.id}): ${leads.length} leads na base (OPEN${cfg.onlySiteLeads ? '+Site' : ''}${excludeTag ? `, sem tag "${excludeTag}"` : ''}) → ${countStage} bateram etapa "${cfg.stageName || '(qualquer)'}" → ${countDept} bateram setor${departmentId ? '' : ' (qualquer, sem filtro)'} → ${countEligible} elegíveis por tempo (${days}d${repeatEveryDays ? ', repete mesmo calado' : ''}${minDaysInStage ? `, ${minDaysInStage}d+ na etapa` : ''}) → ${countExecuted} executados (${countAlready} já tinham disparado antes${docReminder ? `; ${countHeld} esperando resposta ao template de aprovação` : ''}).`);
     } catch (err) {
       console.error('[Automation] Erro em checkInactivityAutomations (regra ' + rule.id + '):', err);
     }

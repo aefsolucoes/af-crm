@@ -82,6 +82,21 @@ export async function processApprovalNotices(io: any): Promise<void> {
   }
 }
 
+/** true = o cliente recebeu o template de aprovação ("seu crédito foi aprovado, quer saber as
+ *  condições?") e AINDA NÃO respondeu nada no WhatsApp depois dele. O lembrete de documentação
+ *  espera isso (Fabio 13/10): sem resposta o cliente nunca viu a lista de documentos, e o
+ *  lembrete falaria de "documentos solicitados anteriormente". */
+export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
+  const tpl = await prisma.message.findFirst({
+    where: { leadId, direction: 'OUTBOUND', templateName: APPROVAL_TEMPLATE, status: { not: 'FAILED' } },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true },
+  });
+  if (!tpl) return false;
+  const replied = await prisma.message.count({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gt: tpl.createdAt } } });
+  return replied === 0;
+}
+
 interface ApprovalOption { instituicao: string; valor: string; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
