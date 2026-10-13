@@ -2,6 +2,8 @@ import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
+import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
+import { getAutoSetting, setAutoSetting } from '../services/credit-auto.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock,
@@ -82,6 +84,35 @@ router.post('/unlock', (req: AuthRequest, res: Response) => {
   res.json({ ok: true });
 });
 
+// "Avisar cliente": prévia do texto (todas as opções aprovadas, com o nome em que saiu) e envio.
+router.get('/notify-client/preview', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.query.leadId || '');
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true } });
+    if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
+    const out = await previewApprovalNotice(leadId);
+    if (!out) return res.status(404).json({ error: 'Não há opção aprovada com valor pra avisar o cliente.' });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao montar o aviso'); }
+});
+router.post('/notify-client', async (req: AuthRequest, res: Response) => {
+  try {
+    const out = await sendApprovalNoticeNow({ accountId: req.user!.accountId, leadId: String(req.body?.leadId || ''), userId: req.user!.id, io: io(req) });
+    if (!out.ok) return res.status(400).json({ error: out.error });
+    emit(req, { leadId: String(req.body?.leadId || '') });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao avisar o cliente'); }
+});
+
+// Chave da análise automática (só admin liga/desliga). A extensão consulta pra não rodar sozinha em duplicidade.
+router.get('/auto', async (req: AuthRequest, res: Response) => {
+  try { res.json(await getAutoSetting(req.user!.accountId)); } catch (err) { fail(res, err, 'Erro ao ler a análise automática'); }
+});
+router.put('/auto', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores ligam a análise automática' });
+  try { res.json(await setAutoSetting(req.user!.accountId, req.body?.enabled === true, req.user!.id)); } catch (err) { fail(res, err, 'Erro ao salvar a análise automática'); }
+});
+
 router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));
 
 // Dispara a análise de vários clientes em vários bancos (a extensão busca na fila).
@@ -91,7 +122,7 @@ router.post('/requests', async (req: AuthRequest, res: Response) => {
   if (!leadIds.length) return res.status(400).json({ error: 'Escolha pelo menos um cliente' });
   if (!banks.length) return res.status(400).json({ error: 'Escolha pelo menos um banco' });
   try {
-    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds, banks, dryRun: req.body?.dryRun === true, kind: req.body?.kind === 'CHECK' ? 'CHECK' : 'RUN' });
+    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds, banks, dryRun: req.body?.dryRun === true, kind: req.body?.kind === 'CHECK' ? 'CHECK' : 'RUN', force: req.body?.force === true });
     emit(req);
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao pedir as análises'); }

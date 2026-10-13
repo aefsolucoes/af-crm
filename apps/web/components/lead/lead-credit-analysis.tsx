@@ -7,6 +7,7 @@ import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { pingExtensions } from '@/lib/credit-extensions';
+import { NotifyClientModal } from '@/components/credit/notify-modal';
 import { BANKS, Badge, STATUS, type Analysis, type Bank } from '@/components/credit/shared';
 
 /* Bloco "Análises de crédito" dentro do card (aba Financiamento). Mostra o último resultado de
@@ -32,6 +33,8 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   const [running, setRunning] = useState(false);
   const [banks, setBanks] = useState<Bank[]>(['CREDIMORAR', 'CREDITAS', 'INTER']);
   const [busy, setBusy] = useState(false);
+  const [force, setForce] = useState(false);
+  const [notify, setNotify] = useState(false);
 
   useEffect(() => {
     const socket = getSocket();
@@ -55,9 +58,9 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   async function run() {
     setBusy(true);
     try {
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks });
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks, force });
       pingExtensions(data?.extensions, banks);
-      toast(r.created ? `${r.created} análise(s) na fila` : 'Já estava rodando', 'success');
+      toast(r.created ? `${r.created} na fila${r.consulted?.length ? ' · onde já foi rodado, só consulta a proposta' : ''}` : 'Já estava rodando', 'success');
       setRunning(false);
       refresh();
     } catch (err: any) {
@@ -82,6 +85,9 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     <div className="mb-3 rounded-lg border border-af-border bg-slate-50/60 p-3">
       <div className="flex items-center justify-between mb-2">
         <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-600"><Landmark size={12} /> Análises de crédito</span>
+        {Object.values(data.latest).some((a) => a && (a.status === 'APPROVED' || a.status === 'CONDITIONAL') && !!a.approvedValue) && (
+          <button onClick={() => setNotify(true)} className="text-[11px] text-white bg-af-mid hover:bg-af-dark rounded px-2 py-0.5" title="Mandar ao cliente as opções aprovadas">Avisar cliente</button>
+        )}
         <Link href={`/analise-credito?leadId=${leadId}`} className="flex items-center gap-1 text-[11px] text-af-mid hover:underline" title="Abrir na aba Análise de Crédito (resultado manual e histórico)">
           Abrir aba <ExternalLink size={10} />
         </Link>
@@ -140,7 +146,10 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
             </div>
             <p className="text-[11px] text-slate-400">A extensão envia a proposta de verdade ao banco.</p>
             {sentBefore.length > 0 && (
-              <p className="text-[11px] text-amber-600">Já tem análise em {sentBefore.map((b) => `${BANKS.find((x) => x.key === b)!.short} (${STATUS[data.latest[b]!.status].label.toLowerCase()})`).join(', ')} — rodar de novo pode duplicar a proposta.</p>
+              <label className="flex items-start gap-1.5 text-[11px] text-slate-500 cursor-pointer"><input type="checkbox" className="mt-0.5" checked={force} onChange={(e) => setForce(e.target.checked)} /> <span>Rodar de novo mesmo assim (cria proposta nova). Sem marcar, onde já foi rodado só consulto a proposta.</span></label>
+            )}
+            {sentBefore.length > 0 && (
+              <p className="text-[11px] text-amber-600">Já tem análise em {sentBefore.map((b) => `${BANKS.find((x) => x.key === b)!.short} (${STATUS[data.latest[b]!.status].label.toLowerCase()})`).join(', ')} — {force ? 'vai criar proposta NOVA.' : 'só vou consultar a proposta.'}</p>
             )}
             {offline.length > 0 && (
               <p className="text-[11px] text-amber-600">Extensão sem sinal: {offline.map((b) => BANKS.find((x) => x.key === b)!.short).join(', ')}. O pedido espera na fila até ela abrir no Chrome.</p>
@@ -152,6 +161,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
           </div>
         )}
       </div>
+      {notify && <NotifyClientModal leadId={leadId} leadName={data.participants?.name1 || 'cliente'} onClose={() => setNotify(false)} onSent={refresh} />}
     </div>
   );
 }

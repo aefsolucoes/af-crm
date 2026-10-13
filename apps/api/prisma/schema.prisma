@@ -1184,6 +1184,8 @@ model CreditAnalysis {
   conditions       String?   @db.Text
   dryRun           Boolean   @default(false)
   source           String    @default("EXTENSION")
+  notBefore        DateTime? // conferência repetida: só entra na fila depois disso
+  attempt          Int       @default(0) // nº da conferência (a cada 1 min no começo, depois a cada 5)
   holderName       String? // em nome de quem a análise foi feita (titular na análise; o 2º participante quando invertido)
   kind             String    @default("RUN") // RUN | CHECK (só conferir o resultado de uma proposta já enviada) // EXTENSION | MANUAL
   chosen           Boolean   @default(false)
@@ -1211,4 +1213,13 @@ model CreditOverride {
   updatedAt   DateTime @updatedAt
 
   @@unique([leadId, bank])
+}
+
+/// Chave da "Análise automática" de crédito (por conta). Ver services/credit-auto.service.ts.
+model CreditAutoSetting {
+  accountId   String    @id
+  enabled     Boolean   @default(false)
+  enabledAt   DateTime?
+  updatedById String?
+  updatedAt   DateTime  @updatedAt
 }

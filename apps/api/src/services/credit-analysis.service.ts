@@ -32,6 +32,11 @@ export const EXTENSION_STATUS: Record<string, string> = {
 const ALL_STATUS = new Set(['REQUESTED', 'RUNNING', 'SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
 const FINAL = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
 const ACTIVE = ['REQUESTED', 'RUNNING'];
+/** Bancos cuja extensão sabe só CONFERIR uma proposta já enviada (sem criar outra). */
+export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS'];
+const CHECK_FAST_TRIES = 30; // de 1 em 1 min
+const CHECK_MAX_TRIES = 60; // depois, de 5 em 5 min até aqui (~3 h); passou disso, fica pra conferir à mão
+const REAL_SENT = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CHECK']; // já foi rodada de verdade nesse banco
 const STALE_ACTIVE_MS = 25 * 60 * 1000; // pedido/execução parado há mais que isso não bloqueia um novo
 const STUCK_RUNNING_MS = 30 * 60 * 1000; // rodando há mais que isso sem sinal da extensão = parou
 const REPORT_REUSE_MS = 12 * 60 * 60 * 1000; // relatório da extensão continua a execução aberta das últimas 12 h
@@ -130,12 +135,14 @@ export function analysisNote(a: { bank: string; status: string; detail?: string 
 }
 
 /** Pede a análise de N clientes em N bancos (`kind` RUN), ou só a CONFERÊNCIA do resultado de uma proposta já enviada
- *  (`kind` CHECK — Inter e Santander; a extensão acha o cliente pelo CPF na lista do portal; não cria proposta nova). A extensão busca os pedidos (claimQueue). */
-export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK' }) {
-  const kind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
-  const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (kind === 'RUN' || b === 'INTER' || b === 'CREDIMORAR'));
+ *  (`kind` CHECK — a extensão acha o cliente pelo CPF na lista do portal; não cria proposta nova). Pedido de RUN para quem JÁ foi
+ *  rodado nesse banco vira só uma CONSULTA da proposta (CHECK), a não ser que venha `force` (ex.: depois de ajustar valores). A extensão busca os pedidos (claimQueue). */
+export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean }) {
+  const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
+  const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
   const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true } });
   let created = 0, skipped = 0;
+  const consulted: string[] = [];
   for (const l of leads) {
     for (const bank of banks) {
       const open = await db.creditAnalysis.findFirst({
@@ -143,12 +150,18 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
         select: { id: true },
       });
       if (open) { skipped++; continue; }
+      // Já foi rodada nesse banco? Então só consulta a proposta (não cria de novo), a menos que seja pra rodar de novo de propósito.
+      let kind: 'RUN' | 'CHECK' = wantedKind;
+      if (kind === 'RUN' && !p.force && CHECK_BANKS.includes(bank)) {
+        const done = await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, dryRun: false, status: { in: REAL_SENT }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, select: { id: true } });
+        if (done) { kind = 'CHECK'; if (!consulted.includes(bank)) consulted.push(bank); }
+      }
       const prevNumber = kind === 'CHECK' ? (await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } }))?.proposalNumber || null : null;
       await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, proposalNumber: prevNumber, dryRun: kind === 'CHECK' ? false : p.dryRun, source: 'EXTENSION', requestedById: p.userId || null } });
       created++;
     }
   }
-  return { created, skipped, banks, leads: leads.length, kind };
+  return { created, skipped, consulted, banks, leads: leads.length, kind: wantedKind };
 }
 
 /** A extensão do banco pergunta: "tem pedido pra mim?". Marca como RUNNING o que entregar. Pedidos de só conferir
@@ -158,7 +171,7 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   if (!BANK_KEYS.includes(p.bank)) return [];
   const canCheck = !!p.caps?.includes('check');
   const rows = await db.creditAnalysis.findMany({
-    where: { accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }) },
+    where: { accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }), OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
     orderBy: { requestedAt: 'asc' }, take: p.limit || 3,
     select: { id: true, leadId: true, dryRun: true, kind: true, proposalNumber: true, requestedAt: true, lead: { select: { name: true } } },
   });
@@ -200,6 +213,38 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   return { row: updated, becameFinal };
 }
 
+type AnalysisRow = NonNullable<Awaited<ReturnType<Db['creditAnalysis']['findFirst']>>>;
+
+/** Depois de cada relato: (1) conferência que ainda não achou resultado volta pra fila — de 1 em 1 min nas primeiras 30 vezes,
+ *  depois de 5 em 5 min até 60 (~3 h) — pra termos certeza do resultado real; (2) rodada que terminou "enviada" (resultado ainda
+ *  não saiu) agenda essa conferência sozinha. Passou do limite, fica "conferir" pra olhar à mão. */
+async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
+  if (row.dryRun) return row;
+  if (row.kind === 'CHECK' && (row.status === 'SENT' || row.status === 'CHECK')) {
+    if (row.attempt < CHECK_MAX_TRIES) {
+      const attempt = row.attempt + 1;
+      const fast = attempt <= CHECK_FAST_TRIES;
+      return db.creditAnalysis.update({
+        where: { id: row.id },
+        data: {
+          status: 'REQUESTED', notBefore: new Date(Date.now() + (fast ? 60_000 : 5 * 60_000)), attempt, finishedAt: null,
+          detail: `Conferindo ${fast ? 'de 1 em 1 min' : 'de 5 em 5 min'} (conferência ${attempt} de ${CHECK_MAX_TRIES}). Última leitura: ${String(row.detail || '').replace(/^Conferindo[^:]*:\s*(Última leitura:\s*)?/i, '').slice(0, 300)}`,
+        },
+      });
+    }
+    return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', detail: `Sem resultado depois de ${CHECK_MAX_TRIES} conferências: confira no portal. ${String(row.detail || '').slice(0, 300)}` } });
+  }
+  if (row.kind === 'RUN' && row.status === 'SENT' && CHECK_BANKS.includes(row.bank)) {
+    const open = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'CHECK', status: { in: ACTIVE } }, select: { id: true } });
+    if (!open) {
+      await db.creditAnalysis.create({
+        data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'CHECK', attempt: 1, notBefore: new Date(Date.now() + 60_000), proposalNumber: row.proposalNumber, dryRun: false, source: 'EXTENSION', holderName: row.holderName, detail: 'Conferindo de 1 em 1 min até sair o resultado.' },
+      });
+    }
+  }
+  return row;
+}
+
 /** Relato da extensão: status (já em inglês do CRM) + texto + números que ela conseguir ler. */
 export async function reportAnalysis(db: Db, p: { accountId: string; requestId?: string; leadId: string; bank: string; status: string; detail?: string; result?: Record<string, any> }) {
   if (!BANK_KEYS.includes(p.bank)) throw new Error('banco desconhecido');
@@ -224,7 +269,7 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   const numbers = p.bank === 'CREDIMORAR' ? parseSantanderConditions(p.detail || '') : {};
   const holderName = parseHolder(p.detail) || row.holderName || (FINAL.has(status) ? await resolveHolder(db, p.leadId, p.bank, null) : null);
   const { row: updated } = await applyUpdate(db, row, { status, detail: p.detail ?? null, holderName, ...numbers, ...pickResult(p.result || {}) });
-  return updated;
+  return afterReport(db, updated);
 }
 
 /** Edição à mão (formulário "Registrar resultado" da aba): muda status e/ou os números. */

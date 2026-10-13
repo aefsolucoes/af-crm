@@ -191,7 +191,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
   return replied === 0;
 }
 
-interface ApprovalOption { instituicao: string; valor: string; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string }
+interface ApprovalOption { instituicao: string; valor: string; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; parcelaMaxima?: string; nome?: string; pedido?: string }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -267,13 +267,16 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     `🏦 Instituição: ${o.instituicao}`,
     o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
     `💰 Valor aprovado: ${o.valor}`,
+    o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
     o.prazo && `📅 Prazo: ${o.prazo}`,
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
     o.primeiraParcela && `💵 1ª parcela: ${o.primeiraParcela}`,
     o.ultimaParcela && `💵 Última parcela: ${o.ultimaParcela}`,
+    o.parcelaMaxima && !o.primeiraParcela && `💵 Parcela máxima: ${o.parcelaMaxima}`,
   ].filter(Boolean).join('\n');
   const head = options.length > 1 ? `✅ Consegui ${options.length} opções de aprovação pra você escolher!` : '✅ Crédito aprovado!';
-  return `${head}\n\n${options.map(block).join('\n\n')}\n\nAgora vamos para a próxima etapa do processo!`;
+  const tail = options.length > 1 ? '👉 Qual dessas opções você prefere? É só me responder por aqui que eu sigo com a que você escolher.' : 'Agora vamos para a próxima etapa do processo!';
+  return `${head}\n\n${options.map(block).join('\n\n')}\n\n${tail}`;
 }
 
 /** Texto de aprovação montado pro card (notas primeiro, aba Financiamento
@@ -307,7 +310,34 @@ async function withHolders(leadId: string, options: ApprovalOption[]): Promise<A
   return holder ? options.map((o) => ({ ...o, nome: holder(o.instituicao) || undefined })) : options;
 }
 
-export async function buildApprovalText(leadId: string): Promise<{ text: string; source: 'notas' | 'card' } | null> {
+/** Opções aprovadas que a aba Análise de Crédito já registrou (a mais recente de cada banco, com valor). Números estruturados:
+ *  é a fonte preferida; se não houver, cai nas notas e depois no card. */
+async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | null> {
+  const rows = await prisma.creditAnalysis.findMany({
+    where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
+    orderBy: { createdAt: 'asc' },
+  });
+  const byBank = new Map<string, (typeof rows)[number]>();
+  for (const r of rows) byBank.set(r.bank, r);
+  const label: Record<string, string> = { INTER: 'Banco Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  const options = Array.from(byBank.values())
+    .sort((a, b) => (b.approvedValue || 0) - (a.approvedValue || 0))
+    .map((r): ApprovalOption => ({
+      instituicao: label[r.bank] || r.bank,
+      valor: money(r.approvedValue) as string,
+      prazo: r.termMonths ? `${r.termMonths} meses` : undefined,
+      taxa: r.rate || undefined,
+      primeiraParcela: money(r.firstInstallment),
+      ultimaParcela: money(r.lastInstallment),
+      parcelaMaxima: (/parcela m[aá]xima\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1],
+      pedido: /aprovad[oa] a menor/i.test(r.detail || '') ? (/pedido:?\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1] : undefined,
+    }));
+  return options.length ? options : null;
+}
+
+export async function buildApprovalText(leadId: string): Promise<{ text: string; source: 'analises' | 'notas' | 'card' } | null> {
+  const fromAnalyses = await optionsFromAnalyses(leadId).catch(() => null);
+  if (fromAnalyses) return { text: renderApprovalText(await withHolders(leadId, fromAnalyses)), source: 'analises' };
   // Duas tentativas nas notas antes de cair na aba Financiamento: a leitura
   // pode variar e a trava de números descarta resposta com valor que não
   // está escrito na nota.
@@ -335,9 +365,51 @@ export async function maybeSendApprovalOnYes(accountId: string, leadId: string, 
   const sent = await sendOutboundWhatsApp({ accountId, leadId, content, io });
   if (sent.success) {
     await prisma.lead.update({ where: { id: leadId }, data: { aiAutoReplyActive: true } }).catch(() => {});
-    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, leadName: lead.name, summary: `mandou as condições de aprovação (dados ${built.source === 'notas' ? 'das notas' : 'do card'}) — cliente tocou em "Sim, quero saber"` });
-    console.log(`[Aprovação] ${lead.name}: condições enviadas (dados ${built.source === 'notas' ? 'das notas' : 'do card'})`);
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, leadName: lead.name, summary: `mandou as condições de aprovação (dados ${built.source === 'analises' ? 'das análises de crédito' : built.source === 'notas' ? 'das notas' : 'do card'}) — cliente tocou em "Sim, quero saber"` });
+    console.log(`[Aprovação] ${lead.name}: condições enviadas (dados ${built.source === 'analises' ? 'das análises de crédito' : built.source === 'notas' ? 'das notas' : 'do card'})`);
   }
   return true;
 }
 
+// ─── Aviso de aprovação sob demanda (botão "Avisar cliente" da aba Análise de Crédito) ───
+const WINDOW_MS = 23 * 3_600_000; // janela de 24 h do WhatsApp, com folga
+
+async function whatsappWindowOpen(leadId: string): Promise<boolean> {
+  const last = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  return !!last && Date.now() - last.createdAt.getTime() < WINDOW_MS;
+}
+
+/** O que seria enviado: texto com TODAS as opções aprovadas (cada uma com o nome em que saiu, se for o 2º participante) e como vai. */
+export async function previewApprovalNotice(leadId: string): Promise<{ text: string; options: number; mode: 'text' | 'template' } | null> {
+  const built = await optionsFromAnalyses(leadId).catch(() => null);
+  if (!built) return null;
+  const text = renderApprovalText(await withHolders(leadId, built));
+  return { text, options: built.length, mode: (await whatsappWindowOpen(leadId)) ? 'text' : 'template' };
+}
+
+/** Manda o aviso: dentro da janela de 24 h vai o texto com as opções; fora dela vai o template de aprovação e o texto completo sai
+ *  quando o cliente tocar em "Sim, quero saber" (já montado a partir das análises, com os nomes certos). */
+export async function sendApprovalNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any }): Promise<{ ok: boolean; mode?: 'text' | 'template'; options?: number; error?: string }> {
+  const preview = await previewApprovalNotice(p.leadId);
+  if (!preview) return { ok: false, error: 'Não há opção aprovada com valor pra avisar o cliente (preencha o resultado da análise).' };
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true } } } });
+  if (!lead) return { ok: false, error: 'Card não encontrado' };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (preview.mode === 'text') {
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: preview.text, userId: p.userId, io: p.io });
+    if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
+  } else {
+    const tpl = await approvalTemplate(p.accountId);
+    if (!tpl.approved) return { ok: false, error: 'A janela de 24 h do WhatsApp fechou e o template de aprovação ainda não foi aprovado pela Meta.' };
+    const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || 'cliente';
+    const previewText = `${(tpl.body || '').replace(/\{\{1\}\}/g, nome)}\n\n[Sim, quero saber]  [Não tenho interesse]`;
+    const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+    const r = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, templateName: APPROVAL_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText, userId: p.userId, io: p.io });
+    if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar o template' };
+    await prisma.lead.update({ where: { id: p.leadId }, data: { aiAutoReplyActive: true, customFields: { ...cf, _aprovTemplateAt: new Date().toISOString() } } });
+  }
+  // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado das opções de crédito (${preview.options} opç${preview.options === 1 ? 'ão' : 'ões'}) — ${preview.mode === 'text' ? 'texto enviado' : 'template enviado; o texto completo sai quando ele tocar em "Sim, quero saber"'}.` } });
+  return { ok: true, mode: preview.mode, options: preview.options };
+}

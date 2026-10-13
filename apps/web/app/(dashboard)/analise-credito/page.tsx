@@ -11,8 +11,10 @@ import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
 import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead } from '@/components/credit/shared';
 import { AdjustModal } from '@/components/credit/adjust-modal';
+import { NotifyClientModal } from '@/components/credit/notify-modal';
 import { pingExtensions } from '@/lib/credit-extensions';
-import { ChevronDown, ChevronRight, MessageSquare, Play, Plus, Star, Pencil, SlidersHorizontal, ArrowLeftRight, RefreshCw } from 'lucide-react';
+import { useAuthStore } from '@/store/auth.store';
+import { ChevronDown, ChevronRight, MessageSquare, Play, Plus, Star, Pencil, SlidersHorizontal, ArrowLeftRight, RefreshCw, Send } from 'lucide-react';
 import api from '@/lib/api';
 
 /* Análise de Crédito — ver apps/api/src/services/credit-analysis.service.ts.
@@ -107,6 +109,21 @@ export default function AnaliseCreditoPage() {
   const [confirm, setConfirm] = useState(false);
   const [view, setView] = useState<'pre' | 'ran'>('pre');
   const [adjust, setAdjust] = useState<BoardLead | null>(null);
+  const [notify, setNotify] = useState<BoardLead | null>(null);
+  const [forceRun, setForceRun] = useState(false);
+  const isAdmin = useAuthStore((s) => s.user?.role === 'ADMIN');
+  const { data: auto } = useQuery<{ enabled: boolean; enabledAt: string | null }>({ queryKey: ['credit-auto'], queryFn: async () => (await api.get('/api/credit-analysis/auto')).data });
+  async function toggleAuto() {
+    const next = !auto?.enabled;
+    if (next && !window.confirm('Ligar a análise automática?\n\nDaqui pra frente, todo cliente que cair na Pré-Análise do Home Equity (proposta preenchida) e tiver os dados conferidos pela IA vai ser enviado sozinho para os 3 bancos. Se o 1º participante vier reprovado ou aprovado a menor, roda no 2º. Quando as respostas saírem, o cliente recebe no WhatsApp as opções aprovadas para escolher. Cards que já estão na Pré-Análise não entram.')) return;
+    try {
+      await api.put('/api/credit-analysis/auto', { enabled: next });
+      toast(next ? 'Análise automática LIGADA' : 'Análise automática desligada', 'success');
+      queryClient.invalidateQueries({ queryKey: ['credit-auto'] });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao salvar', 'error');
+    }
+  }
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['credit-board'] });
 
@@ -148,9 +165,9 @@ export default function AnaliseCreditoPage() {
   async function run() {
     setBusy(true);
     try {
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: selected, banks });
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: selected, banks, force: forceRun });
       pingExtensions(data?.extensions, banks);
-      toast(`${r.created} análise(s) na fila${r.skipped ? ` · ${r.skipped} já estavam rodando` : ''}`, 'success');
+      toast(`${r.created} na fila${r.consulted?.length ? ` · quem já foi rodado só tem a proposta consultada (${r.consulted.map((b: string) => BANKS.find((x) => x.key === b)?.short).join(', ')})` : ''}${r.skipped ? ` · ${r.skipped} já estavam rodando` : ''}`, 'success');
       setConfirm(false);
       setSelected([]);
       refresh();
@@ -186,7 +203,7 @@ export default function AnaliseCreditoPage() {
   // "Salvar e rodar de novo" do modal de ajuste.
   async function runAgain(leadId: string, bks: Bank[]) {
     try {
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: bks });
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: bks, force: true }); // depois de ajustar: roda de novo de propósito
       pingExtensions(data?.extensions, bks);
       toast(`${r.created} análise(s) na fila${r.skipped ? ` · ${r.skipped} já estavam rodando` : ''}`, 'success');
       refresh();
@@ -226,6 +243,23 @@ export default function AnaliseCreditoPage() {
             })}
           </div>
           <p className="mt-2 text-xs text-slate-400">As análises rodam no Chrome do Fabio (login e código dos bancos ficam lá). Com o Chrome aberto, a extensão busca os pedidos desta tela a cada minuto.</p>
+        </div>
+
+        {/* Análise automática */}
+        <div className="bg-white rounded-xl border border-af-border p-4 flex flex-wrap items-center gap-3">
+          <div className="flex-1 min-w-[260px]">
+            <div className="text-sm font-medium text-slate-700 flex items-center gap-2">
+              Análise automática
+              <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${auto?.enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'}`}>{auto?.enabled ? 'ligada' : 'desligada'}</span>
+            </div>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Quando o cliente preenche a proposta e a IA confere os dados, as análises rodam sozinhas nos 3 bancos. 1º participante reprovado ou aprovado a menor → roda no 2º. Depois o cliente recebe as opções aprovadas para escolher, e a IA ajuda na conversa.
+              {auto?.enabled && auto.enabledAt ? ` Valendo para cards que chegaram na Pré-Análise depois de ${new Date(auto.enabledAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.` : ''}
+            </p>
+          </div>
+          {isAdmin ? (
+            <Button variant={auto?.enabled ? 'secondary' : 'primary'} onClick={toggleAuto}>{auto?.enabled ? 'Desligar' : 'Ligar'}</Button>
+          ) : <span className="text-xs text-slate-400">Só administradores ligam.</span>}
         </div>
 
         {/* Disparo */}
@@ -305,6 +339,9 @@ export default function AnaliseCreditoPage() {
                           <td className="px-3 py-3">
                             <div className="flex flex-col gap-1.5 items-start">
                               <button onClick={() => router.push(`/inbox?leadId=${l.id}`)} title="Abrir a conversa do WhatsApp deste cliente" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50"><MessageSquare size={11} /> Conversa</button>
+                              {Object.values(l.latest).some((a) => a && (a.status === 'APPROVED' || a.status === 'CONDITIONAL') && !!a.approvedValue) && (
+                                <button onClick={() => setNotify(l)} title="Mandar ao cliente as opções aprovadas (todas, para ele escolher)" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg bg-af-accent text-white hover:opacity-90"><Send size={11} /> Avisar cliente</button>
+              )}
                               <button onClick={() => setAdjust(l)} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><SlidersHorizontal size={11} /> Ajustar</button>
                               {(['INTER', 'CREDIMORAR'] as Bank[]).filter((bk) => l.latest[bk] && !['REQUESTED', 'RUNNING'].includes(l.latest[bk]!.status)).map((bk) => (
                                 <button key={bk} onClick={() => checkBank(l, bk)} title={`Ler o resultado no portal do ${BANKS.find((b) => b.key === bk)?.short} sem criar proposta nova`} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><RefreshCw size={11} /> Conferir {BANKS.find((b) => b.key === bk)?.short}</button>
@@ -390,15 +427,19 @@ export default function AnaliseCreditoPage() {
         <p className="text-xs text-slate-400 pb-2">Escolher a proposta é manual por enquanto: preenche o Financiamento do card (instituição, valor, prazo, taxa, parcelas) e cria uma nota.</p>
       </div>
 
+      {notify && <NotifyClientModal leadId={notify.id} leadName={notify.name} onClose={() => setNotify(null)} onSent={refresh} />}
       {adjust && <AdjustModal lead={adjust} onClose={() => setAdjust(null)} onSaved={refresh} onRunAgain={(bks) => runAgain(adjust.id, bks)} />}
       {modal && <ResultModal lead={modal.lead} bank={modal.bank} analysis={modal.analysis} onClose={() => setModal(null)} onSaved={refresh} />}
       {confirm && (
         <Modal title="Enviar propostas aos bancos?" onClose={() => setConfirm(false)}>
           <div className="space-y-3 text-sm text-slate-600">
-            <p>A extensão vai <strong>enviar de verdade</strong> a proposta de {selected.length} cliente(s) para {banks.map((b) => BANKS.find((x) => x.key === b)!.short).join(', ')}.</p>
+            <p>A extensão vai <strong>enviar de verdade</strong> a proposta de {selected.length} cliente(s) para {banks.map((b) => BANKS.find((x) => x.key === b)!.short).join(', ')}; onde o cliente já foi rodado, só consulta a proposta.</p>
+            {dups.length > 0 && (
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer"><input type="checkbox" checked={forceRun} onChange={(e) => setForceRun(e.target.checked)} /> Rodar de novo mesmo assim (cria proposta nova no banco)</label>
+            )}
             {dups.length > 0 && (
               <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-700">
-                <p className="font-medium mb-1">Já tiveram proposta enviada ao banco — rodar de novo pode criar proposta DUPLICADA:</p>
+                <p className="font-medium mb-1">{forceRun ? 'Já têm proposta enviada — vai criar proposta NOVA (duplicada) no banco:' : 'Já foram rodados — nesses bancos só vou CONSULTAR a proposta (não cria de novo):'}</p>
                 <ul className="list-disc pl-4 space-y-0.5">{dups.slice(0, 8).map((d) => <li key={d}>{d}</li>)}{dups.length > 8 && <li>e mais {dups.length - 8}…</li>}</ul>
               </div>
             )}

@@ -42,6 +42,7 @@ import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { autoStarBigLeads } from './services/auto-star.service';
 import { processRemarketing } from './services/remarketing.service';
 import { processApprovalNotices, processApprovalReminders } from './services/approval-notice.service';
+import { processCreditAutomation } from './services/credit-auto.service';
 import { setWhatsAppAlertIo, checkWhatsAppHealth } from './services/whatsapp-alert.service';
 import { autoMergeDuplicatesByPhone } from './services/lead.service';
 import { configureWebPush } from './services/push.service';
@@ -265,6 +266,13 @@ httpServer.listen(PORT, () => {
         .catch((err) => console.error('[Aprovação] Poll:', err?.message));
     }, 2 * 60 * 1000);
   }, 150 * 1000);
+
+  // Análise automática de crédito (chave desligada por padrão): confere a proposta, pede as análises, roda no 2º participante e avisa o cliente.
+  setTimeout(() => {
+    setInterval(() => {
+      processCreditAutomation(io).catch((err) => console.error('[Análise automática] Poll:', err?.message));
+    }, 60 * 1000);
+  }, 100 * 1000);
 
   // Remarketing por WhatsApp: manda as mensagens do rodízio que venceram
   // (só 9h–19h, seg–sáb, aos poucos) e encerra quem respondeu.
