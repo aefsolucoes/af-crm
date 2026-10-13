@@ -24,19 +24,35 @@ import { callableFirstName } from '../lib/text';
 const prisma = new PrismaClient();
 
 export const APPROVAL_TEMPLATE = 'credito_aprovado_condicoes';
+/** Lembrete pra quem recebeu o aviso de aprovação e não respondeu (Fabio 13/10): até 3 vezes —
+ *  1º 2 dias depois do aviso, os outros a cada 3 dias; 3 dias depois do 3º sem resposta o card
+ *  vai pra "Lead Sem Retorno". Texto aprovado pelo Fabio, enviado à Meta como MARKETING. */
+export const APPROVAL_REMINDER_TEMPLATE = 'credito_aprovado_lembrete';
+const FIRST_REMINDER_AFTER_DAYS = 2;
+const NEXT_REMINDER_EVERY_DAYS = 3;
+const MAX_REMINDERS = 3;
+const MOVE_AFTER_LAST_DAYS = 3;
+const RETRY_AFTER_FAIL_MS = 6 * 60 * 60 * 1000;
+const MAX_FAILED_REMINDERS = 3;
+const DAY_MS = 86_400_000;
 const YES_RE = /^sim,?\s*quero saber\b/i;
 const RECENT_DAYS = 3;
 
 let running = false;
-let tplCheck: { at: number; approved: boolean; body: string | null } | null = null;
+let runningReminders = false;
+const tplCache = new Map<string, { at: number; approved: boolean; body: string | null }>();
 
-async function approvalTemplate(accountId: string): Promise<{ approved: boolean; body: string | null }> {
-  if (tplCheck && Date.now() - tplCheck.at < 15 * 60 * 1000) return tplCheck;
+/** Status/texto de um template na Meta, com cache de 15 min. */
+async function metaTemplate(accountId: string, name: string): Promise<{ approved: boolean; body: string | null }> {
+  const hit = tplCache.get(name);
+  if (hit && Date.now() - hit.at < 15 * 60 * 1000) return hit;
   const { listMetaTemplates } = require('./whatsapp.service') as typeof import('./whatsapp.service');
-  const t: any = (await listMetaTemplates(accountId).catch(() => [])).find((x: any) => x.name === APPROVAL_TEMPLATE);
-  tplCheck = { at: Date.now(), approved: t?.status === 'APPROVED', body: t?.components?.find((c: any) => c.type === 'BODY')?.text || null };
-  return tplCheck;
+  const t: any = (await listMetaTemplates(accountId).catch(() => [])).find((x: any) => x.name === name);
+  const info = { at: Date.now(), approved: t?.status === 'APPROVED', body: t?.components?.find((c: any) => c.type === 'BODY')?.text || null };
+  tplCache.set(name, info);
+  return info;
 }
+const approvalTemplate = (accountId: string) => metaTemplate(accountId, APPROVAL_TEMPLATE);
 
 /** Roda a cada 2 min (index.ts). */
 export async function processApprovalNotices(io: any): Promise<void> {
@@ -79,6 +95,84 @@ export async function processApprovalNotices(io: any): Promise<void> {
     }
   } finally {
     running = false;
+  }
+}
+
+export interface ReminderPlanItem { leadId: string; accountId: string; name: string; action: 'remind' | 'move'; number?: number }
+
+/** Quem precisa de lembrete (ou de ir pra Lead Sem Retorno) agora. Só leitura — o envio é em processApprovalReminders. */
+export async function planApprovalReminders(): Promise<ReminderPlanItem[]> {
+  const leads = await prisma.lead.findMany({
+    where: { status: 'OPEN', archived: false, isGroup: false, stage: { name: { startsWith: 'Aguardando Document', mode: 'insensitive' } } },
+    select: { id: true, accountId: true, name: true },
+  });
+  const plan: ReminderPlanItem[] = [];
+  const now = Date.now();
+  for (const l of leads) {
+    const tpl = await prisma.message.findFirst({
+      where: { leadId: l.id, direction: 'OUTBOUND', templateName: APPROVAL_TEMPLATE, status: { not: 'FAILED' } },
+      orderBy: { createdAt: 'desc' }, select: { createdAt: true },
+    });
+    if (!tpl) continue;
+    const replied = await prisma.message.count({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gt: tpl.createdAt } } });
+    if (replied > 0) continue; // respondeu: o fluxo normal assume
+    const tries = await prisma.message.findMany({
+      where: { leadId: l.id, direction: 'OUTBOUND', templateName: APPROVAL_REMINDER_TEMPLATE, createdAt: { gt: tpl.createdAt } },
+      orderBy: { createdAt: 'asc' }, select: { createdAt: true, status: true },
+    });
+    const ok = tries.filter((t) => t.status !== 'FAILED');
+    if (tries.length - ok.length >= MAX_FAILED_REMINDERS) continue; // a Meta recusou várias vezes: deixa pra equipe
+    const lastTry = tries[tries.length - 1];
+    if (lastTry && now - lastTry.createdAt.getTime() < RETRY_AFTER_FAIL_MS) continue;
+    if (ok.length >= MAX_REMINDERS) {
+      if (now - ok[ok.length - 1].createdAt.getTime() >= MOVE_AFTER_LAST_DAYS * DAY_MS) plan.push({ leadId: l.id, accountId: l.accountId, name: l.name, action: 'move' });
+      continue;
+    }
+    const dueAt = ok.length === 0 ? tpl.createdAt.getTime() + FIRST_REMINDER_AFTER_DAYS * DAY_MS : ok[ok.length - 1].createdAt.getTime() + NEXT_REMINDER_EVERY_DAYS * DAY_MS;
+    if (now >= dueAt) plan.push({ leadId: l.id, accountId: l.accountId, name: l.name, action: 'remind', number: ok.length + 1 });
+  }
+  return plan;
+}
+
+/** Roda a cada 2 min (index.ts): manda os lembretes que venceram e move pra Lead Sem Retorno quem não respondeu aos 3. */
+export async function processApprovalReminders(io: any): Promise<void> {
+  if (runningReminders) return;
+  runningReminders = true;
+  try {
+    const plan = await planApprovalReminders();
+    if (!plan.length) return;
+    for (const item of plan) {
+      const lead = await prisma.lead.findUnique({ where: { id: item.leadId }, select: { id: true, name: true, pipelineId: true, customFields: true, stage: { select: { name: true } }, contact: { select: { name: true } } } });
+      if (!lead) continue;
+      if (item.action === 'remind') {
+        const tpl = await metaTemplate(item.accountId, APPROVAL_REMINDER_TEMPLATE);
+        if (!tpl.approved) continue; // ainda em análise na Meta — tenta na próxima rodada
+        const cf = (lead.customFields || {}) as Record<string, any>;
+        const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || 'cliente';
+        const previewText = `${(tpl.body || '').replace(/\{\{1\}\}/g, nome)}\n\n[Sim, quero saber]  [Não tenho interesse]`;
+        const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+        const r = await sendOutboundWhatsAppTemplate({ accountId: item.accountId, leadId: lead.id, templateName: APPROVAL_REMINDER_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText, io });
+        if (r.success) {
+          await prisma.lead.update({ where: { id: lead.id }, data: { aiAutoReplyActive: true } }).catch(() => {});
+          console.log(`[Aprovação] ${lead.name}: ${item.number}º lembrete de aprovação enviado`);
+        } else {
+          console.error(`[Aprovação] ${lead.name}: falha no ${item.number}º lembrete: ${r.error}`);
+        }
+      } else {
+        // 3 lembretes e nenhuma resposta: Lead Sem Retorno do mesmo funil.
+        const target = (await prisma.stage.findMany({ where: { pipelineId: lead.pipelineId }, orderBy: { order: 'asc' }, select: { id: true, name: true } }))
+          .find((st) => st.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().startsWith('lead sem retorno'));
+        if (!target) { console.error(`[Aprovação] ${lead.name}: sem estágio "Lead Sem Retorno" no funil — card não movido`); continue; }
+        const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+        await updateLeadStage(lead.id, item.accountId, target.id);
+        await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${target.name}" — por Aviso de aprovação (o cliente não respondeu ao aviso de crédito aprovado nem aos ${MAX_REMINDERS} lembretes)` } }).catch(() => {});
+        logActivity({ accountId: item.accountId, userId: null, userName: 'Aviso de aprovação', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: `moveu pra "${target.name}": cliente aprovado não respondeu ao aviso nem a ${MAX_REMINDERS} lembretes` });
+        io?.to(`account_${item.accountId}`).emit('lead_moved', { leadId: lead.id, stageId: target.id });
+        console.log(`[Aprovação] ${lead.name}: ${MAX_REMINDERS} lembretes sem resposta → ${target.name}`);
+      }
+    }
+  } finally {
+    runningReminders = false;
   }
 }
 
