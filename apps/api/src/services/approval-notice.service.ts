@@ -11,7 +11,7 @@ import { callableFirstName } from '../lib/text';
  *    Documentação" e cujo cliente NUNCA mandou mensagem no WhatsApp recebe o
  *    template credito_aprovado_condicoes ("seu crédito foi aprovado na
  *    pré-análise. Quer saber as condições?" + [Sim, quero saber] [Não tenho
- *    interesse]). Uma vez por card, das 8h às 20h, só com o template aprovado.
+ *    interesse]). Uma vez por card, a qualquer hora (sem janela de horário), só com o template aprovado.
  *
  * 2. maybeSendApprovalOnYes: o cliente tocou em "Sim, quero saber" → manda o
  *    texto de aprovação no formato da equipe (✅ … 📋 Resumo da proposta …),
