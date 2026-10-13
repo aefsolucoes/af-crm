@@ -161,7 +161,10 @@ export default function ChamadasPage() {
               </thead>
               <tbody className="divide-y divide-af-border">
                 {calls.map((call) => {
-                  const missed = call.status === 'MISSED' || call.status === 'REJECTED' || call.status === 'FAILED';
+                  // Registro que ficou "chamando"/"conectando" sem o aviso de término (ligação antiga travada) não é ligação de agora.
+                  const stale = !isLive(call, now) && ['RINGING', 'CONNECTING', 'CONNECTED'].includes(call.status);
+                  const shownStatus = stale ? (call.status === 'CONNECTED' ? 'ENDED' : call.status === 'RINGING' ? 'MISSED' : 'FAILED') : call.status;
+                  const missed = shownStatus === 'MISSED' || shownStatus === 'REJECTED' || shownStatus === 'FAILED';
                   const duration = formatDuration(call.connectedAt, call.endedAt);
                   const Icon = missed ? PhoneMissed : call.direction === 'INBOUND' ? PhoneIncoming : PhoneOutgoing;
                   const date = new Date(call.startedAt);
@@ -180,7 +183,7 @@ export default function ChamadasPage() {
                           {call.direction === 'INBOUND' ? 'Recebida' : 'Feita'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-slate-600">{STATUS_LABEL[call.status]}</td>
+                      <td className="px-4 py-3 text-slate-600">{STATUS_LABEL[shownStatus]}</td>
                       <td className="px-4 py-3 text-slate-600">{duration || '—'}</td>
                       <td className="px-4 py-3 text-slate-600">{call.answeredBy?.name || '—'}</td>
                       <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">
