@@ -411,6 +411,12 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   // Já mandamos um resumo antes (ex.: sem as parcelas certas)? Então este é uma ATUALIZAÇÃO, e o texto diz isso.
   const jaMandou = (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } } })) > 0;
   const text = `${jaMandou ? '🔄 Atualizei os valores da sua proposta, agora com os números certos:\n\n' : ''}${renderApprovalText(await withHolders(leadId, built))}`;
+  // O MESMO aviso (mesmas opções, mesmos números) já foi enviado? Não manda de novo igual — só se algo mudou.
+  const lastSummary = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
+  const body = renderApprovalText(await withHolders(leadId, built));
+  if (lastSummary && lastSummary.content.replace(/^🔄[^\n]*\n\n/, '').trim() === body.trim()) {
+    warnings.push(`Esse mesmo aviso (mesmos valores) já foi enviado às ${lastSummary.createdAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })} — não vou mandar igual de novo. Se os números mudarem, o aviso novo sai como atualização.`);
+  }
   const [mode, tpl, already, move] = await Promise.all([
     whatsappWindowOpen(leadId), lead ? docsTemplate(lead.accountId) : null, docsAlreadySent(leadId), awaitingDocsMove(leadId),
   ]);

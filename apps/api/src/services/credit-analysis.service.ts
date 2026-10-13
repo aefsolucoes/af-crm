@@ -216,6 +216,10 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     const holder = await holderIfSecond(db, row.leadId, updated.holderName);
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: analysisNote({ ...updated, status: next, holder }) } });
   }
+  // Creditas: CPF com proposta ativa que NÃO é nossa → observação no card (precisa acionar o gestor).
+  if (becameFinal && !updated.dryRun && /acionar manualmente o gestor/i.test(updated.detail || '')) {
+    await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Creditas: este CPF já possui uma proposta ativa que NÃO está na nossa conta — precisa acionar manualmente o gestor da Creditas (contato executivo Home).' } });
+  }
   return { row: updated, becameFinal };
 }
 
