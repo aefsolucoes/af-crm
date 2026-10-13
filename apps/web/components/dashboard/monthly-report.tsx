@@ -14,8 +14,8 @@ import { Skeleton } from '@/components/ui/skeleton';
  */
 interface Person { id: string; name: string; value: number }
 interface Row {
-  month: string; label: string; entered: number; approved: number; docsSent: number; lost: number; rejected: number;
-  people?: { entered: Person[]; approved: Person[]; docsSent: Person[]; lost: Person[]; rejected: Person[] };
+  month: string; label: string; entered: number; approved: number; docsSent: number; lost: number; rejected: number; contracted: number;
+  people?: { entered: Person[]; approved: Person[]; docsSent: Person[]; lost: Person[]; rejected: Person[]; contracted: Person[] };
 }
 
 /** Número com a lista dos clientes ao passar o mouse (nome, valor, total) —
@@ -101,6 +101,7 @@ export function MonthlyReport() {
                 <th className="py-2 px-3 font-medium text-right">Entraram</th>
                 <th className="py-2 px-3 font-medium text-right">Aprovados</th>
                 <th className="py-2 px-3 font-medium text-right">Mandaram a documentação</th>
+                <th className="py-2 px-3 font-medium text-right" title="Estão ou já passaram pela etapa Vistoria do Imóvel">Contratação (vistoria)</th>
                 <th className="py-2 px-3 font-medium text-right">Reprovados</th>
                 <th className="py-2 px-3 font-medium text-right">Perdidos</th>
                 <th className="py-2 pl-3 font-medium text-right" title="Mandaram a documentação ÷ entraram">Conversão</th>
@@ -113,6 +114,7 @@ export function MonthlyReport() {
                   <NumberCell n={r.entered} people={r.people?.entered} className="font-semibold text-slate-800" />
                   <NumberCell n={r.approved} people={r.people?.approved} className="text-slate-700" />
                   <NumberCell n={r.docsSent} people={r.people?.docsSent} className="text-emerald-700 font-medium" />
+                  <NumberCell n={r.contracted} people={r.people?.contracted} className="text-violet-700 font-medium" />
                   <NumberCell n={r.rejected} people={r.people?.rejected} className="text-orange-600" />
                   <NumberCell n={r.lost} people={r.people?.lost} className="text-red-600" />
                   <td className="py-2 pl-3 text-right text-slate-600">{pct(r.docsSent, r.entered)}</td>

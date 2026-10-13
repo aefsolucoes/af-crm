@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { CalendarDays, UserPlus, BadgeCheck, ThumbsDown, XCircle, ChevronDown } from 'lucide-react';
+import { CalendarDays, UserPlus, BadgeCheck, ThumbsDown, XCircle, ChevronDown, FileSignature } from 'lucide-react';
 import api from '@/lib/api';
 import { cn, formatCurrency } from '@/lib/utils';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -17,14 +17,15 @@ import { Skeleton } from '@/components/ui/skeleton';
  */
 interface Person { id: string; name: string; value: number }
 interface Row {
-  month: string; label: string; entered: number; approved: number; lost: number; rejected: number; lostRejected: number;
-  people?: { entered: Person[]; approved: Person[]; lost: Person[]; rejected: Person[] };
+  month: string; label: string; entered: number; approved: number; lost: number; rejected: number; lostRejected: number; contracted: number;
+  people?: { entered: Person[]; approved: Person[]; lost: Person[]; rejected: Person[]; contracted: Person[] };
 }
-type Key = 'entered' | 'approved' | 'rejected' | 'lost';
+type Key = 'entered' | 'approved' | 'contracted' | 'rejected' | 'lost';
 
 const CARDS: { key: Key; label: string; hint: string; icon: typeof UserPlus; tone: string; ring: string }[] = [
   { key: 'entered', label: 'Entraram', hint: 'cards criados no mês', icon: UserPlus, tone: 'text-sky-700 bg-sky-50', ring: 'ring-sky-300' },
   { key: 'approved', label: 'Aprovados', hint: 'chegaram em Aguardando Documentação', icon: BadgeCheck, tone: 'text-emerald-700 bg-emerald-50', ring: 'ring-emerald-300' },
+  { key: 'contracted', label: 'Contratação', hint: 'estão ou passaram pela Vistoria do Imóvel', icon: FileSignature, tone: 'text-violet-700 bg-violet-50', ring: 'ring-violet-300' },
   { key: 'rejected', label: 'Reprovados', hint: 'passaram pela pré-análise e os bancos reprovaram', icon: ThumbsDown, tone: 'text-orange-700 bg-orange-50', ring: 'ring-orange-300' },
   { key: 'lost', label: 'Perdidos', hint: 'marcados como Perdido no mês', icon: XCircle, tone: 'text-red-700 bg-red-50', ring: 'ring-red-300' },
 ];
@@ -74,7 +75,7 @@ export function MonthPanel() {
       </div>
 
       {isLoading ? <Skeleton className="h-28" /> : (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           {CARDS.map((c) => {
             const n = count(row, c.key);
             const before = prev ? count(prev, c.key) : null;
@@ -134,6 +135,7 @@ export function MonthPanel() {
 
       <p className="text-[11px] text-slate-400 mt-3">
         Cada número no mês em que aconteceu. Entraram = card criado no mês. Aprovados = chegaram em &quot;Aguardando Documentação&quot;.
+        Contratação = estão ou já passaram pela etapa &quot;Vistoria do Imóvel&quot; (inclui as etapas depois dela e os concluídos).
         Reprovados = marcados com o botão &quot;Reprovado&quot; (os dos meses anteriores a 13/10 são uma <strong>estimativa</strong> feita pelo motivo da perda) — eles também contam em Perdidos.
         Valores: valor do crédito do card (sem ele, valor da venda). A Caixa de Entrada (corretores etc.) não entra. Histórico de aprovados e perdidos só existe a partir de 31/08/2026.
       </p>
