@@ -77,7 +77,7 @@ router.get('/queue', async (req: AuthRequest, res: Response) => {
   const bank = String(req.query.bank || '');
   if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
   try {
-    touchExtension(req.user!.accountId, bank);
+    touchExtension(req.user!.accountId, bank, typeof req.query.extId === 'string' ? req.query.extId : null);
     const items = req.query.claim === '0' ? [] : await claimQueue(prisma, { accountId: req.user!.accountId, bank, limit: Number(req.query.limit) || 3 });
     if (items.length) emit(req);
     res.json({ items });

@@ -366,13 +366,19 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
 }
 
 // ─── Presença das extensões (quando cada uma buscou a fila pela última vez) ───
-const lastSeen = new Map<string, number>();
-export function touchExtension(accountId: string, bank: string) { lastSeen.set(`${accountId}:${bank}`, Date.now()); }
-export function extensionStatus(accountId: string): Record<string, { lastSeenAt: string | null; online: boolean }> {
-  const out: Record<string, { lastSeenAt: string | null; online: boolean }> = {};
+const lastSeen = new Map<string, { at: number; extId: string | null }>();
+const EXT_ID_RE = /^[a-p]{32}$/;
+/** `extId` = id da extensão no Chrome, que o CRM usa pra avisá-la na hora (externally_connectable). */
+export function touchExtension(accountId: string, bank: string, extId?: string | null) {
+  const key = `${accountId}:${bank}`;
+  const prev = lastSeen.get(key);
+  lastSeen.set(key, { at: Date.now(), extId: extId && EXT_ID_RE.test(extId) ? extId : prev?.extId || null });
+}
+export function extensionStatus(accountId: string): Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null }> {
+  const out: Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null }> = {};
   for (const bank of BANK_KEYS) {
-    const t = lastSeen.get(`${accountId}:${bank}`);
-    out[bank] = { lastSeenAt: t ? new Date(t).toISOString() : null, online: !!t && Date.now() - t < 3 * 60 * 1000 };
+    const seen = lastSeen.get(`${accountId}:${bank}`);
+    out[bank] = { lastSeenAt: seen ? new Date(seen.at).toISOString() : null, online: !!seen && Date.now() - seen.at < 3 * 60 * 1000, extId: seen?.extId || null };
   }
   return out;
 }

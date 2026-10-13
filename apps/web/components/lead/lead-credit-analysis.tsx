@@ -6,6 +6,7 @@ import { ExternalLink, Landmark, Play, Star } from 'lucide-react';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
+import { pingExtensions } from '@/lib/credit-extensions';
 import { BANKS, Badge, STATUS, type Analysis, type Bank } from '@/components/credit/shared';
 
 /* Bloco "Análises de crédito" dentro do card (aba Financiamento). Mostra o último resultado de
@@ -16,7 +17,7 @@ interface LeadAnalyses {
   latest: Partial<Record<Bank, Analysis>>;
   history: Analysis[];
   chosenId: string | null;
-  extensions: Record<Bank, { online: boolean; lastSeenAt: string | null }>;
+  extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null }>;
 }
 
 export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onChanged?: () => void }) {
@@ -54,6 +55,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     setBusy(true);
     try {
       const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks });
+      pingExtensions(data?.extensions, banks);
       toast(r.created ? `${r.created} análise(s) na fila` : 'Já estava rodando', 'success');
       setRunning(false);
       refresh();

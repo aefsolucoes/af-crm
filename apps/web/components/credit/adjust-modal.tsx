@@ -91,6 +91,7 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
               <span className="block text-xs text-slate-400">
                 {form.inverter ? <>Titular na análise: <strong>{c.name2}</strong> · 2º participante: <strong>{c.name1}</strong></> : <>Titular: <strong>{c.name1}</strong> · 2º participante: <strong>{c.name2}</strong></>}
               </span>
+              {form.inverter && <span className="block text-[11px] text-slate-400 mt-1">Trocam de lugar nome, CPF, nascimento, telefone, e-mail e estado civil. A renda não troca: o novo titular usa a renda do 1º participante.</span>}
             </span>
           </label>
         ) : (

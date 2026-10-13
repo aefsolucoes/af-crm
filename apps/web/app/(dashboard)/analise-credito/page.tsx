@@ -11,6 +11,7 @@ import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
 import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead } from '@/components/credit/shared';
 import { AdjustModal } from '@/components/credit/adjust-modal';
+import { pingExtensions } from '@/lib/credit-extensions';
 import { ChevronDown, ChevronRight, MessageSquare, Play, Plus, Star, Pencil, SlidersHorizontal, ArrowLeftRight } from 'lucide-react';
 import api from '@/lib/api';
 
@@ -18,7 +19,7 @@ import api from '@/lib/api';
  * As extensões do Chrome (Credimorar/Santander, Creditas, Inter) rodam nos portais dos bancos e
  * contam o resultado pra cá; daqui o time dispara novas análises e escolhe a proposta. */
 
-interface Board { leads: BoardLead[]; extensions: Record<Bank, { lastSeenAt: string | null; online: boolean }>; }
+interface Board { leads: BoardLead[]; extensions: Record<Bank, { lastSeenAt: string | null; online: boolean; extId?: string | null }>; }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="block text-xs text-slate-500">{label}<div className="mt-1">{children}</div></label>;
@@ -148,6 +149,7 @@ export default function AnaliseCreditoPage() {
     setBusy(true);
     try {
       const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: selected, banks });
+      pingExtensions(data?.extensions, banks);
       toast(`${r.created} análise(s) na fila${r.skipped ? ` · ${r.skipped} já estavam rodando` : ''}`, 'success');
       setConfirm(false);
       setSelected([]);
@@ -173,6 +175,7 @@ export default function AnaliseCreditoPage() {
   async function runAgain(leadId: string, bks: Bank[]) {
     try {
       const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: bks });
+      pingExtensions(data?.extensions, bks);
       toast(`${r.created} análise(s) na fila${r.skipped ? ` · ${r.skipped} já estavam rodando` : ''}`, 'success');
       refresh();
     } catch (err: any) {
