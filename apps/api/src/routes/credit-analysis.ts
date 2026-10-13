@@ -1,0 +1,98 @@
+import { Router, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { getScopeDepartmentIds } from '../services/department.service';
+import {
+  BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
+  registerManual, chooseAnalysis, touchExtension, extensionStatus,
+} from '../services/credit-analysis.service';
+
+/** Aba "Análise de Crédito" — ver credit-analysis.service.ts. As extensões do Chrome entram com o login normal do CRM. */
+const router = Router();
+const prisma = new PrismaClient();
+router.use(authMiddleware);
+
+const io = (req: AuthRequest) => (req as any).app.get('io');
+const emit = (req: AuthRequest, extra: Record<string, any> = {}) =>
+  io(req)?.to(`account_${req.user!.accountId}`).emit('credit_analysis_updated', extra);
+const fail = (res: Response, err: any, fallback: string, code = 500) => res.status(code).json({ error: err?.message || fallback });
+
+router.get('/board', async (req: AuthRequest, res: Response) => {
+  try {
+    const scope = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+    res.json({ leads: await board(prisma, { accountId: req.user!.accountId, scopeDepartmentIds: scope }), extensions: extensionStatus(req.user!.accountId) });
+  } catch (err) { fail(res, err, 'Erro ao carregar as análises'); }
+});
+
+router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));
+
+// Dispara a análise de vários clientes em vários bancos (a extensão busca na fila).
+router.post('/requests', async (req: AuthRequest, res: Response) => {
+  const leadIds = Array.isArray(req.body?.leadIds) ? (req.body.leadIds as unknown[]).filter((v): v is string => typeof v === 'string') : [];
+  const banks = Array.isArray(req.body?.banks) ? (req.body.banks as unknown[]).filter((v): v is string => typeof v === 'string' && BANK_KEYS.includes(v)) : [];
+  if (!leadIds.length) return res.status(400).json({ error: 'Escolha pelo menos um cliente' });
+  if (!banks.length) return res.status(400).json({ error: 'Escolha pelo menos um banco' });
+  try {
+    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds, banks, dryRun: req.body?.dryRun !== false });
+    emit(req);
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao pedir as análises'); }
+});
+
+// A extensão do banco pergunta: "tem pedido pra mim?" (ela chama a cada minuto).
+router.get('/queue', async (req: AuthRequest, res: Response) => {
+  const bank = String(req.query.bank || '');
+  if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
+  try {
+    touchExtension(req.user!.accountId, bank);
+    const items = req.query.claim === '0' ? [] : await claimQueue(prisma, { accountId: req.user!.accountId, bank, limit: Number(req.query.limit) || 3 });
+    if (items.length) emit(req);
+    res.json({ items });
+  } catch (err) { fail(res, err, 'Erro ao buscar a fila'); }
+});
+
+// A extensão conta o que aconteceu. `status` aceita os termos dela (enviando, enviado, aprovado…) ou os do CRM.
+router.post('/report', async (req: AuthRequest, res: Response) => {
+  const b = req.body || {};
+  const raw = String(b.status || '');
+  const status = EXTENSION_STATUS[raw.toLowerCase()] || raw.toUpperCase();
+  const bank = String(b.bank || '').toUpperCase();
+  if (!b.leadId || !BANK_KEYS.includes(bank) || !status) return res.status(400).json({ error: 'leadId, bank e status são obrigatórios' });
+  try {
+    touchExtension(req.user!.accountId, bank);
+    const row = await reportAnalysis(prisma, { accountId: req.user!.accountId, requestId: b.requestId ? String(b.requestId) : undefined, leadId: String(b.leadId), bank, status, detail: b.detail ? String(b.detail) : undefined, result: b.result && typeof b.result === 'object' ? b.result : {} });
+    emit(req, { leadId: row.leadId });
+    res.json({ ok: true, id: row.id, status: row.status });
+  } catch (err) { fail(res, err, 'Erro ao registrar a análise', 400); }
+});
+
+// Registrar à mão (ex.: Inter lido no portal pelo Fabio ou pela skill).
+router.post('/manual', async (req: AuthRequest, res: Response) => {
+  const b = req.body || {};
+  const bank = String(b.bank || '').toUpperCase();
+  if (!b.leadId || !BANK_KEYS.includes(bank) || !b.status) return res.status(400).json({ error: 'leadId, bank e status são obrigatórios' });
+  try {
+    const row = await registerManual(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadId: String(b.leadId), bank, status: String(b.status).toUpperCase(), detail: b.detail ? String(b.detail) : undefined, result: b.result && typeof b.result === 'object' ? b.result : b });
+    emit(req, { leadId: row.leadId });
+    res.json(row);
+  } catch (err) { fail(res, err, 'Erro ao registrar', 400); }
+});
+
+router.put('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const row = await updateAnalysis(prisma, { accountId: req.user!.accountId, id: req.params.id, patch: req.body || {} });
+    emit(req, { leadId: row.leadId });
+    res.json(row);
+  } catch (err) { fail(res, err, 'Erro ao salvar', 400); }
+});
+
+router.post('/:id/choose', async (req: AuthRequest, res: Response) => {
+  try {
+    const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;
+    const out = await chooseAnalysis(prisma, { accountId: req.user!.accountId, id: req.params.id, userName });
+    emit(req);
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao escolher a proposta', 400); }
+});
+
+export default router;

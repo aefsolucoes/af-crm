@@ -35,6 +35,7 @@ import activityRoutes from './routes/activity';
 import callRoutes from './routes/calls';
 import aiQuestionRoutes from './routes/ai-questions';
 import remarketingRoutes from './routes/remarketing';
+import creditAnalysisRoutes from './routes/credit-analysis';
 import emailRoutes from './routes/email';
 import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.service';
 import { pollSalesBotRuns } from './services/salesbot.service';
@@ -102,6 +103,7 @@ app.use('/api/activity', activityRoutes);
 app.use('/api/calls', callRoutes);
 app.use('/api/ai-questions', aiQuestionRoutes);
 app.use('/api/remarketing', remarketingRoutes);
+app.use('/api/credit-analysis', creditAnalysisRoutes);
 app.use('/api/email', emailRoutes);
 
 configureWebPush();

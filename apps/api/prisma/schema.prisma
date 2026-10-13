@@ -260,6 +260,7 @@ model Lead {
   tasks              Task[]
   notes              Note[]
   messages           Message[]
+  creditAnalyses     CreditAnalysis[]
   assistantQuestions AssistantQuestion[]
   calls              Call[]
   aiTeamQuestions    AiTeamQuestion[]
@@ -1158,4 +1159,36 @@ model PushSubscription {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+/// Análise de crédito de um cliente num banco (aba "Análise de Crédito"): pedido pelo CRM ou
+/// iniciado pela extensão do Chrome, e o retorno do portal. Ver credit-analysis.service.ts.
+model CreditAnalysis {
+  id               String    @id @default(cuid())
+  accountId        String
+  leadId           String
+  lead             Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  bank             String // INTER | CREDITAS | CREDIMORAR (Santander)
+  status           String    @default("REQUESTED") // REQUESTED RUNNING SENT APPROVED REJECTED FAILED CHECK INCOMPLETE TEST
+  detail           String?   @db.Text
+  proposalNumber   String?
+  approvedValue    Float?
+  termMonths       Int?
+  rate             String?
+  indexer          String?
+  firstInstallment Float?
+  lastInstallment  Float?
+  conditions       String?   @db.Text
+  dryRun           Boolean   @default(false)
+  source           String    @default("EXTENSION") // EXTENSION | MANUAL
+  chosen           Boolean   @default(false)
+  requestedById    String?
+  requestedAt      DateTime  @default(now())
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([leadId, bank, createdAt])
+  @@index([accountId, status])
 }
