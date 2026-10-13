@@ -63,6 +63,10 @@ export async function processApprovalNotices(io: any): Promise<void> {
       // Cliente que já falou no WhatsApp segue pelo atendimento normal.
       const spoke = await prisma.message.count({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' } });
       if (spoke > 0) continue;
+      // A equipe (Andreia) também manda esse template à mão: se já foi enviado
+      // com sucesso pra esse cliente, por qualquer um, não manda de novo.
+      const already = await prisma.message.count({ where: { leadId: l.id, direction: 'OUTBOUND', templateName: APPROVAL_TEMPLATE, status: { not: 'FAILED' } } });
+      if (already > 0) continue;
       const tpl = await approvalTemplate(l.accountId);
       if (!tpl.approved) return; // ainda em análise na Meta — tenta na próxima rodada
       const nome = callableFirstName(cf.participante_1, l.name, l.contact?.name) || 'cliente';
