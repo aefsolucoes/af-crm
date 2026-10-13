@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
+import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, type Bank, type Analysis, type BoardLead } from '@/components/credit/shared';
 import { ChevronDown, ChevronRight, MessageSquare, Play, Plus, Star, Pencil } from 'lucide-react';
 import api from '@/lib/api';
 
@@ -16,64 +17,7 @@ import api from '@/lib/api';
  * As extensões do Chrome (Credimorar/Santander, Creditas, Inter) rodam nos portais dos bancos e
  * contam o resultado pra cá; daqui o time dispara novas análises e escolhe a proposta. */
 
-type Bank = 'CREDIMORAR' | 'CREDITAS' | 'INTER';
-const BANKS: { key: Bank; label: string; short: string }[] = [
-  { key: 'CREDIMORAR', label: 'Santander (Credimorar)', short: 'Santander' },
-  { key: 'CREDITAS', label: 'Creditas', short: 'Creditas' },
-  { key: 'INTER', label: 'Banco Inter', short: 'Inter' },
-];
-
-const STATUS: Record<string, { label: string; cls: string }> = {
-  REQUESTED: { label: 'Na fila', cls: 'bg-slate-100 text-slate-600' },
-  RUNNING: { label: 'Rodando', cls: 'bg-blue-50 text-blue-600' },
-  SENT: { label: 'Enviada', cls: 'bg-indigo-50 text-indigo-600' },
-  APPROVED: { label: 'Aprovado', cls: 'bg-emerald-50 text-emerald-600' },
-  REJECTED: { label: 'Reprovado', cls: 'bg-red-50 text-red-500' },
-  FAILED: { label: 'Falhou', cls: 'bg-orange-50 text-orange-600' },
-  CHECK: { label: 'Conferir', cls: 'bg-amber-50 text-amber-600' },
-  INCOMPLETE: { label: 'Incompleto', cls: 'bg-amber-50 text-amber-600' },
-  TEST: { label: 'Teste', cls: 'bg-slate-100 text-slate-500' },
-};
-const MANUAL_STATUS = ['SENT', 'APPROVED', 'REJECTED', 'CHECK', 'FAILED'];
-
-interface Analysis {
-  id: string; bank: Bank; status: string; detail: string | null; dryRun: boolean; source: string; chosen: boolean;
-  proposalNumber: string | null; approvedValue: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
-  firstInstallment: number | null; lastInstallment: number | null; conditions: string | null;
-  requestedAt: string; finishedAt: string | null; updatedAt: string; createdAt: string;
-}
-interface BoardLead {
-  id: string; name: string; stage: string; status: string;
-  requested: { creditValue: number; propertyValue: number; term: string | null };
-  latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; chosenId: string | null;
-}
 interface Board { leads: BoardLead[]; extensions: Record<Bank, { lastSeenAt: string | null; online: boolean }>; }
-
-function ago(d: string | null | undefined): string {
-  if (!d) return '';
-  const min = Math.round((Date.now() - new Date(d).getTime()) / 60000);
-  if (min < 1) return 'agora';
-  if (min < 60) return `há ${min} min`;
-  if (min < 60 * 24) return `há ${Math.round(min / 60)} h`;
-  return new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
-}
-
-function Badge({ a }: { a?: Analysis }) {
-  if (!a) return <span className="text-xs text-slate-300">—</span>;
-  const s = STATUS[a.status] || { label: a.status, cls: 'bg-slate-100 text-slate-500' };
-  return (
-    <div className="space-y-0.5">
-      <div className="flex items-center gap-1">
-        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${s.cls}`}>{s.label}{a.dryRun && a.status !== 'TEST' ? ' · teste' : ''}</span>
-        {a.chosen && <Star size={13} className="text-amber-500 fill-amber-400" />}
-      </div>
-      <div className="text-[11px] text-slate-400">
-        {a.status === 'APPROVED' && a.approvedValue ? <span className="text-slate-600 font-medium">{formatCurrency(a.approvedValue)} · </span> : null}
-        {ago(a.updatedAt)}
-      </div>
-    </div>
-  );
-}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="block text-xs text-slate-500">{label}<div className="mt-1">{children}</div></label>;
@@ -155,7 +99,6 @@ export default function AnaliseCreditoPage() {
   });
   const [selected, setSelected] = useState<string[]>([]);
   const [banks, setBanks] = useState<Bank[]>(['CREDIMORAR', 'CREDITAS', 'INTER']);
-  const [dryRun, setDryRun] = useState(true);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [modal, setModal] = useState<{ lead: BoardLead; bank: Bank; analysis?: Analysis } | null>(null);
@@ -170,6 +113,12 @@ export default function AnaliseCreditoPage() {
     socket.on('credit_analysis_updated', on);
     return () => { if (t) clearTimeout(t); socket.off('credit_analysis_updated', on); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Link vindo do card (?leadId=): já abre o cliente.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('leadId');
+    if (id) setOpen(id);
   }, []);
 
   const leads = data?.leads || [];
@@ -192,7 +141,7 @@ export default function AnaliseCreditoPage() {
   async function run() {
     setBusy(true);
     try {
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: selected, banks, dryRun });
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: selected, banks });
       toast(`${r.created} análise(s) na fila${r.skipped ? ` · ${r.skipped} já estavam rodando` : ''}`, 'success');
       setConfirm(false);
       setSelected([]);
@@ -245,12 +194,8 @@ export default function AnaliseCreditoPage() {
                 {b.short}
               </label>
             ))}
-            <label className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer" title="A extensão preenche tudo, mas não envia a proposta ao banco">
-              <input type="checkbox" checked={dryRun} onChange={() => setDryRun((v) => !v)} />
-              Modo teste (não envia ao banco)
-            </label>
             <div className="ml-auto">
-              <Button onClick={() => (dryRun ? run() : setConfirm(true))} disabled={busy || !selected.length || !banks.length}>
+              <Button onClick={() => setConfirm(true)} disabled={busy || !selected.length || !banks.length}>
                 <Play size={14} /> Rodar {selected.length ? `${selected.length} cliente(s)` : ''}
               </Button>
             </div>
@@ -343,7 +288,7 @@ export default function AnaliseCreditoPage() {
                                   <div className="font-medium text-slate-500 mb-1">Histórico</div>
                                   <ul className="space-y-0.5">
                                     {l.history.map((h) => (
-                                      <li key={h.id}>{new Date(h.createdAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} · {BANKS.find((b) => b.key === h.bank)?.short} · {STATUS[h.status]?.label || h.status}{h.dryRun ? ' (teste)' : ''}{h.source === 'MANUAL' ? ' · manual' : ''}{h.detail ? ` — ${h.detail.slice(0, 90)}` : ''}</li>
+                                      <li key={h.id}>{new Date(h.createdAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} · {BANKS.find((b) => b.key === h.bank)?.short} · {STATUS[h.status]?.label || h.status}{h.source === 'MANUAL' ? ' · manual' : ''}{h.detail ? ` — ${h.detail.slice(0, 90)}` : ''}</li>
                                     ))}
                                   </ul>
                                 </div>
@@ -367,17 +312,16 @@ export default function AnaliseCreditoPage() {
       {confirm && (
         <Modal title="Enviar propostas aos bancos?" onClose={() => setConfirm(false)}>
           <div className="space-y-3 text-sm text-slate-600">
-            <p>O modo teste está <strong>desligado</strong>: a extensão vai <strong>enviar de verdade</strong> a proposta de {selected.length} cliente(s) para {banks.map((b) => BANKS.find((x) => x.key === b)!.short).join(', ')}.</p>
+            <p>A extensão vai <strong>enviar de verdade</strong> a proposta de {selected.length} cliente(s) para {banks.map((b) => BANKS.find((x) => x.key === b)!.short).join(', ')}.</p>
             {dups.length > 0 && (
               <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-700">
                 <p className="font-medium mb-1">Já tiveram proposta enviada ao banco — rodar de novo pode criar proposta DUPLICADA:</p>
                 <ul className="list-disc pl-4 space-y-0.5">{dups.slice(0, 8).map((d) => <li key={d}>{d}</li>)}{dups.length > 8 && <li>e mais {dups.length - 8}…</li>}</ul>
               </div>
             )}
-            <p className="text-xs text-slate-400">Se o modo teste estiver ligado na própria extensão (Santander e Creditas), ele vale mais que este pedido e nada é enviado.</p>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="secondary" onClick={() => setConfirm(false)}>Cancelar</Button>
-              <Button onClick={run} disabled={busy}>{busy ? 'Enviando…' : 'Enviar de verdade'}</Button>
+              <Button onClick={run} disabled={busy}>{busy ? 'Enviando…' : 'Enviar'}</Button>
             </div>
           </div>
         </Modal>

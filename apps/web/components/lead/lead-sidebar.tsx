@@ -5,6 +5,7 @@ import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
 import { Plus, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
 import { cn, formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate, formatMoneyDisplay } from '@/lib/utils';
+import { LeadCreditAnalysis } from './lead-credit-analysis';
 
 interface LeadSidebarProps {
   lead: LeadDetail;
@@ -521,6 +522,9 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
               </div>
             ));
           })()}
+
+          {/* Análises de crédito dos bancos (extensões) — só na aba Financiamento */}
+          {expanded && activeTab === 'Financiamento' && <LeadCreditAnalysis leadId={lead.id} onChanged={onRefresh} />}
 
           {/* Custom fields for this tab (ocultos no modo compacto) */}
           {expanded && fieldsForTab.map(field => (

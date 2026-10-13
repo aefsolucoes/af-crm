@@ -226,13 +226,17 @@ export async function chooseAnalysis(db: Db, p: { accountId: string; id: string;
   return { ok: true, filled: Object.keys(fill).filter((k) => !k.startsWith('_')) };
 }
 
-/** Quadro da aba: clientes do Home Equity em Pré-Análise (e quem teve análise nas últimas 3 semanas) × bancos. */
-export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: string[] }) {
-  // Execução que ficou "rodando" sem a extensão dar sinal (Chrome fechado, janela fechada) vira "falhou".
+/** Execução que ficou "rodando" sem a extensão dar sinal (Chrome fechado, janela fechada) vira "falhou". */
+async function expireStuck(db: Db, where: { accountId: string; leadId?: string }) {
   await db.creditAnalysis.updateMany({
-    where: { accountId: p.accountId, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } },
+    where: { ...where, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } },
     data: { status: 'FAILED', finishedAt: new Date(), detail: 'A extensão parou no meio (Chrome ou janela do banco fechada). Peça de novo.' },
   });
+}
+
+/** Quadro da aba: clientes do Home Equity em Pré-Análise (e quem teve análise nas últimas 3 semanas) × bancos. */
+export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: string[] }) {
+  await expireStuck(db, { accountId: p.accountId });
   const since = new Date(Date.now() - 21 * 86_400_000);
   const recent = await db.creditAnalysis.findMany({ where: { accountId: p.accountId, createdAt: { gte: since } }, select: { leadId: true } });
   const recentIds = Array.from(new Set(recent.map((r) => r.leadId)));
@@ -266,6 +270,25 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       chosenId: l.creditAnalyses.find((a) => a.chosen)?.id || null,
     };
   });
+}
+
+/** Bloco "Análises de crédito" dentro do card: último resultado de cada banco + histórico. */
+export async function leadAnalyses(db: Db, p: { accountId: string; leadId: string; scopeDepartmentIds: string[] }) {
+  const lead = await db.lead.findFirst({
+    where: { id: p.leadId, accountId: p.accountId },
+    select: { id: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } },
+  });
+  if (!lead) return null;
+  const deptId = lead.pipeline?.departmentId;
+  if (p.scopeDepartmentIds.length && deptId && !p.scopeDepartmentIds.includes(deptId)) return null;
+  await expireStuck(db, { accountId: p.accountId, leadId: p.leadId });
+  const history = await db.creditAnalysis.findMany({ where: { leadId: p.leadId }, orderBy: { createdAt: 'desc' }, take: 12 });
+  const latest: Record<string, any> = {};
+  for (const a of history) if (!latest[a.bank]) latest[a.bank] = a;
+  return {
+    eligible: /home equity/i.test(lead.pipeline?.department?.name || ''),
+    latest, history, chosenId: history.find((a) => a.chosen)?.id || null,
+  };
 }
 
 // ─── Presença das extensões (quando cada uma buscou a fila pela última vez) ───

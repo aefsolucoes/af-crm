@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
-  registerManual, chooseAnalysis, touchExtension, extensionStatus,
+  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses,
 } from '../services/credit-analysis.service';
 
 /** Aba "Análise de Crédito" — ver credit-analysis.service.ts. As extensões do Chrome entram com o login normal do CRM. */
@@ -24,6 +24,16 @@ router.get('/board', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao carregar as análises'); }
 });
 
+// Análises de UM card (bloco dentro do card).
+router.get('/lead/:leadId', async (req: AuthRequest, res: Response) => {
+  try {
+    const scope = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+    const out = await leadAnalyses(prisma, { accountId: req.user!.accountId, leadId: req.params.leadId, scopeDepartmentIds: scope });
+    if (!out) return res.status(404).json({ error: 'Card não encontrado' });
+    res.json({ ...out, extensions: extensionStatus(req.user!.accountId) });
+  } catch (err) { fail(res, err, 'Erro ao carregar as análises do card'); }
+});
+
 router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));
 
 // Dispara a análise de vários clientes em vários bancos (a extensão busca na fila).
@@ -33,7 +43,7 @@ router.post('/requests', async (req: AuthRequest, res: Response) => {
   if (!leadIds.length) return res.status(400).json({ error: 'Escolha pelo menos um cliente' });
   if (!banks.length) return res.status(400).json({ error: 'Escolha pelo menos um banco' });
   try {
-    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds, banks, dryRun: req.body?.dryRun !== false });
+    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds, banks, dryRun: req.body?.dryRun === true });
     emit(req);
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao pedir as análises'); }

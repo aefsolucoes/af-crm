@@ -26,6 +26,7 @@ const NAV: NavItem[] = [
   // por padrão (ADMIN/MANAGER/AGENT), então todo colaborador vê esse atalho
   // sem precisar de configuração extra de permissão.
   { href: '/meu-assistente', label: 'Meu Assistente', icon: Sparkles, perm: 'dashboard' },
+  { href: '/analise-credito', label: 'Análise de Crédito', icon: Landmark, perm: 'funnel_view' },
   // Item único pros 3 setores (Habitação/Consórcio/Home Equity) — antes eram
   // 3 itens de menu separados, um por setor; agora FunilView tem seu próprio
   // seletor de setor (mesmo critério de "só os próprios setores" de antes,
@@ -39,7 +40,6 @@ const NAV: NavItem[] = [
   { href: '/templates', label: 'Templates', icon: FileText, perm: 'templates' },
   { href: '/automacao', label: 'Automações', icon: Zap, perm: 'automations' },
   { href: '/remarketing', label: 'Remarketing', icon: Megaphone, perm: 'automations' },
-  { href: '/analise-credito', label: 'Análise de Crédito', icon: Landmark, perm: 'funnel_view' },
   { href: '/usuarios', label: 'Usuários', icon: UserCog, perm: 'users' },
   { href: '/financeiro', label: 'Financeiro', icon: Wallet, perm: 'finance' },
   { href: '/importar', label: 'Importar', icon: Upload, perm: 'funnel_manage' },
