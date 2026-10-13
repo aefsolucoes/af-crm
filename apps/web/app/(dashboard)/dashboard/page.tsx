@@ -12,6 +12,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { MorningReport } from '@/components/dashboard/morning-report';
 import { NotesBoard } from '@/components/dashboard/notes-board';
 import { MonthlyReport } from '@/components/dashboard/monthly-report';
+import { MonthPanel } from '@/components/dashboard/month-panel';
 import { useState } from 'react';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement,
@@ -179,6 +180,7 @@ export default function DashboardPage() {
           )}
         </div>
 
+        <MonthPanel />
         <MonthlyReport />
 
         {/* Charts row 1 */}

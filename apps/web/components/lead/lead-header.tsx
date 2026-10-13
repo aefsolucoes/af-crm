@@ -4,7 +4,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Modal } from '@/components/ui/modal';
 import { formatCurrency } from '@/lib/utils';
-import { Building2, DollarSign, Trophy, XCircle, RotateCcw, X, Plus, Archive, ArchiveRestore } from 'lucide-react';
+import { Building2, DollarSign, Trophy, XCircle, ThumbsDown, RotateCcw, X, Plus, Archive, ArchiveRestore } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useState } from 'react';
@@ -76,6 +76,11 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
   const [showLostModal, setShowLostModal] = useState(false);
   const [lostReasonInput, setLostReasonInput] = useState('');
   const [savingLost, setSavingLost] = useState(false);
+  // "Reprovado" (Fabio 13/10): cliente que passou pela Pré-Análise e os bancos
+  // reprovaram. Marca a data (painel mensal do Dashboard) e vai pra Perdido.
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectReasonInput, setRejectReasonInput] = useState('');
+  const [savingReject, setSavingReject] = useState(false);
 
   async function handleArchive(archive: boolean) {
     if (archive && !confirm('Arquivar este lead? Ele não aparecerá mais no funil, mas pode ser restaurado depois.')) return;
@@ -135,6 +140,22 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
     }
   }
 
+  async function confirmMarkRejected() {
+    setSavingReject(true);
+    try {
+      const reason = rejectReasonInput.trim();
+      await api.put(`/api/leads/${lead.id}`, { status: 'LOST', rejected: true, lostReason: `Reprovado — ${reason || 'crédito não aprovado pelos bancos'}` });
+      toast('Lead marcado como Reprovado (foi pra Perdidos)');
+      setShowRejectModal(false);
+      setRejectReasonInput('');
+      onStageChange();
+    } catch {
+      toast('Erro ao marcar como reprovado', 'error');
+    } finally {
+      setSavingReject(false);
+    }
+  }
+
   async function handleRemoveTag(tag: string) {
     try {
       const newTags = lead.tags.filter(t => t !== tag);
@@ -189,6 +210,15 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
             className={`${btn} bg-red-50 text-red-600 hover:bg-red-100 border-red-200`}
           >
             <XCircle size={icon} /> Perdido
+          </button>
+        )}
+        {lead.status === 'OPEN' && !lead.archived && (
+          <button
+            onClick={() => setShowRejectModal(true)}
+            title="Passou pela Pré-Análise e os bancos reprovaram — vai pra Perdidos e entra na contagem de reprovados"
+            className={`${btn} bg-orange-50 text-orange-700 hover:bg-orange-100 border-orange-200`}
+          >
+            <ThumbsDown size={icon} /> Reprovado
           </button>
         )}
         {(lead.status === 'WON' || lead.status === 'LOST') && (
@@ -257,6 +287,36 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
           )}
         </div>
       )}
+
+      <Modal open={showRejectModal} onClose={() => setShowRejectModal(false)} title="Marcar como Reprovado" size="sm">
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">
+            Use quando o cliente passou pela Pré-Análise e os bancos reprovaram. O card vai pra <strong>Perdidos</strong> e entra na contagem de
+            <strong> reprovados</strong> do painel mensal.
+          </p>
+          <div>
+            <label className="text-sm font-medium text-slate-700 mb-1 block">Motivo (opcional)</label>
+            <textarea
+              autoFocus
+              value={rejectReasonInput}
+              onChange={(e) => setRejectReasonInput(e.target.value)}
+              placeholder="Ex: reprovado no Inter, Santander e Creditas; restrição no CPF; idade..."
+              rows={3}
+              className="w-full text-sm px-3 py-2 border border-af-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-af-accent"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setShowRejectModal(false)} className="text-sm px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100">Cancelar</button>
+            <button
+              onClick={confirmMarkRejected}
+              disabled={savingReject}
+              className="text-sm px-4 py-2 rounded-lg bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-50"
+            >
+              {savingReject ? 'Salvando...' : 'Marcar Reprovado'}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal open={showLostModal} onClose={() => setShowLostModal(false)} title="Marcar como Perdido" size="sm">
         <div className="space-y-3">
