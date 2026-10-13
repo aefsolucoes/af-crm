@@ -349,11 +349,34 @@ export async function chooseAnalysis(db: Db, p: { accountId: string; id: string;
 }
 
 /** Execução que ficou "rodando" sem a extensão dar sinal (Chrome fechado, janela fechada) vira "falhou". */
+/** Texto da falha de uma execução que sumiu: diz POR QUÊ (o que aconteceu) e em que etapa parou, e o que fazer. */
+function orphanDetail(why: string, lastDetail?: string | null): string {
+  const ult = String(lastDetail || '').replace(/\s+/g, ' ').replace(/^Titular na análise:[^.]*\.\s*/i, '').slice(0, 220);
+  return `${why}${ult ? ` Última etapa registrada: "${ult}".` : ' Não chegou a registrar nenhuma etapa.'} Nada foi concluído: peça de novo (se a proposta já tinha sido enviada ao banco, use "Conferir").`;
+}
+
 async function expireStuck(db: Db, where: { accountId: string; leadId?: string }) {
-  await db.creditAnalysis.updateMany({
-    where: { ...where, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } },
-    data: { status: 'FAILED', finishedAt: new Date(), detail: 'A extensão parou no meio (Chrome ou janela do banco fechada). Peça de novo.' },
-  });
+  const rows = await db.creditAnalysis.findMany({ where: { ...where, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } }, select: { id: true, detail: true } });
+  for (const r of rows) {
+    await db.creditAnalysis.updateMany({
+      where: { id: r.id, status: 'RUNNING' },
+      data: { status: 'FAILED', finishedAt: new Date(), detail: orphanDetail('A extensão parou de dar sinal por mais de 30 minutos (Chrome ou janela do banco fechada, computador dormiu ou a extensão foi recarregada).', r.detail) },
+    });
+  }
+}
+
+/** A extensão acabou de (re)iniciar: o que ela tinha em execução se perdeu (recarregar a extensão, o Chrome reiniciar ou o service
+ *  worker ser encerrado derruba a execução). Falha na hora, com o motivo, em vez de esperar 30 min. */
+export async function releaseOrphans(db: Db, p: { accountId: string; bank: string }) {
+  const rows = await db.creditAnalysis.findMany({ where: { accountId: p.accountId, bank: p.bank, status: 'RUNNING' }, select: { id: true, detail: true } });
+  for (const r of rows) {
+    await db.creditAnalysis.updateMany({
+      where: { id: r.id, status: 'RUNNING' },
+      data: { status: 'FAILED', finishedAt: new Date(), detail: orphanDetail('A extensão foi recarregada ou reiniciada no meio desta execução (recarregar a extensão no Chrome, reiniciar o Chrome ou o Chrome encerrar a extensão).', r.detail) },
+    });
+  }
+  releaseLock(p.accountId, p.bank);
+  return rows.length;
 }
 
 /** Quadro da aba: clientes do Home Equity em Pré-Análise (e quem teve análise nas últimas 3 semanas) × bancos. */

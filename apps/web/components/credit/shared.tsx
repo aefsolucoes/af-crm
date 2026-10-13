@@ -98,7 +98,17 @@ export function Badge({ a }: { a?: Analysis }) {
         {(a.status === 'APPROVED' || a.status === 'CONDITIONAL') && a.approvedValue ? <span className="text-slate-600 font-medium">{formatCurrency(a.approvedValue)} · </span> : null}
         {ago(a.updatedAt)}
       </div>
+      {(a.status === 'FAILED' || a.status === 'INCOMPLETE') && a.detail && (
+        // Motivo da falha à vista (o texto completo fica no tooltip e na linha aberta): sem ter que abrir cada cliente.
+        <div className="text-[11px] leading-snug text-red-500 max-w-[230px]" title={a.detail}>{reasonOf(a.detail)}</div>
+      )}
     </div>
   );
+}
+
+/** Texto curto do motivo: tira o "Titular na análise: …" do começo e corta em ~150 caracteres. */
+function reasonOf(detail: string): string {
+  const t = String(detail).replace(/\s+/g, ' ').replace(/^Titular na análise:[^.]*\.\s*/i, '').trim();
+  return t.length > 150 ? `${t.slice(0, 147)}…` : t;
 }
 

@@ -6,7 +6,7 @@ import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approv
 import { getAutoSetting, setAutoSetting } from '../services/credit-auto.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
-  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock,
+  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
 } from '../services/credit-analysis.service';
 
 /** Aba "Análise de Crédito" — ver credit-analysis.service.ts. As extensões do Chrome entram com o login normal do CRM. */
@@ -77,6 +77,15 @@ router.post('/lock', (req: AuthRequest, res: Response) => {
   if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
   res.json(acquireLock(req.user!.accountId, bank));
 });
+// A extensão acabou de iniciar (carregou/recarregou/reiniciou): o que estava "rodando" nela se perdeu — falha na hora, com o motivo.
+router.post('/release', async (req: AuthRequest, res: Response) => {
+  try {
+    const bank = String(req.body?.bank || '').toUpperCase();
+    if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
+    res.json({ ok: true, released: await releaseOrphans(prisma, { accountId: req.user!.accountId, bank }) });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
 router.post('/unlock', (req: AuthRequest, res: Response) => {
   const bank = String(req.body?.bank || '').toUpperCase();
   if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
