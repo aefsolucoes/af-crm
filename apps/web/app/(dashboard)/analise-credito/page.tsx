@@ -289,6 +289,14 @@ export default function AnaliseCreditoPage() {
                             <div className="text-[11px] text-slate-400">
                               {l.stage}{l.requested.creditValue ? ` · pediu ${formatCurrency(l.requested.creditValue)}` : ''}{l.requested.term ? ` · ${l.requested.term}` : ''}
                             </div>
+                            {l.card?.name2 && (
+                              <div className="text-[11px] text-slate-500 mt-0.5">
+                                2º participante: <span className="font-medium text-slate-600">{l.card.name2}</span>
+                                {BANKS.some((b) => l.overrides?.[b.key]?.inverter) && (
+                                  <span className="text-amber-600"> · rodando no nome de <strong>{l.card.name2}</strong></span>
+                                )}
+                              </div>
+                            )}
                             {overrideSummary(BANKS.map((b) => l.overrides?.[b.key]).find(Boolean)) && (
                               <div className="text-[11px] text-amber-600 mt-0.5">✎ {overrideSummary(BANKS.map((b) => l.overrides?.[b.key]).find(Boolean))}</div>
                             )}

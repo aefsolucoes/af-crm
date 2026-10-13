@@ -377,7 +377,7 @@ export async function setOverrides(db: Db, p: { accountId: string; userId?: stri
 export async function leadAnalyses(db: Db, p: { accountId: string; leadId: string; scopeDepartmentIds: string[] }) {
   const lead = await db.lead.findFirst({
     where: { id: p.leadId, accountId: p.accountId },
-    select: { id: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } },
+    select: { id: true, name: true, customFields: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } },
   });
   if (!lead) return null;
   const deptId = lead.pipeline?.departmentId;
@@ -386,9 +386,12 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   const history = await db.creditAnalysis.findMany({ where: { leadId: p.leadId }, orderBy: { createdAt: 'desc' }, take: 12 });
   const latest: Record<string, any> = {};
   for (const a of history) if (!latest[a.bank]) latest[a.bank] = a;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const overrides = await db.creditOverride.findMany({ where: { leadId: p.leadId }, select: { bank: true, data: true } });
   return {
     eligible: /home equity/i.test(lead.pipeline?.department?.name || ''),
     latest, history, chosenId: history.find((a) => a.chosen)?.id || null,
+    participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
   };
 }
 

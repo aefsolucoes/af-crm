@@ -17,6 +17,7 @@ interface LeadAnalyses {
   latest: Partial<Record<Bank, Analysis>>;
   history: Analysis[];
   chosenId: string | null;
+  participants?: { name1: string; name2: string; inverted: boolean };
   extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null }>;
 }
 
@@ -85,6 +86,14 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
           Abrir aba <ExternalLink size={10} />
         </Link>
       </div>
+
+      {data.participants?.name2 && (
+        <div className="mb-2 text-[11px] text-slate-500 leading-snug">
+          Titular: <span className="font-medium text-slate-600">{data.participants.inverted ? data.participants.name2 : data.participants.name1}</span>
+          {' · '}2º participante: <span className="font-medium text-slate-600">{data.participants.inverted ? data.participants.name1 : data.participants.name2}</span>
+          {data.participants.inverted && <span className="text-amber-600"> (invertidos na análise)</span>}
+        </div>
+      )}
 
       <div className="space-y-2">
         {BANKS.map((b) => {
