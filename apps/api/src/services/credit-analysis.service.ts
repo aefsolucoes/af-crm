@@ -132,8 +132,8 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
       ...(becameFinal ? { finishedAt: new Date() } : {}),
     },
   });
-  // Nota automática só na primeira vez que vira aprovada/reprovada.
-  if (becameFinal && (next === 'APPROVED' || next === 'REJECTED')) {
+  // Nota automática só na primeira vez que vira aprovada/reprovada (modo teste não escreve no card).
+  if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'REJECTED')) {
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: analysisNote({ ...updated, status: next }) } });
   }
   return { row: updated, becameFinal };
