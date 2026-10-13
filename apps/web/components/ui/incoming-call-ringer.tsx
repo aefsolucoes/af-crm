@@ -4,11 +4,12 @@ import { useRouter } from 'next/navigation';
 import { Phone, PhoneOff } from 'lucide-react';
 import { getSocket } from '@/lib/socket';
 import api from '@/lib/api';
-import { useAuthStore } from '@/store/auth.store';
 import { ActiveCallBar } from '@/components/ui/active-call-bar';
 import { waitForIceGatheringComplete } from '@/lib/webrtc';
 import { playTone, SoundKey } from '@/lib/sounds';
 import { startCallRecording } from '@/lib/call-recorder';
+import { closeCallNotifications } from '@/lib/call-notifications';
+import { toast } from '@/components/ui/toast';
 
 interface IncomingCallEvent {
   callId: string;
@@ -21,6 +22,9 @@ interface IncomingCallEvent {
 
 type Stage = 'ringing' | 'connecting' | 'connected';
 
+/** Identifica ESTA aba/aparelho: o servidor avisa "fulano atendeu" com esse id, e as OUTRAS abas do mesmo usuário também param de tocar. */
+const CLIENT_ID = (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2)).slice(0, 12);
+
 /** Ringer global de chamadas do WhatsApp — mesmo padrão do
  *  <ContractingLeadAlert />: componente autocontido, montado uma vez no
  *  layout, próprio listener de socket, próprio estado de fila. Toca pra
@@ -30,7 +34,6 @@ type Stage = 'ringing' | 'connecting' | 'connected';
  *  Fase 1 (só chamada recebida) — não tem fluxo de ligar pro cliente ainda. */
 export function IncomingCallRinger() {
   const router = useRouter();
-  const myUserId = useAuthStore((s) => s.user?.id);
   const [queue, setQueue] = useState<IncomingCallEvent[]>([]);
   const [active, setActive] = useState<{ call: IncomingCallEvent; stage: Stage; muted: boolean; connectedAt: number } | null>(null);
 
@@ -102,14 +105,17 @@ export function IncomingCallRinger() {
       setQueue((q) => (q.some((x) => x.waCallId === data.waCallId) || active?.call.waCallId === data.waCallId ? q : [...q, data]));
     }
 
-    function onCallAnsweredBy({ waCallId, byUserId }: { waCallId: string; byUserId?: string }) {
-      if (byUserId === myUserId) return; // fomos nós — já tratado no fluxo de Atender
+    function onCallAnsweredBy({ waCallId, byClientId }: { waCallId: string; byUserId?: string; byClientId?: string }) {
+      if (byClientId && byClientId === CLIENT_ID) return; // fomos nós — já tratado no fluxo de Atender
+      // Atendida por outra pessoa OU por outra aba/aparelho do mesmo usuário: para de tocar aqui também.
       setQueue((q) => q.filter((c) => c.waCallId !== waCallId));
+      closeCallNotifications();
     }
 
     function onCallEnded({ waCallId }: { waCallId: string }) {
       setQueue((q) => q.filter((c) => c.waCallId !== waCallId));
       endActiveCall(waCallId);
+      closeCallNotifications();
     }
 
     socket.on('incoming_call', onIncomingCall);
@@ -120,7 +126,7 @@ export function IncomingCallRinger() {
       socket.off('call_answered_by', onCallAnsweredBy);
       socket.off('call_ended', onCallEnded);
     };
-  }, [myUserId, active, endActiveCall]);
+  }, [active, endActiveCall]);
 
   const dismissCurrent = useCallback(() => setQueue((q) => q.slice(1)), []);
 
@@ -128,6 +134,7 @@ export function IncomingCallRinger() {
     if (!current) return;
     const call = current;
     dismissCurrent();
+    closeCallNotifications();
     try { await api.post(`/api/calls/${call.waCallId}/reject`); } catch { /* melhor esforço */ }
   }, [current, dismissCurrent]);
 
@@ -136,6 +143,19 @@ export function IncomingCallRinger() {
     const call = current;
     dismissCurrent();
     setActive({ call, stage: 'connecting', muted: false, connectedAt: 0 });
+    closeCallNotifications();
+
+    // Reserva a ligação na hora: os outros (colegas e outras abas suas) param de tocar e ninguém atende em dobro.
+    try {
+      await api.post(`/api/calls/${call.waCallId}/claim`, { clientId: CLIENT_ID });
+    } catch (err: any) {
+      if (err?.response?.status === 409) {
+        setActive(null);
+        toast(err.response.data?.error || 'A ligação já foi atendida', 'error');
+        return;
+      }
+      // qualquer outro erro (rede, servidor antigo sem esta rota): segue o fluxo normal de atender
+    }
 
     try {
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });

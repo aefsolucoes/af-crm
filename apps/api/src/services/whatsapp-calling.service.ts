@@ -406,6 +406,15 @@ export async function handleCallPermissionReply(msg: any, accountId: string, io:
   return true;
 }
 
+/** Tira da tela de TODOS os aparelhos a notificação "Ligação recebida" (push com requireInteraction fica
+ *  no ar até alguém mexer, e parecia que a ligação continuava tocando depois de atendida). */
+export async function cancelCallPush(accountId: string, leadId: string | null, text: string): Promise<void> {
+  try {
+    const lead = leadId ? await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } }) : null;
+    await sendPushToAccount(accountId, { title: lead?.name || 'Ligação', body: text, leadId: leadId || undefined, type: 'call_cancel' });
+  } catch { /* melhor esforço */ }
+}
+
 /** Status de uma ligação que NÓS fizemos: RINGING (celular tocando),
  *  ACCEPTED (cliente atendeu de verdade), REJECTED (recusou -- o terminate
  *  vem logo depois e finaliza). Só o ACCEPTED marca a Call como conectada,
@@ -551,6 +560,7 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
         const payload = { waCallId, status: updated.status, endReason };
         io.to(`account_${accountId}`).emit('call_ended', payload);
         if (existing.leadId) io.to(`lead:${existing.leadId}`).emit('call_ended', payload);
+        if (!wasConnected && existing.direction === 'INBOUND') cancelCallPush(accountId, existing.leadId, 'Ligação perdida').catch(() => {});
 
         const durationSec = existing.connectedAt ? Math.max(0, Math.round((updated.endedAt!.getTime() - existing.connectedAt.getTime()) / 1000)) : 0;
         await finalizeCallMessage(waCallId, updated.status, durationSec, io, accountId, existing.leadId);

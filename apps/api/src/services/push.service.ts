@@ -35,7 +35,9 @@ type PushPayload = {
   leadId?: string;
   // 'call' faz o service worker manter a notificação visível (requireInteraction)
   // e mostrar ações de Atender/Recusar — omitido = comportamento normal de mensagem.
-  type?: 'call';
+  // 'call_cancel' é o inverso: a ligação foi atendida/recusada/perdida, então o service
+  // worker troca (mesmo tag) a notificação "tocando" por um aviso mudo que some sozinho.
+  type?: 'call' | 'call_cancel';
 };
 
 /**

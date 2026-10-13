@@ -95,6 +95,22 @@ self.addEventListener('push', (event) => {
     // payload não veio em JSON — mantém o fallback acima
   }
 
+  // Ligação já atendida/recusada/perdida: troca (mesmo tag) a notificação "tocando" por um aviso mudo
+  // que some sozinho — senão ela ficava no ar, com a ligação parecendo ainda tocar, em todos os aparelhos.
+  if (data.type === 'call_cancel') {
+    const tag = `af-crm-call-${data.url || ''}`;
+    event.waitUntil(
+      self.registration.showNotification(data.title, {
+        body: data.body, icon: '/icons/icon-192.png', badge: '/icons/icon-192.png',
+        tag, silent: true, renotify: false, requireInteraction: false, data: { url: data.url || '/inbox' },
+      })
+        .then(() => new Promise((resolve) => setTimeout(resolve, 2500)))
+        .then(() => self.registration.getNotifications({ tag }))
+        .then((list) => list.forEach((n) => n.close()))
+    );
+    return;
+  }
+
   const isCall = data.type === 'call';
 
   event.waitUntil(

@@ -6,7 +6,7 @@ import { validate } from '../middleware/validate';
 import {
   preAcceptCall, acceptCall, rejectCall, terminateCall,
   connectCall, getCallPermissionState, sendCallPermissionRequest, pickRealPhone,
-  createCallMessage, finalizeCallMessage,
+  createCallMessage, finalizeCallMessage, cancelCallPush,
 } from '../services/whatsapp-calling.service';
 import { getWhatsAppConfig, normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { startAiCall } from '../services/ai-call-bridge.service';
@@ -39,6 +39,28 @@ router.post('/:waCallId/pre-accept', validate(sdpSchema), async (req: AuthReques
   if (!call) return;
   const result = await preAcceptCall(call.whatsappConfig, call.waCallId, req.body.sdpAnswer);
   if (!result.ok) return res.status(502).json({ error: result.json?.error?.message || 'Falha ao pré-aceitar a ligação' });
+  res.json({ ok: true });
+});
+
+// POST /api/calls/:waCallId/claim — quem clica em "Atender" reserva a ligação NA HORA: os outros param de
+// tocar (inclusive as outras abas/aparelhos da MESMA pessoa) e duas pessoas não atendem a mesma ligação.
+router.post('/:waCallId/claim', async (req: AuthRequest, res: Response) => {
+  const call = await findOwnCallOrFail(req.params.waCallId, req.user!.accountId, res);
+  if (!call) return;
+  const clientId = typeof req.body?.clientId === 'string' ? req.body.clientId.slice(0, 40) : undefined;
+  const claimed = await prisma.call.updateMany({ where: { id: call.id, status: 'RINGING' }, data: { status: 'CONNECTING', answeredByUserId: req.user!.id } });
+  if (claimed.count === 0) {
+    const cur = await prisma.call.findUnique({ where: { id: call.id }, select: { status: true, answeredBy: { select: { name: true } } } });
+    const ended = cur && ['ENDED', 'MISSED', 'REJECTED', 'FAILED'].includes(cur.status);
+    return res.status(409).json({
+      error: ended ? 'A ligação já terminou' : `A ligação já foi atendida${cur?.answeredBy?.name ? ` por ${cur.answeredBy.name}` : ''}`,
+      status: cur?.status, answeredBy: cur?.answeredBy?.name || null,
+    });
+  }
+  const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name;
+  const io = (req as any).app.get('io');
+  io.to(`account_${req.user!.accountId}`).emit('call_answered_by', { waCallId: call.waCallId, byUserId: req.user!.id, byUserName: userName, byClientId: clientId });
+  cancelCallPush(req.user!.accountId, call.leadId, `Atendida por ${userName || 'um colega'}`).catch(() => {});
   res.json({ ok: true });
 });
 
@@ -76,6 +98,7 @@ router.post('/:waCallId/reject', async (req: AuthRequest, res: Response) => {
   io.to(`account_${req.user!.accountId}`).emit('call_ended', { waCallId: call.waCallId, status: 'REJECTED', endReason: 'rejected_by_agent' });
   if (call.leadId) io.to(`lead:${call.leadId}`).emit('call_ended', { waCallId: call.waCallId, status: 'REJECTED', endReason: 'rejected_by_agent' });
   await finalizeCallMessage(call.waCallId, 'REJECTED', 0, io, req.user!.accountId, call.leadId);
+  cancelCallPush(req.user!.accountId, call.leadId, 'Ligação recusada').catch(() => {});
 
   res.json({ ok: true });
 });
