@@ -221,6 +221,7 @@ model Lead {
   id                 String              @id @default(cuid())
   name               String
   value              Float?
+  rejectedAt         DateTime? // reprovado pelos bancos na pré-análise (vai pra Perdido) — painel mensal do Dashboard
   status             LeadStatus          @default(OPEN)
   // Motivo informado ao marcar como Perdido (obrigatório na tela — o
   // backend aceita sem, pra não travar automações/integrações que mudem o

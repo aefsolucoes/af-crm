@@ -86,6 +86,7 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
   tags: string[];
   customFields: Record<string, unknown>;
   isGroup: boolean;
+  rejectedAt: Date;
 }>, io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null) {
   // Perdido é definitivo — a IA de auto-resposta não deve continuar
   // conversando com o cliente depois disso (usuário pediu: não pode "dar

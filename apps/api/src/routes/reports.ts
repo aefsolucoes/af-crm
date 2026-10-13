@@ -148,8 +148,10 @@ router.get('/conversion', async (req: AuthRequest, res: Response) => {
 
 // GET /api/reports/monthly?months=6&departmentId=&mode=event|cohort —
 // relatório mensal (Fabio 30/09): clientes que ENTRARAM, foram APROVADOS
-// (pré-análise), MANDARAM A DOCUMENTAÇÃO (Fechado/contratação) e foram
-// PERDIDOS. Só conta card que está num setor — a Caixa de Entrada fica de fora
+// (chegaram em "Aguardando Documentação" — Fabio 13/10; antes contava também
+// "Aprovado Pré-Análise"), foram REPROVADOS (botão "Reprovado" — Lead.rejectedAt),
+// MANDARAM A DOCUMENTAÇÃO (Fechado/contratação) e foram PERDIDOS (os
+// reprovados também são Perdidos). Só conta card que está num setor — a Caixa de Entrada fica de fora
 // (corretor que fala com a gente fica lá e não é cliente).
 //  - event: cada coisa no mês em que aconteceu.
 //  - cohort: dos que ENTRARAM no mês, quantos já foram aprovados / mandaram a
@@ -178,10 +180,10 @@ router.get('/monthly', async (req: AuthRequest, res: Response) => {
     const from = starts[0];
 
     const leadScope = { accountId, pipeline: deptFilter };
-    const [created, approvalNotes, entries, lostNotes] = await Promise.all([
+    const [created, approvalNotes, entries, lostNotes, rejectedLeads] = await Promise.all([
       prisma.lead.findMany({ where: { ...leadScope, createdAt: { gte: from } }, select: { id: true, createdAt: true, status: true } }),
       prisma.note.findMany({
-        where: { OR: [{ content: { contains: '→ "Aprovado Pr' } }, { content: { contains: '→ "Aguardando Documenta' } }], lead: { is: leadScope } },
+        where: { OR: [{ content: { contains: '→ "Aguardando Documenta' } }, { content: { contains: '(Aguardando Documenta' } }], lead: { is: leadScope } },
         select: { leadId: true, createdAt: true },
       }),
       contractEntries(accountId, deptFilter),
@@ -189,6 +191,7 @@ router.get('/monthly', async (req: AuthRequest, res: Response) => {
         where: { OR: [{ content: { contains: 'funil "Perdidos"' } }, { content: { contains: 'Status alterado para "Perdido"' } }], lead: { is: { ...leadScope, status: 'LOST' } } },
         select: { leadId: true, createdAt: true },
       }),
+      prisma.lead.findMany({ where: { ...leadScope, rejectedAt: { not: null } }, select: { id: true, createdAt: true, rejectedAt: true } }),
     ]);
     // Aprovado = primeira aprovação registrada; quem foi direto pra
     // contratação sem essa nota conta como aprovado na entrada da contratação.
@@ -198,7 +201,7 @@ router.get('/monthly', async (req: AuthRequest, res: Response) => {
     // Está hoje em etapa de aprovado sem registro (movido antes do histórico):
     // usa a data em que entrou na etapa atual.
     const approvedNow = await prisma.lead.findMany({
-      where: { ...leadScope, id: { notIn: [...approvedAt.keys()] }, stage: { OR: [{ name: { startsWith: 'Aprovado Pr' } }, { name: { startsWith: 'Aguardando Documenta' } }] } },
+      where: { ...leadScope, id: { notIn: [...approvedAt.keys()] }, stage: { name: { startsWith: 'Aguardando Documenta' } } },
       select: { id: true, stageEnteredAt: true, createdAt: true },
     });
     for (const l of approvedNow) approvedAt.set(l.id, l.stageEnteredAt || l.createdAt);
@@ -212,12 +215,16 @@ router.get('/monthly', async (req: AuthRequest, res: Response) => {
     const cApproved = new Map<string, string[]>();
     const cDocs = new Map<string, string[]>();
     const cLost = new Map<string, string[]>();
+    const cRejected = new Map<string, string[]>();
+    const rejectedIds = new Set(rejectedLeads.map((l) => l.id));
     for (const l of created) push(cEntered, monthKey(l.createdAt), l.id);
     if (mode === 'event') {
       for (const [id, d] of approvedAt) push(cApproved, monthKey(d), id);
       for (const [id, d] of entries) push(cDocs, monthKey(d), id);
       for (const [id, d] of lostAt) push(cLost, monthKey(d), id);
+      for (const l of rejectedLeads) push(cRejected, monthKey(l.rejectedAt!), l.id);
     } else {
+      for (const l of rejectedLeads) push(cRejected, monthKey(l.createdAt), l.id);
       for (const l of created) {
         const k = monthKey(l.createdAt);
         if (approvedAt.has(l.id)) push(cApproved, k, l.id);
@@ -227,7 +234,7 @@ router.get('/monthly', async (req: AuthRequest, res: Response) => {
     }
     const monthKeys = new Set(starts.map(monthKey));
     const ids = new Set<string>();
-    for (const m of [cEntered, cApproved, cDocs, cLost]) for (const [k, list] of m) if (monthKeys.has(k)) list.forEach((id) => ids.add(id));
+    for (const m of [cEntered, cApproved, cDocs, cLost, cRejected]) for (const [k, list] of m) if (monthKeys.has(k)) list.forEach((id) => ids.add(id));
     const info = new Map<string, { id: string; name: string; value: number }>();
     for (const l of await prisma.lead.findMany({ where: { id: { in: [...ids] } }, select: { id: true, name: true, value: true, customFields: true } })) {
       const cf = (l.customFields || {}) as Record<string, unknown>;
@@ -250,7 +257,9 @@ router.get('/monthly', async (req: AuthRequest, res: Response) => {
         approved: cApproved.get(k)?.length || 0,
         docsSent: cDocs.get(k)?.length || 0,
         lost: cLost.get(k)?.length || 0,
-        people: { entered: people(cEntered.get(k)), approved: people(cApproved.get(k)), docsSent: people(cDocs.get(k)), lost: people(cLost.get(k)) },
+        rejected: cRejected.get(k)?.length || 0,
+        lostRejected: (cLost.get(k) || []).filter((id) => rejectedIds.has(id)).length, // perdidos que são reprovados
+        people: { entered: people(cEntered.get(k)), approved: people(cApproved.get(k)), docsSent: people(cDocs.get(k)), lost: people(cLost.get(k)), rejected: people(cRejected.get(k)) },
       };
     }).reverse();
     res.json({ rows, mode, historySince: '2026-08-31' });

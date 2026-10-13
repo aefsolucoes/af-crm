@@ -99,6 +99,8 @@ const updateLeadSchema = createLeadSchema.partial().extend({
   status: z.enum(['OPEN', 'WON', 'LOST']).optional(),
   lostReason: z.string().max(500).nullable().optional(),
   isGroup: z.boolean().optional(),
+  /** Botão "Reprovado": junto com status LOST, grava a data da reprovação (painel mensal). */
+  rejected: z.boolean().optional(),
 });
 const stageSchema = z.object({ stageId: z.string() });
 
@@ -368,7 +370,9 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
       },
     });
 
-    const lead = await updateLead(req.params.id, req.user!.accountId, req.body, req.app.get('io'));
+    const { rejected, ...updateData } = req.body as typeof req.body & { rejected?: boolean };
+    const isRejection = rejected === true && updateData.status === 'LOST';
+    const lead = await updateLead(req.params.id, req.user!.accountId, { ...updateData, ...(isRejection ? { rejectedAt: new Date() } : {}) }, req.app.get('io'));
     res.json(lead);
 
     // Auditoria assíncrona
@@ -381,6 +385,9 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
         const statusLabels: Record<string, string> = { WON: 'Ganho', LOST: 'Perdido', OPEN: 'Aberto' };
         await auditNote(req.params.id, req.user!.id,
           `Status alterado para "${statusLabels[req.body.status] || req.body.status}" por ${userName}`);
+        if (isRejection) {
+          await auditNote(req.params.id, req.user!.id, `❌ Marcado como REPROVADO por ${userName}${req.body.lostReason ? ` — ${req.body.lostReason}` : ''}`);
+        }
         logActivity({
           accountId: req.user!.accountId, userId: req.user!.id, userName,
           action: 'lead_status_changed', leadId: req.params.id, leadName: lead.name,
