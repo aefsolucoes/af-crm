@@ -94,6 +94,16 @@ router.post('/whatsapp', async (req: AuthRequest, res: Response) => {
 });
 
 // GET /api/settings/whatsapp/test — testa se o token + phoneNumberId estão corretos
+// Aviso vermelho do WhatsApp (a Meta bloqueou o envio) — o banner do CRM consulta aqui.
+router.get('/whatsapp/alert', async (req: AuthRequest, res: Response) => {
+  try {
+    const { getWhatsAppAlert } = require('../services/whatsapp-alert.service') as typeof import('../services/whatsapp-alert.service');
+    res.json(await getWhatsAppAlert(req.user!.accountId));
+  } catch {
+    res.json({ active: false });
+  }
+});
+
 router.get('/whatsapp/test', async (req: AuthRequest, res: Response) => {
   try {
     const config = await getWhatsAppConfig(req.user!.accountId, readDeptQuery(req));

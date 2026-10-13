@@ -6,6 +6,7 @@ import { Sidebar } from '@/components/ui/sidebar';
 import { ToastContainer } from '@/components/ui/toast';
 import { toast } from '@/components/ui/toast';
 import { GoogleDriveAlert } from '@/components/ui/google-drive-alert';
+import { WhatsAppAlertBanner } from '@/components/ui/whatsapp-alert-banner';
 import { ContractingLeadAlert } from '@/components/ui/contracting-lead-alert';
 import { IncomingCallRinger } from '@/components/ui/incoming-call-ringer';
 import { OutboundCallBar } from '@/components/ui/outbound-call-bar';
@@ -124,6 +125,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     <div className="flex h-screen overflow-hidden app-bg-surface">
       <Sidebar />
       <main className="flex-1 flex flex-col overflow-hidden">
+        <WhatsAppAlertBanner />
         {children}
       </main>
       <ToastContainer />

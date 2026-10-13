@@ -43,6 +43,7 @@ import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { autoStarBigLeads } from './services/auto-star.service';
 import { processRemarketing } from './services/remarketing.service';
 import { processApprovalNotices } from './services/approval-notice.service';
+import { setWhatsAppAlertIo, checkWhatsAppHealth } from './services/whatsapp-alert.service';
 import { autoMergeDuplicatesByPhone } from './services/lead.service';
 import { configureWebPush } from './services/push.service';
 import { archiveOldAttachmentsAllAccounts } from './services/google.service';
@@ -262,6 +263,13 @@ httpServer.listen(PORT, () => {
       checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade:', err?.message));
     }, AUTOMATION_INACTIVITY_POLL_MS);
   }, 90 * 1000);
+
+  // Aviso vermelho se a Meta bloquear o envio (pagamento, conta restrita…): checa a saúde a cada 30 min.
+  setWhatsAppAlertIo(io);
+  setTimeout(() => {
+    checkWhatsAppHealth().catch(() => {});
+    setInterval(() => checkWhatsAppHealth().catch(() => {}), 30 * 60 * 1000);
+  }, 4 * 60 * 1000);
 
   // Aviso de crédito aprovado (template) pra quem nunca falou no WhatsApp.
   setTimeout(() => {

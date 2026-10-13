@@ -58,7 +58,7 @@ export function ContractingLeadAlert() {
   return (
     <>
     {cardModal}
-    <Modal title="Cliente pronto para contratação" onClose={dismissCurrent} size="sm">
+    <Modal title="Cliente pronto para contratação" onClose={dismissCurrent} size="md">
       <div className="space-y-3 text-sm text-slate-600">
         <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800">
           <strong>{current.leadName}</strong> foi fechado e entrou no funil{' '}
@@ -68,19 +68,21 @@ export function ContractingLeadAlert() {
           <p className="text-xs text-slate-400">+{queue.length - 1} outro(s) cliente(s) na fila.</p>
         )}
       </div>
-      <div className="flex flex-wrap justify-end gap-2 mt-5">
-        <button onClick={dismissCurrent} className="text-sm px-3 py-1.5 rounded-lg text-slate-500 hover:text-slate-700">
+      {/* Uma linha só: "Depois" à esquerda, as duas ações à direita (no celular
+          empilha, com as ações em cima e largura cheia). */}
+      <div className="flex flex-col-reverse sm:flex-row sm:items-center gap-2 mt-5">
+        <button onClick={dismissCurrent} className="text-sm px-3 py-2 rounded-lg text-slate-500 hover:text-slate-700 hover:bg-slate-50 sm:mr-auto">
           Depois
         </button>
         <button
           onClick={goToChat}
-          className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-af-border text-slate-700 hover:bg-slate-50"
+          className="flex items-center justify-center gap-1.5 whitespace-nowrap text-sm px-4 py-2 rounded-lg border border-af-border text-slate-700 hover:bg-slate-50"
         >
           <MessageCircle size={14} /> Abrir conversa
         </button>
         <button
           onClick={goToCard}
-          className="flex items-center gap-1.5 text-sm px-4 py-1.5 rounded-lg text-white font-medium"
+          className="flex items-center justify-center gap-1.5 whitespace-nowrap text-sm px-4 py-2 rounded-lg text-white font-medium"
           style={{ backgroundColor: '#2261a8' }}
         >
           <FileText size={14} /> Abrir card

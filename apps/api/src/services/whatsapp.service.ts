@@ -291,7 +291,7 @@ export function normalizeBrazilianWhatsAppPhone(to: string): string {
  *  na falha assíncrona reportada depois por webhook (processWhatsAppStatus).
  *  null = código ainda não mapeado; quem chama decide o que fazer nesse caso
  *  (mostra o texto original da Meta, não perde a informação). */
-function friendlyWhatsAppError(code: number | undefined): string | null {
+export function friendlyWhatsAppError(code: number | undefined): string | null {
   switch (code) {
     case 190:
       return 'Token de acesso inválido ou expirado. Acesse Configurações → API Oficial e gere um novo token.';
@@ -318,9 +318,12 @@ function friendlyWhatsAppError(code: number | undefined): string | null {
 }
 
 /** Interpreta o erro da Graph API num formato consistente. */
-function parseGraphError(json: { error?: { message: string; code: number } }, res: Response, phone: string): string {
+function parseGraphError(json: { error?: { message: string; code: number } }, res: Response, phone: string, accountId?: string): string {
   const errMsg  = json.error?.message || 'Erro desconhecido';
   const errCode = json.error?.code ?? res.status;
+  // Erro grave (pagamento, conta restrita, token): acende o aviso vermelho.
+  const { noteWhatsAppFailure } = require('./whatsapp-alert.service') as typeof import('./whatsapp-alert.service');
+  noteWhatsAppFailure(accountId, errCode).catch(() => {});
   const friendly = friendlyWhatsAppError(errCode);
   return `${friendly || errMsg} (código: ${errCode}, número: ${phone})`;
 }
@@ -371,7 +374,7 @@ export async function sendWhatsAppMessage(
 
     if (!res.ok || json.error) {
       console.error(`[WhatsApp] Send error para "${phone}":`, json.error);
-      return { success: false, error: parseGraphError(json, res, phone) };
+      return { success: false, error: parseGraphError(json, res, phone, accountId) };
     }
 
     return { success: true, externalId: json.messages?.[0]?.id };
@@ -416,7 +419,7 @@ export async function sendWhatsAppMedia(
     const uploadJson = await uploadRes.json() as { id?: string; error?: { message: string; code: number } };
     if (!uploadRes.ok || uploadJson.error || !uploadJson.id) {
       console.error(`[WhatsApp] Erro no upload de mídia para "${phone}":`, uploadJson.error);
-      return { success: false, error: parseGraphError(uploadJson, uploadRes, phone) };
+      return { success: false, error: parseGraphError(uploadJson, uploadRes, phone, accountId) };
     }
 
     // 2) manda a mensagem de verdade, referenciando o media_id do passo 1.
@@ -432,7 +435,7 @@ export async function sendWhatsAppMedia(
     const sendJson = await sendRes.json() as { messages?: { id: string }[]; error?: { message: string; code: number } };
     if (!sendRes.ok || sendJson.error) {
       console.error(`[WhatsApp] Erro ao mandar mídia para "${phone}":`, sendJson.error);
-      return { success: false, error: parseGraphError(sendJson, sendRes, phone) };
+      return { success: false, error: parseGraphError(sendJson, sendRes, phone, accountId) };
     }
     return { success: true, externalId: sendJson.messages?.[0]?.id };
   } catch (err) {
@@ -473,7 +476,7 @@ export async function sendWhatsAppReaction(
     const json = await res.json() as { error?: { message: string; code: number } };
     if (!res.ok || json.error) {
       console.error(`[WhatsApp] Erro ao reagir para "${phone}":`, json.error);
-      return { success: false, error: parseGraphError(json, res, phone) };
+      return { success: false, error: parseGraphError(json, res, phone, accountId) };
     }
     return { success: true };
   } catch (err) {
@@ -533,7 +536,7 @@ export async function sendWhatsAppButtonsMessage(
 
     if (!res.ok || json.error) {
       console.error(`[WhatsApp] Send buttons error para "${phone}":`, json.error);
-      return { success: false, error: parseGraphError(json, res, phone) };
+      return { success: false, error: parseGraphError(json, res, phone, accountId) };
     }
 
     return { success: true, externalId: json.messages?.[0]?.id };
@@ -592,7 +595,7 @@ export async function sendWhatsAppCtaUrlMessage(
 
     if (!res.ok || json.error) {
       console.error(`[WhatsApp] Send cta_url error para "${phone}":`, json.error);
-      return { success: false, error: parseGraphError(json, res, phone) };
+      return { success: false, error: parseGraphError(json, res, phone, accountId) };
     }
 
     return { success: true, externalId: json.messages?.[0]?.id };
@@ -648,7 +651,7 @@ export async function sendWhatsAppTemplateMessage(
 
     if (!res.ok || json.error) {
       console.error(`[WhatsApp] Template send error para "${phone}":`, json.error);
-      return { success: false, error: parseGraphError(json, res, phone) };
+      return { success: false, error: parseGraphError(json, res, phone, accountId) };
     }
 
     return { success: true, externalId: json.messages?.[0]?.id };
@@ -710,6 +713,12 @@ export async function processWhatsAppStatus(body: any, io: any) {
             const raw = [e?.title || e?.message, details].filter(Boolean).join(' — ');
             statusError = friendlyWhatsAppError(e?.code) || raw;
             if (e?.code) statusError = `${statusError} (código: ${e.code})`;
+            // Falha grave avisada pelo webhook (ex.: 131042 pagamento): aviso vermelho.
+            if (e?.code) {
+              const failed = await prisma.message.findFirst({ where: { externalId }, select: { lead: { select: { accountId: true } } } });
+              const { noteWhatsAppFailure } = require('./whatsapp-alert.service') as typeof import('./whatsapp-alert.service');
+              noteWhatsAppFailure(failed?.lead?.accountId, Number(e.code)).catch(() => {});
+            }
             console.error(`[WA Status] Falha ao entregar ${externalId}:`, JSON.stringify(s.errors));
           }
 
@@ -721,6 +730,14 @@ export async function processWhatsAppStatus(body: any, io: any) {
 
           if (updated.count > 0) {
             console.log(`[WA Status] ${externalId} → ${newStatus}${statusError ? ` (${statusError})` : ''}`);
+            // Entregou de verdade depois de um alerta: o problema passou.
+            if (newStatus === 'DELIVERED' || newStatus === 'READ') {
+              const ok = await prisma.message.findFirst({ where: { externalId }, select: { createdAt: true, lead: { select: { accountId: true } } } });
+              if (ok) {
+                const { noteWhatsAppDelivered } = require('./whatsapp-alert.service') as typeof import('./whatsapp-alert.service');
+                noteWhatsAppDelivered(ok.lead?.accountId, ok.createdAt).catch(() => {});
+              }
+            }
             // Busca a mensagem para emitir via socket
             const msg = await prisma.message.findFirst({ where: { externalId } });
             if (msg && io) {
