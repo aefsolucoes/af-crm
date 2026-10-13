@@ -395,7 +395,9 @@ export async function processDeferredAutomations(io: unknown): Promise<void> {
       });
       if (!lead || lead.archived || lead.status !== 'OPEN') { await finish('SKIPPED', 'lead não está mais aberto'); continue; }
       if ((action.config as any)?.skipIfClientContacted !== false) {
-        const falou = await prisma.message.findFirst({ where: { leadId: job.leadId, createdAt: { gte: job.createdAt }, direction: { in: ['INBOUND', 'OUTBOUND'] } }, select: { direction: true } });
+        // Só conta WhatsApp: o e-mail da proposta do site chega como mensagem de ENTRADA no card, mas NÃO abre a janela de 24 h do WhatsApp
+        // (sem o template o cliente nunca receberia a boas-vindas no WhatsApp).
+        const falou = await prisma.message.findFirst({ where: { leadId: job.leadId, channel: 'WHATSAPP', createdAt: { gte: job.createdAt }, direction: { in: ['INBOUND', 'OUTBOUND'] } }, select: { direction: true } });
         if (falou) { await finish('SKIPPED', falou.direction === 'INBOUND' ? 'o cliente já falou com a gente: janela de 24 h aberta, sem gastar template' : 'já houve contato nosso com o cliente'); continue; }
       }
       const ok = await executeAction(action, lead, { departmentId: lead.pipeline?.departmentId || undefined, deferredRun: true }, io);
