@@ -33,6 +33,7 @@ const ALL_STATUS = new Set(['REQUESTED', 'RUNNING', 'SENT', 'APPROVED', 'REJECTE
 const FINAL = new Set(['APPROVED', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
 const ACTIVE = ['REQUESTED', 'RUNNING'];
 const STALE_ACTIVE_MS = 25 * 60 * 1000; // pedido/execução parado há mais que isso não bloqueia um novo
+const STUCK_RUNNING_MS = 30 * 60 * 1000; // rodando há mais que isso sem sinal da extensão = parou
 const REPORT_REUSE_MS = 12 * 60 * 60 * 1000; // relatório da extensão continua a execução aberta das últimas 12 h
 
 export interface ResultFields {
@@ -156,6 +157,8 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   if (!row) {
     row = await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: p.leadId, bank: p.bank, status: 'RUNNING', source: 'EXTENSION', startedAt: new Date(), dryRun: p.status === 'TEST' } });
   }
+  // Relato atrasado (ex.: um "passo" que chegou depois do resultado) não pode desfazer um resultado final.
+  if (FINAL.has(row.status) && !FINAL.has(p.status)) return row;
   const { row: updated } = await applyUpdate(db, row, { status: p.status, detail: p.detail ?? null, ...pickResult(p.result || {}) });
   return updated;
 }
@@ -225,6 +228,11 @@ export async function chooseAnalysis(db: Db, p: { accountId: string; id: string;
 
 /** Quadro da aba: clientes do Home Equity em Pré-Análise (e quem teve análise nas últimas 3 semanas) × bancos. */
 export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: string[] }) {
+  // Execução que ficou "rodando" sem a extensão dar sinal (Chrome fechado, janela fechada) vira "falhou".
+  await db.creditAnalysis.updateMany({
+    where: { accountId: p.accountId, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } },
+    data: { status: 'FAILED', finishedAt: new Date(), detail: 'A extensão parou no meio (Chrome ou janela do banco fechada). Peça de novo.' },
+  });
   const since = new Date(Date.now() - 21 * 86_400_000);
   const recent = await db.creditAnalysis.findMany({ where: { accountId: p.accountId, createdAt: { gte: since } }, select: { leadId: true } });
   const recentIds = Array.from(new Set(recent.map((r) => r.leadId)));

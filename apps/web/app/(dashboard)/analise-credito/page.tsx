@@ -176,6 +176,19 @@ export default function AnaliseCreditoPage() {
   const allSelected = leads.length > 0 && selected.length === leads.length;
   const offline = useMemo(() => banks.filter((b) => !data?.extensions?.[b]?.online), [banks, data]);
 
+  // Clientes que já tiveram proposta enviada de verdade no banco: rodar de novo pode duplicar a proposta.
+  const dups = useMemo(() => {
+    const out: string[] = [];
+    for (const l of leads) {
+      if (!selected.includes(l.id)) continue;
+      for (const b of banks) {
+        const a = l.latest[b];
+        if (a && !a.dryRun && ['SENT', 'APPROVED', 'REJECTED', 'CHECK'].includes(a.status)) out.push(`${l.name} — ${BANKS.find((x) => x.key === b)!.short} (${STATUS[a.status].label.toLowerCase()})`);
+      }
+    }
+    return out;
+  }, [leads, selected, banks]);
+
   async function run() {
     setBusy(true);
     try {
@@ -355,6 +368,13 @@ export default function AnaliseCreditoPage() {
         <Modal title="Enviar propostas aos bancos?" onClose={() => setConfirm(false)}>
           <div className="space-y-3 text-sm text-slate-600">
             <p>O modo teste está <strong>desligado</strong>: a extensão vai <strong>enviar de verdade</strong> a proposta de {selected.length} cliente(s) para {banks.map((b) => BANKS.find((x) => x.key === b)!.short).join(', ')}.</p>
+            {dups.length > 0 && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-700">
+                <p className="font-medium mb-1">Já tiveram proposta enviada ao banco — rodar de novo pode criar proposta DUPLICADA:</p>
+                <ul className="list-disc pl-4 space-y-0.5">{dups.slice(0, 8).map((d) => <li key={d}>{d}</li>)}{dups.length > 8 && <li>e mais {dups.length - 8}…</li>}</ul>
+              </div>
+            )}
+            <p className="text-xs text-slate-400">Se o modo teste estiver ligado na própria extensão (Santander e Creditas), ele vale mais que este pedido e nada é enviado.</p>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="secondary" onClick={() => setConfirm(false)}>Cancelar</Button>
               <Button onClick={run} disabled={busy}>{busy ? 'Enviando…' : 'Enviar de verdade'}</Button>
