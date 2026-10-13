@@ -64,6 +64,22 @@ function pickResult(input: Record<string, any>): ResultFields {
   return out;
 }
 
+const brNumber = (t: string) => Number(t.replace(/\./g, '').replace(',', '.'));
+
+/** O Credimorar devolve as condições do Santander como texto ("CONDIÇÕES — Santander: libera + R$ 150.000,00; prazo 120 Meses;
+ *  1ª parcela R$ 3.735,50; última R$ 1.281,81; CET 22,96% a.a.; taxa efetiva 21,70% a.a.; …"). Aqui vira número (valor, prazo,
+ *  parcelas, taxa) pra preencher a análise e, depois, o card. */
+export function parseSantanderConditions(text: string): ResultFields {
+  const t = String(text || '').replace(/\s+/g, ' ');
+  const out: ResultFields = {};
+  const libera = /libera\s*\+?\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (libera) out.approvedValue = brNumber(libera[1]);
+  const prazo = /prazo\s*(\d+)\s*meses/i.exec(t); if (prazo) out.termMonths = Number(prazo[1]);
+  const p1 = /1[ªa]\s*parcela\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (p1) out.firstInstallment = brNumber(p1[1]);
+  const pu = /[úu]ltima\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (pu) out.lastInstallment = brNumber(pu[1]);
+  const taxa = /taxa efetiva\s*([\d.,]+\s*%\s*a\.a\.)/i.exec(t); if (taxa) out.rate = taxa[1].replace(/\s+/g, ' ');
+  return out;
+}
+
 /** Nota automática no card quando a análise termina aprovada/reprovada. O formato de
  *  aprovada tem "aprovad…" e "R$ …" de propósito: approval-notice.service lê notas assim
  *  pra montar o texto "✅ Crédito aprovado! Resumo da proposta". */
@@ -169,7 +185,8 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   if (FINAL.has(row.status) && !FINAL.has(p.status)) return row;
   // Aprovado "condicionado" (Inter pede documentos; Santander "Aprovado Condicional") é um status próprio: aprovou, mas falta algo.
   const status = p.status === 'APPROVED' && /condicion/i.test(p.detail || '') ? 'CONDITIONAL' : p.status;
-  const { row: updated } = await applyUpdate(db, row, { status, detail: p.detail ?? null, ...pickResult(p.result || {}) });
+  const numbers = p.bank === 'CREDIMORAR' ? parseSantanderConditions(p.detail || '') : {};
+  const { row: updated } = await applyUpdate(db, row, { status, detail: p.detail ?? null, ...numbers, ...pickResult(p.result || {}) });
   return updated;
 }
 

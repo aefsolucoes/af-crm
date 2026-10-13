@@ -12,10 +12,46 @@ import { BANKS, type Bank, type BoardLead, type OverrideData } from '@/component
 const inputCls = 'w-full text-sm border border-af-border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-af-accent bg-white text-slate-800';
 type Scope = 'ALL' | Bank;
 
+/** "320000", "11364.46" ou "R$ 5.000,00" → número (ou null). */
+function toNum(v: string | undefined | null): number | null {
+  const t = String(v ?? '').replace(/[^\d.,-]/g, '');
+  if (!t) return null;
+  const n = t.includes(',') ? Number(t.replace(/\./g, '').replace(',', '.')) : (/^\d{1,3}(\.\d{3})+$/.test(t) ? Number(t.replace(/\./g, '')) : Number(t));
+  return Number.isFinite(n) ? n : null;
+}
+const brl = (v: string | undefined | null) => { const n = toNum(v); return n === null ? '' : n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+
+/** Valores que já estão no card — o modal abre preenchido com eles; só o que você mudar vira ajuste. */
+function cardDefaults(lead: BoardLead): OverrideData {
+  const c = lead.card;
+  const prazo = toNum(c?.term);
+  return {
+    valorImovel: brl(c?.propertyValue), valorEmprestimo: brl(c?.creditValue), renda: brl(c?.income1),
+    ...(c?.name2 ? { rendaParticipante: brl(c?.income2) } : {}),
+    ...(prazo ? { prazo: String(prazo) } : {}),
+  };
+}
+
 function initial(lead: BoardLead, scope: Scope): OverrideData {
   const ov = lead.overrides || {};
-  if (scope === 'ALL') return (BANKS.map((b) => ov[b.key]).find(Boolean) as OverrideData | undefined) || {};
-  return (ov[scope] as OverrideData | undefined) || {};
+  const saved = scope === 'ALL' ? ((BANKS.map((b) => ov[b.key]).find(Boolean) as OverrideData | undefined) || {}) : ((ov[scope] as OverrideData | undefined) || {});
+  const base = cardDefaults(lead);
+  return { ...base, ...Object.fromEntries(Object.entries(saved).filter(([, v]) => v !== undefined && v !== '')) } as OverrideData;
+}
+
+/** Só vira ajuste o campo que é diferente do que está no card. */
+function onlyChanges(lead: BoardLead, form: OverrideData): OverrideData {
+  const base = cardDefaults(lead);
+  const out: OverrideData = {};
+  for (const k of ['valorImovel', 'valorEmprestimo', 'renda', 'rendaParticipante', 'prazo'] as const) {
+    const v = (form[k] || '').trim();
+    if (!v) continue;
+    const a = toNum(v), b = toNum(base[k]);
+    if (a !== null && b !== null && Math.abs(a - b) < 0.005) continue; // igual ao card = sem ajuste
+    out[k] = v;
+  }
+  if (form.inverter) out.inverter = true;
+  return out;
 }
 
 export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
@@ -37,7 +73,7 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
     if (runAgain && !window.confirm(`Salvar e enviar de novo a proposta de ${lead.name} para ${banksOf(scope).map((b) => BANKS.find((x) => x.key === b)!.short).join(', ')}? Isso envia de verdade ao banco.`)) return;
     setBusy(true);
     try {
-      await api.put('/api/credit-analysis/overrides', { leadId: lead.id, banks: banksOf(scope), data: clear ? {} : form, merge: false });
+      await api.put('/api/credit-analysis/overrides', { leadId: lead.id, banks: banksOf(scope), data: clear ? {} : onlyChanges(lead, form), merge: false });
       toast(clear ? 'Ajustes removidos' : 'Ajuste salvo — vale na próxima análise', 'success');
       onSaved();
       if (runAgain && !clear) onRunAgain(banksOf(scope));
@@ -62,23 +98,23 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
           </div>
         </div>
 
-        <p className="text-xs text-slate-400">Deixe em branco o que não quiser mudar: a extensão usa o que está na proposta do cliente.</p>
+        <p className="text-xs text-slate-400">Os campos já vêm com os dados do card. Mude só o que quiser ajustar — o que ficar igual ao card segue como está.</p>
         <div className="grid grid-cols-2 gap-3">
           <label className="block text-xs text-slate-500">Valor do imóvel (R$)
-            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.valorImovel || ''} onChange={set('valorImovel')} placeholder={c?.propertyValue ? `no card: ${c.propertyValue}` : 'ex.: 900.000,00'} />
+            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.valorImovel || ''} onChange={set('valorImovel')} placeholder="ex.: 900.000,00" />
           </label>
           <label className="block text-xs text-slate-500">Valor do financiamento (R$)
-            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.valorEmprestimo || ''} onChange={set('valorEmprestimo')} placeholder={c?.creditValue ? `no card: ${c.creditValue}` : 'ex.: 300.000,00'} />
+            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.valorEmprestimo || ''} onChange={set('valorEmprestimo')} placeholder="ex.: 300.000,00" />
           </label>
           <label className="block text-xs text-slate-500">Renda do titular (R$)
-            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.renda || ''} onChange={set('renda')} placeholder={c?.income1 ? `no card: ${c.income1}` : ''} />
+            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.renda || ''} onChange={set('renda')} placeholder="ex.: 8.000,00" />
           </label>
           <label className="block text-xs text-slate-500">Prazo (meses)
-            <input className={`${inputCls} mt-1`} inputMode="numeric" value={form.prazo || ''} onChange={set('prazo')} placeholder={c?.term ? `no card: ${c.term}` : 'ex.: 180'} />
+            <input className={`${inputCls} mt-1`} inputMode="numeric" value={form.prazo || ''} onChange={set('prazo')} placeholder="ex.: 180" />
           </label>
           {hasP2 && (
             <label className="block text-xs text-slate-500 col-span-2">Renda do 2º participante (R$)
-              <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.rendaParticipante || ''} onChange={set('rendaParticipante')} placeholder={c?.income2 ? `no card: ${c.income2}` : ''} />
+              <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.rendaParticipante || ''} onChange={set('rendaParticipante')} placeholder="ex.: 3.500,00" />
             </label>
           )}
         </div>
