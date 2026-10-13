@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
-  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides,
+  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics,
 } from '../services/credit-analysis.service';
 
 /** Aba "Análise de Crédito" — ver credit-analysis.service.ts. As extensões do Chrome entram com o login normal do CRM. */
@@ -55,6 +55,18 @@ router.put('/overrides', async (req: AuthRequest, res: Response) => {
     emit(req, { leadId: String(b.leadId) });
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao salvar o ajuste', 400); }
+});
+
+// Métricas do Dashboard: aprovados por banco, taxa de aprovação, tempo até o resultado.
+router.get('/metrics', async (req: AuthRequest, res: Response) => {
+  try {
+    const scope = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+    res.json(await creditMetrics(prisma, {
+      accountId: req.user!.accountId, scopeDepartmentIds: scope,
+      departmentId: req.query.departmentId ? String(req.query.departmentId) : undefined,
+      months: Math.min(Math.max(Number(req.query.months) || 6, 1), 24),
+    }));
+  } catch (err) { fail(res, err, 'Erro ao calcular as métricas'); }
 });
 
 router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));

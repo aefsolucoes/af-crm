@@ -375,6 +375,96 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   };
 }
 
+// ─── Métricas pro Dashboard (Fabio 14/10: aprovados por banco, tempo até o resultado, taxa de aprovação) ───
+const DECIDED_OK = new Set(['APPROVED', 'CONDITIONAL']);
+const PENDING = new Set(['REQUESTED', 'RUNNING', 'SENT', 'CHECK']);
+
+function median(xs: number[]): number | null {
+  if (!xs.length) return null;
+  const a = [...xs].sort((x, y) => x - y);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+/** Métricas por mês e por banco. Conta UMA vez cada cliente×banco (o resultado mais recente já decidido; senão a linha mais
+ *  recente) — refazer a análise do mesmo cliente no mesmo banco não infla os números. Teste e extensões em modo teste ficam de fora.
+ *  Taxa de aprovação = aprovadas ÷ (aprovadas + reprovadas); "aprovada" inclui a condicional (o banco pede documentos).
+ *  Tempo até o resultado = da 1ª solicitação do cliente naquele banco até o resultado final. */
+export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartmentIds: string[]; departmentId?: string; months: number }) {
+  const monthKey = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit' }).format(d);
+  const [cy, cm] = monthKey(new Date()).split('-').map(Number);
+  const keys: string[] = [];
+  for (let i = p.months - 1; i >= 0; i--) {
+    const y = cy + Math.floor((cm - 1 - i) / 12);
+    const m = ((cm - 1 - i) % 12 + 12) % 12 + 1;
+    keys.push(`${y}-${String(m).padStart(2, '0')}`);
+  }
+  const from = new Date(`${keys[0]}-01T00:00:00-03:00`);
+  const deptWhere = p.departmentId
+    ? { departmentId: p.departmentId, ...(p.scopeDepartmentIds.length ? { AND: [{ departmentId: { in: p.scopeDepartmentIds } }] } : {}) }
+    : (p.scopeDepartmentIds.length ? { departmentId: { in: p.scopeDepartmentIds } } : { departmentId: { not: null } });
+  const rows = await db.creditAnalysis.findMany({
+    where: { accountId: p.accountId, createdAt: { gte: from }, dryRun: false, status: { not: 'TEST' }, lead: { pipeline: deptWhere } },
+    select: { leadId: true, bank: true, status: true, createdAt: true, finishedAt: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const out = keys.map((key) => {
+    const [y, m] = key.split('-').map(Number);
+    const label = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', month: 'long', year: 'numeric' }).format(new Date(`${key}-15T12:00:00-03:00`));
+    // cliente×banco → linhas do mês (pelo mês da 1ª solicitação)
+    const pairs = new Map<string, typeof rows>();
+    for (const r of rows) {
+      if (monthKey(r.createdAt) !== key) continue;
+      const k = `${r.leadId}|${r.bank}`;
+      pairs.set(k, [...(pairs.get(k) || []), r]);
+    }
+    const banks: Record<string, { analyzed: number; approved: number; conditional: number; rejected: number; pending: number; failed: number; decided: number; approvalRate: number | null; medianMinutes: number | null; avgMinutes: number | null }> = {};
+    for (const b of BANK_KEYS) banks[b] = { analyzed: 0, approved: 0, conditional: 0, rejected: 0, pending: 0, failed: 0, decided: 0, approvalRate: null, medianMinutes: null, avgMinutes: null };
+    const mins: Record<string, number[]> = Object.fromEntries(BANK_KEYS.map((b) => [b, [] as number[]]));
+    const byLead = new Map<string, { ok: boolean; rejected: boolean; pending: boolean }>();
+    for (const [k, list] of Array.from(pairs.entries())) {
+      const [leadId, bank] = k.split('|');
+      if (!banks[bank]) continue;
+      const decided = [...list].reverse().find((r) => DECIDED_OK.has(r.status) || r.status === 'REJECTED');
+      const rep = decided || list[list.length - 1];
+      const b = banks[bank];
+      b.analyzed++;
+      if (DECIDED_OK.has(rep.status)) { b.approved++; if (rep.status === 'CONDITIONAL') b.conditional++; }
+      else if (rep.status === 'REJECTED') b.rejected++;
+      else if (PENDING.has(rep.status)) b.pending++;
+      else b.failed++;
+      if (decided && decided.finishedAt) {
+        const minutes = (decided.finishedAt.getTime() - list[0].createdAt.getTime()) / 60_000;
+        if (minutes >= 0) mins[bank].push(minutes);
+      }
+      const l = byLead.get(leadId) || { ok: false, rejected: false, pending: false };
+      if (DECIDED_OK.has(rep.status)) l.ok = true; else if (rep.status === 'REJECTED') l.rejected = true; else if (PENDING.has(rep.status)) l.pending = true;
+      byLead.set(leadId, l);
+    }
+    for (const b of BANK_KEYS) {
+      const x = banks[b];
+      x.decided = x.approved + x.rejected;
+      x.approvalRate = x.decided ? Math.round((x.approved / x.decided) * 1000) / 10 : null;
+      x.medianMinutes = median(mins[b]) === null ? null : Math.round(median(mins[b])! * 10) / 10;
+      x.avgMinutes = mins[b].length ? Math.round((mins[b].reduce((a, c) => a + c, 0) / mins[b].length) * 10) / 10 : null;
+    }
+    const leads = Array.from(byLead.values());
+    const clientsApproved = leads.filter((l) => l.ok).length;
+    const clientsRejected = leads.filter((l) => !l.ok && l.rejected && !l.pending).length; // reprovado em todos os bancos que já responderam
+    const allMins = BANK_KEYS.flatMap((b) => mins[b]);
+    return {
+      month: key, label,
+      clientsAnalyzed: leads.length, clientsApproved, clientsRejected,
+      clientsPending: leads.filter((l) => !l.ok && l.pending).length,
+      approvalRate: clientsApproved + clientsRejected ? Math.round((clientsApproved / (clientsApproved + clientsRejected)) * 1000) / 10 : null,
+      medianMinutes: median(allMins) === null ? null : Math.round(median(allMins)! * 10) / 10,
+      banks,
+    };
+  });
+  return { rows: out.reverse() }; // mês mais novo primeiro, igual ao painel do mês
+}
+
 // ─── Presença das extensões (quando cada uma buscou a fila pela última vez) ───
 const lastSeen = new Map<string, { at: number; extId: string | null }>();
 const EXT_ID_RE = /^[a-p]{32}$/;
