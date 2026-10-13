@@ -335,7 +335,25 @@ export default function AnaliseCreditoPage() {
                               <div className="text-[11px] text-amber-600 mt-0.5">✎ {overrideSummary(BANKS.map((b) => l.overrides?.[b.key]).find(Boolean))}</div>
                             )}
                           </td>
-                          {BANKS.map((b) => <td key={b.key} className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}><Badge a={l.latest[b.key]} /></td>)}
+                          {BANKS.map((b) => {
+                            // Resultado de cada participante lado a lado: o do 2º participante não esconde o do 1º (e vice-versa).
+                            const a1 = l.latestP1?.[b.key], a2 = l.latestP2?.[b.key];
+                            return (
+                              <td key={b.key} className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}>
+                                {a1 && a2 ? (
+                                  <div className="space-y-1.5">
+                                    <div><div className="text-[10px] uppercase tracking-wide text-slate-400">1º participante</div><Badge a={a1} /></div>
+                                    <div><div className="text-[10px] uppercase tracking-wide text-slate-400">2º participante</div><Badge a={a2} /></div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    {a2 && !a1 && <div className="text-[10px] uppercase tracking-wide text-slate-400">2º participante</div>}
+                                    <Badge a={l.latest[b.key]} />
+                                  </>
+                                )}
+                              </td>
+                            );
+                          })}
                           <td className="px-3 py-3">
                             <div className="flex flex-col gap-1.5 items-start">
                               <button onClick={() => router.push(`/inbox?leadId=${l.id}`)} title="Abrir a conversa do WhatsApp deste cliente" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50"><MessageSquare size={11} /> Conversa</button>
@@ -363,12 +381,18 @@ export default function AnaliseCreditoPage() {
                             <td />
                             <td colSpan={BANKS.length + 3} className="px-3 py-4">
                               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                                {BANKS.map((b) => {
-                                  const a = l.latest[b.key];
+                                {BANKS.flatMap((b) => {
+                                  const a1 = l.latestP1?.[b.key], a2 = l.latestP2?.[b.key];
+                                  // Com resultado dos dois participantes no mesmo banco: um cartão pra cada.
+                                  const itens: { a?: typeof a1; who: 'p1' | 'p2' }[] = a1 && a2 ? [{ a: a1, who: 'p1' }, { a: a2, who: 'p2' }] : [{ a: l.latest[b.key], who: a2 && !a1 ? 'p2' : 'p1' }];
+                                  return itens.map((it) => ({ b, ...it }));
+                                }).map(({ b, a, who }) => {
+                                  const hasP2 = Object.keys(l.latestP2 || {}).length > 0;
+                                  const quem = who === 'p2' ? `2º participante${l.card?.name2 ? ` · ${l.card.name2}` : ''}` : `1º participante${l.card?.name1 ? ` · ${l.card.name1}` : ''}`;
                                   return (
-                                    <div key={b.key} className="rounded-lg border border-af-border bg-white p-3 text-xs space-y-2">
+                                    <div key={`${b.key}-${who}`} className="rounded-lg border border-af-border bg-white p-3 text-xs space-y-2">
                                       <div className="flex items-center justify-between">
-                                        <span className="font-semibold text-slate-700">{b.label}</span>
+                                        <span className="font-semibold text-slate-700">{b.label}{hasP2 && <span className="block font-normal text-[11px] text-slate-400">{quem}</span>}</span>
                                         <Badge a={a} />
                                       </div>
                                       {a ? (

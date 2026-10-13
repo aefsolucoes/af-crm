@@ -89,8 +89,13 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
       )}
 
       <div className="space-y-2">
-        {BANKS.map((b) => {
-          const a = data.latest[b.key];
+        {BANKS.flatMap((b) => {
+          const a1 = data.latestP1?.[b.key], a2 = data.latestP2?.[b.key];
+          // Resultado dos dois participantes no mesmo banco: uma linha pra cada.
+          const itens = a1 && a2 ? [{ a: a1, who: 'p1' as const }, { a: a2, who: 'p2' as const }] : [{ a: data.latest[b.key], who: (a2 && !a1 ? 'p2' : 'p1') as 'p1' | 'p2' }];
+          return itens.map((it) => ({ b, ...it }));
+        }).map(({ b, a, who }) => {
+          const hasP2 = Object.keys(data.latestP2 || {}).length > 0;
           const approved = a?.status === 'APPROVED' || a?.status === 'CONDITIONAL';
           const maxParcel = a ? (/parcela m[aá]xima\s*(R\$\s*[\d.]+,\d{2})/i.exec(a.detail || '') || [])[1] : '';
           const second = a?.holderName && data.participants?.name1 && a.holderName.trim().toLowerCase() !== data.participants.name1.trim().toLowerCase() ? a.holderName : '';
@@ -106,9 +111,9 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
             ['Proposta nº', a.proposalNumber || ''],
           ] as [string, string][]).filter(([, v]) => v) : [];
           return (
-            <div key={b.key} className="text-xs">
+            <div key={`${b.key}-${who}`} className="text-xs">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-slate-600 font-medium">{b.short}</span>
+                <span className="text-slate-600 font-medium">{b.short}{hasP2 && <span className="font-normal text-slate-400"> · {who === 'p2' ? '2º participante' : '1º participante'}</span>}</span>
                 <div className="flex items-center gap-1.5">
                   <Badge a={a} />
                 </div>

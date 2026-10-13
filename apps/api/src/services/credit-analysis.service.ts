@@ -71,6 +71,22 @@ function pickResult(input: Record<string, any>): ResultFields {
   return out;
 }
 
+/** Última análise de cada banco separada por PARTICIPANTE: o resultado do 2º participante (rodado no nome dele) aparece junto do
+ *  do 1º, em vez de um esconder o outro. `rows` vem do mais novo pro mais antigo. */
+function latestByParticipant(rows: any[], name2: string): { p1: Record<string, any>; p2: Record<string, any> } {
+  const n2 = normName(name2);
+  const isP2 = (holder?: string | null) => {
+    const h = normName(holder || '');
+    return !!(n2 && h && (h === n2 || n2.includes(h) || h.includes(n2)));
+  };
+  const p1: Record<string, any> = {}, p2: Record<string, any> = {};
+  for (const a of rows) {
+    const bucket = isP2(a.holderName) ? p2 : p1;
+    if (!bucket[a.bank]) bucket[a.bank] = a;
+  }
+  return { p1, p2 };
+}
+
 const normName = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 const HOLDER_RE = /titular(?:\s+na\s+an[aá]lise)?\s*:\s*([^.(+;|\n]+?)\s*(?=[(+.;|\n]|$)/i;
 
@@ -395,7 +411,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
     select: {
       id: true, name: true, value: true, status: true, customFields: true,
       stage: { select: { name: true } }, pipeline: { select: { name: true } },
-      creditAnalyses: { orderBy: { createdAt: 'desc' }, take: 12 },
+      creditAnalyses: { orderBy: { createdAt: 'desc' }, take: 30 },
       creditOverrides: { select: { bank: true, data: true } },
     },
     orderBy: { updatedAt: 'desc' },
@@ -405,7 +421,10 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
     const cf = (l.customFields || {}) as Record<string, any>;
     const latest: Record<string, any> = {};
     for (const a of l.creditAnalyses) if (!latest[a.bank]) latest[a.bank] = a; // já vem do mais novo pro mais antigo
+    const byPart = latestByParticipant(l.creditAnalyses, String(cf.participante_2 || ''));
     return {
+      latestP1: byPart.p1,
+      latestP2: byPart.p2,
       id: l.id,
       name: String(cf.participante_1 || l.name),
       stage: l.stage?.name || '',
@@ -501,14 +520,14 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   const deptId = lead.pipeline?.departmentId;
   if (p.scopeDepartmentIds.length && deptId && !p.scopeDepartmentIds.includes(deptId)) return null;
   await expireStuck(db, { accountId: p.accountId, leadId: p.leadId });
-  const history = await db.creditAnalysis.findMany({ where: { leadId: p.leadId }, orderBy: { createdAt: 'desc' }, take: 12 });
+  const history = await db.creditAnalysis.findMany({ where: { leadId: p.leadId }, orderBy: { createdAt: 'desc' }, take: 30 });
   const latest: Record<string, any> = {};
   for (const a of history) if (!latest[a.bank]) latest[a.bank] = a;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const overrides = await db.creditOverride.findMany({ where: { leadId: p.leadId }, select: { bank: true, data: true } });
   return {
     eligible: /home equity/i.test(lead.pipeline?.department?.name || ''),
-    latest, history, chosenId: history.find((a) => a.chosen)?.id || null,
+    latest, latestP1: latestByParticipant(history, String(cf.participante_2 || '')).p1, latestP2: latestByParticipant(history, String(cf.participante_2 || '')).p2, history, chosenId: history.find((a) => a.chosen)?.id || null,
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
   };
 }

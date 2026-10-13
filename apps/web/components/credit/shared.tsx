@@ -42,6 +42,8 @@ export interface BoardLead {
   overrides: Partial<Record<Bank, OverrideData>>;
   inPre: boolean; ran: boolean; lastRunAt: string | null;
   latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; chosenId: string | null;
+  /** Última análise de cada banco por participante (o 2º, rodado no nome dele, não esconde o 1º). */
+  latestP1?: Partial<Record<Bank, Analysis>>; latestP2?: Partial<Record<Bank, Analysis>>;
 }
 
 /** Resumo curto dos ajustes de um banco, pra mostrar na linha. */
@@ -56,6 +58,7 @@ export function overrideSummary(o?: OverrideData): string {
 export interface LeadAnalyses {
   eligible: boolean;
   latest: Partial<Record<Bank, Analysis>>;
+  latestP1?: Partial<Record<Bank, Analysis>>; latestP2?: Partial<Record<Bank, Analysis>>;
   history: Analysis[];
   chosenId: string | null;
   participants?: { name1: string; name2: string; inverted: boolean };
