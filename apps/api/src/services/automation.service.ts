@@ -205,10 +205,23 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
           if (buttonTexts.length) previewText += `\n\n${buttonTexts.map((t: string) => `[${t}]`).join('  ')}`;
         }
       } catch { /* fica com o rótulo genérico */ }
-      const result = await sendOutboundWhatsAppTemplate({
-        accountId: lead.accountId, leadId: lead.id, templateName, language, bodyParams,
-        previewText, io: io as any,
-      });
+      // ECONOMIA (Fabio 13/10: "evitar ao máximo o custo com templates"): com a janela de 24 h aberta (o cliente escreveu no WhatsApp nas últimas
+      // ~23 h) o MESMO texto vai como mensagem normal — GRÁTIS — em vez do template pago. Os botões do template não vão (a resposta do cliente,
+      // em texto, é tratada pela IA). `forceTemplate: true` na ação desliga isso.
+      let result: Awaited<ReturnType<typeof sendOutboundWhatsAppTemplate>> | null = null;
+      if (action.config.forceTemplate !== true && !previewText.startsWith('Template "')) {
+        const lastIn = await prisma.message.findFirst({ where: { leadId: lead.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+        if (lastIn && Date.now() - lastIn.createdAt.getTime() < 23 * 3_600_000) {
+          const livre = await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: lead.id, content: previewText.replace(/\n\n(\[[^\]]+\]\s*)+$/, ''), io: io as any });
+          if (livre.success) result = livre;
+        }
+      }
+      if (!result) {
+        result = await sendOutboundWhatsAppTemplate({
+          accountId: lead.accountId, leadId: lead.id, templateName, language, bodyParams,
+          previewText, io: io as any,
+        });
+      }
       // "Também por e-mail": o mesmo texto vai pro e-mail do card, se houver
       // — mesmo que o WhatsApp tenha falhado (aí o e-mail vale ainda mais).
       // É um extra: não muda o resultado da ação (não trava as seguintes).
