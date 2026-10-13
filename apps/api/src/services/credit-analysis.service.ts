@@ -64,6 +64,29 @@ function pickResult(input: Record<string, any>): ResultFields {
   return out;
 }
 
+const normName = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+const HOLDER_RE = /titular(?:\s+na\s+an[aá]lise)?\s*:\s*([^.(+;|\n]+?)\s*(?=[(+.;|\n]|$)/i;
+
+/** "Titular na análise: Sandra Regina (2º participante: Silas…)." / "iniciando… — titular: Sandra + 2º participante: …" → "Sandra Regina". */
+export function parseHolder(detail?: string | null): string | null {
+  const m = HOLDER_RE.exec(String(detail || ''));
+  const name = m ? m[1].trim() : '';
+  return name.length >= 3 ? name : null;
+}
+
+/** Em nome de quem a análise foi feita: o que o texto da extensão diz; senão, o 2º participante quando a inversão está ligada
+ *  pra esse banco; senão null (titular normal). */
+async function resolveHolder(db: Db, leadId: string, bank: string, detail?: string | null): Promise<string | null> {
+  const parsed = parseHolder(detail);
+  if (parsed) return parsed;
+  const [lead, ov] = await Promise.all([
+    db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }),
+    db.creditOverride.findFirst({ where: { leadId, bank }, select: { data: true } }),
+  ]);
+  const p2 = String(((lead?.customFields || {}) as Record<string, any>).participante_2 || '').trim();
+  return ov && (ov.data as any)?.inverter === true && p2 ? p2 : null;
+}
+
 const brNumber = (t: string) => Number(t.replace(/\./g, '').replace(',', '.'));
 
 /** O Credimorar devolve as condições do Santander como texto ("CONDIÇÕES — Santander: libera + R$ 150.000,00; prazo 120 Meses;
@@ -72,7 +95,8 @@ const brNumber = (t: string) => Number(t.replace(/\./g, '').replace(',', '.'));
 export function parseSantanderConditions(text: string): ResultFields {
   const t = String(text || '').replace(/\s+/g, ' ');
   const out: ResultFields = {};
-  const libera = /libera\s*\+?\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (libera) out.approvedValue = brNumber(libera[1]);
+  const liberado = /(?:valor\s+)?liberado\s*:?\s*R\$\s*([\d.]+,\d{2})/i.exec(t);
+  const libera = liberado || /libera\s*\+?\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (libera) out.approvedValue = brNumber(libera[1]);
   const prazo = /prazo\s*(\d+)\s*meses/i.exec(t); if (prazo) out.termMonths = Number(prazo[1]);
   const p1 = /1[ªa]\s*parcela\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (p1) out.firstInstallment = brNumber(p1[1]);
   const pu = /[úu]ltima\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (pu) out.lastInstallment = brNumber(pu[1]);
@@ -83,9 +107,10 @@ export function parseSantanderConditions(text: string): ResultFields {
 /** Nota automática no card quando a análise termina aprovada/reprovada. O formato de
  *  aprovada tem "aprovad…" e "R$ …" de propósito: approval-notice.service lê notas assim
  *  pra montar o texto "✅ Crédito aprovado! Resumo da proposta". */
-export function analysisNote(a: { bank: string; status: string; detail?: string | null; dryRun?: boolean } & ResultFields): string {
+export function analysisNote(a: { bank: string; status: string; detail?: string | null; dryRun?: boolean; holder?: string | null } & ResultFields): string {
   const label = BANKS[a.bank]?.label || a.bank;
   const test = a.dryRun ? ' [modo teste]' : '';
+  const nome = a.holder ? ` 👤 Aprovado no nome de ${a.holder} (2º participante da proposta).` : '';
   if (a.status === 'APPROVED') {
     const parts = [
       `Banco: ${label}`,
@@ -96,19 +121,19 @@ export function analysisNote(a: { bank: string; status: string; detail?: string 
       a.lastInstallment ? `Última parcela: ${brl(a.lastInstallment)}` : '',
       a.proposalNumber ? `Proposta nº ${a.proposalNumber}` : '',
     ].filter(Boolean);
-    return `✅ Análise de crédito${test} — APROVADO no ${label}. ${parts.join(' · ')}${a.conditions ? `\nCondições: ${a.conditions}` : ''}${a.detail && !a.approvedValue ? `\n${a.detail}` : ''}`;
+    return `✅ Análise de crédito${test} — ${/aprovad[oa] a menor/i.test(a.detail || '') ? 'APROVADO A MENOR' : 'APROVADO'} no ${label}.${nome} ${parts.join(' · ')}${a.conditions ? `\nCondições: ${a.conditions}` : ''}${a.detail && !a.approvedValue ? `\n${a.detail}` : ''}`;
   }
   if (a.status === 'CONDITIONAL') {
-    return `📄 Análise de crédito${test} — APROVADO CONDICIONAL no ${label}${a.proposalNumber ? ` (proposta nº ${a.proposalNumber})` : ''}: o banco pede documentação para seguir.${a.detail ? ` ${a.detail}` : ''}`;
+    return `📄 Análise de crédito${test} — APROVADO CONDICIONAL no ${label}${a.proposalNumber ? ` (proposta nº ${a.proposalNumber})` : ''}: o banco pede documentação para seguir.${nome}${a.detail ? ` ${a.detail}` : ''}`;
   }
   return `❌ Análise de crédito${test} — REPROVADO no ${label}${a.proposalNumber ? ` (proposta nº ${a.proposalNumber})` : ''}.${a.detail ? ` ${a.detail}` : ''}`;
 }
 
 /** Pede a análise de N clientes em N bancos (`kind` RUN), ou só a CONFERÊNCIA do resultado de uma proposta já enviada
- *  (`kind` CHECK — só Inter; a extensão acha o cliente pelo CPF na lista de Propostas; não cria proposta nova). A extensão busca os pedidos (claimQueue). */
+ *  (`kind` CHECK — Inter e Santander; a extensão acha o cliente pelo CPF na lista do portal; não cria proposta nova). A extensão busca os pedidos (claimQueue). */
 export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK' }) {
   const kind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
-  const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (kind === 'RUN' || b === 'INTER'));
+  const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (kind === 'RUN' || b === 'INTER' || b === 'CREDIMORAR'));
   const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true } });
   let created = 0, skipped = 0;
   for (const l of leads) {
@@ -118,7 +143,8 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
         select: { id: true },
       });
       if (open) { skipped++; continue; }
-      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, dryRun: kind === 'CHECK' ? false : p.dryRun, source: 'EXTENSION', requestedById: p.userId || null } });
+      const prevNumber = kind === 'CHECK' ? (await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } }))?.proposalNumber || null : null;
+      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, proposalNumber: prevNumber, dryRun: kind === 'CHECK' ? false : p.dryRun, source: 'EXTENSION', requestedById: p.userId || null } });
       created++;
     }
   }
@@ -144,7 +170,15 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   return claimed.map((r) => ({ id: r.id, leadId: r.leadId, leadName: r.lead?.name || '', dryRun: r.dryRun, kind: r.kind, proposalNumber: r.proposalNumber, requestedAt: r.requestedAt }));
 }
 
-async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null } & ResultFields) {
+/** O nome do titular da análise só importa pro cliente quando NÃO é o do 1º participante do card (ex.: inversão). */
+async function holderIfSecond(db: Db, leadId: string, holderName?: string | null): Promise<string | null> {
+  if (!holderName) return null;
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const main = String(((lead?.customFields || {}) as Record<string, any>).participante_1 || lead?.name || '');
+  return normName(holderName) !== normName(main) ? holderName : null;
+}
+
+async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null; holderName?: string | null } & ResultFields) {
   const next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
   const becameFinal = FINAL.has(next) && !FINAL.has(row.status);
   const updated = await db.creditAnalysis.update({
@@ -154,12 +188,14 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
       ...(data.detail !== undefined ? { detail: data.detail ? String(data.detail).slice(0, 4000) : null } : {}),
       ...Object.fromEntries(RESULT_KEYS.filter((k) => k in data).map((k) => [k, (data as any)[k]])),
       ...(next === 'RUNNING' ? { startedAt: undefined } : {}),
+      ...(data.holderName ? { holderName: data.holderName } : {}),
       ...(becameFinal ? { finishedAt: new Date() } : {}),
     },
   });
   // Nota automática só na primeira vez que vira aprovada/reprovada (modo teste não escreve no card).
   if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) {
-    await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: analysisNote({ ...updated, status: next }) } });
+    const holder = await holderIfSecond(db, row.leadId, updated.holderName);
+    await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: analysisNote({ ...updated, status: next, holder }) } });
   }
   return { row: updated, becameFinal };
 }
@@ -186,7 +222,8 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   // Aprovado "condicionado" (Inter pede documentos; Santander "Aprovado Condicional") é um status próprio: aprovou, mas falta algo.
   const status = p.status === 'APPROVED' && /condicion/i.test(p.detail || '') ? 'CONDITIONAL' : p.status;
   const numbers = p.bank === 'CREDIMORAR' ? parseSantanderConditions(p.detail || '') : {};
-  const { row: updated } = await applyUpdate(db, row, { status, detail: p.detail ?? null, ...numbers, ...pickResult(p.result || {}) });
+  const holderName = parseHolder(p.detail) || row.holderName || (FINAL.has(status) ? await resolveHolder(db, p.leadId, p.bank, null) : null);
+  const { row: updated } = await applyUpdate(db, row, { status, detail: p.detail ?? null, holderName, ...numbers, ...pickResult(p.result || {}) });
   return updated;
 }
 
@@ -211,7 +248,7 @@ export async function registerManual(db: Db, p: { accountId: string; userId?: st
   const row = await db.creditAnalysis.create({
     data: { accountId: p.accountId, leadId: p.leadId, bank: p.bank, status: 'RUNNING', source: 'MANUAL', requestedById: p.userId || null, startedAt: new Date() },
   });
-  const { row: updated } = await applyUpdate(db, row, { status: p.status, detail: p.detail ?? null, ...pickResult(p.result || {}) });
+  const { row: updated } = await applyUpdate(db, row, { status: p.status, detail: p.detail ?? null, holderName: await resolveHolder(db, p.leadId, p.bank, p.detail), ...pickResult(p.result || {}) });
   return updated;
 }
 
@@ -247,7 +284,7 @@ export async function chooseAnalysis(db: Db, p: { accountId: string; id: string;
   await db.note.create({
     data: {
       leadId: lead.id, type: 'COMMENT',
-      content: `⭐ Proposta escolhida: ${b?.label || row.bank}${row.approvedValue ? ` — ${brl(row.approvedValue)}` : ''}${p.userName ? ` (por ${p.userName})` : ''}. A aba Financiamento do card foi preenchida com ela (${campos}).${before.valor && row.approvedValue && Number(before.valor) !== row.approvedValue ? ` Valor pedido antes: ${brl(Number(before.valor))}.` : ''}`,
+      content: `⭐ Proposta escolhida: ${b?.label || row.bank}${row.approvedValue ? ` — ${brl(row.approvedValue)}` : ''}${(await holderIfSecond(db, row.leadId, row.holderName)) ? `, no nome de ${row.holderName} (2º participante)` : ''}${p.userName ? ` (por ${p.userName})` : ''}. A aba Financiamento do card foi preenchida com ela (${campos}).${before.valor && row.approvedValue && Number(before.valor) !== row.approvedValue ? ` Valor pedido antes: ${brl(Number(before.valor))}.` : ''}`,
     },
   });
   return { ok: true, filled: Object.keys(fill).filter((k) => !k.startsWith('_')) };
@@ -483,6 +520,28 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
     };
   });
   return { rows: out.reverse() }; // mês mais novo primeiro, igual ao painel do mês
+}
+
+// ─── Trava única: uma extensão por vez usa o navegador ───
+// As 3 extensões trabalham como uma pessoa (a aba do banco precisa ficar visível, senão o Chrome congela a página). Rodando
+// juntas, cada uma puxa a aba pra frente e derruba a outra. Então elas pedem a vez aqui e esperam. A trava vence sozinha
+// (10 min sem sinal) pra uma extensão travada/fechada não segurar a fila, e cada relato da extensão dona renova o prazo.
+const LOCK_TTL_MS = 10 * 60 * 1000;
+const locks = new Map<string, { bank: string; expiresAt: number }>();
+export function acquireLock(accountId: string, bank: string): { ok: boolean; holder?: string } {
+  const now = Date.now();
+  const cur = locks.get(accountId);
+  if (cur && cur.expiresAt > now && cur.bank !== bank) return { ok: false, holder: cur.bank };
+  locks.set(accountId, { bank, expiresAt: now + LOCK_TTL_MS });
+  return { ok: true };
+}
+export function releaseLock(accountId: string, bank: string) {
+  const cur = locks.get(accountId);
+  if (cur && cur.bank === bank) locks.delete(accountId);
+}
+export function renewLock(accountId: string, bank: string) {
+  const cur = locks.get(accountId);
+  if (cur && cur.bank === bank) cur.expiresAt = Date.now() + LOCK_TTL_MS;
 }
 
 // ─── Presença das extensões (quando cada uma buscou a fila pela última vez) ───

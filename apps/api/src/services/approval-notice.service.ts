@@ -191,7 +191,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
   return replied === 0;
 }
 
-interface ApprovalOption { instituicao: string; valor: string; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string }
+interface ApprovalOption { instituicao: string; valor: string; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -265,6 +265,7 @@ export function renderApprovalText(options: ApprovalOption[]): string {
   const block = (o: ApprovalOption) => [
     '📋 Resumo da proposta:',
     `🏦 Instituição: ${o.instituicao}`,
+    o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
     `💰 Valor aprovado: ${o.valor}`,
     o.prazo && `📅 Prazo: ${o.prazo}`,
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
@@ -277,14 +278,43 @@ export function renderApprovalText(options: ApprovalOption[]): string {
 
 /** Texto de aprovação montado pro card (notas primeiro, aba Financiamento
  *  depois); null se faltar dado. Usado no envio e pra conferir sem enviar. */
+/** Quando a análise foi feita no nome do 2º participante (ex.: titular invertido), o aviso ao cliente tem que dizer em nome de quem
+ *  saiu a aprovação. Devolve, por instituição do texto, o nome (ou null quando é o titular normal). */
+async function holderResolver(leadId: string): Promise<(instituicao: string) => string | null> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const main = String(cf.participante_1 || lead?.name || '');
+  const p2 = String(cf.participante_2 || '').trim();
+  const norm = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const analyses = await prisma.creditAnalysis.findMany({
+    where: { leadId, status: { in: ['APPROVED', 'CONDITIONAL'] }, dryRun: false },
+    orderBy: { createdAt: 'asc' }, select: { bank: true, holderName: true },
+  });
+  const overrides = await prisma.creditOverride.findMany({ where: { leadId }, select: { bank: true, data: true } });
+  const byBank = new Map<string, string>();
+  for (const a of analyses) if (a.holderName) byBank.set(a.bank, a.holderName);
+  const inverted = new Set(overrides.filter((o) => (o.data as any)?.inverter === true).map((o) => o.bank));
+  const bankOf = (inst: string) => (/inter/i.test(inst) ? 'INTER' : /creditas/i.test(inst) ? 'CREDITAS' : /santander|credimorar/i.test(inst) ? 'CREDIMORAR' : '');
+  return (inst: string) => {
+    const bank = bankOf(inst);
+    const holder = (bank && byBank.get(bank)) || (bank && inverted.has(bank) && p2 ? p2 : '') || '';
+    return holder && norm(holder) !== norm(main) ? holder : null;
+  };
+}
+
+async function withHolders(leadId: string, options: ApprovalOption[]): Promise<ApprovalOption[]> {
+  const holder = await holderResolver(leadId).catch(() => null);
+  return holder ? options.map((o) => ({ ...o, nome: holder(o.instituicao) || undefined })) : options;
+}
+
 export async function buildApprovalText(leadId: string): Promise<{ text: string; source: 'notas' | 'card' } | null> {
   // Duas tentativas nas notas antes de cair na aba Financiamento: a leitura
   // pode variar e a trava de números descarta resposta com valor que não
   // está escrito na nota.
   const fromNotes = (await optionsFromNotes(leadId).catch(() => null)) || (await optionsFromNotes(leadId).catch(() => null));
-  if (fromNotes) return { text: renderApprovalText(fromNotes), source: 'notas' };
+  if (fromNotes) return { text: renderApprovalText(await withHolders(leadId, fromNotes)), source: 'notas' };
   const fromCard = await optionFromCard(leadId).catch(() => null);
-  return fromCard ? { text: renderApprovalText(fromCard), source: 'card' } : null;
+  return fromCard ? { text: renderApprovalText(await withHolders(leadId, fromCard)), source: 'card' } : null;
 }
 
 /** Cliente tocou em "Sim, quero saber" no template de aprovação. true = tratou. */

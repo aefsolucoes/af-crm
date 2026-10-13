@@ -1184,6 +1184,7 @@ model CreditAnalysis {
   conditions       String?   @db.Text
   dryRun           Boolean   @default(false)
   source           String    @default("EXTENSION")
+  holderName       String? // em nome de quem a análise foi feita (titular na análise; o 2º participante quando invertido)
   kind             String    @default("RUN") // RUN | CHECK (só conferir o resultado de uma proposta já enviada) // EXTENSION | MANUAL
   chosen           Boolean   @default(false)
   requestedById    String?

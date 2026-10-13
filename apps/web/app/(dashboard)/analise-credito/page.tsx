@@ -172,11 +172,11 @@ export default function AnaliseCreditoPage() {
   }
 
   // Só CONFERIR o resultado no portal do Inter de uma proposta já enviada (não cria proposta nova).
-  async function checkInter(l: BoardLead) {
+  async function checkBank(l: BoardLead, bank: Bank) {
     try {
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: ['INTER'], kind: 'CHECK' });
-      pingExtensions(data?.extensions, ['INTER']);
-      toast(r.created ? 'Conferência pedida — a extensão do Inter vai ler o resultado no portal' : 'Já tem uma conferência/análise em andamento', 'success');
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: [bank], kind: 'CHECK' });
+      pingExtensions(data?.extensions, [bank]);
+      toast(r.created ? `Conferência pedida — a extensão do ${BANKS.find((b) => b.key === bank)?.short} vai ler o resultado no portal` : 'Já tem uma conferência/análise em andamento', 'success');
       refresh();
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao pedir a conferência', 'error');
@@ -304,10 +304,11 @@ export default function AnaliseCreditoPage() {
                           {BANKS.map((b) => <td key={b.key} className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}><Badge a={l.latest[b.key]} /></td>)}
                           <td className="px-3 py-3">
                             <div className="flex flex-col gap-1.5 items-start">
+                              <button onClick={() => router.push(`/inbox?leadId=${l.id}`)} title="Abrir a conversa do WhatsApp deste cliente" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50"><MessageSquare size={11} /> Conversa</button>
                               <button onClick={() => setAdjust(l)} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><SlidersHorizontal size={11} /> Ajustar</button>
-                              {l.latest.INTER && !['REQUESTED', 'RUNNING'].includes(l.latest.INTER.status) && (
-                                <button onClick={() => checkInter(l)} title="Ler o resultado no portal do Inter sem criar proposta nova" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><RefreshCw size={11} /> Conferir Inter</button>
-                              )}
+                              {(['INTER', 'CREDIMORAR'] as Bank[]).filter((bk) => l.latest[bk] && !['REQUESTED', 'RUNNING'].includes(l.latest[bk]!.status)).map((bk) => (
+                                <button key={bk} onClick={() => checkBank(l, bk)} title={`Ler o resultado no portal do ${BANKS.find((b) => b.key === bk)?.short} sem criar proposta nova`} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><RefreshCw size={11} /> Conferir {BANKS.find((b) => b.key === bk)?.short}</button>
+                              ))}
                               {(() => {
                                 const inverted = BANKS.every((b) => l.overrides?.[b.key]?.inverter);
                                 return l.card?.name2 ? (
@@ -335,6 +336,7 @@ export default function AnaliseCreditoPage() {
                                       </div>
                                       {a ? (
                                         <>
+                                          {a.holderName && l.card?.name1 && a.holderName.trim().toLowerCase() !== l.card.name1.trim().toLowerCase() && <p className="text-amber-600 font-medium">Aprovado no nome de {a.holderName} (2º participante)</p>}
                                           {a.detail && <p className="text-slate-500 whitespace-pre-line">{a.detail}</p>}
                                           {(a.status === 'APPROVED' || a.status === 'CONDITIONAL' || (a.status === 'SENT' && !!a.approvedValue)) && (
                                             <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-600">

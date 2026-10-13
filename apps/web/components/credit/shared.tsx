@@ -26,7 +26,7 @@ export const MANUAL_STATUS = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CH
 
 export interface Analysis {
   id: string; bank: Bank; status: string; detail: string | null; dryRun: boolean; source: string; chosen: boolean;
-  proposalNumber: string | null; approvedValue: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
+  holderName?: string | null; proposalNumber: string | null; approvedValue: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
   firstInstallment: number | null; lastInstallment: number | null; conditions: string | null;
   requestedAt: string; finishedAt: string | null; updatedAt: string; createdAt: string;
 }
@@ -62,7 +62,8 @@ export function ago(d: string | null | undefined): string {
 
 export function Badge({ a }: { a?: Analysis }) {
   if (!a) return <span className="text-xs text-slate-300">—</span>;
-  const s = STATUS[a.status] || { label: a.status, cls: 'bg-slate-100 text-slate-500' };
+  const baseStatus = STATUS[a.status] || { label: a.status, cls: 'bg-slate-100 text-slate-500' };
+  const s = a.status === 'APPROVED' && /aprovad[oa] a menor/i.test(a.detail || '') ? { ...baseStatus, label: 'Aprovado a menor' } : baseStatus;
   return (
     <div className="space-y-0.5">
       <div className="flex items-center gap-1">

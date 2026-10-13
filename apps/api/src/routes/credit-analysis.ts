@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
-  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics,
+  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock,
 } from '../services/credit-analysis.service';
 
 /** Aba "Análise de Crédito" — ver credit-analysis.service.ts. As extensões do Chrome entram com o login normal do CRM. */
@@ -69,6 +69,19 @@ router.get('/metrics', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao calcular as métricas'); }
 });
 
+// Uma extensão por vez usa o navegador: pede a vez (ok:false = outra está rodando, tente de novo) e devolve quando termina.
+router.post('/lock', (req: AuthRequest, res: Response) => {
+  const bank = String(req.body?.bank || '').toUpperCase();
+  if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
+  res.json(acquireLock(req.user!.accountId, bank));
+});
+router.post('/unlock', (req: AuthRequest, res: Response) => {
+  const bank = String(req.body?.bank || '').toUpperCase();
+  if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
+  releaseLock(req.user!.accountId, bank);
+  res.json({ ok: true });
+});
+
 router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));
 
 // Dispara a análise de vários clientes em vários bancos (a extensão busca na fila).
@@ -105,6 +118,7 @@ router.post('/report', async (req: AuthRequest, res: Response) => {
   if (!b.leadId || !BANK_KEYS.includes(bank) || !status) return res.status(400).json({ error: 'leadId, bank e status são obrigatórios' });
   try {
     touchExtension(req.user!.accountId, bank);
+    renewLock(req.user!.accountId, bank);
     const row = await reportAnalysis(prisma, { accountId: req.user!.accountId, requestId: b.requestId ? String(b.requestId) : undefined, leadId: String(b.leadId), bank, status, detail: b.detail ? String(b.detail) : undefined, result: b.result && typeof b.result === 'object' ? b.result : {} });
     emit(req, { leadId: row.leadId });
     res.json({ ok: true, id: row.id, status: row.status });
