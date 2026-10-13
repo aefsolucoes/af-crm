@@ -37,7 +37,7 @@ import remarketingRoutes from './routes/remarketing';
 import creditAnalysisRoutes from './routes/credit-analysis';
 import emailRoutes from './routes/email';
 import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.service';
-import { checkInactivityAutomations } from './services/automation.service';
+import { checkInactivityAutomations, processDeferredAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { autoStarBigLeads } from './services/auto-star.service';
 import { processRemarketing } from './services/remarketing.service';
@@ -246,6 +246,8 @@ httpServer.listen(PORT, () => {
   const AUTOMATION_INACTIVITY_POLL_MS = 15 * 60 * 1000;
   setTimeout(() => {
     checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade (boot):', err?.message));
+    // Ações adiadas (ex.: boas-vindas 10 min depois): confere a cada 1 min.
+    setInterval(() => processDeferredAutomations(io).catch((err) => console.error('[Automation] Ações adiadas:', err?.message)), 60 * 1000);
     setInterval(() => {
       checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade:', err?.message));
     }, AUTOMATION_INACTIVITY_POLL_MS);

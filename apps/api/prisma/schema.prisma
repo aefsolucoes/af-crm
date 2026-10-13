@@ -968,6 +968,24 @@ model AutomationRule {
   @@index([accountId, trigger, active])
 }
 
+/// Ação de automação ADIADA (ex.: mensagem inicial de boas-vindas só 10 min depois da entrada do lead, e só se ele ainda não falou com a gente —
+/// economiza o template pago da Meta). Um poller de 1 min (processDeferredAutomations) executa quando runAt chega.
+model AutomationDeferred {
+  id          String    @id @default(cuid())
+  accountId   String
+  ruleId      String
+  leadId      String
+  actionIndex Int
+  runAt       DateTime
+  status      String    @default("PENDING") // PENDING | RUNNING | DONE | SKIPPED | FAILED
+  note        String?
+  createdAt   DateTime  @default(now())
+  doneAt      DateTime?
+
+  @@index([status, runAt])
+  @@index([leadId, ruleId])
+}
+
 // Uma linha por DISPARO da regra (não por ação individual dentro dela).
 // leadId é campo solto, sem @relation — mesmo padrão leve de
 // CommissionSuggestion.leadId/AgentTask.leadId, pra não mexer no model Lead.

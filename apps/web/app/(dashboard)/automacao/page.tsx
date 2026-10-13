@@ -437,6 +437,25 @@ export default function AutomacaoPage() {
                         onChange={(e) => updateActionConfig(i, 'bodyParams', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
                         placeholder="Parâmetros do corpo, separados por vírgula (opcional)"
                       />
+                      {/* Atraso do envio (economia de template da Meta): agenda e, na hora, só manda se o cliente ainda não falou com a gente. */}
+                      <div className={`mt-2 rounded-lg border ${Number(action.config.delayMinutes) > 0 ? 'border-amber-200 bg-amber-50/40' : 'border-af-border'} p-2.5 space-y-1.5`}>
+                        <label className="flex items-center gap-2 text-sm text-slate-700">
+                          <span className="font-medium">⏱ Enviar só depois de</span>
+                          <input
+                            type="number" min={0} max={1440}
+                            value={Number(action.config.delayMinutes) || 0}
+                            onChange={(e) => updateActionConfig(i, 'delayMinutes', Math.max(0, Number(e.target.value) || 0))}
+                            className="w-20 rounded border border-af-border px-2 py-1 text-sm"
+                          />
+                          <span>minutos (0 = na hora)</span>
+                        </label>
+                        {Number(action.config.delayMinutes) > 0 && (
+                          <label className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
+                            <input type="checkbox" className="mt-0.5" checked={action.config.skipIfClientContacted !== false} onChange={(e) => updateActionConfig(i, 'skipIfClientContacted', e.target.checked)} />
+                            <span>Não enviar se o cliente já tiver falado com a gente nesse tempo (economiza a mensagem paga da Meta: dentro das 24 h a IA/equipe responde de graça).</span>
+                          </label>
+                        )}
+                      </div>
                       {/* E-mail pro cliente junto com o template — texto livre (e-mail não
                           precisa de aprovação da Meta, pedido do Fabio 2026-09-25). */}
                       <div className={`mt-2 rounded-lg border ${action.config.alsoEmail === true ? 'border-blue-200 bg-blue-50/40' : 'border-af-border'} p-2.5 space-y-2`}>

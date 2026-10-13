@@ -50,6 +50,8 @@ export interface RunContext {
    *  ações internas (ligar IA, tag…) mas NÃO manda nada pro cliente — o "Recebi
    *  sua proposta" sai só quando a proposta chegar pelo WhatsApp (Fabio 10/10). */
   skipClientMessages?: boolean;
+  /** Execução de uma ação que tinha sido ADIADA (delayMinutes): roda de verdade, sem agendar de novo. */
+  deferredRun?: boolean;
 }
 
 type LeadForActions = {
@@ -342,7 +344,17 @@ async function executeRuleForLead(
 
   const actions = (rule.actions as unknown as AutomationAction[]) || [];
   const results: { type: string; ok: boolean }[] = [];
-  for (const action of actions) {
+  for (let idx = 0; idx < actions.length; idx++) {
+    const action = actions[idx];
+    // Template com atraso (ex.: boas-vindas 10 min depois, pra não gastar mensagem da Meta se o cliente já falou com a gente): agenda e segue
+    // com as outras ações (ex.: ligar a IA agora, pra ela atender quem escrever nesse meio-tempo, de graça, dentro da janela de 24 h).
+    const delay = Number((action.config as any)?.delayMinutes) || 0;
+    if (action.type === 'send_template' && delay > 0 && !context.deferredRun && !context.skipClientMessages) {
+      const jaAgendado = await prisma.automationDeferred.findFirst({ where: { ruleId: rule.id, leadId, actionIndex: idx, status: { in: ['PENDING', 'RUNNING'] } }, select: { id: true } });
+      if (!jaAgendado) await prisma.automationDeferred.create({ data: { accountId: lead.accountId, ruleId: rule.id, leadId, actionIndex: idx, runAt: new Date(Date.now() + delay * 60_000) } });
+      results.push({ type: action.type, ok: true, deferred: true } as any);
+      continue;
+    }
     let ok: boolean;
     try {
       ok = await executeAction(action, lead, context, io);
@@ -363,6 +375,37 @@ async function executeRuleForLead(
   await prisma.automationLog
     .create({ data: { ruleId: rule.id, leadId, success: results.every((r) => r.ok), actionsResult: results as any } })
     .catch((err) => console.error('[Automation] Falha ao gravar log:', err));
+}
+
+/** Poll de 1 min: executa as ações adiadas que venceram. Antes de mandar o template, confere se ainda vale: se o cliente JÁ falou com a gente
+ *  (a janela de 24 h está aberta, a IA/equipe responde de graça) ou já houve contato nosso, NÃO gasta o template pago. */
+export async function processDeferredAutomations(io: unknown): Promise<void> {
+  const due = await prisma.automationDeferred.findMany({ where: { status: 'PENDING', runAt: { lte: new Date() } }, orderBy: { runAt: 'asc' }, take: 25 });
+  for (const job of due) {
+    const claimed = await prisma.automationDeferred.updateMany({ where: { id: job.id, status: 'PENDING' }, data: { status: 'RUNNING' } });
+    if (!claimed.count) continue;
+    const finish = (status: string, note?: string) => prisma.automationDeferred.update({ where: { id: job.id }, data: { status, note: note ? note.slice(0, 300) : null, doneAt: new Date() } }).catch(() => {});
+    try {
+      const rule = await prisma.automationRule.findUnique({ where: { id: job.ruleId } });
+      const action = rule && rule.active ? ((rule.actions as unknown as AutomationAction[]) || [])[job.actionIndex] : null;
+      if (!rule || !rule.active || !action) { await finish('SKIPPED', 'regra desativada ou mudou'); continue; }
+      const lead = await prisma.lead.findUnique({
+        where: { id: job.leadId },
+        include: { contact: { select: { name: true, phone: true, whatsappPhone: true, email: true } }, pipeline: { select: { departmentId: true } } },
+      });
+      if (!lead || lead.archived || lead.status !== 'OPEN') { await finish('SKIPPED', 'lead não está mais aberto'); continue; }
+      if ((action.config as any)?.skipIfClientContacted !== false) {
+        const falou = await prisma.message.findFirst({ where: { leadId: job.leadId, createdAt: { gte: job.createdAt }, direction: { in: ['INBOUND', 'OUTBOUND'] } }, select: { direction: true } });
+        if (falou) { await finish('SKIPPED', falou.direction === 'INBOUND' ? 'o cliente já falou com a gente: janela de 24 h aberta, sem gastar template' : 'já houve contato nosso com o cliente'); continue; }
+      }
+      const ok = await executeAction(action, lead, { departmentId: lead.pipeline?.departmentId || undefined, deferredRun: true }, io);
+      await prisma.automationLog.create({ data: { ruleId: rule.id, leadId: job.leadId, success: ok, actionsResult: [{ type: action.type, ok, deferred: true }] as any } }).catch(() => {});
+      await finish(ok ? 'DONE' : 'FAILED', ok ? undefined : 'o envio do template falhou');
+    } catch (err: any) {
+      console.error('[Automation] ação adiada falhou', job.id, err?.message);
+      await finish('FAILED', err?.message || 'erro');
+    }
+  }
 }
 
 function matchesTriggerConfig(rule: { trigger: AutomationTrigger; triggerConfig: unknown }, context: RunContext): boolean {
