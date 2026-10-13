@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { ExternalLink, Landmark, Play, Star } from 'lucide-react';
 import api from '@/lib/api';
@@ -8,28 +8,15 @@ import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { pingExtensions } from '@/lib/credit-extensions';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
-import { BANKS, Badge, STATUS, type Analysis, type Bank } from '@/components/credit/shared';
+import { BANKS, Badge, STATUS, useLeadAnalyses, type Analysis, type Bank } from '@/components/credit/shared';
+import { formatCurrency } from '@/lib/utils';
 
 /* Bloco "Análises de crédito" dentro do card (aba Financiamento). Mostra o último resultado de
  * cada banco, dispara nova análise e escolhe a proposta. Ver a aba /analise-credito. */
 
-interface LeadAnalyses {
-  eligible: boolean;
-  latest: Partial<Record<Bank, Analysis>>;
-  history: Analysis[];
-  chosenId: string | null;
-  participants?: { name1: string; name2: string; inverted: boolean };
-  extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null }>;
-}
-
 export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onChanged?: () => void }) {
   const queryClient = useQueryClient();
-  const { data } = useQuery<LeadAnalyses>({
-    queryKey: ['credit-lead', leadId],
-    queryFn: async () => (await api.get(`/api/credit-analysis/lead/${leadId}`)).data,
-    refetchInterval: 30_000,
-    retry: false,
-  });
+  const { data } = useLeadAnalyses(leadId);
   const [running, setRunning] = useState(false);
   const [banks, setBanks] = useState<Bank[]>(['CREDIMORAR', 'CREDITAS', 'INTER']);
   const [busy, setBusy] = useState(false);
@@ -104,9 +91,19 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
       <div className="space-y-2">
         {BANKS.map((b) => {
           const a = data.latest[b.key];
-          const nums = a?.status === 'APPROVED' || a?.status === 'CONDITIONAL'
-            ? [a.termMonths ? `${a.termMonths} meses` : '', a.rate || ''].filter(Boolean).join(' · ')
-            : '';
+          const approved = a?.status === 'APPROVED' || a?.status === 'CONDITIONAL';
+          const maxParcel = a ? (/parcela m[aá]xima\s*(R\$\s*[\d.]+,\d{2})/i.exec(a.detail || '') || [])[1] : '';
+          const second = a?.holderName && data.participants?.name1 && a.holderName.trim().toLowerCase() !== data.participants.name1.trim().toLowerCase() ? a.holderName : '';
+          // "Carta de aprovação": valor, prazo, taxa, parcelas, nº da proposta e em nome de quem saiu (substitui os campos soltos de Financiamento).
+          const letter: [string, string][] = approved && a ? ([
+            ['Valor aprovado', a.approvedValue ? formatCurrency(a.approvedValue) : ''],
+            ['Prazo', a.termMonths ? `${a.termMonths} meses` : ''],
+            ['Taxa', a.rate || ''],
+            ['1ª parcela', a.firstInstallment ? formatCurrency(a.firstInstallment) : ''],
+            ['Última parcela', a.lastInstallment ? formatCurrency(a.lastInstallment) : ''],
+            ['Parcela máxima', !a.firstInstallment && maxParcel ? maxParcel : ''],
+            ['Proposta nº', a.proposalNumber || ''],
+          ] as [string, string][]).filter(([, v]) => v) : [];
           return (
             <div key={b.key} className="text-xs">
               <div className="flex items-center justify-between gap-2">
@@ -115,7 +112,12 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
                   <Badge a={a} />
                 </div>
               </div>
-              {nums && <div className="text-[11px] text-slate-500 mt-0.5">{nums}</div>}
+              {second && <div className="text-[11px] text-amber-600 font-medium mt-0.5">Aprovado no nome de {second} (2º participante)</div>}
+              {letter.length > 0 && (
+                <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] rounded-md bg-white border border-af-border px-2 py-1.5">
+                  {letter.map(([k, v]) => <div key={k} className="contents"><dt className="text-slate-400">{k}</dt><dd className="text-slate-700 text-right">{v}</dd></div>)}
+                </dl>
+              )}
               {a && a.status !== 'APPROVED' && a.detail && ['CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE'].includes(a.status) && (
                 <div className="text-[11px] text-slate-400 mt-0.5 line-clamp-2" title={a.detail}>{a.detail}</div>
               )}
@@ -130,6 +132,8 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
           );
         })}
       </div>
+
+      <p className="mt-2 text-[10px] leading-snug text-slate-400">Instituição, taxa, parcelas e nº da proposta vêm daqui (as análises dos bancos): são os dados verdadeiros usados no aviso de aprovação.</p>
 
       <div className="mt-3 pt-2 border-t border-af-border">
         {!running ? (

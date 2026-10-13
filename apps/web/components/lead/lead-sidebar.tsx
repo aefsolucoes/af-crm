@@ -6,6 +6,7 @@ import api from '@/lib/api';
 import { Plus, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
 import { cn, formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate, formatMoneyDisplay } from '@/lib/utils';
 import { LeadCreditAnalysis } from './lead-credit-analysis';
+import { useLeadAnalyses, FIELDS_FROM_ANALYSES } from '@/components/credit/shared';
 
 interface LeadSidebarProps {
   lead: LeadDetail;
@@ -204,7 +205,11 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
   const allTabs = ['Principal', ...fieldDefs
     .filter(f => f.tab !== 'Principal')
     .reduce<string[]>((acc, f) => { if (!acc.includes(f.tab)) acc.push(f.tab); return acc; }, [])];
-  const fieldsForTab = fieldDefs.filter(f => f.tab === activeTab).sort((a, b) => a.order - b.order);
+  // Cliente com análise de crédito: a carta de aprovação (bloco acima dos campos) já mostra instituição, taxa, parcelas e nº da proposta —
+  // esses campos soltos não aparecem de novo (o dado continua guardado; cliente sem análise segue com os campos).
+  const { data: creditAnalyses } = useLeadAnalyses(lead.id);
+  const hideDuplicated = activeTab === 'Financiamento' && !!creditAnalyses && creditAnalyses.history.length > 0;
+  const fieldsForTab = fieldDefs.filter(f => f.tab === activeTab && !(hideDuplicated && FIELDS_FROM_ANALYSES.includes(f.key))).sort((a, b) => a.order - b.order);
 
   const saveFieldValue = async (key: string, value: string) => {
     setSaving(true);

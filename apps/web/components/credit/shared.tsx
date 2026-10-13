@@ -1,4 +1,6 @@
 import { Star } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import api from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
 
 /* Pedaços compartilhados entre a aba Análise de Crédito e o bloco de análises dentro do card. */
@@ -50,6 +52,28 @@ export function overrideSummary(o?: OverrideData): string {
     o.rendaParticipante ? `renda 2º ${o.rendaParticipante}` : '', o.prazo ? `prazo ${o.prazo}` : '', o.inverter ? 'participantes invertidos' : '',
   ].filter(Boolean).join(' · ');
 }
+
+export interface LeadAnalyses {
+  eligible: boolean;
+  latest: Partial<Record<Bank, Analysis>>;
+  history: Analysis[];
+  chosenId: string | null;
+  participants?: { name1: string; name2: string; inverted: boolean };
+  extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null }>;
+}
+
+/** Análises de crédito de UM card (compartilhado entre o bloco do card e a barra lateral). */
+export function useLeadAnalyses(leadId: string) {
+  return useQuery<LeadAnalyses>({
+    queryKey: ['credit-lead', leadId],
+    queryFn: async () => (await api.get(`/api/credit-analysis/lead/${leadId}`)).data,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+}
+
+/** Campos soltos de Financiamento que a "carta de aprovação" (análises) já mostra — somem do card quando o cliente tem análise. */
+export const FIELDS_FROM_ANALYSES = ['instituicao', 'num_proposta', 'taxa_efetiva', 'indexador', 'primeira_parcela', 'ultima_parcela'];
 
 export function ago(d: string | null | undefined): string {
   if (!d) return '';

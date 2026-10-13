@@ -379,26 +379,91 @@ async function whatsappWindowOpen(leadId: string): Promise<boolean> {
   return !!last && Date.now() - last.createdAt.getTime() < WINDOW_MS;
 }
 
-/** O que seria enviado: texto com TODAS as opções aprovadas (cada uma com o nome em que saiu, se for o 2º participante) e como vai. */
-export async function previewApprovalNotice(leadId: string): Promise<{ text: string; options: number; mode: 'text' | 'template' } | null> {
-  const built = await optionsFromAnalyses(leadId).catch(() => null);
-  if (!built) return null;
-  const text = renderApprovalText(await withHolders(leadId, built));
-  return { text, options: built.length, mode: (await whatsappWindowOpen(leadId)) ? 'text' : 'template' };
+const norm = (v: string) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+/** Lista de documentos padrão do Home Equity (Resposta rápida "Documentos Home Equity") do setor do card. */
+async function docsTemplate(accountId: string) {
+  return prisma.messageTemplate.findFirst({ where: { accountId, name: { contains: 'Documentos Home Equity', mode: 'insensitive' } }, select: { body: true } });
 }
 
-/** Manda o aviso: dentro da janela de 24 h vai o texto com as opções; fora dela vai o template de aprovação e o texto completo sai
- *  quando o cliente tocar em "Sim, quero saber" (já montado a partir das análises, com os nomes certos). */
-export async function sendApprovalNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any }): Promise<{ ok: boolean; mode?: 'text' | 'template'; options?: number; error?: string }> {
+/** A lista de documentos já foi mandada pra esse cliente nos últimos dias? (não manda duas vezes) */
+async function docsAlreadySent(leadId: string): Promise<boolean> {
+  return (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 5 * 86_400_000) }, content: { contains: 'precisaremos da seguinte documentação' } } })) > 0;
+}
+
+/** Etapa "Aguardando Documentação" do funil do card, se o card ainda está ANTES dela. */
+async function awaitingDocsMove(leadId: string): Promise<{ from: string; to: string; targetId: string } | null> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipelineId: true, stageId: true } });
+  if (!lead) return null;
+  const stages = await prisma.stage.findMany({ where: { pipelineId: lead.pipelineId }, orderBy: { order: 'asc' }, select: { id: true, name: true, order: true } });
+  const target = stages.find((st) => /^aguardando document/i.test(norm(st.name)));
+  const current = stages.find((st) => st.id === lead.stageId);
+  if (!target || !current || current.order >= target.order) return null;
+  return { from: current.name, to: target.name, targetId: target.id };
+}
+
+/** O que seria enviado: texto com TODAS as opções aprovadas (cada uma com o nome em que saiu, se for o 2º participante) e como vai. */
+export async function previewApprovalNotice(leadId: string): Promise<{ text: string; options: number; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null } | null> {
+  const built = await optionsFromAnalyses(leadId).catch(() => null);
+  if (!built) return null;
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true } });
+  const text = renderApprovalText(await withHolders(leadId, built));
+  const [mode, tpl, already, move] = await Promise.all([
+    whatsappWindowOpen(leadId), lead ? docsTemplate(lead.accountId) : null, docsAlreadySent(leadId), awaitingDocsMove(leadId),
+  ]);
+  return { text, options: built.length, mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null };
+}
+
+/** Manda a lista de documentos (Resposta rápida) se ainda não foi e se a janela de 24 h estiver aberta. */
+async function sendDocsList(p: { accountId: string; leadId: string; userId?: string; io?: any }): Promise<boolean> {
+  if (!(await whatsappWindowOpen(p.leadId)) || (await docsAlreadySent(p.leadId))) return false;
+  const tpl = await docsTemplate(p.accountId);
+  if (!tpl) return false;
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const d = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: tpl.body, userId: p.userId, io: p.io });
+  return !!d.success;
+}
+
+/** Move pra Aguardando Documentação (mesmo caminho do botão de mover estágio: nota, atividade e automações da etapa). */
+async function moveToAwaitingDocs(p: { accountId: string; leadId: string; userId?: string; io?: any }): Promise<string | null> {
+  const mv = await awaitingDocsMove(p.leadId);
+  if (!mv) return null;
+  const lead = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { name: true } });
+  const userName = p.userId ? (await prisma.user.findUnique({ where: { id: p.userId }, select: { name: true } }))?.name || 'Usuário' : 'Análise automática';
+  const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+  await updateLeadStage(p.leadId, p.accountId, mv.targetId);
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'STAGE_CHANGE', content: `Estágio: "${mv.from}" → "${mv.to}" — por ${userName} (cliente avisado da aprovação)` } });
+  logActivity({ accountId: p.accountId, userId: p.userId || null, userName, action: 'lead_stage_changed', leadId: p.leadId, leadName: lead?.name || '', summary: `moveu de "${mv.from}" para "${mv.to}" (aviso de aprovação)` });
+  const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
+  await runAutomations({ accountId: p.accountId, trigger: 'STAGE_CHANGE', leadId: p.leadId, io: p.io, context: { newStageId: mv.targetId } }).catch((e: any) => console.error('[Aviso de aprovação] automações da etapa:', e?.message));
+  return mv.to;
+}
+
+/** Só a parte que vem DEPOIS do aviso (lista de documentos + mover a etapa) — pra completar um aviso que já foi enviado sem elas. */
+export async function finishApprovalFollowUp(p: { accountId: string; leadId: string; userId?: string; io?: any; sendDocs?: boolean; moveStage?: boolean }): Promise<{ docsSent: boolean; moved: string | null }> {
+  const docsSent = p.sendDocs === false ? false : await sendDocsList(p);
+  const moved = p.moveStage === false ? null : await moveToAwaitingDocs(p);
+  return { docsSent, moved };
+}
+
+/** Manda o aviso. Dentro da janela de 24 h vai o texto com as opções (e, se marcado, a lista de documentos); fora dela vai o template
+ *  de aprovação e o texto completo sai quando o cliente tocar em "Sim, quero saber". Se marcado, move o card pra Aguardando Documentação
+ *  (dispara as automações da etapa: IA ligada e e-mail "pré-análise aprovada"). */
+export async function sendApprovalNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; sendDocs?: boolean; moveStage?: boolean }): Promise<{ ok: boolean; mode?: 'text' | 'template'; options?: number; docsSent?: boolean; moved?: string | null; error?: string }> {
+  const sendDocs = p.sendDocs !== false;
+  const moveStage = p.moveStage !== false;
   const preview = await previewApprovalNotice(p.leadId);
   if (!preview) return { ok: false, error: 'Não há opção aprovada com valor pra avisar o cliente (preencha o resultado da análise).' };
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true } } } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
+  let docsSent = false;
   if (preview.mode === 'text') {
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: preview.text, userId: p.userId, io: p.io });
     if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
+    // Lista de documentos (a mesma Resposta rápida da equipe), logo depois do aviso — uma vez só.
+    if (sendDocs) { await new Promise((resolve) => setTimeout(resolve, 2500)); docsSent = await sendDocsList(p); }
   } else {
     const tpl = await approvalTemplate(p.accountId);
     if (!tpl.approved) return { ok: false, error: 'A janela de 24 h do WhatsApp fechou e o template de aprovação ainda não foi aprovado pela Meta.' };
@@ -409,7 +474,8 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
     if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar o template' };
     await prisma.lead.update({ where: { id: p.leadId }, data: { aiAutoReplyActive: true, customFields: { ...cf, _aprovTemplateAt: new Date().toISOString() } } });
   }
+  const moved = moveStage ? await moveToAwaitingDocs(p) : null;
   // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
-  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado das opções de crédito (${preview.options} opç${preview.options === 1 ? 'ão' : 'ões'}) — ${preview.mode === 'text' ? 'texto enviado' : 'template enviado; o texto completo sai quando ele tocar em "Sim, quero saber"'}.` } });
-  return { ok: true, mode: preview.mode, options: preview.options };
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado das opções de crédito (${preview.options} opç${preview.options === 1 ? 'ão' : 'ões'}) — ${preview.mode === 'text' ? 'texto enviado' : 'template enviado; o texto completo sai quando ele tocar em "Sim, quero saber"'}${docsSent ? '; lista de documentos enviada' : ''}${moved ? `; card movido para ${moved}` : ''}.` } });
+  return { ok: true, mode: preview.mode, options: preview.options, docsSent, moved };
 }

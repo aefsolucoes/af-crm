@@ -97,7 +97,7 @@ router.get('/notify-client/preview', async (req: AuthRequest, res: Response) => 
 });
 router.post('/notify-client', async (req: AuthRequest, res: Response) => {
   try {
-    const out = await sendApprovalNoticeNow({ accountId: req.user!.accountId, leadId: String(req.body?.leadId || ''), userId: req.user!.id, io: io(req) });
+    const out = await sendApprovalNoticeNow({ accountId: req.user!.accountId, leadId: String(req.body?.leadId || ''), userId: req.user!.id, io: io(req), sendDocs: req.body?.sendDocs !== false, moveStage: req.body?.moveStage !== false });
     if (!out.ok) return res.status(400).json({ error: out.error });
     emit(req, { leadId: String(req.body?.leadId || '') });
     res.json(out);
