@@ -313,11 +313,16 @@ async function withHolders(leadId: string, options: ApprovalOption[]): Promise<A
  *  é a fonte preferida; se não houver, cai nas notas e depois no card. */
 async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | null> {
   const rows = await prisma.creditAnalysis.findMany({
-    where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
+    where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
     orderBy: { createdAt: 'asc' },
   });
+  // O veredito MAIS RECENTE de cada banco vale: se depois de aprovado o banco negou (ex.: Creditas nega a análise seguinte à
+  // pré-qualificação), não oferece mais essa opção ao cliente.
   const byBank = new Map<string, (typeof rows)[number]>();
-  for (const r of rows) byBank.set(r.bank, r);
+  for (const r of rows) {
+    if (r.status === 'REJECTED') byBank.delete(r.bank);
+    else if (r.approvedValue != null) byBank.set(r.bank, r);
+  }
   const label: Record<string, string> = { INTER: 'Banco Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
   const options = Array.from(byBank.values())
     .sort((a, b) => (b.netValue || b.approvedValue || 0) - (a.netValue || a.approvedValue || 0))
