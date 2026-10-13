@@ -157,6 +157,28 @@ export async function remarketingStatus(accountId: string) {
     };
   });
   const sentToday = leads.filter((l) => { const cf = (l.customFields || {}) as Cf; return cf._rmkLastAt && new Date(cf._rmkLastAt) >= dayStartUtc; }).length;
+
+  // Quem respondeu: quando e o quê (1ª mensagem do cliente depois de entrar no remarketing — mesmo critério que encerra o rodízio).
+  const repliedRows = rows.filter((r) => r.end === 'respondeu');
+  if (repliedRows.length) {
+    const minStart = new Date(Math.min(...repliedRows.map((r) => new Date(r.startedAt).getTime())));
+    const msgs = await prisma.message.findMany({
+      where: { leadId: { in: repliedRows.map((r) => r.id) }, direction: 'INBOUND', createdAt: { gt: minStart } },
+      orderBy: { createdAt: 'asc' },
+      select: { leadId: true, createdAt: true, content: true },
+    });
+    const first = new Map<string, { at: Date; text: string }>();
+    for (const m of msgs) {
+      const row = repliedRows.find((r) => r.id === m.leadId);
+      if (!row || first.has(m.leadId) || m.createdAt <= new Date(row.startedAt)) continue;
+      first.set(m.leadId, { at: m.createdAt, text: String(m.content || '').replace(/\s+/g, ' ').trim().slice(0, 140) });
+    }
+    for (const r of repliedRows) {
+      const f = first.get(r.id);
+      (r as any).repliedAt = f?.at.toISOString() || null;
+      (r as any).replyText = f ? f.text || '(mídia/áudio)' : null;
+    }
+  }
   return {
     rows,
     summary: {

@@ -18,6 +18,7 @@ interface StageOption { id: string; name: string; department: string; eligible: 
 interface Row {
   id: string; name: string; department: string; stage: string; step: number; active: boolean; paused: boolean;
   end: string | null; startedAt: string; lastAt: string | null; nextAt: string | null;
+  repliedAt?: string | null; replyText?: string | null;
 }
 interface Status {
   rows: Row[];
@@ -40,6 +41,11 @@ const END_LABEL: Record<string, string> = {
   'bloqueou marketing': 'Bloqueou mensagens de marketing', 'sem WhatsApp': 'Número sem WhatsApp',
 };
 
+function fmtDateTime(d: string | null | undefined): string {
+  if (!d) return '—';
+  return new Date(d).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
 function fmt(d: string | null): string {
   if (!d) return '—';
   return new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
@@ -61,7 +67,7 @@ export default function RemarketingPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [filter, setFilter] = useState<'ativos' | 'todos'>('ativos');
+  const [filter, setFilter] = useState<'ativos' | 'responderam' | 'todos'>('ativos');
 
   const total = useMemo(() => (stages || []).filter((s) => selected.includes(s.id)).reduce((n, s) => n + s.eligible, 0), [stages, selected]);
   const byDept = useMemo(() => {
@@ -69,7 +75,9 @@ export default function RemarketingPage() {
     for (const s of stages || []) m.set(s.department, [...(m.get(s.department) || []), s]);
     return Array.from(m.entries());
   }, [stages]);
-  const rows = (status?.rows || []).filter((r) => filter === 'todos' || r.active);
+  const rows = (status?.rows || [])
+    .filter((r) => filter === 'todos' || (filter === 'responderam' ? r.end === 'respondeu' : r.active))
+    .sort((a, b) => (filter === 'responderam' ? new Date(b.repliedAt || 0).getTime() - new Date(a.repliedAt || 0).getTime() : 0));
 
   function refresh() {
     queryClient.invalidateQueries({ queryKey: ['remarketing-status'] });
@@ -135,10 +143,17 @@ export default function RemarketingPage() {
                 ['No rodízio', s.active], ['Aguardando 1ª', s.waitingFirst], ['Receberam 1ª', s.byStep[0]], ['Receberam 2ª', s.byStep[1]],
                 ['Receberam 3ª', s.byStep[2]], ['Responderam', s.replied], ['Foram pra Perdido', s.lost],
               ].map(([label, n]) => (
-                <div key={label as string} className="rounded-lg bg-slate-50 py-2">
-                  <div className="text-lg font-semibold text-slate-800">{n as number}</div>
-                  <div className="text-[11px] text-slate-400">{label as string}</div>
-                </div>
+                label === 'Responderam' ? (
+                  <button key={label as string} onClick={() => setFilter('responderam')} title="Ver quem respondeu" className={`rounded-lg py-2 transition-colors ${filter === 'responderam' ? 'bg-emerald-50 ring-1 ring-emerald-300' : 'bg-slate-50 hover:bg-emerald-50'}`}>
+                    <div className="text-lg font-semibold text-emerald-600">{n as number}</div>
+                    <div className="text-[11px] text-slate-500 underline decoration-dotted">{label as string}</div>
+                  </button>
+                ) : (
+                  <div key={label as string} className="rounded-lg bg-slate-50 py-2">
+                    <div className="text-lg font-semibold text-slate-800">{n as number}</div>
+                    <div className="text-[11px] text-slate-400">{label as string}</div>
+                  </div>
+                )
               ))}
             </div>
             {s.paused && <p className="mt-3 text-xs text-amber-600">Envios pausados — ninguém recebe mensagem até retomar.</p>}
@@ -189,15 +204,15 @@ export default function RemarketingPage() {
           <div className="flex items-center justify-between px-4 py-3 border-b border-af-border">
             <h2 className="text-sm font-semibold text-slate-800">Clientes</h2>
             <div className="flex gap-1 text-xs">
-              {(['ativos', 'todos'] as const).map((f) => (
+              {(['ativos', 'responderam', 'todos'] as const).map((f) => (
                 <button key={f} onClick={() => setFilter(f)} className={`px-2.5 py-1 rounded-lg ${filter === f ? 'bg-slate-100 text-slate-800 font-medium' : 'text-slate-400'}`}>
-                  {f === 'ativos' ? 'No rodízio' : 'Todos'}
+                  {f === 'ativos' ? 'No rodízio' : f === 'responderam' ? `Responderam (${status?.summary.replied ?? 0})` : 'Todos'}
                 </button>
               ))}
             </div>
           </div>
           {rows.length === 0 ? (
-            <div className="text-center py-10 text-slate-400 text-sm">Ninguém {filter === 'ativos' ? 'no rodízio agora' : 'passou pelo remarketing ainda'}.</div>
+            <div className="text-center py-10 text-slate-400 text-sm">{filter === 'ativos' ? 'Ninguém no rodízio agora.' : filter === 'responderam' ? 'Ninguém respondeu ao remarketing ainda.' : 'Ninguém passou pelo remarketing ainda.'}</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[560px]">
@@ -205,10 +220,19 @@ export default function RemarketingPage() {
                   <tr className="text-left text-xs text-slate-400 border-b border-af-border">
                     <th className="px-4 py-2.5 font-medium">Cliente</th>
                     <th className="px-4 py-2.5 font-medium">Estágio</th>
-                    <th className="px-4 py-2.5 font-medium">Mensagens</th>
-                    <th className="px-4 py-2.5 font-medium">Última</th>
-                    <th className="px-4 py-2.5 font-medium">Próxima</th>
-                    <th className="px-4 py-2.5 font-medium">Situação</th>
+                    {filter === 'responderam' ? (
+                      <>
+                        <th className="px-4 py-2.5 font-medium">Respondeu em</th>
+                        <th className="px-4 py-2.5 font-medium">O que respondeu</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="px-4 py-2.5 font-medium">Mensagens</th>
+                        <th className="px-4 py-2.5 font-medium">Última</th>
+                        <th className="px-4 py-2.5 font-medium">Próxima</th>
+                        <th className="px-4 py-2.5 font-medium">Situação</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-af-border">
@@ -216,14 +240,23 @@ export default function RemarketingPage() {
                     <tr key={r.id} className="hover:bg-slate-50 cursor-pointer transition-colors" onClick={() => router.push(`/inbox?leadId=${r.id}`)}>
                       <td className="px-4 py-2.5 font-medium text-slate-800">{r.name}</td>
                       <td className="px-4 py-2.5 text-slate-500 text-xs">{r.department} · {r.stage}</td>
-                      <td className="px-4 py-2.5 text-slate-600">{r.step}/3</td>
-                      <td className="px-4 py-2.5 text-slate-500 text-xs">{fmt(r.lastAt)}</td>
-                      <td className="px-4 py-2.5 text-slate-500 text-xs">{r.active ? (r.step === 0 ? 'na fila' : r.step >= 3 ? `${fmt(r.nextAt)} (Perdido)` : fmt(r.nextAt)) : '—'}</td>
-                      <td className="px-4 py-2.5 text-xs">
+                      {filter === 'responderam' ? (
+                        <>
+                          <td className="px-4 py-2.5 text-slate-500 text-xs whitespace-nowrap">{fmtDateTime(r.repliedAt)}</td>
+                          <td className="px-4 py-2.5 text-slate-600 text-xs max-w-[320px] truncate" title={r.replyText || ''}>{r.replyText || '—'}</td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="px-4 py-2.5 text-slate-600">{r.step}/3</td>
+                          <td className="px-4 py-2.5 text-slate-500 text-xs">{fmt(r.lastAt)}</td>
+                          <td className="px-4 py-2.5 text-slate-500 text-xs">{r.active ? (r.step === 0 ? 'na fila' : r.step >= 3 ? `${fmt(r.nextAt)} (Perdido)` : fmt(r.nextAt)) : '—'}</td>
+                          <td className="px-4 py-2.5 text-xs">
                         {r.active
                           ? <span className={r.paused ? 'text-amber-600' : 'text-emerald-600'}>{r.paused ? 'Pausado' : 'No rodízio'}</span>
                           : <span className="text-slate-500">{END_LABEL[r.end || ''] || r.end || '—'}</span>}
                       </td>
+                        </>
+                      )}
                     </tr>
                   ))}
                 </tbody>
