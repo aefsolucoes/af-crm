@@ -195,8 +195,10 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
 export async function claimQueue(db: Db, p: { accountId: string; bank: string; limit?: number; caps?: string[] }) {
   if (!BANK_KEYS.includes(p.bank)) return [];
   const canCheck = !!p.caps?.includes('check');
+  // Em PAUSA GERAL só sai da fila o que uma pessoa pediu (requestedById): reconferências e pedidos automáticos ficam parados.
+  const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { paused: true } }))?.paused;
   const rows = await db.creditAnalysis.findMany({
-    where: { accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }), OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
+    where: { accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }), ...(paused ? { requestedById: { not: null } } : {}), OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
     orderBy: { requestedAt: 'asc' }, take: p.limit || 3,
     select: { id: true, leadId: true, dryRun: true, kind: true, proposalNumber: true, requestedAt: true, lead: { select: { name: true } } },
   });
@@ -249,7 +251,9 @@ type AnalysisRow = NonNullable<Awaited<ReturnType<Db['creditAnalysis']['findFirs
  *  não saiu) agenda essa conferência sozinha. Passou do limite, fica "conferir" pra olhar à mão. */
 async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
   if (row.dryRun) return row;
+  const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: row.accountId }, select: { paused: true } }))?.paused;
   if (row.kind === 'CHECK' && (row.status === 'SENT' || row.status === 'CHECK')) {
+    if (paused) return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: `Conferência automática PAUSADA (pausa geral ligada). Use "Conferir" pra ler de novo. ${String(row.detail || '').slice(0, 300)}` } });
     if (row.attempt < CHECK_MAX_TRIES) {
       const attempt = row.attempt + 1;
       const fast = attempt <= CHECK_FAST_TRIES;
@@ -263,7 +267,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     }
     return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', detail: `Sem resultado depois de ${CHECK_MAX_TRIES} conferências: confira no portal. ${String(row.detail || '').slice(0, 300)}` } });
   }
-  if (row.kind === 'RUN' && row.status === 'SENT' && CHECK_BANKS.includes(row.bank)) {
+  if (row.kind === 'RUN' && row.status === 'SENT' && CHECK_BANKS.includes(row.bank) && !paused) {
     const open = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'CHECK', status: { in: ACTIVE } }, select: { id: true } });
     if (!open) {
       await db.creditAnalysis.create({

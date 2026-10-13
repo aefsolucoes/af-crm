@@ -1221,6 +1221,7 @@ model CreditAutoSetting {
   accountId   String    @id
   enabled     Boolean   @default(false)
   enabledAt   DateTime?
+  paused      Boolean   @default(false) // PAUSA GERAL: nada roda sozinho (CRM e extensões); só o que for pedido na hora, à mão
   updatedById String?
   updatedAt   DateTime  @updatedAt
 }

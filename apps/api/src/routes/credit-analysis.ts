@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
-import { getAutoSetting, setAutoSetting } from '../services/credit-auto.service';
+import { getAutoSetting, setAutoSetting, setPaused } from '../services/credit-auto.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
@@ -119,6 +119,7 @@ router.get('/auto', async (req: AuthRequest, res: Response) => {
 });
 router.put('/auto', async (req: AuthRequest, res: Response) => {
   if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores ligam a análise automática' });
+  try { if (typeof req.body?.paused === 'boolean') return res.json(await setPaused(req.user!.accountId, req.body.paused, req.user!.id)); } catch (err) { return fail(res, err, 'Erro ao salvar a pausa'); }
   try { res.json(await setAutoSetting(req.user!.accountId, req.body?.enabled === true, req.user!.id)); } catch (err) { fail(res, err, 'Erro ao salvar a análise automática'); }
 });
 

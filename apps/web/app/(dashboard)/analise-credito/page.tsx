@@ -112,7 +112,17 @@ export default function AnaliseCreditoPage() {
   const [notify, setNotify] = useState<BoardLead | null>(null);
   const [forceRun, setForceRun] = useState(false);
   const isAdmin = useAuthStore((s) => s.user?.role === 'ADMIN');
-  const { data: auto } = useQuery<{ enabled: boolean; enabledAt: string | null }>({ queryKey: ['credit-auto'], queryFn: async () => (await api.get('/api/credit-analysis/auto')).data });
+  const { data: auto } = useQuery<{ enabled: boolean; enabledAt: string | null; paused?: boolean }>({ queryKey: ['credit-auto'], queryFn: async () => (await api.get('/api/credit-analysis/auto')).data });
+  async function togglePause() {
+    const next = !auto?.paused;
+    try {
+      await api.put('/api/credit-analysis/auto', { paused: next });
+      toast(next ? 'PAUSADO: nada roda sozinho. Só o que você pedir na hora.' : 'Pausa desligada', 'success');
+      queryClient.invalidateQueries({ queryKey: ['credit-auto'] });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao salvar a pausa', 'error');
+    }
+  }
   async function toggleAuto() {
     const next = !auto?.enabled;
     if (next && !window.confirm('Ligar a análise automática?\n\nDaqui pra frente, todo cliente que cair na Pré-Análise do Home Equity (proposta preenchida) e tiver os dados conferidos pela IA vai ser enviado sozinho para os 3 bancos. Se o 1º participante vier reprovado ou aprovado a menor, roda no 2º. Quando as respostas saírem, o cliente recebe no WhatsApp as opções aprovadas para escolher. Cards que já estão na Pré-Análise não entram.')) return;
@@ -258,8 +268,12 @@ export default function AnaliseCreditoPage() {
             </p>
           </div>
           {isAdmin ? (
-            <Button variant={auto?.enabled ? 'secondary' : 'primary'} onClick={toggleAuto}>{auto?.enabled ? 'Desligar' : 'Ligar'}</Button>
+            <div className="flex items-center gap-2">
+              <Button variant={auto?.paused ? 'primary' : 'secondary'} onClick={togglePause} title="Para tudo que roda sozinho (análise automática, reconferências e as extensões por conta própria). Só roda o que você pedir na hora, um de cada vez.">{auto?.paused ? '▶ Retomar automático' : '⏸ Pausar automático'}</Button>
+              <Button variant={auto?.enabled ? 'secondary' : 'primary'} onClick={toggleAuto}>{auto?.enabled ? 'Desligar' : 'Ligar'}</Button>
+            </div>
           ) : <span className="text-xs text-slate-400">Só administradores ligam.</span>}
+          {auto?.paused && <div className="basis-full text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">⏸ PAUSA GERAL LIGADA — nada roda sozinho (nem a análise automática, nem as reconferências, nem as extensões por conta própria). Só o que você pedir na hora (Rodar análise / Conferir) é executado.</div>}
         </div>
 
         {/* Disparo */}

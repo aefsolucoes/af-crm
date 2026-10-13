@@ -24,7 +24,17 @@ const norm = (s: string) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g,
 
 export async function getAutoSetting(accountId: string) {
   const s = await prisma.creditAutoSetting.findUnique({ where: { accountId } });
-  return { enabled: !!s?.enabled, enabledAt: s?.enabledAt || null };
+  return { enabled: !!s?.enabled, enabledAt: s?.enabledAt || null, paused: !!s?.paused };
+}
+
+/** Pausa geral: nada roda sozinho (nem a análise automática do CRM, nem as reconferências, nem as extensões por conta própria). */
+export async function setPaused(accountId: string, paused: boolean, userId?: string) {
+  await prisma.creditAutoSetting.upsert({
+    where: { accountId },
+    create: { accountId, enabled: false, paused, updatedById: userId || null },
+    update: { paused, updatedById: userId || null },
+  });
+  return getAutoSetting(accountId);
 }
 
 export async function setAutoSetting(accountId: string, enabled: boolean, userId?: string) {
@@ -186,7 +196,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
   if (running) return;
   running = true;
   try {
-    const settings = await prisma.creditAutoSetting.findMany({ where: { enabled: true, enabledAt: { not: null } } });
+    const settings = await prisma.creditAutoSetting.findMany({ where: { enabled: true, paused: false, enabledAt: { not: null } } });
     for (const s of settings) {
       await startNewLeads(s.accountId, s.enabledAt!).catch((e) => console.error('[Análise automática] início:', e?.message));
       await cascadeToSecond(s.accountId).catch((e) => console.error('[Análise automática] 2º participante:', e?.message));

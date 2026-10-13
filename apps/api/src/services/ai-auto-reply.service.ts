@@ -189,6 +189,7 @@ const MOVE_STAGE_RULES = `MOVER O CARD DE ETAPA ("moveToStage") — só estes va
 - "Pré-Análise": o cliente confirmou que já preencheu a proposta/formulário manual completo, OU você já reuniu nesta conversa todos os dados pessoais necessários pra uma pré-análise (nome, telefone, CPF, renda etc. de todos os participantes). Só use se essa condição foi REALMENTE atendida — não adiante.
 - "Prospecção": raramente necessário (o lead já começa nessa etapa).
 - "Venda Futura": o cliente quer seguir, mas não agora — disse que vai deixar pra mais pra frente, pra outro mês/ano, depois de algum evento.
+- "Aguardando Documentação": o CLIENTE falou da CAIXA (quer fazer/aprovar pela CAIXA) — você explica que a CAIXA pede a documentação ANTES (regra da CAIXA nas REGRAS OBRIGATÓRIAS) e move o card junto com a explicação, sem perguntar nada (Fabio 13/10). NUNCA use só porque a proposta lista a CAIXA (toda proposta lista) nem por causa de outros bancos: só quando o próprio cliente falar da CAIXA. "moveReason": "Cliente quer a CAIXA: ela pede a documentação antes da análise".
 Sempre que mover de etapa, preencha "moveReason" com o motivo em 1 frase (vai pra uma anotação no card).`;
 
 /** "Perdido" é o STATUS do lead (Aberto/Ganho/Perdido, mesmo botão "Marcar
