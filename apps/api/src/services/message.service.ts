@@ -217,7 +217,7 @@ export async function findOrCreateLeadByPhone(
 /**
  * Envia uma mensagem WhatsApp de saída para o lead pela API Oficial da Meta,
  * grava o registro e emite os eventos de socket — mesma lógica usada tanto
- * pelo envio manual (Inbox) quanto pelo agente de IA e o SalesBot.
+ * pelo envio manual (Inbox) quanto pelo agente de IA.
  */
 export async function sendOutboundWhatsApp(params: {
   accountId: string;
@@ -232,7 +232,7 @@ export async function sendOutboundWhatsApp(params: {
   replyToContent?: string;
   replyToSender?: string;
   /** Botões de resposta rápida (ex.: ["Sim","Não"], máx. 3) — usado pelo
-   *  SalesBot e pelas Respostas rápidas com botão. Nunca junto com `ctaButton`
+   *  Respostas rápidas com botão. Nunca junto com `ctaButton`
    *  — a API do WhatsApp só aceita um tipo por mensagem avulsa. */
   buttons?: string[];
   /** Botão único de link (Respostas rápidas com botão "URL"). */

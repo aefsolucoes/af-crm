@@ -4,9 +4,9 @@ import { generateAiAutoReply } from './ai-auto-reply.service';
 import { applyAiExtractedActions } from './ai-shared.service';
 import { logActivity } from './activity.service';
 import { normalizeClientName } from '../lib/text';
-// maybeSalesBotStep/runAutomations/maybeMessageReceivedAutomations: require()
-// tardio (dentro da função, não aqui em cima) — salesbot.service.ts e
-// automation.service.ts importam de volta este arquivo (pra mandar
+// runAutomations/maybeMessageReceivedAutomations: require()
+// tardio (dentro da função, não aqui em cima) — automation.service.ts
+// importa de volta este arquivo (pra mandar
 // mensagem), um import estático nos dois sentidos criaria dependência
 // circular.
 
@@ -486,7 +486,7 @@ export async function sendWhatsAppReaction(
 }
 
 /** Envia uma mensagem com até 3 botões de resposta rápida (interactive reply
- *  buttons) — usado pelo SalesBot (ex.: "Sim"/"Não" clicáveis). Diferente de
+ *  buttons) — usado pelas Respostas rápidas com botão (ex.: "Sim"/"Não" clicáveis). Diferente de
  *  template, NÃO precisa aprovação da Meta (é uma mensagem de texto comum
  *  com botões). */
 export async function sendWhatsAppButtonsMessage(
@@ -1008,7 +1008,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
 
     for (const msg of value.messages) {
       const mediaInfo = getCloudApiMediaInfo(msg);
-      // Clique em botão de resposta rápida (ex.: Sim/Não do SalesBot) — antes
+      // Clique em botão de resposta rápida (ex.: Sim/Não de uma Resposta rápida) — antes
       // disto, uma resposta assim era descartada inteira (nem virava Message),
       // por não ser nem "text" nem mídia suportada.
       // Botão de TEMPLATE (ex.: "Tenho interesse" das boas-vindas) chega como
@@ -1217,12 +1217,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       // verdade, não mídia. Template tem prioridade sobre a resposta de IA.
       const textForFlow = text;
       if ((msg.type === 'text' || buttonReplyTitle || voiceTranscript) && text) {
-        // Áudio transcrito: o fluxo (IA, SalesBot, gatilhos) recebe o que foi falado.
+        // Áudio transcrito: o fluxo (IA, gatilhos) recebe o que foi falado.
         const text = voiceTranscript ? `(áudio) ${voiceTranscript}` : textForFlow;
-        // SalesBot tem prioridade — se uma resposta continua um fluxo em
-        // andamento (ou dispara um novo por palavra-chave), template/IA não
-        // entram em cima da mesma mensagem (mesma regra de exclusividade que
-        // já existe entre template e IA logo abaixo).
         // "Tenho interesse" no botão do template de boas-vindas → link da
         // proposta manual do produto do card (pedido do Fabio 26/09). Quando
         // manda, nada mais responde essa mensagem (nem a IA).
@@ -1242,9 +1238,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         // (Alexandre Barutti 27/09: duas confirmações seguidas).
         const formAlreadyAcknowledged = formAdvanced || await isSiteFormAlreadyAcknowledged(leadId, text);
         if (formAlreadyAcknowledged) console.log(`[Formulário] ${leadId}: proposta pelo WhatsApp já confirmada (chegou antes por e-mail) — sem resposta`);
-        const { maybeSalesBotStep } = require('./salesbot.service') as typeof import('./salesbot.service');
-        const botHandled = interestHandled || formAlreadyAcknowledged || await maybeSalesBotStep(accountId, leadId, text, io);
-        if (!botHandled) {
+        const alreadyHandled = interestHandled || formAlreadyAcknowledged;
+        if (!alreadyHandled) {
           const templateDisparou = await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
           if (!templateDisparou) {
             const { maybeMessageReceivedAutomations } = require('./automation.service') as typeof import('./automation.service');

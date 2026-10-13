@@ -232,13 +232,6 @@ export interface Conversation {
   pipeline?: { departmentId: string | null } | null;
 }
 
-export interface SalesBot {
-  id: string;
-  name: string;
-  active: boolean;
-  flow: Record<string, unknown>;
-}
-
 export interface ReportSummary {
   totalRevenue: number;
   newLeads: number;

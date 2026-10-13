@@ -9,7 +9,6 @@ export const PERMISSION_KEYS = [
   'inbox_view',    // ver as conversas
   'inbox_reply',   // enviar mensagens
   'tasks',         // ver e gerenciar tarefas
-  'salesbot',      // criar/editar automações de mensagem
   'templates',     // gerenciar modelos de mensagem
   'automations',   // configurar regras/automações
   'finance',       // ver/gerenciar o financeiro

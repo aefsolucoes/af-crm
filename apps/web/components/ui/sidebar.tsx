@@ -9,7 +9,7 @@ import { useFunilSectorStore } from '@/store/funil-sector.store';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
-  LayoutDashboard, Kanban, MessageSquare, CheckSquare, Bot, BarChart3, LogOut, Settings,
+  LayoutDashboard, Kanban, MessageSquare, CheckSquare, BarChart3, LogOut, Settings,
   FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown, Megaphone, Landmark,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
@@ -36,7 +36,6 @@ const NAV: NavItem[] = [
   { href: '/email', label: 'E-mail', icon: Mail, perm: 'inbox_view' },
   { href: '/chamadas', label: 'Chamadas', icon: Phone, perm: 'inbox_view' },
   { href: '/tarefas', label: 'Tarefas', icon: CheckSquare, perm: 'tasks' },
-  { href: '/salesbot', label: 'SalesBot', icon: Bot, perm: 'salesbot' },
   { href: '/templates', label: 'Templates', icon: FileText, perm: 'templates' },
   { href: '/automacao', label: 'Automações', icon: Zap, perm: 'automations' },
   { href: '/remarketing', label: 'Remarketing', icon: Megaphone, perm: 'automations' },

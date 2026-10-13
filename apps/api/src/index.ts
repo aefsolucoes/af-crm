@@ -28,7 +28,6 @@ import dashboardNoteRoutes from './routes/dashboard-notes';
 import importRoutes from './routes/import';
 import messageTemplateRoutes from './routes/message-templates';
 import departmentRoutes from './routes/departments';
-import salesBotRoutes from './routes/salesbot';
 import automationRoutes from './routes/automations';
 import pushRoutes from './routes/push';
 import activityRoutes from './routes/activity';
@@ -38,7 +37,6 @@ import remarketingRoutes from './routes/remarketing';
 import creditAnalysisRoutes from './routes/credit-analysis';
 import emailRoutes from './routes/email';
 import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.service';
-import { pollSalesBotRuns } from './services/salesbot.service';
 import { checkInactivityAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { autoStarBigLeads } from './services/auto-star.service';
@@ -96,7 +94,6 @@ app.use('/api/dashboard-notes', dashboardNoteRoutes);
 app.use('/api/import', importRoutes);
 app.use('/api/message-templates', messageTemplateRoutes);
 app.use('/api/departments', departmentRoutes);
-app.use('/api/salesbot', salesBotRoutes);
 app.use('/api/automations', automationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/activity', activityRoutes);
@@ -242,22 +239,9 @@ httpServer.listen(PORT, () => {
     }, SIX_HOURS);
   }, 10 * 60 * 1000);
 
-  // SalesBot: retoma runs pausadas por TEMPO cujo prazo já chegou, e desiste
-  // de runs esperando RESPOSTA cujo prazo de desistência venceu. Cadência
-  // curta (não usa o bloco de 6h acima, que é pra financeiro/Drive) — vive
-  // no Postgres, então um restart do processo só atrasa até o próximo poll,
-  // nunca perde a run.
-  const SALESBOT_POLL_MS = 2 * 60 * 1000;
-  setTimeout(() => {
-    pollSalesBotRuns(io).catch((err) => console.error('[SalesBot] Poll (boot):', err?.message));
-    setInterval(() => {
-      pollSalesBotRuns(io).catch((err) => console.error('[SalesBot] Poll:', err?.message));
-    }, SALESBOT_POLL_MS);
-  }, 60 * 1000);
-
   // Automações — gatilho de inatividade (é granularidade de dias, não faz
-  // sentido pollar rápido como o SalesBot acima). Escalonado 90s após o
-  // boot pra não competir com a restauração de sessões/poll do SalesBot.
+  // sentido pollar rápido). Escalonado 90s após o boot pra não competir com
+  // a restauração de sessões.
   const AUTOMATION_INACTIVITY_POLL_MS = 15 * 60 * 1000;
   setTimeout(() => {
     checkInactivityAutomations(io).catch((err) => console.error('[Automation] Poll inatividade (boot):', err?.message));

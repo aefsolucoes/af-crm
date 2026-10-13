@@ -1,7 +1,6 @@
 import { PrismaClient, AutomationTrigger } from '@prisma/client';
 import { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, sendOutboundEmail } from './message.service';
 import { updateLead, updateLeadStage } from './lead.service';
-import { startSalesBotRun } from './salesbot.service';
 import { logActivity } from './activity.service';
 
 const prisma = new PrismaClient();
@@ -21,7 +20,6 @@ export type AutomationActionType =
   | 'move_stage_by_name'
   | 'add_note'
   | 'add_tag'
-  | 'start_salesbot'
   | 'webhook'
   | 'activate_ai'
   | 'deactivate_ai';
@@ -36,7 +34,7 @@ export interface AutomationAction {
  *  elas presumem que a comunicação deu certo. Mesmo critério já usado em
  *  maybeMessageReceivedAutomations pra decidir se a mensagem foi
  *  "respondida" por automação. */
-const COMMUNICATION_ACTION_TYPES = new Set<AutomationActionType>(['send_message', 'send_template', 'send_email', 'start_salesbot']);
+const COMMUNICATION_ACTION_TYPES = new Set<AutomationActionType>(['send_message', 'send_template', 'send_email']);
 
 /** Contexto do disparo — o que muda de gatilho pra gatilho (texto da
  *  mensagem recebida, novo estágio, tag adicionada). */
@@ -65,7 +63,7 @@ type LeadForActions = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CRUD — espelha salesbot.service.ts
+// CRUD
 // ═══════════════════════════════════════════════════════════════════════════
 
 export async function listAutomationRules(accountId: string) {
@@ -170,7 +168,7 @@ export function fillVariables(text: string, lead: LeadForActions, context?: RunC
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function executeAction(action: AutomationAction, lead: LeadForActions, context: RunContext, io: unknown): Promise<boolean> {
-  if (context.skipClientMessages && ['send_message', 'send_template', 'send_email', 'start_salesbot'].includes(action.type)) {
+  if (context.skipClientMessages && ['send_message', 'send_template', 'send_email'].includes(action.type)) {
     console.log(`[Automation] ação "${action.type}" não enviada: proposta chegou por e-mail — a confirmação sai quando chegar pelo WhatsApp`);
     return false;
   }
@@ -292,12 +290,6 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       await updateLead(lead.id, lead.accountId, { tags });
       return true;
     }
-    case 'start_salesbot': {
-      const botId = String(action.config.botId || '');
-      if (!botId) return false;
-      const result = await startSalesBotRun(lead.accountId, lead.id, botId, io);
-      return result.started;
-    }
     case 'activate_ai': {
       // Liga a IA de auto-resposta (mesmo campo do botão "Ativar IA" da
       // Inbox) — pra automatizar exatamente esse toggle por regra (ex.:
@@ -392,7 +384,7 @@ function matchesTriggerConfig(rule: { trigger: AutomationTrigger; triggerConfig:
  *  pontos de hook ficam em código quente — criação de lead, troca de
  *  estágio). MESSAGE_RECEIVED usa `maybeMessageReceivedAutomations` abaixo
  *  (precisa devolver se "respondeu", pra entrar na exclusividade com
- *  SalesBot/template/IA); INACTIVITY usa `checkInactivityAutomations`
+ *  template/IA); INACTIVITY usa `checkInactivityAutomations`
  *  (é um poll, não um evento). */
 export async function runAutomations(params: {
   accountId: string;
@@ -416,9 +408,9 @@ export async function runAutomations(params: {
 }
 
 /** Gatilho "mensagem recebida" — mesma exclusividade que já existe entre
- *  SalesBot/template/IA (só um responde por mensagem). Só considera a
+ *  template/IA (só um responde por mensagem). Só considera a
  *  mensagem "respondida" se alguma regra tinha ação de responder de verdade
- *  (send_message/send_template/start_salesbot) — uma regra que só adiciona
+ *  (send_message/send_template) — uma regra que só adiciona
  *  tag não deve impedir a IA de responder depois. */
 export async function maybeMessageReceivedAutomations(accountId: string, leadId: string, text: string, io: unknown): Promise<boolean> {
   try {
@@ -439,7 +431,7 @@ export async function maybeMessageReceivedAutomations(accountId: string, leadId:
   }
 }
 
-/** Poll periódico (setInterval em index.ts, igual pollSalesBotRuns) — é
+/** Poll periódico (setInterval em index.ts) — é
  *  granularidade de dias, não de minutos, então não precisa de cadência
  *  curta. Dedupe via AutomationLog: só dispara de novo pra um lead depois
  *  de uma mensagem NOVA resetar o silêncio (evita repetir a cada poll

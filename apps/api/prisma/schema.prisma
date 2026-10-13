@@ -872,6 +872,8 @@ model KnowledgeEntry {
 
 // flow guarda { trigger: { keywords: string[] }, steps: BotStep[] } — ver
 // apps/web/components/salesbot/node-types.tsx pro formato exato de BotStep.
+// DESCONTINUADO (Fabio, 2026-10-14): o SalesBot saiu do CRM (tela, rotas, motor e permissão). Os models/tabelas
+// ficam aqui só pra não apagar dados nem exigir migration; podem ser removidos de vez numa migration de DROP.
 model SalesBot {
   id          String        @id @default(cuid())
   name        String

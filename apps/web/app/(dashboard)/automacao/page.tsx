@@ -11,7 +11,7 @@ import { signatureLineHtml } from '@/lib/signature-links';
 import { Plus, Trash2, Edit2, Zap, ToggleLeft, ToggleRight, Clock, GitBranch, MessageSquare, ArrowRight } from 'lucide-react';
 
 type TriggerType = 'NEW_LEAD' | 'STAGE_CHANGE' | 'TAG_ADDED' | 'INACTIVITY' | 'MESSAGE_RECEIVED' | 'FORM_SUBMITTED';
-type ActionType = 'send_message' | 'send_template' | 'send_email' | 'assign_agent' | 'move_stage' | 'move_stage_by_name' | 'add_note' | 'add_tag' | 'start_salesbot' | 'webhook' | 'activate_ai' | 'deactivate_ai';
+type ActionType = 'send_message' | 'send_template' | 'send_email' | 'assign_agent' | 'move_stage' | 'move_stage_by_name' | 'add_note' | 'add_tag' | 'webhook' | 'activate_ai' | 'deactivate_ai';
 
 interface AutomationAction { type: ActionType; config: Record<string, unknown> }
 
@@ -47,7 +47,6 @@ const ACTION_META: Record<ActionType, { label: string }> = {
   move_stage_by_name: { label: 'Mover pra etapa (por nome, no funil atual)' },
   add_note: { label: 'Adicionar nota' },
   add_tag: { label: 'Adicionar tag' },
-  start_salesbot: { label: 'Iniciar Salesbot' },
   webhook: { label: 'Disparar webhook' },
   activate_ai: { label: 'Ativar IA (auto-resposta)' },
   deactivate_ai: { label: 'Desativar IA (auto-resposta)' },
@@ -64,7 +63,6 @@ interface Stage { id: string; name: string; order: number }
 interface Pipeline { id: string; name: string; stages: Stage[]; department?: { id: string; name: string } | null }
 interface Department { id: string; name: string }
 interface UserOption { id: string; name: string; email: string }
-interface SalesBotOption { id: string; name: string; active: boolean }
 interface MetaTemplate { name: string; status: string; language: string }
 
 const EMPTY_FORM = {
@@ -95,10 +93,6 @@ export default function AutomacaoPage() {
   const { data: users } = useQuery({
     queryKey: ['users'],
     queryFn: async () => (await api.get('/api/users')).data as UserOption[],
-  });
-  const { data: salesBots } = useQuery({
-    queryKey: ['salesbots'],
-    queryFn: async () => (await api.get('/api/salesbot')).data as SalesBotOption[],
   });
   // Sem API Oficial configurada, esse endpoint dá 400 — trata como "sem
   // templates" (fallback pra digitar o nome à mão), não deixa a tela quebrar.
@@ -589,19 +583,6 @@ export default function AutomacaoPage() {
                       onChange={(e) => updateActionConfig(i, 'tag', e.target.value)}
                       placeholder="nome-da-tag"
                     />
-                  )}
-
-                  {action.type === 'start_salesbot' && (
-                    <select
-                      value={String(action.config.botId || '')}
-                      onChange={(e) => updateActionConfig(i, 'botId', e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent bg-white"
-                    >
-                      <option value="">Selecione um SalesBot...</option>
-                      {(salesBots || []).map((b) => (
-                        <option key={b.id} value={b.id}>{b.name}{!b.active ? ' (inativo)' : ''}</option>
-                      ))}
-                    </select>
                   )}
 
                   {action.type === 'webhook' && (

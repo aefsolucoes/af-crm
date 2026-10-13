@@ -115,7 +115,7 @@ export async function updateLead(id: string, accountId: string, data: Partial<{
 
 export async function updateLeadStage(id: string, accountId: string, stageId: string) {
   // Move o FUNIL junto com o estágio. Antes só o stageId era gravado: mover um
-  // lead pra um estágio de outro funil (a automação e o SalesBot deixam
+  // lead pra um estágio de outro funil (a automação deixa
   // escolher qualquer estágio, de qualquer funil) deixava o card com
   // pipelineId de um funil e stageId de outro — some da tela, porque cada
   // funil só mostra os estágios dele. Dentro do mesmo funil nada muda: o
