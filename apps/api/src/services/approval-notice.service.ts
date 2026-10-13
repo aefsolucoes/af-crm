@@ -27,10 +27,6 @@ export const APPROVAL_TEMPLATE = 'credito_aprovado_condicoes';
 const YES_RE = /^sim,?\s*quero saber\b/i;
 const RECENT_DAYS = 3;
 
-function brasiliaHour(): number {
-  return parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hourCycle: 'h23' }).format(new Date()), 10);
-}
-
 let running = false;
 let tplCheck: { at: number; approved: boolean; body: string | null } | null = null;
 
@@ -47,8 +43,6 @@ export async function processApprovalNotices(io: any): Promise<void> {
   if (running) return;
   running = true;
   try {
-    const h = brasiliaHour();
-    if (h < 8 || h >= 20) return;
     const leads = await prisma.lead.findMany({
       where: {
         status: 'OPEN', archived: false, isGroup: false,
