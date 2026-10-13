@@ -66,7 +66,7 @@ router.post('/requests', async (req: AuthRequest, res: Response) => {
   if (!leadIds.length) return res.status(400).json({ error: 'Escolha pelo menos um cliente' });
   if (!banks.length) return res.status(400).json({ error: 'Escolha pelo menos um banco' });
   try {
-    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds, banks, dryRun: req.body?.dryRun === true });
+    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds, banks, dryRun: req.body?.dryRun === true, kind: req.body?.kind === 'CHECK' ? 'CHECK' : 'RUN' });
     emit(req);
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao pedir as análises'); }
@@ -78,7 +78,7 @@ router.get('/queue', async (req: AuthRequest, res: Response) => {
   if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
   try {
     touchExtension(req.user!.accountId, bank, typeof req.query.extId === 'string' ? req.query.extId : null);
-    const items = req.query.claim === '0' ? [] : await claimQueue(prisma, { accountId: req.user!.accountId, bank, limit: Number(req.query.limit) || 3 });
+    const items = req.query.claim === '0' ? [] : await claimQueue(prisma, { accountId: req.user!.accountId, bank, limit: Number(req.query.limit) || 3, caps: typeof req.query.caps === 'string' ? req.query.caps.split(',') : [] });
     if (items.length) emit(req);
     res.json({ items });
   } catch (err) { fail(res, err, 'Erro ao buscar a fila'); }

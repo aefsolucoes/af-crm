@@ -47,7 +47,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   };
   const sentBefore = banks.filter((b) => {
     const a = data.latest[b];
-    return a && ['SENT', 'APPROVED', 'REJECTED', 'CHECK'].includes(a.status);
+    return a && ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CHECK'].includes(a.status);
   });
   const offline = banks.filter((b) => !data.extensions?.[b]?.online);
 
@@ -89,7 +89,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
       <div className="space-y-2">
         {BANKS.map((b) => {
           const a = data.latest[b.key];
-          const nums = a?.status === 'APPROVED'
+          const nums = a?.status === 'APPROVED' || a?.status === 'CONDITIONAL'
             ? [a.termMonths ? `${a.termMonths} meses` : '', a.rate || ''].filter(Boolean).join(' · ')
             : '';
           return (
@@ -101,10 +101,10 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
                 </div>
               </div>
               {nums && <div className="text-[11px] text-slate-500 mt-0.5">{nums}</div>}
-              {a && a.status !== 'APPROVED' && a.detail && ['REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE'].includes(a.status) && (
+              {a && a.status !== 'APPROVED' && a.detail && ['CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE'].includes(a.status) && (
                 <div className="text-[11px] text-slate-400 mt-0.5 line-clamp-2" title={a.detail}>{a.detail}</div>
               )}
-              {a?.status === 'APPROVED' && (
+              {(a?.status === 'APPROVED' || a?.status === 'CONDITIONAL') && (
                 <div className="mt-1">
                   {a.chosen
                     ? <span className="flex items-center gap-1 text-[11px] text-amber-600"><Star size={10} className="fill-amber-400" /> Proposta escolhida</span>

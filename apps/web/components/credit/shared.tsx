@@ -15,13 +15,14 @@ export const STATUS: Record<string, { label: string; cls: string }> = {
   RUNNING: { label: 'Rodando', cls: 'bg-blue-50 text-blue-600' },
   SENT: { label: 'Enviada', cls: 'bg-indigo-50 text-indigo-600' },
   APPROVED: { label: 'Aprovado', cls: 'bg-emerald-50 text-emerald-600' },
+  CONDITIONAL: { label: 'Aprovado condicional', cls: 'bg-teal-50 text-teal-700' },
   REJECTED: { label: 'Reprovado', cls: 'bg-red-50 text-red-500' },
   FAILED: { label: 'Falhou', cls: 'bg-orange-50 text-orange-600' },
   CHECK: { label: 'Conferir', cls: 'bg-amber-50 text-amber-600' },
   INCOMPLETE: { label: 'Incompleto', cls: 'bg-amber-50 text-amber-600' },
   TEST: { label: 'Teste', cls: 'bg-slate-100 text-slate-500' },
 };
-export const MANUAL_STATUS = ['SENT', 'APPROVED', 'REJECTED', 'CHECK', 'FAILED'];
+export const MANUAL_STATUS = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CHECK', 'FAILED'];
 
 export interface Analysis {
   id: string; bank: Bank; status: string; detail: string | null; dryRun: boolean; source: string; chosen: boolean;
@@ -69,7 +70,7 @@ export function Badge({ a }: { a?: Analysis }) {
         {a.chosen && <Star size={13} className="text-amber-500 fill-amber-400" />}
       </div>
       <div className="text-[11px] text-slate-400">
-        {a.status === 'APPROVED' && a.approvedValue ? <span className="text-slate-600 font-medium">{formatCurrency(a.approvedValue)} · </span> : null}
+        {(a.status === 'APPROVED' || a.status === 'CONDITIONAL') && a.approvedValue ? <span className="text-slate-600 font-medium">{formatCurrency(a.approvedValue)} · </span> : null}
         {ago(a.updatedAt)}
       </div>
     </div>

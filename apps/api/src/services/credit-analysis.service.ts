@@ -27,10 +27,10 @@ export const BANK_KEYS = Object.keys(BANKS);
 /** Status em português que as extensões já usam (recordHistory) → status do CRM. */
 export const EXTENSION_STATUS: Record<string, string> = {
   enviando: 'RUNNING', enviado: 'SENT', aprovado: 'APPROVED', rejeitado: 'REJECTED',
-  falhou: 'FAILED', verificar: 'CHECK', incompleto: 'INCOMPLETE', teste: 'TEST',
+  falhou: 'FAILED', verificar: 'CHECK', incompleto: 'INCOMPLETE', teste: 'TEST', condicional: 'CONDITIONAL',
 };
-const ALL_STATUS = new Set(['REQUESTED', 'RUNNING', 'SENT', 'APPROVED', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
-const FINAL = new Set(['APPROVED', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
+const ALL_STATUS = new Set(['REQUESTED', 'RUNNING', 'SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
+const FINAL = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
 const ACTIVE = ['REQUESTED', 'RUNNING'];
 const STALE_ACTIVE_MS = 25 * 60 * 1000; // pedido/execução parado há mais que isso não bloqueia um novo
 const STUCK_RUNNING_MS = 30 * 60 * 1000; // rodando há mais que isso sem sinal da extensão = parou
@@ -82,12 +82,17 @@ export function analysisNote(a: { bank: string; status: string; detail?: string 
     ].filter(Boolean);
     return `✅ Análise de crédito${test} — APROVADO no ${label}. ${parts.join(' · ')}${a.conditions ? `\nCondições: ${a.conditions}` : ''}${a.detail && !a.approvedValue ? `\n${a.detail}` : ''}`;
   }
+  if (a.status === 'CONDITIONAL') {
+    return `📄 Análise de crédito${test} — APROVADO CONDICIONAL no ${label}${a.proposalNumber ? ` (proposta nº ${a.proposalNumber})` : ''}: o banco pede documentação para seguir.${a.detail ? ` ${a.detail}` : ''}`;
+  }
   return `❌ Análise de crédito${test} — REPROVADO no ${label}${a.proposalNumber ? ` (proposta nº ${a.proposalNumber})` : ''}.${a.detail ? ` ${a.detail}` : ''}`;
 }
 
-/** Pede a análise de N clientes em N bancos. A extensão busca os pedidos (claimQueue). */
-export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean }) {
-  const banks = p.banks.filter((b) => BANK_KEYS.includes(b));
+/** Pede a análise de N clientes em N bancos (`kind` RUN), ou só a CONFERÊNCIA do resultado de uma proposta já enviada
+ *  (`kind` CHECK — só Inter; a extensão acha o cliente pelo CPF na lista de Propostas; não cria proposta nova). A extensão busca os pedidos (claimQueue). */
+export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK' }) {
+  const kind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
+  const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (kind === 'RUN' || b === 'INTER'));
   const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true } });
   let created = 0, skipped = 0;
   for (const l of leads) {
@@ -97,27 +102,30 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
         select: { id: true },
       });
       if (open) { skipped++; continue; }
-      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', dryRun: p.dryRun, source: 'EXTENSION', requestedById: p.userId || null } });
+      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, dryRun: kind === 'CHECK' ? false : p.dryRun, source: 'EXTENSION', requestedById: p.userId || null } });
       created++;
     }
   }
-  return { created, skipped, banks, leads: leads.length };
+  return { created, skipped, banks, leads: leads.length, kind };
 }
 
-/** A extensão do banco pergunta: "tem pedido pra mim?". Marca como RUNNING o que entregar. */
-export async function claimQueue(db: Db, p: { accountId: string; bank: string; limit?: number }) {
+/** A extensão do banco pergunta: "tem pedido pra mim?". Marca como RUNNING o que entregar. Pedidos de só conferir
+ *  (CHECK) só vão pra extensão que avisa saber fazer isso (`caps` inclui "check") — uma versão antiga trataria
+ *  como pedido normal e criaria proposta duplicada no banco. */
+export async function claimQueue(db: Db, p: { accountId: string; bank: string; limit?: number; caps?: string[] }) {
   if (!BANK_KEYS.includes(p.bank)) return [];
+  const canCheck = !!p.caps?.includes('check');
   const rows = await db.creditAnalysis.findMany({
-    where: { accountId: p.accountId, bank: p.bank, status: 'REQUESTED' },
+    where: { accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }) },
     orderBy: { requestedAt: 'asc' }, take: p.limit || 3,
-    select: { id: true, leadId: true, dryRun: true, requestedAt: true, lead: { select: { name: true } } },
+    select: { id: true, leadId: true, dryRun: true, kind: true, proposalNumber: true, requestedAt: true, lead: { select: { name: true } } },
   });
   const claimed: typeof rows = [];
   for (const r of rows) {
     const u = await db.creditAnalysis.updateMany({ where: { id: r.id, status: 'REQUESTED' }, data: { status: 'RUNNING', startedAt: new Date() } });
     if (u.count === 1) claimed.push(r);
   }
-  return claimed.map((r) => ({ id: r.id, leadId: r.leadId, leadName: r.lead?.name || '', dryRun: r.dryRun, requestedAt: r.requestedAt }));
+  return claimed.map((r) => ({ id: r.id, leadId: r.leadId, leadName: r.lead?.name || '', dryRun: r.dryRun, kind: r.kind, proposalNumber: r.proposalNumber, requestedAt: r.requestedAt }));
 }
 
 async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null } & ResultFields) {
@@ -134,7 +142,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     },
   });
   // Nota automática só na primeira vez que vira aprovada/reprovada (modo teste não escreve no card).
-  if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'REJECTED')) {
+  if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) {
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: analysisNote({ ...updated, status: next }) } });
   }
   return { row: updated, becameFinal };
@@ -159,7 +167,9 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   }
   // Relato atrasado (ex.: um "passo" que chegou depois do resultado) não pode desfazer um resultado final.
   if (FINAL.has(row.status) && !FINAL.has(p.status)) return row;
-  const { row: updated } = await applyUpdate(db, row, { status: p.status, detail: p.detail ?? null, ...pickResult(p.result || {}) });
+  // Aprovado "condicionado" (Inter pede documentos; Santander "Aprovado Condicional") é um status próprio: aprovou, mas falta algo.
+  const status = p.status === 'APPROVED' && /condicion/i.test(p.detail || '') ? 'CONDITIONAL' : p.status;
+  const { row: updated } = await applyUpdate(db, row, { status, detail: p.detail ?? null, ...pickResult(p.result || {}) });
   return updated;
 }
 
@@ -192,7 +202,7 @@ export async function registerManual(db: Db, p: { accountId: string; userId?: st
 export async function chooseAnalysis(db: Db, p: { accountId: string; id: string; userName?: string }) {
   const row = await db.creditAnalysis.findFirst({ where: { id: p.id, accountId: p.accountId } });
   if (!row) throw new Error('análise não encontrada');
-  if (row.status !== 'APPROVED') throw new Error('só dá pra escolher uma proposta aprovada');
+  if (row.status !== 'APPROVED' && row.status !== 'CONDITIONAL') throw new Error('só dá pra escolher uma proposta aprovada');
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { id: true, value: true, customFields: true } });
   if (!lead) throw new Error('card não encontrado');
   await db.creditAnalysis.updateMany({ where: { leadId: row.leadId, chosen: true }, data: { chosen: false } });

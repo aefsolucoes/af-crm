@@ -12,7 +12,7 @@ import { formatCurrency } from '@/lib/utils';
 import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead } from '@/components/credit/shared';
 import { AdjustModal } from '@/components/credit/adjust-modal';
 import { pingExtensions } from '@/lib/credit-extensions';
-import { ChevronDown, ChevronRight, MessageSquare, Play, Plus, Star, Pencil, SlidersHorizontal, ArrowLeftRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, MessageSquare, Play, Plus, Star, Pencil, SlidersHorizontal, ArrowLeftRight, RefreshCw } from 'lucide-react';
 import api from '@/lib/api';
 
 /* Análise de Crédito — ver apps/api/src/services/credit-analysis.service.ts.
@@ -139,7 +139,7 @@ export default function AnaliseCreditoPage() {
       if (!selected.includes(l.id)) continue;
       for (const b of banks) {
         const a = l.latest[b];
-        if (a && !a.dryRun && ['SENT', 'APPROVED', 'REJECTED', 'CHECK'].includes(a.status)) out.push(`${l.name} — ${BANKS.find((x) => x.key === b)!.short} (${STATUS[a.status].label.toLowerCase()})`);
+        if (a && !a.dryRun && ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CHECK'].includes(a.status)) out.push(`${l.name} — ${BANKS.find((x) => x.key === b)!.short} (${STATUS[a.status].label.toLowerCase()})`);
       }
     }
     return out;
@@ -168,6 +168,18 @@ export default function AnaliseCreditoPage() {
       refresh();
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao inverter', 'error');
+    }
+  }
+
+  // Só CONFERIR o resultado no portal do Inter de uma proposta já enviada (não cria proposta nova).
+  async function checkInter(l: BoardLead) {
+    try {
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: ['INTER'], kind: 'CHECK' });
+      pingExtensions(data?.extensions, ['INTER']);
+      toast(r.created ? 'Conferência pedida — a extensão do Inter vai ler o resultado no portal' : 'Já tem uma conferência/análise em andamento', 'success');
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir a conferência', 'error');
     }
   }
 
@@ -285,6 +297,9 @@ export default function AnaliseCreditoPage() {
                           <td className="px-3 py-3">
                             <div className="flex flex-col gap-1.5 items-start">
                               <button onClick={() => setAdjust(l)} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><SlidersHorizontal size={11} /> Ajustar</button>
+                              {l.latest.INTER && !['REQUESTED', 'RUNNING'].includes(l.latest.INTER.status) && (
+                                <button onClick={() => checkInter(l)} title="Ler o resultado no portal do Inter sem criar proposta nova" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><RefreshCw size={11} /> Conferir Inter</button>
+                              )}
                               {(() => {
                                 const inverted = BANKS.every((b) => l.overrides?.[b.key]?.inverter);
                                 return l.card?.name2 ? (
@@ -313,7 +328,7 @@ export default function AnaliseCreditoPage() {
                                       {a ? (
                                         <>
                                           {a.detail && <p className="text-slate-500 whitespace-pre-line">{a.detail}</p>}
-                                          {a.status === 'APPROVED' && (
+                                          {(a.status === 'APPROVED' || a.status === 'CONDITIONAL') && (
                                             <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-600">
                                               {a.approvedValue ? <><dt className="text-slate-400">Valor aprovado</dt><dd>{formatCurrency(a.approvedValue)}</dd></> : null}
                                               {a.termMonths ? <><dt className="text-slate-400">Prazo</dt><dd>{a.termMonths} meses</dd></> : null}
@@ -325,13 +340,14 @@ export default function AnaliseCreditoPage() {
                                             </dl>
                                           )}
                                           {a.status === 'APPROVED' && !a.approvedValue && <p className="text-amber-600">Aprovada, mas sem os números — clique em "Resultado" e preencha.</p>}
+                                          {a.status === 'CONDITIONAL' && <p className="text-teal-700">Aprovada com condição: o banco pede documentação para seguir.</p>}
                                         </>
                                       ) : <p className="text-slate-400">Nenhuma análise ainda.</p>}
                                       <div className="flex flex-wrap gap-2 pt-1">
                                         <button onClick={() => setModal({ lead: l, bank: b.key, analysis: a })} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50">
                                           {a ? <><Pencil size={11} /> Resultado</> : <><Plus size={11} /> Registrar</>}
                                         </button>
-                                        {a?.status === 'APPROVED' && (a.chosen
+                                        {(a?.status === 'APPROVED' || a?.status === 'CONDITIONAL') && (a.chosen
                                           ? <span className="flex items-center gap-1 px-2.5 py-1 text-amber-600"><Star size={11} className="fill-amber-400" /> Escolhida</span>
                                           : <button onClick={() => choose(a, l)} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-af-accent text-white hover:opacity-90"><Star size={11} /> Escolher esta proposta</button>)}
                                       </div>

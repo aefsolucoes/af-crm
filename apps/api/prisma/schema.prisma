@@ -1183,7 +1183,8 @@ model CreditAnalysis {
   lastInstallment  Float?
   conditions       String?   @db.Text
   dryRun           Boolean   @default(false)
-  source           String    @default("EXTENSION") // EXTENSION | MANUAL
+  source           String    @default("EXTENSION")
+  kind             String    @default("RUN") // RUN | CHECK (só conferir o resultado de uma proposta já enviada) // EXTENSION | MANUAL
   chosen           Boolean   @default(false)
   requestedById    String?
   requestedAt      DateTime  @default(now())
