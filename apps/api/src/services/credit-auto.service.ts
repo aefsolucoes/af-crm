@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { createRequests, setOverrides, parseHolder } from './credit-analysis.service';
-import { sendApprovalNoticeNow, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText, aprovadasSemNumeros } from './approval-notice.service';
+import { sendApprovalNoticeNow, sendEarlyStatusNotice, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText, aprovadasSemNumeros } from './approval-notice.service';
 
 /**
  * Análise automática de crédito (Fabio 14/10): assim que o cliente preenche a proposta e a IA do CRM confere que os dados estão
@@ -380,6 +380,30 @@ async function flagInterSemNumero(accountId: string) {
   }
 }
 
+/** Aviso ANTECIPADO (Fabio 14/10): análise demorando (Creditas/Inter levam horas) e a janela de 24 h do WhatsApp perto de fechar → o cliente recebe a aprovação que já saiu (e que
+ *  seguimos esperando outros bancos pra tentar taxa menor) ou o "análise em andamento". Uma vez por janela; as regras de horário/janela/dedupe ficam em sendEarlyStatusNotice. */
+async function earlyStatusNotices(accountId: string, io: any) {
+  const leads = await prisma.lead.findMany({
+    where: {
+      accountId, status: 'OPEN', archived: false, isGroup: false,
+      stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
+      pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
+      creditAnalyses: { some: { dryRun: false } },
+    },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, source: true } } },
+    take: 60,
+  });
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Cf;
+    if (!cf._autoStartedAt || cf._noticeAt) continue;
+    const verdicts = BANKS.map((b) => bankVerdict(l.creditAnalyses as any, b));
+    if (!verdicts.includes('PENDING')) continue; // todos decididos: aviso final / fechamento cuidam
+    const out = await sendEarlyStatusNotice({ accountId, leadId: l.id, variant: verdicts.includes('POS') ? 'APPROVED_PARTIAL' : 'WAITING', io });
+    if (out.ok) console.log(`[Análise automática] ${l.name}: aviso antecipado enviado (${verdicts.includes('POS') ? 'aprovação parcial' : 'em andamento'})`);
+    else if (out.error) console.warn(`[Análise automática] ${l.name}: aviso antecipado falhou — ${out.error}`);
+  }
+}
+
 export async function processCreditAutomation(io: any): Promise<void> {
   if (running) return;
   running = true;
@@ -393,6 +417,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await retryTechnicalFailures(s.accountId).catch((e) => console.error('[Análise automática] refazer falhas técnicas:', e?.message));
       await ackPendingProposals(s.accountId, io).catch((e) => console.error('[Análise automática] confirmação da proposta:', e?.message));
       await flagInterSemNumero(s.accountId).catch((e) => console.error('[Análise automática] Inter sem número:', e?.message));
+      await earlyStatusNotices(s.accountId, io).catch((e) => console.error('[Análise automática] aviso antecipado:', e?.message));
     }
   } finally {
     running = false;

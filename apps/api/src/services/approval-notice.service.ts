@@ -654,9 +654,11 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   const cf = (lead.customFields || {}) as Record<string, any>;
   // Já está na conversa? (qualquer remetente) Aviso com texto: todas as opções (banco + valor + nome) já foram enviadas; com template: o cliente recebeu e ainda não respondeu.
   const jaTem = preview.mode === 'template'
-    ? ((await isWaitingApprovalReply(p.leadId)) ? { at: null as Date | null } : null)
+    ? ((await isWaitingApprovalReply(p.leadId)) ? { at: null as Date | null, preliminar: false } : null)
     : await approvalAlreadyInChat(p.leadId, preview.text);
-  if (jaTem) return { ok: false, already: true, error: `O cliente já recebeu este aviso de aprovação na conversa${jaTem.at ? ` (${fmtQuando(jaTem.at)})` : ' (template enviado, ainda sem resposta dele)'} — não reenviei.` };
+  // Se as opções só foram ditas no aviso ANTECIPADO ("aguardando outros bancos"), o aviso final NÃO repete o resumo: manda só a lista de documentos, o pedido do PDF e move o card.
+  const soComplemento = !!jaTem?.preliminar;
+  if (jaTem && !soComplemento) return { ok: false, already: true, error: `O cliente já recebeu este aviso de aprovação na conversa${jaTem.at ? ` (${fmtQuando(jaTem.at)})` : ' (template enviado, ainda sem resposta dele)'} — não reenviei.` };
   // Fora do horário (07h–21h): não manda agora — agenda pro próximo 07:00; o poller manda em ordem (processScheduledNotices).
   if (!p.ignoreWindow && !inNoticeWindow()) {
     const at = nextNoticeStart();
@@ -668,7 +670,7 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   let docsSent = false;
   if (preview.mode === 'text') {
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-    const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: preview.text, userId: p.userId, io: p.io });
+    const r = soComplemento ? { success: true } : await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: preview.text, userId: p.userId, io: p.io });
     if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
     // Lista de documentos (a mesma Resposta rápida da equipe), logo depois do aviso — uma vez só.
     if (sendDocs) { await new Promise((resolve) => setTimeout(resolve, 2500)); docsSent = await sendDocsList(p, preview.docsText); }
@@ -726,17 +728,65 @@ export function approvalPairs(text: string): { inst: string; val: string; nome: 
 }
 
 /** TODAS as opções do aviso que ia sair (banco + valor + nome) já foram enviadas ao cliente numa mensagem de aprovação? (últimos 21 dias) */
-export async function approvalAlreadyInChat(leadId: string, text: string): Promise<{ at: Date } | null> {
+export async function approvalAlreadyInChat(leadId: string, text: string): Promise<{ at: Date; preliminar: boolean } | null> {
   const pairs = approvalPairs(text);
   if (!pairs.length) return null;
   const msgs = await prisma.message.findMany({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 21 * 86_400_000) }, content: { contains: 'Instituição:' } }, orderBy: { createdAt: 'desc' }, take: 60, select: { content: true, createdAt: true } });
   let at: Date | null = null;
+  let preliminar = true; // todas as opções só foram ditas no aviso ANTECIPADO (resultado parcial)?
   for (const p of pairs) {
     const hit = msgs.find((m) => flat(m.content || '').split('📋 Resumo da proposta:').slice(1).some((b) => b.includes(p.inst) && b.includes(p.val) && (!p.nome || b.includes(p.nome))));
     if (!hit) return null;
+    if (!(hit.content || '').includes(EARLY_MARK_PARTIAL)) preliminar = false;
     if (!at || hit.createdAt > at) at = hit.createdAt;
   }
-  return at ? { at } : null;
+  return at ? { at, preliminar } : null;
+}
+
+// ─── Aviso ANTECIPADO antes da janela de 24 h do WhatsApp fechar (Fabio 14/10) ───
+// Banco lento (Creditas/Inter levam horas): antes da janela fechar o cliente recebe (a) o resumo da aprovação que já saiu + "aguardando outros bancos pra tentar taxa menor", ou
+// (b) "análise em andamento", se todos ainda estão analisando. Uma vez por janela — e a mensagem pede uma resposta: quando o cliente responde, a janela de 24 h recomeça (conta da ÚLTIMA mensagem dele) e, se a análise seguir pendente, o aviso pode sair de novo na janela seguinte. O aviso FINAL depois continua saindo (só documentos/etapa, sem repetir o resumo).
+export const EARLY_MARK_PARTIAL = '⏳ Já temos essa aprovação';
+const EARLY_MARK_WAIT = 'análise de crédito está em andamento';
+const EARLY_BEFORE_CLOSE_MS = 5 * 3_600_000; // começa a avisar quando faltam até 5 h pra janela fechar
+const EARLY_DEAD_HOURS_LEAD_MS = 14 * 3_600_000; // janela que fecha fora das 07h–21h: avisa já no dia anterior (até 14 h antes), senão perde a chance
+
+export async function sendEarlyStatusNotice(p: { accountId: string; leadId: string; variant: 'APPROVED_PARTIAL' | 'WAITING'; io?: any }): Promise<{ ok: boolean; skipped?: string; error?: string }> {
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true } } } });
+  if (!lead) return { ok: false, error: 'Card não encontrado' };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const lastIn = await prisma.message.findFirst({ where: { leadId: p.leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  if (!lastIn) return { ok: false, skipped: 'cliente nunca falou pelo WhatsApp' };
+  const closeAt = lastIn.createdAt.getTime() + WINDOW_MS;
+  const left = closeAt - Date.now();
+  if (left <= 0) return { ok: false, skipped: 'janela já fechou' };
+  if (!inNoticeWindow()) return { ok: false, skipped: 'fora do horário dos avisos' };
+  const cedo = left <= EARLY_BEFORE_CLOSE_MS || (!inNoticeWindow(new Date(closeAt)) && left <= EARLY_DEAD_HOURS_LEAD_MS);
+  if (!cedo) return { ok: false, skipped: 'ainda falta tempo pra janela fechar' };
+  if (cf._earlyNoticeFor === lastIn.createdAt.toISOString()) return { ok: false, skipped: 'já avisado nesta janela' };
+  const recente = await prisma.message.count({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 60 * 60_000) } } });
+  if (recente) return { ok: false, skipped: 'conversa recente (última hora)' };
+
+  const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || '';
+  let text: string;
+  if (p.variant === 'APPROVED_PARTIAL') {
+    const preview = await previewApprovalNotice(p.leadId).catch(() => null);
+    if (!preview || preview.warnings.length || preview.mode !== 'text') return { ok: false, skipped: 'aprovação sem números completos ainda' };
+    if (await approvalAlreadyInChat(p.leadId, preview.text)) return { ok: false, skipped: 'a aprovação já está na conversa' };
+    text = `${preview.text}\n\n${EARLY_MARK_PARTIAL}, mas ainda estamos aguardando o retorno de outros bancos pra tentar uma taxa de juros menor. Assim que sair o resultado, te aviso por aqui! Se puder, me responde essa mensagem pra gente manter a conversa aberta por aqui. 😉`;
+  } else {
+    const ja = await prisma.message.count({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) }, content: { contains: EARLY_MARK_WAIT } } });
+    if (ja) return { ok: false, skipped: 'aviso de andamento já enviado' };
+    text = `Oi${nome ? `, ${nome}` : ''}! Passando pra te atualizar: a sua ${EARLY_MARK_WAIT}. Já enviamos a proposta aos bancos parceiros e estamos aguardando o retorno deles. Assim que sair o resultado, eu te aviso por aqui! Me responde essa mensagem só pra eu saber que chegou, tá? Qualquer dúvida, é só me chamar. 😊`;
+  }
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: text, io: p.io });
+  if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
+  const fresh = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
+  await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _earlyNoticeFor: lastIn.createdAt.toISOString() } } });
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: p.variant === 'APPROVED_PARTIAL' ? '⏳ Aviso antecipado enviado antes da janela de 24 h fechar: já tem aprovação, aguardando os outros bancos pra tentar taxa menor.' : '⏳ Aviso antecipado enviado antes da janela de 24 h fechar: análise em andamento, aguardando o retorno dos bancos.' } }).catch(() => {});
+  logActivity({ accountId: p.accountId, userId: null, userName: 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou o cliente (antes da janela fechar) que a análise segue em andamento' } as any);
+  return { ok: true };
 }
 
 const fmtQuando = (d: Date) => d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
