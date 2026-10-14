@@ -608,6 +608,58 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   return { ok: true, mode: preview.mode, options: preview.options, docsSent, moved };
 }
 
+// ─── Aviso de "não aprovado" (Fabio 14/10) ───────────────────────────────────────────────────────────────
+// Texto simples, com o motivo OBJETIVO (terreno / valor do imóvel abaixo do mínimo / saldo devedor / análise não aprovada) — nunca o detalhe
+// interno do banco. Só 07h–21h (fora disso agenda), e só com a janela de 24 h do WhatsApp aberta (não existe template pra isso: sem janela,
+// fica nota pra equipe chamar o cliente).
+const REJECTION_MARK = 'não conseguimos aprovar agora';
+
+export async function buildRejectionText(leadId: string): Promise<{ text: string; reasons: string[] } | null> {
+  if (await optionsFromAnalyses(leadId).catch(() => null)) return null; // tem opção aprovada: o aviso é o de aprovação
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true, contact: { select: { name: true } } } });
+  if (!lead) return null;
+  const rows = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['FAILED', 'REJECTED', 'CHECK', 'SENT', 'INCOMPLETE'] } }, orderBy: { createdAt: 'desc' }, take: 40, select: { bank: true, status: true, detail: true } });
+  const detail = rows.map((r) => r.detail || '').join(' ');
+  const reasons: string[] = [];
+  if (/terreno/i.test(detail)) reasons.push('o imóvel é um terreno (a maioria dos bancos não aceita)');
+  if (/abaixo do m[ií]nimo/i.test(detail)) reasons.push('o valor do imóvel fica abaixo do mínimo exigido por alguns bancos');
+  if (rows.some((r) => r.bank === 'CREDIMORAR' && /saldo devedor/i.test(r.detail || ''))) reasons.push('o imóvel ainda tem saldo devedor (um dos bancos não aceita)');
+  if (rows.some((r) => r.status === 'REJECTED')) reasons.push(reasons.length ? 'os demais bancos não aprovaram a análise de crédito' : 'os bancos não aprovaram a análise de crédito');
+  if (!reasons.length) return null;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || 'tudo bem';
+  const motivos = reasons.length > 1 ? `${reasons.slice(0, -1).join(', ')} e ${reasons[reasons.length - 1]}` : reasons[0];
+  const text = `Olá, ${nome}! Analisamos seu pedido e, infelizmente, ${REJECTION_MARK} com os bancos com que trabalhamos: ${motivos}.\n\nSe quiser, me conta mais sobre o imóvel e o valor que você precisa, que eu vejo outras possibilidades por aqui.`;
+  return { text, reasons };
+}
+
+export async function sendRejectionNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; ignoreWindow?: boolean }): Promise<{ ok: boolean; scheduled?: boolean; at?: string; error?: string }> {
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true } });
+  if (!lead) return { ok: false, error: 'Card não encontrado' };
+  const built = await buildRejectionText(p.leadId);
+  if (!built) return { ok: false, error: 'Este card tem opção aprovada ou nenhum motivo claro de não aprovação.' };
+  const ja = await prisma.message.count({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) }, content: { contains: REJECTION_MARK } } });
+  if (ja) return { ok: false, error: 'O aviso de não aprovado já foi enviado a este cliente nos últimos 3 dias.' };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (!p.ignoreWindow && !inNoticeWindow()) {
+    const at = nextNoticeStart();
+    await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...cf, _noticeAt: at.toISOString(), _noticeSeq: Date.now(), _noticeBy: p.userId || null, _noticeKind: 'REJECTED' } } });
+    const hora = at.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+    await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `⏰ Aviso de "não aprovado" agendado para ${hora} (os avisos só saem das ${NOTICE_START_HOUR}h às ${NOTICE_END_HOUR}h).` } }).catch(() => {});
+    return { ok: true, scheduled: true, at: at.toISOString() };
+  }
+  if (!(await whatsappWindowOpen(p.leadId))) {
+    await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: '⚠️ O aviso de "não aprovado" NÃO saiu: a janela de 24 h do WhatsApp fechou (não há template pra isso). Chame o cliente por ligação ou reabra a conversa.' } }).catch(() => {});
+    return { ok: false, error: 'janela de 24 h fechada' };
+  }
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: built.text, userId: p.userId, io: p.io });
+  if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado que não foi aprovado (${built.reasons.join('; ')}).` } }).catch(() => {});
+  logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou o cliente que não foi aprovado' } as any);
+  return { ok: true };
+}
+
 /** Manda os avisos que ficaram agendados (fora do horário), UM por rodada e na ordem em que foram agendados — a ordem Inter → Creditas → Santander
  *  é a de quem agendou. Só roda dentro das 07h–21h. */
 let runningScheduled = false;
@@ -625,10 +677,12 @@ export async function processScheduledNotices(io: any): Promise<void> {
     const first = due[0];
     if (!first) return;
     const { l, cf } = first;
-    const limpa = { ...cf }; delete limpa._noticeAt; delete limpa._noticeSeq; delete limpa._noticeBy; delete limpa._noticeDocs; delete limpa._noticeMove;
+    const limpa = { ...cf }; delete limpa._noticeAt; delete limpa._noticeSeq; delete limpa._noticeBy; delete limpa._noticeDocs; delete limpa._noticeMove; delete limpa._noticeKind;
     await prisma.lead.update({ where: { id: l.id }, data: { customFields: limpa } }); // limpa antes: se falhar, não repete em laço
     if (l.status !== 'OPEN') return;
-    const r = await sendApprovalNoticeNow({ accountId: l.accountId, leadId: l.id, userId: cf._noticeBy || undefined, io, sendDocs: cf._noticeDocs !== false, moveStage: cf._noticeMove !== false, ignoreWindow: true });
+    const r = cf._noticeKind === 'REJECTED'
+      ? await sendRejectionNoticeNow({ accountId: l.accountId, leadId: l.id, userId: cf._noticeBy || undefined, io, ignoreWindow: true })
+      : await sendApprovalNoticeNow({ accountId: l.accountId, leadId: l.id, userId: cf._noticeBy || undefined, io, sendDocs: cf._noticeDocs !== false, moveStage: cf._noticeMove !== false, ignoreWindow: true });
     console.log(`[Aprovação] aviso agendado de ${l.name}: ${r.ok ? 'enviado' : `não saiu (${r.error})`}`);
     if (!r.ok) await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `⚠️ O aviso agendado ao cliente não saiu: ${r.error}` } }).catch(() => {});
   } catch (e: any) {
