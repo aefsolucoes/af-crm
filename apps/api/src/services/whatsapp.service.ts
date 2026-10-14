@@ -769,7 +769,7 @@ function getCloudApiMediaInfo(msg: any): { mediaId: string; fileName: string; mi
     case 'image':    fileName = `foto-${Date.now()}.${mimeType.includes('png') ? 'png' : 'jpg'}`; break;
     case 'video':    fileName = `video-${Date.now()}.${mimeType.includes('3gpp') ? '3gp' : 'mp4'}`; break;
     case 'audio':    fileName = `audio-${Date.now()}.${mimeType.includes('mpeg') ? 'mp3' : mimeType.includes('ogg') ? 'ogg' : 'm4a'}`; break;
-    case 'sticker':  fileName = `sticker-${Date.now()}.webp`; break;
+    case 'sticker':  return null; // figurinha NÃO é salva (nem no banco nem no Drive) — Fabio 14/10
     case 'document': fileName = node.filename || `documento-${Date.now()}`; break;
     default: return null;
   }
@@ -1059,7 +1059,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       // loga o que for descartado por tipo desconhecido (não 'text'), pra
       // não repetir o incidente do call_permission_reply que sumia sem
       // nenhum rastro por causa de um match exato que não bateu.
-      if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo) {
+      if (msg.type !== 'text' && msg.type !== 'sticker' && !buttonReplyTitle && !mediaInfo) {
         if (msg.type && msg.type !== 'unknown') {
           console.log(`[WhatsApp] Mensagem tipo="${msg.type}" descartada (não tratada):`, JSON.stringify(msg));
         }
@@ -1069,6 +1069,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       const from = msg.from as string; // e.g. "5561999990001"
       let text = mediaInfo
         ? `📎 ${mediaInfo.fileName}${mediaInfo.caption ? ` — ${mediaInfo.caption}` : ''}`
+        : msg.type === 'sticker' ? '🏷️ Figurinha'
         : buttonReplyTitle || (msg.text?.body as string) || '';
       const externalId = msg.id as string;
       const profileName = normalizeClientName(value.contacts?.[0]?.profile?.name || `+${from}`);

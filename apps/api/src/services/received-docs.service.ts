@@ -35,6 +35,9 @@ Depois do nome do documento, coloque " | " e o nome completo do titular como apa
 Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
 Se NÃO for documento (foto qualquer, selfie, figurinha, print de conversa), responda IGNORAR.`;
 
+/** Figurinha do WhatsApp (webp / "sticker-…"): não é documento — nunca entra na pasta do Drive, na leitura de documentos nem na conferência (Fabio 14/10). */
+export const isStickerAttachment = (a: { mimeType: string; fileName?: string | null }) => /^sticker-/i.test(a.fileName || '') || a.mimeType === 'image/webp';
+
 type AttachmentForVision = { id: string; driveFileId: string | null; data?: Uint8Array | null; mimeType: string };
 
 export interface DocInfo { type: string; holder?: string }
@@ -179,7 +182,7 @@ async function organizeLead(lead: {
     where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'INBOUND' } },
     orderBy: { createdAt: 'asc' },
     select: { id: true, driveFileId: true, fileName: true, mimeType: true },
-  })).filter((a) => !/^(audio|video)\//.test(a.mimeType));
+  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a));
   // Simulações que a equipe mandou pro cliente também vão pra pasta (raiz).
   const sentSimulations = (await prisma.messageAttachment.findMany({
     where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'OUTBOUND' } },

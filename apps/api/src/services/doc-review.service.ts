@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { downloadDriveFileForVision } from './google.service';
-import { getDocInfo } from './received-docs.service';
+import { getDocInfo, isStickerAttachment } from './received-docs.service';
 import { todayContextLine } from './ai-shared.service';
 
 const prisma = new PrismaClient();
@@ -145,7 +145,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     where: { leadId, message: { direction: 'INBOUND' } },
     orderBy: { createdAt: 'asc' },
     select: { id: true, driveFileId: true, data: true, mimeType: true, fileName: true, createdAt: true },
-  })).filter((a) => !/^(audio|video)\//.test(a.mimeType));
+  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a));
   if (!atts.length) return null;
 
   const info = await getDocInfo(accountId, leadId, atts); // classificação barata: pula o que não é documento
