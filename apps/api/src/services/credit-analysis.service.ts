@@ -224,13 +224,13 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
 /** A extensão do banco pergunta: "tem pedido pra mim?". Marca como RUNNING o que entregar. Pedidos de só conferir
  *  (CHECK) só vão pra extensão que avisa saber fazer isso (`caps` inclui "check") — uma versão antiga trataria
  *  como pedido normal e criaria proposta duplicada no banco. */
-/** Qual cliente a fila libera agora (Fabio 14/10: "um por um", do mais antigo pro mais novo): o que já tem análise RODANDO (termina primeiro);
- *  sem nenhum rodando, o card mais antigo entre os que têm pedido esperando. Pura (testável). Só entram pedidos de RODAR (RUN) de pessoa/automático:
+/** Qual cliente a fila libera agora (Fabio 14/10: "um por um", na ORDEM DE ENTRADA NA PRÉ-ANÁLISE — `leadOrderAt`): o que já tem análise RODANDO (termina primeiro);
+ *  sem nenhum rodando, o que entrou há mais tempo entre os que têm pedido esperando. Pura (testável). Só entram pedidos de RODAR (RUN) de pessoa/automático:
  *  conferências (CHECK) e leituras da IA da conversa não travam nem são travadas. Pedido esperando há mais de 30 min (extensão fora do ar) não segura a fila. */
-export function pickActiveLead(open: Array<{ leadId: string; status: string; requestedAt: Date; leadCreatedAt: Date }>, now = Date.now()): string | null {
+export function pickActiveLead(open: Array<{ leadId: string; status: string; requestedAt: Date; leadOrderAt: Date }>, now = Date.now()): string | null {
   const vivos = open.filter((o) => o.status === 'RUNNING' || now - o.requestedAt.getTime() < 30 * 60_000);
   if (!vivos.length) return null;
-  const byAge = (a: { leadCreatedAt: Date }, b: { leadCreatedAt: Date }) => a.leadCreatedAt.getTime() - b.leadCreatedAt.getTime();
+  const byAge = (a: { leadOrderAt: Date }, b: { leadOrderAt: Date }) => a.leadOrderAt.getTime() - b.leadOrderAt.getTime();
   const rodando = vivos.filter((o) => o.status === 'RUNNING').sort(byAge);
   return (rodando[0] || [...vivos].sort(byAge)[0]).leadId;
 }
@@ -244,9 +244,12 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   // "Um cliente por vez": os pedidos de RODAR de outros clientes esperam o cliente atual terminar em todos os bancos.
   const abertos = await db.creditAnalysis.findMany({
     where: { accountId: p.accountId, kind: 'RUN', status: { in: ['REQUESTED', 'RUNNING'] }, source: { notIn: ['AI', 'AI_SIM'] }, OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
-    select: { leadId: true, status: true, requestedAt: true, lead: { select: { createdAt: true } } },
+    select: { leadId: true, status: true, requestedAt: true, lead: { select: { createdAt: true, stageEnteredAt: true, status: true, stage: { select: { name: true } } } } },
   });
-  const ativo = pickActiveLead(abertos.map((a) => ({ leadId: a.leadId, status: a.status, requestedAt: a.requestedAt, leadCreatedAt: a.lead?.createdAt || new Date(0) })));
+  // Ordem da fila = quando o card ENTROU na Pré-Análise (card que está nela: stageEnteredAt); fora dela (ex.: card rodado à mão em outra etapa), a data de criação.
+  const ordem = (l?: { createdAt: Date; stageEnteredAt: Date | null; status: string; stage: { name: string } | null } | null) =>
+    (l && l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '') && l.stageEnteredAt) || l?.createdAt || new Date(0);
+  const ativo = pickActiveLead(abertos.map((a) => ({ leadId: a.leadId, status: a.status, requestedAt: a.requestedAt, leadOrderAt: ordem(a.lead) })));
   const rows = await db.creditAnalysis.findMany({
     where: {
       accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }),
