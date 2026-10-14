@@ -1,8 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { ExternalLink, Landmark, Play, Star } from 'lucide-react';
+import { ExternalLink, FileText, Landmark, Play, Star } from 'lucide-react';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
@@ -14,6 +14,8 @@ import { formatCurrency } from '@/lib/utils';
 /* Bloco "Análises de crédito" dentro do card (aba Financiamento). Mostra o último resultado de
  * cada banco, dispara nova análise e escolhe a proposta. Ver a aba /analise-credito. */
 
+type SimDoc = { id: string; institution: string; status: 'REQUESTED' | 'RUNNING' | 'DONE' | 'FAILED'; detail: string | null; createdAt: string };
+
 export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onChanged?: () => void }) {
   const queryClient = useQueryClient();
   const { data } = useLeadAnalyses(leadId);
@@ -22,10 +24,16 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   const [busy, setBusy] = useState(false);
   const [force, setForce] = useState(false);
   const [notify, setNotify] = useState(false);
+  const [simBusy, setSimBusy] = useState<string | null>(null);
+  const { data: simDocs } = useQuery<SimDoc[]>({
+    queryKey: ['sim-docs', leadId],
+    queryFn: async () => (await api.get('/api/credit-analysis/simulation-docs', { params: { leadId } })).data,
+    refetchInterval: (q) => ((q.state.data as SimDoc[] | undefined)?.some((d) => d.status === 'REQUESTED' || d.status === 'RUNNING') ? 8000 : false),
+  });
 
   useEffect(() => {
     const socket = getSocket();
-    const on = () => queryClient.invalidateQueries({ queryKey: ['credit-lead', leadId] });
+    const on = () => { queryClient.invalidateQueries({ queryKey: ['credit-lead', leadId] }); queryClient.invalidateQueries({ queryKey: ['sim-docs', leadId] }); };
     socket.on('credit_analysis_updated', on);
     return () => { socket.off('credit_analysis_updated', on); };
   }, [leadId, queryClient]);
@@ -67,6 +75,23 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
       toast(err?.response?.data?.error || 'Erro ao escolher', 'error');
     }
   }
+
+  async function sendSimulation(inst: 'SANTANDER' | 'INTER') {
+    const label = inst === 'INTER' ? 'Inter' : 'Santander';
+    if (!window.confirm(`Mandar ao cliente, pelo WhatsApp, o PDF da simulação do ${label} (com a logo da A&F)? A extensão baixa o PDF no portal do Credimorar e o CRM envia sozinho.`)) return;
+    setSimBusy(inst);
+    try {
+      const { data: r } = await api.post('/api/credit-analysis/simulation-docs', { leadId, institutions: [inst] });
+      pingExtensions(data?.extensions, ['CREDIMORAR']);
+      toast(r.created?.length ? `Pedido feito: o PDF do ${label} sai em instantes` : 'Já tem um pedido desse PDF em andamento', 'success');
+      queryClient.invalidateQueries({ queryKey: ['sim-docs', leadId] });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir o PDF', 'error');
+    } finally { setSimBusy(null); }
+  }
+
+  const simOpen = (simDocs || []).filter((d) => d.status === 'REQUESTED' || d.status === 'RUNNING');
+  const simRecent = (simDocs || []).slice(0, 3);
 
   return (
     <div className="mb-3 rounded-lg border border-af-border bg-slate-50/60 p-3">
@@ -137,6 +162,32 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
             </div>
           );
         })}
+      </div>
+
+      <div className="mt-3 pt-2 border-t border-af-border">
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1 text-[11px] font-medium text-slate-600"><FileText size={11} /> Simulação em PDF pro cliente</span>
+          <div className="flex gap-1.5">
+            {(['SANTANDER', 'INTER'] as const).map((inst) => (
+              <button key={inst} onClick={() => sendSimulation(inst)} disabled={!!simBusy || simOpen.some((d) => d.institution === inst)} className="text-[11px] px-2 py-0.5 rounded border border-af-mid text-af-mid hover:bg-af-mid hover:text-white disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-af-mid" title={`Baixa o PDF da simulação do ${inst === 'INTER' ? 'Inter' : 'Santander'} no Credimorar e manda ao cliente com a logo da A&F`}>
+                {inst === 'INTER' ? 'Inter' : 'Santander'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {!data.extensions?.CREDIMORAR?.online && <p className="mt-1 text-[11px] text-amber-600">Extensão do Santander/Credimorar sem sinal: o pedido espera até ela abrir no Chrome (falha depois de 15 min).</p>}
+        {simRecent.length > 0 && (
+          <ul className="mt-1 space-y-0.5">
+            {simRecent.map((d) => (
+              <li key={d.id} className="text-[11px] text-slate-500 flex items-start gap-1.5">
+                <span className={d.status === 'DONE' ? 'text-emerald-600' : d.status === 'FAILED' ? 'text-red-500' : 'text-amber-600'}>
+                  {d.status === 'DONE' ? '✓ enviado' : d.status === 'FAILED' ? '✗ não saiu' : d.status === 'RUNNING' ? '… baixando' : '… na fila'}
+                </span>
+                <span>{d.institution === 'INTER' ? 'Inter' : 'Santander'}{d.status === 'FAILED' && d.detail ? ` — ${d.detail}` : ''}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       <p className="mt-2 text-[10px] leading-snug text-slate-400">Instituição, taxa, parcelas e nº da proposta vêm daqui (as análises dos bancos): são os dados verdadeiros usados no aviso de aprovação.</p>

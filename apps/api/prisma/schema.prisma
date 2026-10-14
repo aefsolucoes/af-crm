@@ -986,6 +986,28 @@ model AutomationDeferred {
   @@index([leadId, ruleId])
 }
 
+/// Pedido do PDF "Evolução das parcelas" de uma simulação (portal Credimorar): a extensão baixa o original, o CRM põe a logo A&F
+/// (simulation-pdf.service.ts) e manda pro cliente pelo WhatsApp. leadId é campo solto (sem @relation), como AutomationDeferred.
+model SimulationDocRequest {
+  id            String    @id @default(cuid())
+  accountId     String
+  leadId        String
+  institution   String // SANTANDER | INTER (colunas do portal Credimorar)
+  status        String    @default("REQUESTED") // REQUESTED | RUNNING | DONE | FAILED
+  source        String    @default("USER") // USER | AI
+  requestedById String?
+  caption       String?   @db.Text
+  detail        String?   @db.Text
+  messageId     String? // mensagem enviada ao cliente com o PDF
+  createdAt     DateTime  @default(now())
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  updatedAt     DateTime  @updatedAt
+
+  @@index([accountId, status])
+  @@index([leadId, createdAt])
+}
+
 // Uma linha por DISPARO da regra (não por ação individual dentro dela).
 // leadId é campo solto, sem @relation — mesmo padrão leve de
 // CommissionSuggestion.leadId/AgentTask.leadId, pra não mexer no model Lead.

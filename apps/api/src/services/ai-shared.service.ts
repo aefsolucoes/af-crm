@@ -321,6 +321,8 @@ export interface AiExtractedAction {
   stopFollowUp?: boolean;
   /** true = a IA pediu pra rodar a análise de crédito do cliente (extensões como ponte) — valem as travas de requestRunForAi. */
   runAnalysis?: boolean;
+  /** Bancos (SANTANDER | INTER) cuja simulação em PDF a IA quer mandar ao cliente — o PDF original do portal sai com a logo A&F (simulation-doc.service.ts). */
+  sendSimulation?: string[] | null;
 }
 
 /** Tag usada pra excluir o lead de lembretes automáticos recorrentes
@@ -428,6 +430,17 @@ export async function applyAiExtractedActions(
         await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? `🤖 A IA pediu a análise de crédito a pedido do cliente: ${r.detail}.` : `🤖 A IA quis rodar a análise de crédito, mas não rodou: ${r.detail}.` } }).catch(() => {});
         logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: r.ok ? 'pediu a análise de crédito nos bancos' : `não rodou a análise: ${r.detail}` });
       } catch (e: any) { console.error('[IA] rodar análise falhou:', e?.message); }
+    }
+
+    // Mandar a simulação em PDF (a IA decidiu, a pedido do cliente): a extensão do Credimorar baixa o original e o CRM envia com a logo A&F.
+    if (action.sendSimulation && action.sendSimulation.length) {
+      try {
+        const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+        const r = await requestSimulationDocs(prisma as any, { accountId, leadId, institutions: action.sendSimulation, source: 'AI' });
+        const quais = r.created.map((c: any) => c.institution).join(', ');
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.created.length ? `🤖 A IA pediu o PDF da simulação (${quais}) a pedido do cliente; sai com a logo A&F assim que a extensão baixar do portal.` : `🤖 A IA quis mandar o PDF da simulação, mas já havia um pedido em andamento (${r.skipped.join(', ') || 'nenhum banco válido'}).` } }).catch(() => {});
+        if (r.created.length) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `pediu o PDF da simulação (${quais})` });
+      } catch (e: any) { console.error('[IA] pedir PDF da simulação falhou:', e?.message); }
     }
 
     // Preencher dados extraídos da conversa — só chaves conhecidas

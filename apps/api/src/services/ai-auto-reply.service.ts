@@ -267,7 +267,8 @@ const CREDIT_ANALYSIS_RULES = `ANÁLISE DE CRÉDITO — quando o bloco "ANÁLISE
 - "REPROVADO" num banco: não alongue; fale dos outros bancos que estiverem aprovados ou em análise. "NÃO ANALISADO" é assunto interno: nunca explique o motivo ao cliente.
 - Mais de um banco aprovado: siga a regra de várias opções (valor, prazo, taxa e parcela de cada uma). Creditas: o valor que o cliente vê é o LÍQUIDO.
 - Se a leitura for antiga (horas) e o cliente perguntar do resultado, responda com o que está confirmado e diga que está acompanhando.
-RODAR A ANÁLISE ("runAnalysis": true) — só quando o cliente PEDIU pra rodar/analisar o crédito dele (ex.: "pode rodar?", "já pode analisar") e a proposta dele já está preenchida (card em Pré-Análise). Nunca por conta própria. Quando marcar true, diga que já encaminhou a análise aos bancos e que avisa quando sair, sem prazo. Nos outros casos, false.`;
+RODAR A ANÁLISE ("runAnalysis": true) — só quando o cliente PEDIU pra rodar/analisar o crédito dele (ex.: "pode rodar?", "já pode analisar") e a proposta dele já está preenchida (card em Pré-Análise). Nunca por conta própria. Quando marcar true, diga que já encaminhou a análise aos bancos e que avisa quando sair, sem prazo. Nos outros casos, false.
+MANDAR A SIMULAÇÃO EM PDF ("sendSimulation": ["SANTANDER"] e/ou ["INTER"]) — só quando o cliente PEDIU a simulação, as parcelas ou o PDF e o banco aparece como APROVADO no bloco acima (Santander = o banco "Santander"; Inter só se o bloco listar o Inter aprovado). O CRM baixa o PDF no portal, põe a logo da A&F e envia ao cliente sozinho em 1-2 minutos: no "reply" diga só que já está enviando o PDF da simulação (sem prazo exato, sem prometer o conteúdo). Nunca ofereça o PDF por conta própria e nunca mande de banco reprovado ou em análise. Nos outros casos, null.`;
 
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
 - Se o "ok" responder uma pergunta sua de sim/não (ex.: "posso te mandar a lista de documentos?"), trate como "sim" e siga normalmente, com noReply false.
@@ -280,7 +281,14 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "sendSimulation": <lista com "SANTANDER" e/ou "INTER", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>}`;
+
+/** "sendSimulation" vindo do JSON da IA: aceita só SANTANDER/INTER (lista ou texto); qualquer outra coisa = null. */
+function parseSendSimulation(raw: unknown): string[] | null {
+  const list = (Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []).map((v) => String(v || '').trim().toUpperCase());
+  const ok = Array.from(new Set(list.filter((v) => v === 'SANTANDER' || v === 'INTER')));
+  return ok.length ? ok : null;
+}
 
 export interface AiAutoReplyResult {
   reply: string;
@@ -309,6 +317,8 @@ export interface AiAutoReplyResult {
   extractedFields?: Record<string, string> | null;
   /** true = a IA pediu pra RODAR a análise de crédito do cliente nos bancos (extensões como ponte) — aplicar via applyAiExtractedActions. */
   runAnalysis?: boolean;
+  /** Bancos cuja simulação em PDF a IA quer mandar (SANTANDER | INTER) — aplicar via applyAiExtractedActions. */
+  sendSimulation?: string[] | null;
 }
 
 /**
@@ -508,6 +518,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         moveReason: typeof parsed.moveReason === 'string' && parsed.moveReason.trim() ? parsed.moveReason.trim() : null,
         extractedFields,
         runAnalysis: parsed.runAnalysis === true,
+        sendSimulation: parseSendSimulation(parsed.sendSimulation),
       };
     }
     if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
@@ -525,6 +536,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         moveReason: typeof parsed.moveReason === 'string' && parsed.moveReason.trim() ? parsed.moveReason.trim() : null,
         extractedFields,
         runAnalysis: parsed.runAnalysis === true,
+        sendSimulation: parseSendSimulation(parsed.sendSimulation),
       };
     }
   } catch {

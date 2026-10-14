@@ -1,9 +1,10 @@
-import { Router, Response } from 'express';
+import express, { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
 import { getAutoSetting, setAutoSetting, setPaused } from '../services/credit-auto.service';
+import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
@@ -144,9 +145,12 @@ router.get('/queue', async (req: AuthRequest, res: Response) => {
   if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
   try {
     touchExtension(req.user!.accountId, bank, typeof req.query.extId === 'string' ? req.query.extId : null);
-    const items = req.query.claim === '0' ? [] : await claimQueue(prisma, { accountId: req.user!.accountId, bank, limit: Number(req.query.limit) || 3, caps: typeof req.query.caps === 'string' ? req.query.caps.split(',') : [] });
+    const caps = typeof req.query.caps === 'string' ? req.query.caps.split(',') : [];
+    const items = req.query.claim === '0' ? [] : await claimQueue(prisma, { accountId: req.user!.accountId, bank, limit: Number(req.query.limit) || 3, caps });
     if (items.length) emit(req);
-    res.json({ items });
+    // PDFs de simulação pedidos (só pra extensão do Credimorar que avisa saber baixar: caps inclui "doc").
+    const docs = bank === 'CREDIMORAR' && caps.includes('doc') && req.query.claim !== '0' ? await claimSimulationDocs(prisma, { accountId: req.user!.accountId, limit: 2 }) : [];
+    res.json({ items, docs });
   } catch (err) { fail(res, err, 'Erro ao buscar a fila'); }
 });
 
@@ -176,6 +180,39 @@ router.post('/manual', async (req: AuthRequest, res: Response) => {
     emit(req, { leadId: row.leadId });
     res.json(row);
   } catch (err) { fail(res, err, 'Erro ao registrar', 400); }
+});
+
+// ── PDF da simulação pro cliente (com a logo A&F) ─────────────────────────────────────────────
+// Pede à extensão do Credimorar que baixe o "Evolução das parcelas" original; o CRM põe a logo e manda no WhatsApp.
+router.post('/simulation-docs', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || '');
+    const institutions = parseInstitutions(req.body?.institutions ?? req.body?.institution);
+    if (!leadId || !institutions.length) return res.status(400).json({ error: 'leadId e pelo menos uma instituição (SANTANDER ou INTER) são obrigatórios' });
+    const out = await requestSimulationDocs(prisma, { accountId: req.user!.accountId, leadId, institutions, userId: req.user!.id, source: 'USER', caption: typeof req.body?.caption === 'string' ? req.body.caption : undefined });
+    emit(req, { leadId });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao pedir o PDF da simulação', 400); }
+});
+router.get('/simulation-docs', async (req: AuthRequest, res: Response) => {
+  try { res.json(await listSimulationDocs(prisma, { accountId: req.user!.accountId, leadId: String(req.query.leadId || '') })); } catch (err) { fail(res, err, 'Erro ao listar os PDFs pedidos'); }
+});
+// A extensão devolve o PDF ORIGINAL do portal (corpo = bytes do PDF).
+router.post('/simulation-docs/:id/upload', express.raw({ type: () => true, limit: '20mb' }), async (req: AuthRequest, res: Response) => {
+  try {
+    const pdf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (pdf.length < 1000 || pdf.subarray(0, 5).toString('latin1') !== '%PDF-') return res.status(400).json({ error: 'o corpo não é um PDF' });
+    const out = await finishSimulationDoc(prisma, { accountId: req.user!.accountId, id: req.params.id, pdf, io: io(req) });
+    emit(req);
+    res.status(out.ok ? 200 : 422).json(out);
+  } catch (err) { fail(res, err, 'Erro ao enviar a simulação', 400); }
+});
+router.post('/simulation-docs/:id/fail', async (req: AuthRequest, res: Response) => {
+  try {
+    await failSimulationDoc(prisma, { accountId: req.user!.accountId, id: req.params.id, reason: String(req.body?.reason || 'a extensão não conseguiu baixar o PDF') });
+    emit(req);
+    res.json({ ok: true });
+  } catch (err) { fail(res, err, 'Erro ao registrar a falha', 400); }
 });
 
 router.put('/:id', async (req: AuthRequest, res: Response) => {

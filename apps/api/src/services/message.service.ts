@@ -3,6 +3,7 @@ import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMe
 import { downloadDriveFile } from './google.service';
 import { sendGenericEmail } from './email.service';
 import { normalizeClientName } from '../lib/text';
+import { brandPortalPdf } from './simulation-pdf.service';
 
 const prisma = new PrismaClient();
 
@@ -425,13 +426,25 @@ export async function sendOutboundMedia(params: {
   userId?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: any } | { success: false; error: string; code?: string }> {
-  const { accountId, leadId, buffer, fileName, mimeType, caption, userId, io } = params;
+  const { accountId, leadId, fileName, mimeType, caption, userId, io } = params;
+  let buffer = params.buffer;
 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
     include: { contact: true, pipeline: { select: { departmentId: true } } },
   });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
+
+  // "Evolução das parcelas" original do portal vai pro cliente com a logo A&F (qualquer caminho: Inbox, IA, encaminhar).
+  // Só mexe no modelo do portal; qualquer outro PDF segue intacto.
+  if (/pdf/i.test(mimeType) || /\.pdf$/i.test(fileName)) {
+    try {
+      const branded = await brandPortalPdf(buffer);
+      if (branded.recognized) buffer = branded.pdf;
+    } catch (err: any) {
+      console.error('[SimulationPdf] não consegui pôr a logo, enviando o PDF como veio:', err?.message);
+    }
+  }
 
   const cloudPhone = plainPhone(lead.contact);
   if (!cloudPhone) {
