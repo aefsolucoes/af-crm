@@ -222,6 +222,26 @@ export default function AnaliseCreditoPage() {
     }
   }
 
+  // Botão dentro do cartão do banco: roda SÓ aquele banco, daquele participante (Fabio 14/10). No 2º participante liga a inversão só naquele banco
+  // (a mesma que a cascata automática usa); no 1º desliga, pra não rodar no nome errado.
+  const [rerunKey, setRerunKey] = useState<string | null>(null);
+  async function rerunBank(l: BoardLead, bank: Bank, who: 'p1' | 'p2') {
+    const key = `${l.id}-${bank}-${who}`;
+    if (rerunKey) return;
+    setRerunKey(key);
+    try {
+      const inverted = !!l.overrides?.[bank]?.inverter;
+      if (who === 'p2' !== inverted) await api.put('/api/credit-analysis/overrides', { leadId: l.id, banks: [bank], data: { inverter: who === 'p2' }, merge: true });
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: [bank], force: true });
+      pingExtensions(data?.extensions, [bank]);
+      const short = BANKS.find((b) => b.key === bank)?.short;
+      toast(r.created ? `${short} na fila para ${who === 'p2' ? (l.card?.name2 || '2º participante') : (l.card?.name1 || l.name)}` : `${short}: já tem uma análise rodando`, r.created ? 'success' : 'error');
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir a análise', 'error');
+    } finally { setRerunKey(null); }
+  }
+
   async function choose(a: Analysis, lead: BoardLead) {
     if (!window.confirm(`Escolher a proposta ${BANKS.find((b) => b.key === a.bank)?.short} para ${lead.name}? Isso preenche o Financiamento do card com ela.`)) return;
     try {
@@ -435,6 +455,11 @@ export default function AnaliseCreditoPage() {
                                         <button onClick={() => setModal({ lead: l, bank: b.key, analysis: a })} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50">
                                           {a ? <><Pencil size={11} /> Resultado</> : <><Plus size={11} /> Registrar</>}
                                         </button>
+                                        {(!a || ['FAILED', 'INCOMPLETE', 'CHECK'].includes(a.status)) && (
+                                          <button onClick={() => rerunBank(l, b.key, who)} disabled={!!rerunKey} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50">
+                                            <RefreshCw size={11} className={rerunKey === `${l.id}-${b.key}-${who}` ? 'animate-spin' : ''} /> {a ? 'Rodar de novo' : who === 'p2' ? 'Rodar no 2º participante' : 'Rodar'}
+                                          </button>
+                                        )}
                                         {(a?.status === 'APPROVED' || a?.status === 'CONDITIONAL') && (a.chosen
                                           ? <span className="flex items-center gap-1 px-2.5 py-1 text-amber-600"><Star size={11} className="fill-amber-400" /> Escolhida</span>
                                           : <button onClick={() => choose(a, l)} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-af-accent text-white hover:opacity-90"><Star size={11} /> Escolher esta proposta</button>)}
