@@ -323,6 +323,8 @@ export interface AiExtractedAction {
   runAnalysis?: boolean;
   /** Bancos (SANTANDER | INTER) cuja simulação em PDF a IA quer mandar ao cliente — o PDF original do portal sai com a logo A&F (simulation-doc.service.ts). */
   sendSimulation?: string[] | null;
+  /** true = a IA decidiu apresentar a aprovação: o CRM manda o aviso padrão (resumo + documentos + PDF) em vez de a IA escrever as condições. */
+  sendApproval?: boolean;
 }
 
 /** Tag usada pra excluir o lead de lembretes automáticos recorrentes
@@ -432,8 +434,20 @@ export async function applyAiExtractedActions(
       } catch (e: any) { console.error('[IA] rodar análise falhou:', e?.message); }
     }
 
+    // Apresentar a aprovação (a IA decidiu): o CRM manda o MESMO aviso do botão "Avisar cliente" — mensagem 1 com o resumo, mensagem 2 com os
+    // documentos — e já pede o PDF da simulação. A IA não escreve as condições (formato fixo, Fabio 14/10).
+    if (action.sendApproval) {
+      try {
+        const { sendApprovalNoticeNow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+        await new Promise((resolve) => setTimeout(resolve, 1500)); // depois da frase curta da IA
+        const r = await sendApprovalNoticeNow({ accountId, leadId, io, sendDocs: true, moveStage: true });
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? '🤖 A IA apresentou a aprovação ao cliente (aviso padrão: resumo + documentos + simulação em PDF).' : `🤖 A IA quis apresentar a aprovação, mas o aviso não saiu: ${r.error}` } }).catch(() => {});
+        if (r.ok) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: 'apresentou a aprovação ao cliente (aviso padrão)' });
+      } catch (e: any) { console.error('[IA] aviso de aprovação falhou:', e?.message); }
+    }
+
     // Mandar a simulação em PDF (a IA decidiu, a pedido do cliente): a extensão do Credimorar baixa o original e o CRM envia com a logo A&F.
-    if (action.sendSimulation && action.sendSimulation.length) {
+    if (action.sendSimulation && action.sendSimulation.length && !action.sendApproval) { // com sendApproval o PDF já vai junto do aviso padrão
       try {
         const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
         const r = await requestSimulationDocs(prisma as any, { accountId, leadId, institutions: action.sendSimulation.slice(0, 1), source: 'AI', skipIfSentWithinHours: 0.25 });

@@ -269,6 +269,7 @@ const CREDIT_ANALYSIS_RULES = `ANÁLISE DE CRÉDITO — quando o bloco "ANÁLISE
 - Mais de um banco aprovado: siga a regra de várias opções (valor, prazo, taxa e parcela de cada uma). Creditas: o valor que o cliente vê é o LÍQUIDO.
 - Se a leitura for antiga (horas) e o cliente perguntar do resultado, responda com o que está confirmado e diga que está acompanhando.
 RODAR A ANÁLISE ("runAnalysis": true) — só quando o cliente PEDIU pra rodar/analisar o crédito dele (ex.: "pode rodar?", "já pode analisar") e a proposta dele já está preenchida (card em Pré-Análise). Nunca por conta própria. Quando marcar true, diga que já encaminhou a análise aos bancos e que avisa quando sair, sem prazo. Nos outros casos, false.
+APRESENTAR A APROVAÇÃO ("sendApproval": true) — quando o cliente perguntar do resultado/aprovação/condições e o bloco acima trouxer banco APROVADO (ou aprovado a menor) e as condições ainda NÃO foram enviadas nesta conversa: marque true e NÃO escreva valor, prazo, taxa, parcela nem lista de documentos no "reply". O CRM manda sozinho, logo em seguida, o aviso padrão em 2 mensagens (1ª: resumo da proposta; 2ª: documentos) e a simulação em PDF. No "reply" escreva só uma frase curta (ex.: "Boa notícia! Já te mando os detalhes por aqui."). Se marcar sendApproval, NÃO marque sendSimulation (o PDF já vai junto). Se as condições já foram enviadas na conversa, responda a dúvida normalmente e deixe false.
 MANDAR A SIMULAÇÃO EM PDF ("sendSimulation": ["SANTANDER"], ["INTER"] ou ["CREDITAS"]) — SEMPRE UM banco só: o que o CLIENTE ESCOLHEU; se ele ainda não escolheu, o de MENOR TAXA entre os aprovados do bloco; se as taxas empatarem (ou não aparecerem), a ordem é Inter, depois Creditas e por último Santander (a linha "Simulação em PDF" do bloco já indica qual). Marque quando, NESTA resposta, você apresentar as condições aprovadas, quando o cliente escolher um banco, ou quando pedir a simulação/parcelas/PDF. O CRM lê a simulação no portal do banco, põe a logo da A&F e envia o PDF logo em seguida, sozinho (1-2 min): no "reply" diga só que a simulação em PDF segue logo abaixo (sem prometer prazo exato). Nunca mande de vários bancos de uma vez, nem de banco reprovado ou em análise, nem repita se o PDF desse banco já foi enviado na conversa. Se o cliente escolher OUTRO banco depois, mande o desse banco. Nos outros casos, null.`;
 
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
@@ -282,7 +283,7 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>}`;
 
 /** "sendSimulation" vindo do JSON da IA: aceita só SANTANDER/INTER (lista ou texto); qualquer outra coisa = null. */
 function parseSendSimulation(raw: unknown): string[] | null {
@@ -320,6 +321,8 @@ export interface AiAutoReplyResult {
   runAnalysis?: boolean;
   /** Bancos cuja simulação em PDF a IA quer mandar (SANTANDER | INTER) — aplicar via applyAiExtractedActions. */
   sendSimulation?: string[] | null;
+  /** true = a IA vai apresentar a aprovação pelo aviso padrão do CRM — aplicar via applyAiExtractedActions. */
+  sendApproval?: boolean;
 }
 
 /**
@@ -520,6 +523,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         extractedFields,
         runAnalysis: parsed.runAnalysis === true,
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
+        sendApproval: parsed.sendApproval === true,
       };
     }
     if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
@@ -538,6 +542,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         extractedFields,
         runAnalysis: parsed.runAnalysis === true,
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
+        sendApproval: parsed.sendApproval === true,
       };
     }
   } catch {
