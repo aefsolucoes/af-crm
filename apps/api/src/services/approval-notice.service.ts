@@ -643,7 +643,7 @@ export async function finishApprovalFollowUp(p: { accountId: string; leadId: str
 /** Manda o aviso. Dentro da janela de 24 h vai o texto com as opções (e, se marcado, a lista de documentos); fora dela vai o template
  *  de aprovação e o texto completo sai quando o cliente tocar em "Sim, quero saber". Se marcado, move o card pra Aguardando Documentação
  *  (dispara as automações da etapa: IA ligada e e-mail "pré-análise aprovada"). */
-export async function sendApprovalNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; sendDocs?: boolean; moveStage?: boolean; ignoreWindow?: boolean }): Promise<{ ok: boolean; mode?: 'text' | 'template'; options?: number; docsSent?: boolean; moved?: string | null; scheduled?: boolean; at?: string; error?: string }> {
+export async function sendApprovalNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; sendDocs?: boolean; moveStage?: boolean; ignoreWindow?: boolean }): Promise<{ ok: boolean; mode?: 'text' | 'template'; options?: number; docsSent?: boolean; moved?: string | null; scheduled?: boolean; at?: string; already?: boolean; error?: string }> {
   const sendDocs = p.sendDocs !== false;
   const moveStage = p.moveStage !== false;
   const preview = await previewApprovalNotice(p.leadId);
@@ -652,6 +652,11 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true } } } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
+  // Já está na conversa? (qualquer remetente) Aviso com texto: todas as opções (banco + valor + nome) já foram enviadas; com template: o cliente recebeu e ainda não respondeu.
+  const jaTem = preview.mode === 'template'
+    ? ((await isWaitingApprovalReply(p.leadId)) ? { at: null as Date | null } : null)
+    : await approvalAlreadyInChat(p.leadId, preview.text);
+  if (jaTem) return { ok: false, already: true, error: `O cliente já recebeu este aviso de aprovação na conversa${jaTem.at ? ` (${fmtQuando(jaTem.at)})` : ' (template enviado, ainda sem resposta dele)'} — não reenviei.` };
   // Fora do horário (07h–21h): não manda agora — agenda pro próximo 07:00; o poller manda em ordem (processScheduledNotices).
   if (!p.ignoreWindow && !inNoticeWindow()) {
     const at = nextNoticeStart();
@@ -694,6 +699,48 @@ const REJECTION_TEXT = 'Oi! Tudo bem? Analisamos seu crédito junto às institui
 /** Template aprovado da Meta pro aviso de reprovado (Fabio 14/10): é o que vale quando a janela de 24 h do WhatsApp está fechada. */
 export const REJECTION_TEMPLATE = 'reprovacao';
 
+// ─── Conferir a CONVERSA antes de avisar (Fabio 14/10: "a IA do CRM precisa verificar na conversa se já não foi encaminhado alguma negativa ou aprovação, pra não duplicar") ───
+// Vale pra QUALQUER caminho (aviso automático, botão da tela, IA da conversa, agendado) e pra QUALQUER remetente (sistema, equipe pelo WhatsApp, IA, e-mail).
+const flat = (t: string) => t.replace(/\s+/g, ' ').trim();
+const REJECTION_RX = [
+  /n[ãa]o conseguimos aprova(ç[ãa]o|r)/i,
+  /(infelizmente|lamento|sinto muito|n[ãa]o foi poss[ií]vel)[^.!?\n]{0,140}(reprov|negad|recusad|n[ãa]o (foi|ficou|est[aá]) aprovad|n[ãa]o aprovad|n[ãa]o conseguimos|n[ãa]o consegui)/i,
+  /(cr[eé]dito|an[áa]lise|proposta|pedido|financiamento)[^.!?\n]{0,60}\b(foi|ficou|est[aá]|foram)\s+(reprovad|negad|recusad|n[ãa]o aprovad)/i,
+];
+export const isRejectionText = (t: string) => REJECTION_RX.some((rx) => rx.test(t));
+
+/** O cliente já recebeu, na conversa, o aviso de que NÃO foi aprovado (dos últimos 14 dias)? Devolve a mensagem mais recente. */
+export async function rejectionAlreadyInChat(leadId: string): Promise<{ at: Date } | null> {
+  const msgs = await prisma.message.findMany({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 14 * 86_400_000) }, NOT: { content: '' } }, orderBy: { createdAt: 'desc' }, take: 150, select: { content: true, createdAt: true } });
+  const hit = msgs.find((m) => isRejectionText(m.content || ''));
+  return hit ? { at: hit.createdAt } : null;
+}
+
+/** Cada opção do texto de aprovação (banco + valor + em nome de quem). */
+export function approvalPairs(text: string): { inst: string; val: string; nome: string }[] {
+  return flat(text).split('📋 Resumo da proposta:').slice(1).map((b) => ({
+    inst: (b.match(/🏦 Instituição: (.+?)(?= 👤| 💰| ℹ️| 📅|$)/)?.[1] || '').trim(),
+    val: (b.match(/💰 Valor (?:aprovado|líquido): (R\$ ?[\d.,]+)/)?.[1] || '').trim(),
+    nome: (b.match(/👤 Aprovado no nome de: (.+?) \(/)?.[1] || '').trim(),
+  })).filter((x) => x.inst && x.val);
+}
+
+/** TODAS as opções do aviso que ia sair (banco + valor + nome) já foram enviadas ao cliente numa mensagem de aprovação? (últimos 21 dias) */
+export async function approvalAlreadyInChat(leadId: string, text: string): Promise<{ at: Date } | null> {
+  const pairs = approvalPairs(text);
+  if (!pairs.length) return null;
+  const msgs = await prisma.message.findMany({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 21 * 86_400_000) }, content: { contains: 'Instituição:' } }, orderBy: { createdAt: 'desc' }, take: 60, select: { content: true, createdAt: true } });
+  let at: Date | null = null;
+  for (const p of pairs) {
+    const hit = msgs.find((m) => flat(m.content || '').split('📋 Resumo da proposta:').slice(1).some((b) => b.includes(p.inst) && b.includes(p.val) && (!p.nome || b.includes(p.nome))));
+    if (!hit) return null;
+    if (!at || hit.createdAt > at) at = hit.createdAt;
+  }
+  return at ? { at } : null;
+}
+
+const fmtQuando = (d: Date) => d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+
 export async function buildRejectionText(leadId: string): Promise<{ text: string; reasons: string[] } | null> {
   if (await optionsFromAnalyses(leadId).catch(() => null)) return null; // tem opção aprovada: o aviso é o de aprovação
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true, contact: { select: { name: true } } } });
@@ -716,16 +763,16 @@ export async function buildRejectionText(leadId: string): Promise<{ text: string
   return { text, reasons };
 }
 
-export async function sendRejectionNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; ignoreWindow?: boolean }): Promise<{ ok: boolean; scheduled?: boolean; at?: string; via?: 'whatsapp' | 'email'; error?: string }> {
+export async function sendRejectionNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; ignoreWindow?: boolean }): Promise<{ ok: boolean; already?: boolean; scheduled?: boolean; at?: string; via?: 'whatsapp' | 'email'; error?: string }> {
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const built = await buildRejectionText(p.leadId);
   if (!built) return { ok: false, error: 'Este card tem opção aprovada ou nenhum motivo claro de não aprovação.' };
   // Já avisado? Só barra se o aviso é MAIS NOVO que o último resultado ruim: o cliente que pede outro valor e volta reprovado de novo precisa saber (Fabio 14/10).
-  const ultimoAviso = await prisma.message.findFirst({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) }, OR: [{ content: { contains: REJECTION_MARK } }, { content: { contains: REJECTION_MARK_OLD } }, { templateName: REJECTION_TEMPLATE }] }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  const ultimoAviso = await rejectionAlreadyInChat(p.leadId);
   if (ultimoAviso) {
     const ultimoRuim = await prisma.creditAnalysis.findFirst({ where: { leadId: p.leadId, dryRun: false, status: { in: ['REJECTED', 'FAILED'] }, source: { not: 'AI_SIM' } }, orderBy: { updatedAt: 'desc' }, select: { updatedAt: true } });
-    if (!ultimoRuim || ultimoRuim.updatedAt.getTime() <= ultimoAviso.createdAt.getTime()) return { ok: false, error: 'O aviso de não aprovado já foi enviado a este cliente (nenhum resultado novo desde então).' };
+    if (!ultimoRuim || ultimoRuim.updatedAt.getTime() <= ultimoAviso.at.getTime()) return { ok: false, already: true, error: `O cliente já foi avisado da negativa na conversa em ${fmtQuando(ultimoAviso.at)} (nenhum resultado novo desde então) — não reenviei.` };
   }
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (!p.ignoreWindow && !inNoticeWindow()) {
@@ -818,7 +865,7 @@ export async function processScheduledNotices(io: any): Promise<void> {
       const built = await buildRejectionText(l.id).catch(() => null);
       await markRejectedAndMove({ accountId: l.accountId, leadId: l.id, io, disqualify: cf._autoCloseAfterNotice === 'DESQ', motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Aprovação] mover reprovado:', e?.message));
     }
-    if (!r.ok) await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `⚠️ O aviso agendado ao cliente não saiu: ${r.error}` } }).catch(() => {});
+    if (!r.ok) await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: r.already ? `ℹ️ Aviso agendado não reenviado: ${r.error}` : `⚠️ O aviso agendado ao cliente não saiu: ${r.error}` } }).catch(() => {});
   } catch (e: any) {
     console.error('[Aprovação] avisos agendados:', e?.message);
   } finally {

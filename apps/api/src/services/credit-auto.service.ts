@@ -206,6 +206,11 @@ async function noticeClients(accountId: string, io: any) {
     const sig = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${a.holderName || ''}`).sort().join('|');
     if (cf._autoNoticeSig === sig) continue;
     const out = await sendApprovalNoticeNow({ accountId, leadId: l.id, io });
+    if (out.already) { // a conversa já tem esse aviso (equipe, IA ou aviso anterior): não duplica e não tenta de novo a cada minuto
+      await saveCf(l.id, { _autoNoticeSig: sig, _autoNoticeAt: new Date().toISOString() });
+      await addNote(l.id, `ℹ️ Aviso de aprovação NÃO reenviado: ${out.error}`);
+      continue;
+    }
     if (!out.ok) { console.warn(`[Análise automática] ${l.name}: aviso não enviado — ${out.error}`); continue; }
     await saveCf(l.id, { _autoNoticeSig: sig, _autoNoticeAt: new Date().toISOString() });
     await prisma.lead.update({ where: { id: l.id }, data: { aiAutoReplyActive: true } }).catch(() => {});
@@ -256,7 +261,8 @@ async function closeRejected(accountId: string, io: any) {
     const desqualificado = BANKS.every((b) => ultima(b)?.status === 'FAILED');
     const out = await sendRejectionNoticeNow({ accountId, leadId: l.id, io });
     if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: desqualificado ? 'DESQ' : true }); continue; } // fora das 07h–21h: o aviso sai às 07:00 e o poller dos agendados fecha o card
-    if (!out.ok) {
+    if (out.already) await addNote(l.id, `ℹ️ Aviso de negativa NÃO reenviado: ${out.error}`); // já foi avisado: segue pro fechamento do card, sem duplicar a mensagem
+    if (!out.ok && !out.already) {
       await saveCf(l.id, { _autoCloseTriedAt: new Date().toISOString() });
       console.warn(`[Análise automática] ${l.name}: reprovado, mas o aviso não saiu — ${out.error}`);
       continue;

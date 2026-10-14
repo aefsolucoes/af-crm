@@ -460,7 +460,7 @@ export async function applyAiExtractedActions(
         const { sendApprovalNoticeNow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
         await new Promise((resolve) => setTimeout(resolve, 1500)); // depois da frase curta da IA
         const r = await sendApprovalNoticeNow({ accountId, leadId, io, sendDocs: true, moveStage: true });
-        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? (r.scheduled ? '🤖 A IA quis apresentar a aprovação: o aviso padrão (resumo + documentos + PDF) ficou agendado pro próximo horário de aviso (07h–21h).' : '🤖 A IA apresentou a aprovação ao cliente (aviso padrão: resumo + documentos + simulação em PDF).') : `🤖 A IA quis apresentar a aprovação, mas o aviso não saiu: ${r.error}` } }).catch(() => {});
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? (r.scheduled ? '🤖 A IA quis apresentar a aprovação: o aviso padrão (resumo + documentos + PDF) ficou agendado pro próximo horário de aviso (07h–21h).' : '🤖 A IA apresentou a aprovação ao cliente (aviso padrão: resumo + documentos + simulação em PDF).') : `🤖 A IA quis apresentar a aprovação, mas ${r.already ? 'o aviso não foi reenviado' : 'o aviso não saiu'}: ${r.error}` } }).catch(() => {});
         if (r.ok) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: 'apresentou a aprovação ao cliente (aviso padrão)' });
       } catch (e: any) { console.error('[IA] aviso de aprovação falhou:', e?.message); }
     }
