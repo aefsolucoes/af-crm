@@ -281,6 +281,7 @@ async function retryTechnicalFailures(accountId: string) {
     if (cf._noticeAt || rows.some((r) => r.status === 'REQUESTED' || r.status === 'RUNNING')) continue;
     const retries: Record<string, { n: number; at: string; gaveUp?: boolean }> = { ...(cf._autoRetries || {}) };
     const redo: string[] = [];
+    const redoCheck = new Set<string>(); // bancos cuja ÚLTIMA linha era uma CONFERÊNCIA que falhou: refaz a conferência, NUNCA cria proposta nova
     const gaveUp: string[] = [];
     for (const b of BANKS) {
       const r = rows.filter((x) => x.bank === b && x.source !== 'AI_SIM' && !(x.kind === 'CHECK' && x.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
@@ -292,10 +293,13 @@ async function retryTechnicalFailures(accountId: string) {
       if (st.n >= RETRY_MAX) { retries[b] = { ...st, gaveUp: true }; gaveUp.push(b); continue; }
       retries[b] = { n: st.n + 1, at: new Date().toISOString() };
       redo.push(b);
+      if (r.kind === 'CHECK') redoCheck.add(b);
     }
     const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
     if (redo.length) {
-      await createRequests(prisma, { accountId, leadIds: [l.id], banks: redo, dryRun: false, force: true });
+      const runBanks = redo.filter((b) => !redoCheck.has(b));
+      if (runBanks.length) await createRequests(prisma, { accountId, leadIds: [l.id], banks: runBanks, dryRun: false, force: true });
+      if (redoCheck.size) await createRequests(prisma, { accountId, leadIds: [l.id], banks: [...redoCheck], dryRun: false, kind: 'CHECK' });
       await saveCf(l.id, { _autoRetries: retries });
       await addNote(l.id, `🤖 Falha técnica na análise (${redo.map((b) => label[b]).join(', ')}): refazendo sozinha — tentativa ${Math.max(...redo.map((b) => retries[b].n))} de ${RETRY_MAX}.`);
     } else if (gaveUp.length) {
