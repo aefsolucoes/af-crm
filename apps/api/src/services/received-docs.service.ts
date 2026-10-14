@@ -12,6 +12,7 @@ const prisma = new PrismaClient();
  * automação, IA), e Lead.stageEnteredAt (trigger no banco) marca quando
  * entrou — sem depender de cada caminho lembrar de chamar isto. */
 
+const CONTRACTING_ENTRY_DAYS = 45; // funil "Em contratação": qualquer etapa, até 45 dias depois de entrar
 const RECENT_ENTRY_DAYS = 7; // só quem entrou na etapa agora (não mexe em pasta antiga organizada à mão)
 const RETRY_AFTER_FAILURE_MS = 6 * 60 * 60 * 1000;
 const MAX_VISION_BYTES = 4_500_000;
@@ -261,14 +262,19 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
       where: {
         archived: false,
         isGroup: false,
-        stage: { name: { contains: 'recebida', mode: 'insensitive' } },
-        stageEnteredAt: { gte: new Date(Date.now() - RECENT_ENTRY_DAYS * 86_400_000) },
+        // "Documentação Recebida" (entrou há pouco) OU qualquer etapa do funil "Em contratação" (entrou há até 45 dias): o Financiamento Habitacional costuma ir direto
+        // pra Crédito em Análise/Aprovado/Vistoria/Análise Jurídica sem passar por Documentação Recebida e ficava SEM pasta (Fabio 14/10). A pasta vai pro LEADS ATIVOS
+        // configurado no setor do card (FH: "1. LEADS ATIVOS"); quem já tem link/pasta montada é pulado abaixo.
+        OR: [
+          { stage: { name: { contains: 'recebida', mode: 'insensitive' } }, stageEnteredAt: { gte: new Date(Date.now() - RECENT_ENTRY_DAYS * 86_400_000) } },
+          { pipeline: { name: { startsWith: 'Em contratação' } }, stageEnteredAt: { gte: new Date(Date.now() - CONTRACTING_ENTRY_DAYS * 86_400_000) } },
+        ],
         pipeline: { department: { activeLeadsFolderId: { not: null } } },
       },
       select: {
         id: true, name: true, accountId: true, customFields: true, aiAutoReplyActive: true,
         stage: { select: { name: true } },
-        pipeline: { select: { department: { select: { activeLeadsFolderId: true } } } },
+        pipeline: { select: { name: true, department: { select: { activeLeadsFolderId: true } } } },
       },
     });
 
@@ -276,7 +282,7 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
     // desliga quando alguém da equipe responde direto o cliente — Fabio.)
 
     for (const lead of leads) {
-      if (!norm(lead.stage.name).includes('documentacao recebida')) continue;
+      if (!norm(lead.stage.name).includes('documentacao recebida') && !/^em contratacao/.test(norm(lead.pipeline.name))) continue;
       const cf = (lead.customFields || {}) as Record<string, string>;
       if (cf.link_pasta_drive || cf._driveOrganizedAt) {
         // Link colocado à mão: não mexe. Pasta montada antes (ex.: sob demanda,
