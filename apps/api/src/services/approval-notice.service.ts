@@ -299,9 +299,10 @@ export function renderApprovalText(options: ApprovalOption[]): string {
   return `${head}\n\n${options.map(block).join('\n\n')}${tail}`;
 }
 
-const DOCS_HEADER = '📎 Para seguir com esse valor o banco pede os seguintes documentos:';
-const DOCS_HEADER_MULTI = '📎 Para seguir com a opção que você escolher o banco pede os seguintes documentos:';
-const DOCS_MARK = 'o banco pede os seguintes documentos';
+// Texto da mensagem 2 (Fabio 14/10): cabeçalho único, "Documentos pessoais" + Imóvel, e os documentos do cônjuge/2º participante quando houver.
+const DOCS_HEADER = 'Para seguir com a contratação do crédito encaminhar os seguintes documentos:';
+const DOCS_MARK = 'encaminhar os seguintes documentos';
+const DOCS_MARK_OLD = 'o banco pede os seguintes documentos';
 const FALLBACK_PESSOAIS = ['Documento de identificação', 'Comprovante de residência', 'Comprovante de estado civil (certidão de nascimento ou casamento)'];
 const FALLBACK_IMOVEL = ['Certidão de ônus reais atualizada', 'CND de IPTU'];
 
@@ -319,8 +320,8 @@ function parseDocsTemplate(body: string | null | undefined): { pessoais: string[
   return out;
 }
 
-/** Mensagem 2 do aviso de aprovação: documentos pessoais + (SÓ se o banco pediu comprovação de renda) os de renda + documentos do imóvel. */
-export async function buildDocsText(accountId: string, options: ApprovalOption[]): Promise<string> {
+/** Mensagem 2 do aviso de aprovação: documentos pessoais (+ os de renda SÓ se o banco pediu comprovação de renda) + os do CÔNJUGE/2º PARTICIPANTE quando houver + os do imóvel. */
+export async function buildDocsText(accountId: string, options: ApprovalOption[], leadId?: string): Promise<string> {
   const tpl = await docsTemplate(accountId);
   const parsed = parseDocsTemplate(tpl?.body);
   const pessoais = parsed.pessoais.length ? parsed.pessoais : FALLBACK_PESSOAIS;
@@ -328,7 +329,13 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
   const renda: string[] = [];
   for (const o of options) for (const d of o.documentos?.itens || []) if (!renda.includes(d)) renda.push(d);
   const lista = [...pessoais, ...renda].map((d) => `• ${d}`).join('\n');
-  return `${options.length > 1 ? DOCS_HEADER_MULTI : DOCS_HEADER}\n\n${lista}\n\n*Imóvel:*\n${imovel.map((d) => `• ${d}`).join('\n')}`;
+  let conjuge = '';
+  if (leadId) {
+    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const p2 = String(((lead?.customFields || {}) as Record<string, any>).participante_2 || '').trim();
+    if (p2) conjuge = `\n\n*Documentos pessoais do cônjuge / 2º participante (${p2}):*\n${pessoais.map((d) => `• ${d}`).join('\n')}\n_Se moram juntos, o comprovante de residência e a certidão podem ser os mesmos._`;
+  }
+  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}${conjuge}\n\n*Imóvel:*\n${imovel.map((d) => `• ${d}`).join('\n')}`;
 }
 
 /** Texto de aprovação montado pro card (notas primeiro, aba Financiamento
@@ -511,7 +518,7 @@ export async function maybeSendApprovalOnYes(accountId: string, leadId: string, 
     // Mensagem 2: documentos (uma vez só por cliente).
     if (!(await docsAlreadySent(leadId))) {
       await new Promise((resolve) => setTimeout(resolve, 2500));
-      const docsText = await buildDocsText(accountId, built.options);
+      const docsText = await buildDocsText(accountId, built.options, leadId);
       await sendOutboundWhatsApp({ accountId, leadId, content: docsText, io });
     }
     requestSimulationsAfterApproval({ accountId, leadId }).catch(() => {});
@@ -536,7 +543,7 @@ async function docsTemplate(accountId: string) {
 
 /** A lista de documentos já foi mandada pra esse cliente nos últimos dias? (não manda duas vezes) */
 async function docsAlreadySent(leadId: string): Promise<boolean> {
-  return (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 5 * 86_400_000) }, OR: [{ content: { contains: 'precisaremos da seguinte documentação' } }, { content: { contains: DOCS_MARK } }] } })) > 0;
+  return (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 5 * 86_400_000) }, OR: [{ content: { contains: 'precisaremos da seguinte documentação' } }, { content: { contains: DOCS_MARK } }, { content: { contains: DOCS_MARK_OLD } }] } })) > 0;
 }
 
 /** Etapa "Aguardando Documentação" do funil do card, se o card ainda está ANTES dela. */
@@ -586,7 +593,7 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   const [mode, tpl, already, move] = await Promise.all([
     whatsappWindowOpen(leadId), lead ? docsTemplate(lead.accountId) : null, docsAlreadySent(leadId), awaitingDocsMove(leadId),
   ]);
-  const docsText = lead ? await buildDocsText(lead.accountId, await withHolders(leadId, built)) : '';
+  const docsText = lead ? await buildDocsText(lead.accountId, await withHolders(leadId, built), leadId) : '';
   return { text, docsText, options: built.length, mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
 }
 
