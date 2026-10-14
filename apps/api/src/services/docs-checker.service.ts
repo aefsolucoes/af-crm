@@ -4,6 +4,7 @@ import { moveLeadToContracting } from './contracting.service';
 import { sendOutboundWhatsApp } from './message.service';
 import { logActivity } from './activity.service';
 import { todayContextLine } from './ai-shared.service';
+import { reviewReceivedDocs, buildDocProblemsMessage } from './doc-review.service';
 
 const prisma = new PrismaClient();
 
@@ -136,6 +137,26 @@ ${history}`;
 export async function checkDocsComplete(accountId: string, leadId: string, io: Io): Promise<void> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
   if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return;
+
+  // Conferência de CONTEÚDO (Fabio 14/10): a IA LÊ cada arquivo e vê se está legível, atualizado e no nome certo (RG/CNH com frente e verso). Documento com
+  // problema NÃO deixa o card avançar, mesmo que "chegou tudo": o cliente é avisado do que corrigir (uma vez por conjunto de problemas).
+  const review = await reviewReceivedDocs(accountId, leadId).catch((err) => { console.error(`[Docs] leitura dos documentos falhou (${leadId}):`, err?.message || err); return null; });
+  if (review?.novas.length) {
+    const linhas = review.novas.map(({ arquivo, r }) => `${r.resultado === 'OK' ? '✅' : r.resultado === 'PROBLEMA' ? '⚠️' : '•'} ${r.tipo}${r.titular ? ` (${r.titular})` : ''}${r.resultado === 'PROBLEMA' ? ` — ${r.problemas.join('; ')}` : ''}${r.observacao ? ` [${r.observacao}]` : ''} — ${arquivo}`);
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA leu ${review.novas.length > 1 ? 'os documentos novos' : 'o documento novo'}:\n${linhas.join('\n')}` } }).catch(() => {});
+  }
+  if (review?.problemas.length) {
+    const sig = review.problemas.map((p) => `${p.doc}:${p.texto.join('/')}`).sort().join('|');
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cf = (fresh?.customFields || {}) as Record<string, unknown>;
+    if (cf._docProblemSig !== sig) {
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docProblemSig: sig } as any } });
+      const texto = buildDocProblemsMessage(review);
+      const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA achou problema em documento: ${review.problemas.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}. ${sent.success ? 'Cliente avisado do que corrigir.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: avise o cliente.'}` } }).catch(() => {});
+    }
+    return;
+  }
 
   const verdict = await evaluateDocs(accountId, leadId);
   if (!verdict) return;

@@ -3,6 +3,7 @@ import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE
 import { aiCreditContext, refreshAnalysesForAi } from './credit-analysis.service';
 import { teamQuestionsContext } from './ai-team-question.service';
 import { callSummaryContext } from './call-recording.service';
+import { aiDocsContext, DOCS_REVIEW_RULES } from './doc-review.service';
 
 /**
  * Pedido de permissão pra LIGAR pelo WhatsApp (template com o cartão "pode
@@ -398,6 +399,7 @@ export async function generateAiAutoReply(
     // Pergunta de status: pede leitura NOVA nos bancos (extensão) e espera até ~2 min; depois monta o bloco com o que está mais recente.
     await refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText }).catch(() => null);
     const analiseCredito = await aiCreditContext(prisma, leadId).catch(() => '');
+    const documentos = await aiDocsContext(leadId).catch(() => '');
 
     const systemPrompt = `${ROLE_FRAMING}
 
@@ -419,7 +421,7 @@ ${PROPOSAL_REVIEW_RULES}
 
 ${CREDIT_ANALYSIS_RULES}
 
-${NO_REPLY_RULES}
+${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${NO_REPLY_RULES}
 
 ${buildFillFieldsRules(camposTexto)}
 
@@ -427,7 +429,9 @@ ${OUTPUT_FORMAT}
 
 ${buildContextBlocks(ctx)}${analiseCredito ? `
 
-${analiseCredito}` : ''}${duvidasEquipe ? `
+${analiseCredito}` : ''}${documentos ? `
+
+${documentos}` : ''}${duvidasEquipe ? `
 
 ${duvidasEquipe}` : ''}${ligacao ? `
 
