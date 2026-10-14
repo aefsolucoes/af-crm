@@ -686,8 +686,12 @@ export function monthlyRatePct(text?: string | null): number | null {
   return /a\.?\s*a\b|ao ano|anual/i.test(String(text)) ? (Math.pow(1 + v / 100, 1 / 12) - 1) * 100 : v;
 }
 
+/** Ordem de preferência quando a taxa empata ou não é conhecida (Fabio 14/10): Inter, depois Creditas e por último Santander. */
+const SIM_BANK_PRIORITY: Record<string, number> = { INTER: 0, CREDITAS: 1, CREDIMORAR: 2 };
+const simPriority = (bank: string) => SIM_BANK_PRIORITY[bank] ?? 9;
+
 /** Banco cuja simulação em PDF vai pro cliente (Fabio 14/10): só UM — a proposta que o cliente ESCOLHEU (`chosen`) ou, sem escolha,
- *  a de MENOR TAXA mensal entre as aprovadas (sem taxa informada, a de menor 1ª parcela). */
+ *  a de MENOR TAXA mensal entre as aprovadas; empate (ou taxa desconhecida): Inter > Creditas > Santander. */
 export function pickSimulationBank(approved: Array<{ bank: string; rate?: string | null; chosen?: boolean; firstInstallment?: number | null }>): { bank: string; why: string } | null {
   if (!approved.length) return null;
   const chosen = approved.find((a) => a.chosen);
@@ -695,11 +699,14 @@ export function pickSimulationBank(approved: Array<{ bank: string; rate?: string
   if (approved.length === 1) return { bank: approved[0].bank, why: 'única aprovada' };
   const withRate = approved.map((a) => ({ a, r: monthlyRatePct(a.rate) })).filter((x): x is { a: (typeof approved)[number]; r: number } => x.r != null);
   if (withRate.length) {
-    withRate.sort((x, y) => x.r - y.r || (x.a.firstInstallment ?? Infinity) - (y.a.firstInstallment ?? Infinity));
-    return { bank: withRate[0].a.bank, why: `menor taxa (${withRate[0].r.toFixed(2).replace('.', ',')}% a.m.)` };
+    // taxas iguais (diferença menor que 0,005 p.p.) contam como empate e vale a ordem de preferência
+    withRate.sort((x, y) => (Math.abs(x.r - y.r) < 0.005 ? 0 : x.r - y.r) || simPriority(x.a.bank) - simPriority(y.a.bank));
+    const w = withRate[0];
+    const empate = withRate.filter((x) => Math.abs(x.r - w.r) < 0.005).length > 1;
+    return { bank: w.a.bank, why: `menor taxa (${w.r.toFixed(2).replace('.', ',')}% a.m.${empate ? ', empate: ordem Inter > Creditas > Santander' : ''})` };
   }
-  const byParcel = [...approved].sort((x, y) => (x.firstInstallment ?? Infinity) - (y.firstInstallment ?? Infinity));
-  return { bank: byParcel[0].bank, why: 'menor parcela' };
+  const byPriority = [...approved].sort((x, y) => simPriority(x.bank) - simPriority(y.bank));
+  return { bank: byPriority[0].bank, why: 'sem taxa informada: ordem Inter > Creditas > Santander' };
 }
 
 const BANK_LABEL_IA: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
