@@ -147,7 +147,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
                   <Badge a={a} />
                 </div>
               </div>
-              {second && <div className="text-[11px] text-amber-600 font-medium mt-0.5">Aprovado no nome de {second} (2º participante)</div>}
+              {second && <div className="text-[11px] text-amber-600 font-medium mt-0.5">{a && (a.status === 'APPROVED' || a.status === 'CONDITIONAL') ? 'Aprovado' : 'Analisado'} no nome de {second} (2º participante)</div>}
               {letter.length > 0 && (
                 <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] rounded-md bg-white border border-af-border px-2 py-1.5">
                   {letter.map(([k, v]) => <div key={k} className="contents"><dt className="text-slate-400">{k}</dt><dd className="text-slate-700 text-right">{v}</dd></div>)}

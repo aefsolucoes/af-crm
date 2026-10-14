@@ -83,10 +83,17 @@ function latestByParticipant(rows: any[], name2: string): { p1: Record<string, a
     return !!(n2 && h && (h === n2 || n2.includes(h) || h.includes(n2)));
   };
   const p1: Record<string, any> = {}, p2: Record<string, any> = {};
+  // Uma releitura (CONFERÊNCIA) que falhou por problema técnico ou não conseguiu ler NÃO esconde um resultado que já existia (Fabio 14/10: "mostra que falhou no Inter, sendo
+  // que foi aprovado no nome da Larissa" — a releitura morreu na recarga da extensão e cobriu a aprovação). Só entra se não houver nada melhor.
+  const ruido = (a: any) => a.kind === 'CHECK' && ['FAILED', 'CHECK', 'INCOMPLETE'].includes(a.status);
+  const fallback: Record<string, any> = {};
   for (const a of rows) {
     const bucket = isP2(a.holderName) ? p2 : p1;
+    const k = `${bucket === p2 ? '2' : '1'}|${a.bank}`;
+    if (ruido(a)) { if (!fallback[k]) fallback[k] = a; continue; }
     if (!bucket[a.bank]) bucket[a.bank] = a;
   }
+  for (const [k, a] of Object.entries(fallback)) { const [w, bank] = k.split('|'); const bucket = w === '2' ? p2 : p1; if (!bucket[bank]) bucket[bank] = a; }
   return { p1, p2 };
 }
 
@@ -640,9 +647,12 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
     : (p.scopeDepartmentIds.length ? { departmentId: { in: p.scopeDepartmentIds } } : { departmentId: { not: null } });
   const rows = await db.creditAnalysis.findMany({
     where: { accountId: p.accountId, createdAt: { gte: from }, dryRun: false, status: { not: 'TEST' }, lead: { pipeline: deptWhere } },
-    select: { leadId: true, bank: true, status: true, createdAt: true, finishedAt: true, source: true },
+    select: { leadId: true, bank: true, status: true, createdAt: true, finishedAt: true, source: true, detail: true },
     orderBy: { createdAt: 'asc' },
   });
+  // "Desqualificado" (o cliente não atende às regras daquele banco: mínimo do imóvel, terreno, saldo devedor…) vale como REPROVADO (Fabio 14/10).
+  const OBJETIVA = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i;
+  const reprovou = (r: { status: string; detail?: string | null }) => r.status === 'REJECTED' || (r.status === 'FAILED' && OBJETIVA.test(r.detail || ''));
 
   const out = keys.map((key) => {
     const [y, m] = key.split('-').map(Number);
@@ -661,12 +671,12 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
     for (const [k, list] of Array.from(pairs.entries())) {
       const [leadId, bank] = k.split('|');
       if (!banks[bank]) continue;
-      const decided = [...list].reverse().find((r) => DECIDED_OK.has(r.status) || r.status === 'REJECTED');
+      const decided = [...list].reverse().find((r) => DECIDED_OK.has(r.status) || reprovou(r));
       const rep = decided || list[list.length - 1];
       const b = banks[bank];
       b.analyzed++;
       if (DECIDED_OK.has(rep.status)) { b.approved++; if (rep.status === 'CONDITIONAL') b.conditional++; }
-      else if (rep.status === 'REJECTED') b.rejected++;
+      else if (reprovou(rep)) b.rejected++;
       else if (PENDING.has(rep.status)) b.pending++;
       else b.failed++;
       if (decided && decided.finishedAt && list[0].source === 'EXTENSION') { // registro manual não mede tempo (não tem uma solicitação de verdade)
@@ -674,7 +684,7 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
         if (minutes >= 0) mins[bank].push(minutes);
       }
       const l = byLead.get(leadId) || { ok: false, rejected: false, pending: false };
-      if (DECIDED_OK.has(rep.status)) l.ok = true; else if (rep.status === 'REJECTED') l.rejected = true; else if (PENDING.has(rep.status)) l.pending = true;
+      if (DECIDED_OK.has(rep.status)) l.ok = true; else if (reprovou(rep)) l.rejected = true; else if (PENDING.has(rep.status)) l.pending = true;
       byLead.set(leadId, l);
     }
     for (const b of BANK_KEYS) {

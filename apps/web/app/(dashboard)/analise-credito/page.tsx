@@ -354,9 +354,9 @@ export default function AnaliseCreditoPage() {
                             const a1 = l.latestP1?.[b.key], a2 = l.latestP2?.[b.key];
                             return (
                               <td key={b.key} className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}>
-                                {a1 && a2 ? (
+                                {(a1 && a2) || l.card?.name2 ? (
                                   <div className="space-y-1.5">
-                                    <div><div className="text-[10px] uppercase tracking-wide text-slate-400">1º participante</div><Badge a={a1} /></div>
+                                    <div><div className="text-[10px] uppercase tracking-wide text-slate-400">1º participante</div><Badge a={a1 || (!a2 ? l.latest[b.key] : undefined)} /></div>
                                     <div><div className="text-[10px] uppercase tracking-wide text-slate-400">2º participante</div><Badge a={a2} /></div>
                                   </div>
                                 ) : (
@@ -398,10 +398,12 @@ export default function AnaliseCreditoPage() {
                                 {BANKS.flatMap((b) => {
                                   const a1 = l.latestP1?.[b.key], a2 = l.latestP2?.[b.key];
                                   // Com resultado dos dois participantes no mesmo banco: um cartão pra cada.
-                                  const itens: { a?: typeof a1; who: 'p1' | 'p2' }[] = a1 && a2 ? [{ a: a1, who: 'p1' }, { a: a2, who: 'p2' }] : [{ a: l.latest[b.key], who: a2 && !a1 ? 'p2' : 'p1' }];
+                                  // Card com 2º participante: SEMPRE um cartão por banco pra cada participante (Fabio 14/10: "senão fica muito confuso"); sem análise num deles, o cartão diz que não rodou.
+                                  const dois = !!l.card?.name2 || (a1 && a2);
+                                  const itens: { a?: typeof a1; who: 'p1' | 'p2' }[] = dois ? [{ a: a1 || (!a2 ? l.latest[b.key] : undefined), who: 'p1' }, { a: a2, who: 'p2' }] : [{ a: l.latest[b.key], who: 'p1' }];
                                   return itens.map((it) => ({ b, ...it }));
                                 }).map(({ b, a, who }) => {
-                                  const hasP2 = Object.keys(l.latestP2 || {}).length > 0;
+                                  const hasP2 = Object.keys(l.latestP2 || {}).length > 0 || !!l.card?.name2;
                                   const quem = who === 'p2' ? `2º participante${l.card?.name2 ? ` · ${l.card.name2}` : ''}` : `1º participante${l.card?.name1 ? ` · ${l.card.name1}` : ''}`;
                                   return (
                                     <div key={`${b.key}-${who}`} className="rounded-lg border border-af-border bg-white p-3 text-xs space-y-2">
@@ -411,7 +413,7 @@ export default function AnaliseCreditoPage() {
                                       </div>
                                       {a ? (
                                         <>
-                                          {a.holderName && l.card?.name1 && a.holderName.trim().toLowerCase() !== l.card.name1.trim().toLowerCase() && <p className="text-amber-600 font-medium">Aprovado no nome de {a.holderName} (2º participante)</p>}
+                                          {a.holderName && l.card?.name1 && a.holderName.trim().toLowerCase() !== l.card.name1.trim().toLowerCase() && <p className="text-amber-600 font-medium">{a.status === 'APPROVED' || a.status === 'CONDITIONAL' ? 'Aprovado' : 'Analisado'} no nome de {a.holderName} (2º participante)</p>}
                                           {a.detail && <p className="text-slate-500 whitespace-pre-line">{a.detail}</p>}
                                           {(a.status === 'APPROVED' || a.status === 'CONDITIONAL' || (a.status === 'SENT' && !!a.approvedValue)) && (
                                             <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-600">
@@ -428,7 +430,7 @@ export default function AnaliseCreditoPage() {
                                           {a.status === 'APPROVED' && !a.approvedValue && <p className="text-amber-600">Aprovada, mas sem os números — clique em "Resultado" e preencha.</p>}
                                           {a.status === 'CONDITIONAL' && <p className="text-teal-700">Aprovada com condição: o banco pede documentação para seguir.</p>}
                                         </>
-                                      ) : <p className="text-slate-400">Nenhuma análise ainda.</p>}
+                                      ) : <p className="text-slate-400">{who === 'p2' ? 'Não rodou no 2º participante.' : 'Nenhuma análise ainda.'}</p>}
                                       <div className="flex flex-wrap gap-2 pt-1">
                                         <button onClick={() => setModal({ lead: l, bank: b.key, analysis: a })} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50">
                                           {a ? <><Pencil size={11} /> Resultado</> : <><Plus size={11} /> Registrar</>}

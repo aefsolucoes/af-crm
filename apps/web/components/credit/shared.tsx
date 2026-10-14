@@ -87,10 +87,14 @@ export function ago(d: string | null | undefined): string {
   return new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 }
 
+export const isDesqualificado = (detail?: string | null) => /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i.test(detail || '');
+
 export function Badge({ a }: { a?: Analysis }) {
   if (!a) return <span className="text-xs text-slate-300">—</span>;
   const baseStatus = STATUS[a.status] || { label: a.status, cls: 'bg-slate-100 text-slate-500' };
-  const s = a.status === 'APPROVED' && /aprovad[oa] a menor/i.test(a.detail || '') ? { ...baseStatus, label: 'Aprovado a menor' } : baseStatus;
+  // Falha por REGRA do banco/imóvel (mínimo do imóvel, terreno, saldo devedor…) aparece como "Desqualificado" (vale como reprovado), não como "Falhou" (Fabio 14/10).
+  const desq = a.status === 'FAILED' && isDesqualificado(a.detail);
+  const s = a.status === 'APPROVED' && /aprovad[oa] a menor/i.test(a.detail || '') ? { ...baseStatus, label: 'Aprovado a menor' } : desq ? { label: 'Desqualificado', cls: 'bg-red-50 text-red-500' } : baseStatus;
   return (
     <div className="space-y-0.5">
       <div className="flex items-center gap-1">
