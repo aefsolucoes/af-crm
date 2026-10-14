@@ -77,9 +77,11 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   }
 
   // Santander vem pela extensão do Credimorar; Inter pela extensão do Inter (ela só lê os dados e o CRM monta o PDF no modelo da A&F).
-  const SIM_BANK: Record<'SANTANDER' | 'INTER', Bank> = { SANTANDER: 'CREDIMORAR', INTER: 'INTER' };
-  async function sendSimulation(inst: 'SANTANDER' | 'INTER') {
-    const label = inst === 'INTER' ? 'Inter' : 'Santander';
+  type SimInst = 'SANTANDER' | 'INTER' | 'CREDITAS';
+  const SIM_LABEL: Record<SimInst, string> = { SANTANDER: 'Santander', INTER: 'Inter', CREDITAS: 'Creditas' };
+  const SIM_BANK: Record<SimInst, Bank> = { SANTANDER: 'CREDIMORAR', INTER: 'INTER', CREDITAS: 'CREDITAS' };
+  async function sendSimulation(inst: SimInst) {
+    const label = SIM_LABEL[inst];
     if (!window.confirm(`Mandar ao cliente, pelo WhatsApp, o PDF da simulação do ${label} (com a logo da A&F)? A extensão lê a simulação no portal do banco e o CRM envia sozinho.`)) return;
     setSimBusy(inst);
     try {
@@ -170,15 +172,15 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-[11px] font-medium text-slate-600"><FileText size={11} /> Simulação em PDF pro cliente</span>
           <div className="flex gap-1.5">
-            {(['SANTANDER', 'INTER'] as const).map((inst) => (
-              <button key={inst} onClick={() => sendSimulation(inst)} disabled={!!simBusy || simOpen.some((d) => d.institution === inst)} className="text-[11px] px-2 py-0.5 rounded border border-af-mid text-af-mid hover:bg-af-mid hover:text-white disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-af-mid" title={`Lê a simulação do ${inst === 'INTER' ? 'Inter' : 'Santander'} no portal do banco e manda ao cliente em PDF com a logo da A&F`}>
-                {inst === 'INTER' ? 'Inter' : 'Santander'}
+            {(['SANTANDER', 'INTER', 'CREDITAS'] as const).map((inst) => (
+              <button key={inst} onClick={() => sendSimulation(inst)} disabled={!!simBusy || simOpen.some((d) => d.institution === inst)} className="text-[11px] px-2 py-0.5 rounded border border-af-mid text-af-mid hover:bg-af-mid hover:text-white disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-af-mid" title={`Lê a simulação do ${SIM_LABEL[inst]} no portal do banco e manda ao cliente em PDF com a logo da A&F`}>
+                {SIM_LABEL[inst]}
               </button>
             ))}
           </div>
         </div>
-        {(['SANTANDER', 'INTER'] as const).filter((inst) => !data.extensions?.[SIM_BANK[inst]]?.online).map((inst) => (
-          <p key={inst} className="mt-1 text-[11px] text-amber-600">Extensão do {inst === 'INTER' ? 'Inter' : 'Santander'} sem sinal: o pedido espera até ela abrir no Chrome (falha depois de 15 min).</p>
+        {(['SANTANDER', 'INTER', 'CREDITAS'] as const).filter((inst) => !data.extensions?.[SIM_BANK[inst]]?.online).map((inst) => (
+          <p key={inst} className="mt-1 text-[11px] text-amber-600">Extensão do {SIM_LABEL[inst]} sem sinal: o pedido espera até ela abrir no Chrome (falha depois de 15 min).</p>
         ))}
         {simRecent.length > 0 && (
           <ul className="mt-1 space-y-0.5">
@@ -187,7 +189,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
                 <span className={d.status === 'DONE' ? 'text-emerald-600' : d.status === 'FAILED' ? 'text-red-500' : 'text-amber-600'}>
                   {d.status === 'DONE' ? '✓ enviado' : d.status === 'FAILED' ? '✗ não saiu' : d.status === 'RUNNING' ? '… baixando' : '… na fila'}
                 </span>
-                <span>{d.institution === 'INTER' ? 'Inter' : 'Santander'}{d.status === 'FAILED' && d.detail ? ` — ${d.detail}` : ''}</span>
+                <span>{SIM_LABEL[d.institution as SimInst] || d.institution}{d.status === 'FAILED' && d.detail ? ` — ${d.detail}` : ''}</span>
               </li>
             ))}
           </ul>

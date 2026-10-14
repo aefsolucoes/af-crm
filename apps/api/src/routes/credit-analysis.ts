@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
 import { getAutoSetting, setAutoSetting, setPaused } from '../services/credit-auto.service';
-import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
+import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
@@ -218,6 +218,16 @@ router.post('/simulation-docs/:id/inter', async (req: AuthRequest, res: Response
     emit(req);
     res.status(out.ok ? 200 : 422).json(out);
   } catch (err) { fail(res, err, 'Erro ao montar a simulação do Inter', 400); }
+});
+// Creditas: a extensão manda o que leu da API do portal (resumo do prazo + tabela mês a mês).
+router.post('/simulation-docs/:id/creditas', async (req: AuthRequest, res: Response) => {
+  try {
+    const b = req.body || {};
+    if (!b.summary || !Array.isArray(b.installments) || !b.input) return res.status(400).json({ error: 'summary, installments e input são obrigatórios' });
+    const out = await finishCreditasDoc(prisma, { accountId: req.user!.accountId, id: req.params.id, data: { input: b.input, summary: b.summary, installments: b.installments }, io: io(req) });
+    emit(req);
+    res.status(out.ok ? 200 : 422).json(out);
+  } catch (err) { fail(res, err, 'Erro ao montar a simulação da Creditas', 400); }
 });
 router.post('/simulation-docs/:id/fail', async (req: AuthRequest, res: Response) => {
   try {

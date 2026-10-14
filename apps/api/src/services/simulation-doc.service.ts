@@ -195,6 +195,63 @@ export async function finishInterDoc(db: Db, p: { accountId: string; id: string;
   return deliver(db, r, pdf, p.io);
 }
 
+
+// ── Creditas: dados da API do portal → modelo do Credimorar ──────────────────────────────────────
+// A API da Creditas devolve duas faixas (min = "a partir de", max = pior caso). O PDF próprio da Creditas usa a faixa MÍNIMA
+// (1ª parcela, última parcela e total batem com o "Valor da parcela" que o portal mostra), então usamos a mínima também.
+export interface CreditasData {
+  input: { valorImovel: number; valorEmprestimo: number; renda: number; uf?: string; tipoImovel?: string };
+  summary: Record<string, any>; // item do GET /b2b/simulations pro prazo escolhido
+  installments: Array<Record<string, any>>; // GET /b2b/simulations/installments
+}
+
+const pct3 = (frac: unknown): string => `${(num(frac) * 100).toFixed(3).replace('.', ',')}%`;
+
+export function sheetFromCreditas(p: { clientName: string; data: CreditasData; when?: Date }): SimulationSheet {
+  const { input, summary, installments } = p.data;
+  const min = (o: any) => num(o?.min);
+  const rows: SheetRow[] = installments.map((i) => ({
+    n: Number(i.period), amort: min(i.amortization), juros: min(i.interest), mip: min(i.mipInsurance), dfi: min(i.dfiInsurance),
+    tsa: min(i.creditManagementFee), parcela: min(i.payment), saldo: min(i.outstanding),
+  }));
+  const taxa = summary?.interestRate?.min?.monthly;
+  const cet = summary?.cet?.min?.monthly;
+  return {
+    clientName: p.clientName,
+    when: p.when,
+    bank: 'CREDITAS',
+    summary: {
+      tipoImovel: input.tipoImovel || '—',
+      prazoMeses: num(summary?.term) || rows.length,
+      cet: cet != null ? `${pct3(cet)} a.m. + IPCA` : '—',
+      cesh: '—', // a Creditas não informa o CESH
+      sistema: 'PRICE',
+      valorImovel: num(input.valorImovel),
+      taxaEfetiva: taxa != null ? `${(num(taxa) * 100).toFixed(2).replace('.', ',')}% a.m. + IPCA` : '—',
+      valorEmprestimo: num(input.valorEmprestimo),
+      valorEntrada: Math.max(num(input.valorImovel) - num(input.valorEmprestimo), 0),
+      renda: num(input.renda),
+    },
+    rows,
+  };
+}
+
+/** CREDITAS: a extensão leu a simulação pela API do portal; o CRM confere os números e desenha o PDF no modelo do Credimorar. */
+export async function finishCreditasDoc(db: Db, p: { accountId: string; id: string; data: CreditasData; io?: Io }) {
+  const r = await loadOpen(db, p.accountId, p.id);
+  if (r.status === 'DONE') return { ok: true as const, already: true, messageId: r.messageId };
+  const fail = async (reason: string) => { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason }); return { ok: false as const, error: reason }; };
+  const inst = Array.isArray(p.data?.installments) ? p.data.installments : [];
+  if (!inst.length || !p.data?.summary || !p.data?.input) return fail('Os dados da Creditas vieram incompletos. Não enviei.');
+  // Conferência de sanidade: o saldo final tem que ser ~0 e a soma das amortizações ~ o primeiro saldo + a 1ª amortização.
+  const last = inst[inst.length - 1];
+  if (Math.abs(num(last?.outstanding?.min)) > 1) return fail(`Os dados da Creditas não fecham (saldo final ${num(last?.outstanding?.min).toFixed(2)}). Não enviei.`);
+  const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
+  let pdf: Buffer;
+  try { pdf = await renderSimulationSheet(sheetFromCreditas({ clientName: lead?.name || 'Cliente', data: p.data })); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
+  return deliver(db, r, pdf, p.io);
+}
+
 export async function listSimulationDocs(db: Db, p: { accountId: string; leadId: string }) {
   await expireStuck(db, p.accountId);
   return db.simulationDocRequest.findMany({ where: { accountId: p.accountId, leadId: p.leadId }, orderBy: { createdAt: 'desc' }, take: 10 });
