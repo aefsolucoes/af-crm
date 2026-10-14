@@ -39,7 +39,6 @@ import emailRoutes from './routes/email';
 import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.service';
 import { checkInactivityAutomations, processDeferredAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
-import { autoStarBigLeads } from './services/auto-star.service';
 import { processRemarketing } from './services/remarketing.service';
 import { processApprovalNotices, processApprovalReminders, processScheduledNotices } from './services/approval-notice.service';
 import { processCreditAutomation } from './services/credit-auto.service';
@@ -285,13 +284,6 @@ httpServer.listen(PORT, () => {
     }, 60 * 1000);
   }, 2 * 60 * 1000);
 
-  // Estrela automática em cliente grande (HE > 150 mil, Financiamento > 300 mil).
-  setTimeout(() => {
-    autoStarBigLeads().catch((err) => console.error('[Estrela] Poll (boot):', err?.message));
-    setInterval(() => {
-      autoStarBigLeads().catch((err) => console.error('[Estrela] Poll:', err?.message));
-    }, 5 * 60 * 1000);
-  }, 3 * 60 * 1000);
 
   // Caixa de e-mail do CRM: busca e-mails novos (IMAP) de todas as caixas
   // conectadas — a da empresa e as pessoais. E-mail de cliente conhecido
