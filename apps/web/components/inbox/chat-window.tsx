@@ -716,6 +716,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const lastLeadIdRef = useRef<string | null>(null);
   const lastMessageCountRef = useRef(0);
+  const lastMessageIdRef = useRef<string | null>(null); // id da última mensagem — separa "chegou mensagem no fim" de "histórico carregado em cima"
   // Botão "ir pro final" — reforço pro auto-scroll de cima: aparece sempre
   // que o usuário não está perto do fim (rolou pra ler histórico, ou o
   // auto-scroll não pegou por algum motivo, ex.: imagem grande ainda
@@ -760,7 +761,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     const grew = messages.length > lastMessageCountRef.current;
     lastMessageCountRef.current = messages.length;
     const lastMsg = messages[messages.length - 1];
-    const justSentByMe = grew && lastMsg?.direction === 'OUTBOUND';
+    // "Carregar mensagens anteriores" também faz a lista CRESCER, mas a última mensagem continua a mesma: sem esta checagem, quando a última era nossa
+    // (resposta da IA/equipe) o código achava que "acabei de enviar" e jogava a conversa de volta pro final — Fabio 14/10: "todo vez que carrego, volta e eu
+    // subo tudo de novo". Só conta como enviada por mim se uma mensagem NOVA entrou no fim.
+    const appendedAtEnd = !!lastMsg && lastMsg.id !== lastMessageIdRef.current;
+    lastMessageIdRef.current = lastMsg?.id ?? null;
+    const justSentByMe = grew && appendedAtEnd && lastMsg?.direction === 'OUTBOUND';
 
     let nearBottom = true;
     if (container && !isNewConversation) {

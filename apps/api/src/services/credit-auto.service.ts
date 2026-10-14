@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { createRequests, setOverrides, parseHolder } from './credit-analysis.service';
-import { sendApprovalNoticeNow, previewApprovalNotice, novoBancoPendente } from './approval-notice.service';
+import { sendApprovalNoticeNow, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText } from './approval-notice.service';
 
 /**
  * Análise automática de crédito (Fabio 14/10): assim que o cliente preenche a proposta e a IA do CRM confere que os dados estão
@@ -73,7 +73,7 @@ async function aiReadiness(leadId: string): Promise<{ ready: boolean; reason: st
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-sonnet-5', max_tokens: 400,
-      system: `Você é a IA de um correspondente bancário (crédito com garantia de imóvel, Home Equity). Decida se a PROPOSTA do cliente já pode ir para a ANÁLISE DE CRÉDITO nos bancos. Está pronta quando: os dados essenciais estão completos (nome, CPF, nascimento, renda, e-mail, telefone, valor do imóvel, valor do crédito, prazo, endereço do imóvel) e fazem sentido juntos (valores plausíveis, crédito dentro do que o imóvel comporta, nada que pareça erro de preenchimento) e NÃO há pergunta nossa pendente ao cliente sobre o preenchimento, nem ele pediu pra esperar, corrigir ou cancelar. Regras dos bancos (quem recusa é a extensão, não você): crédito mínimo R$ 50 mil; imóvel mínimo R$ 150 mil (Creditas) / R$ 200 mil (Inter) / R$ 144 mil se for TERRENO no Santander; crédito até ~58–60% do valor do imóvel. NÃO questione datas nem escolha de bancos. Responda SÓ com JSON: {"ready":true|false,"reason":"motivo curto em português"}.`,
+      system: `Você é a IA de um correspondente bancário (crédito com garantia de imóvel, Home Equity). Decida se a PROPOSTA do cliente já pode ir para a ANÁLISE DE CRÉDITO nos bancos. Está pronta quando: os dados essenciais estão completos (nome, CPF, nascimento, renda, e-mail, telefone, valor do imóvel, valor do crédito, prazo, endereço do imóvel) e fazem sentido juntos (valores plausíveis, crédito dentro do que o imóvel comporta, nada que pareça erro de preenchimento) e NÃO há pergunta nossa pendente ao cliente sobre o preenchimento, nem ele pediu pra esperar, corrigir ou cancelar. Regras dos bancos (quem recusa é a extensão, não você): crédito mínimo R$ 50 mil; imóvel mínimo R$ 150 mil (Creditas) / R$ 200 mil (Inter) / R$ 144 mil se for TERRENO no Santander; crédito até ~58–60% do valor do imóvel. Esses limites NÃO são motivo pra dizer que a proposta não está pronta: cada banco recusa só o seu limite e os outros seguem (Solange 14/10: a IA barrou a proposta toda por causa do mínimo de 2 bancos) — marque ready=false só por dado faltando, incoerente ou pergunta pendente. NÃO questione datas nem escolha de bancos. Responda SÓ com JSON: {"ready":true|false,"reason":"motivo curto em português"}.`,
       messages: [{ role: 'user', content: `PROPOSTA:\n${proposal.content.slice(0, 3500)}\n\nCARD:\n${card}\n\nCONVERSA DEPOIS DA PROPOSTA:\n${recent.map((m) => `${m.direction === 'INBOUND' ? 'CLIENTE' : 'NÓS'}: ${String(m.content).slice(0, 220)}`).join('\n') || '(nada ainda)'}` }],
     }),
   }).catch(() => null);
@@ -191,6 +191,56 @@ async function noticeClients(accountId: string, io: any) {
   }
 }
 
+/** Falha OBJETIVA (regra do banco/imóvel), não técnica: "NÃO RODEI: … abaixo do mínimo / terreno / saldo devedor", "Não conformidade…". */
+const OBJECTIVE_FAIL = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i;
+type VRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; source: string };
+
+/** Resposta de um banco: NEG = não vai (reprovou ou a regra dele barrou), POS = aprovou, PENDING = falta resposta / falha técnica a refazer. A última rodada decide;
+ *  conferência sem leitura ("conferir") não conta. Pura (testável). */
+export function bankVerdict(rows: VRow[], bank: string): 'NEG' | 'POS' | 'PENDING' {
+  const mine = rows.filter((r) => r.bank === bank && r.source !== 'AI_SIM' && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const r = mine[0];
+  if (!r) return 'PENDING';
+  if (r.status === 'APPROVED' || r.status === 'CONDITIONAL') return 'POS';
+  if (r.status === 'REJECTED') return 'NEG';
+  if (r.status === 'FAILED' && OBJECTIVE_FAIL.test(r.detail || '')) return 'NEG';
+  return 'PENDING';
+}
+
+/** 4) Os 3 bancos responderam NÃO (reprovou ou a regra do banco/imóvel barrou): avisa o cliente que retornou reprovado e tira o card da Pré-Análise (Reprovado → Perdidos),
+ *  senão a fila acumula (Fabio 14/10). Falha técnica (extensão, dado faltando) NÃO conta: essa fica pra refazer. */
+async function closeRejected(accountId: string, io: any) {
+  const leads = await prisma.lead.findMany({
+    where: {
+      accountId, status: 'OPEN', archived: false, isGroup: false,
+      stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
+      pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
+      creditAnalyses: { some: { dryRun: false } },
+    },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true } } },
+    orderBy: { createdAt: 'asc' }, take: 80,
+  });
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Cf;
+    if (cf._noticeAt) continue; // aviso já agendado (o poller dos agendados fecha depois de enviar)
+    if (cf._autoCloseTriedAt && Date.now() - new Date(cf._autoCloseTriedAt).getTime() < 6 * 3_600_000) continue;
+    const rows = l.creditAnalyses;
+    if (BANKS.some((b) => bankVerdict(rows, b) !== 'NEG')) continue;
+    const last = Math.max(...rows.map((r) => r.updatedAt.getTime()));
+    if (Date.now() - last < NOTICE_QUIET_MS) continue; // deixa as respostas assentarem
+    if (cascadePlan(cf, l.name, rows as any).length) continue; // ainda falta rodar no 2º participante
+    const out = await sendRejectionNoticeNow({ accountId, leadId: l.id, io });
+    if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: true }); continue; } // fora das 07h–21h: o aviso sai às 07:00 e o poller dos agendados fecha o card
+    if (!out.ok) {
+      await saveCf(l.id, { _autoCloseTriedAt: new Date().toISOString() });
+      console.warn(`[Análise automática] ${l.name}: reprovado, mas o aviso não saiu — ${out.error}`);
+      continue;
+    }
+    const built = await buildRejectionText(l.id).catch(() => null);
+    await markRejectedAndMove({ accountId, leadId: l.id, io, motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Análise automática] mover reprovado:', e?.message));
+  }
+}
+
 let running = false;
 /** Roda a cada minuto (index.ts). Só mexe em conta com a chave "Análise automática" LIGADA. */
 export async function processCreditAutomation(io: any): Promise<void> {
@@ -202,6 +252,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await startNewLeads(s.accountId, s.enabledAt!).catch((e) => console.error('[Análise automática] início:', e?.message));
       await cascadeToSecond(s.accountId).catch((e) => console.error('[Análise automática] 2º participante:', e?.message));
       await noticeClients(s.accountId, io).catch((e) => console.error('[Análise automática] aviso:', e?.message));
+      await closeRejected(s.accountId, io).catch((e) => console.error('[Análise automática] fechar reprovados:', e?.message));
     }
   } finally {
     running = false;
