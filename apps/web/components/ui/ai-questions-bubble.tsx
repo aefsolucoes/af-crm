@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { MessageCircleQuestion, Bot, BookOpen, Send, X, Hand, Undo2, Loader2, Phone, Check, Clock } from 'lucide-react';
+import { MessageCircleQuestion, Bot, BookOpen, Send, X, Hand, Undo2, Loader2, Phone, Check, Clock, FileText, ExternalLink } from 'lucide-react';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { playSoundOnce, SoundKey } from '@/lib/sounds';
@@ -34,8 +34,51 @@ interface AiQuestion {
   createdAt: string;
   lead: { name: string };
   /** CALL_REQUEST = cliente quer ligação — a Andreia confirma o horário ou propõe outro. */
-  kind?: 'QUESTION' | 'CALL_REQUEST';
+  kind?: 'QUESTION' | 'CALL_REQUEST' | 'DOC_QUESTION';
   callWhen?: string | null;
+  /** DOC_QUESTION = a IA ficou em dúvida sobre um documento do cliente: o arquivo vem junto pra equipe abrir, analisar e responder. */
+  attachment?: { id: string; fileName: string; mimeType: string } | null;
+}
+
+/** O documento em questão da dúvida: miniatura (imagem) e botão pra abrir o arquivo inteiro (PDF/imagem) numa aba. */
+function DocPreview({ att }: { att: { id: string; fileName: string; mimeType: string } }) {
+  const [thumb, setThumb] = useState<string | null>(null);
+  const isImage = att.mimeType.startsWith('image/');
+  useEffect(() => {
+    if (!isImage) return;
+    let obj: string | null = null;
+    let cancelled = false;
+    api.get(`/api/messages/attachment/${att.id}`, { responseType: 'blob' })
+      .then((r) => { if (cancelled) return; obj = URL.createObjectURL(r.data); setThumb(obj); })
+      .catch(() => { /* sem miniatura: o botão abrir tenta de novo */ });
+    return () => { cancelled = true; if (obj) URL.revokeObjectURL(obj); };
+  }, [att.id, isImage]);
+  async function abrir() {
+    try {
+      const r = await api.get(`/api/messages/attachment/${att.id}`, { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err: any) {
+      const driveId = err?.response?.data?.driveFileId;
+      if (driveId) window.open(`https://drive.google.com/file/d/${driveId}/view`, '_blank');
+      else toast('Não deu pra abrir o arquivo agora.', 'error');
+    }
+  }
+  return (
+    <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2 flex items-center gap-2.5">
+      {thumb
+        ? <img src={thumb} alt={att.fileName} className="w-14 h-14 object-cover rounded-md border border-slate-200 flex-shrink-0" />
+        : <div className="w-14 h-14 rounded-md bg-slate-100 text-slate-400 flex items-center justify-center flex-shrink-0"><FileText size={22} /></div>}
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-slate-700 truncate" title={att.fileName}>{att.fileName}</p>
+        <p className="text-[11px] text-slate-400">Documento em dúvida</p>
+      </div>
+      <button onClick={abrir} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-[#2261a8] text-[#2261a8] hover:bg-[#2261a8]/10 flex-shrink-0">
+        <ExternalLink size={12} /> Abrir
+      </button>
+    </div>
+  );
 }
 
 function timeAgo(iso: string) {
@@ -129,6 +172,7 @@ export function AiQuestionsBubble() {
           {q.lead.name}
         </button>
         <span className="text-[11px] text-slate-400 flex-shrink-0">{timeAgo(q.createdAt)}</span>
+        {q.kind === 'DOC_QUESTION' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 flex-shrink-0">Documento</span>}
         <span className={cn('ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0',
           q.status === 'OPEN' ? 'bg-amber-100 text-amber-700' : q.status === 'ANSWERED' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
           {q.status === 'OPEN' ? 'Aguardando' : q.status === 'ANSWERED' ? (q.kind === 'CALL_REQUEST' ? 'Resolvido' : 'Respondida') : 'Assumida'}
@@ -151,6 +195,8 @@ export function AiQuestionsBubble() {
         <div className="text-sm text-slate-700 bg-slate-100 rounded-xl rounded-tl-sm px-3 py-2 whitespace-pre-line">{q.question}</div>
       </div>
       )}
+
+      {q.kind === 'DOC_QUESTION' && q.attachment && <DocPreview att={q.attachment} />}
 
       {q.answer && (
         <div className="flex justify-end mt-2">
@@ -233,25 +279,27 @@ export function AiQuestionsBubble() {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); act(q, 'answer'); }
             }}
             rows={2}
-            placeholder="Responda aqui — a IA passa pro cliente"
+            placeholder={q.kind === 'DOC_QUESTION' ? 'Responda aqui — a IA reconfere o documento e aprende (nada vai pro cliente)' : 'Responda aqui — a IA passa pro cliente'}
             className="w-full text-sm rounded-lg border border-slate-200 px-2.5 py-1.5 resize-none focus:outline-none focus:border-[#2261a8] text-slate-800"
           />
           <div className="flex items-center justify-end gap-2 mt-1.5">
-            <button
-              onClick={() => act(q, 'dismiss')}
-              disabled={!!busy}
-              className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
-              title="Fecha a dúvida, desliga a IA nesse card e abre a conversa pra você falar direto"
-            >
-              <Hand size={12} /> Eu assumo
-            </button>
+            {q.kind !== 'DOC_QUESTION' && (
+              <button
+                onClick={() => act(q, 'dismiss')}
+                disabled={!!busy}
+                className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
+                title="Fecha a dúvida, desliga a IA nesse card e abre a conversa pra você falar direto"
+              >
+                <Hand size={12} /> Eu assumo
+              </button>
+            )}
             <button
               onClick={() => act(q, 'answer')}
               disabled={!!busy || !(drafts[q.id] || '').trim()}
               className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50"
               style={{ backgroundColor: '#2261a8' }}
             >
-              {busy === `${q.id}:answer` ? <><Loader2 size={12} className="animate-spin" /> Passando pro cliente...</> : <><Send size={12} /> Responder</>}
+              {busy === `${q.id}:answer` ? <><Loader2 size={12} className="animate-spin" /> {q.kind === 'DOC_QUESTION' ? 'Reconferindo o documento...' : 'Passando pro cliente...'}</> : <><Send size={12} /> Responder</>}
             </button>
           </div>
         </div>
@@ -277,9 +325,11 @@ export function AiQuestionsBubble() {
                 <p className="text-sm font-semibold leading-tight">
                   {popupQuestions.every((q) => q.kind === 'CALL_REQUEST')
                     ? (popupQuestions.length > 1 ? `${popupQuestions.length} pedidos de ligação` : 'Pedido de ligação')
+                    : popupQuestions.every((q) => q.kind === 'DOC_QUESTION')
+                    ? (popupQuestions.length > 1 ? `${popupQuestions.length} documentos em dúvida` : 'Documento em dúvida')
                     : popupQuestions.length > 1 ? `A IA tem ${popupQuestions.length} pendências` : 'A IA tem uma dúvida'}
                 </p>
-                <p className="text-[11px] text-white/75 leading-tight">Ela disse ao cliente que ia verificar — responda e ela repassa</p>
+                <p className="text-[11px] text-white/75 leading-tight">{popupQuestions.every((q) => q.kind === 'DOC_QUESTION') ? 'Abra o documento, analise e responda — a IA aprende com a sua resposta' : 'Ela disse ao cliente que ia verificar — responda e ela repassa'}</p>
               </div>
               <button onClick={closePopup} className="p-1 rounded-md hover:bg-white/15" aria-label="Fechar" title="Fechar (a dúvida continua no balão)">
                 <X size={18} />

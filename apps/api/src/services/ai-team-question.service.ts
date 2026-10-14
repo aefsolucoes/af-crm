@@ -22,7 +22,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 const SELECT = {
   id: true, leadId: true, departmentId: true, question: true, clientMessage: true, status: true,
   answer: true, answeredByName: true, answeredAt: true, sentReply: true, sendError: true,
-  knowledgeEntryId: true, knowledgeTitle: true, createdAt: true, kind: true, callWhen: true, callAt: true,
+  knowledgeEntryId: true, knowledgeTitle: true, createdAt: true, kind: true, callWhen: true, callAt: true, attachmentId: true,
   lead: { select: { name: true } },
 } as const;
 
@@ -89,11 +89,35 @@ export async function createAiTeamQuestion(params: {
   return saved;
 }
 
+/** Dúvida da IA sobre um DOCUMENTO do cliente (Fabio 14/10: "se tiver dúvida em algum, manda a pergunta pra nós — ele precisa trazer o documento em questão pra
+ *  gente analisar"): abre no balão com o arquivo anexado (a equipe abre, analisa e responde). Uma pergunta por arquivo. A resposta NÃO vai pro cliente: a IA reconfere o
+ *  documento com ela e, se for regra geral, passa a aplicar a regra nos próximos clientes. */
+export async function createDocQuestion(params: { accountId: string; leadId: string; attachmentId: string; fileName: string; docType?: string; question: string; io?: Io }) {
+  const { accountId, leadId, io } = params;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead) return null;
+  const ja = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, attachmentId: params.attachmentId, kind: 'DOC_QUESTION' }, select: { id: true } });
+  if (ja) return null;
+  const question = `📎 ${params.docType ? `${params.docType} — ` : ''}${params.fileName}\n${params.question.trim()}`.slice(0, 1000);
+  const departmentId = lead.pipeline?.departmentId ?? null;
+  const saved = await prisma.aiTeamQuestion.create({
+    data: { accountId, leadId, departmentId, question, kind: 'DOC_QUESTION', attachmentId: params.attachmentId },
+    select: SELECT,
+  });
+  const userIds = await recipientsFor(accountId, departmentId);
+  emitTo(io, userIds, 'ai_team_question', { id: saved.id, leadId, leadName: lead.name, question: saved.question, isNew: true });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA ficou em dúvida sobre um documento (${params.docType || 'documento'}) e levou a pergunta pra equipe no balão "Dúvidas da IA": ${params.question.trim()}` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `Dúvida sobre documento — ${lead.name}`, body: params.question.trim().slice(0, 140), leadId }, userIds).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_team_question', leadId, leadName: lead.name, summary: `perguntou à equipe sobre um documento: ${params.question.trim().slice(0, 100)}` });
+  return saved;
+}
+
 /** Dúvidas que o usuário enxerga: todas as abertas + as respondidas nos
  *  últimos 7 dias (histórico curto, o balão não é arquivo). */
 export async function listAiTeamQuestions(accountId: string, scopeDepartmentIds: string[]) {
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  return prisma.aiTeamQuestion.findMany({
+  const rows = await prisma.aiTeamQuestion.findMany({
     where: {
       accountId,
       OR: [{ status: 'OPEN' }, { createdAt: { gte: since } }],
@@ -103,13 +127,18 @@ export async function listAiTeamQuestions(accountId: string, scopeDepartmentIds:
     take: 60,
     select: SELECT,
   });
+  // Dúvida de documento: devolve o arquivo em questão pro balão mostrar/abrir.
+  const attIds = rows.map((r) => r.attachmentId).filter((x): x is string => !!x);
+  const atts = attIds.length ? await prisma.messageAttachment.findMany({ where: { id: { in: attIds } }, select: { id: true, fileName: true, mimeType: true } }) : [];
+  const byId = new Map(atts.map((a) => [a.id, a]));
+  return rows.map((r) => ({ ...r, attachment: r.attachmentId ? byId.get(r.attachmentId) || null : null }));
 }
 
 /** Perguntas abertas / respostas recentes da equipe sobre ESTE card — entra
  *  no prompt da IA pra ela não inventar nem perguntar de novo o mesmo. */
 export async function teamQuestionsContext(leadId: string): Promise<string> {
   const rows = await prisma.aiTeamQuestion.findMany({
-    where: { leadId, OR: [{ status: 'OPEN' }, { status: 'ANSWERED', answeredAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }] },
+    where: { leadId, kind: { not: 'DOC_QUESTION' }, OR: [{ status: 'OPEN' }, { status: 'ANSWERED', answeredAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }] },
     orderBy: { createdAt: 'desc' },
     take: 5,
     select: { status: true, question: true, answer: true, kind: true, callWhen: true },
@@ -204,6 +233,8 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
   if (q.status !== 'OPEN') throw new Error('Essa dúvida já foi resolvida');
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
 
+  if (q.kind === 'DOC_QUESTION') return answerDocQuestion(q, answer, userId, user?.name || null, io);
+
   const { reply, knowledge } = await composeClientReply(accountId, q.leadId, q.question, answer);
 
   const sent = await sendOutboundWhatsApp({ accountId, leadId: q.leadId, content: reply, io: io || undefined });
@@ -242,6 +273,30 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
   }).catch(() => {});
   logActivity({ accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: 'respondeu uma dúvida da IA' });
   emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+  return updated;
+}
+
+/** A equipe respondeu a dúvida de um documento: nada vai pro cliente. A IA reconfere o arquivo com a resposta, grava o veredito no card e, se a equipe deu uma regra geral,
+ *  guarda pra aplicar nos próximos clientes (aparece como "Aprendi: …" no balão; "desfazer" tira). Depois retoma a conferência da documentação do card. */
+async function answerDocQuestion(q: { id: string; accountId: string; leadId: string; departmentId: string | null; question: string; attachmentId: string | null }, answer: string, userId: string, userName: string | null, io: Io) {
+  const { resolveDocDoubt } = require('./doc-review.service') as typeof import('./doc-review.service');
+  const veredito = q.attachmentId ? await resolveDocDoubt(q.accountId, q.leadId, q.attachmentId, q.question, answer).catch(() => undefined) : undefined;
+  const regra = veredito?.regra || null;
+  const updated = await prisma.aiTeamQuestion.update({
+    where: { id: q.id },
+    data: {
+      status: 'ANSWERED', answer, answeredByUserId: userId, answeredByName: userName, answeredAt: new Date(), sendError: null,
+      knowledgeTitle: regra ? regra.slice(0, 200) : null,
+    },
+    select: SELECT,
+  });
+  const resumo = veredito ? (veredito.resultado === 'OK' ? 'a IA reconferiu e o documento está OK' : `a IA reconferiu e o documento tem problema: ${veredito.problemas.join('; ') || 'ver resposta da equipe'}`) : 'a IA não conseguiu reler o arquivo agora — confira o documento à mão';
+  await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `Dúvida de documento respondida por ${userName || 'alguém da equipe'}: ${answer}\n🤖 ${resumo}.${regra ? `\n📚 Aprendi (vale pros próximos clientes): ${regra}` : ''}` } }).catch(() => {});
+  logActivity({ accountId: q.accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: 'respondeu uma dúvida da IA sobre documento' });
+  emitTo(io, await recipientsFor(q.accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+  // Retoma a conferência (se o card ainda está em "Aguardando Documentação"): sem mais dúvida, segue o fluxo normal (problema → avisa o cliente; tudo certo → avança).
+  const { checkDocsComplete } = require('./docs-checker.service') as typeof import('./docs-checker.service');
+  checkDocsComplete(q.accountId, q.leadId, io as any).catch((e) => console.error('[Docs] reconferência após a dúvida:', e?.message || e));
   return updated;
 }
 

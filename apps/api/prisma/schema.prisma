@@ -394,6 +394,8 @@ model AiTeamQuestion {
   kind             String    @default("QUESTION")
   callWhen         String?   // horário como o cliente pediu ("amanhã às 10h")
   callAt           DateTime? // o mesmo horário em data/hora (vira a tarefa)
+  // "DOC_QUESTION" (dúvida da IA sobre um DOCUMENTO do cliente — Fabio 14/10): attachmentId é o arquivo em questão, que a equipe abre no balão pra analisar.
+  attachmentId     String?
   createdAt        DateTime  @default(now())
 
   @@index([accountId, status])
