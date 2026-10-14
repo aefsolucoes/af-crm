@@ -274,11 +274,42 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
     o.primeiraParcela && `💵 1ª parcela: ${o.primeiraParcela}`,
     o.ultimaParcela && `💵 Última parcela: ${o.ultimaParcela}`,
-    o.documentos && `📎 Para seguir com esse valor o banco pede comprovação de renda${o.documentos.perfil ? ` (perfil ${o.documentos.perfil})` : ''}:\n${o.documentos.itens.map((d) => `   • ${d}`).join('\n')}`,
   ].filter(Boolean).join('\n');
   const head = options.length > 1 ? `✅ Consegui ${options.length} opções de aprovação pra você escolher!` : '✅ Crédito aprovado!';
-  const tail = options.length > 1 ? '👉 Qual dessas opções você prefere? É só me responder por aqui que eu sigo com a que você escolher.' : 'Agora vamos para a próxima etapa do processo!';
-  return `${head}\n\n${options.map(block).join('\n\n')}\n\n${tail}`;
+  const tail = options.length > 1 ? '\n\n👉 Qual dessas opções você prefere? É só me responder por aqui que eu sigo com a que você escolher.' : ''; // opção única: a mensagem acaba no resumo (Fabio 14/10)
+  return `${head}\n\n${options.map(block).join('\n\n')}${tail}`;
+}
+
+const DOCS_HEADER = '📎 Para seguir com esse valor o banco pede os seguintes documentos:';
+const DOCS_HEADER_MULTI = '📎 Para seguir com a opção que você escolher o banco pede os seguintes documentos:';
+const DOCS_MARK = 'o banco pede os seguintes documentos';
+const FALLBACK_PESSOAIS = ['Documento de identificação', 'Comprovante de residência', 'Comprovante de estado civil (certidão de nascimento ou casamento)'];
+const FALLBACK_IMOVEL = ['Certidão de ônus reais atualizada', 'CND de IPTU'];
+
+/** Linhas "• ..." de cada seção ("*Proponente:*" / "*Imóvel:*") da Resposta rápida "Documentos Home Equity" — a equipe edita lá. */
+function parseDocsTemplate(body: string | null | undefined): { pessoais: string[]; imovel: string[] } {
+  const out = { pessoais: [] as string[], imovel: [] as string[] };
+  let cur: 'pessoais' | 'imovel' | null = null;
+  for (const raw of String(body || '').split('\n')) {
+    const l = raw.trim();
+    if (/^\*?\s*proponente/i.test(l)) { cur = 'pessoais'; continue; }
+    if (/^\*?\s*im[oó]vel/i.test(l)) { cur = 'imovel'; continue; }
+    const m = /^[•\-*]\s*(.+)$/.exec(l);
+    if (cur && m) out[cur].push(m[1].trim());
+  }
+  return out;
+}
+
+/** Mensagem 2 do aviso de aprovação: documentos pessoais + (SÓ se o banco pediu comprovação de renda) os de renda + documentos do imóvel. */
+export async function buildDocsText(accountId: string, options: ApprovalOption[]): Promise<string> {
+  const tpl = await docsTemplate(accountId);
+  const parsed = parseDocsTemplate(tpl?.body);
+  const pessoais = parsed.pessoais.length ? parsed.pessoais : FALLBACK_PESSOAIS;
+  const imovel = parsed.imovel.length ? parsed.imovel : FALLBACK_IMOVEL;
+  const renda: string[] = [];
+  for (const o of options) for (const d of o.documentos?.itens || []) if (!renda.includes(d)) renda.push(d);
+  const lista = [...pessoais, ...renda].map((d) => `• ${d}`).join('\n');
+  return `${options.length > 1 ? DOCS_HEADER_MULTI : DOCS_HEADER}\n\n${lista}\n\n*Imóvel:*\n${imovel.map((d) => `• ${d}`).join('\n')}`;
 }
 
 /** Texto de aprovação montado pro card (notas primeiro, aba Financiamento
@@ -345,16 +376,18 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
   return options.length ? options : null;
 }
 
-export async function buildApprovalText(leadId: string): Promise<{ text: string; source: 'analises' | 'notas' | 'card' } | null> {
+export async function buildApprovalText(leadId: string): Promise<{ text: string; source: 'analises' | 'notas' | 'card'; options: ApprovalOption[] } | null> {
   const fromAnalyses = await optionsFromAnalyses(leadId).catch(() => null);
-  if (fromAnalyses) return { text: renderApprovalText(await withHolders(leadId, fromAnalyses)), source: 'analises' };
+  if (fromAnalyses) { const o = await withHolders(leadId, fromAnalyses); return { text: renderApprovalText(o), source: 'analises', options: o }; }
   // Duas tentativas nas notas antes de cair na aba Financiamento: a leitura
   // pode variar e a trava de números descarta resposta com valor que não
   // está escrito na nota.
   const fromNotes = (await optionsFromNotes(leadId).catch(() => null)) || (await optionsFromNotes(leadId).catch(() => null));
-  if (fromNotes) return { text: renderApprovalText(await withHolders(leadId, fromNotes)), source: 'notas' };
+  if (fromNotes) { const o = await withHolders(leadId, fromNotes); return { text: renderApprovalText(o), source: 'notas', options: o }; }
   const fromCard = await optionFromCard(leadId).catch(() => null);
-  return fromCard ? { text: renderApprovalText(await withHolders(leadId, fromCard)), source: 'card' } : null;
+  if (!fromCard) return null;
+  const oc = await withHolders(leadId, fromCard);
+  return { text: renderApprovalText(oc), source: 'card', options: oc };
 }
 
 /** Banco do PDF da simulação (Fabio 14/10): a proposta que o cliente ESCOLHEU ou, sem escolha, a de MENOR TAXA entre as aprovadas
@@ -415,6 +448,12 @@ export async function maybeSendApprovalOnYes(accountId: string, leadId: string, 
     await prisma.lead.update({ where: { id: leadId }, data: { aiAutoReplyActive: true } }).catch(() => {});
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, leadName: lead.name, summary: `mandou as condições de aprovação (dados ${built.source === 'analises' ? 'das análises de crédito' : built.source === 'notas' ? 'das notas' : 'do card'}) — cliente tocou em "Sim, quero saber"` });
     console.log(`[Aprovação] ${lead.name}: condições enviadas (dados ${built.source === 'analises' ? 'das análises de crédito' : built.source === 'notas' ? 'das notas' : 'do card'})`);
+    // Mensagem 2: documentos (uma vez só por cliente).
+    if (!(await docsAlreadySent(leadId))) {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      const docsText = await buildDocsText(accountId, built.options);
+      await sendOutboundWhatsApp({ accountId, leadId, content: docsText, io });
+    }
     requestSimulationsAfterApproval({ accountId, leadId }).catch(() => {});
   }
   return true;
@@ -437,7 +476,7 @@ async function docsTemplate(accountId: string) {
 
 /** A lista de documentos já foi mandada pra esse cliente nos últimos dias? (não manda duas vezes) */
 async function docsAlreadySent(leadId: string): Promise<boolean> {
-  return (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 5 * 86_400_000) }, content: { contains: 'precisaremos da seguinte documentação' } } })) > 0;
+  return (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 5 * 86_400_000) }, OR: [{ content: { contains: 'precisaremos da seguinte documentação' } }, { content: { contains: DOCS_MARK } }] } })) > 0;
 }
 
 /** Etapa "Aguardando Documentação" do funil do card, se o card ainda está ANTES dela. */
@@ -452,7 +491,7 @@ async function awaitingDocsMove(leadId: string): Promise<{ from: string; to: str
 }
 
 /** O que seria enviado: texto com TODAS as opções aprovadas (cada uma com o nome em que saiu, se for o 2º participante) e como vai. */
-export async function previewApprovalNotice(leadId: string): Promise<{ text: string; options: number; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] } | null> {
+export async function previewApprovalNotice(leadId: string): Promise<{ text: string; docsText: string; options: number; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] } | null> {
   const built = await optionsFromAnalyses(leadId).catch(() => null);
   if (!built) return null;
   // "Aprovado a menor": as parcelas certas são as da NOVA simulação com os valores aprovados (a extensão refaz). Sem elas, não avisa.
@@ -470,16 +509,17 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   const [mode, tpl, already, move] = await Promise.all([
     whatsappWindowOpen(leadId), lead ? docsTemplate(lead.accountId) : null, docsAlreadySent(leadId), awaitingDocsMove(leadId),
   ]);
-  return { text, options: built.length, mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
+  const docsText = lead ? await buildDocsText(lead.accountId, await withHolders(leadId, built)) : '';
+  return { text, docsText, options: built.length, mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
 }
 
 /** Manda a lista de documentos (Resposta rápida) se ainda não foi e se a janela de 24 h estiver aberta. */
-async function sendDocsList(p: { accountId: string; leadId: string; userId?: string; io?: any }): Promise<boolean> {
+async function sendDocsList(p: { accountId: string; leadId: string; userId?: string; io?: any }, text?: string): Promise<boolean> {
   if (!(await whatsappWindowOpen(p.leadId)) || (await docsAlreadySent(p.leadId))) return false;
-  const tpl = await docsTemplate(p.accountId);
-  if (!tpl) return false;
+  const tpl = text ? null : await docsTemplate(p.accountId);
+  if (!text && !tpl) return false;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-  const d = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: tpl.body, userId: p.userId, io: p.io });
+  const d = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: text || tpl!.body, userId: p.userId, io: p.io });
   return !!d.success;
 }
 
@@ -523,7 +563,7 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
     const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: preview.text, userId: p.userId, io: p.io });
     if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
     // Lista de documentos (a mesma Resposta rápida da equipe), logo depois do aviso — uma vez só.
-    if (sendDocs) { await new Promise((resolve) => setTimeout(resolve, 2500)); docsSent = await sendDocsList(p); }
+    if (sendDocs) { await new Promise((resolve) => setTimeout(resolve, 2500)); docsSent = await sendDocsList(p, preview.docsText); }
     requestSimulationsAfterApproval({ accountId: p.accountId, leadId: p.leadId, userId: p.userId }).catch(() => {});
   } else {
     const tpl = await approvalTemplate(p.accountId);

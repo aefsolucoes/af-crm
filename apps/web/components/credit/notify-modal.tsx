@@ -9,7 +9,7 @@ import api from '@/lib/api';
 
 /* "Avisar cliente": mostra o texto que vai pro cliente (todas as opções aprovadas, até 3, com o nome em que saiu quando for o
  * 2º participante) e envia. O cliente escolhe a opção respondendo no WhatsApp; a IA do CRM dá o apoio. */
-interface Preview { text: string; options: number; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] }
+interface Preview { text: string; docsText?: string; options: number; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] }
 
 export function NotifyClientModal({ leadId, leadName, onClose, onSent }: { leadId: string; leadName: string; onClose: () => void; onSent: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -45,13 +45,14 @@ export function NotifyClientModal({ leadId, leadName, onClose, onSent }: { leadI
               {' '}{data.mode === 'text' ? 'O cliente falou nas últimas 24 h: o texto vai direto.' : 'A janela de 24 h fechou: vai o template de aprovação e o texto abaixo sai quando ele tocar em "Sim, quero saber".'}
             </p>
             <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-3 text-sm text-slate-800 whitespace-pre-line max-h-80 overflow-y-auto">{data.text}</div>
+            {data.docsText && <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-3 text-sm text-slate-800 whitespace-pre-line max-h-60 overflow-y-auto"><p className="text-[11px] text-emerald-700 mb-1">2ª mensagem (documentos), logo depois:</p>{data.docsText}</div>}
             {data.warnings.length > 0 && (
               <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-700 space-y-1">{data.warnings.map((w) => <p key={w}>{w}</p>)}</div>
             )}
             <div className="space-y-1.5 rounded-lg border border-af-border p-3 text-xs text-slate-600">
               <label className={`flex items-start gap-2 ${data.mode !== 'text' || !data.docs.available || data.docs.alreadySent ? 'opacity-50' : 'cursor-pointer'}`}>
                 <input type="checkbox" className="mt-0.5" checked={sendDocs && data.mode === 'text' && data.docs.available && !data.docs.alreadySent} disabled={data.mode !== 'text' || !data.docs.available || data.docs.alreadySent} onChange={(e) => setSendDocs(e.target.checked)} />
-                <span>Enviar também a <strong>lista de documentos</strong> (Resposta rápida &quot;Documentos Home Equity&quot;){data.docs.alreadySent ? ' — já foi enviada pra esse cliente' : !data.docs.available ? ' — não encontrei essa resposta rápida' : data.mode !== 'text' ? ' — só dentro da janela de 24 h' : ''}</span>
+                <span>Enviar também a <strong>lista de documentos</strong> (2ª mensagem, montada a partir da Resposta rápida &quot;Documentos Home Equity&quot;){data.docs.alreadySent ? ' — já foi enviada pra esse cliente' : !data.docs.available ? ' — não encontrei essa resposta rápida' : data.mode !== 'text' ? ' — só dentro da janela de 24 h' : ''}</span>
               </label>
               <label className={`flex items-start gap-2 ${data.move ? 'cursor-pointer' : 'opacity-50'}`}>
                 <input type="checkbox" className="mt-0.5" checked={moveStage && !!data.move} disabled={!data.move} onChange={(e) => setMoveStage(e.target.checked)} />
