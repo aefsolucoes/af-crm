@@ -192,15 +192,33 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
 /** A extensão do banco pergunta: "tem pedido pra mim?". Marca como RUNNING o que entregar. Pedidos de só conferir
  *  (CHECK) só vão pra extensão que avisa saber fazer isso (`caps` inclui "check") — uma versão antiga trataria
  *  como pedido normal e criaria proposta duplicada no banco. */
+/** Qual cliente a fila libera agora (Fabio 14/10: "um por um", do mais antigo pro mais novo): o que já tem análise RODANDO (termina primeiro);
+ *  sem nenhum rodando, o card mais antigo entre os que têm pedido esperando. Pura (testável). Só entram pedidos de RODAR (RUN) de pessoa/automático:
+ *  conferências (CHECK) e leituras da IA da conversa não travam nem são travadas. Pedido esperando há mais de 30 min (extensão fora do ar) não segura a fila. */
+export function pickActiveLead(open: Array<{ leadId: string; status: string; requestedAt: Date; leadCreatedAt: Date }>, now = Date.now()): string | null {
+  const vivos = open.filter((o) => o.status === 'RUNNING' || now - o.requestedAt.getTime() < 30 * 60_000);
+  if (!vivos.length) return null;
+  const byAge = (a: { leadCreatedAt: Date }, b: { leadCreatedAt: Date }) => a.leadCreatedAt.getTime() - b.leadCreatedAt.getTime();
+  const rodando = vivos.filter((o) => o.status === 'RUNNING').sort(byAge);
+  return (rodando[0] || [...vivos].sort(byAge)[0]).leadId;
+}
+
 export async function claimQueue(db: Db, p: { accountId: string; bank: string; limit?: number; caps?: string[] }) {
   if (!BANK_KEYS.includes(p.bank)) return [];
   const canCheck = !!p.caps?.includes('check');
   // Em PAUSA GERAL só sai da fila o que uma pessoa pediu (requestedById): reconferências e pedidos automáticos ficam parados.
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { paused: true } }))?.paused;
+  // "Um cliente por vez": os pedidos de RODAR de outros clientes esperam o cliente atual terminar em todos os bancos.
+  const abertos = await db.creditAnalysis.findMany({
+    where: { accountId: p.accountId, kind: 'RUN', status: { in: ['REQUESTED', 'RUNNING'] }, source: { not: 'AI' }, OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
+    select: { leadId: true, status: true, requestedAt: true, lead: { select: { createdAt: true } } },
+  });
+  const ativo = pickActiveLead(abertos.map((a) => ({ leadId: a.leadId, status: a.status, requestedAt: a.requestedAt, leadCreatedAt: a.lead?.createdAt || new Date(0) })));
   const rows = await db.creditAnalysis.findMany({
     where: {
       accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }),
       AND: [
+        ...(ativo ? [{ OR: [{ kind: 'CHECK' }, { source: 'AI' }, { leadId: ativo }] }] : []),
         { OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
         // Em pausa geral: só o pedido de pessoa; a leitura (CHECK, só leitura) pedida pela IA da conversa também passa.
         ...(paused ? [{ OR: [{ requestedById: { not: null } }, { source: 'AI', kind: 'CHECK' }] }] : []),

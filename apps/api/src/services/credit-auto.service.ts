@@ -94,7 +94,7 @@ async function startNewLeads(accountId: string, enabledAt: Date) {
       pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
       creditAnalyses: { none: {} },
     },
-    select: { id: true, name: true, customFields: true }, take: 30,
+    select: { id: true, name: true, customFields: true }, orderBy: { createdAt: 'asc' }, take: 30, // do mais antigo pro mais novo (Fabio 14/10)
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
