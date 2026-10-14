@@ -34,9 +34,9 @@ const FINAL = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK',
 const ACTIVE = ['REQUESTED', 'RUNNING'];
 /** Bancos cuja extensão sabe só CONFERIR uma proposta já enviada (sem criar outra). */
 export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS'];
-const CHECK_FAST_TRIES = 30; // de 1 em 1 min
-const CHECK_MAX_TRIES = 60; // depois, de 5 em 5 min até aqui (~3 h); passou disso, fica pra conferir à mão
-const CREDITAS_EXTRA_TRIES = 96; // Creditas demora (horas): depois das ~3 h segue de 15 em 15 min por mais 24 h (96 conferências)
+const CHECK_EVERY_MS = 10 * 60_000; // conferência do resultado de 10 em 10 min (Fabio 14/10: de 1 em 1 min as conferências ocupavam o navegador e atrapalhavam os outros clientes)
+const CHECK_MAX_TRIES = 18; // 18 conferências de 10 min = ~3 h; passou disso, fica pra conferir à mão
+const CREDITAS_EXTRA_TRIES = 144; // Creditas demora (horas): depois das ~3 h segue de 10 em 10 min por mais 24 h (144 conferências)
 const REAL_SENT = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CHECK']; // já foi rodada de verdade nesse banco
 const STALE_ACTIVE_MS = 25 * 60 * 1000; // pedido/execução parado há mais que isso não bloqueia um novo
 const STUCK_RUNNING_MS = 8 * 60 * 1000; // rodando há mais que isso sem NENHUM passo novo da extensão = parou (Fabio 14/10: antes eram 30 min e travava a fila; 5 min pareceu curto, ficou 8; cada passo da extensão leva < 3 min)
@@ -342,8 +342,7 @@ export async function resolveHolderCpf(db: Db, row: { leadId: string; holderCpf?
 
 type AnalysisRow = NonNullable<Awaited<ReturnType<Db['creditAnalysis']['findFirst']>>>;
 
-/** Depois de cada relato: (1) conferência que ainda não achou resultado volta pra fila — de 1 em 1 min nas primeiras 30 vezes,
- *  depois de 5 em 5 min até 60 (~3 h) — pra termos certeza do resultado real; (2) rodada que terminou "enviada" (resultado ainda
+/** Depois de cada relato: (1) conferência que ainda não achou resultado volta pra fila — de 10 em 10 min (18 vezes, ~3 h; Creditas segue por mais 24 h) — pra termos certeza do resultado real; (2) rodada que terminou "enviada" (resultado ainda
  *  não saiu) agenda essa conferência sozinha. Passou do limite, fica "conferir" pra olhar à mão. */
 async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
   if (row.dryRun) return row;
@@ -354,13 +353,11 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     const maxTries = CHECK_MAX_TRIES + (row.bank === 'CREDITAS' ? CREDITAS_EXTRA_TRIES : 0);
     if (row.attempt < maxTries) {
       const attempt = row.attempt + 1;
-      const fast = attempt <= CHECK_FAST_TRIES;
-      const slow = attempt > CHECK_MAX_TRIES; // só o Creditas chega aqui
-      const passo = fast ? 'de 1 em 1 min' : slow ? 'de 15 em 15 min' : 'de 5 em 5 min';
+      const passo = 'de 10 em 10 min';
       return db.creditAnalysis.update({
         where: { id: row.id },
         data: {
-          status: 'REQUESTED', notBefore: new Date(Date.now() + (fast ? 60_000 : slow ? 15 * 60_000 : 5 * 60_000)), attempt, finishedAt: null,
+          status: 'REQUESTED', notBefore: new Date(Date.now() + CHECK_EVERY_MS), attempt, finishedAt: null,
           detail: `Conferindo ${passo} (conferência ${attempt} de ${maxTries}). Última leitura: ${String(row.detail || '').replace(/^Conferindo[^:]*:\s*(Última leitura:\s*)?/i, '').slice(0, 300)}`,
         },
       });
@@ -371,7 +368,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     const open = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'CHECK', status: { in: ACTIVE } }, select: { id: true } });
     if (!open) {
       await db.creditAnalysis.create({
-        data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'CHECK', attempt: 1, notBefore: new Date(Date.now() + 60_000), proposalNumber: row.proposalNumber, dryRun: false, source: 'EXTENSION', holderName: row.holderName, holderCpf: row.holderCpf, detail: 'Conferindo de 1 em 1 min até sair o resultado.' },
+        data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'CHECK', attempt: 1, notBefore: new Date(Date.now() + CHECK_EVERY_MS), proposalNumber: row.proposalNumber, dryRun: false, source: 'EXTENSION', holderName: row.holderName, holderCpf: row.holderCpf, detail: 'Conferindo de 10 em 10 min até sair o resultado.' },
       });
     }
   }
