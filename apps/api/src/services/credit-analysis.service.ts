@@ -227,16 +227,24 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
 /** Qual cliente a fila libera agora (Fabio 14/10: "um por um", na ORDEM DE ENTRADA NA PRÉ-ANÁLISE — `leadOrderAt`): o que já tem análise RODANDO (termina primeiro);
  *  sem nenhum rodando, o que entrou há mais tempo entre os que têm pedido esperando. Pura (testável). Só entram pedidos de RODAR (RUN) de pessoa/automático:
  *  conferências (CHECK) e leituras da IA da conversa não travam nem são travadas. Pedido esperando há mais de 30 min (extensão fora do ar) não segura a fila. */
-export function pickActiveLead(open: Array<{ leadId: string; status: string; requestedAt: Date; leadOrderAt: Date }>, now = Date.now()): string | null {
-  const vivos = open.filter((o) => o.status === 'RUNNING' || now - o.requestedAt.getTime() < 30 * 60_000);
+export function pickActiveLead(open: Array<{ leadId: string; bank?: string; status: string; requestedAt: Date; leadOrderAt: Date }>, now = Date.now(), alive: (bank?: string) => boolean = () => false): string | null {
+  // Pedido velho só deixa de segurar a fila se a extensão do banco dele sumiu: se ela está viva, ele esperou na fila de verdade (atrás de outro cliente) e NÃO pode
+  // perder a vez por isso (Mauricio Rodrigues esperava desde 15:47 e foi ultrapassado por um card que entrou depois, 14/10).
+  const vivos = open.filter((o) => o.status === 'RUNNING' || now - o.requestedAt.getTime() < 30 * 60_000 || alive(o.bank));
   if (!vivos.length) return null;
   const byAge = (a: { leadOrderAt: Date }, b: { leadOrderAt: Date }) => a.leadOrderAt.getTime() - b.leadOrderAt.getTime();
   const rodando = vivos.filter((o) => o.status === 'RUNNING').sort(byAge);
   return (rodando[0] || [...vivos].sort(byAge)[0]).leadId;
 }
 
+// A extensão de cada banco consulta a fila de ~1 em 1 min: quem consultou nos últimos 3 min está viva. Logo depois de o servidor reiniciar ninguém consultou ainda: vale como viva.
+const BOOT_AT = Date.now();
+const lastPollAt = new Map<string, number>();
+const bankAlive = (accountId: string, bank?: string) => !!bank && (Date.now() - BOOT_AT < 5 * 60_000 || Date.now() - (lastPollAt.get(`${accountId}:${bank}`) || 0) < 3 * 60_000);
+
 export async function claimQueue(db: Db, p: { accountId: string; bank: string; limit?: number; caps?: string[] }) {
   if (!BANK_KEYS.includes(p.bank)) return [];
+  lastPollAt.set(`${p.accountId}:${p.bank}`, Date.now());
   const canCheck = !!p.caps?.includes('check');
   // Em PAUSA GERAL só sai da fila o que uma pessoa pediu (requestedById): reconferências e pedidos automáticos ficam parados.
   await expireStuck(db, { accountId: p.accountId }); // execução parada não segura a fila: aqui (e não só ao abrir a tela) é o que a destrava
@@ -244,12 +252,12 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   // "Um cliente por vez": os pedidos de RODAR de outros clientes esperam o cliente atual terminar em todos os bancos.
   const abertos = await db.creditAnalysis.findMany({
     where: { accountId: p.accountId, kind: 'RUN', status: { in: ['REQUESTED', 'RUNNING'] }, source: { notIn: ['AI', 'AI_SIM'] }, OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
-    select: { leadId: true, status: true, requestedAt: true, lead: { select: { createdAt: true, stageEnteredAt: true, status: true, stage: { select: { name: true } } } } },
+    select: { leadId: true, bank: true, status: true, requestedAt: true, lead: { select: { createdAt: true, stageEnteredAt: true, status: true, stage: { select: { name: true } } } } },
   });
   // Ordem da fila = quando o card ENTROU na Pré-Análise (card que está nela: stageEnteredAt); fora dela (ex.: card rodado à mão em outra etapa), a data de criação.
   const ordem = (l?: { createdAt: Date; stageEnteredAt: Date | null; status: string; stage: { name: string } | null } | null) =>
     (l && l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '') && l.stageEnteredAt) || l?.createdAt || new Date(0);
-  const ativo = pickActiveLead(abertos.map((a) => ({ leadId: a.leadId, status: a.status, requestedAt: a.requestedAt, leadOrderAt: ordem(a.lead) })));
+  const ativo = pickActiveLead(abertos.map((a) => ({ leadId: a.leadId, bank: a.bank, status: a.status, requestedAt: a.requestedAt, leadOrderAt: ordem(a.lead) })), Date.now(), (b) => bankAlive(p.accountId, b));
   const rows = await db.creditAnalysis.findMany({
     where: {
       accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }),
@@ -467,12 +475,27 @@ function orphanDetail(why: string, lastDetail?: string | null): string {
   return `${why}${ult ? ` Última etapa registrada: "${ult}".` : ' Não chegou a registrar nenhuma etapa.'} Nada foi concluído: peça de novo (se a proposta já tinha sido enviada ao banco, use "Conferir").`;
 }
 
+// Teto de duração de UMA análise de rodar (Fabio 14/10: "não podemos deixar esse tanto de tempo com um cliente"): a Maria Antônia ficou 27 min no Inter repetindo
+// "preencher CPF" — a extensão seguia mandando passos, então o limite de "sem passo novo" nunca disparava. Tempos reais (5 dias): Inter p90 8 min, Creditas p50 4,5 min,
+// Santander p90 15 min / máx. 21 min (inclui esperar o navegador compartilhado). Estourou: vira falha e a retentativa automática refaz (como CONFERIR se a proposta já foi enviada).
+const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 22 };
+
 async function expireStuck(db: Db, where: { accountId: string; leadId?: string }) {
   const rows = await db.creditAnalysis.findMany({ where: { ...where, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } }, select: { id: true, detail: true } });
   for (const r of rows) {
     await db.creditAnalysis.updateMany({
       where: { id: r.id, status: 'RUNNING' },
       data: { status: 'FAILED', finishedAt: new Date(), detail: orphanDetail('A extensão ficou mais de 8 minutos sem andar para o passo seguinte (janela do banco sem foco, portal que não respondeu, Chrome fechado, computador dormiu ou extensão recarregada).', r.detail) },
+    });
+  }
+  // Teto de duração (independe de a extensão ainda mandar passos).
+  const longos = await db.creditAnalysis.findMany({ where: { ...where, status: 'RUNNING', kind: 'RUN', startedAt: { lt: new Date(Date.now() - 15 * 60_000) } }, select: { id: true, bank: true, startedAt: true, detail: true } });
+  for (const r of longos) {
+    const teto = MAX_RUN_MIN[r.bank] || 15;
+    if (!r.startedAt || Date.now() - r.startedAt.getTime() < teto * 60_000) continue;
+    await db.creditAnalysis.updateMany({
+      where: { id: r.id, status: 'RUNNING' },
+      data: { status: 'FAILED', finishedAt: new Date(), detail: orphanDetail(`Esta análise passou de ${teto} minutos rodando (o limite de um cliente por banco). O portal ou a janela provavelmente travou.`, r.detail) },
     });
   }
 }
