@@ -83,18 +83,25 @@ function latestByParticipant(rows: any[], name2: string): { p1: Record<string, a
     return !!(n2 && h && (h === n2 || n2.includes(h) || h.includes(n2)));
   };
   const p1: Record<string, any> = {}, p2: Record<string, any> = {};
-  // Uma releitura (CONFERÊNCIA) que falhou por problema técnico ou não conseguiu ler NÃO esconde um resultado que já existia (Fabio 14/10: "mostra que falhou no Inter, sendo
-  // que foi aprovado no nome da Larissa" — a releitura morreu na recarga da extensão e cobriu a aprovação). Só entra se não houver nada melhor.
-  const ruido = (a: any) => a.kind === 'CHECK' && ['FAILED', 'CHECK', 'INCOMPLETE'].includes(a.status);
-  const fallback: Record<string, any> = {};
-  for (const a of rows) {
-    const bucket = isP2(a.holderName) ? p2 : p1;
-    const k = `${bucket === p2 ? '2' : '1'}|${a.bank}`;
-    if (ruido(a)) { if (!fallback[k]) fallback[k] = a; continue; }
-    if (!bucket[a.bank]) bucket[a.bank] = a;
-  }
-  for (const [k, a] of Object.entries(fallback)) { const [w, bank] = k.split('|'); const bucket = w === '2' ? p2 : p1; if (!bucket[bank]) bucket[bank] = a; }
+  const p1Rows = rows.filter((a) => !isP2(a.holderName)), p2Rows = rows.filter((a) => isP2(a.holderName));
+  Object.assign(p1, latestPerBank(p1Rows));
+  Object.assign(p2, latestPerBank(p2Rows));
   return { p1, p2 };
+}
+
+const RESULTADO_DECISIVO = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED']);
+/** Última análise de cada banco (`rows` do mais novo pro mais antigo). Uma releitura (CONFERÊNCIA) que ainda está na fila, rodando, falhou ou não conseguiu ler NÃO esconde um
+ *  resultado que já existia (Fabio 14/10: "mostra que falhou no Inter, sendo que foi aprovado no nome da Larissa"). Rodada nova de verdade (RUN) continua valendo. */
+export function latestPerBank(rows: any[]): Record<string, any> {
+  const temDecisivo = new Set(rows.filter((r) => RESULTADO_DECISIVO.has(r.status)).map((r) => r.bank));
+  const out: Record<string, any> = {};
+  for (const a of rows) {
+    if (out[a.bank]) continue;
+    if (a.kind === 'CHECK' && !RESULTADO_DECISIVO.has(a.status) && temDecisivo.has(a.bank)) continue;
+    out[a.bank] = a;
+  }
+  for (const a of rows) if (!out[a.bank]) out[a.bank] = a;
+  return out;
 }
 
 const normName = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -504,8 +511,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
   });
   return leads.map((l) => {
     const cf = (l.customFields || {}) as Record<string, any>;
-    const latest: Record<string, any> = {};
-    for (const a of l.creditAnalyses) if (!latest[a.bank]) latest[a.bank] = a; // já vem do mais novo pro mais antigo
+    const latest: Record<string, any> = latestPerBank(l.creditAnalyses); // já vem do mais novo pro mais antigo
     const byPart = latestByParticipant(l.creditAnalyses, String(cf.participante_2 || ''));
     return {
       latestP1: byPart.p1,
@@ -606,8 +612,7 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   if (p.scopeDepartmentIds.length && deptId && !p.scopeDepartmentIds.includes(deptId)) return null;
   await expireStuck(db, { accountId: p.accountId, leadId: p.leadId });
   const history = await db.creditAnalysis.findMany({ where: { leadId: p.leadId }, orderBy: { createdAt: 'desc' }, take: 30 });
-  const latest: Record<string, any> = {};
-  for (const a of history) if (!latest[a.bank]) latest[a.bank] = a;
+  const latest: Record<string, any> = latestPerBank(history);
   const cf = (lead.customFields || {}) as Record<string, any>;
   const overrides = await db.creditOverride.findMany({ where: { leadId: p.leadId }, select: { bank: true, data: true } });
   return {

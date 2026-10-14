@@ -413,7 +413,7 @@ export default function AnaliseCreditoPage() {
                                       </div>
                                       {a ? (
                                         <>
-                                          {a.holderName && l.card?.name1 && a.holderName.trim().toLowerCase() !== l.card.name1.trim().toLowerCase() && <p className="text-amber-600 font-medium">{a.status === 'APPROVED' || a.status === 'CONDITIONAL' ? 'Aprovado' : 'Analisado'} no nome de {a.holderName} (2º participante)</p>}
+                                          {a.holderName && l.card?.name1 && a.holderName.trim().toLowerCase() !== l.card.name1.trim().toLowerCase() && <p className="text-amber-600 font-medium">{a.status === 'APPROVED' || a.status === 'CONDITIONAL' ? 'Aprovado' : a.status === 'REJECTED' ? 'Reprovado' : 'Analisado'} no nome de {a.holderName} (2º participante)</p>}
                                           {a.detail && <p className="text-slate-500 whitespace-pre-line">{a.detail}</p>}
                                           {(a.status === 'APPROVED' || a.status === 'CONDITIONAL' || (a.status === 'SENT' && !!a.approvedValue)) && (
                                             <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-600">
