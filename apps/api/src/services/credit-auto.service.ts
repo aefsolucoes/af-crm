@@ -227,7 +227,7 @@ async function closeRejected(accountId: string, io: any) {
     const rows = l.creditAnalyses;
     if (BANKS.some((b) => bankVerdict(rows, b) !== 'NEG')) continue;
     const last = Math.max(...rows.map((r) => r.updatedAt.getTime()));
-    if (Date.now() - last < NOTICE_QUIET_MS) continue; // deixa as respostas assentarem
+    if (Date.now() - last < 2 * 60_000) continue; // resultado final dos 3 bancos: só uma folga curta pra conferências em andamento
     if (cascadePlan(cf, l.name, rows as any).length) continue; // ainda falta rodar no 2º participante
     const out = await sendRejectionNoticeNow({ accountId, leadId: l.id, io });
     if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: true }); continue; } // fora das 07h–21h: o aviso sai às 07:00 e o poller dos agendados fecha o card

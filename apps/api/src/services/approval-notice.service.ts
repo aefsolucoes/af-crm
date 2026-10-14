@@ -631,7 +631,9 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
 // Texto simples, com o motivo OBJETIVO (terreno / valor do imóvel abaixo do mínimo / saldo devedor / análise não aprovada) — nunca o detalhe
 // interno do banco. Só 07h–21h (fora disso agenda), e só com a janela de 24 h do WhatsApp aberta (não existe template pra isso: sem janela,
 // fica nota pra equipe chamar o cliente).
-const REJECTION_MARK = 'não conseguimos aprovar agora';
+const REJECTION_MARK = 'não conseguimos aprovação';
+const REJECTION_MARK_OLD = 'não conseguimos aprovar agora'; // texto antigo do aviso — ainda conta como "já avisado"
+const REJECTION_TEXT = 'Oi! Tudo bem? Analisamos seu crédito junto às instituições parceiras, mas infelizmente não conseguimos aprovação para o valor solicitado no momento. Qualquer mudança na situação, estou à disposição para tentarmos novamente!';
 /** Template aprovado da Meta pro aviso de reprovado (Fabio 14/10): é o que vale quando a janela de 24 h do WhatsApp está fechada. */
 export const REJECTION_TEMPLATE = 'reprovacao';
 
@@ -651,11 +653,9 @@ export async function buildRejectionText(leadId: string): Promise<{ text: string
   const cf = (lead.customFields || {}) as Record<string, any>;
   const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || 'tudo bem';
   const motivos = reasons.length > 1 ? `${reasons.slice(0, -1).join(', ')} e ${reasons[reasons.length - 1]}` : reasons[0];
-  // Diz QUAL valor foi analisado e que dá pra refazer com outro: o cliente que volta pedindo um valor menor não estranha a IA topar tentar (Aline, 14/10:
-  // "a IA dá uma negativa e depois fala que pode tentar").
-  const pedido = Number(String(cf.valor_credito ?? '').replace(/[R$\s.]/g, '').replace(',', '.'));
-  const doValor = pedido > 0 ? ` de R$ ${pedido.toLocaleString('pt-BR')}` : '';
-  const text = `Olá, ${nome}! Analisamos seu pedido${doValor} e, infelizmente, ${REJECTION_MARK} com os bancos com que trabalhamos: ${motivos}.\n\nSe quiser, me conta mais sobre o imóvel e o valor que você precisa — posso refazer a análise com outro valor ou ver outras possibilidades por aqui.`;
+  // Fabio 14/10: "a IA não precisa dar uma negativa e depois falar que tem jeito — sempre informar a negativa e mover o card pra Perdido e marcar reprovado".
+  // O texto é o do template aprovado "reprovacao" (sem motivo detalhado e sem oferecer alternativa); os motivos objetivos ficam só na nota do card.
+  const text = REJECTION_TEXT;
   return { text, reasons };
 }
 
@@ -665,7 +665,7 @@ export async function sendRejectionNoticeNow(p: { accountId: string; leadId: str
   const built = await buildRejectionText(p.leadId);
   if (!built) return { ok: false, error: 'Este card tem opção aprovada ou nenhum motivo claro de não aprovação.' };
   // Já avisado? Só barra se o aviso é MAIS NOVO que o último resultado ruim: o cliente que pede outro valor e volta reprovado de novo precisa saber (Fabio 14/10).
-  const ultimoAviso = await prisma.message.findFirst({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) }, OR: [{ content: { contains: REJECTION_MARK } }, { templateName: REJECTION_TEMPLATE }] }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  const ultimoAviso = await prisma.message.findFirst({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) }, OR: [{ content: { contains: REJECTION_MARK } }, { content: { contains: REJECTION_MARK_OLD } }, { templateName: REJECTION_TEMPLATE }] }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
   if (ultimoAviso) {
     const ultimoRuim = await prisma.creditAnalysis.findFirst({ where: { leadId: p.leadId, dryRun: false, status: { in: ['REJECTED', 'FAILED'] }, source: { not: 'AI_SIM' } }, orderBy: { updatedAt: 'desc' }, select: { updatedAt: true } });
     if (!ultimoRuim || ultimoRuim.updatedAt.getTime() <= ultimoAviso.createdAt.getTime()) return { ok: false, error: 'O aviso de não aprovado já foi enviado a este cliente (nenhum resultado novo desde então).' };
