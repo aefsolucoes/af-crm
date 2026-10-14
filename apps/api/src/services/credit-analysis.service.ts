@@ -718,27 +718,19 @@ export function monthlyRatePct(text?: string | null): number | null {
   return /a\.?\s*a\b|ao ano|anual/i.test(String(text)) ? (Math.pow(1 + v / 100, 1 / 12) - 1) * 100 : v;
 }
 
-/** Ordem de preferência quando a taxa empata ou não é conhecida (Fabio 14/10): Inter, depois Creditas e por último Santander. */
+/** Ordem fixa de preferência dos bancos (Fabio 14/10): Inter primeiro, Creditas segundo, Santander terceiro. */
 const SIM_BANK_PRIORITY: Record<string, number> = { INTER: 0, CREDITAS: 1, CREDIMORAR: 2 };
 const simPriority = (bank: string) => SIM_BANK_PRIORITY[bank] ?? 9;
 
-/** Banco cuja simulação em PDF vai pro cliente (Fabio 14/10): só UM — a proposta que o cliente ESCOLHEU (`chosen`) ou, sem escolha,
- *  a de MENOR TAXA mensal entre as aprovadas; empate (ou taxa desconhecida): Inter > Creditas > Santander. */
+/** Banco cuja simulação em PDF vai pro cliente: só UM — a proposta que o cliente ESCOLHEU (`chosen`) ou, sem escolha, o primeiro na ordem
+ *  Inter > Creditas > Santander entre os aprovados (Fabio 14/10: "não há taxa alta, segue a ordem dos bancos"). */
 export function pickSimulationBank(approved: Array<{ bank: string; rate?: string | null; chosen?: boolean; firstInstallment?: number | null }>): { bank: string; why: string } | null {
   if (!approved.length) return null;
   const chosen = approved.find((a) => a.chosen);
   if (chosen) return { bank: chosen.bank, why: 'proposta escolhida' };
   if (approved.length === 1) return { bank: approved[0].bank, why: 'única aprovada' };
-  const withRate = approved.map((a) => ({ a, r: monthlyRatePct(a.rate) })).filter((x): x is { a: (typeof approved)[number]; r: number } => x.r != null);
-  if (withRate.length) {
-    // taxas iguais (diferença menor que 0,005 p.p.) contam como empate e vale a ordem de preferência
-    withRate.sort((x, y) => (Math.abs(x.r - y.r) < 0.005 ? 0 : x.r - y.r) || simPriority(x.a.bank) - simPriority(y.a.bank));
-    const w = withRate[0];
-    const empate = withRate.filter((x) => Math.abs(x.r - w.r) < 0.005).length > 1;
-    return { bank: w.a.bank, why: `menor taxa (${w.r.toFixed(2).replace('.', ',')}% a.m.${empate ? ', empate: ordem Inter > Creditas > Santander' : ''})` };
-  }
-  const byPriority = [...approved].sort((x, y) => simPriority(x.bank) - simPriority(y.bank));
-  return { bank: byPriority[0].bank, why: 'sem taxa informada: ordem Inter > Creditas > Santander' };
+  const first = [...approved].sort((x, y) => simPriority(x.bank) - simPriority(y.bank))[0];
+  return { bank: first.bank, why: 'ordem Inter > Creditas > Santander' };
 }
 
 const BANK_LABEL_IA: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
@@ -792,7 +784,7 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   }
   const aprovados = Object.entries(p1).filter(([, r]: [string, any]) => r && (r.status === 'APPROVED' || r.status === 'CONDITIONAL') && r.approvedValue != null).map(([bank, r]: [string, any]) => ({ bank, rate: r.rate, chosen: r.chosen, firstInstallment: r.firstInstallment }));
   const escolha = aprovados.length >= 2 ? pickSimulationBank(aprovados) : null;
-  if (escolha) linhas.push(`- Simulação em PDF: ${aprovados.some((a) => a.chosen) ? 'o cliente já escolheu' : 'se o cliente ainda não escolheu, mande só a do banco de MENOR TAXA'} → ${BANK_LABEL_IA[escolha.bank]} (${escolha.why}).`);
+  if (escolha) linhas.push(`- Simulação em PDF: ${aprovados.some((a) => a.chosen) ? 'o cliente já escolheu' : 'se o cliente ainda não escolheu, mande só a do primeiro banco na ordem Inter, Creditas, Santander'} → ${BANK_LABEL_IA[escolha.bank]} (${escolha.why}).`);
   if (!linhas.length) return '';
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };
