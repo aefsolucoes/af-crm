@@ -201,6 +201,32 @@ function lastInboundApiMessage(messages: Message[]): Message | null {
   return latest;
 }
 
+/** Anexo aguardando envio: miniatura (imagem) ou ícone, nome, tamanho e X pra tirar. */
+function StagedFileChip({ file, onRemove, disabled }: { file: File; onRemove: () => void; disabled?: boolean }) {
+  const [thumb, setThumb] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file.type.startsWith('image/')) return;
+    const url = URL.createObjectURL(file);
+    setThumb(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  const kb = file.size / 1024;
+  return (
+    <div className="relative flex items-center gap-2 pl-1.5 pr-7 py-1.5 rounded-lg bg-[#2a3942] flex-shrink-0 max-w-[240px]">
+      {thumb
+        ? <img src={thumb} alt={file.name} className="w-11 h-11 object-cover rounded-md flex-shrink-0" />
+        : <div className="w-11 h-11 rounded-md bg-[#33434c] text-[#8696a0] flex items-center justify-center flex-shrink-0"><FileText size={20} /></div>}
+      <div className="min-w-0">
+        <p className="text-xs text-[#e9edef] truncate" title={file.name}>{file.name}</p>
+        <p className="text-[10px] text-[#8696a0]">{kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(kb))} KB`}</p>
+      </div>
+      <button type="button" onClick={onRemove} disabled={disabled} title="Tirar este anexo" className="absolute top-1 right-1 p-0.5 rounded-full text-[#8696a0] hover:text-white hover:bg-[#33434c] disabled:opacity-40">
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
 export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId, hasOlderMessages, loadingOlderMessages, onLoadOlderMessages }: ChatWindowProps) {
   const router = useRouter();
   // O listener de socket que atualiza o card de ligação (mais abaixo) roda
@@ -699,6 +725,19 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Arquivos escolhidos (📎), arrastados ou colados FICAM AQUI EMBAIXO, ao lado da caixa de texto, até clicar em enviar — nada vai direto pro cliente
+  // (Fabio 14/10: a captura de tela arrastada foi sozinha pra cliente e teve que ser apagada).
+  const [stagedFiles, setStagedFiles] = useState<File[]>([]);
+  function stageFiles(files: File[]) {
+    const ok: File[] = [];
+    for (const f of files) {
+      if (f.size > 25 * 1024 * 1024) { toast(`"${f.name}" é muito grande (máx. 25 MB)`, 'error'); continue; }
+      ok.push(f);
+    }
+    if (!ok.length) return;
+    setStagedFiles((prev) => [...prev, ...ok].slice(0, 10));
+    inputRef.current?.focus();
+  }
   const [uploadingFile, setUploadingFile] = useState(false);
 
   // Ao ABRIR uma conversa, pula direto pro final sem animação — com
@@ -877,8 +916,27 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // deixar a mensagem falhar silenciosamente lá na frente.
   const windowClosedForApi = channel === 'WHATSAPP' && windowOpen === false;
 
+  async function sendStagedFiles() {
+    if (uploadingFile || !stagedFiles.length) return;
+    if (windowClosedForApi) {
+      toast('Janela de 24h fechada — use um template aprovado para reabrir a conversa.', 'error');
+      setShowTemplates(true);
+      return;
+    }
+    let caption = content.trim();
+    const rest = [...stagedFiles];
+    for (const f of stagedFiles) {
+      const ok = await uploadFile(f, { caption: caption || undefined });
+      if (!ok) return; // o que falhou (e o resto) continua embaixo pra tentar de novo
+      rest.shift();
+      setStagedFiles([...rest]);
+      if (caption) { setContent(''); caption = ''; } // a legenda vai só no 1º arquivo
+    }
+  }
+
   async function handleSend(e?: React.FormEvent) {
     e?.preventDefault();
+    if (stagedFiles.length) { await sendStagedFiles(); return; }
     const text = content.trim();
     if (!text || sending) return;   // trava contra envio duplo
     if (windowClosedForApi) {
@@ -919,8 +977,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
   /** Envia 1 arquivo — usado pelo seletor (📎), por arrastar-e-soltar e por
    *  colar (Ctrl+V) na caixa de mensagem. */
-  async function uploadFile(file: File, opts?: { transcodeAudio?: boolean }) {
-    if (file.size > 25 * 1024 * 1024) { toast('Arquivo muito grande (máx. 25 MB)', 'error'); return; }
+  async function uploadFile(file: File, opts?: { transcodeAudio?: boolean; caption?: string }): Promise<boolean> {
+    if (file.size > 25 * 1024 * 1024) { toast('Arquivo muito grande (máx. 25 MB)', 'error'); return false; }
     setUploadingFile(true);
     try {
       const dataBase64 = await new Promise<string>((resolve, reject) => {
@@ -935,10 +993,13 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         mimeType: file.type || 'application/octet-stream',
         dataBase64,
         ...(opts?.transcodeAudio ? { transcodeAudio: true } : {}),
+        ...(opts?.caption ? { caption: opts.caption } : {}),
       });
       onNewMessage(data);
+      return true;
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao enviar o arquivo', 'error');
+      return false;
     } finally {
       setUploadingFile(false);
     }
@@ -1035,10 +1096,9 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   }
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // permite reenviar o mesmo arquivo
-    if (!file) return;
-    await uploadFile(file);
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // permite escolher o mesmo arquivo de novo
+    stageFiles(files);
   }
 
   // Arrastar-e-soltar: sem preventDefault no dragOver o navegador nunca chama
@@ -1062,8 +1122,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   async function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragDepth(0);
-    const files = Array.from(e.dataTransfer.files || []);
-    for (const file of files) await uploadFile(file); // um de cada vez — mesma ordem em que soltou
+    stageFiles(Array.from(e.dataTransfer.files || [])); // fica embaixo, esperando o envio (não vai direto pro cliente)
   }
 
   // Insere o emoji na posição do cursor (não só no final) e mantém o foco
@@ -2263,6 +2322,17 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
         </div>
       )}
 
+      {stagedFiles.length > 0 && (
+        <div className="relative z-10 px-3 pt-2 pb-1 bg-[#202c33] border-t border-[#2a3942]">
+          <p className="text-[11px] text-[#8696a0] mb-1.5">Pronto pra enviar — escreva uma legenda (opcional) e clique em enviar. Nada foi pro cliente ainda.</p>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {stagedFiles.map((f, i) => (
+              <StagedFileChip key={`${f.name}-${f.size}-${i}`} file={f} disabled={uploadingFile} onRemove={() => setStagedFiles((prev) => prev.filter((_, j) => j !== i))} />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Input bar */}
       <form
         onSubmit={handleSend}
@@ -2291,6 +2361,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             <input
               ref={fileInputRef}
               type="file"
+              multiple
               className="hidden"
               onChange={handleFileChange}
             />
@@ -2325,6 +2396,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={(e) => { const fs = Array.from(e.clipboardData?.files || []); if (fs.length) { e.preventDefault(); stageFiles(fs); } }}
                 placeholder={windowClosedForApi ? 'Janela fechada — use um template acima' : 'Digite uma mensagem'}
                 rows={1}
                 spellCheck
@@ -2370,10 +2442,11 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           >
             {processingAudio ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
           </button>
-        ) : content.trim() ? (
+        ) : content.trim() || stagedFiles.length ? (
           <button
             type="submit"
-            disabled={sending}
+            disabled={sending || uploadingFile}
+            title={stagedFiles.length ? 'Enviar o anexo' : 'Enviar'}
             className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-white transition-all opacity-100 scale-100"
             style={{ backgroundColor: '#00a884' }}
           >
