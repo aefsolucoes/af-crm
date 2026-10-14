@@ -188,7 +188,10 @@ async function noticeClients(accountId: string, io: any) {
     const rows = l.creditAnalyses;
     // Aviso IMEDIATO (Fabio 14/10: "o Inter é o primeiro banco e foi aprovado o valor total, por que não avisou?"): quando o banco de MAIOR prioridade entre os aprovados
     // aprovou o valor TOTAL com os números completos e todos os bancos acima dele na ordem já responderam, não espera os de baixo — se algum deles aprovar depois, sai o aviso de "mais um banco".
-    if (!avisoCedo(rows as any)) {
+    // Os 3 bancos já responderam (aprovou/reprovou/regra barrou) e há aprovação: não tem mais nada a esperar — avisa NA HORA, sem os 10 min de silêncio (Eva, 14/10: Santander aprovou
+    // a menor, Creditas e Inter desqualificaram e o aviso ficou parado esperando).
+    const todosDecididos = BANKS.every((b) => bankVerdict(rows as any, b) !== 'PENDING');
+    if (!avisoCedo(rows as any) && !todosDecididos) {
       if (rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // ainda tem análise rodando
       // O silêncio conta só o que JÁ ASSENTOU: conferência ainda rodando (Creditas leva horas) atualiza a linha a cada 10 min e o aviso da aprovação que já saiu nunca chegava (Azevedo, 14/10).
       const last = rows.filter((a) => !(a.kind === 'CHECK' && ['REQUESTED', 'RUNNING'].includes(a.status)))[0]?.updatedAt;
