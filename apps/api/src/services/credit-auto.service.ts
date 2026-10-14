@@ -229,15 +229,19 @@ async function closeRejected(accountId: string, io: any) {
     const last = Math.max(...rows.map((r) => r.updatedAt.getTime()));
     if (Date.now() - last < 2 * 60_000) continue; // resultado final dos 3 bancos: só uma folga curta pra conferências em andamento
     if (cascadePlan(cf, l.name, rows as any).length) continue; // ainda falta rodar no 2º participante
+    // Desqualificado x Reprovado: se NENHUM banco chegou a reprovar (todas as respostas são regra do banco/imóvel — mínimo, terreno, saldo devedor), o lead não atende
+    // aos critérios → "desqualificado". Basta um banco ter reprovado de verdade → "reprovado".
+    const ultima = (b: string) => rows.filter((r) => r.bank === b && r.source !== 'AI_SIM' && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
+    const desqualificado = BANKS.every((b) => ultima(b)?.status === 'FAILED');
     const out = await sendRejectionNoticeNow({ accountId, leadId: l.id, io });
-    if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: true }); continue; } // fora das 07h–21h: o aviso sai às 07:00 e o poller dos agendados fecha o card
+    if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: desqualificado ? 'DESQ' : true }); continue; } // fora das 07h–21h: o aviso sai às 07:00 e o poller dos agendados fecha o card
     if (!out.ok) {
       await saveCf(l.id, { _autoCloseTriedAt: new Date().toISOString() });
       console.warn(`[Análise automática] ${l.name}: reprovado, mas o aviso não saiu — ${out.error}`);
       continue;
     }
     const built = await buildRejectionText(l.id).catch(() => null);
-    await markRejectedAndMove({ accountId, leadId: l.id, io, motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Análise automática] mover reprovado:', e?.message));
+    await markRejectedAndMove({ accountId, leadId: l.id, io, disqualify: desqualificado, motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Análise automática] mover reprovado:', e?.message));
   }
 }
 

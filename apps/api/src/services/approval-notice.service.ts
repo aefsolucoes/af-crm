@@ -716,16 +716,20 @@ export async function sendRejectionNoticeNow(p: { accountId: string; leadId: str
 
 /** Marca o card como REPROVADO e o tira do funil ativo (mesmo caminho do botão "Reprovado" da tela: status Perdido + rejectedAt + funil "Perdidos").
  *  Usado depois que o cliente foi avisado de que não foi aprovado (Fabio 14/10: "avise o cliente e tire eles de lá"). */
-export async function markRejectedAndMove(p: { accountId: string; leadId: string; userId?: string; io?: any; motivo: string }): Promise<{ ok: boolean; error?: string }> {
+export async function markRejectedAndMove(p: { accountId: string; leadId: string; userId?: string; io?: any; motivo: string; /** não atende aos critérios dos bancos (nenhum banco chegou a reprovar): vira "Lead desqualificado" e NÃO conta como Reprovado */ disqualify?: boolean }): Promise<{ ok: boolean; error?: string }> {
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, status: true, pipeline: { select: { departmentId: true } } } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   if (lead.status !== 'OPEN') return { ok: false, error: 'Card já não está aberto' };
   const { updateLead } = require('./lead.service') as typeof import('./lead.service');
   const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
-  await updateLead(lead.id, p.accountId, { status: 'LOST', lostReason: p.motivo, rejectedAt: new Date() }, p.io);
-  await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `❌ Marcado como REPROVADO (análise automática) — ${p.motivo}` } }).catch(() => {});
-  await moveLeadToPerdidos({ accountId: p.accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId ?? null, byName: p.userId ? 'Usuário' : 'Análise automática', userId: p.userId || null, motivo: p.motivo, io: p.io });
-  logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou como "Reprovado": ${p.motivo}` } as any);
+  // Reprovado = algum banco recusou (botão "Reprovado": status Perdido + rejectedAt). Desqualificado (Fabio 14/10: "quando não atende os critérios, coloca como
+  // desqualificado") = nenhum banco reprovou, o lead não cumpre as regras (imóvel abaixo do mínimo, terreno, saldo devedor…): Perdido com motivo "Lead desqualificado — …",
+  // sem rejectedAt (o painel de reprovados não conta).
+  const motivo = p.disqualify ? `Lead desqualificado — ${p.motivo.replace(/^(Reprovado|Lead desqualificado)[^—]*—\s*/i, '')}`.slice(0, 280) : p.motivo;
+  await updateLead(lead.id, p.accountId, { status: 'LOST', lostReason: motivo, ...(p.disqualify ? {} : { rejectedAt: new Date() }) }, p.io);
+  await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: p.disqualify ? `🚫 Marcado como DESQUALIFICADO (não atende aos critérios dos bancos) — ${motivo}` : `❌ Marcado como REPROVADO (análise automática) — ${p.motivo}` } }).catch(() => {});
+  await moveLeadToPerdidos({ accountId: p.accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId ?? null, byName: p.userId ? 'Usuário' : 'Análise automática', userId: p.userId || null, motivo, io: p.io });
+  logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: p.disqualify ? `marcou como "Desqualificado": ${motivo}` : `marcou como "Reprovado": ${p.motivo}` } as any);
   return { ok: true };
 }
 
@@ -755,7 +759,7 @@ export async function processScheduledNotices(io: any): Promise<void> {
     console.log(`[Aprovação] aviso agendado de ${l.name}: ${r.ok ? 'enviado' : `não saiu (${r.error})`}`);
     if (r.ok && cf._noticeKind === 'REJECTED' && cf._autoCloseAfterNotice) {
       const built = await buildRejectionText(l.id).catch(() => null);
-      await markRejectedAndMove({ accountId: l.accountId, leadId: l.id, io, motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Aprovação] mover reprovado:', e?.message));
+      await markRejectedAndMove({ accountId: l.accountId, leadId: l.id, io, disqualify: cf._autoCloseAfterNotice === 'DESQ', motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Aprovação] mover reprovado:', e?.message));
     }
     if (!r.ok) await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `⚠️ O aviso agendado ao cliente não saiu: ${r.error}` } }).catch(() => {});
   } catch (e: any) {
