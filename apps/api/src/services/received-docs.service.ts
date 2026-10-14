@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
-import { organizeReceivedDocsFolder, downloadDriveFileForVision } from './google.service';
+import { organizeReceivedDocsFolder, downloadDriveFileForVision, isStickerAttachment } from './google.service';
+export { isStickerAttachment };
 import { logActivity } from './activity.service';
 
 const prisma = new PrismaClient();
@@ -34,9 +35,6 @@ Se for outro documento, use um nome curto que o descreva (até 4 palavras).
 Depois do nome do documento, coloque " | " e o nome completo do titular como aparece no documento (a pessoa a quem ele pertence). Se não aparecer nome de pessoa, escreva só o nome do documento.
 Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
 Se NÃO for documento (foto qualquer, selfie, figurinha, print de conversa), responda IGNORAR.`;
-
-/** Figurinha do WhatsApp (webp / "sticker-…"): não é documento — nunca entra na pasta do Drive, na leitura de documentos nem na conferência (Fabio 14/10). */
-export const isStickerAttachment = (a: { mimeType: string; fileName?: string | null }) => /^sticker-/i.test(a.fileName || '') || a.mimeType === 'image/webp';
 
 type AttachmentForVision = { id: string; driveFileId: string | null; data?: Uint8Array | null; mimeType: string };
 

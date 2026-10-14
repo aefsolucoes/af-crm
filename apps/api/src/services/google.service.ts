@@ -775,6 +775,37 @@ export async function reorganizeWhatsAppArchive(
  *  .whatsappAttachmentsFolderId) — ver resolveAttachmentParentFolder. */
 const WHATSAPP_ARCHIVE_FOLDER = 'WhatsApp — arquivo automático';
 
+/** Figurinha do WhatsApp (webp / "sticker-…"): NÃO vai pra pasta do cliente nem entra em documentação — fica numa pasta própria "FIGURINHAS" (Fabio 14/10). */
+export const isStickerAttachment = (a: { mimeType: string; fileName?: string | null }) => /^sticker-/i.test(a.fileName || '') || a.mimeType === 'image/webp';
+const STICKERS_FOLDER = 'FIGURINHAS';
+async function stickersFolderId(accountId: string, conn: { rootFolderId: string | null; whatsappAttachmentsFolderId: string | null }): Promise<string> {
+  const parent = conn.whatsappAttachmentsFolderId || conn.rootFolderId;
+  if (!parent) throw new Error('Drive sem pasta-raiz');
+  return (await createFolder(accountId, STICKERS_FOLDER, parent)).id;
+}
+
+/** Leva pra pasta FIGURINHAS as figurinhas que já estavam salvas nas pastas dos clientes. */
+export async function moveExistingStickersToFolder(accountId: string): Promise<{ moved: number; errors: number; folderId: string }> {
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  if (!conn?.refreshToken || !conn.rootFolderId) throw new Error('Conecte o Google Drive e escolha a pasta-raiz primeiro');
+  const folderId = await stickersFolderId(accountId, conn);
+  const drive = await getDrive(accountId);
+  const atts = await prisma.messageAttachment.findMany({
+    where: { driveFileId: { not: null }, OR: [{ fileName: { startsWith: 'sticker-' } }, { mimeType: 'image/webp' }] },
+    select: { driveFileId: true },
+  });
+  let moved = 0, errors = 0;
+  for (const a of atts) {
+    try {
+      const r = await drive.files.get({ fileId: a.driveFileId!, fields: 'id, parents, trashed', supportsAllDrives: true });
+      if (r.data.trashed || (r.data.parents || []).includes(folderId)) continue;
+      await drive.files.update({ fileId: a.driveFileId!, addParents: folderId, ...(r.data.parents?.length ? { removeParents: r.data.parents.join(',') } : {}), fields: 'id', supportsAllDrives: true });
+      moved++;
+    } catch { errors++; }
+  }
+  return { moved, errors, folderId };
+}
+
 type LeadFolderInfo = {
   name: string | null;
   customFields?: unknown;
@@ -853,7 +884,7 @@ export async function autoUploadAttachmentToDrive(accountId: string, leadId: str
       // Onde guardar: <pasta de anexos>/<telefone do cliente> se configurada;
       // senão <raiz>/WhatsApp — arquivo automático/<nome>. Ver
       // resolveAttachmentParentFolder.
-      const parentId = await resolveAttachmentParentFolder(accountId, conn, lead ?? { name: null });
+      const parentId = isStickerAttachment(att) ? await stickersFolderId(accountId, conn) : await resolveAttachmentParentFolder(accountId, conn, lead ?? { name: null });
       const up = await uploadFile(accountId, {
         name: att.fileName,
         mimeType: att.mimeType,
@@ -918,7 +949,7 @@ export async function bulkArchiveOldAttachments(accountId: string): Promise<{ ar
         if (!att.data) continue;
         try {
           const up = await uploadFile(accountId, {
-            name: att.fileName, mimeType: att.mimeType, data: Buffer.from(att.data), parentId: folderId,
+            name: att.fileName, mimeType: att.mimeType, data: Buffer.from(att.data), parentId: isStickerAttachment(att) ? await stickersFolderId(accountId, conn) : folderId,
           });
           await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
           archived++;
@@ -1011,7 +1042,7 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
         name: att.fileName,
         mimeType: att.mimeType,
         data: Buffer.from(withData.data),
-        parentId: await folderForLead(att.leadId),
+        parentId: isStickerAttachment(att) ? await stickersFolderId(accountId, conn!) : await folderForLead(att.leadId),
       });
       await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
       archived++;
