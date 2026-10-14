@@ -96,10 +96,11 @@ function ResultModal({ lead, bank, analysis, onClose, onSaved }: { lead: BoardLe
 export default function AnaliseCreditoPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery<Board>({
+  const { data, isLoading, dataUpdatedAt } = useQuery<Board>({
     queryKey: ['credit-board'],
     queryFn: async () => (await api.get('/api/credit-analysis/board')).data,
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: true, // aba em segundo plano (o Fabio fica no portal do banco) também atualiza — o padrão do navegador era pausar (14/10)
   });
   const [selected, setSelected] = useState<string[]>([]);
   const [banks, setBanks] = useState<Bank[]>(['CREDIMORAR', 'CREDITAS', 'INTER']);
@@ -140,7 +141,8 @@ export default function AnaliseCreditoPage() {
   useEffect(() => {
     const socket = getSocket();
     let t: ReturnType<typeof setTimeout> | null = null;
-    const on = () => { if (t) return; t = setTimeout(() => { t = null; refresh(); }, 600); };
+    // Aba em segundo plano: o Chrome segura timers (até 1 min) — nesse caso atualiza na hora, sem o atraso de 0,6 s.
+    const on = () => { if (document.visibilityState === 'hidden') { refresh(); return; } if (t) return; t = setTimeout(() => { t = null; refresh(); }, 600); };
     socket.on('credit_analysis_updated', on);
     return () => { if (t) clearTimeout(t); socket.off('credit_analysis_updated', on); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -326,7 +328,7 @@ export default function AnaliseCreditoPage() {
               </button>
             ))}
             <span className="ml-auto pb-2 text-[11px] text-slate-400 hidden md:block">
-              {view === 'pre' ? 'Home Equity · clientes na etapa Pré-Análise' : 'Home Equity · quem já foi analisado nos últimos 90 dias e saiu da Pré-Análise — ajuste ou inverta participantes e rode de novo'}
+              {view === 'pre' ? 'Home Equity · clientes na etapa Pré-Análise' : 'Home Equity · quem já foi analisado nos últimos 90 dias e saiu da Pré-Análise — ajuste ou inverta participantes e rode de novo'}{dataUpdatedAt ? ` · atualizado às ${new Date(dataUpdatedAt).toLocaleTimeString('pt-BR')}` : ''}
             </span>
           </div>
           {isLoading ? (
