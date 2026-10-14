@@ -478,7 +478,7 @@ function orphanDetail(why: string, lastDetail?: string | null): string {
 // Teto de duração de UMA análise de rodar (Fabio 14/10: "não podemos deixar esse tanto de tempo com um cliente"): a Maria Antônia ficou 27 min no Inter repetindo
 // "preencher CPF" — a extensão seguia mandando passos, então o limite de "sem passo novo" nunca disparava. Tempos reais (5 dias): Inter p90 8 min, Creditas p50 4,5 min,
 // Santander p90 15 min / máx. 21 min (inclui esperar o navegador compartilhado). Estourou: vira falha e a retentativa automática refaz (como CONFERIR se a proposta já foi enviada).
-const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 22 };
+const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 6 }; // Santander 6 min por ordem do Fabio (14/10); 4 de 13 rodadas boas dos últimos 5 dias passaram disso
 
 async function expireStuck(db: Db, where: { accountId: string; leadId?: string }) {
   const rows = await db.creditAnalysis.findMany({ where: { ...where, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } }, select: { id: true, detail: true } });

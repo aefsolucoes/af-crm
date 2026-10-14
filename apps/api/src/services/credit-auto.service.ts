@@ -302,7 +302,7 @@ async function retryTechnicalFailures(accountId: string) {
       pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
       creditAnalyses: { some: { dryRun: false } },
     },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true } } },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true } } },
     orderBy: { createdAt: 'asc' }, take: 80,
   });
   for (const l of leads) {
@@ -323,7 +323,8 @@ async function retryTechnicalFailures(accountId: string) {
       if (st.n >= RETRY_MAX) { retries[b] = { ...st, gaveUp: true }; gaveUp.push(b); continue; }
       retries[b] = { n: st.n + 1, at: new Date().toISOString() };
       redo.push(b);
-      if (r.kind === 'CHECK') redoCheck.add(b);
+      // Falha de um RODAR que já tinha ENVIADO a proposta ao banco (teto de tempo/extensão travada depois do envio): refazer como RODAR criaria proposta DUPLICADA no portal.
+      if (r.kind === 'CHECK' || r.proposalNumber || /proposta (j[aá] )?enviada|lendo o resultado/i.test(r.detail || '')) redoCheck.add(b);
     }
     const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
     if (redo.length) {
