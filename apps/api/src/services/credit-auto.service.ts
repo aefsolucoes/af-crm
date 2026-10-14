@@ -363,7 +363,11 @@ async function flagInterSemNumero(accountId: string) {
     const depois = await prisma.creditAnalysis.count({ where: { leadId: r.leadId, bank: 'INTER', dryRun: false, proposalNumber: { not: null }, status: { notIn: ['FAILED'] }, createdAt: { gt: r.createdAt } } });
     await saveCf(r.leadId, { _interSemNumero: [...avisados, r.id].slice(-10) });
     if (depois) continue;
-    await addNote(r.leadId, '⚠️ Inter: a rodada consta como ENVIADA, mas SEM número de proposta — no portal o cliente pode estar só como rascunho (a proposta pode não ter sido criada). Confira no portal do Inter; se for erro, use "Rodar de novo" no cartão do Inter na Análise de Crédito.');
+    // Regra do Fabio (14/10): se já rodou 2 vezes e deu o MESMO sinal, NÃO rodar de novo — aguardar a conferência ver se o resultado sai.
+    const vezes = await prisma.creditAnalysis.count({ where: { leadId: r.leadId, bank: 'INTER', kind: 'RUN', status: 'SENT', proposalNumber: null, dryRun: false, source: { notIn: ['AI', 'AI_SIM', 'MANUAL'] } } });
+    await addNote(r.leadId, vezes >= 2
+      ? '⚠️ Inter: já foi rodado 2 vezes e as duas constam como ENVIADAS sem número de proposta. NÃO rodar de novo: aguardar a conferência (segue lendo o portal) pra ver se o resultado sai.'
+      : '⚠️ Inter: a rodada consta como ENVIADA, mas SEM número de proposta — no portal o cliente pode estar só como rascunho (a proposta pode não ter sido criada). Confira no portal do Inter; se for erro, use "Rodar de novo" no cartão do Inter na Análise de Crédito.');
     console.warn(`[Análise automática] ${r.lead?.name}: Inter enviado sem número de proposta — nota de aviso criada`);
   }
 }
