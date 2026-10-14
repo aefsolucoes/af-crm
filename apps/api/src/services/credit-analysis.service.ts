@@ -502,7 +502,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])],
     },
     select: {
-      id: true, name: true, value: true, status: true, customFields: true,
+      id: true, name: true, value: true, status: true, customFields: true, stageEnteredAt: true,
       stage: { select: { name: true } }, pipeline: { select: { name: true } },
       creditAnalyses: { orderBy: { createdAt: 'desc' }, take: 30 },
       creditOverrides: { select: { bank: true, data: true } },
@@ -510,8 +510,17 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
     orderBy: { updatedAt: 'desc' },
     take: 300,
   });
+  // Quando o card ENTROU na Pré-Análise (Fabio 14/10: "quero data e hora que o card entrou"): se está nela agora, é o `stageEnteredAt`; se já saiu
+  // (aprovado/reprovado/movido), a anotação "Estágio: … → "Pré-Analise"" mais recente.
+  const preNotes = await db.note.findMany({
+    where: { leadId: { in: leads.map((l) => l.id) }, type: 'STAGE_CHANGE', content: { contains: '→ "Pré-An', mode: 'insensitive' } },
+    orderBy: { createdAt: 'desc' }, select: { leadId: true, createdAt: true },
+  });
+  const preNoteAt = new Map<string, Date>();
+  for (const n of preNotes) if (!preNoteAt.has(n.leadId)) preNoteAt.set(n.leadId, n.createdAt);
   return leads.map((l) => {
     const cf = (l.customFields || {}) as Record<string, any>;
+    const preAnaliseAt = (l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '') && l.stageEnteredAt) || preNoteAt.get(l.id) || null;
     const latest: Record<string, any> = latestPerBank(l.creditAnalyses); // já vem do mais novo pro mais antigo
     const byPart = latestByParticipant(l.creditAnalyses, String(cf.participante_2 || ''));
     return {
@@ -531,6 +540,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       },
       overrides: Object.fromEntries(l.creditOverrides.map((o) => [o.bank, o.data])),
       inPre: l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || ''),
+      preAnaliseAt,
       ran: l.creditAnalyses.length > 0,
       lastRunAt: l.creditAnalyses[0]?.createdAt || null,
       latest,

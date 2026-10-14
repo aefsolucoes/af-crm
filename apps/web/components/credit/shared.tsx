@@ -40,7 +40,7 @@ export interface BoardLead {
   requested: { creditValue: number; propertyValue: number; term: string | null };
   card: { name1: string; name2: string; income1: string; income2: string; propertyValue: string; creditValue: string; term: string };
   overrides: Partial<Record<Bank, OverrideData>>;
-  inPre: boolean; ran: boolean; lastRunAt: string | null;
+  inPre: boolean; preAnaliseAt?: string | null; ran: boolean; lastRunAt: string | null;
   latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; chosenId: string | null;
   /** Última análise de cada banco por participante (o 2º, rodado no nome dele, não esconde o 1º). */
   latestP1?: Partial<Record<Bank, Analysis>>; latestP2?: Partial<Record<Bank, Analysis>>;

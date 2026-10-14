@@ -357,6 +357,11 @@ export default function AnaliseCreditoPage() {
                             <div className="text-[11px] text-slate-400">
                               {l.stage}{l.requested.creditValue ? ` · pediu ${formatCurrency(l.requested.creditValue)}` : ''}{l.requested.term ? ` · ${l.requested.term}` : ''}
                             </div>
+                            {l.preAnaliseAt && (
+                              <div className="text-[11px] text-slate-400" title="Data e hora em que o card entrou na Pré-Análise">
+                                Entrou na Pré-Análise: {new Date(l.preAnaliseAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                              </div>
+                            )}
                             {l.card?.name2 && (
                               <div className="text-[11px] text-slate-500 mt-0.5">
                                 2º participante: <span className="font-medium text-slate-600">{l.card.name2}</span>
