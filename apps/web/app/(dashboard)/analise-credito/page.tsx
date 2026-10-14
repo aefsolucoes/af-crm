@@ -452,6 +452,7 @@ export default function AnaliseCreditoPage() {
                                               {a.proposalNumber ? <><dt className="text-slate-400">Proposta nº</dt><dd>{a.proposalNumber}</dd></> : null}
                                             </dl>
                                           )}
+                                          {a.bank === 'INTER' && a.status === 'SENT' && !a.proposalNumber && a.source !== 'MANUAL' && <p className="text-amber-600">⚠️ Marcada como enviada, mas sem número de proposta: no portal pode ser só um rascunho. Confira no portal do Inter; se for erro, use "Rodar de novo".</p>}
                                           {a.status === 'APPROVED' && !a.approvedValue && <p className="text-amber-600">Aprovada, mas sem os números — clique em "Resultado" e preencha.</p>}
                                           {a.status === 'CONDITIONAL' && <p className="text-teal-700">Aprovada com condição: o banco pede documentação para seguir.</p>}
                                         </>
@@ -460,7 +461,7 @@ export default function AnaliseCreditoPage() {
                                         <button onClick={() => setModal({ lead: l, bank: b.key, analysis: a })} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50">
                                           {a ? <><Pencil size={11} /> Resultado</> : <><Plus size={11} /> Registrar</>}
                                         </button>
-                                        {(!a || ['FAILED', 'INCOMPLETE', 'CHECK'].includes(a.status)) && (
+                                        {(!a || ['FAILED', 'INCOMPLETE', 'CHECK'].includes(a.status) || (a.bank === 'INTER' && a.status === 'SENT' && !a.proposalNumber && a.source !== 'MANUAL')) && (
                                           <button onClick={() => rerunBank(l, b.key, who)} disabled={!!rerunKey} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50">
                                             <RefreshCw size={11} className={rerunKey === `${l.id}-${b.key}-${who}` ? 'animate-spin' : ''} /> {a ? 'Rodar de novo' : who === 'p2' ? 'Rodar no 2º participante' : 'Rodar'}
                                           </button>

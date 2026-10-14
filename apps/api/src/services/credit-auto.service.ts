@@ -342,6 +342,32 @@ async function retryTechnicalFailures(accountId: string) {
 
 let running = false;
 /** Roda a cada minuto (index.ts). Só mexe em conta com a chave "Análise automática" LIGADA. */
+/** Inter marcado como "ENVIADO" SEM número de proposta (Fabio 14/10, Mauricio de Azevedo): no portal o cliente estava só como RASCUNHO — a extensão leu a linha de
+ *  outro cliente na lista e deu a rodada como enviada. Só AVISA (nota no card, uma vez por rodada); NÃO roda nada sozinho: a equipe confere no portal e, se for erro,
+ *  manda "Rodar de novo" no cartão do Inter. Só o Inter: ele sempre devolve número; o Creditas não devolve, então SEM número não é sinal de erro lá. */
+async function flagInterSemNumero(accountId: string) {
+  const rows = await prisma.creditAnalysis.findMany({
+    where: {
+      accountId, bank: 'INTER', kind: 'RUN', status: 'SENT', proposalNumber: null, dryRun: false, source: { notIn: ['AI', 'AI_SIM', 'MANUAL'] },
+      updatedAt: { gte: new Date(Date.now() - 24 * 3_600_000), lte: new Date(Date.now() - 3 * 60_000) }, // 3 min de folga: o número pode chegar logo depois
+      lead: { status: 'OPEN', archived: false },
+    },
+    select: { id: true, leadId: true, createdAt: true, lead: { select: { name: true, customFields: true } } },
+    take: 50,
+  });
+  for (const r of rows) {
+    const cf = (r.lead?.customFields || {}) as Cf;
+    const avisados: string[] = Array.isArray(cf._interSemNumero) ? cf._interSemNumero : [];
+    if (avisados.includes(r.id)) continue;
+    // Uma rodada/conferência POSTERIOR do Inter já trouxe o número: está tudo certo.
+    const depois = await prisma.creditAnalysis.count({ where: { leadId: r.leadId, bank: 'INTER', dryRun: false, proposalNumber: { not: null }, status: { notIn: ['FAILED'] }, createdAt: { gt: r.createdAt } } });
+    await saveCf(r.leadId, { _interSemNumero: [...avisados, r.id].slice(-10) });
+    if (depois) continue;
+    await addNote(r.leadId, '⚠️ Inter: a rodada consta como ENVIADA, mas SEM número de proposta — no portal o cliente pode estar só como rascunho (a proposta pode não ter sido criada). Confira no portal do Inter; se for erro, use "Rodar de novo" no cartão do Inter na Análise de Crédito.');
+    console.warn(`[Análise automática] ${r.lead?.name}: Inter enviado sem número de proposta — nota de aviso criada`);
+  }
+}
+
 export async function processCreditAutomation(io: any): Promise<void> {
   if (running) return;
   running = true;
@@ -354,6 +380,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await closeRejected(s.accountId, io).catch((e) => console.error('[Análise automática] fechar reprovados:', e?.message));
       await retryTechnicalFailures(s.accountId).catch((e) => console.error('[Análise automática] refazer falhas técnicas:', e?.message));
       await ackPendingProposals(s.accountId, io).catch((e) => console.error('[Análise automática] confirmação da proposta:', e?.message));
+      await flagInterSemNumero(s.accountId).catch((e) => console.error('[Análise automática] Inter sem número:', e?.message));
     }
   } finally {
     running = false;
