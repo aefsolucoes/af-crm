@@ -78,16 +78,19 @@ export async function claimSimulationDocs(db: Db, p: { accountId: string; extBan
   const insts = Object.entries(SIM_INSTITUTIONS).filter(([, v]) => v.extBank === p.extBank).map(([k]) => k);
   if (!insts.length) return [];
   const rows = await db.simulationDocRequest.findMany({ where: { accountId: p.accountId, status: 'REQUESTED', institution: { in: insts } }, orderBy: { createdAt: 'asc' }, take: Math.min(p.limit || 2, 5) });
-  const out: Array<{ id: string; leadId: string; leadName: string; institution: string; mode: 'pdf' | 'data'; institutionId: number; proposalNumber: string | null }> = [];
+  const out: Array<{ id: string; leadId: string; leadName: string; institution: string; mode: 'pdf' | 'data'; institutionId: number; proposalNumber: string | null; cpf: string | null }> = [];
   for (const r of rows) {
     const claimed = await db.simulationDocRequest.updateMany({ where: { id: r.id, status: 'REQUESTED' }, data: { status: 'RUNNING', startedAt: new Date() } });
     if (!claimed.count) continue;
     const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
     const meta = SIM_INSTITUTIONS[r.institution];
     const bankKey = meta.extBank;
-    // Número da proposta do banco (a extensão acha o cliente por ele, sem depender da lista): última análise com número.
-    const last = bankKey === 'CREDIMORAR' ? null : await db.creditAnalysis.findFirst({ where: { leadId: r.leadId, bank: bankKey, proposalNumber: { not: null }, dryRun: false }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
-    out.push({ id: r.id, leadId: r.leadId, leadName: lead?.name || 'Sem nome', institution: r.institution, mode: meta.mode, institutionId: meta.credimorarId ?? 0, proposalNumber: last?.proposalNumber || null });
+    // A proposta APROVADA do banco e o CPF de quem foi aprovado (Fabio 14/10): a extensão acha o cliente por eles, sem adivinhar nem depender da lista.
+    const aprovada = await db.creditAnalysis.findFirst({ where: { leadId: r.leadId, bank: bankKey, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: [{ chosen: 'desc' }, { createdAt: 'desc' }], select: { proposalNumber: true, holderCpf: true, holderName: true, detail: true, leadId: true, bank: true } });
+    const ultima = aprovada || await db.creditAnalysis.findFirst({ where: { leadId: r.leadId, bank: bankKey, proposalNumber: { not: null }, dryRun: false }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true, detail: true, leadId: true, bank: true } });
+    const { resolveHolderCpf } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    const cpf = ultima ? await resolveHolderCpf(db, ultima) : null;
+    out.push({ id: r.id, leadId: r.leadId, leadName: lead?.name || 'Sem nome', institution: r.institution, mode: meta.mode, institutionId: meta.credimorarId ?? 0, proposalNumber: ultima?.proposalNumber || null, cpf });
   }
   return out;
 }

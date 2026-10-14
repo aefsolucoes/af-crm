@@ -1228,6 +1228,7 @@ model CreditAnalysis {
   notBefore        DateTime? // conferência repetida: só entra na fila depois disso
   attempt          Int       @default(0) // nº da conferência (a cada 1 min no começo, depois a cada 5)
   holderName       String? // em nome de quem a análise foi feita (titular na análise; o 2º participante quando invertido)
+  holderCpf        String? // CPF (só dígitos) de quem foi analisado/aprovado — o PDF da simulação é buscado no portal por ele + o nº da proposta
   kind             String    @default("RUN") // RUN | CHECK (só conferir o resultado de uma proposta já enviada) // EXTENSION | MANUAL
   chosen           Boolean   @default(false)
   requestedById    String?

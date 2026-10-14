@@ -44,6 +44,7 @@ const REPORT_REUSE_MS = 12 * 60 * 60 * 1000; // relatório da extensão continua
 
 export interface ResultFields {
   proposalNumber?: string | null;
+  holderCpf?: string | null;
   approvedValue?: number | null;
   netValue?: number | null;
   termMonths?: number | null;
@@ -53,7 +54,7 @@ export interface ResultFields {
   lastInstallment?: number | null;
   conditions?: string | null;
 }
-const RESULT_KEYS: (keyof ResultFields)[] = ['proposalNumber', 'approvedValue', 'netValue', 'termMonths', 'rate', 'indexer', 'firstInstallment', 'lastInstallment', 'conditions'];
+const RESULT_KEYS: (keyof ResultFields)[] = ['proposalNumber', 'holderCpf', 'approvedValue', 'netValue', 'termMonths', 'rate', 'indexer', 'firstInstallment', 'lastInstallment', 'conditions'];
 
 const brl = (n: number | null | undefined) => (n == null ? '' : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
 
@@ -61,6 +62,7 @@ function pickResult(input: Record<string, any>): ResultFields {
   const out: ResultFields = {};
   const num = (v: any) => { const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(/[^\d.,-]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : null; };
   if ('proposalNumber' in input) out.proposalNumber = input.proposalNumber ? String(input.proposalNumber).slice(0, 40) : null;
+  if ('holderCpf' in input) { const d = String(input.holderCpf || '').replace(/\D/g, ''); out.holderCpf = d.length === 11 ? d : null; }
   if ('approvedValue' in input) out.approvedValue = num(input.approvedValue);
   if ('netValue' in input) out.netValue = num(input.netValue);
   if ('termMonths' in input) { const t = num(input.termMonths); out.termMonths = t ? Math.round(t) : null; }
@@ -196,8 +198,9 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
         const done = await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, dryRun: false, status: { in: REAL_SENT }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, select: { id: true } });
         if (done) { kind = 'CHECK'; if (!consulted.includes(bank)) consulted.push(bank); }
       }
-      const prevNumber = kind === 'CHECK' ? (await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } }))?.proposalNumber || null : null;
-      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, proposalNumber: prevNumber, dryRun: kind === 'CHECK' ? false : p.dryRun, source: p.source || 'EXTENSION', requestedById: p.userId || null } });
+      const prev = kind === 'CHECK' ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true } }) : null;
+      const prevNumber = prev?.proposalNumber || null;
+      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, proposalNumber: prevNumber, holderCpf: prev?.holderCpf || null, holderName: prev?.holderName || null, dryRun: kind === 'CHECK' ? false : p.dryRun, source: p.source || 'EXTENSION', requestedById: p.userId || null } });
       created++;
     }
   }
@@ -272,6 +275,12 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
       ...(becameFinal ? { finishedAt: new Date() } : {}),
     },
   });
+  // Aprovada: grava o CPF de QUEM foi aprovado (a extensão manda; senão deduz pelo nome do titular da análise no card) — é por ele que o PDF da simulação
+  // é buscado no portal (Juan Reppucci, 14/10: o Santander aprovou no CPF da esposa e o PDF foi procurado no do marido).
+  if (!updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL') && !updated.holderCpf) {
+    const cpf = await resolveHolderCpf(db, updated);
+    if (cpf) { await db.creditAnalysis.update({ where: { id: updated.id }, data: { holderCpf: cpf } }).catch(() => {}); (updated as any).holderCpf = cpf; }
+  }
   // Nota automática só na primeira vez que vira aprovada/reprovada (modo teste não escreve no card).
   if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) {
     const holder = await holderIfSecond(db, row.leadId, updated.holderName);
@@ -283,6 +292,26 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   }
   if (becameFinal && updated.dryRun && updated.source === 'AI_SIM') await deliverAiSimulation(db, updated).catch((e: any) => console.error('[IA] simulação de outro prazo:', e?.message));
   return { row: updated, becameFinal };
+}
+
+/** CPF (só dígitos) de quem foi analisado: o gravado na análise; senão o do participante do card cujo nome bate com o titular da análise; senão o do 1º participante. */
+export async function resolveHolderCpf(db: Db, row: { leadId: string; holderCpf?: string | null; holderName?: string | null; detail?: string | null; bank?: string }): Promise<string | null> {
+  if (row.holderCpf) return row.holderCpf;
+  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '');
+  const c1 = dig(cf.cpf_1); const c2 = dig(cf.cpf_2);
+  const holder = normName(row.holderName || parseHolder(row.detail) || '');
+  const n2 = normName(String(cf.participante_2 || ''));
+  const n1 = normName(String(cf.participante_1 || ''));
+  const bate = (a: string, b: string) => !!a && !!b && (a === b || a.includes(b) || b.includes(a));
+  if (holder && bate(holder, n2) && c2.length === 11) return c2;
+  if (holder && bate(holder, n1) && c1.length === 11) return c1;
+  if (!holder) {
+    const ov = row.bank ? await db.creditOverride.findFirst({ where: { leadId: row.leadId, bank: row.bank }, select: { data: true } }) : null;
+    if ((ov?.data as any)?.inverter === true && c2.length === 11) return c2;
+  }
+  return c1.length === 11 ? c1 : null;
 }
 
 type AnalysisRow = NonNullable<Awaited<ReturnType<Db['creditAnalysis']['findFirst']>>>;
@@ -316,7 +345,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     const open = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'CHECK', status: { in: ACTIVE } }, select: { id: true } });
     if (!open) {
       await db.creditAnalysis.create({
-        data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'CHECK', attempt: 1, notBefore: new Date(Date.now() + 60_000), proposalNumber: row.proposalNumber, dryRun: false, source: 'EXTENSION', holderName: row.holderName, detail: 'Conferindo de 1 em 1 min até sair o resultado.' },
+        data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'CHECK', attempt: 1, notBefore: new Date(Date.now() + 60_000), proposalNumber: row.proposalNumber, dryRun: false, source: 'EXTENSION', holderName: row.holderName, holderCpf: row.holderCpf, detail: 'Conferindo de 1 em 1 min até sair o resultado.' },
       });
     }
   }
