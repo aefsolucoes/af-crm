@@ -39,7 +39,7 @@ const CHECK_MAX_TRIES = 60; // depois, de 5 em 5 min até aqui (~3 h); passou di
 const CREDITAS_EXTRA_TRIES = 96; // Creditas demora (horas): depois das ~3 h segue de 15 em 15 min por mais 24 h (96 conferências)
 const REAL_SENT = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CHECK']; // já foi rodada de verdade nesse banco
 const STALE_ACTIVE_MS = 25 * 60 * 1000; // pedido/execução parado há mais que isso não bloqueia um novo
-const STUCK_RUNNING_MS = 5 * 60 * 1000; // rodando há mais que isso sem NENHUM passo novo da extensão = parou (Fabio 14/10: antes eram 30 min e travava a fila; cada passo da extensão leva < 3 min)
+const STUCK_RUNNING_MS = 8 * 60 * 1000; // rodando há mais que isso sem NENHUM passo novo da extensão = parou (Fabio 14/10: antes eram 30 min e travava a fila; 5 min pareceu curto, ficou 8; cada passo da extensão leva < 3 min)
 const REPORT_REUSE_MS = 12 * 60 * 60 * 1000; // relatório da extensão continua a execução aberta das últimas 12 h
 
 export interface ResultFields {
@@ -469,7 +469,7 @@ async function expireStuck(db: Db, where: { accountId: string; leadId?: string }
   for (const r of rows) {
     await db.creditAnalysis.updateMany({
       where: { id: r.id, status: 'RUNNING' },
-      data: { status: 'FAILED', finishedAt: new Date(), detail: orphanDetail('A extensão ficou mais de 5 minutos sem andar para o passo seguinte (janela do banco sem foco, portal que não respondeu, Chrome fechado, computador dormiu ou extensão recarregada).', r.detail) },
+      data: { status: 'FAILED', finishedAt: new Date(), detail: orphanDetail('A extensão ficou mais de 8 minutos sem andar para o passo seguinte (janela do banco sem foco, portal que não respondeu, Chrome fechado, computador dormiu ou extensão recarregada).', r.detail) },
     });
   }
 }
