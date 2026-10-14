@@ -353,6 +353,37 @@ export async function buildApprovalText(leadId: string): Promise<{ text: string;
   return fromCard ? { text: renderApprovalText(await withHolders(leadId, fromCard)), source: 'card' } : null;
 }
 
+/** Bancos com aprovação válida (o veredito mais recente de cada banco vale) → instituições do PDF de simulação. */
+async function approvedSimulationInstitutions(leadId: string): Promise<string[]> {
+  const rows = await prisma.creditAnalysis.findMany({
+    where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
+    orderBy: { createdAt: 'asc' },
+  });
+  const byBank = new Map<string, true>();
+  for (const r of rows) {
+    if (r.status === 'REJECTED') byBank.delete(r.bank);
+    else if (r.approvedValue != null) byBank.set(r.bank, true);
+  }
+  const map: Record<string, string> = { CREDIMORAR: 'SANTANDER', INTER: 'INTER', CREDITAS: 'CREDITAS' };
+  return Array.from(byBank.keys()).map((b) => map[b]).filter(Boolean);
+}
+
+/** Logo depois do texto com as condições de aprovação (Fabio 14/10): pede o PDF da simulação (modelo A&F) de cada banco aprovado.
+ *  A extensão do banco lê os dados e o CRM manda o PDF sozinho em ~1-2 min. Nunca derruba o aviso: erro só vai pro log. */
+export async function requestSimulationsAfterApproval(p: { accountId: string; leadId: string; userId?: string }): Promise<string[]> {
+  try {
+    const institutions = await approvedSimulationInstitutions(p.leadId);
+    if (!institutions.length) return [];
+    const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+    const r = await requestSimulationDocs(prisma, { accountId: p.accountId, leadId: p.leadId, institutions, userId: p.userId, source: p.userId ? 'USER' : 'AI', skipIfSentWithinHours: 12 });
+    if (r.created.length) console.log(`[Aprovação] simulação em PDF pedida (${r.created.map((c) => c.institution).join(', ')}) logo depois das condições`);
+    return r.created.map((c) => c.institution);
+  } catch (e: any) {
+    console.error('[Aprovação] não consegui pedir o PDF da simulação:', e?.message);
+    return [];
+  }
+}
+
 /** Cliente tocou em "Sim, quero saber" no template de aprovação. true = tratou. */
 export async function maybeSendApprovalOnYes(accountId: string, leadId: string, text: string, io: any): Promise<boolean> {
   if (!YES_RE.test(text.trim())) return false;
@@ -373,6 +404,7 @@ export async function maybeSendApprovalOnYes(accountId: string, leadId: string, 
     await prisma.lead.update({ where: { id: leadId }, data: { aiAutoReplyActive: true } }).catch(() => {});
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, leadName: lead.name, summary: `mandou as condições de aprovação (dados ${built.source === 'analises' ? 'das análises de crédito' : built.source === 'notas' ? 'das notas' : 'do card'}) — cliente tocou em "Sim, quero saber"` });
     console.log(`[Aprovação] ${lead.name}: condições enviadas (dados ${built.source === 'analises' ? 'das análises de crédito' : built.source === 'notas' ? 'das notas' : 'do card'})`);
+    requestSimulationsAfterApproval({ accountId, leadId }).catch(() => {});
   }
   return true;
 }
@@ -481,6 +513,7 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
     if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
     // Lista de documentos (a mesma Resposta rápida da equipe), logo depois do aviso — uma vez só.
     if (sendDocs) { await new Promise((resolve) => setTimeout(resolve, 2500)); docsSent = await sendDocsList(p); }
+    requestSimulationsAfterApproval({ accountId: p.accountId, leadId: p.leadId, userId: p.userId }).catch(() => {});
   } else {
     const tpl = await approvalTemplate(p.accountId);
     if (!tpl.approved) return { ok: false, error: 'A janela de 24 h do WhatsApp fechou e o template de aprovação ainda não foi aprovado pela Meta.' };

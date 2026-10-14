@@ -53,7 +53,7 @@ export function parseInstitutions(raw: unknown): string[] {
   return out;
 }
 
-export async function requestSimulationDocs(db: Db, p: { accountId: string; leadId: string; institutions: string[]; userId?: string; source?: 'USER' | 'AI'; caption?: string }) {
+export async function requestSimulationDocs(db: Db, p: { accountId: string; leadId: string; institutions: string[]; userId?: string; source?: 'USER' | 'AI'; caption?: string; /** não pede de novo se o mesmo PDF já foi enviado nas últimas N horas (envio automático) */ skipIfSentWithinHours?: number }) {
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
   if (!lead) throw new Error('Card não encontrado');
   await expireStuck(db, p.accountId);
@@ -62,6 +62,10 @@ export async function requestSimulationDocs(db: Db, p: { accountId: string; lead
   for (const inst of parseInstitutions(p.institutions)) {
     const open = await db.simulationDocRequest.findFirst({ where: { leadId: p.leadId, institution: inst, status: { in: ['REQUESTED', 'RUNNING'] } }, select: { id: true } });
     if (open) { skipped.push(inst); continue; }
+    if (p.skipIfSentWithinHours) {
+      const done = await db.simulationDocRequest.findFirst({ where: { leadId: p.leadId, institution: inst, status: 'DONE', finishedAt: { gt: new Date(Date.now() - p.skipIfSentWithinHours * 3_600_000) } }, select: { id: true } });
+      if (done) { skipped.push(inst); continue; }
+    }
     const row = await db.simulationDocRequest.create({ data: { accountId: p.accountId, leadId: p.leadId, institution: inst, source: p.source || 'USER', requestedById: p.userId || null, caption: p.caption?.trim() || null } });
     created.push({ id: row.id, institution: inst });
   }
