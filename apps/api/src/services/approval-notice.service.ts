@@ -212,7 +212,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
   return replied === 0;
 }
 
-interface ApprovalOption { documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
+interface ApprovalOption { aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -364,35 +364,76 @@ async function withHolders(leadId: string, options: ApprovalOption[]): Promise<A
 
 /** Opções aprovadas que a aba Análise de Crédito já registrou (a mais recente de cada banco, com valor). Números estruturados:
  *  é a fonte preferida; se não houver, cai nas notas e depois no card. */
+const normN = (t: string) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+/** 1 = titular, 2 = 2º participante (esposa/segundo proponente), pelo nome do titular da análise. */
+async function holderBucketer(leadId: string): Promise<(holder?: string | null) => 1 | 2> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const n2 = normN(String(((lead?.customFields || {}) as Record<string, any>).participante_2 || ''));
+  return (holder) => { const h = normN(holder || ''); return n2 && h && (h === n2 || n2.includes(h) || h.includes(n2)) ? 2 : 1; };
+}
+
 async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | null> {
   const rows = await prisma.creditAnalysis.findMany({
     where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
     orderBy: { createdAt: 'asc' },
   });
-  // O veredito MAIS RECENTE de cada banco vale: se depois de aprovado o banco negou (ex.: Creditas nega a análise seguinte à
-  // pré-qualificação), não oferece mais essa opção ao cliente.
-  const byBank = new Map<string, (typeof rows)[number]>();
+  const bucket = await holderBucketer(leadId);
+  // O veredito MAIS RECENTE de cada banco+PARTICIPANTE vale: se depois de aprovado o banco negou (ex.: Creditas nega a análise seguinte à pré-qualificação), não oferece
+  // mais essa opção — mas a negativa do titular não apaga a aprovação do 2º participante (esposa/segundo proponente) no mesmo banco.
+  const byKey = new Map<string, (typeof rows)[number]>();
   for (const r of rows) {
-    if (r.status === 'REJECTED') byBank.delete(r.bank);
-    else if (r.approvedValue != null) byBank.set(r.bank, r);
+    const k = `${r.bank}|${bucket(r.holderName)}`;
+    if (r.status === 'REJECTED') byKey.delete(k);
+    else if (r.approvedValue != null) byKey.set(k, r);
+  }
+  // Por banco, a aprovação de MAIOR valor (titular ou 2º participante).
+  const byBank = new Map<string, (typeof rows)[number]>();
+  for (const r of byKey.values()) {
+    const cur = byBank.get(r.bank);
+    if (!cur || (r.netValue || r.approvedValue || 0) > (cur.netValue || cur.approvedValue || 0)) byBank.set(r.bank, r);
   }
   const label: Record<string, string> = { INTER: 'Banco Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
   const options = Array.from(byBank.values())
     .sort((a, b) => (b.netValue || b.approvedValue || 0) - (a.netValue || a.approvedValue || 0))
     .map((r): ApprovalOption => ({
+      aMenor: /aprovad[oa] a menor/i.test(r.detail || ''),
       instituicao: label[r.bank] || r.bank,
       // Creditas: o cliente vê só o valor LÍQUIDO (regra do Fabio) — o total (bruto) não aparece no aviso.
       valor: money(r.netValue || r.approvedValue) as string,
       liquido: !!r.netValue,
       prazo: r.termMonths ? `${r.termMonths} meses` : undefined,
-      taxa: r.rate || undefined,
+      taxa: r.rate ? r.rate.replace(/(\d)\.(\d)/g, '$1,$2') : undefined, // 1.40% → 1,40%
       primeiraParcela: money(r.firstInstallment),
       ultimaParcela: money(r.lastInstallment),
       pedido: /aprovad[oa] a menor/i.test(r.detail || '') ? (/pedido:?\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1] : undefined,
       incompleta: /aprovad[oa] a menor/i.test(r.detail || '') && !r.firstInstallment,
       documentos: /aprovad[oa] a menor/i.test(r.detail || '') ? parseDocumentosExigidos(r.detail) || undefined : undefined,
     }));
-  return options.length ? options : null;
+  if (!options.length) return null;
+  // REGRA DO FABIO (14/10): aprovado no INTER pelo valor TOTAL — no nome do titular, da esposa ou do 2º proponente — é SEMPRE o que vai ao cliente (menor taxa, valor total).
+  // Aprovação parcial ("a menor") de outro banco NÃO entra no aviso quando algum banco aprovou o valor total.
+  const interTotal = options.find((o) => o.instituicao === 'Banco Inter' && !o.aMenor && !o.incompleta);
+  if (interTotal) return [interTotal];
+  const totais = options.filter((o) => !o.aMenor);
+  return totais.length ? totais : options;
+}
+
+/** Bancos que APROVARAM (último veredito de cada banco+participante) mas ainda sem os números gravados — o aviso espera, senão sai só a outra opção (Alexandre/Larissa, 14/10). */
+export async function aprovadasSemNumeros(leadId: string): Promise<string[]> {
+  const rows = await prisma.creditAnalysis.findMany({
+    where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
+    orderBy: { createdAt: 'desc' },
+  });
+  const bucket = await holderBucketer(leadId);
+  const visto = new Set<string>();
+  const out = new Set<string>();
+  for (const r of rows) {
+    const k = `${r.bank}|${bucket(r.holderName)}`;
+    if (visto.has(k)) continue;
+    visto.add(k);
+    if (r.status !== 'REJECTED' && r.approvedValue == null) out.add(r.bank);
+  }
+  return Array.from(out);
 }
 
 export async function buildApprovalText(leadId: string): Promise<{ text: string; source: 'analises' | 'notas' | 'card'; options: ApprovalOption[] } | null> {
@@ -519,13 +560,22 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   // Já mandamos um resumo antes (ex.: sem as parcelas certas)? Então este é uma ATUALIZAÇÃO, e o texto diz isso.
   const anterior = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
   const corpoNovo = renderApprovalText(await withHolders(leadId, built));
+  const semNum = await aprovadasSemNumeros(leadId);
+  if (semNum.length) {
+    const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+    warnings.push(`${semNum.map((b) => nomes[b] || b).join(', ')} aprovou, mas ainda sem os números (a extensão está lendo) — o aviso espera, pra não mandar só a outra opção.`);
+  }
   // Como o texto diz: banco NOVO (saiu o resultado de mais um) x valores que mudaram. Compara bancos e números do último resumo — não o texto inteiro
   // (Iara 14/10: o formato mudou e o cliente recebeu "Atualizei os valores" sem valor nenhum ter mudado).
   const bancosAntes = anterior ? [...anterior.content.matchAll(/Institui[çc][ãa]o:\s*([^\n]+)/g)].map((m) => m[1].trim()) : [];
   const dinheiro = (t: string) => (t.match(/R\$\s*[\d.]+,\d{2}/g) || []).map((v) => v.replace(/\s/g, '')).sort().join('|');
   const bancoNovo = !!anterior && built.some((o) => !bancosAntes.includes(o.instituicao));
   const mudou = !!anterior && !bancoNovo && dinheiro(anterior.content) !== dinheiro(corpoNovo);
-  const prefixo = bancoNovo ? '🆕 Saiu o resultado de mais um banco para o seu pedido. Seguem as opções aprovadas:\n\n' : mudou ? '🔄 Atualizei os valores da sua proposta, agora com os números certos:\n\n' : '';
+  // A aprovação anterior era PARCIAL ("a menor") e agora existe uma de valor TOTAL: o aviso novo substitui a anterior (Fabio 14/10).
+  const eraParcial = !!anterior && /Valor menor que o solicitado/.test(anterior.content) && !/Valor menor que o solicitado/.test(corpoNovo);
+  const prefixo = bancoNovo && eraParcial ? '🆕 Boa notícia! Saiu a aprovação do valor TOTAL em outro banco, com condição melhor que a anterior. Considere esta:\n\n'
+    : bancoNovo ? '🆕 Saiu o resultado de mais um banco para o seu pedido. Seguem as opções aprovadas:\n\n'
+    : mudou ? '🔄 Atualizei os valores da sua proposta, agora com os números certos:\n\n' : '';
   const text = `${prefixo}${corpoNovo}`;
   // O MESMO aviso (mesmas opções, mesmos números) já foi enviado? Não manda de novo igual — só se algo mudou.
   const lastSummary = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });

@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { createRequests, setOverrides, parseHolder } from './credit-analysis.service';
-import { sendApprovalNoticeNow, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText } from './approval-notice.service';
+import { sendApprovalNoticeNow, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText, aprovadasSemNumeros } from './approval-notice.service';
 
 /**
  * Análise automática de crédito (Fabio 14/10): assim que o cliente preenche a proposta e a IA do CRM confere que os dados estão
@@ -194,6 +194,13 @@ async function noticeClients(accountId: string, io: any) {
       if (!last || Date.now() - last.getTime() < NOTICE_QUIET_MS) continue;
     }
     if (cf._autoNoticeAt && Date.now() - new Date(cf._autoNoticeAt).getTime() < NOTICE_MIN_GAP_MS) continue;
+    // Aprovação SEM números (a extensão ainda não leu): segura o aviso e pede a leitura — senão sai só a outra opção (Alexandre/Larissa, 14/10).
+    const semNum = await aprovadasSemNumeros(l.id).catch(() => [] as string[]);
+    if (semNum.length) {
+      const jaPedido = await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, kind: 'CHECK', bank: { in: semNum }, OR: [{ status: { in: ['REQUESTED', 'RUNNING'] } }, { createdAt: { gte: new Date(Date.now() - 10 * 60_000) } }] }, select: { id: true } });
+      if (!jaPedido) await createRequests(prisma, { accountId, leadIds: [l.id], banks: semNum, dryRun: false, kind: 'CHECK' });
+      continue;
+    }
     const preview = await previewApprovalNotice(l.id).catch(() => null);
     if (!preview || preview.warnings.length) continue; // nenhuma aprovada com valor, ou ainda faltam as parcelas da nova simulação
     const sig = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${a.holderName || ''}`).sort().join('|');
