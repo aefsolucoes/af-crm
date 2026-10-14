@@ -164,11 +164,21 @@ async function cascadeToSecond(accountId: string) {
   }
 }
 
+const PRIORIDADE_BANCOS = ['INTER', 'CREDITAS', 'CREDIMORAR']; // mesma ordem fixa dos PDFs: Inter > Creditas > Santander
+/** O aprovado de MAIOR prioridade é valor TOTAL (não "a menor") e tem os números completos, e os bancos acima dele na ordem já responderam? Pura (testável). */
+export function avisoCedo(rows: VRow[] & { approvedValue?: number | null; firstInstallment?: number | null }[]): boolean {
+  const aprovados = (rows as any[]).filter((a) => (a.status === 'APPROVED' || a.status === 'CONDITIONAL') && a.approvedValue && a.firstInstallment && !/aprovad[oa] a menor/i.test(a.detail || ''));
+  if (!aprovados.length) return false;
+  const melhor = [...aprovados].sort((a, b) => PRIORIDADE_BANCOS.indexOf(a.bank) - PRIORIDADE_BANCOS.indexOf(b.bank))[0];
+  const acima = PRIORIDADE_BANCOS.slice(0, PRIORIDADE_BANCOS.indexOf(melhor.bank));
+  return acima.every((b) => bankVerdict(rows as any, b) !== 'PENDING');
+}
+
 /** 3) Quando as respostas assentam, avisa o cliente de todas as opções aprovadas (até 3) pra ele escolher. A IA do CRM dá o apoio. */
 async function noticeClients(accountId: string, io: any) {
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, creditAnalyses: { some: { status: { in: ['APPROVED', 'CONDITIONAL'] }, dryRun: false } } },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { updatedAt: 'desc' }, select: { kind: true, status: true, updatedAt: true, bank: true, approvedValue: true, holderName: true } } },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { updatedAt: 'desc' }, select: { kind: true, status: true, updatedAt: true, createdAt: true, bank: true, approvedValue: true, firstInstallment: true, holderName: true, detail: true, source: true } } },
     take: 80,
   });
   for (const l of leads) {
@@ -176,9 +186,13 @@ async function noticeClients(accountId: string, io: any) {
     // Card que a análise automática NÃO iniciou também entra, se o cliente já recebeu um resumo e agora saiu o resultado de OUTRO banco (Juan, 14/10).
     if (!cf._autoStartedAt && !(await novoBancoPendente(l.id).catch(() => false))) continue;
     const rows = l.creditAnalyses;
-    if (rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // ainda tem análise rodando
-    const last = rows[0]?.updatedAt;
-    if (!last || Date.now() - last.getTime() < NOTICE_QUIET_MS) continue;
+    // Aviso IMEDIATO (Fabio 14/10: "o Inter é o primeiro banco e foi aprovado o valor total, por que não avisou?"): quando o banco de MAIOR prioridade entre os aprovados
+    // aprovou o valor TOTAL com os números completos e todos os bancos acima dele na ordem já responderam, não espera os de baixo — se algum deles aprovar depois, sai o aviso de "mais um banco".
+    if (!avisoCedo(rows as any)) {
+      if (rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // ainda tem análise rodando
+      const last = rows[0]?.updatedAt;
+      if (!last || Date.now() - last.getTime() < NOTICE_QUIET_MS) continue;
+    }
     if (cf._autoNoticeAt && Date.now() - new Date(cf._autoNoticeAt).getTime() < NOTICE_MIN_GAP_MS) continue;
     const preview = await previewApprovalNotice(l.id).catch(() => null);
     if (!preview || preview.warnings.length) continue; // nenhuma aprovada com valor, ou ainda faltam as parcelas da nova simulação
