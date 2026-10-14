@@ -142,19 +142,21 @@ function drawFirstPageHeader(ctx: Ctx, page: PDFPage, s: SimulationSheet) {
     { x: 476, w: 142.583, label: 'CESH', cx: 545.83, value: m.cesh },
     { x: 618, w: 197.887, label: 'Sistema Amortizador', cx: 716.05, value: m.sistema },
   ];
+  // SEM "Valor da entrada" (Fabio 14/10): no Home Equity não existe entrada (o imóvel é só a garantia) e o cliente lia R$ 40 mil / R$ 500 mil de "entrada" como valor a pagar.
+  // Ficam 4 caixas de larguras iguais (29 → 814).
+  const W2 = (814 - 29) / 4;
   const row2 = [
-    { x: 29, w: 162.151, label: 'Valor do imóvel', cx: 109.08, value: brl(m.valorImovel) },
-    { x: 191, w: 143.683, label: 'Taxa Efetiva', cx: 261.0, value: m.taxaEfetiva },
-    { x: 333, w: 172.359, label: 'Valor empréstimo', cx: 418.01, value: brl(m.valorEmprestimo) },
-    { x: 505, w: 166.109, label: 'Valor da entrada', cx: 586.25, value: brl(m.valorEntrada) },
-    { x: 670, w: 145.698, label: 'Renda', cx: 741.15, value: brl(m.renda) },
+    { x: 29, w: W2, label: 'Valor do imóvel', cx: 29 + W2 / 2, value: brl(m.valorImovel) },
+    { x: 29 + W2, w: W2, label: 'Taxa Efetiva', cx: 29 + W2 * 1.5, value: m.taxaEfetiva },
+    { x: 29 + W2 * 2, w: W2, label: 'Valor empréstimo', cx: 29 + W2 * 2.5, value: brl(m.valorEmprestimo) },
+    { x: 29 + W2 * 3, w: W2, label: 'Renda', cx: 29 + W2 * 3.5, value: brl(m.renda) },
   ];
   // As caixas do modelo são recortadas: 39,2 pt de altura e nunca passam de x=814.
   const BOX_H = 39.2;
   for (const b of row1) page.drawRectangle({ x: b.x, y: 374, width: Math.min(b.w, 814 - b.x), height: BOX_H, color: BOX });
   for (const b of row2) page.drawRectangle({ x: b.x, y: 330, width: Math.min(b.w, 814 - b.x), height: BOX_H, color: BOX });
   for (const x of [197.4332, 344.123, 475.5293, 617.1127]) page.drawLine({ start: { x, y: 374 + BOX_H }, end: { x, y: 374 }, thickness: 2, color: SEP_BOX });
-  for (const x of [190.1508, 332.8343, 504.1928, 669.3016, 814]) page.drawLine({ start: { x, y: 330 + BOX_H }, end: { x, y: 330 }, thickness: 2, color: SEP_BOX });
+  for (const x of [29 + W2, 29 + W2 * 2, 29 + W2 * 3, 814]) page.drawLine({ start: { x, y: 330 + BOX_H }, end: { x, y: 330 }, thickness: 2, color: SEP_BOX });
   row1.forEach((b) => { centered(page, b.label, bold, 10.5, b.cx, 397.67, rgb(0, 0, 0)); centered(page, b.value, reg, 10.5, b.cx, 383.67, rgb(0, 0, 0)); });
   row2.forEach((b) => { centered(page, b.label, bold, 10.5, b.cx, 353.67, rgb(0, 0, 0)); centered(page, b.value, reg, 10.5, b.cx, 339.67, rgb(0, 0, 0)); });
 }
