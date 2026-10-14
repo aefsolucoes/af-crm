@@ -91,6 +91,20 @@ const normName = (s: string) => String(s || '').normalize('NFD').replace(/[\u030
 const HOLDER_RE = /titular(?:\s+na\s+an[aá]lise)?\s*:\s*([^.(+;|\n]+?)\s*(?=[(+.;|\n]|$)/i;
 
 /** "Titular na análise: Sandra Regina (2º participante: Silas…)." / "iniciando… — titular: Sandra + 2º participante: …" → "Sandra Regina". */
+/** Documentos que o Santander pede pra seguir com o valor aprovado a menor — a extensão escreve `[DOCUMENTOS (perfil de renda X): a ; b]` no detalhe. */
+export function parseDocumentosExigidos(detail?: string | null): { perfil: string; itens: string[] } | null {
+  const m = /\[DOCUMENTOS(?:\s*\(perfil de renda ([^)]*)\))?:\s*([^\]]+)\]/i.exec(String(detail || ''));
+  if (!m) return null;
+  const itens = m[2].split(/\s*;\s*/).map((t) => t.trim()).filter(Boolean).map(friendlyDocName);
+  return itens.length ? { perfil: (m[1] || '').trim().toLowerCase(), itens } : null;
+}
+
+/** "Declaração De Imposto De Renda Pessoa Física (IRPF) - Ultimo Exercício E Extrato…" → frase normal (IRPF continua maiúsculo). */
+function friendlyDocName(t: string): string {
+  const low = t.toLowerCase().replace(/\bultimo\b/g, 'último').replace(/\birpf\b/g, 'IRPF');
+  return low.charAt(0).toUpperCase() + low.slice(1);
+}
+
 export function parseHolder(detail?: string | null): string | null {
   const m = HOLDER_RE.exec(String(detail || ''));
   const name = m ? m[1].trim() : '';
@@ -757,7 +771,9 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
           r.termMonths ? `${r.termMonths} meses` : '', r.rate ? `taxa ${r.rate}` : '',
           r.firstInstallment ? `1ª parcela ${brl(r.firstInstallment)}` : '', r.lastInstallment ? `última parcela ${brl(r.lastInstallment)}` : '',
         ].filter(Boolean);
-        return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}`;
+        const docs = aMenor ? parseDocumentosExigidos(r.detail) : null;
+        const docsTxt = docs ? `. Para seguir com esse valor o banco exige comprovação de renda${docs.perfil ? ` (perfil ${docs.perfil})` : ''} — documentos: ${docs.itens.join('; ')} (peça ao cliente)` : '';
+        return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}${docsTxt}`;
       }
       case 'CONDITIONAL': return 'APROVADO COM CONDIÇÃO — o banco pede documentos para seguir';
       case 'REJECTED': return 'REPROVADO';

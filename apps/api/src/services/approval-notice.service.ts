@@ -21,6 +21,8 @@ import { callableFirstName } from '../lib/text';
  *    mandar à mão (a conversa já está aberta nessa hora).
  */
 
+import { parseDocumentosExigidos } from './credit-analysis.service';
+
 const prisma = new PrismaClient();
 
 export const APPROVAL_TEMPLATE = 'credito_aprovado_condicoes';
@@ -191,7 +193,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
   return replied === 0;
 }
 
-interface ApprovalOption { instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
+interface ApprovalOption { documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -272,6 +274,7 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
     o.primeiraParcela && `💵 1ª parcela: ${o.primeiraParcela}`,
     o.ultimaParcela && `💵 Última parcela: ${o.ultimaParcela}`,
+    o.documentos && `📎 Para seguir com esse valor o banco pede comprovação de renda${o.documentos.perfil ? ` (perfil ${o.documentos.perfil})` : ''}:\n${o.documentos.itens.map((d) => `   • ${d}`).join('\n')}`,
   ].filter(Boolean).join('\n');
   const head = options.length > 1 ? `✅ Consegui ${options.length} opções de aprovação pra você escolher!` : '✅ Crédito aprovado!';
   const tail = options.length > 1 ? '👉 Qual dessas opções você prefere? É só me responder por aqui que eu sigo com a que você escolher.' : 'Agora vamos para a próxima etapa do processo!';
@@ -337,6 +340,7 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
       ultimaParcela: money(r.lastInstallment),
       pedido: /aprovad[oa] a menor/i.test(r.detail || '') ? (/pedido:?\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1] : undefined,
       incompleta: /aprovad[oa] a menor/i.test(r.detail || '') && !r.firstInstallment,
+      documentos: /aprovad[oa] a menor/i.test(r.detail || '') ? parseDocumentosExigidos(r.detail) || undefined : undefined,
     }));
   return options.length ? options : null;
 }

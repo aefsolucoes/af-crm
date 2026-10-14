@@ -264,6 +264,7 @@ const PROPOSAL_REVIEW_RULES = `PROPOSTA RECEBIDA — quando a mensagem começar 
 
 const CREDIT_ANALYSIS_RULES = `ANÁLISE DE CRÉDITO — quando o bloco "ANÁLISE DE CRÉDITO DESTE CLIENTE" aparecer abaixo, ele traz a leitura MAIS RECENTE dos bancos, lida agora pouco pela extensão (o "lido há N min" mostra a idade de cada leitura). Use SÓ esses dados quando o cliente perguntar do resultado, do valor, das parcelas ou do andamento: nunca invente valor, prazo, taxa ou parcela.
 - "APROVADO" é o único estado que pode ser dado como aprovação. "ENVIADO/EM ANÁLISE", "o banco pediu mais dados" e "sem resultado" = ainda em análise: diga que está em análise, sem prometer prazo e sem dizer "vou verificar".
+- "APROVADO A MENOR": diga que o banco aprovou um valor MENOR que o pedido (cite valor, prazo e parcela do bloco) e, se o bloco trouxer os documentos que o banco exige, peça ao cliente exatamente esses documentos (comprovação de renda) pra seguir — nunca invente documento.
 - "REPROVADO" num banco: não alongue; fale dos outros bancos que estiverem aprovados ou em análise. "NÃO ANALISADO" é assunto interno: nunca explique o motivo ao cliente.
 - Mais de um banco aprovado: siga a regra de várias opções (valor, prazo, taxa e parcela de cada uma). Creditas: o valor que o cliente vê é o LÍQUIDO.
 - Se a leitura for antiga (horas) e o cliente perguntar do resultado, responda com o que está confirmado e diga que está acompanhando.
