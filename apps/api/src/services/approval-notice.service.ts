@@ -353,30 +353,37 @@ export async function buildApprovalText(leadId: string): Promise<{ text: string;
   return fromCard ? { text: renderApprovalText(await withHolders(leadId, fromCard)), source: 'card' } : null;
 }
 
-/** Bancos com aprovação válida (o veredito mais recente de cada banco vale) → instituições do PDF de simulação. */
-async function approvedSimulationInstitutions(leadId: string): Promise<string[]> {
+/** Banco do PDF da simulação (Fabio 14/10): a proposta que o cliente ESCOLHEU ou, sem escolha, a de MENOR TAXA entre as aprovadas
+ *  (o veredito mais recente de cada banco vale). Só UM banco por vez. */
+async function pickApprovedSimulationInstitution(leadId: string): Promise<{ institution: string; why: string } | null> {
   const rows = await prisma.creditAnalysis.findMany({
     where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
     orderBy: { createdAt: 'asc' },
   });
-  const byBank = new Map<string, true>();
+  const byBank = new Map<string, (typeof rows)[number]>();
   for (const r of rows) {
     if (r.status === 'REJECTED') byBank.delete(r.bank);
-    else if (r.approvedValue != null) byBank.set(r.bank, true);
+    else if (r.approvedValue != null) byBank.set(r.bank, r);
   }
+  const { pickSimulationBank } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const pick = pickSimulationBank(Array.from(byBank.values()).map((r) => ({ bank: r.bank, rate: r.rate, chosen: r.chosen, firstInstallment: r.firstInstallment })));
+  if (!pick) return null;
   const map: Record<string, string> = { CREDIMORAR: 'SANTANDER', INTER: 'INTER', CREDITAS: 'CREDITAS' };
-  return Array.from(byBank.keys()).map((b) => map[b]).filter(Boolean);
+  return map[pick.bank] ? { institution: map[pick.bank], why: pick.why } : null;
 }
 
-/** Logo depois do texto com as condições de aprovação (Fabio 14/10): pede o PDF da simulação (modelo A&F) de cada banco aprovado.
- *  A extensão do banco lê os dados e o CRM manda o PDF sozinho em ~1-2 min. Nunca derruba o aviso: erro só vai pro log. */
+/** Logo depois do texto com as condições de aprovação (Fabio 14/10): pede o PDF da simulação (modelo A&F) de UM banco — o que o cliente
+ *  escolheu ou o de menor taxa. A extensão do banco lê os dados e o CRM manda o PDF sozinho em ~1-2 min. Nunca derruba o aviso. */
 export async function requestSimulationsAfterApproval(p: { accountId: string; leadId: string; userId?: string }): Promise<string[]> {
   try {
-    const institutions = await approvedSimulationInstitutions(p.leadId);
-    if (!institutions.length) return [];
+    const pick = await pickApprovedSimulationInstitution(p.leadId);
+    if (!pick) return [];
     const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
-    const r = await requestSimulationDocs(prisma, { accountId: p.accountId, leadId: p.leadId, institutions, userId: p.userId, source: p.userId ? 'USER' : 'AI', skipIfSentWithinHours: 12 });
-    if (r.created.length) console.log(`[Aprovação] simulação em PDF pedida (${r.created.map((c) => c.institution).join(', ')}) logo depois das condições`);
+    const r = await requestSimulationDocs(prisma, { accountId: p.accountId, leadId: p.leadId, institutions: [pick.institution], userId: p.userId, source: p.userId ? 'USER' : 'AI', skipIfSentWithinHours: 12 });
+    if (r.created.length) {
+      console.log(`[Aprovação] simulação em PDF pedida (${pick.institution} — ${pick.why}) logo depois das condições`);
+      await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📄 Simulação em PDF pedida: ${pick.institution} (${pick.why}). Sai pelo WhatsApp assim que a extensão ler no portal.` } }).catch(() => {});
+    }
     return r.created.map((c) => c.institution);
   } catch (e: any) {
     console.error('[Aprovação] não consegui pedir o PDF da simulação:', e?.message);

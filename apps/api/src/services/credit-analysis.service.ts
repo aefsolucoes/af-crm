@@ -677,6 +677,31 @@ export function extensionStatus(accountId: string): Record<string, { lastSeenAt:
 
 // ═══ IA da conversa × extensões (Fabio 13/10: "sempre que a IA responder o cliente, consultar agora no sistema, usando a extensão") ═══
 
+/** Taxa MENSAL (%) lida do texto da análise ("1,09% a.m. + IPCA", "1.40% a.m.", "13,89% a.a."). null = não informou. */
+export function monthlyRatePct(text?: string | null): number | null {
+  const m = /(\d+(?:[.,]\d+)?)\s*%/.exec(String(text || ''));
+  if (!m) return null;
+  const v = Number(m[1].replace(',', '.'));
+  if (!Number.isFinite(v) || v <= 0) return null;
+  return /a\.?\s*a\b|ao ano|anual/i.test(String(text)) ? (Math.pow(1 + v / 100, 1 / 12) - 1) * 100 : v;
+}
+
+/** Banco cuja simulação em PDF vai pro cliente (Fabio 14/10): só UM — a proposta que o cliente ESCOLHEU (`chosen`) ou, sem escolha,
+ *  a de MENOR TAXA mensal entre as aprovadas (sem taxa informada, a de menor 1ª parcela). */
+export function pickSimulationBank(approved: Array<{ bank: string; rate?: string | null; chosen?: boolean; firstInstallment?: number | null }>): { bank: string; why: string } | null {
+  if (!approved.length) return null;
+  const chosen = approved.find((a) => a.chosen);
+  if (chosen) return { bank: chosen.bank, why: 'proposta escolhida' };
+  if (approved.length === 1) return { bank: approved[0].bank, why: 'única aprovada' };
+  const withRate = approved.map((a) => ({ a, r: monthlyRatePct(a.rate) })).filter((x): x is { a: (typeof approved)[number]; r: number } => x.r != null);
+  if (withRate.length) {
+    withRate.sort((x, y) => x.r - y.r || (x.a.firstInstallment ?? Infinity) - (y.a.firstInstallment ?? Infinity));
+    return { bank: withRate[0].a.bank, why: `menor taxa (${withRate[0].r.toFixed(2).replace('.', ',')}% a.m.)` };
+  }
+  const byParcel = [...approved].sort((x, y) => (x.firstInstallment ?? Infinity) - (y.firstInstallment ?? Infinity));
+  return { bank: byParcel[0].bank, why: 'menor parcela' };
+}
+
 const BANK_LABEL_IA: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
 const PERGUNTA_DE_STATUS = /(anali[sz]|aprov|resultad|retorno|saiu|sair|reprov|negad|deu certo|j[aá] sai|como (est|t[aá])|novidade|andamento|cr[eé]dito|propost|simula|banco|parcela|liberad|taxa|prazo)/i;
 
@@ -724,6 +749,9 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
       if (r) linhas.push(`- ${BANK_LABEL_IA[bank]}${quem}: ${descreve(r)} (lido há ${ha(r.updatedAt)})`);
     }
   }
+  const aprovados = Object.entries(p1).filter(([, r]: [string, any]) => r && (r.status === 'APPROVED' || r.status === 'CONDITIONAL') && r.approvedValue != null).map(([bank, r]: [string, any]) => ({ bank, rate: r.rate, chosen: r.chosen, firstInstallment: r.firstInstallment }));
+  const escolha = aprovados.length >= 2 ? pickSimulationBank(aprovados) : null;
+  if (escolha) linhas.push(`- Simulação em PDF: ${aprovados.some((a) => a.chosen) ? 'o cliente já escolheu' : 'se o cliente ainda não escolheu, mande só a do banco de MENOR TAXA'} → ${BANK_LABEL_IA[escolha.bank]} (${escolha.why}).`);
   if (!linhas.length) return '';
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };

@@ -436,7 +436,7 @@ export async function applyAiExtractedActions(
     if (action.sendSimulation && action.sendSimulation.length) {
       try {
         const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
-        const r = await requestSimulationDocs(prisma as any, { accountId, leadId, institutions: action.sendSimulation, source: 'AI', skipIfSentWithinHours: 0.25 });
+        const r = await requestSimulationDocs(prisma as any, { accountId, leadId, institutions: action.sendSimulation.slice(0, 1), source: 'AI', skipIfSentWithinHours: 0.25 });
         const quais = r.created.map((c: any) => c.institution).join(', ');
         await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.created.length ? `🤖 A IA pediu o PDF da simulação (${quais}) a pedido do cliente; sai com a logo A&F assim que a extensão baixar do portal.` : `🤖 A IA quis mandar o PDF da simulação, mas já havia um pedido em andamento (${r.skipped.join(', ') || 'nenhum banco válido'}).` } }).catch(() => {});
         if (r.created.length) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `pediu o PDF da simulação (${quais})` });
