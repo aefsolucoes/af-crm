@@ -1497,11 +1497,11 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     // repetindo a mesma coisa).
     const newest = await latestInbound();
     if (mine && newest && newest.id !== mine.id) return;
-    const { reply, handoff, moveToStage, markLost, stopFollowUp, moveReason, extractedFields, runAnalysis, sendSimulation, sendApproval } = genResult;
+    const { reply, handoff, moveToStage, markLost, stopFollowUp, moveReason, extractedFields, runAnalysis, sendSimulation, sendApproval, simulate } = genResult;
 
     if (genResult.noReply) {
-      if (moveToStage || markLost || stopFollowUp || runAnalysis || (sendSimulation && sendSimulation.length) || sendApproval || (extractedFields && Object.keys(extractedFields).length)) {
-        await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, markLost, stopFollowUp, extractedFields, runAnalysis, sendSimulation, sendApproval }, io);
+      if (moveToStage || markLost || stopFollowUp || runAnalysis || (sendSimulation && sendSimulation.length) || sendApproval || simulate || (extractedFields && Object.keys(extractedFields).length)) {
+        await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, markLost, stopFollowUp, extractedFields, runAnalysis, sendSimulation, sendApproval, simulate }, io);
       }
       // Não sabe responder: não fala nada pro cliente, só pergunta pra equipe
       // — a resposta certa vai pelo balão (Fabio 30/09: nada de "vou verificar").
@@ -1532,8 +1532,8 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 
     // Mover etapa / marcar Perdido / preencher dados do card — independente
     // do handoff (pode marcar Perdido no mesmo turno em que encerra, por ex.).
-    if (moveToStage || markLost || stopFollowUp || runAnalysis || (sendSimulation && sendSimulation.length) || sendApproval || (extractedFields && Object.keys(extractedFields).length)) {
-      await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, markLost, stopFollowUp, extractedFields, runAnalysis, sendSimulation, sendApproval }, io);
+    if (moveToStage || markLost || stopFollowUp || runAnalysis || (sendSimulation && sendSimulation.length) || sendApproval || simulate || (extractedFields && Object.keys(extractedFields).length)) {
+      await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, markLost, stopFollowUp, extractedFields, runAnalysis, sendSimulation, sendApproval, simulate }, io);
     }
 
     // Cliente quer ligação num horário: abre o popup pra equipe confirmar se

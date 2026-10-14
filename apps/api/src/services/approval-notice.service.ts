@@ -633,7 +633,7 @@ export async function buildRejectionText(leadId: string): Promise<{ text: string
   return { text, reasons };
 }
 
-export async function sendRejectionNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; ignoreWindow?: boolean }): Promise<{ ok: boolean; scheduled?: boolean; at?: string; error?: string }> {
+export async function sendRejectionNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; ignoreWindow?: boolean }): Promise<{ ok: boolean; scheduled?: boolean; at?: string; via?: 'whatsapp' | 'email'; error?: string }> {
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const built = await buildRejectionText(p.leadId);
@@ -649,7 +649,20 @@ export async function sendRejectionNoticeNow(p: { accountId: string; leadId: str
     return { ok: true, scheduled: true, at: at.toISOString() };
   }
   if (!(await whatsappWindowOpen(p.leadId))) {
-    await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: '⚠️ O aviso de "não aprovado" NÃO saiu: a janela de 24 h do WhatsApp fechou (não há template pra isso). Chame o cliente por ligação ou reabra a conversa.' } }).catch(() => {});
+    // Sem a janela de 24 h não há WhatsApp livre (e não existe template pra isso): se o card tem e-mail, o aviso vai por e-mail (caixa comercial@,
+    // o mesmo caminho do follow-up — Fabio 25/09 e 14/10). Sem e-mail, fica nota pra equipe chamar o cliente.
+    const full = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { contact: { select: { email: true } } } });
+    const to = String(full?.contact?.email || cf.email_1 || '').trim();
+    if (/^\S+@\S+\.\S+$/.test(to)) {
+      const { sendFollowUpEmail } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+      const okMail = await sendFollowUpEmail({ accountId: p.accountId, leadId: p.leadId, to, text: built.text, subject: 'Sobre a sua análise de crédito — A&F Soluções Financeiras', io: p.io });
+      if (okMail) {
+        await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📧 Cliente avisado por e-mail (a janela de 24 h do WhatsApp estava fechada) que não foi aprovado (${built.reasons.join('; ')}).` } }).catch(() => {});
+        logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou por e-mail que o cliente não foi aprovado' } as any);
+        return { ok: true, via: 'email' };
+      }
+    }
+    await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `⚠️ O aviso de "não aprovado" NÃO saiu: a janela de 24 h do WhatsApp fechou (não há template pra isso)${to ? ' e o e-mail falhou' : ' e o card não tem e-mail'}. Chame o cliente por ligação ou reabra a conversa.` } }).catch(() => {});
     return { ok: false, error: 'janela de 24 h fechada' };
   }
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
@@ -657,6 +670,21 @@ export async function sendRejectionNoticeNow(p: { accountId: string; leadId: str
   if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado que não foi aprovado (${built.reasons.join('; ')}).` } }).catch(() => {});
   logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou o cliente que não foi aprovado' } as any);
+  return { ok: true, via: 'whatsapp' };
+}
+
+/** Marca o card como REPROVADO e o tira do funil ativo (mesmo caminho do botão "Reprovado" da tela: status Perdido + rejectedAt + funil "Perdidos").
+ *  Usado depois que o cliente foi avisado de que não foi aprovado (Fabio 14/10: "avise o cliente e tire eles de lá"). */
+export async function markRejectedAndMove(p: { accountId: string; leadId: string; userId?: string; io?: any; motivo: string }): Promise<{ ok: boolean; error?: string }> {
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, status: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead) return { ok: false, error: 'Card não encontrado' };
+  if (lead.status !== 'OPEN') return { ok: false, error: 'Card já não está aberto' };
+  const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+  const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+  await updateLead(lead.id, p.accountId, { status: 'LOST', lostReason: p.motivo, rejectedAt: new Date() }, p.io);
+  await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `❌ Marcado como REPROVADO (análise automática) — ${p.motivo}` } }).catch(() => {});
+  await moveLeadToPerdidos({ accountId: p.accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId ?? null, byName: p.userId ? 'Usuário' : 'Análise automática', userId: p.userId || null, motivo: p.motivo, io: p.io });
+  logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou como "Reprovado": ${p.motivo}` } as any);
   return { ok: true };
 }
 

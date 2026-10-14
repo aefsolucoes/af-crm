@@ -225,7 +225,7 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { paused: true } }))?.paused;
   // "Um cliente por vez": os pedidos de RODAR de outros clientes esperam o cliente atual terminar em todos os bancos.
   const abertos = await db.creditAnalysis.findMany({
-    where: { accountId: p.accountId, kind: 'RUN', status: { in: ['REQUESTED', 'RUNNING'] }, source: { not: 'AI' }, OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
+    where: { accountId: p.accountId, kind: 'RUN', status: { in: ['REQUESTED', 'RUNNING'] }, source: { notIn: ['AI', 'AI_SIM'] }, OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
     select: { leadId: true, status: true, requestedAt: true, lead: { select: { createdAt: true } } },
   });
   const ativo = pickActiveLead(abertos.map((a) => ({ leadId: a.leadId, status: a.status, requestedAt: a.requestedAt, leadCreatedAt: a.lead?.createdAt || new Date(0) })));
@@ -233,7 +233,7 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
     where: {
       accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }),
       AND: [
-        ...(ativo ? [{ OR: [{ kind: 'CHECK' }, { source: 'AI' }, { leadId: ativo }] }] : []),
+        ...(ativo ? [{ OR: [{ kind: 'CHECK' }, { source: { in: ['AI', 'AI_SIM'] } }, { leadId: ativo }] }] : []),
         { OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
         // Em pausa geral: só o pedido de pessoa; a leitura (CHECK, só leitura) pedida pela IA da conversa também passa.
         ...(paused ? [{ OR: [{ requestedById: { not: null } }, { source: 'AI', kind: 'CHECK' }] }] : []),
@@ -281,6 +281,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun && /acionar manualmente o gestor/i.test(updated.detail || '')) {
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Creditas: este CPF já possui uma proposta ativa que NÃO está na nossa conta — precisa acionar manualmente o gestor da Creditas (contato executivo Home).' } });
   }
+  if (becameFinal && updated.dryRun && updated.source === 'AI_SIM') await deliverAiSimulation(db, updated).catch((e: any) => console.error('[IA] simulação de outro prazo:', e?.message));
   return { row: updated, becameFinal };
 }
 
@@ -830,17 +831,111 @@ export async function refreshAnalysesForAi(db: Db, p: { accountId: string; leadI
   }
 }
 
+// ─── Simulação em OUTRO prazo, feita pela IA (Fabio 14/10: "a IA tem autonomia de fazer a simulação e encaminhar ao cliente") ───
+// A IA marca `simulate`; aqui o CRM põe o prazo (e o valor aprovado) como ajuste do Inter, pede um teste (dryRun) à extensão — que preenche o
+// simulador do portal e PARA antes de "Solicitar análise" (nada é enviado ao banco) — lê o painel de resultado e manda os valores ao cliente.
+const SIM_ROW_NOTE = 'AI_SIM';
+
+export interface InterSimulation { prazo?: number; primeira?: number; ultima?: number; taxa?: string; cet?: string; valor?: number }
+
+/** Lê o texto do painel "Resultado da simulação" do Inter (capturado pela extensão em `| SIMULACAO: …`). */
+export function parseInterSimText(detail: string | null | undefined): InterSimulation | null {
+  const t = String(detail || '');
+  const i = t.indexOf('SIMULACAO:');
+  if (i < 0) return null;
+  const txt = t.slice(i + 10).replace(/\s+/g, ' ');
+  const money = (re: RegExp) => { const m = re.exec(txt); return m ? brNumber(m[1]) : undefined; };
+  const out: InterSimulation = {
+    primeira: money(/(?:1[ªa]|primeira)\s*parcela[^R\d]{0,40}R\$\s*([\d.]+,\d{2})/i),
+    ultima: money(/[úu]ltima\s*parcela[^R\d]{0,40}R\$\s*([\d.]+,\d{2})/i),
+    valor: money(/valor\s+(?:do\s+)?(?:financiamento|empr[ée]stimo|solicitado)[^R\d]{0,40}R\$\s*([\d.]+,\d{2})/i),
+  };
+  const taxa = /taxa[^%\d]{0,40}(\d+,\d+)\s*%/i.exec(txt); if (taxa) out.taxa = `${taxa[1]}%`;
+  const cet = /CET[^%\d]{0,40}(\d+,\d+)\s*%/i.exec(txt); if (cet) out.cet = `${cet[1]}%`;
+  return out.primeira || out.ultima ? out : null;
+}
+
+const fmtBRL = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+export async function requestSimulationForAi(db: Db, accountId: string, leadId: string, p: { prazo: number }): Promise<{ ok: boolean; detail: string }> {
+  const prazo = Math.round(Number(p.prazo));
+  if (!(prazo >= 60 && prazo <= 240)) return { ok: false, detail: `prazo de ${p.prazo} meses fora do que o Inter simula (60 a 240)` };
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto' };
+  if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity' };
+  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 8, select: { bank: true, approvedValue: true, chosen: true } });
+  const banco = aprovadas.find((a) => a.chosen) || [...aprovadas].sort((a, b) => simPriority(a.bank) - simPriority(b.bank))[0];
+  if (!banco) return { ok: false, detail: 'o cliente não tem banco aprovado pra simular' };
+  if (banco.bank !== 'INTER') return { ok: false, detail: `a simulação de outro prazo só roda sozinha no Inter (o banco aprovado é ${BANKS[banco.bank]?.label || banco.bank})` };
+  const aberta = await db.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', source: SIM_ROW_NOTE, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } }, select: { id: true } });
+  if (aberta) return { ok: false, detail: 'já havia uma simulação em andamento' };
+  const anterior = await db.creditOverride.findFirst({ where: { leadId, bank: 'INTER' }, select: { data: true } });
+  const data: Record<string, any> = { prazo: String(prazo) };
+  if (banco.approvedValue) data.valorEmprestimo = fmtBRL(banco.approvedValue).replace('R$ ', '');
+  await setOverrides(db, { accountId, leadId, banks: ['INTER'], data, merge: true });
+  await createRequests(db, { accountId, leadIds: [leadId], banks: ['INTER'], dryRun: true, kind: 'RUN', source: SIM_ROW_NOTE, force: true });
+  const row = await db.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', source: SIM_ROW_NOTE, status: 'REQUESTED' }, orderBy: { createdAt: 'desc' }, select: { id: true } });
+  if (row) await db.creditAnalysis.update({ where: { id: row.id }, data: { conditions: JSON.stringify({ prazo, anterior: anterior ? anterior.data : null }) } });
+  return { ok: true, detail: `simulação de ${prazo}x pedida ao Inter (modo teste, sem enviar proposta)` };
+}
+
+/** O teste do portal terminou: devolve o ajuste do Inter ao que era e manda os valores ao cliente (ou avisa a equipe se não deu pra ler). */
+async function deliverAiSimulation(db: Db, row: AnalysisRow): Promise<void> {
+  let prazo = 0; let anterior: any = null;
+  try { const c = JSON.parse(row.conditions || '{}'); prazo = Number(c.prazo) || 0; anterior = c.anterior ?? null; } catch { /* sem dados de volta */ }
+  const existing = await db.creditOverride.findFirst({ where: { leadId: row.leadId, bank: 'INTER' } });
+  if (anterior && existing) await db.creditOverride.update({ where: { id: existing.id }, data: { data: anterior } });
+  else if (existing) await db.creditOverride.delete({ where: { id: existing.id } });
+  const nota = (content: string) => db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content } }).catch(() => {});
+  const sim = row.status === 'TEST' ? parseInterSimText(row.detail) : null;
+  if (!sim) { await nota(`⚠️ A IA pediu a simulação de ${prazo || '?'}x no Inter, mas não consegui ler os valores do portal (${row.status}: ${String(row.detail || '').slice(0, 220)}). Mande a simulação ao cliente à mão.`); return; }
+  const linhas = [
+    `Simulação em ${prazo} parcelas (Inter):`,
+    sim.primeira ? `• 1ª parcela: ${fmtBRL(sim.primeira)}` : '',
+    sim.ultima ? `• Última parcela: ${fmtBRL(sim.ultima)}` : '',
+    sim.taxa ? `• Taxa: ${sim.taxa} a.m. + IPCA` : '',
+    sim.cet ? `• CET: ${sim.cet}` : '',
+    '',
+    'Os valores são uma simulação e podem variar um pouco na contratação. Se quiser seguir com esse prazo, é só me avisar.',
+  ].filter((l, i, a) => l !== '' || (a[i - 1] !== '' && i < a.length - 1)).join('\n');
+  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { accountId: true } });
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId: lead!.accountId, leadId: row.leadId, content: linhas });
+  await nota(r.success ? `🤖 A IA simulou ${prazo}x no Inter (modo teste, nada enviado ao banco) e mandou os valores ao cliente: 1ª parcela ${sim.primeira ? fmtBRL(sim.primeira) : '?'}, última ${sim.ultima ? fmtBRL(sim.ultima) : '?'}.` : `⚠️ Simulei ${prazo}x no Inter (1ª ${sim.primeira ? fmtBRL(sim.primeira) : '?'}, última ${sim.ultima ? fmtBRL(sim.ultima) : '?'}), mas a mensagem ao cliente não saiu: ${(r as any).error || 'falha'}.`);
+}
+
+/** Valor de crédito pedido na última análise real (o Credimorar informa em "proposta N, R$ X") — pra saber se o cliente pediu OUTRO valor depois. */
+export function lastRunCredit(rows: { detail: string | null }[]): number | null {
+  for (const r of rows) {
+    const m = /proposta\s+\d+,\s*R\$\s*([\d.]+,\d{2})/i.exec(r.detail || '');
+    if (m) return brNumber(m[1]);
+  }
+  return null;
+}
+
 /** A IA da conversa pediu pra RODAR a análise do cliente (ponte: a extensão roda nos bancos). Só vale com a "Análise automática" LIGADA e sem
  *  pausa geral, com o card em Pré-Análise (proposta preenchida) do Home Equity. Banco já rodado vira só consulta (não duplica proposta). */
 export async function requestRunForAi(db: Db, accountId: string, leadId: string): Promise<{ ok: boolean; detail: string }> {
   const set = await db.creditAutoSetting.findUnique({ where: { accountId } });
   if (!set?.enabled) return { ok: false, detail: 'a "Análise automática" do CRM está desligada' };
   if (set.paused) return { ok: false, detail: 'a pausa geral das execuções automáticas está ligada' };
-  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto' };
   if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity' };
   if (!/^pre-?an/.test(normName(lead.stage?.name || ''))) return { ok: false, detail: `o card está em "${lead.stage?.name || '?'}", não na Pré-Análise` };
-  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: BANK_KEYS, dryRun: false, kind: 'RUN', source: 'AI' });
+  // O cliente pode ter pedido OUTRO valor depois da 1ª análise (Aline e Dannilo, 14/10: "queria até 50 mil"): a proposta antiga não vale mais, então roda
+  // DE NOVO com o valor do card (ajuste do financiamento nos 3 bancos) — antes o pedido da IA só relia a proposta velha e a "nova análise" nunca acontecia.
+  // Pedido de nova análise entra na fila normal (um cliente por vez), não na via livre da IA.
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const atual = typeof cf.valor_credito === 'number' ? cf.valor_credito : Number(String(cf.valor_credito ?? '').replace(/[R$\s.]/g, '').replace(',', '.'));
+  const antigas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: REAL_SENT }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 12, select: { detail: true } });
+  const anterior = lastRunCredit(antigas);
+  const mudou = atual > 0 && !!anterior && Math.abs(atual - anterior) / anterior > 0.01;
+  if (mudou) {
+    await setOverrides(db, { accountId, leadId, banks: BANK_KEYS, merge: true, data: { valorEmprestimo: atual.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) } });
+  }
+  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: BANK_KEYS, dryRun: false, kind: 'RUN', source: mudou ? 'EXTENSION' : 'AI', force: mudou });
   if (!r.created) return { ok: false, detail: 'já havia análise em andamento' };
+  if (mudou) return { ok: true, detail: `o valor pedido mudou (de R$ ${anterior!.toLocaleString('pt-BR')} para R$ ${atual.toLocaleString('pt-BR')}): análise NOVA pedida a ${r.created} banco(s), um cliente por vez` };
   return { ok: true, detail: `pedido enviado a ${r.created} banco(s)${r.consulted.length ? ` (${r.consulted.length} já rodado(s): só consulta)` : ''}` };
 }

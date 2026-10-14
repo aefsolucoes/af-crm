@@ -270,7 +270,8 @@ const CREDIT_ANALYSIS_RULES = `ANÁLISE DE CRÉDITO — quando o bloco "ANÁLISE
 - Se a leitura for antiga (horas) e o cliente perguntar do resultado, responda com o que está confirmado e diga que está acompanhando.
 RODAR A ANÁLISE ("runAnalysis": true) — só quando o cliente PEDIU pra rodar/analisar o crédito dele (ex.: "pode rodar?", "já pode analisar") e a proposta dele já está preenchida (card em Pré-Análise). Nunca por conta própria. Quando marcar true, diga que já encaminhou a análise aos bancos e que avisa quando sair, sem prazo. Nos outros casos, false.
 APRESENTAR A APROVAÇÃO ("sendApproval": true) — quando o cliente perguntar do resultado/aprovação/condições e o bloco acima trouxer banco APROVADO (ou aprovado a menor) e as condições ainda NÃO foram enviadas nesta conversa: marque true e NÃO escreva valor, prazo, taxa, parcela nem lista de documentos no "reply". O CRM manda sozinho, logo em seguida, o aviso padrão em 2 mensagens (1ª: resumo da proposta; 2ª: documentos) e a simulação em PDF. No "reply" escreva só uma frase curta (ex.: "Boa notícia! Já te mando os detalhes por aqui."). Se marcar sendApproval, NÃO marque sendSimulation (o PDF já vai junto). Se as condições já foram enviadas na conversa, responda a dúvida normalmente e deixe false.
-MANDAR A SIMULAÇÃO EM PDF ("sendSimulation": ["SANTANDER"], ["INTER"] ou ["CREDITAS"]) — SEMPRE UM banco só: o que o CLIENTE ESCOLHEU; se ele ainda não escolheu, o primeiro entre os aprovados do bloco na ordem fixa Inter, depois Creditas e por último Santander (não compare taxas; a linha "Simulação em PDF" do bloco já indica qual). Marque quando, NESTA resposta, você apresentar as condições aprovadas, quando o cliente escolher um banco, ou quando pedir a simulação/parcelas/PDF. O CRM lê a simulação no portal do banco, põe a logo da A&F e envia o PDF logo em seguida, sozinho (1-2 min): no "reply" diga só que a simulação em PDF segue logo abaixo (sem prometer prazo exato). Nunca mande de vários bancos de uma vez, nem de banco reprovado ou em análise, nem repita se o PDF desse banco já foi enviado na conversa. Se o cliente escolher OUTRO banco depois, mande o desse banco. Nos outros casos, null.`;
+MANDAR A SIMULAÇÃO EM PDF ("sendSimulation": ["SANTANDER"], ["INTER"] ou ["CREDITAS"]) — SEMPRE UM banco só: o que o CLIENTE ESCOLHEU; se ele ainda não escolheu, o primeiro entre os aprovados do bloco na ordem fixa Inter, depois Creditas e por último Santander (não compare taxas; a linha "Simulação em PDF" do bloco já indica qual). Marque quando, NESTA resposta, você apresentar as condições aprovadas, quando o cliente escolher um banco, ou quando pedir a simulação/parcelas/PDF. O CRM lê a simulação no portal do banco, põe a logo da A&F e envia o PDF logo em seguida, sozinho (1-2 min): no "reply" diga só que a simulação em PDF segue logo abaixo (sem prometer prazo exato). Nunca mande de vários bancos de uma vez, nem de banco reprovado ou em análise, nem repita se o PDF desse banco já foi enviado na conversa. Se o cliente escolher OUTRO banco depois, mande o desse banco. Nos outros casos, null.
+SIMULAR OUTRO PRAZO ("simulate": {"prazo": 180}) — quando o cliente, já com banco APROVADO, pedir a simulação/parcelas de OUTRO prazo (ex.: "e em 180x?", "um prazo intermediário", "quanto fica a parcela em 15 anos?"): você MESMA faz, a equipe NÃO precisa ser consultada — NÃO use askTeam e NÃO invente valor. Marque "simulate" com o nº de MESES (60 a 240) e, no "reply", diga só que vai gerar a simulação nesse prazo e já volta com os valores (sem prazo exato; leva alguns minutos). O CRM roda no portal do banco (modo teste, nada é enviado ao banco) e manda os valores ao cliente sozinho. Um prazo por vez. Se o pedido for outro (outro valor de crédito, outro banco, dúvida de cálculo), siga as regras normais. Nos outros casos, null.`;
 
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
 - Se o "ok" responder uma pergunta sua de sim/não (ex.: "posso te mandar a lista de documentos?"), trate como "sim" e siga normalmente, com noReply false.
@@ -283,9 +284,15 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "simulate": <{"prazo": nº de meses} ou null — só conforme a regra SIMULAR OUTRO PRAZO>}`;
 
 /** "sendSimulation" vindo do JSON da IA: aceita só SANTANDER/INTER (lista ou texto); qualquer outra coisa = null. */
+/** "simulate" vindo do JSON da IA: {prazo: meses} (ou só o número), 60 a 240; qualquer outra coisa = null. */
+function parseSimulate(raw: unknown): { prazo: number } | null {
+  const n = Math.round(Number(raw && typeof raw === 'object' ? (raw as any).prazo : raw));
+  return n >= 60 && n <= 240 ? { prazo: n } : null;
+}
+
 function parseSendSimulation(raw: unknown): string[] | null {
   const list = (Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []).map((v) => String(v || '').trim().toUpperCase());
   const ok = Array.from(new Set(list.filter((v) => v === 'SANTANDER' || v === 'INTER' || v === 'CREDITAS')));
@@ -323,6 +330,8 @@ export interface AiAutoReplyResult {
   sendSimulation?: string[] | null;
   /** true = a IA vai apresentar a aprovação pelo aviso padrão do CRM — aplicar via applyAiExtractedActions. */
   sendApproval?: boolean;
+  /** Prazo (meses) que a IA vai simular sozinha no Inter a pedido do cliente — aplicar via applyAiExtractedActions. */
+  simulate?: { prazo: number } | null;
 }
 
 /**
@@ -524,6 +533,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         runAnalysis: parsed.runAnalysis === true,
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
         sendApproval: parsed.sendApproval === true,
+        simulate: parseSimulate(parsed.simulate),
       };
     }
     if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
@@ -543,6 +553,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         runAnalysis: parsed.runAnalysis === true,
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
         sendApproval: parsed.sendApproval === true,
+        simulate: parseSimulate(parsed.simulate),
       };
     }
   } catch {
