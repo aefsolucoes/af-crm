@@ -314,14 +314,16 @@ async function retryTechnicalFailures(accountId: string) {
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
     const rows = l.creditAnalyses;
-    if (cf._noticeAt || rows.some((r) => r.status === 'REQUESTED' || r.status === 'RUNNING')) continue;
+    if (cf._noticeAt) continue;
+    // Só barra o banco que ainda tem pedido aberto: a conferência do Creditas (horas) não pode segurar a nova tentativa do Inter (Mauricio Rodrigues, 14/10).
+    const aberto = (b: string) => rows.some((r) => r.bank === b && (r.status === 'REQUESTED' || r.status === 'RUNNING'));
     const retries: Record<string, { n: number; at: string; gaveUp?: boolean }> = { ...(cf._autoRetries || {}) };
     const redo: string[] = [];
     const redoCheck = new Set<string>(); // bancos cuja ÚLTIMA linha era uma CONFERÊNCIA que falhou: refaz a conferência, NUNCA cria proposta nova
     const gaveUp: string[] = [];
     for (const b of BANKS) {
       const r = rows.filter((x) => x.bank === b && x.source !== 'AI_SIM' && !(x.kind === 'CHECK' && x.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
-      if (!r) continue;
+      if (!r || aberto(b)) continue;
       const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE';
       if (!tecnica || /RODADA ANULADA/i.test(r.detail || '')) continue;
       const st = retries[b] || { n: 0, at: '' };
