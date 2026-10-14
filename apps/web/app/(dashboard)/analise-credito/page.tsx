@@ -155,7 +155,7 @@ export default function AnaliseCreditoPage() {
   const allLeads = data?.leads || [];
   const leads = useMemo(() => (view === 'pre'
     ? allLeads.filter((l) => l.inPre)
-    : allLeads.filter((l) => l.ran).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime())), [allLeads, view]);
+    : allLeads.filter((l) => l.ran && !l.inPre).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime())), [allLeads, view]);
   const allSelected = leads.length > 0 && leads.every((l) => selected.includes(l.id));
   const offline = useMemo(() => banks.filter((b) => !data?.extensions?.[b]?.online), [banks, data]);
 
@@ -320,13 +320,13 @@ export default function AnaliseCreditoPage() {
         {/* Quadro */}
         <div className="bg-white rounded-xl border border-af-border overflow-hidden">
           <div className="px-4 pt-3 border-b border-af-border flex items-end gap-1">
-            {([['pre', 'Pré-Análise', allLeads.filter((l) => l.inPre).length], ['ran', 'Já rodados', allLeads.filter((l) => l.ran).length]] as const).map(([k, label, n]) => (
+            {([['pre', 'Pré-Análise', allLeads.filter((l) => l.inPre).length], ['ran', 'Já rodados', allLeads.filter((l) => l.ran && !l.inPre).length]] as const).map(([k, label, n]) => (
               <button key={k} onClick={() => setView(k)} className={`px-4 py-2 text-sm -mb-px border-b-2 transition-colors ${view === k ? 'border-af-accent text-slate-800 font-medium' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
                 {label} <span className="text-xs text-slate-400">({n})</span>
               </button>
             ))}
             <span className="ml-auto pb-2 text-[11px] text-slate-400 hidden md:block">
-              {view === 'pre' ? 'Home Equity · clientes na etapa Pré-Análise' : 'Home Equity · quem teve análise nos últimos 90 dias — ajuste ou inverta participantes e rode de novo'}
+              {view === 'pre' ? 'Home Equity · clientes na etapa Pré-Análise' : 'Home Equity · quem já foi analisado nos últimos 90 dias e saiu da Pré-Análise — ajuste ou inverta participantes e rode de novo'}
             </span>
           </div>
           {isLoading ? (
