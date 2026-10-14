@@ -266,6 +266,29 @@ async function closeRejected(accountId: string, io: any) {
   }
 }
 
+/** 6) Confirmação da proposta que NÃO saiu: o e-mail do formulário do site chega segundos ANTES do WhatsApp do cliente — a automação da Pré-Análise tenta falar sem a janela de 24 h
+ *  aberta e falha, e depois ninguém tentava de novo (Mauricio, 14/10: a IA "não respondeu"). Quando o cliente já escreveu no WhatsApp e ninguém respondeu, roda a etapa de novo (1x por card). */
+async function ackPendingProposals(accountId: string, io: any) {
+  const leads = await prisma.lead.findMany({
+    where: { accountId, status: 'OPEN', archived: false, isGroup: false, stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } }, stageEnteredAt: { gte: new Date(Date.now() - 3 * 3_600_000) } },
+    select: { id: true, name: true, stageId: true, customFields: true }, take: 50,
+  });
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Cf;
+    if (cf._ackRetryAt) continue;
+    const email = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'EMAIL', content: { startsWith: '📋 Proposta preenchida no site' } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    if (!email || Date.now() - email.createdAt.getTime() < 90_000) continue; // dá tempo do fluxo normal
+    const wa = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gt: email.createdAt } }, select: { id: true } });
+    if (!wa) continue;
+    const ack = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'OUTBOUND', channel: 'WHATSAPP', createdAt: { gt: email.createdAt } }, select: { id: true } });
+    if (ack) continue;
+    await saveCf(l.id, { _ackRetryAt: new Date().toISOString() });
+    const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
+    await runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: l.id, io, context: { newStageId: l.stageId } }).catch(() => {});
+    await addNote(l.id, '🤖 A confirmação "Recebi sua proposta" não tinha saído (o e-mail do formulário chegou antes do WhatsApp do cliente): enviada agora.');
+  }
+}
+
 const RETRY_MAX = 3;
 const RETRY_GAP_MS = 15 * 60_000;
 
@@ -329,6 +352,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await noticeClients(s.accountId, io).catch((e) => console.error('[Análise automática] aviso:', e?.message));
       await closeRejected(s.accountId, io).catch((e) => console.error('[Análise automática] fechar reprovados:', e?.message));
       await retryTechnicalFailures(s.accountId).catch((e) => console.error('[Análise automática] refazer falhas técnicas:', e?.message));
+      await ackPendingProposals(s.accountId, io).catch((e) => console.error('[Análise automática] confirmação da proposta:', e?.message));
     }
   } finally {
     running = false;
