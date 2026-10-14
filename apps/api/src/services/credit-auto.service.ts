@@ -245,6 +245,52 @@ async function closeRejected(accountId: string, io: any) {
   }
 }
 
+const RETRY_MAX = 3;
+const RETRY_GAP_MS = 15 * 60_000;
+
+/** 5) Falha TÉCNICA (extensão travou, tela não carregou, dado faltando) não deixa o cliente parado na Pré-Análise: refaz sozinho o banco que falhou, até 3 vezes, de 15 em
+ *  15 min (Fabio 14/10: "como faz pros clientes que falhou rodar sozinha depois?"). Falha OBJETIVA (regra do banco/imóvel) e "rodada anulada" não entram — essas são decisão. */
+async function retryTechnicalFailures(accountId: string) {
+  const leads = await prisma.lead.findMany({
+    where: {
+      accountId, status: 'OPEN', archived: false, isGroup: false,
+      stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
+      pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
+      creditAnalyses: { some: { dryRun: false } },
+    },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true } } },
+    orderBy: { createdAt: 'asc' }, take: 80,
+  });
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Cf;
+    const rows = l.creditAnalyses;
+    if (cf._noticeAt || rows.some((r) => r.status === 'REQUESTED' || r.status === 'RUNNING')) continue;
+    const retries: Record<string, { n: number; at: string; gaveUp?: boolean }> = { ...(cf._autoRetries || {}) };
+    const redo: string[] = [];
+    const gaveUp: string[] = [];
+    for (const b of BANKS) {
+      const r = rows.filter((x) => x.bank === b && x.source !== 'AI_SIM' && !(x.kind === 'CHECK' && x.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
+      if (!r) continue;
+      const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE';
+      if (!tecnica || /RODADA ANULADA/i.test(r.detail || '')) continue;
+      const st = retries[b] || { n: 0, at: '' };
+      if (st.gaveUp || Date.now() - r.updatedAt.getTime() < RETRY_GAP_MS) continue;
+      if (st.n >= RETRY_MAX) { retries[b] = { ...st, gaveUp: true }; gaveUp.push(b); continue; }
+      retries[b] = { n: st.n + 1, at: new Date().toISOString() };
+      redo.push(b);
+    }
+    const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+    if (redo.length) {
+      await createRequests(prisma, { accountId, leadIds: [l.id], banks: redo, dryRun: false, force: true });
+      await saveCf(l.id, { _autoRetries: retries });
+      await addNote(l.id, `🤖 Falha técnica na análise (${redo.map((b) => label[b]).join(', ')}): refazendo sozinha — tentativa ${Math.max(...redo.map((b) => retries[b].n))} de ${RETRY_MAX}.`);
+    } else if (gaveUp.length) {
+      await saveCf(l.id, { _autoRetries: retries });
+      await addNote(l.id, `⚠️ ${gaveUp.map((b) => label[b]).join(', ')} falhou ${RETRY_MAX} vezes seguidas por problema técnico: precisa de olhada (botão "Rodar" ou "Ajustar").`);
+    }
+  }
+}
+
 let running = false;
 /** Roda a cada minuto (index.ts). Só mexe em conta com a chave "Análise automática" LIGADA. */
 export async function processCreditAutomation(io: any): Promise<void> {
@@ -257,6 +303,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await cascadeToSecond(s.accountId).catch((e) => console.error('[Análise automática] 2º participante:', e?.message));
       await noticeClients(s.accountId, io).catch((e) => console.error('[Análise automática] aviso:', e?.message));
       await closeRejected(s.accountId, io).catch((e) => console.error('[Análise automática] fechar reprovados:', e?.message));
+      await retryTechnicalFailures(s.accountId).catch((e) => console.error('[Análise automática] refazer falhas técnicas:', e?.message));
     }
   } finally {
     running = false;
