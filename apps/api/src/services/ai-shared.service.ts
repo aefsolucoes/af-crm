@@ -319,6 +319,8 @@ export interface AiExtractedAction {
    *  recusar o negócio) — marca STOP_FOLLOWUP_TAG, que os gatilhos de
    *  inatividade recorrente (excludeTag) já sabem respeitar. */
   stopFollowUp?: boolean;
+  /** true = a IA pediu pra rodar a análise de crédito do cliente (extensões como ponte) — valem as travas de requestRunForAi. */
+  runAnalysis?: boolean;
 }
 
 /** Tag usada pra excluir o lead de lembretes automáticos recorrentes
@@ -416,6 +418,16 @@ export async function applyAiExtractedActions(
           if (io) io.to(`lead:${leadId}`).emit('lead_moved', { leadId, stageId: match.id });
         }
       }
+    }
+
+    // Rodar a análise de crédito (a IA pediu): só com a "Análise automática" ligada, sem pausa geral e card em Pré-Análise.
+    if (action.runAnalysis) {
+      try {
+        const { requestRunForAi } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+        const r = await requestRunForAi(prisma as any, accountId, leadId);
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? `🤖 A IA pediu a análise de crédito a pedido do cliente: ${r.detail}.` : `🤖 A IA quis rodar a análise de crédito, mas não rodou: ${r.detail}.` } }).catch(() => {});
+        logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: r.ok ? 'pediu a análise de crédito nos bancos' : `não rodou a análise: ${r.detail}` });
+      } catch (e: any) { console.error('[IA] rodar análise falhou:', e?.message); }
     }
 
     // Preencher dados extraídos da conversa — só chaves conhecidas

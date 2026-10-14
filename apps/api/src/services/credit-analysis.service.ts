@@ -162,7 +162,7 @@ export function analysisNote(a: { bank: string; status: string; detail?: string 
 /** Pede a análise de N clientes em N bancos (`kind` RUN), ou só a CONFERÊNCIA do resultado de uma proposta já enviada
  *  (`kind` CHECK — a extensão acha o cliente pelo CPF na lista do portal; não cria proposta nova). Pedido de RUN para quem JÁ foi
  *  rodado nesse banco vira só uma CONSULTA da proposta (CHECK), a não ser que venha `force` (ex.: depois de ajustar valores). A extensão busca os pedidos (claimQueue). */
-export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean }) {
+export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
   const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true } });
@@ -182,7 +182,7 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
         if (done) { kind = 'CHECK'; if (!consulted.includes(bank)) consulted.push(bank); }
       }
       const prevNumber = kind === 'CHECK' ? (await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } }))?.proposalNumber || null : null;
-      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, proposalNumber: prevNumber, dryRun: kind === 'CHECK' ? false : p.dryRun, source: 'EXTENSION', requestedById: p.userId || null } });
+      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, proposalNumber: prevNumber, dryRun: kind === 'CHECK' ? false : p.dryRun, source: p.source || 'EXTENSION', requestedById: p.userId || null } });
       created++;
     }
   }
@@ -198,7 +198,14 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   // Em PAUSA GERAL só sai da fila o que uma pessoa pediu (requestedById): reconferências e pedidos automáticos ficam parados.
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { paused: true } }))?.paused;
   const rows = await db.creditAnalysis.findMany({
-    where: { accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }), ...(paused ? { requestedById: { not: null } } : {}), OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
+    where: {
+      accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }),
+      AND: [
+        { OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
+        // Em pausa geral: só o pedido de pessoa; a leitura (CHECK, só leitura) pedida pela IA da conversa também passa.
+        ...(paused ? [{ OR: [{ requestedById: { not: null } }, { source: 'AI', kind: 'CHECK' }] }] : []),
+      ],
+    },
     orderBy: { requestedAt: 'asc' }, take: p.limit || 3,
     select: { id: true, leadId: true, dryRun: true, kind: true, proposalNumber: true, requestedAt: true, lead: { select: { name: true } } },
   });
@@ -251,6 +258,7 @@ type AnalysisRow = NonNullable<Awaited<ReturnType<Db['creditAnalysis']['findFirs
  *  não saiu) agenda essa conferência sozinha. Passou do limite, fica "conferir" pra olhar à mão. */
 async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
   if (row.dryRun) return row;
+  if (row.kind === 'CHECK' && row.source === 'AI') return row; // leitura pontual pedida pela IA da conversa: não vira laço de reconferência
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: row.accountId }, select: { paused: true } }))?.paused;
   if (row.kind === 'CHECK' && (row.status === 'SENT' || row.status === 'CHECK')) {
     if (paused) return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: `Conferência automática PAUSADA (pausa geral ligada). Use "Conferir" pra ler de novo. ${String(row.detail || '').slice(0, 300)}` } });
@@ -664,4 +672,110 @@ export function extensionStatus(accountId: string): Record<string, { lastSeenAt:
     out[bank] = { lastSeenAt: seen ? new Date(seen.at).toISOString() : null, online: !!seen && Date.now() - seen.at < 3 * 60 * 1000, extId: seen?.extId || null };
   }
   return out;
+}
+
+
+// ═══ IA da conversa × extensões (Fabio 13/10: "sempre que a IA responder o cliente, consultar agora no sistema, usando a extensão") ═══
+
+const BANK_LABEL_IA: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+const PERGUNTA_DE_STATUS = /(anali[sz]|aprov|resultad|retorno|saiu|sair|reprov|negad|deu certo|j[aá] sai|como (est|t[aá])|novidade|andamento|cr[eé]dito|propost|simula|banco|parcela|liberad|taxa|prazo)/i;
+
+/** Texto pra IA da conversa: a leitura MAIS RECENTE de cada banco (por participante), com "lido há N min". Vazio se o cliente nunca foi rodado. */
+export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  if (!lead) return '';
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const rows = await db.creditAnalysis.findMany({
+    where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 60 * 86_400_000) }, status: { notIn: ['REQUESTED', 'RUNNING', 'TEST'] } },
+    orderBy: { createdAt: 'desc' }, take: 40,
+  });
+  if (!rows.length) return '';
+  // Leitura que FALHOU (ex.: conferência que travou) não pode esconder o último resultado conhecido: só entra se não houver nada melhor.
+  const n2 = String(cf.participante_2 || '');
+  const bons = latestByParticipant(rows.filter((r) => r.status !== 'FAILED'), n2);
+  const ruins = latestByParticipant(rows.filter((r) => r.status === 'FAILED'), n2);
+  const p1 = { ...ruins.p1, ...bons.p1 };
+  const p2 = { ...ruins.p2, ...bons.p2 };
+  const agora = Date.now();
+  const ha = (d: Date) => { const m = Math.max(0, Math.round((agora - d.getTime()) / 60000)); return m < 60 ? `${m} min` : m < 1440 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} dia(s)`; };
+  const descreve = (r: any): string => {
+    const aMenor = /aprovad[oa] a menor/i.test(r.detail || '');
+    switch (r.status) {
+      case 'APPROVED': {
+        const partes = [
+          r.netValue ? `valor líquido ${brl(r.netValue)}` : r.approvedValue ? `valor ${brl(r.approvedValue)}` : '',
+          r.termMonths ? `${r.termMonths} meses` : '', r.rate ? `taxa ${r.rate}` : '',
+          r.firstInstallment ? `1ª parcela ${brl(r.firstInstallment)}` : '', r.lastInstallment ? `última parcela ${brl(r.lastInstallment)}` : '',
+        ].filter(Boolean);
+        return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}`;
+      }
+      case 'CONDITIONAL': return 'APROVADO COM CONDIÇÃO — o banco pede documentos para seguir';
+      case 'REJECTED': return 'REPROVADO';
+      case 'SENT': return 'ENVIADO ao banco, EM ANÁLISE — ainda sem resultado';
+      case 'INCOMPLETE': return 'EM ANÁLISE — o banco pediu mais dados do cliente (a equipe está completando)';
+      case 'CHECK': return 'EM ANÁLISE — ainda sem resultado conclusivo';
+      default: return 'NÃO ANALISADO nesse banco (assunto interno: não explique o motivo ao cliente)';
+    }
+  };
+  const linhas: string[] = [];
+  for (const [bucket, quem] of [[p1, ''], [p2, ' [análise no nome do 2º participante]']] as [Record<string, any>, string][]) {
+    for (const bank of ['CREDIMORAR', 'CREDITAS', 'INTER']) {
+      const r = bucket[bank];
+      if (r) linhas.push(`- ${BANK_LABEL_IA[bank]}${quem}: ${descreve(r)} (lido há ${ha(r.updatedAt)})`);
+    }
+  }
+  if (!linhas.length) return '';
+  return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
+};
+
+/** Cliente perguntou da análise: pede uma LEITURA NOVA (só leitura, não cria proposta) nos bancos já rodados e espera a extensão
+ *  ler (até maxWaitMs). A extensão busca pedidos a cada ~1 min, então leva de 1 a 2 min. Nunca lança erro. */
+export async function refreshAnalysesForAi(db: Db, p: { accountId: string; leadId: string; text: string; maxWaitMs?: number }): Promise<{ asked: boolean; waited: boolean }> {
+  try {
+    if (process.env.AI_SKIP_REFRESH === '1') return { asked: false, waited: false }; // só pra teste (não cria pedido nas extensões)
+    if (!PERGUNTA_DE_STATUS.test(String(p.text || ''))) return { asked: false, waited: false };
+    const ran = await db.creditAnalysis.findMany({
+      where: { leadId: p.leadId, dryRun: false, status: { in: REAL_SENT }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } },
+      orderBy: { updatedAt: 'desc' }, select: { bank: true, updatedAt: true },
+    });
+    const banks = Array.from(new Set(ran.map((r) => r.bank))).filter((b) => CHECK_BANKS.includes(b));
+    if (!banks.length) return { asked: false, waited: false };
+    // leitura recente (menos de 10 min) em todos os bancos: não precisa de outra
+    const ultimaPorBanco = new Map<string, number>();
+    for (const r of ran) if (!ultimaPorBanco.has(r.bank)) ultimaPorBanco.set(r.bank, r.updatedAt.getTime());
+    const precisa = banks.filter((b) => Date.now() - (ultimaPorBanco.get(b) || 0) > 10 * 60_000);
+    if (precisa.length) await createRequests(db, { accountId: p.accountId, leadIds: [p.leadId], banks: precisa, dryRun: false, kind: 'CHECK', source: 'AI' });
+    // espera as leituras abertas (as que acabei de pedir e as que já estavam na fila)
+    const abertas = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, kind: 'CHECK', status: { in: ['REQUESTED', 'RUNNING'] }, updatedAt: { gt: new Date(Date.now() - 25 * 60_000) } }, select: { id: true, attempt: true } });
+    if (!abertas.length) return { asked: precisa.length > 0, waited: false };
+    const limite = Date.now() + (p.maxWaitMs ?? 120_000);
+    while (Date.now() < limite) {
+      await new Promise((r) => setTimeout(r, 4000));
+      const agora = await db.creditAnalysis.findMany({ where: { id: { in: abertas.map((a) => a.id) } }, select: { id: true, status: true, attempt: true } });
+      const pendente = agora.some((r) => {
+        const antes = abertas.find((a) => a.id === r.id)!;
+        return ['REQUESTED', 'RUNNING'].includes(r.status) && r.attempt <= antes.attempt;
+      });
+      if (!pendente) return { asked: true, waited: true };
+    }
+    return { asked: true, waited: true };
+  } catch (err: any) {
+    console.error('[IA × análise] não consegui renovar a leitura:', err?.message);
+    return { asked: false, waited: false };
+  }
+}
+
+/** A IA da conversa pediu pra RODAR a análise do cliente (ponte: a extensão roda nos bancos). Só vale com a "Análise automática" LIGADA e sem
+ *  pausa geral, com o card em Pré-Análise (proposta preenchida) do Home Equity. Banco já rodado vira só consulta (não duplica proposta). */
+export async function requestRunForAi(db: Db, accountId: string, leadId: string): Promise<{ ok: boolean; detail: string }> {
+  const set = await db.creditAutoSetting.findUnique({ where: { accountId } });
+  if (!set?.enabled) return { ok: false, detail: 'a "Análise automática" do CRM está desligada' };
+  if (set.paused) return { ok: false, detail: 'a pausa geral das execuções automáticas está ligada' };
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto' };
+  if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity' };
+  if (!/^pre-?an/.test(normName(lead.stage?.name || ''))) return { ok: false, detail: `o card está em "${lead.stage?.name || '?'}", não na Pré-Análise` };
+  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: BANK_KEYS, dryRun: false, kind: 'RUN', source: 'AI' });
+  if (!r.created) return { ok: false, detail: 'já havia análise em andamento' };
+  return { ok: true, detail: `pedido enviado a ${r.created} banco(s)${r.consulted.length ? ` (${r.consulted.length} já rodado(s): só consulta)` : ''}` };
 }

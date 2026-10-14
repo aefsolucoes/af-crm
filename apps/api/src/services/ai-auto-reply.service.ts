@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
+import { aiCreditContext, refreshAnalysesForAi } from './credit-analysis.service';
 import { teamQuestionsContext } from './ai-team-question.service';
 import { callSummaryContext } from './call-recording.service';
 
@@ -261,6 +262,13 @@ const PROPOSAL_REVIEW_RULES = `PROPOSTA RECEBIDA — quando a mensagem começar 
 - Se algum dado indicar que a operação não fecha, ou parecer erro de preenchimento (ex.: saldo devedor igual ou maior que o valor do imóvel, crédito abaixo do mínimo, valor fora de escala), pergunte ao cliente em 1-2 frases SE O PREENCHIMENTO ESTÁ CORRETO, citando o dado — ex.: "Vi que você colocou que o imóvel vale R$ 180 mil e que faltam R$ 180 mil pra quitar. O preenchimento está correto?". Se ajudar, explique o critério em poucas palavras. NUNCA diga que foi reprovado nem que não dá, e não prometa com quais bancos a análise vai seguir (nada de "vou seguir a análise com os outros bancos") — isso quem decide é a análise.
 - Se estiver tudo coerente (mesmo que algum banco escolhido não sirva), "noReply": true (a pré-análise segue normal).`;
 
+const CREDIT_ANALYSIS_RULES = `ANÁLISE DE CRÉDITO — quando o bloco "ANÁLISE DE CRÉDITO DESTE CLIENTE" aparecer abaixo, ele traz a leitura MAIS RECENTE dos bancos, lida agora pouco pela extensão (o "lido há N min" mostra a idade de cada leitura). Use SÓ esses dados quando o cliente perguntar do resultado, do valor, das parcelas ou do andamento: nunca invente valor, prazo, taxa ou parcela.
+- "APROVADO" é o único estado que pode ser dado como aprovação. "ENVIADO/EM ANÁLISE", "o banco pediu mais dados" e "sem resultado" = ainda em análise: diga que está em análise, sem prometer prazo e sem dizer "vou verificar".
+- "REPROVADO" num banco: não alongue; fale dos outros bancos que estiverem aprovados ou em análise. "NÃO ANALISADO" é assunto interno: nunca explique o motivo ao cliente.
+- Mais de um banco aprovado: siga a regra de várias opções (valor, prazo, taxa e parcela de cada uma). Creditas: o valor que o cliente vê é o LÍQUIDO.
+- Se a leitura for antiga (horas) e o cliente perguntar do resultado, responda com o que está confirmado e diga que está acompanhando.
+RODAR A ANÁLISE ("runAnalysis": true) — só quando o cliente PEDIU pra rodar/analisar o crédito dele (ex.: "pode rodar?", "já pode analisar") e a proposta dele já está preenchida (card em Pré-Análise). Nunca por conta própria. Quando marcar true, diga que já encaminhou a análise aos bancos e que avisa quando sair, sem prazo. Nos outros casos, false.`;
+
 const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem do cliente for só uma confirmação ou encerramento (ex.: "ok", "beleza", "tá bom", "obrigado", "combinado", 👍) sem pergunta nem informação nova, e a sua última mensagem não fez uma pergunta que ele precise responder. Nesse caso deixe "reply" vazio: o atendimento continua, só não precisa mandar mais nada agora.
 - Se o "ok" responder uma pergunta sua de sim/não (ex.: "posso te mandar a lista de documentos?"), trate como "sim" e siga normalmente, com noReply false.
 - Nunca repita uma confirmação que você já deu na conversa (ex.: dizer de novo "vou seguir com a análise e te retorno").`;
@@ -272,7 +280,7 @@ ${camposTexto}`;
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>}`;
 
 export interface AiAutoReplyResult {
   reply: string;
@@ -299,6 +307,8 @@ export interface AiAutoReplyResult {
   moveReason?: string | null;
   /** Campos do card que a IA extraiu da conversa — aplicar via applyAiExtractedActions. */
   extractedFields?: Record<string, string> | null;
+  /** true = a IA pediu pra RODAR a análise de crédito do cliente nos bancos (extensões como ponte) — aplicar via applyAiExtractedActions. */
+  runAnalysis?: boolean;
 }
 
 /**
@@ -359,6 +369,9 @@ export async function generateAiAutoReply(
     const duvidasEquipe = await teamQuestionsContext(leadId);
     const ligacao = await callPermissionContext(accountId, leadId, incomingText);
     const conversasPorTelefone = await callSummaryContext(leadId).catch(() => '');
+    // Pergunta de status: pede leitura NOVA nos bancos (extensão) e espera até ~2 min; depois monta o bloco com o que está mais recente.
+    await refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText }).catch(() => null);
+    const analiseCredito = await aiCreditContext(prisma, leadId).catch(() => '');
 
     const systemPrompt = `${ROLE_FRAMING}
 
@@ -378,13 +391,17 @@ ${FORM_FIRST_RULES}
 
 ${PROPOSAL_REVIEW_RULES}
 
+${CREDIT_ANALYSIS_RULES}
+
 ${NO_REPLY_RULES}
 
 ${buildFillFieldsRules(camposTexto)}
 
 ${OUTPUT_FORMAT}
 
-${buildContextBlocks(ctx)}${duvidasEquipe ? `
+${buildContextBlocks(ctx)}${analiseCredito ? `
+
+${analiseCredito}` : ''}${duvidasEquipe ? `
 
 ${duvidasEquipe}` : ''}${ligacao ? `
 
@@ -490,6 +507,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         stopFollowUp: parsed.stopFollowUp === true,
         moveReason: typeof parsed.moveReason === 'string' && parsed.moveReason.trim() ? parsed.moveReason.trim() : null,
         extractedFields,
+        runAnalysis: parsed.runAnalysis === true,
       };
     }
     if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
@@ -506,6 +524,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         stopFollowUp: parsed.stopFollowUp === true,
         moveReason: typeof parsed.moveReason === 'string' && parsed.moveReason.trim() ? parsed.moveReason.trim() : null,
         extractedFields,
+        runAnalysis: parsed.runAnalysis === true,
       };
     }
   } catch {
