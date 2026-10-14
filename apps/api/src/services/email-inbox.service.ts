@@ -317,6 +317,12 @@ const addrList = (list?: Addr[]) => (list || []).filter((a) => a.address).map((a
 
 // ─── Vínculo com o card ─────────────────────────────────────────────────────
 
+/** Banco / sistema que escreve sobre VÁRIOS clientes do mesmo endereço (Inter, no-reply...): vincular um e-mail desses a um card na mão NÃO pode virar
+ *  "todo e-mail desse remetente é desse card" (Antônio Claudir, 14/10: 54 e-mails do Inter sobre outros clientes caíram no card dele). */
+const INSTITUTIONAL_SENDER = /@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br|creditas\.(com|com\.br|io)|santander\.com\.br|bradesco\.com\.br|caixa\.gov\.br|credimorar\.com\.br)$/i;
+const SYSTEM_SENDER = /^(no-?reply|nao-?responda|do-?not-?reply|mailer-daemon|postmaster)[^@]*@/i;
+export const isInstitutionalSender = (address: string) => INSTITUTIONAL_SENDER.test(address) || SYSTEM_SENDER.test(address);
+
 async function findLeadFor(accountId: string, addresses: string[], inReplyTo: string | null, ownAddresses: Set<string>): Promise<string | null> {
   if (inReplyTo) {
     const parent = await prisma.emailMessage.findFirst({ where: { messageId: inReplyTo, leadId: { not: null }, emailAccount: { accountId } }, select: { leadId: true } });
@@ -331,6 +337,7 @@ async function findLeadFor(accountId: string, addresses: string[], inReplyTo: st
       select: { id: true },
     });
     if (lead) return lead.id;
+    if (isInstitutionalSender(address)) continue; // banco/sistema: nunca "lembra" o card do último vínculo manual
     // Remetente que alguém já vinculou a um card na mão ("Vincular a um card").
     const remembered = await prisma.emailMessage.findFirst({
       where: { leadId: { not: null }, emailAccount: { accountId }, OR: [{ fromAddress: address }, { folder: 'SENT', toList: { array_contains: [{ address }] } }] },
@@ -777,7 +784,7 @@ export async function linkEmailToLead(acc: EmailAccount, msgId: string, leadId: 
   // Formulário do site manda de um endereço só pra todos os clientes: aí
   // vincula só este e-mail, nunca "todos desse remetente".
   const address = counterpartOf(msg);
-  const isFormSender = !!address && SITE_FORM_SENDERS.has(address);
+  const isFormSender = !!address && (SITE_FORM_SENDERS.has(address) || isInstitutionalSender(address)); // vincula só ESTE e-mail, não todos do remetente
 
   const siblings = address && !isFormSender
     ? await prisma.emailMessage.findMany({

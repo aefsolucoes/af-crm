@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { createRequests, setOverrides, parseHolder } from './credit-analysis.service';
-import { sendApprovalNoticeNow, previewApprovalNotice } from './approval-notice.service';
+import { sendApprovalNoticeNow, previewApprovalNotice, novoBancoPendente } from './approval-notice.service';
 
 /**
  * Análise automática de crédito (Fabio 14/10): assim que o cliente preenche a proposta e a IA do CRM confere que os dados estão
@@ -173,7 +173,8 @@ async function noticeClients(accountId: string, io: any) {
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
-    if (!cf._autoStartedAt) continue;
+    // Card que a análise automática NÃO iniciou também entra, se o cliente já recebeu um resumo e agora saiu o resultado de OUTRO banco (Juan, 14/10).
+    if (!cf._autoStartedAt && !(await novoBancoPendente(l.id).catch(() => false))) continue;
     const rows = l.creditAnalyses;
     if (rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // ainda tem análise rodando
     const last = rows[0]?.updatedAt;

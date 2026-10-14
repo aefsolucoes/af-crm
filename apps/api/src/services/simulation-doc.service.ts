@@ -163,7 +163,9 @@ export function sheetFromInter(p: { clientName: string; proposal: InterProposalD
   const produto = String(f.produtoAprovado || p.theory.header['Tipo da operação'] || '');
   const sistema = String(f.sistemaAmortizacao || '').toUpperCase() === 'SAC' || /SAC/i.test(p.theory.header['Sistema de amortização'] || '') ? 'SAC' : 'PRICE';
   const imovel = num(f.valorImovel) || num(String(p.theory.header['Valor estimado do imóvel'] || '').replace(/[^\d,]/g, '').replace(',', '.'));
-  const emprestimo = num(f.valorFinanciamento) || num(String(p.theory.header['Valor solicitado'] || '').replace(/[^\d,]/g, '').replace(',', '.'));
+  // O valor da simulação é o APROVADO (Roseli 14/10: Inter aprovou R$ 90 mil de R$ 150 mil pedidos e o PDF saiu com 150 mil). O cabeçalho "Valor solicitado"
+  // do Evolução Teórica já traz o aprovado; `valorFinanciamento` da proposta é o PEDIDO, então só vale se nada mais existir.
+  const emprestimo = num(String(p.theory.header['Valor solicitado'] || '').replace(/[^\d,]/g, '').replace(',', '.')) || num(f.valorAprovado) || num(f.valorFinanciamento);
   const rows: SheetRow[] = p.theory.rows.map((r, i) => ({ n: r.n, amort: r.amort, juros: r.juros, mip: r.seguros, dfi: 0, tsa: r.tarifas, parcela: r.prestacao, saldo: saldos[i] }));
   return {
     clientName: p.clientName,
@@ -179,7 +181,7 @@ export function sheetFromInter(p: { clientName: string; proposal: InterProposalD
       valorImovel: imovel,
       taxaEfetiva: `${pct(f.jurosAnualEfetivo || String(p.theory.header['Taxa efetiva anual de juros'] || '').replace(/[^\d.]/g, ''))} a.a`.replace('%%', '%'),
       valorEmprestimo: emprestimo,
-      valorEntrada: f.valorEntrada != null ? num(f.valorEntrada) : Math.max(imovel - emprestimo, 0),
+      valorEntrada: f.valorEntrada != null && Math.abs(emprestimo - num(f.valorFinanciamento)) < 1 ? num(f.valorEntrada) : Math.max(imovel - emprestimo, 0), // entrada da proposta só vale se o valor aprovado = o pedido
       renda: (p.proposal.rendas || []).reduce((s, v) => s + num(v), 0),
     },
     rows,
@@ -193,6 +195,13 @@ export async function finishInterDoc(db: Db, p: { accountId: string; id: string;
   const fail = async (reason: string) => { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason }); return { ok: false as const, error: reason }; };
   let theory: InterTheory;
   try { theory = await parseInterTheoryPdf(p.pdf); } catch (e: any) { return fail(`Não consegui ler a tabela do Evolução Teórica do Inter (${e?.message || 'erro'}). Não enviei.`); }
+  // A evolução do Inter só sai com os valores certos DEPOIS que a proposta é aceita (Fabio 14/10): antes, ela ainda traz o valor PEDIDO. Se o aprovado é
+  // outro, não manda — um PDF com valor diferente do aprovado é pior que PDF nenhum.
+  const aprovado = num((p.proposal.financiamentoAprovado || {}).valorAprovado);
+  const naTabela = num(String(theory.header['Valor solicitado'] || '').replace(/[^\d,]/g, '').replace(',', '.'));
+  if (aprovado && naTabela && Math.abs(aprovado - naTabela) / aprovado > 0.01) {
+    return fail(`A evolução do Inter ainda mostra R$ ${naTabela.toLocaleString('pt-BR')} (o valor pedido), mas o aprovado é R$ ${aprovado.toLocaleString('pt-BR')}: aceite a proposta no Inter (Seguir com proposta → Aprovar) pra a evolução sair com os valores certos e peça o PDF de novo. Não enviei.`);
+  }
   const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
   let pdf: Buffer;
   try { pdf = await renderSimulationSheet(sheetFromInter({ clientName: lead?.name || 'Cliente', proposal: p.proposal, theory })); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }

@@ -517,12 +517,20 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   const warnings = (built.filter((o) => o.incompleta).map((o) => `${o.instituicao}: aprovado a menor — faltam a 1ª e a última parcela (a extensão ainda não refez a simulação com os valores aprovados). Clique em "Conferir" nesse banco e tente de novo.`));
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true } });
   // Já mandamos um resumo antes (ex.: sem as parcelas certas)? Então este é uma ATUALIZAÇÃO, e o texto diz isso.
-  const jaMandou = (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } } })) > 0;
-  const text = `${jaMandou ? '🔄 Atualizei os valores da sua proposta, agora com os números certos:\n\n' : ''}${renderApprovalText(await withHolders(leadId, built))}`;
+  const anterior = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const corpoNovo = renderApprovalText(await withHolders(leadId, built));
+  // Como o texto diz: banco NOVO (saiu o resultado de mais um) x valores que mudaram. Compara bancos e números do último resumo — não o texto inteiro
+  // (Iara 14/10: o formato mudou e o cliente recebeu "Atualizei os valores" sem valor nenhum ter mudado).
+  const bancosAntes = anterior ? [...anterior.content.matchAll(/Institui[çc][ãa]o:\s*([^\n]+)/g)].map((m) => m[1].trim()) : [];
+  const dinheiro = (t: string) => (t.match(/R\$\s*[\d.]+,\d{2}/g) || []).map((v) => v.replace(/\s/g, '')).sort().join('|');
+  const bancoNovo = !!anterior && built.some((o) => !bancosAntes.includes(o.instituicao));
+  const mudou = !!anterior && !bancoNovo && dinheiro(anterior.content) !== dinheiro(corpoNovo);
+  const prefixo = bancoNovo ? '🆕 Saiu o resultado de mais um banco para o seu pedido. Seguem as opções aprovadas:\n\n' : mudou ? '🔄 Atualizei os valores da sua proposta, agora com os números certos:\n\n' : '';
+  const text = `${prefixo}${corpoNovo}`;
   // O MESMO aviso (mesmas opções, mesmos números) já foi enviado? Não manda de novo igual — só se algo mudou.
   const lastSummary = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
   const body = renderApprovalText(await withHolders(leadId, built));
-  if (lastSummary && lastSummary.content.replace(/^🔄[^\n]*\n\n/, '').trim() === body.trim()) {
+  if (lastSummary && lastSummary.content.replace(/^(🔄|🆕)[^\n]*\n\n/, '').trim() === body.trim()) {
     warnings.push(`Esse mesmo aviso (mesmos valores) já foi enviado às ${lastSummary.createdAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })} — não vou mandar igual de novo. Se os números mudarem, o aviso novo sai como atualização.`);
   }
   const [mode, tpl, already, move] = await Promise.all([
@@ -530,6 +538,17 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   ]);
   const docsText = lead ? await buildDocsText(lead.accountId, await withHolders(leadId, built)) : '';
   return { text, docsText, options: built.length, mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
+}
+
+/** O cliente já recebeu um resumo e agora existe uma opção aprovada de um banco que NÃO estava nele (ex.: a Creditas saiu horas depois do Santander).
+ *  Usado pela análise automática pra mandar a opção nova sozinha — a IA prometeu "vamos aguardar o resultado" e alguém precisa cumprir (Juan, 14/10). */
+export async function novoBancoPendente(leadId: string): Promise<boolean> {
+  const anterior = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  if (!anterior) return false;
+  const built = await optionsFromAnalyses(leadId).catch(() => null);
+  if (!built || built.some((o) => o.incompleta)) return false;
+  const antes = [...anterior.content.matchAll(/Institui[çc][ãa]o:\s*([^\n]+)/g)].map((m) => m[1].trim());
+  return built.some((o) => !antes.includes(o.instituicao));
 }
 
 /** Manda a lista de documentos (Resposta rápida) se ainda não foi e se a janela de 24 h estiver aberta. */
@@ -629,7 +648,11 @@ export async function buildRejectionText(leadId: string): Promise<{ text: string
   const cf = (lead.customFields || {}) as Record<string, any>;
   const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || 'tudo bem';
   const motivos = reasons.length > 1 ? `${reasons.slice(0, -1).join(', ')} e ${reasons[reasons.length - 1]}` : reasons[0];
-  const text = `Olá, ${nome}! Analisamos seu pedido e, infelizmente, ${REJECTION_MARK} com os bancos com que trabalhamos: ${motivos}.\n\nSe quiser, me conta mais sobre o imóvel e o valor que você precisa, que eu vejo outras possibilidades por aqui.`;
+  // Diz QUAL valor foi analisado e que dá pra refazer com outro: o cliente que volta pedindo um valor menor não estranha a IA topar tentar (Aline, 14/10:
+  // "a IA dá uma negativa e depois fala que pode tentar").
+  const pedido = Number(String(cf.valor_credito ?? '').replace(/[R$\s.]/g, '').replace(',', '.'));
+  const doValor = pedido > 0 ? ` de R$ ${pedido.toLocaleString('pt-BR')}` : '';
+  const text = `Olá, ${nome}! Analisamos seu pedido${doValor} e, infelizmente, ${REJECTION_MARK} com os bancos com que trabalhamos: ${motivos}.\n\nSe quiser, me conta mais sobre o imóvel e o valor que você precisa — posso refazer a análise com outro valor ou ver outras possibilidades por aqui.`;
   return { text, reasons };
 }
 
