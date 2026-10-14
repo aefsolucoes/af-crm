@@ -632,6 +632,8 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
 // interno do banco. Só 07h–21h (fora disso agenda), e só com a janela de 24 h do WhatsApp aberta (não existe template pra isso: sem janela,
 // fica nota pra equipe chamar o cliente).
 const REJECTION_MARK = 'não conseguimos aprovar agora';
+/** Template aprovado da Meta pro aviso de reprovado (Fabio 14/10): é o que vale quando a janela de 24 h do WhatsApp está fechada. */
+export const REJECTION_TEMPLATE = 'reprovacao';
 
 export async function buildRejectionText(leadId: string): Promise<{ text: string; reasons: string[] } | null> {
   if (await optionsFromAnalyses(leadId).catch(() => null)) return null; // tem opção aprovada: o aviso é o de aprovação
@@ -661,7 +663,7 @@ export async function sendRejectionNoticeNow(p: { accountId: string; leadId: str
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const built = await buildRejectionText(p.leadId);
   if (!built) return { ok: false, error: 'Este card tem opção aprovada ou nenhum motivo claro de não aprovação.' };
-  const ja = await prisma.message.count({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) }, content: { contains: REJECTION_MARK } } });
+  const ja = await prisma.message.count({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) }, OR: [{ content: { contains: REJECTION_MARK } }, { templateName: REJECTION_TEMPLATE }] } });
   if (ja) return { ok: false, error: 'O aviso de não aprovado já foi enviado a este cliente nos últimos 3 dias.' };
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (!p.ignoreWindow && !inNoticeWindow()) {
@@ -672,8 +674,19 @@ export async function sendRejectionNoticeNow(p: { accountId: string; leadId: str
     return { ok: true, scheduled: true, at: at.toISOString() };
   }
   if (!(await whatsappWindowOpen(p.leadId))) {
-    // Sem a janela de 24 h não há WhatsApp livre (e não existe template pra isso): se o card tem e-mail, o aviso vai por e-mail (caixa comercial@,
-    // o mesmo caminho do follow-up — Fabio 25/09 e 14/10). Sem e-mail, fica nota pra equipe chamar o cliente.
+    // Sem a janela de 24 h não há WhatsApp livre: vai o TEMPLATE aprovado "reprovacao" (Fabio 14/10: "tem template de reprovado"). Se ele falhar, o aviso
+    // vai por e-mail (comercial@, mesmo caminho do follow-up) se o card tem e-mail; sem e-mail, fica nota pra equipe chamar o cliente.
+    const tpl = await metaTemplate(p.accountId, REJECTION_TEMPLATE);
+    if (tpl.approved && tpl.body) {
+      const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+      const rt = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, templateName: REJECTION_TEMPLATE, language: 'pt_BR', bodyParams: [], previewText: tpl.body, userId: p.userId, io: p.io });
+      if (rt.success) {
+        await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado por template (a janela de 24 h do WhatsApp estava fechada) que não foi aprovado (${built.reasons.join('; ')}).` } }).catch(() => {});
+        logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou por template que o cliente não foi aprovado' } as any);
+        return { ok: true, via: 'whatsapp' };
+      }
+      console.warn(`[Aprovação] template "${REJECTION_TEMPLATE}" falhou pra ${lead.name}: ${(rt as any).error}`);
+    }
     const full = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { contact: { select: { email: true } } } });
     const to = String(full?.contact?.email || cf.email_1 || '').trim();
     if (/^\S+@\S+\.\S+$/.test(to)) {
