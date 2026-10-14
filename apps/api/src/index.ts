@@ -41,7 +41,7 @@ import { checkInactivityAutomations, processDeferredAutomations } from './servic
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { autoStarBigLeads } from './services/auto-star.service';
 import { processRemarketing } from './services/remarketing.service';
-import { processApprovalNotices, processApprovalReminders } from './services/approval-notice.service';
+import { processApprovalNotices, processApprovalReminders, processScheduledNotices } from './services/approval-notice.service';
 import { processCreditAutomation } from './services/credit-auto.service';
 import { setWhatsAppAlertIo, checkWhatsAppHealth } from './services/whatsapp-alert.service';
 import { autoMergeDuplicatesByPhone } from './services/lead.service';
@@ -265,6 +265,7 @@ httpServer.listen(PORT, () => {
     setInterval(() => {
       processApprovalNotices(io)
         .then(() => processApprovalReminders(io))
+        .then(() => processScheduledNotices(io))
         .catch((err) => console.error('[Aprovação] Poll:', err?.message));
     }, 2 * 60 * 1000);
   }, 150 * 1000);

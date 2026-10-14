@@ -36,6 +36,7 @@ const ACTIVE = ['REQUESTED', 'RUNNING'];
 export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS'];
 const CHECK_FAST_TRIES = 30; // de 1 em 1 min
 const CHECK_MAX_TRIES = 60; // depois, de 5 em 5 min até aqui (~3 h); passou disso, fica pra conferir à mão
+const CREDITAS_EXTRA_TRIES = 96; // Creditas demora (horas): depois das ~3 h segue de 15 em 15 min por mais 24 h (96 conferências)
 const REAL_SENT = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CHECK']; // já foi rodada de verdade nesse banco
 const STALE_ACTIVE_MS = 25 * 60 * 1000; // pedido/execução parado há mais que isso não bloqueia um novo
 const STUCK_RUNNING_MS = 30 * 60 * 1000; // rodando há mais que isso sem sinal da extensão = parou
@@ -294,18 +295,21 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: row.accountId }, select: { paused: true } }))?.paused;
   if (row.kind === 'CHECK' && (row.status === 'SENT' || row.status === 'CHECK')) {
     if (paused) return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: `Conferência automática PAUSADA (pausa geral ligada). Use "Conferir" pra ler de novo. ${String(row.detail || '').slice(0, 300)}` } });
-    if (row.attempt < CHECK_MAX_TRIES) {
+    const maxTries = CHECK_MAX_TRIES + (row.bank === 'CREDITAS' ? CREDITAS_EXTRA_TRIES : 0);
+    if (row.attempt < maxTries) {
       const attempt = row.attempt + 1;
       const fast = attempt <= CHECK_FAST_TRIES;
+      const slow = attempt > CHECK_MAX_TRIES; // só o Creditas chega aqui
+      const passo = fast ? 'de 1 em 1 min' : slow ? 'de 15 em 15 min' : 'de 5 em 5 min';
       return db.creditAnalysis.update({
         where: { id: row.id },
         data: {
-          status: 'REQUESTED', notBefore: new Date(Date.now() + (fast ? 60_000 : 5 * 60_000)), attempt, finishedAt: null,
-          detail: `Conferindo ${fast ? 'de 1 em 1 min' : 'de 5 em 5 min'} (conferência ${attempt} de ${CHECK_MAX_TRIES}). Última leitura: ${String(row.detail || '').replace(/^Conferindo[^:]*:\s*(Última leitura:\s*)?/i, '').slice(0, 300)}`,
+          status: 'REQUESTED', notBefore: new Date(Date.now() + (fast ? 60_000 : slow ? 15 * 60_000 : 5 * 60_000)), attempt, finishedAt: null,
+          detail: `Conferindo ${passo} (conferência ${attempt} de ${maxTries}). Última leitura: ${String(row.detail || '').replace(/^Conferindo[^:]*:\s*(Última leitura:\s*)?/i, '').slice(0, 300)}`,
         },
       });
     }
-    return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', detail: `Sem resultado depois de ${CHECK_MAX_TRIES} conferências: confira no portal. ${String(row.detail || '').slice(0, 300)}` } });
+    return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', detail: `Sem resultado depois de ${maxTries} conferências: confira no portal. ${String(row.detail || '').slice(0, 300)}` } });
   }
   if (row.kind === 'RUN' && row.status === 'SENT' && CHECK_BANKS.includes(row.bank) && !paused) {
     const open = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'CHECK', status: { in: ACTIVE } }, select: { id: true } });

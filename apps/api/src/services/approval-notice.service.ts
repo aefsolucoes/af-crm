@@ -11,7 +11,7 @@ import { callableFirstName } from '../lib/text';
  *    Documentação" e cujo cliente NUNCA mandou mensagem no WhatsApp recebe o
  *    template credito_aprovado_condicoes ("seu crédito foi aprovado na
  *    pré-análise. Quer saber as condições?" + [Sim, quero saber] [Não tenho
- *    interesse]). Uma vez por card, a qualquer hora (sem janela de horário), só com o template aprovado.
+ *    interesse]). Uma vez por card, só das 07h às 21h (Fabio 14/10), só com o template aprovado.
  *
  * 2. maybeSendApprovalOnYes: o cliente tocou em "Sim, quero saber" → manda o
  *    texto de aprovação no formato da equipe (✅ … 📋 Resumo da proposta …),
@@ -24,6 +24,23 @@ import { callableFirstName } from '../lib/text';
 import { parseDocumentosExigidos } from './credit-analysis.service';
 
 const prisma = new PrismaClient();
+
+// ─── Horário dos avisos ao cliente (Fabio 14/10): só das 07:00 às 21:00, horário de Brasília (UTC-3, sem horário de verão) ───
+export const NOTICE_START_HOUR = 7;
+export const NOTICE_END_HOUR = 21;
+const BRT_MS = -3 * 3_600_000;
+export function inNoticeWindow(d = new Date()): boolean {
+  const h = new Date(d.getTime() + BRT_MS).getUTCHours();
+  return h >= NOTICE_START_HOUR && h < NOTICE_END_HOUR;
+}
+/** Agora, se estiver dentro do horário; senão o próximo 07:00 de Brasília. */
+export function nextNoticeStart(d = new Date()): Date {
+  if (inNoticeWindow(d)) return d;
+  const l = new Date(d.getTime() + BRT_MS);
+  const dia = Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate() + (l.getUTCHours() >= NOTICE_END_HOUR ? 1 : 0), NOTICE_START_HOUR, 0, 0);
+  return new Date(dia - BRT_MS);
+}
+
 
 export const APPROVAL_TEMPLATE = 'credito_aprovado_condicoes';
 /** Lembrete pra quem recebeu o aviso de aprovação e não respondeu (Fabio 13/10): até 3 vezes —
@@ -58,6 +75,7 @@ const approvalTemplate = (accountId: string) => metaTemplate(accountId, APPROVAL
 
 /** Roda a cada 2 min (index.ts). */
 export async function processApprovalNotices(io: any): Promise<void> {
+  if (!inNoticeWindow()) return; // aviso ao cliente só das 07h às 21h
   if (running) return;
   running = true;
   try {
@@ -138,6 +156,7 @@ export async function planApprovalReminders(): Promise<ReminderPlanItem[]> {
 
 /** Roda a cada 2 min (index.ts): manda os lembretes que venceram e move pra Lead Sem Retorno quem não respondeu aos 3. */
 export async function processApprovalReminders(io: any): Promise<void> {
+  if (!inNoticeWindow()) return; // lembrete ao cliente só das 07h às 21h
   if (runningReminders) return;
   runningReminders = true;
   try {
@@ -548,7 +567,7 @@ export async function finishApprovalFollowUp(p: { accountId: string; leadId: str
 /** Manda o aviso. Dentro da janela de 24 h vai o texto com as opções (e, se marcado, a lista de documentos); fora dela vai o template
  *  de aprovação e o texto completo sai quando o cliente tocar em "Sim, quero saber". Se marcado, move o card pra Aguardando Documentação
  *  (dispara as automações da etapa: IA ligada e e-mail "pré-análise aprovada"). */
-export async function sendApprovalNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; sendDocs?: boolean; moveStage?: boolean }): Promise<{ ok: boolean; mode?: 'text' | 'template'; options?: number; docsSent?: boolean; moved?: string | null; error?: string }> {
+export async function sendApprovalNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; sendDocs?: boolean; moveStage?: boolean; ignoreWindow?: boolean }): Promise<{ ok: boolean; mode?: 'text' | 'template'; options?: number; docsSent?: boolean; moved?: string | null; scheduled?: boolean; at?: string; error?: string }> {
   const sendDocs = p.sendDocs !== false;
   const moveStage = p.moveStage !== false;
   const preview = await previewApprovalNotice(p.leadId);
@@ -557,6 +576,14 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true } } } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
+  // Fora do horário (07h–21h): não manda agora — agenda pro próximo 07:00; o poller manda em ordem (processScheduledNotices).
+  if (!p.ignoreWindow && !inNoticeWindow()) {
+    const at = nextNoticeStart();
+    await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...cf, _noticeAt: at.toISOString(), _noticeSeq: Date.now(), _noticeBy: p.userId || null, _noticeDocs: sendDocs, _noticeMove: moveStage } } });
+    const hora = at.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+    await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `⏰ Aviso ao cliente agendado para ${hora} (os avisos só saem das ${NOTICE_START_HOUR}h às ${NOTICE_END_HOUR}h).` } }).catch(() => {});
+    return { ok: true, scheduled: true, at: at.toISOString() };
+  }
   let docsSent = false;
   if (preview.mode === 'text') {
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
@@ -579,4 +606,34 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado das opções de crédito (${preview.options} opç${preview.options === 1 ? 'ão' : 'ões'}) — ${preview.mode === 'text' ? 'texto enviado' : 'template enviado; o texto completo sai quando ele tocar em "Sim, quero saber"'}${docsSent ? '; lista de documentos enviada' : ''}${moved ? `; card movido para ${moved}` : ''}.` } });
   return { ok: true, mode: preview.mode, options: preview.options, docsSent, moved };
+}
+
+/** Manda os avisos que ficaram agendados (fora do horário), UM por rodada e na ordem em que foram agendados — a ordem Inter → Creditas → Santander
+ *  é a de quem agendou. Só roda dentro das 07h–21h. */
+let runningScheduled = false;
+export async function processScheduledNotices(io: any): Promise<void> {
+  if (!inNoticeWindow() || runningScheduled) return;
+  runningScheduled = true;
+  try {
+    const ids = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "customFields"->>'_noticeAt' IS NOT NULL`;
+    if (!ids.length) return;
+    const leads = await prisma.lead.findMany({ where: { id: { in: ids.map((x) => x.id) } }, select: { id: true, accountId: true, name: true, status: true, customFields: true } });
+    const due = leads
+      .map((l) => ({ l, cf: (l.customFields || {}) as Record<string, any> }))
+      .filter(({ cf }) => cf._noticeAt && new Date(cf._noticeAt).getTime() <= Date.now())
+      .sort((a, b) => Number(a.cf._noticeSeq || 0) - Number(b.cf._noticeSeq || 0));
+    const first = due[0];
+    if (!first) return;
+    const { l, cf } = first;
+    const limpa = { ...cf }; delete limpa._noticeAt; delete limpa._noticeSeq; delete limpa._noticeBy; delete limpa._noticeDocs; delete limpa._noticeMove;
+    await prisma.lead.update({ where: { id: l.id }, data: { customFields: limpa } }); // limpa antes: se falhar, não repete em laço
+    if (l.status !== 'OPEN') return;
+    const r = await sendApprovalNoticeNow({ accountId: l.accountId, leadId: l.id, userId: cf._noticeBy || undefined, io, sendDocs: cf._noticeDocs !== false, moveStage: cf._noticeMove !== false, ignoreWindow: true });
+    console.log(`[Aprovação] aviso agendado de ${l.name}: ${r.ok ? 'enviado' : `não saiu (${r.error})`}`);
+    if (!r.ok) await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `⚠️ O aviso agendado ao cliente não saiu: ${r.error}` } }).catch(() => {});
+  } catch (e: any) {
+    console.error('[Aprovação] avisos agendados:', e?.message);
+  } finally {
+    runningScheduled = false;
+  }
 }

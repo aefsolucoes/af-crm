@@ -25,6 +25,7 @@ export function NotifyClientModal({ leadId, leadName, onClose, onSent }: { leadI
     setBusy(true);
     try {
       const { data: r } = await api.post('/api/credit-analysis/notify-client', { leadId, sendDocs, moveStage });
+      if (r.scheduled) { toast(`Fora do horário dos avisos (07h–21h): aviso agendado pra ${new Date(r.at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })}`, 'success'); onSent?.(); onClose(); return; }
       toast(`${r.mode === 'text' ? 'Cliente avisado pelo WhatsApp' : 'Template enviado — o texto completo sai quando o cliente tocar em "Sim, quero saber"'}${r.docsSent ? ' · lista de documentos enviada' : ''}${r.moved ? ` · card em ${r.moved}` : ''}`, 'success');
       onSent();
       onClose();
