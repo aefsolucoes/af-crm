@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
 import { getAutoSetting, setAutoSetting, setPaused } from '../services/credit-auto.service';
-import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
+import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
@@ -148,8 +148,8 @@ router.get('/queue', async (req: AuthRequest, res: Response) => {
     const caps = typeof req.query.caps === 'string' ? req.query.caps.split(',') : [];
     const items = req.query.claim === '0' ? [] : await claimQueue(prisma, { accountId: req.user!.accountId, bank, limit: Number(req.query.limit) || 3, caps });
     if (items.length) emit(req);
-    // PDFs de simulação pedidos (só pra extensão do Credimorar que avisa saber baixar: caps inclui "doc").
-    const docs = bank === 'CREDIMORAR' && caps.includes('doc') && req.query.claim !== '0' ? await claimSimulationDocs(prisma, { accountId: req.user!.accountId, limit: 2 }) : [];
+    // PDFs de simulação pedidos (só pra extensão que avisa saber atender: caps inclui "doc").
+    const docs = caps.includes('doc') && req.query.claim !== '0' ? await claimSimulationDocs(prisma, { accountId: req.user!.accountId, extBank: bank, limit: 2 }) : [];
     res.json({ items, docs });
   } catch (err) { fail(res, err, 'Erro ao buscar a fila'); }
 });
@@ -206,6 +206,18 @@ router.post('/simulation-docs/:id/upload', express.raw({ type: () => true, limit
     emit(req);
     res.status(out.ok ? 200 : 422).json(out);
   } catch (err) { fail(res, err, 'Erro ao enviar a simulação', 400); }
+});
+// Inter: a extensão manda os dados da proposta + o PDF "Evolução Teórica" baixado do portal (JSON, PDF em base64).
+router.post('/simulation-docs/:id/inter', async (req: AuthRequest, res: Response) => {
+  try {
+    const b = req.body || {};
+    const pdf = typeof b.pdfBase64 === 'string' ? Buffer.from(b.pdfBase64, 'base64') : Buffer.alloc(0);
+    if (pdf.length < 1000 || pdf.subarray(0, 5).toString('latin1') !== '%PDF-') return res.status(400).json({ error: 'pdfBase64 não é um PDF' });
+    const proposal = b.proposal && typeof b.proposal === 'object' ? b.proposal : {};
+    const out = await finishInterDoc(prisma, { accountId: req.user!.accountId, id: req.params.id, proposal, pdf, io: io(req) });
+    emit(req);
+    res.status(out.ok ? 200 : 422).json(out);
+  } catch (err) { fail(res, err, 'Erro ao montar a simulação do Inter', 400); }
 });
 router.post('/simulation-docs/:id/fail', async (req: AuthRequest, res: Response) => {
   try {

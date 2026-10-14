@@ -76,13 +76,15 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     }
   }
 
+  // Santander vem pela extensão do Credimorar; Inter pela extensão do Inter (ela só lê os dados e o CRM monta o PDF no modelo da A&F).
+  const SIM_BANK: Record<'SANTANDER' | 'INTER', Bank> = { SANTANDER: 'CREDIMORAR', INTER: 'INTER' };
   async function sendSimulation(inst: 'SANTANDER' | 'INTER') {
     const label = inst === 'INTER' ? 'Inter' : 'Santander';
-    if (!window.confirm(`Mandar ao cliente, pelo WhatsApp, o PDF da simulação do ${label} (com a logo da A&F)? A extensão baixa o PDF no portal do Credimorar e o CRM envia sozinho.`)) return;
+    if (!window.confirm(`Mandar ao cliente, pelo WhatsApp, o PDF da simulação do ${label} (com a logo da A&F)? A extensão lê a simulação no portal do banco e o CRM envia sozinho.`)) return;
     setSimBusy(inst);
     try {
       const { data: r } = await api.post('/api/credit-analysis/simulation-docs', { leadId, institutions: [inst] });
-      pingExtensions(data?.extensions, ['CREDIMORAR']);
+      pingExtensions(data?.extensions, [SIM_BANK[inst]]);
       toast(r.created?.length ? `Pedido feito: o PDF do ${label} sai em instantes` : 'Já tem um pedido desse PDF em andamento', 'success');
       queryClient.invalidateQueries({ queryKey: ['sim-docs', leadId] });
     } catch (err: any) {
@@ -169,13 +171,15 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
           <span className="flex items-center gap-1 text-[11px] font-medium text-slate-600"><FileText size={11} /> Simulação em PDF pro cliente</span>
           <div className="flex gap-1.5">
             {(['SANTANDER', 'INTER'] as const).map((inst) => (
-              <button key={inst} onClick={() => sendSimulation(inst)} disabled={!!simBusy || simOpen.some((d) => d.institution === inst)} className="text-[11px] px-2 py-0.5 rounded border border-af-mid text-af-mid hover:bg-af-mid hover:text-white disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-af-mid" title={`Baixa o PDF da simulação do ${inst === 'INTER' ? 'Inter' : 'Santander'} no Credimorar e manda ao cliente com a logo da A&F`}>
+              <button key={inst} onClick={() => sendSimulation(inst)} disabled={!!simBusy || simOpen.some((d) => d.institution === inst)} className="text-[11px] px-2 py-0.5 rounded border border-af-mid text-af-mid hover:bg-af-mid hover:text-white disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-af-mid" title={`Lê a simulação do ${inst === 'INTER' ? 'Inter' : 'Santander'} no portal do banco e manda ao cliente em PDF com a logo da A&F`}>
                 {inst === 'INTER' ? 'Inter' : 'Santander'}
               </button>
             ))}
           </div>
         </div>
-        {!data.extensions?.CREDIMORAR?.online && <p className="mt-1 text-[11px] text-amber-600">Extensão do Santander/Credimorar sem sinal: o pedido espera até ela abrir no Chrome (falha depois de 15 min).</p>}
+        {(['SANTANDER', 'INTER'] as const).filter((inst) => !data.extensions?.[SIM_BANK[inst]]?.online).map((inst) => (
+          <p key={inst} className="mt-1 text-[11px] text-amber-600">Extensão do {inst === 'INTER' ? 'Inter' : 'Santander'} sem sinal: o pedido espera até ela abrir no Chrome (falha depois de 15 min).</p>
+        ))}
         {simRecent.length > 0 && (
           <ul className="mt-1 space-y-0.5">
             {simRecent.map((d) => (

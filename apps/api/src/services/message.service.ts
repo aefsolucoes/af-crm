@@ -3,7 +3,7 @@ import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMe
 import { downloadDriveFile } from './google.service';
 import { sendGenericEmail } from './email.service';
 import { normalizeClientName } from '../lib/text';
-import { brandPortalPdf } from './simulation-pdf.service';
+import { brandSimulationPdf } from './simulation-pdf.service';
 
 const prisma = new PrismaClient();
 
@@ -439,7 +439,7 @@ export async function sendOutboundMedia(params: {
   // Só mexe no modelo do portal; qualquer outro PDF segue intacto.
   if (/pdf/i.test(mimeType) || /\.pdf$/i.test(fileName)) {
     try {
-      const branded = await brandPortalPdf(buffer);
+      const branded = await brandSimulationPdf(buffer);
       if (branded.recognized) buffer = branded.pdf;
     } catch (err: any) {
       console.error('[SimulationPdf] não consegui pôr a logo, enviando o PDF como veio:', err?.message);

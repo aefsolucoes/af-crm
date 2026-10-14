@@ -1,25 +1,33 @@
 import { PrismaClient } from '@prisma/client';
 import { sendOutboundMedia } from './message.service';
-import { brandPortalPdf } from './simulation-pdf.service';
+import { brandSimulationPdf, parseInterTheoryPdf, InterTheory } from './simulation-pdf.service';
+import { renderSimulationSheet, brl, SimulationSheet, SheetRow } from './simulation-sheet.service';
 
 type Db = PrismaClient;
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 
 /**
- * PDF "Evolução das parcelas" da simulação, do portal Credimorar até o WhatsApp do cliente, SEMPRE com a logo A&F:
- *   CRM cria o pedido → extensão do Credimorar baixa o PDF original do portal e devolve → CRM põe a logo
- *   (simulation-pdf.service.ts) e manda como documento (sendOutboundMedia, grátis dentro da janela de 24h).
- * Nunca vai o PDF cru do portal: se não for o modelo conhecido, o pedido falha com o motivo.
+ * Simulação em PDF pro cliente — SEMPRE no modelo do Credimorar com a logo A&F no alto:
+ *   SANTANDER (Credimorar, "mode pdf"): a extensão baixa o PDF ORIGINAL do portal e o CRM só troca cor/logo (idêntico ao modelo).
+ *   INTER / CREDITAS ("mode data"): a extensão só LÊ os dados no portal do banco e o CRM desenha o PDF no mesmo modelo.
+ * Fluxo: CRM cria o pedido → extensão do banco pega na fila (`caps=doc`) e devolve → CRM monta e manda como documento no WhatsApp
+ * (sendOutboundMedia, grátis dentro da janela de 24h). Nunca vai PDF cru de portal: se não der pra montar, o pedido falha com o motivo.
  */
 
-// Ids das instituições no portal Credimorar (filtro "Bancos" da lista).
-export const SIM_INSTITUTIONS: Record<string, { id: number; label: string }> = {
-  SANTANDER: { id: 2, label: 'Santander' },
-  INTER: { id: 6, label: 'Inter' },
+export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMORAR' | 'INTER' | 'CREDITAS'; mode: 'pdf' | 'data'; credimorarId?: number }> = {
+  SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR', mode: 'pdf', credimorarId: 2 }, // coluna Santander do Credimorar
+  INTER: { label: 'Inter', extBank: 'INTER', mode: 'data' },
+  CREDITAS: { label: 'Creditas', extBank: 'CREDITAS', mode: 'data' },
 };
 
 const REQUESTED_TTL_MIN = 15; // ninguém pegou o pedido (extensão fechada/desatualizada)
 const RUNNING_TTL_MIN = 10; // pegou e não devolveu (aba fechou, SW reiniciou)
+
+async function noteFailure(db: Db, r: { leadId: string; institution: string; source: string; detail: string | null }) {
+  if (r.source !== 'AI') return; // pedido de pessoa: ela vê o motivo na própria tela
+  const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
+  await db.note.create({ data: { leadId: r.leadId, type: 'COMMENT', content: `⚠️ O PDF da simulação do ${label} pedido pela IA NÃO saiu: ${r.detail || 'sem detalhe'}. Mande à mão pela Inbox (a logo A&F só entra sozinha em PDF do Credimorar; nos outros, peça ao suporte).` } }).catch(() => {});
+}
 
 async function expireStuck(db: Db, accountId: string) {
   const now = Date.now();
@@ -30,8 +38,8 @@ async function expireStuck(db: Db, accountId: string) {
       if (done.count) await noteFailure(db, { ...r, detail });
     }
   };
-  await expire({ status: 'REQUESTED', createdAt: { lt: new Date(now - REQUESTED_TTL_MIN * 60_000) } }, 'Nenhuma extensão do Credimorar pegou o pedido (extensão fechada, desligada ou desatualizada).');
-  await expire({ status: 'RUNNING', startedAt: { lt: new Date(now - RUNNING_TTL_MIN * 60_000) } }, 'A extensão pegou o pedido mas não devolveu o PDF (janela fechada ou extensão reiniciada).');
+  await expire({ status: 'REQUESTED', createdAt: { lt: new Date(now - REQUESTED_TTL_MIN * 60_000) } }, 'Nenhuma extensão do banco pegou o pedido (extensão fechada, desligada ou desatualizada).');
+  await expire({ status: 'RUNNING', startedAt: { lt: new Date(now - RUNNING_TTL_MIN * 60_000) } }, 'A extensão pegou o pedido mas não devolveu os dados (janela fechada ou extensão reiniciada).');
 }
 
 export function parseInstitutions(raw: unknown): string[] {
@@ -60,16 +68,22 @@ export async function requestSimulationDocs(db: Db, p: { accountId: string; lead
   return { created, skipped };
 }
 
-/** A extensão pergunta "tem PDF pra baixar?". Cada pedido é entregue UMA vez (REQUESTED → RUNNING). */
-export async function claimSimulationDocs(db: Db, p: { accountId: string; limit?: number }) {
+/** A extensão do banco pergunta "tem simulação pra baixar?". Cada pedido é entregue UMA vez (REQUESTED → RUNNING). */
+export async function claimSimulationDocs(db: Db, p: { accountId: string; extBank: string; limit?: number }) {
   await expireStuck(db, p.accountId);
-  const rows = await db.simulationDocRequest.findMany({ where: { accountId: p.accountId, status: 'REQUESTED' }, orderBy: { createdAt: 'asc' }, take: Math.min(p.limit || 2, 5) });
-  const out: Array<{ id: string; leadId: string; leadName: string; institution: string; institutionId: number }> = [];
+  const insts = Object.entries(SIM_INSTITUTIONS).filter(([, v]) => v.extBank === p.extBank).map(([k]) => k);
+  if (!insts.length) return [];
+  const rows = await db.simulationDocRequest.findMany({ where: { accountId: p.accountId, status: 'REQUESTED', institution: { in: insts } }, orderBy: { createdAt: 'asc' }, take: Math.min(p.limit || 2, 5) });
+  const out: Array<{ id: string; leadId: string; leadName: string; institution: string; mode: 'pdf' | 'data'; institutionId: number; proposalNumber: string | null }> = [];
   for (const r of rows) {
     const claimed = await db.simulationDocRequest.updateMany({ where: { id: r.id, status: 'REQUESTED' }, data: { status: 'RUNNING', startedAt: new Date() } });
     if (!claimed.count) continue;
     const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
-    out.push({ id: r.id, leadId: r.leadId, leadName: lead?.name || 'Sem nome', institution: r.institution, institutionId: SIM_INSTITUTIONS[r.institution]?.id ?? 0 });
+    const meta = SIM_INSTITUTIONS[r.institution];
+    const bankKey = meta.extBank;
+    // Número da proposta do banco (a extensão acha o cliente por ele, sem depender da lista): última análise com número.
+    const last = bankKey === 'CREDIMORAR' ? null : await db.creditAnalysis.findFirst({ where: { leadId: r.leadId, bank: bankKey, proposalNumber: { not: null }, dryRun: false }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
+    out.push({ id: r.id, leadId: r.leadId, leadName: lead?.name || 'Sem nome', institution: r.institution, mode: meta.mode, institutionId: meta.credimorarId ?? 0, proposalNumber: last?.proposalNumber || null });
   }
   return out;
 }
@@ -82,40 +96,108 @@ export async function failSimulationDoc(db: Db, p: { accountId: string; id: stri
   return updated;
 }
 
-/** Pedido que falhou deixa nota no card (a IA já avisou o cliente que o PDF ia sair: a equipe precisa saber que não saiu). */
-async function noteFailure(db: Db, r: { leadId: string; institution: string; source: string; detail: string | null }) {
-  if (r.source !== 'AI') return; // pedido de pessoa: ela vê o motivo na própria tela
-  const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
-  await db.note.create({ data: { leadId: r.leadId, type: 'COMMENT', content: `⚠️ O PDF da simulação do ${label} pedido pela IA NÃO saiu: ${r.detail || 'sem detalhe'}. Mande à mão pela Inbox (anexando o PDF do portal — a logo A&F entra sozinha).` } }).catch(() => {});
-}
-
 function slug(text: string): string {
   return text.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
-/** A extensão devolveu o PDF original do portal: põe a logo A&F e manda pro cliente. */
-export async function finishSimulationDoc(db: Db, p: { accountId: string; id: string; pdf: Buffer; io?: Io }) {
-  const r = await db.simulationDocRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
-  if (!r) throw new Error('Pedido não encontrado');
-  if (r.status === 'DONE') return { ok: true as const, already: true, messageId: r.messageId };
+/** Envia o PDF pronto ao cliente e fecha o pedido (DONE) — ou falha com o motivo. */
+async function deliver(db: Db, r: { id: string; accountId: string; leadId: string; institution: string; caption: string | null; requestedById: string | null }, pdf: Buffer, io?: Io) {
   const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
-  const fail = async (reason: string) => { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason }); return { ok: false as const, error: reason }; };
-
-  let branded;
-  try { branded = await brandPortalPdf(p.pdf); } catch (e: any) { return fail(`Não consegui pôr a logo A&F no PDF (${e?.message || 'erro'}). Não enviei.`); }
-  if (!branded.recognized) return fail('O PDF baixado não está no modelo conhecido do portal (ou já veio sem a logo do portal). Não enviei, pra não sair com a marca errada — avise o suporte.');
-
   const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
-  const nome = slug(lead?.name || 'Cliente');
-  const fileName = `AeF_${r.institution}_${nome || 'Cliente'}.pdf`;
+  const fileName = `AeF_${r.institution}_${slug(lead?.name || 'Cliente') || 'Cliente'}.pdf`;
   const caption = r.caption || `Segue a simulação do ${label} em PDF 📄`;
-  const sent = await sendOutboundMedia({ accountId: p.accountId, leadId: r.leadId, buffer: branded.pdf, fileName, mimeType: 'application/pdf', caption, userId: r.requestedById || undefined, io: p.io });
-  if (!sent.success) return fail(`Baixei e marquei o PDF, mas o WhatsApp não aceitou o envio: ${sent.error}`);
+  const sent = await sendOutboundMedia({ accountId: r.accountId, leadId: r.leadId, buffer: pdf, fileName, mimeType: 'application/pdf', caption, userId: r.requestedById || undefined, io });
+  if (!sent.success) {
+    await failSimulationDoc(db, { accountId: r.accountId, id: r.id, reason: `Montei o PDF, mas o WhatsApp não aceitou o envio: ${sent.error}` });
+    return { ok: false as const, error: sent.error };
+  }
   await db.simulationDocRequest.update({ where: { id: r.id }, data: { status: 'DONE', finishedAt: new Date(), messageId: sent.message?.id || null, detail: `Enviado: ${fileName}` } });
   return { ok: true as const, messageId: sent.message?.id as string | undefined };
+}
+
+async function loadOpen(db: Db, accountId: string, id: string) {
+  const r = await db.simulationDocRequest.findFirst({ where: { id, accountId } });
+  if (!r) throw new Error('Pedido não encontrado');
+  return r;
+}
+
+/** SANTANDER: a extensão devolveu o PDF ORIGINAL do portal do Credimorar — troca cor/logo e manda. */
+export async function finishSimulationDoc(db: Db, p: { accountId: string; id: string; pdf: Buffer; io?: Io }) {
+  const r = await loadOpen(db, p.accountId, p.id);
+  if (r.status === 'DONE') return { ok: true as const, already: true, messageId: r.messageId };
+  const fail = async (reason: string) => { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason }); return { ok: false as const, error: reason }; };
+  let branded;
+  try { branded = await brandSimulationPdf(p.pdf); } catch (e: any) { return fail(`Não consegui pôr a logo A&F no PDF (${e?.message || 'erro'}). Não enviei.`); }
+  if (!branded.recognized) return fail('O PDF baixado não está no modelo conhecido do portal (ou já veio sem a logo do portal). Não enviei, pra não sair com a marca errada — avise o suporte.');
+  return deliver(db, r, branded.pdf, p.io);
+}
+
+// ── Inter: dados do portal → modelo do Credimorar ────────────────────────────────────────────────
+export interface InterProposalData {
+  financiamentoAprovado?: Record<string, any>;
+  dadosImovel?: Record<string, any>;
+  rendas?: number[];
+}
+
+const num = (v: unknown): number => { const n = Number(String(v ?? '').replace(',', '.')); return Number.isFinite(n) ? n : 0; };
+const pct = (v: unknown, suffix = ''): string => `${num(v).toFixed(2).replace('.', ',')}%${suffix}`;
+
+/** O "Saldo devedor" do PDF do Inter às vezes vem zerado/fora de ordem; nesse caso refaz: saldo = soma das amortizações que faltam. */
+export function repairBalances(rows: InterTheory['rows']): { saldos: number[]; refeito: boolean } {
+  const printed = rows.map((r) => r.saldo);
+  const ok = printed.every((v, i) => (i === 0 || v <= printed[i - 1] + 0.01) && (i === printed.length - 1 || v > 0));
+  if (ok) return { saldos: printed, refeito: false };
+  const saldos: number[] = [];
+  let resta = rows.reduce((s, r) => s + r.amort, 0);
+  for (const r of rows) { resta = Math.max(0, +(resta - r.amort).toFixed(2)); saldos.push(resta); }
+  return { saldos, refeito: true };
+}
+
+export function sheetFromInter(p: { clientName: string; proposal: InterProposalData; theory: InterTheory; when?: Date }): SimulationSheet {
+  const f = p.proposal.financiamentoAprovado || {};
+  const { saldos } = repairBalances(p.theory.rows);
+  const produto = String(f.produtoAprovado || p.theory.header['Tipo da operação'] || '');
+  const sistema = String(f.sistemaAmortizacao || '').toUpperCase() === 'SAC' || /SAC/i.test(p.theory.header['Sistema de amortização'] || '') ? 'SAC' : 'PRICE';
+  const imovel = num(f.valorImovel) || num(String(p.theory.header['Valor estimado do imóvel'] || '').replace(/[^\d,]/g, '').replace(',', '.'));
+  const emprestimo = num(f.valorFinanciamento) || num(String(p.theory.header['Valor solicitado'] || '').replace(/[^\d,]/g, '').replace(',', '.'));
+  const rows: SheetRow[] = p.theory.rows.map((r, i) => ({ n: r.n, amort: r.amort, juros: r.juros, mip: r.seguros, dfi: 0, tsa: r.tarifas, parcela: r.prestacao, saldo: saldos[i] }));
+  return {
+    clientName: p.clientName,
+    when: p.when,
+    bank: 'INTER',
+    segurosJuntos: true, // o Inter só informa o total dos seguros (MIP + DFI)
+    summary: {
+      tipoImovel: /COMERCIAL/i.test(produto) ? 'Comercial' : 'Residencial',
+      prazoMeses: num(f.prazoEmprestimo) || rows.length,
+      cet: pct(f.cet),
+      cesh: pct(f.cesh, ' a.a'),
+      sistema,
+      valorImovel: imovel,
+      taxaEfetiva: `${pct(f.jurosAnualEfetivo || String(p.theory.header['Taxa efetiva anual de juros'] || '').replace(/[^\d.]/g, ''))} a.a`.replace('%%', '%'),
+      valorEmprestimo: emprestimo,
+      valorEntrada: f.valorEntrada != null ? num(f.valorEntrada) : Math.max(imovel - emprestimo, 0),
+      renda: (p.proposal.rendas || []).reduce((s, v) => s + num(v), 0),
+    },
+    rows,
+  };
+}
+
+/** INTER: a extensão leu a proposta + baixou o "Evolução Teórica" do portal; o CRM lê a tabela e desenha no modelo do Credimorar. */
+export async function finishInterDoc(db: Db, p: { accountId: string; id: string; proposal: InterProposalData; pdf: Buffer; io?: Io }) {
+  const r = await loadOpen(db, p.accountId, p.id);
+  if (r.status === 'DONE') return { ok: true as const, already: true, messageId: r.messageId };
+  const fail = async (reason: string) => { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason }); return { ok: false as const, error: reason }; };
+  let theory: InterTheory;
+  try { theory = await parseInterTheoryPdf(p.pdf); } catch (e: any) { return fail(`Não consegui ler a tabela do Evolução Teórica do Inter (${e?.message || 'erro'}). Não enviei.`); }
+  const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
+  let pdf: Buffer;
+  try { pdf = await renderSimulationSheet(sheetFromInter({ clientName: lead?.name || 'Cliente', proposal: p.proposal, theory })); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
+  return deliver(db, r, pdf, p.io);
 }
 
 export async function listSimulationDocs(db: Db, p: { accountId: string; leadId: string }) {
   await expireStuck(db, p.accountId);
   return db.simulationDocRequest.findMany({ where: { accountId: p.accountId, leadId: p.leadId }, orderBy: { createdAt: 'desc' }, take: 10 });
 }
+
+export { brl };
