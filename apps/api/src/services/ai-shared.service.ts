@@ -400,7 +400,14 @@ export async function applyAiExtractedActions(
       const ALLOWED = ['prospeccao', 'follow up', 'lead sem retorno', 'pre-analise', 'pre analise', 'venda futura', 'aguardando doc'];
       const target = normalize(action.moveToStage);
       const isAllowed = ALLOWED.some((a) => target.includes(a) || a.includes(target));
-      if (isAllowed) {
+      // Cliente JÁ aprovado e esperando documento não volta pra Follow Up / Sem Retorno / Pré-Análise só porque disse que ainda não tem um papel
+      // (Jézer, 14/10: "sem a escritura, volto essa semana" → a IA mandou pro Follow Up). Aguardando Documentação é justamente a etapa dessa espera.
+      const atual = await prisma.lead.findUnique({ where: { id: lead.id }, select: { stage: { select: { name: true } } } });
+      const regressao = /^aguardando doc/.test(normalize(atual?.stage?.name || '')) && /follow up|lead sem retorno|prospec|pre.?analise/.test(target);
+      if (isAllowed && regressao) {
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🤖 A IA quis mover o card pra "${action.moveToStage}"${action.moveReason ? ` (${action.moveReason})` : ''}, mas o cliente já está aprovado em "${atual?.stage?.name}" — a espera do documento é essa etapa; o card ficou onde estava.` } }).catch(() => {});
+      }
+      if (isAllowed && !regressao) {
         // Nome exato primeiro, depois "começa com" (ex.: "Follow Up Home"),
         // só então "contém" — e nunca uma etapa de aprovado/fechado: "Pré-
         // Análise" casava com "Aprovado Pré-Analise" por conter o texto e a

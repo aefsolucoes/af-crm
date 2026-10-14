@@ -191,6 +191,7 @@ const MOVE_STAGE_RULES = `MOVER O CARD DE ETAPA ("moveToStage") — só estes va
 - "Prospecção": raramente necessário (o lead já começa nessa etapa).
 - "Venda Futura": o cliente quer seguir, mas não agora — disse que vai deixar pra mais pra frente, pra outro mês/ano, depois de algum evento.
 - "Aguardando Documentação": o CLIENTE falou da CAIXA (quer fazer/aprovar pela CAIXA) — você explica que a CAIXA pede a documentação ANTES (regra da CAIXA nas REGRAS OBRIGATÓRIAS) e move o card junto com a explicação, sem perguntar nada (Fabio 13/10). NUNCA use só porque a proposta lista a CAIXA (toda proposta lista) nem por causa de outros bancos: só quando o próprio cliente falar da CAIXA. "moveReason": "Cliente quer a CAIXA: ela pede a documentação antes da análise".
+- Card que já está em "Aguardando Documentação" (cliente aprovado): NÃO mova pra "Follow Up", "Lead Sem Retorno" nem "Pré-Análise" só porque ele avisou que ainda não tem um documento (escritura, certidão, comprovante) ou que volta mais tarde — essa é justamente a etapa de espera de documento: o card fica (null). Fabio 14/10 (Jézer).
 Sempre que mover de etapa, preencha "moveReason" com o motivo em 1 frase (vai pra uma anotação no card).`;
 
 /** "Perdido" é o STATUS do lead (Aberto/Ganho/Perdido, mesmo botão "Marcar
