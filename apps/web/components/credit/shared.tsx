@@ -27,7 +27,7 @@ export const STATUS: Record<string, { label: string; cls: string }> = {
 export const MANUAL_STATUS = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CHECK', 'FAILED'];
 
 export interface Analysis {
-  id: string; bank: Bank; status: string; detail: string | null; dryRun: boolean; source: string; chosen: boolean;
+  id: string; bank: Bank; status: string; kind?: string; detail: string | null; dryRun: boolean; source: string; chosen: boolean;
   holderName?: string | null; proposalNumber: string | null; approvedValue: number | null; netValue?: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
   firstInstallment: number | null; lastInstallment: number | null; conditions: string | null;
   requestedAt: string; finishedAt: string | null; updatedAt: string; createdAt: string;
@@ -94,7 +94,9 @@ export function Badge({ a }: { a?: Analysis }) {
   const baseStatus = STATUS[a.status] || { label: a.status, cls: 'bg-slate-100 text-slate-500' };
   // Falha por REGRA do banco/imóvel (mínimo do imóvel, terreno, saldo devedor…) aparece como "Desqualificado" (vale como reprovado), não como "Falhou" (Fabio 14/10).
   const desq = a.status === 'FAILED' && isDesqualificado(a.detail);
-  const s = a.status === 'APPROVED' && /aprovad[oa] a menor/i.test(a.detail || '') ? { ...baseStatus, label: 'Aprovado a menor' } : desq ? { label: 'Desqualificado', cls: 'bg-red-50 text-red-500' } : baseStatus;
+  // Proposta já enviada ao banco e o resultado final ainda não saiu (a conferência fica lendo o portal): "Em análise" — não "Rodando" nem "Enviada" (Fabio 14/10).
+  const emAnalise = a.status === 'SENT' || (a.kind === 'CHECK' && (a.status === 'REQUESTED' || a.status === 'RUNNING'));
+  const s = a.status === 'APPROVED' && /aprovad[oa] a menor/i.test(a.detail || '') ? { ...baseStatus, label: 'Aprovado a menor' } : desq ? { label: 'Desqualificado', cls: 'bg-red-50 text-red-500' } : emAnalise ? { label: 'Em análise', cls: 'bg-indigo-50 text-indigo-600' } : baseStatus;
   return (
     <div className="space-y-0.5">
       <div className="flex items-center gap-1">
