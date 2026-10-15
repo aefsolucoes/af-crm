@@ -813,7 +813,7 @@ export async function moveExistingStickersToFolder(accountId: string): Promise<{
 }
 
 /** Leva pras pastas FIGURINHAS, AUDIOS e VIDEOS o que já estava salvo nas pastas dos clientes. Devolve o que moveu por pasta. */
-export async function moveExistingSideFiles(accountId: string): Promise<{ moved: Record<string, number>; errors: number }> {
+export async function moveExistingSideFiles(accountId: string, only?: SideFolder[]): Promise<{ moved: Record<string, number>; errors: number }> {
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
   if (!conn?.refreshToken || !conn.rootFolderId) throw new Error('Conecte o Google Drive e escolha a pasta-raiz primeiro');
   const drive = await getDrive(accountId);
@@ -826,7 +826,7 @@ export async function moveExistingSideFiles(accountId: string): Promise<{ moved:
   let errors = 0;
   for (const a of atts) {
     const name = sideFolderName(a);
-    if (!name) continue;
+    if (!name || (only && !only.includes(name))) continue;
     try {
       const folderId = (folders[name] ||= await sideFolderId(accountId, conn, name));
       const r = await drive.files.get({ fileId: a.driveFileId!, fields: 'id, parents, trashed', supportsAllDrives: true });
