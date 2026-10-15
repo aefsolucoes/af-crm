@@ -67,39 +67,69 @@ function formatAudioTime(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-/** Player mínimo — só play/pausa, barra de progresso e tempo — no lugar do
- *  `<audio controls>` nativo do navegador, que trazia junto controle de
- *  volume, menu de velocidade (1x/1,5x/2x) e "baixar" (visível em alguns
- *  navegadores/SOs), nada disso existe na bolha de áudio de verdade do
- *  WhatsApp. Clique na barra pula pra posição; sem arrastar por enquanto. */
+// Só UM áudio toca por vez (Fabio 15/10: "um áudio deve pausar quando se abre outro") e a velocidade escolhida (1x / 1,5x / 2x) vale pros próximos áudios.
+let activeAudio: HTMLAudioElement | null = null;
+const AUDIO_SPEEDS = [1, 1.5, 2];
+const SPEED_KEY = 'af_audio_speed';
+function readSpeed(): number {
+  try { const v = Number(window.localStorage.getItem(SPEED_KEY)); return AUDIO_SPEEDS.includes(v) ? v : 1; } catch { return 1; }
+}
+function saveSpeed(v: number) { try { window.localStorage.setItem(SPEED_KEY, String(v)); } catch { /* sem armazenamento: vale só pra este áudio */ } }
+const speedLabel = (v: number) => `${String(v).replace('.', ',')}x`;
+
+/** Player mínimo — play/pausa, barra de progresso, tempo e velocidade — no lugar do
+ *  `<audio controls>` nativo do navegador (que trazia junto volume e "baixar", coisas
+ *  que não existem na bolha de áudio do WhatsApp). Clique na barra pula pra posição;
+ *  sem arrastar por enquanto. Tocar um áudio pausa o que estava tocando. */
 function AudioPlayer({ url }: { url: string }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+  const [speed, setSpeed] = useState(1);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    setSpeed(readSpeed());
     const onTime = () => setCurrentTime(audio.currentTime);
     const onLoaded = () => setDuration(audio.duration || 0);
-    const onEnd = () => { setPlaying(false); setCurrentTime(0); };
+    const onEnd = () => { setPlaying(false); setCurrentTime(0); if (activeAudio === audio) activeAudio = null; };
+    const onPlay = () => {
+      if (activeAudio && activeAudio !== audio) activeAudio.pause(); // outro áudio estava tocando: pausa
+      activeAudio = audio;
+      audio.playbackRate = readSpeed();
+      setPlaying(true);
+    };
+    const onPause = () => setPlaying(false); // também quando OUTRO áudio pausou este
     audio.addEventListener('timeupdate', onTime);
     audio.addEventListener('loadedmetadata', onLoaded);
     audio.addEventListener('ended', onEnd);
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
     return () => {
       audio.removeEventListener('timeupdate', onTime);
       audio.removeEventListener('loadedmetadata', onLoaded);
       audio.removeEventListener('ended', onEnd);
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+      if (activeAudio === audio) { audio.pause(); activeAudio = null; }
     };
   }, []);
 
   function toggle() {
     const audio = audioRef.current;
     if (!audio) return;
-    if (playing) audio.pause();
-    else audio.play().catch(() => {});
-    setPlaying(!playing);
+    if (audio.paused) audio.play().catch(() => {});
+    else audio.pause();
+  }
+
+  function cycleSpeed(e: React.MouseEvent) {
+    e.stopPropagation();
+    const next = AUDIO_SPEEDS[(AUDIO_SPEEDS.indexOf(speed) + 1) % AUDIO_SPEEDS.length];
+    setSpeed(next);
+    saveSpeed(next);
+    if (audioRef.current) audioRef.current.playbackRate = next;
   }
 
   function seek(e: React.MouseEvent<HTMLDivElement>) {
@@ -115,7 +145,7 @@ function AudioPlayer({ url }: { url: string }) {
   const showElapsed = playing || currentTime > 0;
 
   return (
-    <div className="flex items-center gap-2.5" style={{ minWidth: 220 }}>
+    <div className="flex items-center gap-2.5" style={{ minWidth: 240 }}>
       <audio ref={audioRef} src={url} preload="metadata" className="hidden" />
       <button
         type="button"
@@ -133,6 +163,15 @@ function AudioPlayer({ url }: { url: string }) {
         </div>
         <span className="text-[11px] text-[#e9edef]/60">{formatAudioTime(showElapsed ? currentTime : duration)}</span>
       </div>
+      <button
+        type="button"
+        onClick={cycleSpeed}
+        title="Velocidade do áudio"
+        className="flex-shrink-0 min-w-[34px] h-6 px-1.5 rounded-full text-[11px] font-semibold text-[#e9edef] transition-colors hover:brightness-125"
+        style={{ backgroundColor: speed === 1 ? 'rgba(255,255,255,0.12)' : '#00a884' }}
+      >
+        {speedLabel(speed)}
+      </button>
     </div>
   );
 }
