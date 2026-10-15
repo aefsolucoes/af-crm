@@ -447,6 +447,13 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
     },
   }).catch((err) => { if (err?.code !== 'P2002') throw err; return null; });
 
+  // Creditas pedindo a Autorização SCR Bacen assinada: acha o card pelo CPF do texto, liga o e-mail e dispara o fluxo (creditas-scr.service).
+  if (row && folder === 'INBOX' && from && /@([a-z0-9-]+\.)*creditas\.(com|com\.br|io)$/i.test(from.address)) {
+    const { handleCreditasScrEmail } = require('./creditas-scr.service') as typeof import('./creditas-scr.service');
+    const tratado = await handleCreditasScrEmail(acc, row, opts.io as any).catch((err) => { console.warn('[Creditas SCR] falhou:', err?.message); return false; });
+    if (tratado) return;
+  }
+
   // Proposta preenchida no site (FormSubmit) → vai pro card do cliente.
   const { SITE_FORM_SENDERS, handleSiteProposalEmail } = require('./site-proposal-email.service') as typeof import('./site-proposal-email.service');
   if (row && folder === 'INBOX' && from && SITE_FORM_SENDERS.has(from.address)) {

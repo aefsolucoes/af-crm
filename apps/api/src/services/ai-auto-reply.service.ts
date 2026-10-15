@@ -411,6 +411,7 @@ export async function generateAiAutoReply(
     await refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText }).catch(() => null);
     const analiseCredito = await aiCreditContext(prisma, leadId).catch(() => '');
     const documentos = await aiDocsContext(leadId).catch(() => '');
+    const scrCreditas = await (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => '');
 
     const systemPrompt = `${ROLE_FRAMING}
 
@@ -442,7 +443,9 @@ ${buildContextBlocks(ctx)}${analiseCredito ? `
 
 ${analiseCredito}` : ''}${documentos ? `
 
-${documentos}` : ''}${duvidasEquipe ? `
+${documentos}` : ''}${scrCreditas ? `
+
+${scrCreditas}` : ''}${duvidasEquipe ? `
 
 ${duvidasEquipe}` : ''}${ligacao ? `
 

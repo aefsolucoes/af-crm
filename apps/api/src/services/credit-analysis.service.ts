@@ -246,6 +246,10 @@ const bankAlive = (accountId: string, bank?: string) => !!bank && (Date.now() - 
 const PAUSED_LEAD = { lead: { customFields: { path: ['_autoPaused'], equals: true } } };
 /** Fora da fila: pedido AUTOMÁTICO (sem requestedById) de card pausado. O que uma PESSOA pediu na tela (Rodar/Conferir) continua valendo. */
 const NOT_PAUSED_AUTO = { NOT: { AND: [{ requestedById: null }, PAUSED_LEAD] } };
+/** TRAVA da consulta do Creditas (Fabio 15/10): a Creditas pediu a Autorização SCR Bacen assinada e o cliente ainda não devolveu/enviamos — ler o portal a cada 10 min não adianta.
+ *  As conferências AUTOMÁTICAS do Creditas desse card ficam paradas até o SCR ser enviado à Creditas; "Conferir resultado" pedido por uma pessoa passa. */
+const SCR_LOCKED_LEAD = { lead: { OR: ['PENDING', 'ASKED', 'SENDING'].map((st) => ({ customFields: { path: ['_scrCreditas', 'status'], equals: st } })) } };
+const NOT_SCR_LOCKED = { NOT: { AND: [{ bank: 'CREDITAS' }, { kind: 'CHECK' }, { requestedById: null }, SCR_LOCKED_LEAD] } };
 
 export async function claimQueue(db: Db, p: { accountId: string; bank: string; limit?: number; caps?: string[] }) {
   if (!BANK_KEYS.includes(p.bank)) return [];
@@ -270,6 +274,7 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
         ...(ativo ? [{ OR: [{ kind: 'CHECK' }, { source: { in: ['AI', 'AI_SIM'] } }, { leadId: ativo }] }] : []),
         { OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
         NOT_PAUSED_AUTO,
+        NOT_SCR_LOCKED,
         // Em pausa geral: só o pedido de pessoa; a leitura (CHECK, só leitura) pedida pela IA da conversa também passa.
         ...(paused ? [{ OR: [{ requestedById: { not: null } }, { source: 'AI', kind: 'CHECK' }] }] : []),
       ],
@@ -579,6 +584,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       overrides: Object.fromEntries(l.creditOverrides.map((o) => [o.bank, o.data])),
       inPre: l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || ''),
       autoPaused: !!cf._autoPaused,
+      scr: cf._scrCreditas ? { status: cf._scrCreditas.status, at: cf._scrCreditas.at || null, askedAt: cf._scrCreditas.askedAt || null, sentAt: cf._scrCreditas.sentAt || null, creditasId: cf._scrCreditas.creditasId || null } : null,
       preAnaliseAt,
       ran: l.creditAnalyses.length > 0,
       lastRunAt: l.creditAnalyses[0]?.createdAt || null,

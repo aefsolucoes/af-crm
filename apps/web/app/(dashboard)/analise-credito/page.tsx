@@ -475,6 +475,13 @@ export default function AnaliseCreditoPage() {
                                       {a ? (
                                         <>
                                           {a.holderName && l.card?.name1 && a.holderName.trim().toLowerCase() !== l.card.name1.trim().toLowerCase() && <p className="text-amber-600 font-medium">{a.status === 'APPROVED' || a.status === 'CONDITIONAL' ? 'Aprovado' : a.status === 'REJECTED' ? 'Reprovado' : 'Analisado'} no nome de {a.holderName} (2º participante)</p>}
+                                          {b.key === 'CREDITAS' && l.scr && l.scr.status !== 'NOTED' && (
+                                            <p className={l.scr.status === 'SENT' ? 'text-emerald-700 bg-emerald-50 rounded-md px-2 py-1' : 'text-amber-700 bg-amber-50 rounded-md px-2 py-1'}>
+                                              {l.scr.status === 'SENT'
+                                                ? `📤 Autorização SCR Bacen assinada enviada à Creditas${l.scr.sentAt ? ` em ${new Date(l.scr.sentAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''} — a consulta voltou a rodar; aguardando o retorno da Creditas.`
+                                                : `🔒 Consulta TRAVADA: a Creditas pediu a Autorização SCR Bacen assinada${l.scr.creditasId ? ` (ID ${l.scr.creditasId})` : ''}. ${l.scr.status === 'PENDING' ? 'O CRM vai mandar o formulário ao cliente.' : 'Formulário já foi ao cliente — aguardando ele devolver assinado pelo gov.br com o documento de identidade.'} A consulta destrava quando o formulário for enviado à Creditas.`}
+                                            </p>
+                                          )}
                                           {a.detail && <p className="text-slate-500 whitespace-pre-line">{a.detail}</p>}
                                           {(a.status === 'APPROVED' || a.status === 'CONDITIONAL' || (a.status === 'SENT' && !!a.approvedValue)) && (
                                             <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-600">
