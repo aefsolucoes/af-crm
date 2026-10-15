@@ -26,7 +26,7 @@ export function parseBrl(raw: string | undefined | null): number {
 }
 
 /** O que a proposta preenchida diz do financiamento do imóvel (null = não achou a proposta). */
-async function proposalFinancing(leadId: string): Promise<{ quitado: boolean | null; falta: number } | null> {
+export async function proposalFinancing(leadId: string): Promise<{ quitado: boolean | null; falta: number } | null> {
   const p = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Imóvel quitado', mode: 'insensitive' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
   if (!p?.content) return null;
   const q = p.content.match(/Im[óo]vel quitado:\s*([^\n]+)/i)?.[1]?.trim().toLowerCase() || '';

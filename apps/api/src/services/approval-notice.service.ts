@@ -213,7 +213,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
   return replied === 0;
 }
 
-interface ApprovalOption { aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
+interface ApprovalOption { quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -290,6 +290,8 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
     o.liquido ? `💰 Valor líquido: ${o.valor} (já descontados IOF, tarifa de cadastro e custas)` : `💰 Valor aprovado: ${o.valor}`,
     o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
+    o.quitacao && `🏠 Quitação do financiamento do imóvel: ${o.quitacao}`,
+    o.troco && `💸 Troco pra você: ${o.troco}`,
     o.prazo && `📅 Prazo: ${o.prazo}`,
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
     o.primeiraParcela && `💵 1ª parcela: ${o.primeiraParcela}`,
@@ -370,6 +372,24 @@ async function withHolders(leadId: string, options: ApprovalOption[]): Promise<A
   return holder ? options.map((o) => ({ ...o, nome: holder(o.instituicao) || undefined })) : options;
 }
 
+/** Imóvel com financiamento (Fabio 15/10): na aprovação, diz quanto do valor vai QUITAR o imóvel e quanto sobra de TROCO pro cliente. O saldo vem do card ("Saldo devedor", que o print
+ *  atualiza) ou, sem ele, do que a proposta informou em "Valor que falta para quitação". Só aparece quando o valor aprovado cobre a quitação. */
+async function withPayoff(leadId: string, options: ApprovalOption[]): Promise<ApprovalOption[]> {
+  try {
+    const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cf = (l?.customFields || {}) as Record<string, any>;
+    const { parseBrl, proposalFinancing } = require('./saldo-devedor.service') as typeof import('./saldo-devedor.service');
+    let saldo = parseBrl(cf.saldo_devedor);
+    if (!(saldo > 0)) { const p = await proposalFinancing(leadId); if (p && p.quitado === false) saldo = p.falta; }
+    if (!(saldo > 0)) return options;
+    const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    return options.map((o) => {
+      const valor = parseBrl(o.valor);
+      return valor > saldo ? { ...o, quitacao: brl(saldo), troco: brl(Math.round((valor - saldo) * 100) / 100) } : o;
+    });
+  } catch { return options; }
+}
+
 /** Opções aprovadas que a aba Análise de Crédito já registrou (a mais recente de cada banco, com valor). Números estruturados:
  *  é a fonte preferida; se não houver, cai nas notas e depois no card. */
 const normN = (t: string) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -446,15 +466,15 @@ export async function aprovadasSemNumeros(leadId: string): Promise<string[]> {
 
 export async function buildApprovalText(leadId: string): Promise<{ text: string; source: 'analises' | 'notas' | 'card'; options: ApprovalOption[] } | null> {
   const fromAnalyses = await optionsFromAnalyses(leadId).catch(() => null);
-  if (fromAnalyses) { const o = await withHolders(leadId, fromAnalyses); return { text: renderApprovalText(o), source: 'analises', options: o }; }
+  if (fromAnalyses) { const o = await withPayoff(leadId, await withHolders(leadId, fromAnalyses)); return { text: renderApprovalText(o), source: 'analises', options: o }; }
   // Duas tentativas nas notas antes de cair na aba Financiamento: a leitura
   // pode variar e a trava de números descarta resposta com valor que não
   // está escrito na nota.
   const fromNotes = (await optionsFromNotes(leadId).catch(() => null)) || (await optionsFromNotes(leadId).catch(() => null));
-  if (fromNotes) { const o = await withHolders(leadId, fromNotes); return { text: renderApprovalText(o), source: 'notas', options: o }; }
+  if (fromNotes) { const o = await withPayoff(leadId, await withHolders(leadId, fromNotes)); return { text: renderApprovalText(o), source: 'notas', options: o }; }
   const fromCard = await optionFromCard(leadId).catch(() => null);
   if (!fromCard) return null;
-  const oc = await withHolders(leadId, fromCard);
+  const oc = await withPayoff(leadId, await withHolders(leadId, fromCard));
   return { text: renderApprovalText(oc), source: 'card', options: oc };
 }
 
