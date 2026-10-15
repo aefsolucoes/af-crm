@@ -368,6 +368,37 @@ async function holderIfSecond(db: Db, leadId: string, holderName?: string | null
   return a.length && b.length && a[0] === b[0] && a[a.length - 1] === b[b.length - 1] ? null : (normName(holderName) !== normName(main) ? holderName : null);
 }
 
+/** O banco pediu DE NOVO / não aceitou a certidão de ônus/matrícula que o cliente já mandou (Fabio 15/10: "o próprio CRM faz essa parte: anota e lê"). Lê o resultado da análise (ex.: Inter "Documentos
+ *  pendentes: Certidão de ônus…" ou texto de recusa), anota no card com o marcador "🏛️ CERTIDÃO RECUSADA PELO BANCO" (a conferência de documentos lê esse marcador) e avisa o cliente UMA vez,
+ *  oferecendo emitir uma nova pelo ONR (R$ 40–100, com o OK dele). Só quando o cliente JÁ mandou matrícula/ônus — se ainda não mandou, é só documento pendente normal. */
+const CERTIDAO_MARCADOR = '🏛️ CERTIDÃO RECUSADA PELO BANCO';
+async function flagCertidaoRecusada(db: Db, row: { id: string; leadId: string; bank: string; dryRun: boolean; detail?: string | null; accountId: string }): Promise<void> {
+  const det = String(row.detail || '');
+  if (row.dryRun || !det) return;
+  const pend = (det.match(/Documentos pendentes:\s*([\s\S]*)$/i) || [])[1] || '';
+  const recusa = /(certid[aã]o|matr[ií]cula|[oô]nus)[^.]{0,90}(n[aã]o aceit|recus|inv[aá]lid|vencid|antig|simples consulta)/i.test(det) || /(n[aã]o aceit|recus|pend[eê]ncia)[^.]{0,90}(certid[aã]o|matr[ií]cula|[oô]nus)/i.test(det);
+  if (!(/(certid[aã]o|matr[ií]cula|[oô]nus)/i.test(pend) || recusa)) return;
+  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const jaMandou = Object.values((cf._docReview || {}) as Record<string, any>).some((r: any) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(String(r?.tipo || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()) && r?.resultado !== 'NAO_DOCUMENTO');
+  if (!jaMandou) return; // cliente ainda não mandou: é pendência comum, a cobrança normal cuida
+  const recente = await db.note.findFirst({ where: { leadId: row.leadId, content: { startsWith: CERTIDAO_MARCADOR }, createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) } }, select: { id: true } });
+  if (recente) return;
+  const banco = BANKS[row.bank]?.label || row.bank;
+  const trecho = String((recusa ? det.match(/[^.]{0,80}(certid[aã]o|matr[ií]cula|[oô]nus)[^.]{0,120}/i)?.[0] : pend) || det).replace(/\s+/g, ' ').trim().slice(0, 220);
+  await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `${CERTIDAO_MARCADOR} — ${banco} não aceitou (ou pediu de novo) a certidão de ônus/matrícula que o cliente enviou: ${trecho}. A A&F oferece emitir uma nova pelo ONR (custo de R$ 40 a R$ 100 pro cliente, só com o OK dele).` } });
+  try {
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    const last = await db.message.findFirst({ where: { leadId: row.leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    const aberta = !!last && Date.now() - last.createdAt.getTime() < 23 * 3_600_000;
+    if (lead?.aiAutoReplyActive && aberta && !cf._autoPaused) {
+      await sendOutboundWhatsApp({ accountId: row.accountId, leadId: row.leadId, content: `Sobre a matrícula/certidão do imóvel que você enviou: o banco não aceitou essa versão (por ser só consulta ou antiga). Pra seguir, a gente emite uma nova pra você pelo sistema dos cartórios (ONR) — tem um custo de R$ 40 a R$ 100. Posso emitir?` });
+    } else {
+      await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Não avisei o cliente da certidão recusada (IA desligada, card parado ou janela do WhatsApp fechada) — avise e peça o OK pra emitir uma nova (R$ 40–100).' } });
+    }
+  } catch (e: any) { console.error('[Certidão recusada] aviso ao cliente:', e?.message || e); }
+}
+
 async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null; holderName?: string | null } & ResultFields) {
   let next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
   // Creditas: "Este CPF já possui uma proposta ativa … NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar → vira FALHA POR REGRA ("Desqualificado"), não "Conferir".
@@ -419,6 +450,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Creditas: este CPF já possui uma proposta ativa que NÃO está na nossa conta — precisa acionar manualmente o gestor da Creditas (contato executivo Home).' } });
   }
   if (becameFinal && updated.dryRun && updated.source === 'AI_SIM') await deliverAiSimulation(db, updated).catch((e: any) => console.error('[IA] simulação de outro prazo:', e?.message));
+  await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
   return { row: updated, becameFinal };
 }
 

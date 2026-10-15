@@ -337,10 +337,18 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   }
   // Com a IA desligada a equipe está conversando com o cliente — não manda
   // o aviso automático por cima dela.
+  // Matrícula/ônus aceita COM RESSALVA (só consulta ou antiga): a A&F aceita, mas deixa a observação ao cliente (Fabio 15/10) — o banco decide e pode pedir uma nova.
+  const freshR = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cfR = (freshR?.customFields || {}) as Record<string, any>;
+  const ressalvas = Object.values((cfR._docReview || {}) as Record<string, any>).map((r: any) => r?.ressalva).filter(Boolean) as string[];
+  const obsCertidao = ressalvas.length && !cfR._ressalvaCertidaoAt
+    ? `\n\nSobre a matrícula/certidão do imóvel que você enviou: ela veio ${ressalvas.includes('CONSULTA') ? 'como "consulta" (não é a certidão oficial)' : 'com mais de 30 dias'}. A gente aceita, mas quem decide é o banco: se ele não aceitar essa versão, a gente emite uma nova pra você pelo sistema dos cartórios (ONR), com um custo de R$ 40 a R$ 100. Se isso acontecer, eu te aviso. 🙂`
+    : '';
+  if (obsCertidao) await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfR, _ressalvaCertidaoAt: new Date().toISOString() } as any } });
   const sent = pediuSaldo
     ? { success: true } // a mensagem do saldo devedor já disse que a documentação chegou
     : lead.aiAutoReplyActive
-    ? await sendOutboundWhatsApp({ accountId, leadId, content: DOCS_COMPLETE_MESSAGE, io: io || undefined })
+    ? await sendOutboundWhatsApp({ accountId, leadId, content: `${DOCS_COMPLETE_MESSAGE}${obsCertidao}`, io: io || undefined })
     : { success: false, error: 'IA desligada no card (a equipe avisa o cliente)' };
   if (!sent.success && lead.aiAutoReplyActive) console.error(`[Docs] ${lead.name}: aviso ao cliente não foi enviado:`, sent.error);
 
