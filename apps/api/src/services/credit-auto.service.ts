@@ -401,6 +401,52 @@ async function flagInterSemNumero(accountId: string) {
   }
 }
 
+const INTER_GESTORA_EMAIL = 'vania.tavares@inter.co'; // Vania da Silva Said Tavares — gestora do Inter que resolve proposta travada (Fabio 15/10)
+
+/** Inter "enviado" 2x SEM número de proposta (no portal o cliente fica só como RASCUNHO): a proposta NÃO passou. Fabio 15/10 (Mauricio de Azevedo): "precisa encaminhar um e-mail pra Vania,
+ *  e ficar de olho nisso pra quando ocorrer novamente" — manda UM e-mail à Vania por card (da conta do Fabio, cc Andreia), 1 h depois da 1ª rodada sem número, com os dados do caso. */
+async function emailInterSemProposta(accountId: string) {
+  const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
+  if (hora < 8 || hora >= 20) return; // e-mail pra gestora só em horário comercial
+  const grupos = await prisma.$queryRaw<{ leadId: string; n: number; first: Date }[]>`
+    SELECT a."leadId", count(*)::int AS n, min(a."createdAt") AS first FROM "CreditAnalysis" a
+    WHERE a."accountId" = ${accountId} AND a.bank = 'INTER' AND a.kind = 'RUN' AND a.status = 'SENT' AND a."proposalNumber" IS NULL AND a."dryRun" = false
+      AND a.source NOT IN ('AI', 'AI_SIM', 'MANUAL') AND a."createdAt" > now() - interval '3 days'
+    GROUP BY a."leadId" HAVING count(*) >= 2 AND min(a."createdAt") < now() - interval '60 minutes' LIMIT 5`;
+  for (const g of grupos) {
+    const lead = await prisma.lead.findUnique({ where: { id: g.leadId }, select: { id: true, name: true, status: true, archived: true, customFields: true } });
+    const cf = (lead?.customFields || {}) as Cf;
+    if (!lead || lead.status !== 'OPEN' || lead.archived || cf._interVaniaAt || cf._autoPaused) continue;
+    const numero = await prisma.creditAnalysis.count({ where: { leadId: g.leadId, bank: 'INTER', dryRun: false, proposalNumber: { not: null }, createdAt: { gt: g.first } } });
+    if (numero) continue; // um número saiu depois: tudo certo
+    const hoje = await prisma.note.count({ where: { content: { startsWith: '📧 E-mail enviado à Vania' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } } });
+    if (hoje >= 5) return; // freio: no máximo 5 e-mails por dia
+    const acc = await prisma.emailAccount.findFirst({ where: { accountId, address: { startsWith: 'fabio@', mode: 'insensitive' } } });
+    const fabio = acc?.userId ? await prisma.user.findUnique({ where: { id: acc.userId }, select: { id: true } }) : null;
+    if (!acc) { console.warn('[Inter sem proposta] conta de e-mail do Fabio não encontrada'); return; }
+    const brl = (v: unknown) => (Number(v) > 0 ? `R$ ${Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '');
+    const msg = await prisma.message.findFirst({ where: { leadId: g.leadId, content: { contains: 'Imóvel em garantia' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+    const cidade = /Im[óo]vel em garantia:\s*([^\n]+)/i.exec(msg?.content || '')?.[1]?.trim() || '';
+    const dias = await prisma.creditAnalysis.findMany({ where: { leadId: g.leadId, bank: 'INTER', kind: 'RUN', status: 'SENT', proposalNumber: null, dryRun: false, createdAt: { gt: new Date(Date.now() - 3 * 86_400_000) } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } });
+    const datas = Array.from(new Set(dias.map((d) => d.createdAt.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' })))).join(' e ');
+    const cpf = String(cf.cpf_1 || '');
+    const dados = [brl(cf.valor_credito) && `crédito de ${brl(cf.valor_credito)}`, cf.prazo_financ && `prazo de ${cf.prazo_financ}`, cidade && `imóvel em ${cidade}`, brl(cf.valor_imovel) && `valor do imóvel de ${brl(cf.valor_imovel)}`].filter(Boolean).join(', ');
+    const body = `Olá, Vania, tudo bem?\n\nPreciso da sua ajuda com o cliente ${lead.name.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity${dados ? `: ${dados}` : ''}.\n\nEnviamos a proposta pelo portal de parceiros ${datas ? `nos dias ${datas}` : 'mais de uma vez'}, mas ela não gerou número de proposta: no portal o cliente aparece só como rascunho, sem número, sem valor e sem status, então não conseguimos acompanhar a análise.\n\nVocê poderia verificar o que aconteceu com esse cadastro e, se possível, liberar/criar a proposta ou nos orientar sobre o que precisamos ajustar?\n\nObrigado!`;
+    try {
+      const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+      await sendEmailFrom({ acc, userId: fabio?.id || null, to: [INTER_GESTORA_EMAIL], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${lead.name.toUpperCase()} - proposta Home Equity não gerou número no portal`, body, leadId: lead.id, io: null });
+      await saveCf(lead.id, { _interVaniaAt: new Date().toISOString() });
+      await addNote(lead.id, '📧 E-mail enviado à Vania (Inter, vania.tavares@inter.co, cc Andreia) automaticamente: o Inter foi rodado 2 vezes e a proposta não gerou número (só rascunho no portal). Pedi pra verificar o cadastro e liberar/orientar.');
+      const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+      sendPushToAccount(accountId, { title: lead.name, body: 'Inter não gerou a proposta — e-mail enviado à Vania', leadId: lead.id }).catch(() => {});
+      console.log(`[Inter sem proposta] ${lead.name}: e-mail enviado à Vania`);
+    } catch (e: any) {
+      await saveCf(lead.id, { _interVaniaAt: new Date().toISOString() }); // não repete em laço
+      await addNote(lead.id, `⚠️ Inter sem número de proposta em 2 rodadas: NÃO consegui enviar o e-mail à Vania (${e?.message || e}). Mande à mão.`);
+    }
+  }
+}
+
 /** Aviso ANTECIPADO (Fabio 14/10): análise demorando (Creditas/Inter levam horas) e a janela de 24 h do WhatsApp perto de fechar → o cliente recebe a aprovação que já saiu (e que
  *  seguimos esperando outros bancos pra tentar taxa menor) ou o "análise em andamento". Uma vez por janela; as regras de horário/janela/dedupe ficam em sendEarlyStatusNotice. */
 async function earlyStatusNotices(accountId: string, io: any) {
@@ -439,6 +485,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await retryTechnicalFailures(s.accountId).catch((e) => console.error('[Análise automática] refazer falhas técnicas:', e?.message));
       await ackPendingProposals(s.accountId, io).catch((e) => console.error('[Análise automática] confirmação da proposta:', e?.message));
       await flagInterSemNumero(s.accountId).catch((e) => console.error('[Análise automática] Inter sem número:', e?.message));
+      await emailInterSemProposta(s.accountId).catch((e) => console.error('[Análise automática] e-mail Vania:', e?.message));
       await earlyStatusNotices(s.accountId, io).catch((e) => console.error('[Análise automática] aviso antecipado:', e?.message));
       { const { processDocsChecks } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsChecks(s.accountId, io).catch((e: any) => console.error('[Docs]', e?.message)); }
       { const { processDocsFollowUps } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsFollowUps(s.accountId, io).catch((e: any) => console.error('[Docs] cobrança:', e?.message)); }
