@@ -317,6 +317,25 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   let next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
   // Creditas: "Este CPF já possui uma proposta ativa … NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar → vira FALHA POR REGRA ("Desqualificado"), não "Conferir".
   if (row.bank === 'CREDITAS' && (next === 'CHECK' || next === 'FAILED') && /CPF j[aá] possui uma proposta ativa na Creditas/i.test(String(data.detail || ''))) next = 'FAILED';
+  // Aprovação MUITO acima do que o cliente pediu (Fabio 15/10, Gabriela: pediu R$ 50 mil e a conferência do Creditas trouxe R$ 1,6 milhão em 161 meses — era OUTRA proposta ativa do
+  // mesmo CPF no portal): não vale pra este card. No Creditas vira "CPF com proposta ativa" (Desqualificado); nos outros, volta pra conferir à mão.
+  if (!row.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL')) {
+    const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
+    const cfv = (lead?.customFields || {}) as Record<string, any>;
+    const toN = (v: any) => { const t = String(v ?? '').replace(/[^\d.,]/g, ''); const n = t.includes(',') ? Number(t.replace(/\./g, '').replace(',', '.')) : (/\.\d{3}$/.test(t) ? Number(t.replace(/\./g, '')) : Number(t)); return Number.isFinite(n) ? n : 0; };
+    const pedido = toN(cfv._lastRunValue) || toN(cfv.valor_credito);
+    const aprovado = Number(data.approvedValue) || Number(data.netValue) || 0;
+    if (pedido > 0 && aprovado > pedido * 3) {
+      const lido = `${brl(Number(data.approvedValue) || Number(data.netValue))}${data.termMonths ? ` em ${data.termMonths} meses` : ''}`;
+      next = row.bank === 'CREDITAS' ? 'FAILED' : 'CHECK';
+      data = {
+        ...data, status: next, proposalNumber: null, approvedValue: null, netValue: null, termMonths: null, rate: null, indexer: null, firstInstallment: null, lastInstallment: null, conditions: null,
+        detail: row.bank === 'CREDITAS'
+          ? `CPF já possui uma proposta ativa na Creditas — a conferência trouxe ${lido}, que não é o pedido deste card (${brl(pedido)}). Resultado descartado; confira no portal.`
+          : `RESULTADO DESCARTADO: o portal devolveu ${lido}, muito acima do pedido deste card (${brl(pedido)}) — provavelmente outra proposta do mesmo CPF. Confira no portal.`,
+      };
+    }
+  }
   const becameFinal = FINAL.has(next) && !FINAL.has(row.status);
   const updated = await db.creditAnalysis.update({
     where: { id: row.id },

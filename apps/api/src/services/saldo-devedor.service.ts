@@ -56,7 +56,7 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
   const nome = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
   const texto = [
     `Recebi a documentação${nome ? `, ${nome}` : ''}, obrigada! 🙏`,
-    `Um ponto importante: na matrícula do imóvel consta o financiamento ativo (${gravame.split(' - ').slice(0, 2).join(' - ').toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase())})${declared ? ` e, na proposta, você informou que faltam ${brl(declared)} pra quitar` : ''}.`,
+    `Um ponto importante: na matrícula do imóvel consta um financiamento ativo (${/HIPOTECA/i.test(gravame) ? 'hipoteca' : 'alienação fiduciária'})${declared ? ` e, na proposta, você informou que faltam ${brl(declared)} pra quitar` : ''}.`,
     `Preciso de um *print do saldo devedor atualizado* (no app ou no site do banco). Esse saldo é *somado* ao crédito que você pediu${base ? ` (${brl(base)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. Assim que você mandar, te aviso do resultado.`,
   ].join('\n\n');
   const marker = { askedAt: new Date().toISOString(), base, declared, gravame };
