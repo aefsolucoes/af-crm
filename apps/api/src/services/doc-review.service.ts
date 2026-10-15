@@ -22,6 +22,8 @@ export interface DocReview {
   observacao: string;
   /** Só AUTORIZACAO SCR BACEN: GOVBR = assinatura eletrônica do gov.br (não precisa de identidade); PUNHO = assinada à mão (precisa do documento com foto). */
   assinatura?: 'GOVBR' | 'PUNHO';
+  /** Só MATRICULA/CERTIDAO DE ONUS: alienação fiduciária/hipoteca/penhora VIGENTE (sem cancelamento) que a leitura achou — ex.: "ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024)". Vazio = nada vigente. */
+  gravame?: string;
   /** DUVIDA: a pergunta pra equipe (a IA não tem segurança se o documento serve). */
   duvida?: string;
   /** Depois da resposta da equipe: regra geral que vale pra outros clientes (vazio = foi só desse caso). */
@@ -29,13 +31,14 @@ export interface DocReview {
 }
 
 const SYSTEM = `Você é a conferente de documentos de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional). Olhe o ARQUIVO que o cliente mandou pelo WhatsApp e diga se ele está CORRETO para seguir ao banco. Responda SOMENTE com JSON:
-{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS, MATRICULA, CND IPTU, CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","observacao":"<detalhe INTERNO útil pra equipe (ex.: constam ônus ou alienação fiduciária na matrícula, validade do documento); senão vazio>","duvida":"<SÓ se resultado DUVIDA: a pergunta objetiva pra equipe, 1 a 2 frases, dizendo o que você viu e o que precisa saber; senão vazio>","regra":"<SÓ quando a equipe já respondeu: a regra geral, em 1 frase, que vale pra OUTROS clientes; se foi só sobre este caso, vazio>"}
+{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS, MATRICULA, CND IPTU, CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","gravame":"<SÓ MATRICULA ou CERTIDAO DE ONUS: se constar alienação fiduciária, hipoteca ou penhora ainda VIGENTE (sem averbação de cancelamento/baixa), escreva curto: TIPO - CREDOR - valor original (data), ex.: ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024); senão vazio>",
+"observacao":"<detalhe INTERNO útil pra equipe (ex.: constam ônus ou alienação fiduciária na matrícula, validade do documento); senão vazio>","duvida":"<SÓ se resultado DUVIDA: a pergunta objetiva pra equipe, 1 a 2 frases, dizendo o que você viu e o que precisa saber; senão vazio>","regra":"<SÓ quando a equipe já respondeu: a regra geral, em 1 frase, que vale pra OUTROS clientes; se foi só sobre este caso, vazio>"}
 
 Critérios — aponte PROBLEMA só quando for real; documento legível e correto é OK, não invente defeito:
 - Legibilidade: foto desfocada, escura, com reflexo, cortada ou com dado importante ilegível → PROBLEMA ("manda uma foto mais nítida/inteira").
 - RG/CNH: NÃO dê problema por mostrar só um lado (o cliente pode mandar frente e verso em fotos separadas): só preencha "lado". CNH digital (print do app) conta como "ambos". CNH vencida → PROBLEMA.
-- Atualização (use a data de hoje): comprovante de residência com mais de 90 dias; certidão de ônus reais ou matrícula com mais de 30 dias; CND de IPTU vencida; contracheque que não seja dos últimos 3 meses → PROBLEMA, dizendo o prazo exigido. A data que vale na matrícula/certidão é a de EMISSÃO da certidão (carimbo/linha "certidão emitida em…", em geral no topo ou no fim), NÃO as datas dos registros e averbações dentro dela (um registro de 2011 não torna a certidão antiga). Se a data de emissão/validade não aparecer mas o documento parece inteiro e legível, é OK: anote "sem data de emissão visível" na observação.
-- Titular: compare com os participantes do card. RG/CNH/CPF/certidão/documento de renda em nome de OUTRA pessoa → PROBLEMA ("está no nome de X; o participante é Y"). Comprovante de residência em nome de parente/outra pessoa NÃO é problema por si só; documentos do imóvel seguem o proprietário.
+- Atualização (use a data de hoje): comprovante de residência com mais de 90 dias; CND de IPTU vencida; contracheque que não seja dos últimos 3 meses → PROBLEMA, dizendo o prazo exigido. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA NÃO têm prazo: a A&F aceita antiga/vencida, aceita a versão "PARA SIMPLES CONSULTA, NÃO VALE COMO CERTIDÃO" (consulta do ONR) e aceita incompleta ou com páginas faltando (Fabio 15/10). NUNCA marque PROBLEMA nem peça ao cliente pra tirar outra no cartório por causa de data, marca de consulta ou páginas: se algo estiver ruim, só anote em "observacao" (a A&F emite a certidão pelo endereço ou número da matrícula). A data que vale na matrícula/certidão é a de EMISSÃO da certidão (carimbo/linha "certidão emitida em…", em geral no topo ou no fim), NÃO as datas dos registros e averbações dentro dela (um registro de 2011 não torna a certidão antiga). Se a data de emissão/validade não aparecer mas o documento parece inteiro e legível, é OK: anote "sem data de emissão visível" na observação.
+- Titular: compare com os participantes do card. RG/CNH/CPF/certidão/documento de renda em nome de OUTRA pessoa → PROBLEMA ("está no nome de X; o participante é Y"). Comprovante de residência em nome de parente/outra pessoa NÃO é problema por si só. DOCUMENTOS DO IMÓVEL (matrícula, ônus, IPTU, escritura): olhe o PROPRIETÁRIO ATUAL (o último registro de propriedade, não os antigos) e diga em "titular". Em Home Equity ele precisa ser um dos participantes do card OU parente de 1º grau deles (pai, mãe, filho/a, cônjuge): se for um participante → OK; se for outra pessoa → resultado DUVIDA, com a pergunta "A matrícula está em nome de X; os participantes são Y. X é parente de 1º grau?" (não chute parentesco por sobrenome). No Financiamento Habitacional o imóvel é do VENDEDOR e isso é normal (não é problema nem dúvida).
 - CAPA IPTU (Home Equity: capa do IPTU/carnê com as metragens e a inscrição imobiliária): precisa mostrar as METRAGENS (área do terreno/construída) e a inscrição; se a foto/arquivo não mostrar as metragens → PROBLEMA ("manda a capa do IPTU em que apareçam as metragens"). Não exija CND de IPTU no Home Equity (a lista agora pede a capa e a inscrição; a A&F emite a CND).
 - Documento de várias páginas (matrícula, ônus, escritura, IR) que parece parcial: NÃO marque PROBLEMA; escreva em "observacao" que parece parcial.
 - Se não for documento (selfie, figurinha, print de conversa, foto qualquer): resultado NAO_DOCUMENTO.
@@ -98,16 +101,17 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     const lado = j.lado === 'frente' || j.lado === 'verso' || j.lado === 'ambos' ? j.lado : '';
     const problemas = (Array.isArray(j.problemas) ? j.problemas : []).map((p: unknown) => cleanText(p, 320)).filter(Boolean).slice(0, 4);
     const assinatura = j.assinatura === 'GOVBR' || j.assinatura === 'PUNHO' ? j.assinatura : undefined;
-    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
+    const gravame = /^(MATRICULA|CERTIDAO DE ONUS)/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '')) ? cleanText(j.gravame, 160) : '';
+    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
   } catch { return undefined; }
 }
 
-function participantsContext(cf: Record<string, any>, leadName: string): string {
+function participantsContext(cf: Record<string, any>, leadName: string, setor = ''): string {
   const parts = [
     cf.participante_1 && `1) ${cf.participante_1}${cf.cpf_1 ? ` (CPF ${String(cf.cpf_1).replace(/\D/g, '').replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4')})` : ''}`,
     cf.participante_2 && `2) ${cf.participante_2}${cf.cpf_2 ? ` (CPF ${String(cf.cpf_2).replace(/\D/g, '').replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4')})` : ''}`,
   ].filter(Boolean).join('\n') || `1) ${leadName}`;
-  return `${todayContextLine()}\nParticipantes do card:\n${parts}\n\nConfira este arquivo.`;
+  return `${todayContextLine()}${setor ? `\nSetor: ${setor}` : ''}\nParticipantes do card:\n${parts}\n\nConfira este arquivo.`;
 }
 
 /** Regras que a equipe já ensinou respondendo dúvidas de documento (balão "Dúvidas da IA"): as mais recentes que a IA marcou como regra geral e que ninguém desfez. */
@@ -121,11 +125,11 @@ export async function learnedDocRules(accountId: string): Promise<string> {
 
 /** A equipe respondeu a dúvida de um documento: a IA reconfere o MESMO arquivo com a resposta e grava o veredito no card (cache). Devolve o veredito (undefined = não deu pra reler). */
 export async function resolveDocDoubt(accountId: string, leadId: string, attachmentId: string, pergunta: string, resposta: string): Promise<DocReview | undefined> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   const att = await prisma.messageAttachment.findFirst({ where: { id: attachmentId, leadId }, select: { id: true, driveFileId: true, data: true, mimeType: true, fileName: true, createdAt: true } });
   if (!lead || !att) return undefined;
   const cf0 = (lead.customFields || {}) as Record<string, any>;
-  const r = await reviewAttachment(accountId, att, participantsContext(cf0, lead.name), { teamAnswer: { pergunta, resposta }, learned: await learnedDocRules(accountId).catch(() => '') });
+  const r = await reviewAttachment(accountId, att, participantsContext(cf0, lead.name, lead.pipeline?.department?.name || ''), { teamAnswer: { pergunta, resposta }, learned: await learnedDocRules(accountId).catch(() => '') });
   if (!r) return undefined;
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cache = { ...((((fresh?.customFields || {}) as any)._docReview as Record<string, DocReview>) || {}), [attachmentId]: r };
@@ -149,7 +153,7 @@ const docLabel = (r: DocReview) => (r.titular ? `${r.tipo} (${r.titular.split(' 
 
 /** Lê os documentos que ainda não foram lidos e devolve a situação atual de cada um. */
 export async function reviewReceivedDocs(accountId: string, leadId: string): Promise<ReviewSummary | null> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) return null;
   const atts = (await prisma.messageAttachment.findMany({
     where: { leadId, message: { direction: 'INBOUND' } },
@@ -161,7 +165,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   const info = await getDocInfo(accountId, leadId, atts); // classificação barata: pula o que não é documento
   const cf0 = (lead.customFields || {}) as Record<string, any>;
   const cache: Record<string, DocReview> = { ...((cf0._docReview as Record<string, DocReview>) || {}) };
-  const context = participantsContext(cf0, lead.name);
+  const context = participantsContext(cf0, lead.name, lead.pipeline?.department?.name || '');
   const learned = await learnedDocRules(accountId).catch(() => '');
   const novas: ReviewSummary['novas'] = [];
   // O leitor completo (com raciocínio) acerta mais que o classificador barato: documento do IMÓVEL que o classificador tratou como pessoal

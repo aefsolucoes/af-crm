@@ -516,6 +516,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await earlyStatusNotices(s.accountId, io).catch((e) => console.error('[Análise automática] aviso antecipado:', e?.message));
       { const { processDocsChecks } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsChecks(s.accountId, io).catch((e: any) => console.error('[Docs]', e?.message)); }
       { const { processDocsFollowUps } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsFollowUps(s.accountId, io).catch((e: any) => console.error('[Docs] cobrança:', e?.message)); }
+      { const { processSaldoDevedor } = require('./saldo-devedor.service') as typeof import('./saldo-devedor.service'); await processSaldoDevedor(s.accountId, io).catch((e: any) => console.error('[Saldo]', e?.message)); }
       { const { processScrFlows } = require('./creditas-scr.service') as typeof import('./creditas-scr.service'); await processScrFlows(s.accountId, io).catch((e: any) => console.error('[Creditas SCR]', e?.message)); }
     }
   } finally {

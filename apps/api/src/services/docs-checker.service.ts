@@ -140,7 +140,7 @@ export async function processDocsFollowUps(accountId: string, io: Io): Promise<v
 }
 
 const RULES = `Você confere se um cliente de crédito imobiliário já mandou TODA a documentação pedida. Responda SOMENTE com JSON:
-{"complete": <true ou false>, "listaUsada": "<nome da lista>", "faltando": ["<item que falta>", ...]}
+{"complete": <true ou false>, "listaUsada": "<nome da lista>", "faltando": ["<item que falta>", ...], "emitir": ["<documento do imóvel que a A&F vai emitir>", ...]}
 
 Como decidir:
 0. Se a CONVERSA já tem uma lista de documentos enviada pela equipe pra esse cliente, ELA é a referência (vale mais que as listas abaixo).
@@ -150,10 +150,12 @@ Como decidir:
 4. RG ou CNH servem como documento de identificação; certidão de nascimento ou de casamento servem como comprovante de estado civil.
 5. Cônjuges/companheiros: um comprovante de residência e uma certidão de casamento servem para os dois (moram juntos), a não ser que a conversa diga que moram em endereços diferentes.
 6. Se o cliente disse na conversa que algo não se aplica a ele, considere.
-7. Seja rigoroso: "complete": true só se tiver certeza de que todos os itens obrigatórios chegaram. Se houver arquivos que não puderam ser lidos e algum item obrigatório puder estar entre eles, responda false.`;
+7. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA do imóvel: a A&F EMITE quando o cliente não manda (ou manda incompleta/ilegível) — pelo endereço completo com CEP ou pelo número da matrícula (Fabio 15/10). Se faltar, NÃO ponha em "faltando" (não se cobra do cliente): ponha em "emitir" ("Certidão de ônus reais/Matrícula") e decida "complete" só pelo resto da lista. Qualquer arquivo de matrícula/ônus recebido (mesmo consulta, antigo ou parcial) conta como recebido. O que sobra do imóvel (inscrição imobiliária/IPTU, capa do IPTU com as metragens) continua obrigatório.
+8. A CAPA DO IPTU (carnê/guia do IPTU, "CAPA IPTU") traz a inscrição imobiliária E as metragens: ela sozinha atende os itens "Inscrição Imobiliária/IPTU" e "Capa do IPTU com as metragens" do Home Equity. Qualquer documento de IPTU recebido (capa, carnê, guia, CND de IPTU) conta como "Inscrição Imobiliária/IPTU".
+9. Seja rigoroso: "complete": true só se tiver certeza de que todos os itens obrigatórios chegaram. Se houver arquivos que não puderam ser lidos e algum item obrigatório puder estar entre eles, responda false.`;
 
 /** Só avalia (não move nem manda nada). null = nada pra avaliar. */
-export async function evaluateDocs(accountId: string, leadId: string): Promise<{ leadName: string; complete: boolean; listaUsada?: string; faltando: string[]; receivedText: string } | null> {
+export async function evaluateDocs(accountId: string, leadId: string): Promise<{ leadName: string; complete: boolean; listaUsada?: string; faltando: string[]; emitir: string[]; receivedText: string } | null> {
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
     include: { stage: true, pipeline: { include: { department: true } } },
@@ -197,7 +199,7 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   ].filter(Boolean).join('\n') || `1) ${lead.name}`;
   const history = (await prisma.message.findMany({
     where: { leadId, callWaCallId: null }, orderBy: { createdAt: 'desc' }, take: 25, select: { content: true, direction: true },
-  })).reverse().map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Atendente'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 200)}`).join('\n');
+  })).reverse().map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Atendente'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 200).replace(/[\ud800-\udbff]$/, '')}`).join('\n');
 
   const prompt = `${todayContextLine()}
 Setor/produto: ${lead.pipeline.department?.name || '?'}
@@ -225,9 +227,9 @@ ${history}`;
   }
   const data = (await res.json()) as { content: { type: string; text?: string }[] };
   const raw = data.content?.find((b) => b.type === 'text')?.text || '';
-  let verdict: { complete?: boolean; listaUsada?: string; faltando?: string[] } = {};
+  let verdict: { complete?: boolean; listaUsada?: string; faltando?: string[]; emitir?: string[] } = {};
   try { verdict = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch { return null; }
-  return { leadName: lead.name, complete: verdict.complete === true, listaUsada: verdict.listaUsada, faltando: verdict.faltando || [], receivedText };
+  return { leadName: lead.name, complete: verdict.complete === true, listaUsada: verdict.listaUsada, faltando: verdict.faltando || [], emitir: Array.isArray(verdict.emitir) ? verdict.emitir.map((x) => String(x).slice(0, 120)) : [], receivedText };
 }
 
 export async function checkDocsComplete(accountId: string, leadId: string, io: Io): Promise<void> {
@@ -247,6 +249,9 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     console.log(`[Docs] ${lead.name} (${leadId}): ${review.duvidas.length} documento(s) em dúvida com a equipe — conferência pausada`);
     return;
   }
+
+  // Imóvel com financiamento ativo (gravame vigente na matrícula + proposta com saldo): pede o print do saldo devedor (1 vez). Se pediu, o "recebi tudo" vai junto nessa mensagem.
+  const pediuSaldo = await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).maybeAskSaldoDevedor(accountId, leadId, io).catch((e: any) => { console.error('[Saldo] pedido:', e?.message || e); return false; });
 
   const verdict = await evaluateDocs(accountId, leadId);
   const faltando = verdict && !verdict.complete ? verdict.faltando : [];
@@ -296,7 +301,9 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   }
   // Com a IA desligada a equipe está conversando com o cliente — não manda
   // o aviso automático por cima dela.
-  const sent = lead.aiAutoReplyActive
+  const sent = pediuSaldo
+    ? { success: true } // a mensagem do saldo devedor já disse que a documentação chegou
+    : lead.aiAutoReplyActive
     ? await sendOutboundWhatsApp({ accountId, leadId, content: DOCS_COMPLETE_MESSAGE, io: io || undefined })
     : { success: false, error: 'IA desligada no card (a equipe avisa o cliente)' };
   if (!sent.success && lead.aiAutoReplyActive) console.error(`[Docs] ${lead.name}: aviso ao cliente não foi enviado:`, sent.error);
@@ -308,6 +315,8 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       content: [
         `🤖 A IA conferiu a documentação (lista "${verdict.listaUsada || '?'}") e considerou completa:`,
         receivedText,
+        '',
+        ...(verdict.emitir.length ? ['', `⚠️ A&F precisa EMITIR: ${verdict.emitir.join('; ')} — pelo endereço completo com CEP (conferir com o da proposta) ou pelo número da matrícula.`] : []),
         '',
         `Card movido para "${moved.pipelineName}" (${moved.stageName}).${sent.success ? ' Cliente avisado de que o banco pode pedir algum documento a mais.' : lead.aiAutoReplyActive ? '' : ' Cliente NÃO foi avisado automaticamente (IA desligada no card) — avise pela conversa.'}`,
       ].join('\n'),

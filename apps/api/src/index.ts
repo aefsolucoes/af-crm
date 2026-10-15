@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { installProcessGuards } from './lib/process-guards';
 installProcessGuards(); // antes de tudo: erro de banco/rede momentâneo não derruba mais o servidor
+import { installAnthropicSafeFetch } from './lib/anthropic-safe-fetch';
+installAnthropicSafeFetch(); // corpo pra Anthropic sem metade de emoji (HTTP 400 silencioso)
 import express from 'express';
 import http from 'http';
 import cors from 'cors';

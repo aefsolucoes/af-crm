@@ -204,6 +204,11 @@ Sempre que mover de etapa, preencha "moveReason" com o motivo em 1 frase (vai pr
 const NEW_VALUE_RULES = `VALOR NOVO = ANÁLISE NOVA (Fabio 15/10, Rafaela Andrade: "falar que foi reprovado sem nem rodar não pode acontecer em hipótese alguma"): o resultado de uma análise vale SÓ pro valor em que ela rodou. Se o cliente pediu um valor DIFERENTE (preencheu a proposta de novo, disse que precisa de mais/menos) e nas notas/resultados não há análise nesse valor, NUNCA diga que "não dá", "não foi aprovado", "esse é o valor liberado" nem "não dá pra alterar" — diga em uma frase que vai refazer a análise com o valor novo e retorna com o resultado (o CRM pede a análise sozinho). Só fale de reprovação do valor novo depois que a análise NESSE valor tiver rodado.
 `;
 
+const DOCS_ARRIVING_RULES = `O CLIENTE ESTÁ MANDANDO DOCUMENTOS AGORA (Fabio 15/10): ele ainda não terminou de encaminhar. NÃO diga o que já chegou, o que falta, nem confirme recebimento de documento — a conferência automática faz isso uma vez só, depois que ele parar de mandar. Responda APENAS a dúvida que ele fez, em 1 frase, sem listar documentos nem cobrar nada. Se a mensagem for só aviso/legenda de documento, noReply true.`;
+const PROPERTY_DOCS_RULES = `CERTIDÃO DE ÔNUS / MATRÍCULA (Fabio 15/10): se o cliente não tem a matrícula/certidão de ônus ou diz que não consegue tirar, NÃO peça pra ele ir ao cartório — a A&F emite. Peça só o ENDEREÇO COMPLETO COM CEP do imóvel (a A&F confere com o da proposta) ou, se ele tiver, o NÚMERO DA MATRÍCULA, e diga em uma frase que a A&F emite a certidão. Documento de matrícula que chegou "para simples consulta", antigo ou incompleto serve — não cobre outro. A matrícula precisa estar no nome de um participante ou de parente de 1º grau.
+
+IMÓVEL COM FINANCIAMENTO ATIVO (proposta "Imóvel quitado: Não" ou matrícula com alienação fiduciária/hipoteca vigente — Fabio 15/10): o SALDO DEVEDOR é SOMADO ao crédito que o cliente pediu e a análise de crédito é feita no total. Peça o PRINT do saldo devedor atualizado (app ou site do banco) e explique em 1–2 frases que o valor final da operação é o crédito pedido + o saldo. O CRM lê o print sozinho, soma e refaz a análise: NÃO mexa em valor nem marque runAnalysis por causa disso. Nunca diga que um valor aprovado já inclui o saldo se a análise rodou só no valor pedido.
+`;
 const RETENTION_RULES = `CLIENTE APROVADO QUE RECUSA O BANCO / QUER DESISTIR (Fabio 15/10, Gabriela Messina: "clientes aprovados precisamos tentar entender ele pra achar uma solução, mas não insistir tanto — a IA já teria dispensado a cliente"): quando o crédito JÁ foi aprovado (card em Aguardando Documentação, ou aviso de aprovação enviado) e o cliente recusar o banco, disser que prefere outro banco ou que vai deixar/desistir:
 1) NÃO dispense nem marque Perdido de primeira. Primeiro ENTENDA, com UMA pergunta curta (o que pesou: taxa, o banco, valor, a dívida?) ou, se ele já disse o banco que prefere, ofereça tentar por ele ("Quer que a gente tente pela Caixa?").
 2) Faça UMA proposta de solução concreta (outro banco que ele citou, ajustar valor/prazo, esclarecer a dúvida que travou).
@@ -361,6 +366,23 @@ export interface AiAutoReplyResult {
   simulate?: { prazo: number } | null;
 }
 
+/** Fabio 15/10 (Digmar): "a IA não está aguardando o cliente encaminhar tudo antes de falar o que falta". Card em Aguardando Documentação e o cliente ainda está MANDANDO
+ *  documento (arquivo nos últimos 10 min, ou a conferência de documentos ainda agendada): a conversa não diz o que chegou nem o que falta — quem faz isso é a conferência
+ *  (docs-checker), 10 min depois do último arquivo, num aviso só. */
+async function docsStillArriving(leadId: string): Promise<boolean> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } });
+  if (!lead) return false;
+  const stage = lead.stage.name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  if (!stage.includes('aguardando documentacao')) return false;
+  if ((lead.customFields as any)?._docsCheckDue) return true;
+  const recent = await prisma.messageAttachment.findMany({
+    where: { leadId, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(Date.now() - 10 * 60_000) }, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
+    select: { fileName: true, mimeType: true }, take: 10,
+  });
+  const { isStickerAttachment } = require('./google.service') as typeof import('./google.service');
+  return recent.some((a) => !isStickerAttachment(a as any));
+}
+
 /**
  * Gera a resposta do assistente para uma mensagem recebida de um cliente,
  * usando a Base de Conhecimento + Respostas Rápidas + histórico recente da
@@ -409,6 +431,13 @@ export async function generateAiAutoReply(
       }
     }
 
+    // Cliente ainda mandando documento: legenda/aviso solto ("comprovante de endereço", "tá aí") não recebe resposta; dúvida de verdade (com "?") é respondida SEM listar o que chegou/falta.
+    const chegando = await docsStillArriving(leadId).catch(() => false);
+    if (chegando && !incomingText.includes('?')) {
+      console.log(`[AI Auto-reply] cliente ainda mandando documentos ("${incomingText.trim().slice(0, 40)}") — sem resposta, a conferência avisa depois`);
+      return { reply: '', handoff: false, noReply: true };
+    }
+
     const ctx = await buildSharedAiContext(accountId, leadId, incomingText, {
       historyTake: 12,
       historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' },
@@ -436,6 +465,7 @@ ${ASK_TEAM_RULES}
 ${MOVE_STAGE_RULES}
 
 ${NEW_VALUE_RULES}
+${PROPERTY_DOCS_RULES}
 ${RETENTION_RULES}
 
 ${MARK_LOST_RULES}
@@ -448,7 +478,7 @@ ${PROPOSAL_REVIEW_RULES}
 
 ${CREDIT_ANALYSIS_RULES}
 
-${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${NO_REPLY_RULES}
+${chegando ? DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${NO_REPLY_RULES}
 
 ${buildFillFieldsRules(camposTexto)}
 
