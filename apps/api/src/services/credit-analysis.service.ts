@@ -401,6 +401,28 @@ async function flagCertidaoRecusada(db: Db, row: { id: string; leadId: string; b
 
 async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null; holderName?: string | null } & ResultFields) {
   let next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
+  // Creditas: "A proposta foi negada — Cliente com proposta em andamento na Creditas" é o MESMO caso do "CPF já possui proposta ativa" (não é reprovação de crédito): vira falha por regra (Desqualificado).
+  if (row.bank === 'CREDITAS' && /Cliente com proposta em andamento na Creditas/i.test(String(data.detail || '')) && !/CPF j[aá] possui uma proposta ativa/i.test(String(data.detail || ''))) {
+    data = { ...data, status: 'FAILED', detail: `CPF já possui uma proposta ativa na Creditas — ${String(data.detail || '').replace(/^RESULTADO:\s*/i, '')}` };
+    next = 'FAILED';
+  }
+  // Aprovação confirmada DEPOIS sem os números (conferência que só leu a lista, leitura da API do banco que falhou): herda os números da leitura anterior da MESMA proposta —
+  // senão o aviso de aprovação ficava esperando "os números" que já existiam (Inter: Alexandre, Jézer, Antenor — 3 aprovadas sem valor gravado).
+  if ((next === 'APPROVED' || next === 'CONDITIONAL') && !row.dryRun && data.approvedValue == null) {
+    const cur = await db.creditAnalysis.findUnique({ where: { id: row.id }, select: { approvedValue: true, proposalNumber: true, holderCpf: true } });
+    if (cur && cur.approvedValue == null) {
+      const numero = (data.proposalNumber as string | null | undefined) || cur.proposalNumber || null;
+      const ant = await db.creditAnalysis.findFirst({
+        where: { leadId: row.leadId, bank: row.bank, dryRun: false, id: { not: row.id }, approvedValue: { not: null }, status: { in: ['APPROVED', 'CONDITIONAL'] }, ...(numero ? { proposalNumber: numero } : cur.holderCpf ? { holderCpf: cur.holderCpf } : {}) },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (ant) {
+        const herdados: Record<string, unknown> = {};
+        for (const k of RESULT_KEYS) { if (!(k in data) || (data as any)[k] == null) (herdados as any)[k] = (ant as any)[k]; }
+        data = { ...data, ...(herdados as any) };
+      }
+    }
+  }
   // Creditas: "Este CPF já possui uma proposta ativa … NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar → vira FALHA POR REGRA ("Desqualificado"), não "Conferir".
   if (row.bank === 'CREDITAS' && (next === 'CHECK' || next === 'FAILED') && /CPF j[aá] possui uma proposta ativa na Creditas/i.test(String(data.detail || ''))) next = 'FAILED';
   // Aprovação MUITO acima do que o cliente pediu (mais de 1,5×; Fabio 15/10, Gabriela: pediu R$ 50 mil e a conferência do Creditas trouxe R$ 1,6 milhão em 161 meses — era OUTRA proposta ativa do
@@ -423,13 +445,19 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     }
   }
   const becameFinal = FINAL.has(next) && !FINAL.has(row.status);
+  // Saiu da fila do navegador compartilhado e começou a rodar de verdade: o relógio do teto de duração recomeça agora.
+  let resetStart = false;
+  if (next === 'RUNNING' && data.detail !== undefined && !/^na fila/i.test(String(data.detail || ''))) {
+    const prevRow = await db.creditAnalysis.findUnique({ where: { id: row.id }, select: { detail: true } });
+    resetStart = /^na fila/i.test(String(prevRow?.detail || ''));
+  }
   const updated = await db.creditAnalysis.update({
     where: { id: row.id },
     data: {
       ...(data.status && ALL_STATUS.has(data.status) ? { status: next } : {}),
       ...(data.detail !== undefined ? { detail: data.detail ? String(data.detail).slice(0, 4000) : null } : {}),
       ...Object.fromEntries(RESULT_KEYS.filter((k) => k in data).map((k) => [k, (data as any)[k]])),
-      ...(next === 'RUNNING' ? { startedAt: undefined } : {}),
+      ...(resetStart ? { startedAt: new Date() } : {}),
       ...(data.holderName ? { holderName: data.holderName } : {}),
       ...(becameFinal ? { finishedAt: new Date() } : {}),
     },
@@ -630,7 +658,10 @@ async function expireStuck(db: Db, where: { accountId: string; leadId?: string }
   // Teto de duração (independe de a extensão ainda mandar passos).
   const longos = await db.creditAnalysis.findMany({ where: { ...where, status: 'RUNNING', kind: 'RUN', startedAt: { lt: new Date(Date.now() - 15 * 60_000) } }, select: { id: true, bank: true, startedAt: true, detail: true } });
   for (const r of longos) {
-    const teto = MAX_RUN_MIN[r.bank] || 15;
+    // "na fila: esperando a extensão X terminar de usar o navegador" é ESPERA, não execução (Eduardo 14/10: o Inter foi reprovado por "15 min rodando" depois de 13 min esperando o Creditas liberar o navegador).
+    // Esperando, o teto é outro: 45 min no total; o relógio de execução recomeça quando a extensão volta a andar (ver applyUpdate).
+    const esperando = /^na fila/i.test(String(r.detail || ''));
+    const teto = esperando ? 45 : (MAX_RUN_MIN[r.bank] || 15);
     if (!r.startedAt || Date.now() - r.startedAt.getTime() < teto * 60_000) continue;
     await db.creditAnalysis.updateMany({
       where: { id: r.id, status: 'RUNNING' },
