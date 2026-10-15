@@ -36,6 +36,14 @@ export interface OverrideData {
   valorImovel?: string; valorEmprestimo?: string; renda?: string; prazo?: string; rendaParticipante?: string; inverter?: boolean;
 }
 /** 00000000000 / 000.000.000-00 → 000.000.000-00 (outro formato fica como está; vazio = ''). */
+/** Mesma pessoa? Nome no portal do banco costuma vir abreviado ("Rafaela Andrade" x "Rafaela Aparecida de Andrade"): igual se o 1º e o último nome batem (Fabio 15/10: aparecia "(2º participante)" sem existir 2º). */
+export function sameWho(a?: string | null, b?: string | null): boolean {
+  const t = (x?: string | null) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/\s+/).filter((w) => w.length > 0 && !['de', 'da', 'do', 'dos', 'das', 'e'].includes(w));
+  const x = t(a), y = t(b);
+  if (!x.length || !y.length) return true;
+  return x[0] === y[0] && x[x.length - 1] === y[y.length - 1];
+}
+
 export function fmtCpf(v?: string | null): string {
   const d = String(v || '').replace(/\D/g, '');
   return d.length === 11 ? d.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4') : String(v || '').trim();

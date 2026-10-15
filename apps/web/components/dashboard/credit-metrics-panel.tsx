@@ -6,6 +6,7 @@ import { Landmark, Users, BadgeCheck, Percent, Timer, X, MessageSquare } from 'l
 import api from '@/lib/api';
 import { cn, formatCurrency } from '@/lib/utils';
 import { Skeleton } from '@/components/ui/skeleton';
+import { sameWho } from '@/components/credit/shared';
 
 /**
  * Análises de crédito (Fabio 14/10): aprovados por banco, taxa de aprovação e tempo até o resultado, tirados da aba
@@ -68,7 +69,7 @@ export function CreditMetricsPanel() {
       detail: [
         cat === 'approved' ? (p.status === 'CONDITIONAL' ? 'aprovado condicional' : 'aprovado') : '',
         p.approvedValue ? formatCurrency(p.approvedValue) : '', p.termMonths ? `${p.termMonths} meses` : '', p.rate || '',
-        p.holder && p.holder.trim().toLowerCase() !== (p.name || '').trim().toLowerCase() ? `no nome de ${p.holder}` : '',
+        p.holder && !sameWho(p.holder, p.name) ? `no nome de ${p.holder}` : '',
       ].filter(Boolean).join(' · '),
     }));
     setLista({ title: `${title} — ${shortBank(bankKey)} (${row?.label || ''})`, items });

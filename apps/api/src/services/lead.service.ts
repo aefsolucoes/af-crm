@@ -225,15 +225,25 @@ export async function mergeLeadPair(
   try {
     const [keep, source] = await Promise.all([
       prisma.lead.findUnique({ where: { id: keepId, accountId }, include: { contact: true } }),
-      prisma.lead.findUnique({ where: { id: sourceId, accountId } }),
+      prisma.lead.findUnique({ where: { id: sourceId, accountId }, include: { contact: true } }),
     ]);
     if (!keep || !source) return { ok: false, error: 'Lead não encontrado' };
+
+    // TELEFONE (Fabio 15/10): o número que o cliente usa no WhatsApp tem preferência — senão um dos telefones some do card e a mensagem não chega. O contato do card que fica passa a ser o do
+    // card cujo número MANDOU mensagem no WhatsApp por último; o outro número fica registrado em telefone_alt (e na nota).
+    const lastInbound = (id: string) => prisma.message.findFirst({ where: { leadId: id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    const [inKeep, inSource] = await Promise.all([lastInbound(keepId), lastInbound(sourceId)]);
+    const preferSourcePhone = !!inSource && (!inKeep || inSource.createdAt > inKeep.createdAt) && !!source.contactId && source.contactId !== keep.contactId;
+    const phoneOf = (c?: { whatsappPhone?: string | null; phone?: string | null } | null) => (c?.whatsappPhone || c?.phone || '').trim();
+    const [winnerContact, otherContact] = preferSourcePhone ? [source.contact, keep.contact] : [keep.contact, source.contact];
+    const altPhone = phoneOf(otherContact) && phoneOf(otherContact).replace(/\D/g, '').slice(-8) !== phoneOf(winnerContact).replace(/\D/g, '').slice(-8) ? phoneOf(otherContact) : '';
 
     const mergedCF: Record<string, unknown> = { ...((source.customFields as any) || {}) };
     for (const [k, v] of Object.entries((keep.customFields as any) || {})) {
       if (v !== undefined && v !== null && String(v).trim() !== '') mergedCF[k] = v;
     }
 
+    if (altPhone && !mergedCF.telefone_alt) mergedCF.telefone_alt = altPhone;
     const mergedValue = Math.max(keep.value || 0, source.value || 0) || undefined;
 
     const useSourceName = looksLikePhoneOnly(keep.name) && !looksLikePhoneOnly(source.name);
@@ -259,7 +269,13 @@ export async function mergeLeadPair(
     const older = sourceIsOlder ? source : keep;
     const useOlderStatus = older.status === 'LOST' && keep.status !== 'LOST';
 
+    // Análises de crédito e ajustes por banco também vão pro card que fica (15/10: o delete do card duplicado APAGAVA em cascata as análises e os pedidos na fila dele).
+    // CreditOverride é único por (card, banco): o que o card que fica já tem, vale.
+    const keepBanks = (await prisma.creditOverride.findMany({ where: { leadId: keepId }, select: { bank: true } })).map((o) => o.bank);
     await prisma.$transaction([
+      prisma.creditOverride.deleteMany({ where: { leadId: sourceId, bank: { in: keepBanks } } }),
+      prisma.creditOverride.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
+      prisma.creditAnalysis.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
       prisma.message.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
       prisma.task.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
       prisma.note.updateMany({ where: { leadId: sourceId }, data: { leadId: keepId } }),
@@ -277,6 +293,7 @@ export async function mergeLeadPair(
         where: { id: keepId },
         data: {
           name: finalName, customFields: mergedCF as any, value: mergedValue,
+          ...(preferSourcePhone ? { contactId: source.contactId } : {}),
           ...(useSourceStage ? { pipelineId: source.pipelineId, stageId: source.stageId } : {}),
           ...(useOlderStatus ? { status: 'LOST', lostReason: older.lostReason } : {}),
         },
@@ -290,7 +307,8 @@ export async function mergeLeadPair(
           content: `Lead unificado com "${source.name}" (ID: ${sourceId}). Mensagens, tarefas e notas foram migradas.`
             + (useSourceStage ? ' Estágio/funil atualizado pro do card mais antigo.' : '')
             + (useOlderStatus ? ' Mantido como Perdido (o card mais antigo já tinha essa marcação).' : '')
-            + (userId ? '' : ' (unificação automática por telefone)'),
+            + (altPhone ? ` Telefone do WhatsApp: ${phoneOf(winnerContact)}${preferSourcePhone ? ' (veio do card unificado, que é o número que mandou mensagem)' : ''}; outro número registrado: ${altPhone}.` : '')
+            + (userId ? '' : ' (unificação automática: mesmo telefone, CPF ou e-mail)'),
           type: 'DATA_EDIT',
           ...(userId ? { userId } : {}),
         },
@@ -303,7 +321,7 @@ export async function mergeLeadPair(
       action: 'lead_merged', leadId: keepId, leadName: finalName || keep.name,
       summary: userId
         ? `unificou "${source.name}" neste card — mensagens, tarefas e notas migradas`
-        : `unificou automaticamente "${source.name}" (mesmo telefone) neste card`,
+        : `unificou automaticamente "${source.name}" (mesmo telefone, CPF ou e-mail) neste card`,
     });
 
     const updated = await prisma.lead.findUnique({ where: { id: keepId } });
@@ -346,14 +364,36 @@ export async function autoMergeDuplicatesByPhone(
     const raw = (cf.telefone_1 || l.contact?.phone || l.contact?.whatsappPhone || '').replace(/\D/g, '');
     return raw.length >= 8 ? raw.slice(-8) : null;
   }
-
+  // Fabio 15/10 (Rafaela Andrade): dois cards da MESMA pessoa com telefones diferentes (um da conversa de WhatsApp, outro do formulário do site) nunca eram unidos — o CPF e o e-mail eram
+  // iguais. Agora o agrupamento também usa o CPF (cpf_1/cpf_2, 11 dígitos) e o e-mail (só junto com o 1º nome, porque família divide e-mail). Grupos ligados por qualquer chave viram um só.
+  const norm1 = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  function keysOf(l: (typeof leads)[number]): string[] {
+    const cf = (l.customFields || {}) as Record<string, string>;
+    const keys: string[] = [];
+    const core = phoneCoreOf(l);
+    if (core) keys.push(`tel|${core}`);
+    const alt = String(cf.telefone_alt || '').replace(/\D/g, ''); // outro número do mesmo cliente (guardado numa unificação): se ele escrever por ele, o card novo volta pra cá
+    if (alt.length >= 8) keys.push(`tel|${alt.slice(-8)}`);
+    for (const c of [cf.cpf_1, cf.cpf_2]) { const d = String(c || '').replace(/\D/g, ''); if (d.length === 11 && !/^(\d)\1+$/.test(d)) keys.push(`cpf|${d}`); }
+    const mail = String(l.contact?.email || cf.email_1 || '').trim().toLowerCase();
+    const first = norm1(String(cf.participante_1 || l.name || '')).split(/\s+/)[0];
+    if (mail && mail.includes('@') && first && first.length > 1) keys.push(`mail|${mail}|${first}`);
+    return keys.map((k) => `${l.accountId}|${k}`);
+  }
+  // Componentes conectados (union-find): A↔B por telefone e B↔C por CPF ficam todos no mesmo grupo.
+  const parent = new Map<string, string>();
+  const find = (x: string): string => { let r = x; while (parent.get(r) !== r) r = parent.get(r)!; parent.set(x, r); return r; };
+  const union = (a: string, b: string) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+  const byKey = new Map<string, string>();
+  for (const l of leads) {
+    parent.set(l.id, l.id);
+    for (const k of keysOf(l)) { const other = byKey.get(k); if (other) union(l.id, other); else byKey.set(k, l.id); }
+  }
   const groups = new Map<string, typeof leads>();
   for (const l of leads) {
-    const core = phoneCoreOf(l);
-    if (!core) continue;
-    const key = `${l.accountId}|${core}`;
-    if (!groups.has(key)) groups.set(key, [] as any);
-    groups.get(key)!.push(l);
+    const root = find(l.id);
+    if (!groups.has(root)) groups.set(root, [] as any);
+    groups.get(root)!.push(l);
   }
 
   let merged = 0;
@@ -374,7 +414,7 @@ export async function autoMergeDuplicatesByPhone(
     for (const { l: source } of scored.slice(1)) {
       const result = await mergeLeadPair(keep.accountId, keep.id, source.id, null, io);
       if (result.ok) merged++;
-      else console.error('[Auto-merge telefone] Falhou para', source.id, result.error);
+      else console.error('[Auto-merge] Falhou para', source.id, result.error);
     }
   }
 

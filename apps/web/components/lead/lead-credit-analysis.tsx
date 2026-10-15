@@ -8,7 +8,7 @@ import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { pingExtensions } from '@/lib/credit-extensions';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
-import { BANKS, Badge, STATUS, useLeadAnalyses, type Analysis, type Bank } from '@/components/credit/shared';
+import { BANKS, Badge, STATUS, useLeadAnalyses, sameWho, type Analysis, type Bank } from '@/components/credit/shared';
 import { formatCurrency } from '@/lib/utils';
 
 /* Bloco "Análises de crédito" dentro do card (aba Financiamento). Mostra o último resultado de
@@ -127,7 +127,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
           const hasP2 = Object.keys(data.latestP2 || {}).length > 0;
           const approved = a?.status === 'APPROVED' || a?.status === 'CONDITIONAL';
           const maxParcel = a ? (/parcela m[aá]xima\s*(R\$\s*[\d.]+,\d{2})/i.exec(a.detail || '') || [])[1] : '';
-          const second = a?.holderName && data.participants?.name1 && a.holderName.trim().toLowerCase() !== data.participants.name1.trim().toLowerCase() ? a.holderName : '';
+          const second = a?.holderName && data.participants?.name1 && !sameWho(a.holderName, data.participants.name1) ? a.holderName : '';
           // "Carta de aprovação": valor, prazo, taxa, parcelas, nº da proposta e em nome de quem saiu (substitui os campos soltos de Financiamento).
           const letter: [string, string][] = approved && a ? ([
             ['Valor aprovado', a.approvedValue ? formatCurrency(a.approvedValue) : ''],

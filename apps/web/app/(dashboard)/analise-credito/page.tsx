@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
-import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead, fmtCpf } from '@/components/credit/shared';
+import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead, fmtCpf, sameWho } from '@/components/credit/shared';
 import { AdjustModal } from '@/components/credit/adjust-modal';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
 import { pingExtensions } from '@/lib/credit-extensions';
@@ -474,7 +474,7 @@ export default function AnaliseCreditoPage() {
                                       </div>
                                       {a ? (
                                         <>
-                                          {a.holderName && l.card?.name1 && a.holderName.trim().toLowerCase() !== l.card.name1.trim().toLowerCase() && <p className="text-amber-600 font-medium">{a.status === 'APPROVED' || a.status === 'CONDITIONAL' ? 'Aprovado' : a.status === 'REJECTED' ? 'Reprovado' : 'Analisado'} no nome de {a.holderName} (2º participante)</p>}
+                                          {a.holderName && l.card?.name1 && !sameWho(a.holderName, l.card.name1) && <p className="text-amber-600 font-medium">{a.status === 'APPROVED' || a.status === 'CONDITIONAL' ? 'Aprovado' : a.status === 'REJECTED' ? 'Reprovado' : 'Analisado'} no nome de {a.holderName} (2º participante)</p>}
                                           {b.key === 'CREDITAS' && l.scr && l.scr.status !== 'NOTED' && (
                                             <p className={l.scr.status === 'SENT' ? 'text-emerald-700 bg-emerald-50 rounded-md px-2 py-1' : 'text-amber-700 bg-amber-50 rounded-md px-2 py-1'}>
                                               {l.scr.status === 'SENT'

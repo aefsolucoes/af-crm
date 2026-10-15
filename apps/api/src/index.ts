@@ -310,7 +310,7 @@ httpServer.listen(PORT, () => {
   // corrigida em whatsapp.service.ts, isso aqui é a rede de segurança pra
   // qualquer duplicata que ainda escapar). Mesma cadência do poll de
   // inatividade, escalonado mais 30s pra não competir no boot.
-  const AUTO_MERGE_PHONE_POLL_MS = 15 * 60 * 1000;
+  const AUTO_MERGE_PHONE_POLL_MS = 5 * 60 * 1000; // (era 15 min; agora também junta por CPF e e-mail)
   setTimeout(() => {
     autoMergeDuplicatesByPhone(io).catch((err) => console.error('[Auto-merge telefone] Poll (boot):', err?.message));
     setInterval(() => {

@@ -299,7 +299,10 @@ async function holderIfSecond(db: Db, leadId: string, holderName?: string | null
   if (!holderName) return null;
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
   const main = String(((lead?.customFields || {}) as Record<string, any>).participante_1 || lead?.name || '');
-  return normName(holderName) !== normName(main) ? holderName : null;
+  // Nome do portal costuma vir abreviado ("Rafaela Andrade" x "Rafaela Aparecida de Andrade"): mesma pessoa se o 1º e o último nome batem (antes virava "2º participante" sem existir 2º).
+  const t = (x: string) => normName(x).split(' ').filter((w) => w && !['de', 'da', 'do', 'dos', 'das', 'e'].includes(w));
+  const a = t(holderName), b = t(main);
+  return a.length && b.length && a[0] === b[0] && a[a.length - 1] === b[b.length - 1] ? null : (normName(holderName) !== normName(main) ? holderName : null);
 }
 
 async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null; holderName?: string | null } & ResultFields) {
