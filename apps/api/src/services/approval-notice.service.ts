@@ -654,8 +654,10 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
   // Já está na conversa? (qualquer remetente) Aviso com texto: todas as opções (banco + valor + nome) já foram enviadas; com template: o cliente recebeu e ainda não respondeu.
+  // Template (janela fechada): além do "template já espera resposta", confere se o RESUMO da aprovação já foi dito antes na conversa — senão, 24 h depois, o cliente que já recebeu
+  // a aprovação (e os documentos) ganhava o "Temos uma ótima notícia…" de novo (Maria Antônia, 15/10).
   const jaTem = preview.mode === 'template'
-    ? ((await isWaitingApprovalReply(p.leadId)) ? { at: null as Date | null, preliminar: false } : null)
+    ? ((await isWaitingApprovalReply(p.leadId)) ? { at: null as Date | null, preliminar: false } : await approvalAlreadyInChat(p.leadId, preview.text))
     : await approvalAlreadyInChat(p.leadId, preview.text);
   // Se as opções só foram ditas no aviso ANTECIPADO ("aguardando outros bancos"), o aviso final NÃO repete o resumo: manda só a lista de documentos, o pedido do PDF e move o card.
   const soComplemento = !!jaTem?.preliminar;

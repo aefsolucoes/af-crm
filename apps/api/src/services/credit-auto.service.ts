@@ -216,8 +216,11 @@ async function noticeClients(accountId: string, io: any) {
     }
     const preview = await previewApprovalNotice(l.id).catch(() => null);
     if (!preview || preview.warnings.length) continue; // nenhuma aprovada com valor, ou ainda faltam as parcelas da nova simulação
-    const sig = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${a.holderName || ''}`).sort().join('|');
-    if (cf._autoNoticeSig === sig) continue;
+    // Nome do titular normalizado (só o 1º nome) e sem repetição: o portal às vezes devolve "Danilo Bezerra" e outras "Danilo Bezerra cortes" — isso mudava a assinatura e reenviava o aviso (Maria Antônia, 15/10).
+    const nomeCurto = (n: string | null) => { const t = String(n || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/\s+/).filter((w) => w && !['de', 'da', 'do', 'dos', 'das', 'e'].includes(w)); return t[0] || ''; };
+    const sig = Array.from(new Set(rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${nomeCurto(a.holderName)}`))).sort().join('|');
+    const sigAntiga = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${a.holderName || ''}`).sort().join('|'); // formato antigo: não reenvia pra quem já tinha aviso gravado
+    if (cf._autoNoticeSig === sig || cf._autoNoticeSig === sigAntiga) continue;
     const out = await sendApprovalNoticeNow({ accountId, leadId: l.id, io, holdForPdf: true }); // aviso automático: o PDF da simulação sai junto (Fabio 15/10)
     if (out.waiting) continue; // PDF ainda sendo gerado: tenta de novo no próximo minuto
     if (out.already) { // a conversa já tem esse aviso (equipe, IA ou aviso anterior): não duplica e não tenta de novo a cada minuto
