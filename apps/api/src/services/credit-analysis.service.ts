@@ -747,7 +747,7 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
     : (p.scopeDepartmentIds.length ? { departmentId: { in: p.scopeDepartmentIds } } : { departmentId: { not: null } });
   const rows = await db.creditAnalysis.findMany({
     where: { accountId: p.accountId, createdAt: { gte: from }, dryRun: false, status: { not: 'TEST' }, lead: { pipeline: deptWhere } },
-    select: { leadId: true, bank: true, status: true, createdAt: true, finishedAt: true, source: true, detail: true },
+    select: { leadId: true, bank: true, status: true, createdAt: true, finishedAt: true, updatedAt: true, source: true, detail: true, approvedValue: true, termMonths: true, rate: true, holderName: true, lead: { select: { name: true, customFields: true } } },
     orderBy: { createdAt: 'asc' },
   });
   // "Desqualificado" (o cliente não atende às regras daquele banco: mínimo do imóvel, terreno, saldo devedor…) vale como REPROVADO (Fabio 14/10).
@@ -768,6 +768,10 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
     for (const b of BANK_KEYS) banks[b] = { analyzed: 0, approved: 0, conditional: 0, rejected: 0, pending: 0, failed: 0, decided: 0, approvalRate: null, medianMinutes: null, avgMinutes: null };
     const mins: Record<string, number[]> = Object.fromEntries(BANK_KEYS.map((b) => [b, [] as number[]]));
     const byLead = new Map<string, { ok: boolean; rejected: boolean; pending: boolean }>();
+    // Listas de clientes (pra abrir no Dashboard): por banco e categoria, + "aprovou em algum banco" com os bancos.
+    type Person = { leadId: string; name: string; status: string; approvedValue: number | null; termMonths: number | null; rate: string | null; holder: string | null; at: string };
+    const people: Record<string, { approved: Person[]; rejected: Person[]; pending: Person[] }> = Object.fromEntries(BANK_KEYS.map((b) => [b, { approved: [], rejected: [], pending: [] }]));
+    const approvedAny = new Map<string, { leadId: string; name: string; banks: { bank: string; status: string; approvedValue: number | null }[]; at: string }>();
     for (const [k, list] of Array.from(pairs.entries())) {
       const [leadId, bank] = k.split('|');
       if (!banks[bank]) continue;
@@ -775,9 +779,18 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
       const rep = decided || list[list.length - 1];
       const b = banks[bank];
       b.analyzed++;
-      if (DECIDED_OK.has(rep.status)) { b.approved++; if (rep.status === 'CONDITIONAL') b.conditional++; }
-      else if (reprovou(rep)) b.rejected++;
-      else if (PENDING.has(rep.status)) b.pending++;
+      const cfl = ((rep as any).lead?.customFields || {}) as Record<string, any>;
+      const person: Person = { leadId, name: String(cfl.participante_1 || (rep as any).lead?.name || ''), status: rep.status, approvedValue: rep.approvedValue ?? null, termMonths: rep.termMonths ?? null, rate: rep.rate ?? null, holder: rep.holderName ?? null, at: (rep.finishedAt || rep.updatedAt || rep.createdAt).toISOString() };
+      if (DECIDED_OK.has(rep.status)) {
+        b.approved++; if (rep.status === 'CONDITIONAL') b.conditional++;
+        people[bank].approved.push(person);
+        const a = approvedAny.get(leadId) || { leadId, name: person.name, banks: [], at: person.at };
+        a.banks.push({ bank, status: rep.status, approvedValue: person.approvedValue });
+        if (person.at > a.at) a.at = person.at;
+        approvedAny.set(leadId, a);
+      }
+      else if (reprovou(rep)) { b.rejected++; people[bank].rejected.push(person); }
+      else if (PENDING.has(rep.status)) { b.pending++; people[bank].pending.push(person); }
       else b.failed++;
       if (decided && decided.finishedAt && list[0].source === 'EXTENSION') { // registro manual não mede tempo (não tem uma solicitação de verdade)
         const minutes = (decided.finishedAt.getTime() - list[0].createdAt.getTime()) / 60_000;
@@ -787,6 +800,7 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
       if (DECIDED_OK.has(rep.status)) l.ok = true; else if (reprovou(rep)) l.rejected = true; else if (PENDING.has(rep.status)) l.pending = true;
       byLead.set(leadId, l);
     }
+    for (const b of BANK_KEYS) for (const k of ['approved', 'rejected', 'pending'] as const) people[b][k].sort((a, c) => c.at.localeCompare(a.at));
     for (const b of BANK_KEYS) {
       const x = banks[b];
       x.decided = x.approved + x.rejected;
@@ -802,6 +816,7 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
       month: key, label,
       clientsAnalyzed: leads.length, clientsApproved, clientsRejected,
       clientsPending: leads.filter((l) => !l.ok && l.pending).length,
+      people, approvedAny: Array.from(approvedAny.values()).sort((a, c) => c.at.localeCompare(a.at)),
       approvalRate: clientsApproved + clientsRejected ? Math.round((clientsApproved / (clientsApproved + clientsRejected)) * 1000) / 10 : null,
       medianMinutes: median(allMins) === null ? null : Math.round(median(allMins)! * 10) / 10,
       banks,

@@ -2,9 +2,9 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { Landmark, Users, BadgeCheck, Percent, Timer } from 'lucide-react';
+import { Landmark, Users, BadgeCheck, Percent, Timer, X, MessageSquare } from 'lucide-react';
 import api from '@/lib/api';
-import { cn } from '@/lib/utils';
+import { cn, formatCurrency } from '@/lib/utils';
 import { Skeleton } from '@/components/ui/skeleton';
 
 /**
@@ -16,10 +16,15 @@ interface BankStats {
   analyzed: number; approved: number; conditional: number; rejected: number; pending: number; failed: number;
   decided: number; approvalRate: number | null; medianMinutes: number | null; avgMinutes: number | null;
 }
+interface Person { leadId: string; name: string; status: string; approvedValue: number | null; termMonths: number | null; rate: string | null; holder: string | null; at: string }
 interface MetricsRow {
   month: string; label: string; clientsAnalyzed: number; clientsApproved: number; clientsRejected: number; clientsPending: number;
   approvalRate: number | null; medianMinutes: number | null; banks: Record<string, BankStats>;
+  /** Clientes por banco e categoria (pra abrir a lista) e quem aprovou em algum banco. */
+  people?: Record<string, { approved: Person[]; rejected: Person[]; pending: Person[] }>;
+  approvedAny?: { leadId: string; name: string; banks: { bank: string; status: string; approvedValue: number | null }[]; at: string }[];
 }
+interface ListItem { leadId: string; name: string; detail: string; at: string }
 
 const BANKS: { key: string; label: string }[] = [
   { key: 'CREDIMORAR', label: 'Santander (Credimorar)' },
@@ -36,8 +41,12 @@ function fmtMin(m: number | null): string {
 }
 const pct = (v: number | null) => (v === null ? '—' : `${v.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`);
 
+const shortBank = (k: string) => ({ CREDIMORAR: 'Santander', CREDITAS: 'Creditas', INTER: 'Inter' } as Record<string, string>)[k] || k;
+const fmtDay = (iso: string) => new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
 export function CreditMetricsPanel() {
   const [month, setMonth] = useState('');
+  const [lista, setLista] = useState<{ title: string; items: ListItem[] } | null>(null);
   const [departmentId, setDepartmentId] = useState('');
   const { data: departments = [] } = useQuery<{ id: string; name: string }[]>({
     queryKey: ['departments'],
@@ -52,6 +61,25 @@ export function CreditMetricsPanel() {
   useEffect(() => { if (!month && rows.length) setMonth(rows[0].month); }, [rows, month]);
   const row = rows.find((r) => r.month === month) || rows[0];
   const empty = !row || row.clientsAnalyzed === 0;
+
+  function abrirBanco(bankKey: string, cat: 'approved' | 'rejected' | 'pending', title: string) {
+    const items = (row?.people?.[bankKey]?.[cat] || []).map((p) => ({
+      leadId: p.leadId, name: p.name || 'Sem nome', at: p.at,
+      detail: [
+        cat === 'approved' ? (p.status === 'CONDITIONAL' ? 'aprovado condicional' : 'aprovado') : '',
+        p.approvedValue ? formatCurrency(p.approvedValue) : '', p.termMonths ? `${p.termMonths} meses` : '', p.rate || '',
+        p.holder && p.holder.trim().toLowerCase() !== (p.name || '').trim().toLowerCase() ? `no nome de ${p.holder}` : '',
+      ].filter(Boolean).join(' · '),
+    }));
+    setLista({ title: `${title} — ${shortBank(bankKey)} (${row?.label || ''})`, items });
+  }
+  function abrirAprovadosAlgumBanco() {
+    const items = (row?.approvedAny || []).map((a) => ({
+      leadId: a.leadId, name: a.name || 'Sem nome', at: a.at,
+      detail: a.banks.map((b) => `${shortBank(b.bank)}${b.status === 'CONDITIONAL' ? ' (condicional)' : ''}${b.approvedValue ? ` ${formatCurrency(b.approvedValue)}` : ''}`).join(' · '),
+    }));
+    setLista({ title: `Aprovados em algum banco (${row?.label || ''})`, items });
+  }
 
   const kpis = [
     { label: 'Clientes analisados', value: row ? String(row.clientsAnalyzed) : '0', hint: 'em pelo menos um banco', icon: Users, tone: 'text-sky-700 bg-sky-50' },
@@ -89,7 +117,7 @@ export function CreditMetricsPanel() {
             {kpis.map((k) => {
               const Icon = k.icon;
               return (
-                <div key={k.label} className="rounded-xl border border-af-border p-4">
+                <div key={k.label} onClick={k.label === 'Aprovados em algum banco' && row?.clientsApproved ? abrirAprovadosAlgumBanco : undefined} className={cn('rounded-xl border border-af-border p-4', k.label === 'Aprovados em algum banco' && row?.clientsApproved ? 'cursor-pointer hover:bg-slate-50' : '')} title={k.label === 'Aprovados em algum banco' && row?.clientsApproved ? 'Ver a lista de clientes' : undefined}>
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-medium text-slate-500">{k.label}</span>
                     <span className={cn('w-7 h-7 rounded-lg flex items-center justify-center', k.tone)}><Icon size={15} /></span>
@@ -122,11 +150,11 @@ export function CreditMetricsPanel() {
                       <td className="py-2.5 pr-3 font-medium text-slate-700">{b.label}</td>
                       <td className="py-2.5 px-3 text-right text-slate-600">{s?.analyzed ?? 0}</td>
                       <td className="py-2.5 px-3 text-right text-emerald-600 font-medium">
-                        {s?.approved ?? 0}
+                        {s?.approved ? <button onClick={() => abrirBanco(b.key, 'approved', 'Aprovaram')} className="underline decoration-dotted underline-offset-2 hover:text-emerald-700" title="Ver os clientes">{s.approved}</button> : (s?.approved ?? 0)}
                         {s && s.conditional > 0 && <span className="block text-[10px] font-normal text-teal-700">{s.conditional} condicional{s.conditional === 1 ? '' : 'is'}</span>}
                       </td>
-                      <td className="py-2.5 px-3 text-right text-red-500">{s?.rejected ?? 0}</td>
-                      <td className="py-2.5 px-3 text-right text-slate-500">{s?.pending ?? 0}</td>
+                      <td className="py-2.5 px-3 text-right text-red-500">{s?.rejected ? <button onClick={() => abrirBanco(b.key, 'rejected', 'Reprovaram')} className="underline decoration-dotted underline-offset-2" title="Ver os clientes">{s.rejected}</button> : (s?.rejected ?? 0)}</td>
+                      <td className="py-2.5 px-3 text-right text-slate-500">{s?.pending ? <button onClick={() => abrirBanco(b.key, 'pending', 'Aguardando')} className="underline decoration-dotted underline-offset-2" title="Ver os clientes">{s.pending}</button> : (s?.pending ?? 0)}</td>
                       <td className="py-2.5 px-3 text-right text-slate-700 font-medium">{pct(s?.approvalRate ?? null)}</td>
                       <td className="py-2.5 pl-3 text-right text-slate-600">
                         {fmtMin(s?.medianMinutes ?? null)}
@@ -140,6 +168,30 @@ export function CreditMetricsPanel() {
           </div>
           {empty && <p className="text-xs text-slate-400 mt-3">Ainda sem análises neste mês. Os números aparecem conforme as extensões (Santander, Creditas, Inter) devolvem os resultados.</p>}
         </>
+      )}
+
+      {lista && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={() => setLista(null)}>
+          <div className="w-[560px] max-w-full max-h-[80vh] flex flex-col rounded-2xl bg-white shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-af-border">
+              <h4 className="text-sm font-semibold text-slate-800 mr-auto">{lista.title} · {lista.items.length}</h4>
+              <button onClick={() => setLista(null)} className="p-1 rounded-md hover:bg-slate-100 text-slate-500" aria-label="Fechar"><X size={16} /></button>
+            </div>
+            <ul className="overflow-y-auto divide-y divide-af-border">
+              {lista.items.length === 0 && <li className="px-4 py-6 text-sm text-slate-400 text-center">Nenhum cliente.</li>}
+              {lista.items.map((it) => (
+                <li key={`${it.leadId}-${it.at}`} className="px-4 py-2.5 flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-800 truncate">{it.name}</p>
+                    {it.detail && <p className="text-[11px] text-slate-500">{it.detail}</p>}
+                  </div>
+                  <span className="text-[11px] text-slate-400 flex-shrink-0">{fmtDay(it.at)}</span>
+                  <Link href={`/inbox?leadId=${it.leadId}`} className="text-af-mid hover:underline flex-shrink-0" title="Abrir a conversa"><MessageSquare size={14} /></Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
       )}
 
       <p className="text-[11px] text-slate-400 mt-3">
