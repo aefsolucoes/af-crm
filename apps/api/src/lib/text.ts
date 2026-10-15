@@ -26,3 +26,8 @@ export function callableFirstName(...raws: unknown[]): string | null {
   }
   return null;
 }
+
+/** Arredonda PRA CIMA até o próximo múltiplo de R$ 5.000 (Fabio 15/10: "pode arredondar o valor total para até 5 mil a mais sempre que fizer isso" — saldo devedor + troco). */
+export function roundUpTo5k(v: number): number {
+  return v > 0 ? Math.ceil(v / 5000) * 5000 : v;
+}

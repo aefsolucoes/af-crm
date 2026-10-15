@@ -7,7 +7,7 @@ import { validate } from '../middleware/validate';
 import { getLeads, getLeadById, createLead, updateLead, updateLeadStage, deleteLead, mergeLeadsBySameContact, mergeLeadPair } from '../services/lead.service';
 import { getScopeDepartmentIds, getOrCreateInboxPipeline } from '../services/department.service';
 import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
-import { normalizeClientName } from '../lib/text';
+import { normalizeClientName, roundUpTo5k } from '../lib/text';
 import { runAutomations } from '../services/automation.service';
 import { logActivity } from '../services/activity.service';
 import { MONTH_NAMES_PT, currentMonthNamePT, getOrCreateNamedPipeline, moveLeadToPerdidos } from '../services/named-pipeline.service';
@@ -859,7 +859,7 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
       const mudou = ['saldo_devedor', 'troco'].some((k) => k in customFields && String(customFields[k] ?? '') !== String(before[k] ?? ''));
       const saldo = parseFieldNumber(('saldo_devedor' in customFields ? customFields.saldo_devedor : before.saldo_devedor) as any);
       const troco = parseFieldNumber(('troco' in customFields ? customFields.troco : before.troco) as any);
-      if (mudou && saldo > 0) customFields.valor_credito = String(Math.round((saldo + (troco > 0 ? troco : 0)) * 100) / 100);
+      if (mudou && saldo > 0) customFields.valor_credito = String(roundUpTo5k(Math.round((saldo + (troco > 0 ? troco : 0)) * 100) / 100));
     }
     const lead = await updateLead(req.params.id, req.user!.accountId, { customFields } as any);
 
