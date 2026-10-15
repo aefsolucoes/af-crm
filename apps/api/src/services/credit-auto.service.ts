@@ -119,7 +119,7 @@ async function startNewLeads(accountId: string, enabledAt: Date) {
   }
 }
 
-/** Em quais bancos rodar no 2º participante: o 1º foi REPROVADO ou APROVADO A MENOR, o 2º ainda não foi tentado nem está rodando.
+/** Em quais bancos rodar no 2º participante: o 1º foi REPROVADO, APROVADO A MENOR ou já foi ENVIADO e o resultado está pendente (roda sem esperar), e o 2º ainda não foi tentado nem está rodando.
  *  Sem 2º participante (nome e CPF no card), nada. Pura (testável). */
 export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[]): { bank: string; why: string }[] {
   const p2 = String(cf.participante_2 || '').trim();
@@ -135,9 +135,15 @@ export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; 
     if (rows.some(isSecond)) continue; // já foi rodado no 2º
     if (rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // ainda rodando
     const decided = [...rows].reverse().find((a) => ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(a.status));
-    if (!decided) continue;
-    if (decided.status === 'REJECTED') todo.push({ bank, why: 'reprovado' });
-    else if (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || '')) todo.push({ bank, why: 'aprovado a menor' });
+    if (decided) {
+      if (decided.status === 'REJECTED') todo.push({ bank, why: 'reprovado' });
+      else if (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || '')) todo.push({ bank, why: 'aprovado a menor' });
+      continue; // aprovado no valor total: não precisa do 2º
+    }
+    // SEM esperar a resposta do 1º (Fabio 15/10: "roda 1 e depois roda outro, sem aguardar a resposta do primeiro"): o 1º já foi ENVIADO ao banco e o resultado demora
+    // (Creditas leva horas) — o 2º participante entra na fila agora, atrás dele. Falha por regra do imóvel (mínimo, terreno, saldo devedor) NÃO entra: vale igual pro 2º.
+    const ultimaRodada = [...rows].reverse().find((a) => a.kind === 'RUN');
+    if (ultimaRodada && ultimaRodada.status === 'SENT') todo.push({ bank, why: 'aguardando o resultado (o 2º roda sem esperar)' });
   }
   return todo;
 }

@@ -299,7 +299,7 @@ export default function AnaliseCreditoPage() {
               <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${auto?.enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'}`}>{auto?.enabled ? 'ligada' : 'desligada'}</span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Quando o cliente preenche a proposta e a IA confere os dados, as análises rodam sozinhas nos 3 bancos. 1º participante reprovado ou aprovado a menor → roda no 2º. Depois o cliente recebe as opções aprovadas para escolher, e a IA ajuda na conversa.
+              Quando o cliente preenche a proposta e a IA confere os dados, as análises rodam sozinhas nos 3 bancos. Com 2º participante: roda o 1º e, sem esperar a resposta dele, roda o 2º (só não roda se o 1º foi aprovado no valor total ou barrado por regra do imóvel). Depois o cliente recebe as opções aprovadas para escolher, e a IA ajuda na conversa.
               {auto?.enabled && auto.enabledAt ? ` Valendo para cards que chegaram na Pré-Análise depois de ${new Date(auto.enabledAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.` : ''}
             </p>
           </div>
