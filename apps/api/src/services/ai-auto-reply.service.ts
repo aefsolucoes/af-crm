@@ -201,6 +201,12 @@ Sempre que mover de etapa, preencha "moveReason" com o motivo em 1 frase (vai pr
 /** "Perdido" é o STATUS do lead (Aberto/Ganho/Perdido, mesmo botão "Marcar
  *  Perdido" da tela), não uma etapa — por isso é um campo separado, com
  *  motivo obrigatório quando usado. */
+const RETENTION_RULES = `CLIENTE APROVADO QUE RECUSA O BANCO / QUER DESISTIR (Fabio 15/10, Gabriela Messina: "clientes aprovados precisamos tentar entender ele pra achar uma solução, mas não insistir tanto — a IA já teria dispensado a cliente"): quando o crédito JÁ foi aprovado (card em Aguardando Documentação, ou aviso de aprovação enviado) e o cliente recusar o banco, disser que prefere outro banco ou que vai deixar/desistir:
+1) NÃO dispense nem marque Perdido de primeira. Primeiro ENTENDA, com UMA pergunta curta (o que pesou: taxa, o banco, valor, a dívida?) ou, se ele já disse o banco que prefere, ofereça tentar por ele ("Quer que a gente tente pela Caixa?").
+2) Faça UMA proposta de solução concreta (outro banco que ele citou, ajustar valor/prazo, esclarecer a dúvida que travou).
+3) Se ele recusar de novo, aceite com gentileza e deixe a porta aberta, sem insistir uma 3ª vez. Aí sim, "markLost" com o motivo real (inclusive se não conseguir reverter).
+SALDO DEVEDOR: se o imóvel ainda tem financiamento, o crédito PRIMEIRO quita o saldo — só sobra dinheiro pro cliente se o valor aprovado for MAIOR que o saldo. Cliente pediu R$ 50 mil com saldo de R$ 110 mil: não sobra nada; o certo seria um crédito de R$ 160 mil (110 mil pra quitar + 50 mil pra ele). Explique isso com a conta, em uma frase, em vez de repetir que "quita o saldo".`;
+
 const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um motivo curto (1 frase, baseado no que o cliente disse) quando ele recusar EXPLICITAMENTE: disser que não quer mais, não tem mais interesse, desistiu, ou pedir pra não ser mais contatado. Também quando o lead for desqualificado (ex.: imóvel de garantia sem registro/irregular e sem alternativa) — aí o motivo começa com "Lead desqualificado — ". Deixe null/vazio em todos os outros casos — isso é diferente de só ficar em silêncio (isso é "Lead Sem Retorno", acima), e é definitivo, então só use quando a recusa for clara.
 - NÃO DÁ E O CLIENTE ACEITOU (Fabio 08/10, Marcelo: imóvel em usufruto): se a conversa JÁ explicou ao cliente que a operação não é possível com o que ele tem (ex.: imóvel em usufruto, sem matrícula/irregular, financiamento com parcela atrasada que ele não vai regularizar, crédito abaixo do mínimo) e ele só confirma ("ok", "entendi", "tá bom", "que pena", "beleza") sem trazer alternativa (outro imóvel, outra pessoa, regularizar) → "noReply": true e "markLost": "Lead desqualificado — <motivo>".`;
 
@@ -425,6 +431,8 @@ ${HANDOFF_RULES}
 ${ASK_TEAM_RULES}
 
 ${MOVE_STAGE_RULES}
+
+${RETENTION_RULES}
 
 ${MARK_LOST_RULES}
 
