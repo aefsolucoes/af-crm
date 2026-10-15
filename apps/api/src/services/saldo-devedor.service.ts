@@ -64,14 +64,17 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
   if (!lastIn || Date.now() - lastIn.createdAt.getTime() > 23 * 3_600_000) return false;
   if (opts.respectHours) { const h = new Date(Date.now() + BRT).getUTCHours(); if (h < 7 || h >= 21) return false; }
 
+  // Quanto o cliente PRECISA receber (líquido): se o crédito pedido é maior que o saldo que ele disse dever, o pedido já incluía a quitação (João Henrique: pediu R$ 270 mil = R$ 240 mil de saldo + R$ 30 mil) —
+  // o líquido é a diferença; senão o pedido já é o líquido (Maria: pediu R$ 50 mil com R$ 88 mil de saldo). O valor novo é sempre SALDO REAL (print) + LÍQUIDO.
+  const liquido = declared > 0 && base > declared ? Math.round((base - declared) * 100) / 100 : base;
   const nome = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
   const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const abertura = opts.docsReceived ? `Recebi a documentação${nome ? `, ${nome}` : ''}, obrigada! 🙏\n\n` : ((await conversationActive(leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `);
-  const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de um *print do saldo devedor atualizado* (no app ou no site do banco). Esse saldo é *somado* ao crédito que você pediu${base ? ` (${brl(base)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. Assim que você mandar, te aviso do resultado.`;
-  const marker = { askedAt: new Date().toISOString(), base, declared, gravame };
+  const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de um *print do saldo devedor atualizado* (no app ou no site do banco). Esse saldo é *somado* ao valor que você precisa receber${liquido ? ` (${brl(liquido)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. Assim que você mandar, te aviso do resultado.`;
+  const marker = { askedAt: new Date().toISOString(), base, liquido, declared, gravame };
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoDevedor: marker } as any } });
   const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Crédito aprovado e o imóvel tem financiamento ativo (proposta: faltam ${declared ? brl(declared) : '—'}${gravame ? `; matrícula: ${gravame}` : ''}). ${sent.success ? 'Pedi ao cliente o print do saldo devedor: o saldo será somado ao crédito pedido' + (base ? ` (${brl(base)})` : '') + ' e a análise refeita com o total.' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor.' : 'IA desligada: peça ao cliente o print do saldo devedor (será somado ao crédito pedido e a análise refeita).'}` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Crédito aprovado e o imóvel tem financiamento ativo (proposta: faltam ${declared ? brl(declared) : '—'}${gravame ? `; matrícula: ${gravame}` : ''}). ${sent.success ? 'Pedi ao cliente o print do saldo devedor: o saldo será somado ao valor líquido que ele precisa' + (liquido ? ` (${brl(liquido)})` : '') + ' e a análise refeita com o total.' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor.' : 'IA desligada: peça ao cliente o print do saldo devedor (será somado ao crédito pedido e a análise refeita).'}` } }).catch(() => {});
   return !!sent.success;
 }
 
@@ -133,7 +136,7 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
   if (!lead) return;
   const cf = { ...((lead.customFields || {}) as Record<string, any>) };
-  const st = { ...(cf._saldoDevedor || {}) } as { askedAt: string; base: number; declared: number; scanned?: string[]; doneAt?: string; warnedAt?: string };
+  const st = { ...(cf._saldoDevedor || {}) } as { askedAt: string; base: number; liquido?: number; declared: number; scanned?: string[]; doneAt?: string; warnedAt?: string };
   if (!st.askedAt || st.doneAt || cf._autoPaused) return;
   const scanned = new Set<string>(st.scanned || []);
   const atts = (await prisma.messageAttachment.findMany({
@@ -158,14 +161,14 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   if (!achou) {
     if (lidos.length && !st.warnedAt) {
       st.warnedAt = new Date().toISOString();
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ O cliente mandou ${lidos.length > 1 ? 'arquivos' : 'um arquivo'} depois do pedido do saldo devedor, mas a IA não achou o saldo. Abra a conversa, veja o valor, atualize "Valor do crédito" (= saldo + ${st.base ? brl(st.base) : 'crédito pedido'}) e peça a análise de novo.` } }).catch(() => {});
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ O cliente mandou ${lidos.length > 1 ? 'arquivos' : 'um arquivo'} depois do pedido do saldo devedor, mas a IA não achou o saldo. Abra a conversa, veja o valor, atualize "Valor do crédito" (= saldo + ${st.liquido || st.base ? brl(st.liquido || st.base) : 'valor líquido que ele precisa'}) e peça a análise de novo.` } }).catch(() => {});
       try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: lead.name, body: 'Conferir o print do saldo devedor', leadId }).catch(() => {}); } catch { /* push opcional */ }
     }
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, _saldoDevedor: st } as any } });
     return;
   }
 
-  const base = st.base || Number(cf2.valor_credito) || 0;
+  const base = st.liquido || st.base || Number(cf2.valor_credito) || 0; // valor LÍQUIDO que o cliente precisa receber
   const total = Math.round((achou.saldo + base) * 100) / 100;
   st.doneAt = new Date().toISOString();
   (st as any).saldo = achou.saldo; (st as any).total = total;
@@ -175,9 +178,9 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
     const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
     r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true });
   } catch (e: any) { console.error('[Saldo] não consegui pedir a análise:', e?.message); }
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}. Crédito pedido ${base ? brl(base) : '—'} + saldo = ${brl(total)}: "Valor do crédito" atualizado e ${r.created ? `análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''})` : 'análise já em andamento'}. O resultado anterior não vale pro valor novo.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}. Valor líquido que o cliente precisa ${base ? brl(base) : '—'} + saldo = ${brl(total)}: "Valor do crédito" atualizado e ${r.created ? `análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''})` : 'análise já em andamento'}. O resultado anterior não vale pro valor novo.` } }).catch(() => {});
   if (lead.aiAutoReplyActive) {
     const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-    await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você pediu = ${brl(total)}` : ''}. Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.`, io: io || undefined }).catch(() => {});
+    await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você precisa receber = ${brl(total)}` : ''}. Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.`, io: io || undefined }).catch(() => {});
   }
 }
