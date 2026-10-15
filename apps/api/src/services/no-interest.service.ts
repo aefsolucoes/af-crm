@@ -131,3 +131,48 @@ export async function maybeCaptureLostReason(accountId: string, leadId: string, 
   io?.to(`lead:${lead.id}`).emit('lead_updated', { leadId: lead.id });
   console.log(`[Sem interesse] ${lead.name}: motivo registrado — ${voltou ? 'VOLTOU A TER INTERESSE' : motivo}`);
 }
+
+
+// ─── "Não tenho interesse" por E-MAIL → Perdido (Fabio 15/10) ───────────────────────────────────────────────────────────────────────────────────
+const EMAIL_NO_INTEREST_RE = /(n[ãa]o\s+(tenho|temos)\s+(mais\s+)?interesse|sem\s+interesse|n[ãa]o\s+(quero|queremos)\s+(mais|seguir|continuar|o\s+cr[eé]dito|o\s+empr[eé]stimo|o\s+financiamento)|n[ãa]o\s+(vou|vamos)\s+(mais\s+)?(seguir|continuar|prosseguir|fazer)|desisti|desist(imos|o)\b|n[ãa]o\s+preciso\s+mais|pode(m)?\s+(cancelar|encerrar|arquivar)|retire(m)?\s+(meu|o\s+meu)\s+(contato|nome|cadastro)|n[ãa]o\s+me\s+(envie|mande|procure)|pare(m)?\s+de\s+(me\s+)?(enviar|mandar|ligar|entrar))/i;
+
+/** Confirma com a IA que o cliente DESISTIU (e não só citou "sem interesse" de passagem). null = IA indisponível. */
+async function confirmEmailDecline(text: string): Promise<{ perdido: boolean; motivo: string } | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 1500, system: 'Você lê a resposta de um cliente de crédito imobiliário a um e-mail da empresa. Responda SOMENTE JSON: {"perdido": <true se o cliente diz CLARAMENTE que não tem mais interesse/desistiu/não quer seguir com o crédito; false se for dúvida, adiamento ("agora não, volto depois"), pedido de informação, ou "sem interesse" só em outro banco/produto>, "motivo": "<motivo em até 12 palavras, com as palavras do cliente, ou vazio>"}', messages: [{ role: 'user', content: text.slice(0, 1500) }] }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { content: { type: string; text?: string }[] };
+    const j = JSON.parse((data.content?.find((b) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}');
+    return { perdido: j.perdido === true, motivo: String(j.motivo || '').slice(0, 160) };
+  } catch { return null; }
+}
+
+/** E-mail do cliente (já ligado ao card) dizendo que não tem interesse → card vai pra Perdido (funil "Perdidos"), com o motivo. Não manda mensagem ao cliente. */
+export async function maybeMarkLostByEmail(accountId: string, leadId: string, freshText: string, io: any): Promise<boolean> {
+  const text = (freshText || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length > 1500 || !EMAIL_NO_INTEREST_RE.test(text)) return false;
+  const lead = await prisma.lead.findFirst({
+    where: { id: leadId, accountId, status: 'OPEN' },
+    select: { id: true, name: true, pipeline: { select: { name: true, departmentId: true } } },
+  });
+  if (!lead) return false;
+  if (/contrata|conclu|perdid/i.test(lead.pipeline?.name || '')) return false; // contratação/concluído: a equipe decide
+  const verdict = await confirmEmailDecline(text);
+  if (verdict ? !verdict.perdido : text.length > 300) return false; // sem IA, só aceita mensagem curta e clara
+  const motivo = verdict?.motivo || text.slice(0, 120);
+  const lostReason = `Cliente informou por e-mail que não tem interesse — "${motivo}"`;
+  const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+  const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+  await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io);
+  await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io });
+  await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `📧 O cliente respondeu por e-mail que não tem interesse — card marcado como Perdido.\n"${text.slice(0, 400)}"` } }).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: 'marcou o card como Perdido: cliente disse por e-mail que não tem interesse' });
+  console.log(`[Sem interesse] ${lead.name}: Perdido por e-mail`);
+  return true;
+}

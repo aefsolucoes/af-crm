@@ -1199,6 +1199,11 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         const { scheduleDocsCheck } = require('./docs-checker.service') as typeof import('./docs-checker.service');
         scheduleDocsCheck(accountId, leadId, io).catch(() => {});
       }
+      // "Te mando mais tarde / amanhã" em Aguardando Documentação: agenda a cobrança (antes da janela de 24 h fechar) sem tirar o card da etapa.
+      if (msg.type === 'text' && text) {
+        const { maybeScheduleDocsFollowUp } = require('./docs-checker.service') as typeof import('./docs-checker.service');
+        maybeScheduleDocsFollowUp(accountId, leadId, text).catch(() => {});
+      }
 
       // Foto/print na conversa de venda (ex.: tela do simulador com erro): a IA
       // olha a imagem e responde (Fabio 08/10, Marta). Na fase de documentos

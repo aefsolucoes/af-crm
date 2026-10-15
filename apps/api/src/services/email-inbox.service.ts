@@ -469,6 +469,11 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
       notify: !opts.initial && folder === 'INBOX', io: opts.io, fromLabel: from?.name || from?.address,
     });
   }
+  // Cliente diz POR E-MAIL que não tem interesse → Perdido (Fabio 15/10). Só e-mail novo (não a primeira sincronização) e nunca de banco/sistema.
+  if (leadId && row && folder === 'INBOX' && !opts.initial && from && !isInstitutionalSender(from.address) && Date.now() - date.getTime() < 48 * 3_600_000) {
+    const { maybeMarkLostByEmail } = require('./no-interest.service') as typeof import('./no-interest.service');
+    await maybeMarkLostByEmail(acc.accountId, leadId, fresh, opts.io as any).catch((err) => console.warn('[Sem interesse e-mail] falhou:', err?.message));
+  }
 }
 
 async function syncFolder(acc: EmailAccount, client: ImapFlow, folder: Folder, path: string, state: Record<string, FolderState>, ownAddresses: Set<string>, io: Io) {
