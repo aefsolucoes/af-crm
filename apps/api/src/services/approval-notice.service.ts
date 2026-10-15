@@ -497,7 +497,7 @@ async function pickApprovedSimulationInstitution(leadId: string): Promise<{ inst
   const byBank = new Map<string, (typeof rows)[number]>();
   for (const r of rows) {
     if (r.status === 'REJECTED') byBank.delete(r.bank);
-    else if (r.approvedValue != null && (!noAviso || bancosDoAviso.has(r.bank))) byBank.set(r.bank, r);
+    else if (r.approvedValue != null && r.bank !== 'CREDITAS' && (!noAviso || bancosDoAviso.has(r.bank))) byBank.set(r.bank, r); // Creditas: sem PDF (o simulador do portal não é a proposta aprovada)
   }
   const { pickSimulationBank } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   const pick = pickSimulationBank(Array.from(byBank.values()).map((r) => ({ bank: r.bank, rate: r.rate, chosen: r.chosen, firstInstallment: r.firstInstallment })));

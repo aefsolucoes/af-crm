@@ -63,6 +63,9 @@ export async function requestSimulationDocs(db: Db, p: { accountId: string; lead
   const created: Array<{ id: string; institution: string }> = [];
   const skipped: string[] = [];
   for (const inst of parseInstitutions(p.institutions)) {
+    // PDF do CREDITAS DESATIVADO (Fabio 15/10, João Henrique): ele era montado pela API do SIMULADOR do portal (faixa "a partir de": taxa 1,09% a.m., CET 1,271%) e NÃO tem nada a ver com a
+    // proposta aprovada do cliente (juros 1,50% a.m., CET 1,64%, 1ª parcela R$ 4.798,15). Até sair do que a proposta aprovada traz, não gera.
+    if (inst === 'CREDITAS') { skipped.push(inst); continue; }
     const open = await db.simulationDocRequest.findFirst({ where: { leadId: p.leadId, institution: inst, status: { in: ['REQUESTED', 'RUNNING'] } }, select: { id: true } });
     if (open) { skipped.push(inst); continue; }
     if (p.skipIfSentWithinHours) {
@@ -297,6 +300,7 @@ export function sheetFromCreditas(p: { clientName: string; data: CreditasData; w
 /** CREDITAS: a extensão leu a simulação pela API do portal; o CRM confere os números e desenha o PDF no modelo do Credimorar. */
 export async function finishCreditasDoc(db: Db, p: { accountId: string; id: string; data: CreditasData; io?: Io }) {
   const r = await loadOpen(db, p.accountId, p.id);
+  if (r.status !== 'DONE') { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason: 'PDF do Creditas desativado: o simulador do portal não traz as condições da proposta aprovada. Não enviei.' }); return { ok: false as const, error: 'PDF do Creditas desativado (não bate com a proposta aprovada).' }; }
   if (r.status === 'DONE') return { ok: true as const, already: true, messageId: r.messageId };
   const fail = async (reason: string) => { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason }); return { ok: false as const, error: reason }; };
   const inst = Array.isArray(p.data?.installments) ? p.data.installments : [];
