@@ -98,6 +98,7 @@ async function startNewLeads(accountId: string, enabledAt: Date) {
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     if (cf._autoStartedAt || cf._autoGiveUp) continue;
     if (cf._autoCheckedAt && Date.now() - new Date(cf._autoCheckedAt).getTime() < AI_CHECK_EVERY_MS) continue;
     const checks = Number(cf._autoChecks || 0) + 1;
@@ -150,6 +151,7 @@ async function cascadeToSecond(accountId: string) {
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     if (!cf._autoStartedAt) continue;
     const p2 = String(cf.participante_2 || '').trim();
     const todo = cascadePlan(cf, l.name, l.creditAnalyses);
@@ -183,6 +185,7 @@ async function noticeClients(accountId: string, io: any) {
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     // Card que a análise automática NÃO iniciou também entra, se o cliente já recebeu um resumo e agora saiu o resultado de OUTRO banco (Juan, 14/10).
     if (!cf._autoStartedAt && !(await novoBancoPendente(l.id).catch(() => false))) continue;
     const rows = l.creditAnalyses;
@@ -252,6 +255,7 @@ async function closeRejected(accountId: string, io: any) {
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     if (cf._noticeAt) continue; // aviso já agendado (o poller dos agendados fecha depois de enviar)
     if (cf._autoCloseTriedAt && Date.now() - new Date(cf._autoCloseTriedAt).getTime() < 6 * 3_600_000) continue;
     const rows = l.creditAnalyses;
@@ -317,6 +321,7 @@ async function retryTechnicalFailures(accountId: string) {
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     const rows = l.creditAnalyses;
     if (cf._noticeAt) continue;
     // Só barra o banco que ainda tem pedido aberto: a conferência do Creditas (horas) não pode segurar a nova tentativa do Inter (Mauricio Rodrigues, 14/10).
@@ -399,6 +404,7 @@ async function earlyStatusNotices(accountId: string, io: any) {
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     if (!cf._autoStartedAt || cf._noticeAt) continue;
     const verdicts = BANKS.map((b) => bankVerdict(l.creditAnalyses as any, b));
     if (!verdicts.includes('PENDING')) continue; // todos decididos: aviso final / fechamento cuidam

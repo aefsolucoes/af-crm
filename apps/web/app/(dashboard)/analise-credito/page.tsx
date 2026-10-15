@@ -14,7 +14,7 @@ import { AdjustModal } from '@/components/credit/adjust-modal';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
 import { pingExtensions } from '@/lib/credit-extensions';
 import { useAuthStore } from '@/store/auth.store';
-import { ChevronDown, ChevronRight, MessageSquare, Play, Plus, Star, Pencil, SlidersHorizontal, ArrowLeftRight, RefreshCw, Send } from 'lucide-react';
+import { ChevronDown, ChevronRight, MessageSquare, Pause, Play, Plus, Star, Pencil, SlidersHorizontal, ArrowLeftRight, RefreshCw, Send } from 'lucide-react';
 import api from '@/lib/api';
 
 /* Análise de Crédito — ver apps/api/src/services/credit-analysis.service.ts.
@@ -212,6 +212,18 @@ export default function AnaliseCreditoPage() {
     }
   }
 
+  // Pausa/retoma a análise automática SÓ deste cliente (nada novo roda, refaz, avisa nem fecha sozinho; o que está rodando termina).
+  async function toggleClientPause(l: BoardLead) {
+    const next = !l.autoPaused;
+    try {
+      await api.put('/api/credit-analysis/pause', { leadId: l.id, paused: next });
+      toast(next ? `${l.name}: PAUSADO — nada roda sozinho pra este cliente até retomar` : `${l.name}: retomado`, 'success');
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pausar o cliente', 'error');
+    }
+  }
+
   // "Salvar e rodar de novo" do modal de ajuste.
   async function runAgain(leadId: string, bks: Bank[]) {
     try {
@@ -359,6 +371,7 @@ export default function AnaliseCreditoPage() {
                             <div className="text-[11px] text-slate-400">
                               {l.stage}{l.requested.creditValue ? ` · pediu ${formatCurrency(l.requested.creditValue)}` : ''}{l.requested.term ? ` · ${l.requested.term}` : ''}
                             </div>
+                            {l.autoPaused && <div className="text-[11px] font-semibold text-amber-600">⏸ Pausado — nada roda sozinho pra este cliente</div>}
                             {l.preAnaliseAt && (
                               <div className="text-[11px] text-slate-400" title="Data e hora em que o card entrou na Pré-Análise">
                                 Entrou na Pré-Análise: {new Date(l.preAnaliseAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
@@ -402,6 +415,9 @@ export default function AnaliseCreditoPage() {
                                 <button onClick={() => setNotify(l)} title="Mandar ao cliente as opções aprovadas (todas, para ele escolher)" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg bg-af-accent text-white hover:opacity-90"><Send size={11} /> Avisar cliente</button>
               )}
                               <button onClick={() => setAdjust(l)} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><SlidersHorizontal size={11} /> Ajustar</button>
+                              <button onClick={() => toggleClientPause(l)} title={l.autoPaused ? 'Voltar a rodar sozinho pra este cliente' : 'Pausar só este cliente: nada novo roda, refaz, avisa o cliente nem fecha o card sozinho'} className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border ${l.autoPaused ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50' : 'border-amber-300 text-amber-700 hover:bg-amber-50'}`}>
+                                {l.autoPaused ? <><Play size={11} /> Retomar</> : <><Pause size={11} /> Pausar</>}
+                              </button>
                               {(['INTER', 'CREDITAS', 'CREDIMORAR'] as Bank[]).filter((bk) => l.latest[bk] && !['REQUESTED', 'RUNNING'].includes(l.latest[bk]!.status)).map((bk) => (
                                 <button key={bk} onClick={() => checkBank(l, bk)} title={`Ler o resultado no portal do ${BANKS.find((b) => b.key === bk)?.short} sem criar proposta nova`} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><RefreshCw size={11} /> Conferir {BANKS.find((b) => b.key === bk)?.short}</button>
                               ))}

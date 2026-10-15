@@ -899,7 +899,7 @@ export async function processScheduledNotices(io: any): Promise<void> {
     const leads = await prisma.lead.findMany({ where: { id: { in: ids.map((x) => x.id) } }, select: { id: true, accountId: true, name: true, status: true, customFields: true } });
     const due = leads
       .map((l) => ({ l, cf: (l.customFields || {}) as Record<string, any> }))
-      .filter(({ cf }) => cf._noticeAt && new Date(cf._noticeAt).getTime() <= Date.now())
+      .filter(({ cf }) => cf._noticeAt && new Date(cf._noticeAt).getTime() <= Date.now() && !cf._autoPaused)
       .sort((a, b) => Number(a.cf._noticeSeq || 0) - Number(b.cf._noticeSeq || 0));
     const first = due[0];
     if (!first) return;

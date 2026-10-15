@@ -242,6 +242,11 @@ const BOOT_AT = Date.now();
 const lastPollAt = new Map<string, number>();
 const bankAlive = (accountId: string, bank?: string) => !!bank && (Date.now() - BOOT_AT < 5 * 60_000 || Date.now() - (lastPollAt.get(`${accountId}:${bank}`) || 0) < 3 * 60_000);
 
+/** Card PAUSADO pelo botão da tela (Fabio 14/10, "pausar apenas aquele cliente"): customFields._autoPaused. */
+const PAUSED_LEAD = { lead: { customFields: { path: ['_autoPaused'], equals: true } } };
+/** Fora da fila: pedido AUTOMÁTICO (sem requestedById) de card pausado. O que uma PESSOA pediu na tela (Rodar/Conferir) continua valendo. */
+const NOT_PAUSED_AUTO = { NOT: { AND: [{ requestedById: null }, PAUSED_LEAD] } };
+
 export async function claimQueue(db: Db, p: { accountId: string; bank: string; limit?: number; caps?: string[] }) {
   if (!BANK_KEYS.includes(p.bank)) return [];
   lastPollAt.set(`${p.accountId}:${p.bank}`, Date.now());
@@ -251,7 +256,7 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { paused: true } }))?.paused;
   // "Um cliente por vez": os pedidos de RODAR de outros clientes esperam o cliente atual terminar em todos os bancos.
   const abertos = await db.creditAnalysis.findMany({
-    where: { accountId: p.accountId, kind: 'RUN', status: { in: ['REQUESTED', 'RUNNING'] }, source: { notIn: ['AI', 'AI_SIM'] }, OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
+    where: { accountId: p.accountId, kind: 'RUN', status: { in: ['REQUESTED', 'RUNNING'] }, source: { notIn: ['AI', 'AI_SIM'] }, OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }], ...NOT_PAUSED_AUTO },
     select: { leadId: true, bank: true, status: true, requestedAt: true, lead: { select: { createdAt: true, stageEnteredAt: true, status: true, stage: { select: { name: true } } } } },
   });
   // Ordem da fila = quando o card ENTROU na Pré-Análise (card que está nela: stageEnteredAt); fora dela (ex.: card rodado à mão em outra etapa), a data de criação.
@@ -264,6 +269,7 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
       AND: [
         ...(ativo ? [{ OR: [{ kind: 'CHECK' }, { source: { in: ['AI', 'AI_SIM'] } }, { leadId: ativo }] }] : []),
         { OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] },
+        NOT_PAUSED_AUTO,
         // Em pausa geral: só o pedido de pessoa; a leitura (CHECK, só leitura) pedida pela IA da conversa também passa.
         ...(paused ? [{ OR: [{ requestedById: { not: null } }, { source: 'AI', kind: 'CHECK' }] }] : []),
       ],
@@ -563,6 +569,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       },
       overrides: Object.fromEntries(l.creditOverrides.map((o) => [o.bank, o.data])),
       inPre: l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || ''),
+      autoPaused: !!cf._autoPaused,
       preAnaliseAt,
       ran: l.creditAnalyses.length > 0,
       lastRunAt: l.creditAnalyses[0]?.createdAt || null,
@@ -571,6 +578,17 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       chosenId: l.creditAnalyses.find((a) => a.chosen)?.id || null,
     };
   });
+}
+
+/** Pausa/retoma a análise automática SÓ deste cliente (nada novo é rodado, refeito, avisado nem fechado sozinho; o que está rodando termina e o que uma pessoa pedir continua valendo). */
+export async function setLeadAutoPause(db: Db, p: { accountId: string; leadId: string; paused: boolean; userId?: string; userName?: string }) {
+  const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, customFields: true } });
+  if (!lead) throw new Error('card não encontrado');
+  const cf = { ...((lead.customFields || {}) as Record<string, any>) };
+  if (p.paused) cf._autoPaused = new Date().toISOString(); else delete cf._autoPaused;
+  await db.lead.update({ where: { id: lead.id }, data: { customFields: cf as any } });
+  await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: p.paused ? `⏸️ Análise automática PAUSADA só pra este cliente${p.userName ? ` por ${p.userName}` : ''}: nada novo roda, refaz, avisa o cliente nem fecha o card sozinho até retomar.` : `▶️ Análise automática RETOMADA pra este cliente${p.userName ? ` por ${p.userName}` : ''}.` } }).catch(() => {});
+  return { paused: p.paused };
 }
 
 // ─── Ajustes do cliente na análise (inverter titular, valores, renda, prazo) ───
@@ -938,9 +956,10 @@ const fmtBRL = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionD
 export async function requestSimulationForAi(db: Db, accountId: string, leadId: string, p: { prazo: number }): Promise<{ ok: boolean; detail: string }> {
   const prazo = Math.round(Number(p.prazo));
   if (!(prazo >= 60 && prazo <= 240)) return { ok: false, detail: `prazo de ${p.prazo} meses fora do que o Inter simula (60 a 240)` };
-  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto' };
   if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity' };
+  if ((lead.customFields as any)?._autoPaused) return { ok: false, detail: 'este cliente está PAUSADO na Análise de Crédito (botão da tela)' };
   const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 8, select: { bank: true, approvedValue: true, chosen: true } });
   const banco = aprovadas.find((a) => a.chosen) || [...aprovadas].sort((a, b) => simPriority(a.bank) - simPriority(b.bank))[0];
   if (!banco) return { ok: false, detail: 'o cliente não tem banco aprovado pra simular' };
@@ -1000,6 +1019,7 @@ export async function requestRunForAi(db: Db, accountId: string, leadId: string)
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto' };
   if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity' };
+  if ((lead.customFields as any)?._autoPaused) return { ok: false, detail: 'este cliente está PAUSADO na Análise de Crédito (botão da tela)' };
   if (!/^pre-?an/.test(normName(lead.stage?.name || ''))) return { ok: false, detail: `o card está em "${lead.stage?.name || '?'}", não na Pré-Análise` };
   // O cliente pode ter pedido OUTRO valor depois da 1ª análise (Aline e Dannilo, 14/10: "queria até 50 mil"): a proposta antiga não vale mais, então roda
   // DE NOVO com o valor do card (ajuste do financiamento nos 3 bancos) — antes o pedido da IA só relia a proposta velha e a "nova análise" nunca acontecia.

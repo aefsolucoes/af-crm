@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
+import { setLeadAutoPause } from '../services/credit-analysis.service';
 import { getAutoSetting, setAutoSetting, setPaused } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
@@ -45,6 +46,18 @@ router.get('/overrides', async (req: AuthRequest, res: Response) => {
   try {
     res.json({ data: await getOverride(prisma, { accountId: req.user!.accountId, leadId, bank }) });
   } catch (err) { fail(res, err, 'Erro ao buscar o ajuste'); }
+});
+
+// Pausa/retoma a análise automática SÓ de um cliente (botão "Pausar" no cartão do cliente).
+router.put('/pause', async (req: AuthRequest, res: Response) => {
+  const b = req.body || {};
+  if (!b.leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
+  try {
+    const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;
+    const out = await setLeadAutoPause(prisma, { accountId: req.user!.accountId, leadId: String(b.leadId), paused: b.paused !== false, userId: req.user!.id, userName });
+    emit(req, { leadId: String(b.leadId) });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao pausar o cliente', 400); }
 });
 
 // Grava o ajuste (valores, renda, prazo, inverter) nos bancos escolhidos; `merge` soma ao que já existe; vazio apaga.
