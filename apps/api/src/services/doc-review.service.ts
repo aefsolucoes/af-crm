@@ -234,8 +234,8 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
 /** Mensagem ao cliente com o que precisa ser corrigido (curta, educada, sem jargão). */
 export function buildDocProblemsMessage(s: ReviewSummary): string {
   const linhas = s.problemas.map((p) => `⚠️ *${p.doc}* — ${p.texto.join('; ')}`);
-  const oks = s.ok.length ? `\n\nJá conferi e estão certinhos ✅: ${s.ok.join(', ')}.` : '';
-  return `Conferi os documentos que você mandou e preciso de um ajuste:\n\n${linhas.join('\n')}${oks}\n\nAssim que você reenviar, eu confiro de novo!`;
+  // Fabio 15/10: não repete o que já chegou certo — só o que precisa de ajuste.
+  return `Preciso de um ajuste:\n\n${linhas.join('\n')}\n\nAssim que você reenviar, eu confiro de novo!`;
 }
 
 /** Bloco pro prompt da IA de conversa: o que cada documento recebido tem de bom/ruim (só leitura). Vazio se nada foi conferido. */
@@ -252,4 +252,4 @@ export async function aiDocsContext(leadId: string): Promise<string> {
   return `DOCUMENTOS DESTE CLIENTE (a IA LEU os arquivos que ele mandou — frente/verso, legibilidade, validade e titular):\n${linhas.join('\n')}${falta}`;
 }
 
-export const DOCS_REVIEW_RULES = `DOCUMENTOS — quando o bloco "DOCUMENTOS DESTE CLIENTE" aparecer abaixo, ele traz o que a IA leu dos arquivos que o cliente mandou. Use SÓ ele pra dizer se um documento está certo ou o que falta corrigir ("tá certo?", "faltou alguma coisa?"): nunca diga que um documento está OK se ele não está no bloco como OK, e nunca invente defeito. Se o cliente perguntar de um documento que NÃO está no bloco, diga que ainda não chegou/ainda está sendo conferido. Quando houver PROBLEMA, peça só o ajuste que o bloco descreve, em 1 frase curta. A conferência automática já avisa o cliente do que precisa corrigir quando ele manda os arquivos — não repita a mesma cobrança se ela já está na conversa.`;
+export const DOCS_REVIEW_RULES = `DOCUMENTOS — quando o bloco "DOCUMENTOS DESTE CLIENTE" aparecer abaixo, ele traz o que a IA leu dos arquivos que o cliente mandou. Use SÓ ele pra dizer se um documento está certo ou o que falta corrigir ("tá certo?", "faltou alguma coisa?"): nunca diga que um documento está OK se ele não está no bloco como OK, e nunca invente defeito. Se o cliente perguntar de um documento que NÃO está no bloco, diga que ainda não chegou/ainda está sendo conferido. Quando houver PROBLEMA, peça só o ajuste que o bloco descreve, em 1 frase curta. A conferência automática já avisa o cliente do que precisa corrigir quando ele manda os arquivos — não repita a mesma cobrança se ela já está na conversa. NUNCA enumere os documentos que já chegaram ("recebi X e Y"): se falar de documentos, cite só o que FALTA ou o que está com PROBLEMA (Fabio 15/10).`;

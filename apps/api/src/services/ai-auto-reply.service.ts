@@ -204,6 +204,7 @@ Sempre que mover de etapa, preencha "moveReason" com o motivo em 1 frase (vai pr
 const NEW_VALUE_RULES = `VALOR NOVO = ANÁLISE NOVA (Fabio 15/10, Rafaela Andrade: "falar que foi reprovado sem nem rodar não pode acontecer em hipótese alguma"): o resultado de uma análise vale SÓ pro valor em que ela rodou. Se o cliente pediu um valor DIFERENTE (preencheu a proposta de novo, disse que precisa de mais/menos) e nas notas/resultados não há análise nesse valor, NUNCA diga que "não dá", "não foi aprovado", "esse é o valor liberado" nem "não dá pra alterar" — diga em uma frase que vai refazer a análise com o valor novo e retorna com o resultado (o CRM pede a análise sozinho). Só fale de reprovação do valor novo depois que a análise NESSE valor tiver rodado.
 `;
 
+const NO_RECEIPT_LIST_RULES = `DOCUMENTOS RECEBIDOS (Fabio 15/10): nunca enumere pro cliente os documentos que ele já mandou ("recebi sua certidão e seu comprovante…"). Fale só do que FALTA ou do que está com PROBLEMA, e só depois que ele terminar de encaminhar (a conferência automática avisa).`;
 const DOCS_ARRIVING_RULES = `O CLIENTE ESTÁ MANDANDO DOCUMENTOS AGORA (Fabio 15/10): ele ainda não terminou de encaminhar. NÃO diga o que já chegou, o que falta, nem confirme recebimento de documento — a conferência automática faz isso uma vez só, depois que ele parar de mandar. Responda APENAS a dúvida que ele fez, em 1 frase, sem listar documentos nem cobrar nada. Se a mensagem for só aviso/legenda de documento, noReply true.`;
 const PROPERTY_DOCS_RULES = `CERTIDÃO DE ÔNUS / MATRÍCULA (Fabio 15/10): se o cliente não tem a matrícula/certidão de ônus ou diz que não consegue tirar, NÃO peça pra ele ir ao cartório — a A&F emite. Peça só o ENDEREÇO COMPLETO COM CEP do imóvel (a A&F confere com o da proposta) ou, se ele tiver, o NÚMERO DA MATRÍCULA, e diga em uma frase que a A&F emite a certidão. Documento de matrícula que chegou "para simples consulta", antigo ou incompleto serve — não cobre outro. A matrícula precisa estar no nome de um participante ou de parente de 1º grau.
 
@@ -478,7 +479,7 @@ ${PROPOSAL_REVIEW_RULES}
 
 ${CREDIT_ANALYSIS_RULES}
 
-${chegando ? DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${NO_REPLY_RULES}
+${chegando ? DOCS_ARRIVING_RULES + '\n\n' : ''}${NO_RECEIPT_LIST_RULES}\n\n${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${NO_REPLY_RULES}
 
 ${buildFillFieldsRules(camposTexto)}
 

@@ -283,8 +283,8 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
         // IA ligada: cobra o que falta (uma vez por lista); desligada: quem conversa é a equipe — só nota no card.
         let cobrou = false;
         if (lead.aiAutoReplyActive) {
-          const ok = review?.ok.length ? `Já recebi e conferi ✅: ${review.ok.join(', ')}.` : '';
-          const texto = `Conferi o que você mandou. ${ok}${faltaTxt}\n\nPode mandar por aqui mesmo que eu confiro!`.replace(/\s+\n/g, '\n').replace('. \n', '.\n');
+          // Fabio 15/10: não lista o que chegou — só o que falta (depois da espera de 10 min sem arquivo novo).
+          const texto = `Pra fechar a documentação ainda falta:${faltaTxt.replace(/^\n\nAinda falta mandar:/, '')}\n\nPode mandar por aqui mesmo que eu confiro!`;
           const sent = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined });
           cobrou = !!sent.success;
         }
