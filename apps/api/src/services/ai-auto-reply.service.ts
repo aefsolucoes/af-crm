@@ -510,10 +510,42 @@ ${conversasPorTelefone}` : ''}`;
     // a IA mandou a Resposta Rápida inteira, que abre com a frase de aprovação).
     const aprovado = /aprovad|aguardando document|document|contrata|conclu|fechad/i.test(ctx.etapaTexto.split('→').pop() || '');
     if (!aprovado && result.reply) result.reply = stripApprovalClaims(result.reply);
+    await addDocsDoubtQuestions(leadId, incomingText, ctx.etapaTexto, result);
     return result;
   } catch (err) {
     console.error('[AI Auto-reply] Erro ao gerar resposta:', err);
     return null;
+  }
+}
+
+// Fabio 15/10 (Ricardo Pereira): mandamos a lista de documentos e o cliente diz "vou enviar em breve" → a IA, além do "fico no aguardo", pergunta se
+// ficou alguma dúvida e se a parcela coube no orçamento — UMA vez só por cliente (se alguém já perguntou na conversa, não repete).
+const DOCS_PROMISE_SEND_RX = /(mand|envi|encaminh|pass(o|ar)|trag|junt|separ|entreg|consigo|escane|fotograf)/i;
+const DOCS_PROMISE_LATER_RX = /(\bvou\b|\bvamos\b|\birei\b|\bte (mand|envi|encaminh|pass)|\bj[aá] (te )?(mand|envi|encaminh)|\bem breve\b|\blogo\b|\bmais tarde\b|\bquando\b|amanh[ãa]|\bdepois\b|\b[àa] noite\b|\bhoje\b|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|semana que vem)/i;
+const DOCS_PROMISE_PAST_RX = /\b(mandei|enviei|encaminhei|passei|j[aá] (mandou|enviou)|enviado|mandado)\b/i;
+const DOCS_PROMISE_NEG_RX = /(n[ãa]o (tenho|quero|vou) (mais )?(interesse|seguir|continuar)|desist|cancel)/i;
+const DOUBT_Q = 'Ficou com alguma dúvida?';
+const BUDGET_Q = 'A parcela coube no seu orçamento?';
+
+export function promisesDocsSoon(text: string): boolean {
+  const t = (text || '').trim();
+  return !!t && t.length <= 220 && DOCS_PROMISE_SEND_RX.test(t) && DOCS_PROMISE_LATER_RX.test(t) && !DOCS_PROMISE_PAST_RX.test(t) && !DOCS_PROMISE_NEG_RX.test(t);
+}
+
+async function addDocsDoubtQuestions(leadId: string, incomingText: string, etapaTexto: string, result: AiAutoReplyResult): Promise<void> {
+  try {
+    if (result.handoff || result.askTeam || result.markLost) return;
+    if (!/aguardando document/i.test((etapaTexto.split('→').pop() || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return;
+    if (!promisesDocsSoon(incomingText)) return;
+    const jaPerguntou = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: 'coube no seu orçamento', mode: 'insensitive' } }, select: { id: true } });
+    if (jaPerguntou) return;
+    const reply = (result.reply || '').trim();
+    const falta = [!/d[uú]vida/i.test(reply) && DOUBT_Q, !/(parcela[^.?!]*(coube|cabe)|(coube|cabe)[^.?!]*or[cç]amento)/i.test(reply) && BUDGET_Q].filter(Boolean) as string[];
+    if (!falta.length) return;
+    if (reply) { result.reply = `${reply}\n\n${falta.join(' ')}`; return; }
+    if (result.noReply) { result.reply = falta.join(' '); result.noReply = false; }
+  } catch (err) {
+    console.error('[AI Auto-reply] Perguntas de dúvida/orçamento não adicionadas:', err);
   }
 }
 
