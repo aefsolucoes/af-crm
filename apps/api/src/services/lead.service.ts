@@ -249,21 +249,9 @@ export async function mergeLeadPair(
     const useSourceName = looksLikePhoneOnly(keep.name) && !looksLikePhoneOnly(source.name);
     const finalName = useSourceName ? source.name : keep.name;
 
-    // Estágio/funil: o MAIS AVANÇADO dos dois (Fabio 15/10: a união da Amanda a devolveu de "Aprovado Pré-Análise" pra "Follow Up" pela regra antiga do card mais antigo).
-    // Mesmo funil → a etapa de maior ordem; funis diferentes → contratação/concluído > funil normal > Caixa de Entrada/Perdidos; empate → o do card mais antigo (regra antiga).
-    // Se o resultado é Perdido, o card fica no funil Perdidos (etapa do card que está Perdido) — decidido mais abaixo junto com o status.
+    // Estágio/funil: o do card MAIS RECENTE (Fabio 15/10, corrigindo a regra do "mais avançado": o cliente entrou na Pré-Análise por um card novo e o card antigo estava em Follow Up —
+    // o card unido vai pro funil/etapa do mais recente). Se o resultado da união é Perdido, o card fica no funil Perdidos (decidido junto com o status, logo abaixo).
     const sourceIsOlder = source.createdAt < keep.createdAt;
-    const [keepStage, sourceStage] = await Promise.all([
-      prisma.stage.findUnique({ where: { id: keep.stageId }, select: { id: true, order: true, pipelineId: true, pipeline: { select: { name: true } } } }),
-      prisma.stage.findUnique({ where: { id: source.stageId }, select: { id: true, order: true, pipelineId: true, pipeline: { select: { name: true } } } }),
-    ]);
-    const pipeRank = (name?: string | null) => (/contrata|conclu/i.test(name || '') ? 3 : /caixa de entrada|perdid/i.test(name || '') ? 0 : 2);
-    const sourceMoreAdvanced = (): boolean => {
-      if (!keepStage || !sourceStage) return sourceIsOlder;
-      if (keepStage.pipelineId === sourceStage.pipelineId) return sourceStage.order > keepStage.order;
-      const rk = pipeRank(keepStage.pipeline?.name), rs = pipeRank(sourceStage.pipeline?.name);
-      return rs !== rk ? rs > rk : sourceIsOlder;
-    };
     const stagesDiffer = source.pipelineId !== keep.pipelineId || source.stageId !== keep.stageId;
 
     // Status: Perdido é definitivo e "gruda" no card mais antigo — cliente
@@ -275,7 +263,7 @@ export async function mergeLeadPair(
     // "Reabrir" já existe na tela).
     const older = sourceIsOlder ? source : keep;
     const useOlderStatus = older.status === 'LOST' && keep.status !== 'LOST';
-    const useSourceStage = stagesDiffer && (useOlderStatus ? older === source : keep.status === 'LOST' ? false : sourceMoreAdvanced());
+    const useSourceStage = stagesDiffer && (useOlderStatus ? older === source : keep.status === 'LOST' ? false : !sourceIsOlder); // source mais recente → vale a etapa dele
 
     // Análises de crédito e ajustes por banco também vão pro card que fica (15/10: o delete do card duplicado APAGAVA em cascata as análises e os pedidos na fila dele).
     // CreditOverride é único por (card, banco): o que o card que fica já tem, vale.
@@ -313,7 +301,7 @@ export async function mergeLeadPair(
         data: {
           leadId: keepId,
           content: `Lead unificado com "${source.name}" (ID: ${sourceId}). Mensagens, tarefas e notas foram migradas.`
-            + (useSourceStage ? ' Estágio/funil atualizado pro mais avançado dos dois.' : '')
+            + (useSourceStage ? ' Estágio/funil atualizado pro do card mais recente.' : '')
             + (useOlderStatus ? ' Mantido como Perdido (o card mais antigo já tinha essa marcação).' : '')
             + (altPhone ? ` Telefone do WhatsApp: ${phoneOf(winnerContact)}${preferSourcePhone ? ' (veio do card unificado, que é o número que mandou mensagem)' : ''}; outro número registrado: ${altPhone}.` : '')
             + (userId ? '' : ' (unificação automática: mesmo telefone, CPF ou e-mail)'),
