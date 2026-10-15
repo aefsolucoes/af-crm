@@ -201,6 +201,9 @@ Sempre que mover de etapa, preencha "moveReason" com o motivo em 1 frase (vai pr
 /** "Perdido" é o STATUS do lead (Aberto/Ganho/Perdido, mesmo botão "Marcar
  *  Perdido" da tela), não uma etapa — por isso é um campo separado, com
  *  motivo obrigatório quando usado. */
+const NEW_VALUE_RULES = `VALOR NOVO = ANÁLISE NOVA (Fabio 15/10, Rafaela Andrade: "falar que foi reprovado sem nem rodar não pode acontecer em hipótese alguma"): o resultado de uma análise vale SÓ pro valor em que ela rodou. Se o cliente pediu um valor DIFERENTE (preencheu a proposta de novo, disse que precisa de mais/menos) e nas notas/resultados não há análise nesse valor, NUNCA diga que "não dá", "não foi aprovado", "esse é o valor liberado" nem "não dá pra alterar" — diga em uma frase que vai refazer a análise com o valor novo e retorna com o resultado (o CRM pede a análise sozinho). Só fale de reprovação do valor novo depois que a análise NESSE valor tiver rodado.
+`;
+
 const RETENTION_RULES = `CLIENTE APROVADO QUE RECUSA O BANCO / QUER DESISTIR (Fabio 15/10, Gabriela Messina: "clientes aprovados precisamos tentar entender ele pra achar uma solução, mas não insistir tanto — a IA já teria dispensado a cliente"): quando o crédito JÁ foi aprovado (card em Aguardando Documentação, ou aviso de aprovação enviado) e o cliente recusar o banco, disser que prefere outro banco ou que vai deixar/desistir:
 1) NÃO dispense nem marque Perdido de primeira. Primeiro ENTENDA, com UMA pergunta curta (o que pesou: taxa, o banco, valor, a dívida?) ou, se ele já disse o banco que prefere, ofereça tentar por ele ("Quer que a gente tente pela Caixa?").
 2) Faça UMA proposta de solução concreta (outro banco que ele citou, ajustar valor/prazo, esclarecer a dúvida que travou).
@@ -432,6 +435,7 @@ ${ASK_TEAM_RULES}
 
 ${MOVE_STAGE_RULES}
 
+${NEW_VALUE_RULES}
 ${RETENTION_RULES}
 
 ${MARK_LOST_RULES}

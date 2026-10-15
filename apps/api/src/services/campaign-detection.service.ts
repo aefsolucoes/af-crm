@@ -226,6 +226,24 @@ export function parseProposalForm(text: string): { label: string; fields: Record
   return Object.keys(fields).length ? { label: sig.label, fields } : null;
 }
 
+/** Proposta preenchida DE NOVO num card que já foi analisado, agora com OUTRO valor de crédito (Fabio 15/10, Rafaela: a proposta de R$ 180 mil nunca rodou porque o card já estava em
+ *  Aguardando Documentação e o resultado de R$ 150 mil continuou valendo — "falar que foi reprovado sem nem rodar"): o resultado antigo NÃO vale pro valor novo → pede a análise de novo. */
+async function rerunIfCreditChanged(accountId: string, leadId: string): Promise<void> {
+  try {
+    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+    const cf = (lead?.customFields || {}) as Record<string, any>;
+    const novo = Number(cf.valor_credito);
+    const base = Number(cf._lastRunValue);
+    if (!(novo > 0) || !(base > 0) || Math.abs(novo - base) < 1 || cf._autoPaused) return;
+    const setting = await prisma.creditAutoSetting.findUnique({ where: { accountId }, select: { enabled: true } });
+    if (!setting?.enabled) return;
+    const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true });
+    const brl = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔁 O cliente preencheu a proposta de novo com OUTRO valor de crédito (${brl(base)} → ${brl(novo)}): o resultado antigo não vale pro valor novo. ${r.created ? `Análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''}).` : 'Já havia análise em andamento.'}` } }).catch(() => {});
+  } catch (e: any) { console.error('[Proposta nova] não consegui refazer a análise:', e?.message); }
+}
+
 /** Formulário completo chegou num lead que JÁ existe: leva o card pra
  *  Pré-Análise do setor do formulário, venha de onde vier — Prospecção,
  *  Follow Up, Remarketing, Venda Futura, Perdidos, Caixa de Entrada ou outro
@@ -270,6 +288,7 @@ export async function advanceLeadOnProposalForm(accountId: string, leadId: strin
   // funil Perdidos) também volta: ele não está andando, está perdido.
   const adiante = !eraPerdido && (/pre-analise|pre analise|aprovad|aguardando|fechad/.test(stageNorm) || /contrata|conclu/.test(norm(lead.pipeline.name)));
   if (adiante) {
+    await rerunIfCreditChanged(accountId, lead.id);
     if (!/pre-analise|pre analise/.test(stageNorm) || /aprovad/.test(stageNorm)) {
       await prisma.note.create({
         data: { leadId: lead.id, type: 'COMMENT', content: `📋 O cliente preencheu de novo a proposta (${sig.label}), mas o card ficou onde está — já está em "${lead.pipeline.name} → ${lead.stage.name}", adiante da Pré-Análise.` },
@@ -309,6 +328,7 @@ export async function advanceLeadOnProposalForm(accountId: string, leadId: strin
       notes: { create: notes },
     },
   });
+  if (eraPerdido) await rerunIfCreditChanged(accountId, lead.id); // reabriu com valor diferente do que foi analisado: analisa de novo
   return { stageId: target.id, stageName: target.name };
 }
 

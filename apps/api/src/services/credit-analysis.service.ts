@@ -200,6 +200,7 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
   let created = 0, skipped = 0;
   const consulted: string[] = [];
   for (const l of leads) {
+    const createdBefore = created;
     for (const bank of banks) {
       const open = await db.creditAnalysis.findFirst({
         where: { leadId: l.id, bank, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } },
@@ -216,6 +217,13 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
       const prevNumber = prev?.proposalNumber || null;
       await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, proposalNumber: prevNumber, holderCpf: prev?.holderCpf || null, holderName: prev?.holderName || null, dryRun: kind === 'CHECK' ? false : p.dryRun, source: p.source || 'EXTENSION', requestedById: p.userId || null } });
       created++;
+    }
+    // Guarda o crédito pedido NESTA rodada (15/10, Rafaela): se o cliente preencher a proposta de novo com OUTRO valor, o resultado antigo não vale e a análise é refeita (campaign-detection).
+    if (wantedKind === 'RUN' && !p.dryRun && created > createdBefore) {
+      const f = await db.lead.findUnique({ where: { id: l.id }, select: { customFields: true } });
+      const cf = { ...((f?.customFields || {}) as Record<string, any>) };
+      const v = Number(cf.valor_credito);
+      if (v > 0) { cf._lastRunValue = v; await db.lead.update({ where: { id: l.id }, data: { customFields: cf as any } }).catch(() => {}); }
     }
   }
   return { created, skipped, consulted, banks, leads: leads.length, kind: wantedKind };
