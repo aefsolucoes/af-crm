@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { downloadDriveFileForVision } from './google.service';
-import { getDocInfo, isStickerAttachment } from './received-docs.service';
+import { getDocInfo, isStickerAttachment, isScreenshotAttachment } from './received-docs.service';
 import { todayContextLine } from './ai-shared.service';
 
 const prisma = new PrismaClient();
@@ -20,6 +20,8 @@ export interface DocReview {
   lado: 'frente' | 'verso' | 'ambos' | '';
   emissao: string;
   observacao: string;
+  /** Só AUTORIZACAO SCR BACEN: GOVBR = assinatura eletrônica do gov.br (não precisa de identidade); PUNHO = assinada à mão (precisa do documento com foto). */
+  assinatura?: 'GOVBR' | 'PUNHO';
   /** DUVIDA: a pergunta pra equipe (a IA não tem segurança se o documento serve). */
   duvida?: string;
   /** Depois da resposta da equipe: regra geral que vale pra outros clientes (vazio = foi só desse caso). */
@@ -27,7 +29,7 @@ export interface DocReview {
 }
 
 const SYSTEM = `Você é a conferente de documentos de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional). Olhe o ARQUIVO que o cliente mandou pelo WhatsApp e diga se ele está CORRETO para seguir ao banco. Responda SOMENTE com JSON:
-{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS, MATRICULA, CND IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","observacao":"<detalhe INTERNO útil pra equipe (ex.: constam ônus ou alienação fiduciária na matrícula, validade do documento); senão vazio>","duvida":"<SÓ se resultado DUVIDA: a pergunta objetiva pra equipe, 1 a 2 frases, dizendo o que você viu e o que precisa saber; senão vazio>","regra":"<SÓ quando a equipe já respondeu: a regra geral, em 1 frase, que vale pra OUTROS clientes; se foi só sobre este caso, vazio>"}
+{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS, MATRICULA, CND IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","observacao":"<detalhe INTERNO útil pra equipe (ex.: constam ônus ou alienação fiduciária na matrícula, validade do documento); senão vazio>","duvida":"<SÓ se resultado DUVIDA: a pergunta objetiva pra equipe, 1 a 2 frases, dizendo o que você viu e o que precisa saber; senão vazio>","regra":"<SÓ quando a equipe já respondeu: a regra geral, em 1 frase, que vale pra OUTROS clientes; se foi só sobre este caso, vazio>"}
 
 Critérios — aponte PROBLEMA só quando for real; documento legível e correto é OK, não invente defeito:
 - Legibilidade: foto desfocada, escura, com reflexo, cortada ou com dado importante ilegível → PROBLEMA ("manda uma foto mais nítida/inteira").
@@ -36,7 +38,7 @@ Critérios — aponte PROBLEMA só quando for real; documento legível e correto
 - Titular: compare com os participantes do card. RG/CNH/CPF/certidão/documento de renda em nome de OUTRA pessoa → PROBLEMA ("está no nome de X; o participante é Y"). Comprovante de residência em nome de parente/outra pessoa NÃO é problema por si só; documentos do imóvel seguem o proprietário.
 - Documento de várias páginas (matrícula, ônus, escritura, IR) que parece parcial: NÃO marque PROBLEMA; escreva em "observacao" que parece parcial.
 - Se não for documento (selfie, figurinha, print de conversa, foto qualquer): resultado NAO_DOCUMENTO.
-- AUTORIZACAO SCR BACEN (formulário "Autorização SCR Bacen" que a Creditas pede): só vale ASSINADA. Assinada = carimbo/assinatura eletrônica do gov.br ("Assinado digitalmente/de forma digital por NOME … gov.br", com CPF) ou assinatura de próprio punho no campo de assinatura; "titular" = a PESSOA QUE ASSINOU/preencheu (nome do participante). Formulário em branco, sem assinatura, ou sem o nome/CPF preenchido → PROBLEMA (diga ao cliente: "assine pelo gov.br e mande o PDF assinado"). Assinatura legível e nome batendo com o participante → OK.
+- AUTORIZACAO SCR BACEN (formulário "Autorização SCR Bacen" que a Creditas pede): só vale ASSINADA. Assinada = carimbo/assinatura eletrônica do gov.br ("Assinado digitalmente/de forma digital por NOME … gov.br", com CPF) ou assinatura de próprio punho no campo de assinatura; "titular" = a PESSOA QUE ASSINOU/preencheu (nome do participante). Preencha "assinatura" com GOVBR ou PUNHO. Formulário em branco ou sem assinatura → PROBLEMA (diga ao cliente: "assine pelo gov.br e me devolva o PDF assinado"; se for assinar à mão, "assine igual ao seu documento de identidade e mande o formulário junto com a foto do documento"). O CRM já manda o formulário preenchido (local, data de hoje, nome e CPF no campo do proponente); o cliente só assina. Sem o nome do participante ou sem data → PROBLEMA ("esse formulário veio sem data/nome; assine o que eu te mandei, já preenchido"). Assinatura legível e nome batendo com o participante → OK.
 - DÚVIDA: se você NÃO tem segurança pra dizer que o documento serve ou não (documento raro ou que você não reconhece; nome com grafia diferente que pode ou não ser a mesma pessoa; suspeita de montagem ou adulteração; documento que contradiz o card; regra do banco que você não conhece), NÃO chute: resultado DUVIDA e escreva a pergunta pra equipe em "duvida". Não use DUVIDA por preguiça — documento legível e claro é OK ou PROBLEMA. A equipe vai abrir ESTE arquivo e responder; as respostas anteriores aparecem em "REGRAS APRENDIDAS COM A EQUIPE" (siga-as antes de perguntar de novo).`;
 
 type Att = { id: string; driveFileId: string | null; data?: Uint8Array | null; mimeType: string; fileName?: string; createdAt?: Date };
@@ -89,7 +91,8 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     if (resultado === 'DUVIDA' && (opts.teamAnswer || !duvida)) return undefined; // com a resposta da equipe não pode voltar a duvidar; sem pergunta não dá pra levar pra equipe
     const lado = j.lado === 'frente' || j.lado === 'verso' || j.lado === 'ambos' ? j.lado : '';
     const problemas = (Array.isArray(j.problemas) ? j.problemas : []).map((p: unknown) => cleanText(p, 200)).filter(Boolean).slice(0, 4);
-    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 240), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
+    const assinatura = j.assinatura === 'GOVBR' || j.assinatura === 'PUNHO' ? j.assinatura : undefined;
+    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 240), ...(assinatura ? { assinatura } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
   } catch { return undefined; }
 }
 
@@ -146,7 +149,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     where: { leadId, message: { direction: 'INBOUND' } },
     orderBy: { createdAt: 'asc' },
     select: { id: true, driveFileId: true, data: true, mimeType: true, fileName: true, createdAt: true },
-  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a));
+  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && !isScreenshotAttachment(a));
   if (!atts.length) return null;
 
   const info = await getDocInfo(accountId, leadId, atts); // classificação barata: pula o que não é documento

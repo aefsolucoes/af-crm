@@ -1,5 +1,6 @@
 import { PrismaClient, EmailMessage, EmailAccount } from '@prisma/client';
 import { Readable } from 'stream';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { callableFirstName } from '../lib/text';
 import { logActivity } from './activity.service';
 
@@ -220,7 +221,66 @@ function sameName(holder: string, participant: string): boolean {
   const h = norm(holder).split(' ').filter((w) => w.length > 1);
   const p = norm(participant).split(' ').filter((w) => w.length > 1);
   if (!h.length || !p.length) return false;
-  return h[0] === p[0] || (h[h.length - 1].length > 2 && h[h.length - 1] === p[p.length - 1]);
+  // Casal com o mesmo sobrenome (Fernando/Rosana Bastos Cruz): só o sobrenome NÃO basta — precisa do primeiro nome ou de mais de uma palavra em comum.
+  const comuns = h.filter((w) => p.includes(w)).length;
+  return h[0] === p[0] || (h[h.length - 1].length > 2 && h[h.length - 1] === p[p.length - 1] && comuns >= 2);
+}
+
+// ─── Preencher o formulário (Fabio 15/10: "precisa datar, colocar o local e preencher com o nome do cliente — o CRM precisa fazer isso") ───
+// O PDF da Creditas é UMA página-imagem (A4, sem campos): escreve por cima, em posições fixas (linha da data, "Nome:"/"CPF:" do 1º e do 2º Proponente).
+
+const fmtCpf = (s: string) => { const d = digits(s); return d.length === 11 ? `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}` : String(s || ''); };
+
+/** Cidade do imóvel em garantia (linha "Imóvel em garantia: Cidade/UF" da proposta do card) — é o "local" da data no formulário. */
+async function formCity(leadId: string): Promise<string> {
+  const msgs = await prisma.message.findMany({ where: { leadId, content: { contains: 'Imóvel em garantia' } }, orderBy: { createdAt: 'desc' }, take: 3, select: { content: true } });
+  for (const m of msgs) {
+    const r = /Im[óo]vel em garantia:\s*([^\n]+)/i.exec(m.content || '');
+    const city = r ? r[1].split('/')[0].trim() : '';
+    if (city && city.length < 60) return city;
+  }
+  return '';
+}
+
+export async function fillScrForm(base: Buffer, people: { name: string; cpf: string }[], city: string): Promise<Buffer> {
+  const doc = await PDFDocument.load(base);
+  const page = doc.getPage(0);
+  const { width, height } = page.getSize();
+  if (doc.getPageCount() !== 1 || Math.abs(width - 595) > 3 || Math.abs(height - 842) > 3) return base; // layout diferente do conhecido: não arrisca escrever no lugar errado
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const ink = rgb(0.05, 0.1, 0.45);
+  const fit = (text: string, size: number, maxW: number) => { let sz = size; while (sz > 5.5 && font.widthOfTextAtSize(text, sz) > maxW) sz -= 0.25; return sz; };
+  // Linha "__________, ___ de __________ de 202_": cobre e reescreve inteira ("Cidade, 15 de outubro de 2026").
+  const data = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: 'numeric', month: 'long', year: 'numeric' });
+  const linha = `${city ? `${city}, ` : ''}${data}`;
+  page.drawRectangle({ x: 226.36, y: 437.14, width: 213.42, height: 16.82, color: rgb(1, 1, 1) });
+  const sz = fit(linha, 11, 205);
+  page.drawText(linha, { x: 226.36 + (213.42 - font.widthOfTextAtSize(linha, sz)) / 2, y: 442 + 4.2, size: sz, font, color: ink });
+  // 1º Proponente (coluna da esquerda) e 2º Proponente (coluna da direita).
+  const cols = [{ nameX: 150.5, cpfX: 139, maxW: 200 }, { nameX: 370.5, cpfX: 357.5, maxW: 145 }];
+  people.slice(0, 2).forEach((pe, i) => {
+    const c = cols[i];
+    page.drawText(pe.name, { x: c.nameX, y: 347.8, size: fit(pe.name, 9.5, c.maxW), font, color: ink });
+    if (pe.cpf) page.drawText(fmtCpf(pe.cpf), { x: c.cpfX, y: 333.2, size: 9.5, font, color: ink });
+  });
+  return Buffer.from(await doc.save());
+}
+
+/** Formulário da Creditas já datado, com o local e o nome/CPF de quem assina (1º e 2º participante). Sem o PDF-base → null. Falha ao preencher → manda em branco (a equipe é avisada na nota). */
+async function scrFormFilled(accountId: string, lead: { id: string; name: string; customFields: any }, st: ScrState, nomes: string[]): Promise<{ pdf: Buffer | null; preenchido: boolean; cidade: string }> {
+  const base = await scrFormPdf(accountId);
+  if (!base) return { pdf: null, preenchido: false, cidade: '' };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const fontes = [{ nome: st.holderName || '', cpf: st.holderCpf || '' }, { nome: String(cf.participante_1 || lead.name), cpf: String(cf.cpf_1 || '') }, { nome: String(cf.participante_2 || ''), cpf: String(cf.cpf_2 || '') }].filter((f) => f.nome && digits(f.cpf).length === 11);
+  const cpfDe = (nome: string) => (fontes.find((f) => norm(f.nome) === norm(nome)) || fontes.find((f) => sameName(f.nome, nome)))?.cpf || '';
+  const cidade = await formCity(lead.id).catch(() => '');
+  try {
+    const pdf = await fillScrForm(base, nomes.map((n) => ({ name: n, cpf: cpfDe(n) })), cidade);
+    return { pdf, preenchido: pdf !== base, cidade };
+  } catch (e: any) {
+    console.warn('[Creditas SCR] não consegui preencher o formulário:', e?.message);
+    return { pdf: base, preenchido: false, cidade };
+  }
 }
 
 const whatsappWindowOpen = async (leadId: string) => {
@@ -241,6 +301,18 @@ async function attachmentBytes(accountId: string, att: { id: string; data: Uint8
 
 // ─── Fluxo: pedir ao cliente → conferir → encaminhar à Creditas ─────────────────
 
+const GOVBR_STEPS_FALLBACK = `✍️ *Como assinar pelo gov.br (2 minutos)*
+1️⃣ Acesse *assinador.iti.br* e entre com seu CPF e senha do gov.br (conta nível *prata* ou *ouro*).
+2️⃣ Envie o PDF e arraste o quadrinho da assinatura pra cima da linha do seu nome.
+3️⃣ Clique em *Assinar* e confirme com o código que o gov.br mandar (SMS ou app).
+4️⃣ *Baixe* o PDF assinado e me envie por aqui. (Não use "imprimir como PDF": isso apaga a assinatura.)`;
+
+/** Passo a passo do gov.br: vem da Base de Conhecimento (entrada "Como assinar … gov.br") — o Fabio edita lá, com o link do vídeo, e a próxima mensagem já sai atualizada. */
+async function govbrSteps(accountId: string): Promise<string> {
+  const e = await prisma.knowledgeEntry.findFirst({ where: { accountId, title: { contains: 'gov.br', mode: 'insensitive' }, AND: [{ title: { contains: 'assinar', mode: 'insensitive' } }] }, orderBy: { updatedAt: 'desc' }, select: { content: true } }).catch(() => null);
+  return (e?.content || '').trim() || GOVBR_STEPS_FALLBACK;
+}
+
 async function askClient(accountId: string, lead: { id: string; name: string; customFields: any }, st: ScrState, io: Io): Promise<void> {
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (!(await whatsappWindowOpen(lead.id))) {
@@ -252,20 +324,23 @@ async function askClient(accountId: string, lead: { id: string; name: string; cu
     }
     return;
   }
-  const pdf = await scrFormPdf(accountId); // o formulário é o MESMO pra todos: vai do jeito que a Creditas mandou, sem preencher nada
   const nomes = await scrSigners(lead, st);
+  const { pdf, preenchido, cidade } = await scrFormFilled(accountId, lead, st, nomes); // o CRM data e preenche local/nome/CPF; o cliente só assina
   const nome = callableFirstName(nomes[0], cf.participante_1, lead.name) || '';
   const outros = nomes.slice(1);
-  const texto = `Oi${nome ? `, ${nome}` : ''}! A Creditas pediu mais um passo pra seguir com a pré-aprovação do seu crédito: a *Autorização de consulta ao SCR do Banco Central* assinada${outros.length ? ` por cada participante (você e ${outros.join(', ')})` : ''}.\n\n📎 Estou te mandando o formulário em PDF. É só preencher (nome, CPF e data) e assinar *pelo gov.br* (assinatura eletrônica) — se precisar de ajuda, é só me falar.\n\nDepois me devolva aqui:\n• o PDF *assinado*\n• uma foto do seu *documento de identidade* (RG ou CNH, frente e verso)${outros.length ? ' — e o mesmo do(a) ' + outros.join(', ') : ''}\n\nAssim que chegar, eu envio pra Creditas e te aviso.`;
+  const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const saudacao = (await conversationActive(lead.id)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
+  const texto = `${saudacao}A Creditas pediu mais um passo pra seguir com a pré-aprovação do seu crédito: a *Autorização de consulta ao SCR do Banco Central* assinada${outros.length ? ` por cada participante (você e ${outros.join(', ')})` : ''}.\n\n📎 Estou te mandando o formulário em PDF, que já está preenchido. É só *assinar pelo gov.br* (assinatura eletrônica) e me devolver aqui${outros.length ? ' — cada um assina o seu' : ''}.\n\n✍️ Se preferir assinar à mão: imprima e assine *igual à assinatura do seu documento de identidade*, e me mande o formulário assinado.\n\nJunto, preciso também de uma foto do seu *documento de identidade com foto* (RG ou CNH, frente e verso)${outros.length ? ' — e o mesmo do(a) ' + outros.join(', ') : ''}: ele serve pra validar a assinatura.\n\nAssim que chegar, eu envio pra Creditas e te aviso.`;
   const { sendOutboundWhatsApp, sendOutboundMedia } = require('./message.service') as typeof import('./message.service');
   const r1 = await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: texto, io: io as any });
   if (!r1.success) { console.warn(`[Creditas SCR] ${lead.name}: mensagem ao cliente não saiu — ${(r1 as any).error}`); return; }
   if (pdf) await sendOutboundMedia({ accountId, leadId: lead.id, buffer: pdf, fileName: 'Autorizacao SCR Bacen.pdf', mimeType: 'application/pdf', io: io as any }).catch(() => {});
+  await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: await govbrSteps(accountId), io: io as any }).catch(() => {});
   await saveState(lead.id, { status: 'ASKED', askedAt: new Date().toISOString() });
-  await addNote(lead.id, pdf ? '📨 Mandei ao cliente o formulário SCR Bacen e pedi pra assinar pelo gov.br e devolver com o documento de identidade.' : '📨 Pedi ao cliente a assinatura do SCR Bacen pelo gov.br, mas NÃO consegui baixar o formulário do e-mail — mande o PDF "Bacen SCR" a ele.');
+  await addNote(lead.id, pdf ? `📨 Mandei ao cliente o formulário SCR Bacen ${preenchido ? `já preenchido (data de hoje${cidade ? `, local ${cidade}` : ', SEM local — não achei a cidade do imóvel na proposta'}, nome e CPF)` : 'EM BRANCO (não consegui preencher)'}: assinar pelo gov.br e devolver junto com a foto do documento de identidade (valida a assinatura; à mão, assinar igual ao documento).` : '📨 Pedi ao cliente a assinatura do SCR Bacen pelo gov.br, mas NÃO consegui baixar o formulário do e-mail — mande o PDF "Bacen SCR" a ele.');
 }
 
-type Doc = { attId: string; fileName: string; mimeType: string; createdAt: Date; kind: 'SCR' | 'ID' | 'OUTRO'; holder: string; ok: boolean; problema: string; duvida: boolean };
+type Doc = { attId: string; fileName: string; mimeType: string; createdAt: Date; kind: 'SCR' | 'ID' | 'OUTRO'; holder: string; ok: boolean; problema: string; duvida: boolean; assinatura?: 'GOVBR' | 'PUNHO' };
 
 async function collectDocs(accountId: string, lead: { id: string; name: string }, since: Date): Promise<{ docs: Doc[]; lastAt: Date | null }> {
   const { reviewReceivedDocs } = require('./doc-review.service') as typeof import('./doc-review.service');
@@ -280,7 +355,7 @@ async function collectDocs(accountId: string, lead: { id: string; name: string }
     const r = rev[a.id];
     const tipo = String(r?.tipo || '');
     const kind: Doc['kind'] = /SCR|BACEN/i.test(tipo) ? 'SCR' : /^(RG|CNH|CARTEIRA DE IDENTIDADE|IDENTIDADE)\b/i.test(tipo) ? 'ID' : 'OUTRO';
-    return { attId: a.id, fileName: a.fileName, mimeType: a.mimeType, createdAt: a.createdAt, kind, holder: String(r?.titular || ''), ok: r?.resultado === 'OK', problema: r?.resultado === 'PROBLEMA' ? String((r.problemas || []).join('; ')) : '', duvida: r?.resultado === 'DUVIDA' };
+    return { attId: a.id, fileName: a.fileName, mimeType: a.mimeType, createdAt: a.createdAt, kind, holder: String(r?.titular || ''), ok: r?.resultado === 'OK', problema: r?.resultado === 'PROBLEMA' ? String((r.problemas || []).join('; ')) : '', duvida: r?.resultado === 'DUVIDA', assinatura: r?.assinatura };
   });
   return { docs, lastAt: atts.length ? atts[atts.length - 1].createdAt : null };
 }
@@ -321,7 +396,8 @@ async function checkAndForward(accountId: string, lead: { id: string; name: stri
     const scr = docs.filter((d) => d.kind === 'SCR' && d.ok && sameName(d.holder, p)).pop();
     const ident = docs.filter((d) => d.kind === 'ID' && d.ok && sameName(d.holder, p));
     if (!scr) faltas.push(`a Autorização SCR assinada de ${p.split(' ').slice(0, 2).join(' ')}`);
-    if (!ident.length) faltas.push(`o documento de identidade (RG ou CNH) de ${p.split(' ').slice(0, 2).join(' ')}`);
+    // Fabio 15/10: a identidade (com foto) vem SEMPRE junto — é ela que valida a assinatura (à mão: tem que ser igual à do documento).
+    if (!ident.length) faltas.push(`uma foto do documento de identidade com foto (RG ou CNH) de ${p.split(' ').slice(0, 2).join(' ')}, pra validar a assinatura`);
     if (scr) escolhidos.push(scr);
     escolhidos.push(...ident);
   }
@@ -399,7 +475,7 @@ export async function scrCreditasContext(leadId: string): Promise<string> {
   const situ = st.status === 'SENT'
     ? `Já foi ENVIADO à Creditas em ${quando(st.sentAt)} (autorização assinada + identidades). Agora é aguardar o retorno da Creditas; não peça de novo.`
     : st.status === 'ASKED' || st.status === 'SENDING'
-      ? `O formulário já foi mandado ao cliente em ${quando(st.askedAt)}; AGUARDANDO o cliente devolver o PDF assinado pelo gov.br + o documento de identidade (RG/CNH) de cada participante. O CRM confere os arquivos e envia à Creditas sozinho.`
+      ? `O formulário já foi mandado ao cliente em ${quando(st.askedAt)}; AGUARDANDO o cliente devolver o PDF assinado (gov.br, ou à mão igual à do documento) + a foto do documento de identidade (RG/CNH) de cada participante. O CRM confere os arquivos e envia à Creditas sozinho.`
       : 'A equipe está preparando o envio do formulário ao cliente.';
-  return `CREDITAS PEDIU A AUTORIZAÇÃO SCR BACEN (e-mail de ${quando(st.at)}${st.creditasId ? `, ID ${st.creditasId}` : ''}): a Creditas não conseguiu aprovar o crédito de uma vez e precisa do formulário SCR Bacen ASSINADO por cada participante + as identidades. Situação: ${situ}\nSe o cliente perguntar: é uma autorização pra consulta ao SCR (Sistema de Informações de Crédito do Banco Central), exigência da Creditas pra seguir com a pré-aprovação; ele assina PELO GOV.BR (assinatura eletrônica no PDF) e devolve o PDF assinado aqui, com a foto do RG/CNH. NÃO diga que o crédito está aprovado nem prometa prazo da Creditas.`;
+  return `CREDITAS PEDIU A AUTORIZAÇÃO SCR BACEN (e-mail de ${quando(st.at)}${st.creditasId ? `, ID ${st.creditasId}` : ''}): a Creditas não conseguiu aprovar o crédito de uma vez e precisa do formulário SCR Bacen ASSINADO por cada participante + a identidade com foto (valida a assinatura). Situação: ${situ}\nSe o cliente perguntar: é uma autorização pra consulta ao SCR (Sistema de Informações de Crédito do Banco Central), exigência da Creditas pra seguir com a pré-aprovação; o CRM já manda o formulário preenchido (data, local, nome e CPF); ele só assina PELO GOV.BR (assinatura eletrônica no PDF) — ou à mão, igual à assinatura do documento de identidade — e devolve o PDF assinado aqui, junto com a foto do documento de identidade com foto (RG/CNH), que serve pra validar a assinatura. Ele NÃO precisa preencher nada. NÃO diga que o crédito está aprovado nem prometa prazo da Creditas.`;
 }

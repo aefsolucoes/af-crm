@@ -293,7 +293,7 @@ export async function findFolderLoose(accountId: string, name: string, parentId:
 }
 
 const normFolder = (n: string) => n.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
-/** Pasta de MESMO NOME (sem diferença de maiúscula/acento/espaço) dentro de `parentId`; se já houver duplicadas, a mais antiga. null = não existe. */
+/** Pasta do cliente dentro de `parentId` (mesmo nome sem diferença de maiúscula/acento/espaço, nome cortado em 25 letras ou com sufixo de banco); havendo mais de uma, a MAIS ANTIGA (Fabio 15/10: "salvar os documentos na pasta mais antiga"). null = não existe. */
 export async function findFolderByNormalizedName(accountId: string, parentId: string, name: string): Promise<string | null> {
   const drive = await getDrive(accountId);
   const alvo = normFolder(name);
@@ -302,7 +302,13 @@ export async function findFolderByNormalizedName(accountId: string, parentId: st
   let pageToken: string | undefined;
   do {
     const res: any = await drive.files.list({ q: `'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`, fields: 'nextPageToken, files(id, name, createdTime)', pageSize: 1000, pageToken, supportsAllDrives: true, includeItemsFromAllDrives: true });
-    for (const f of res.data.files || []) if (normFolder(f.name || '') === alvo) achadas.push({ id: f.id!, createdTime: f.createdTime || '' });
+    for (const f of res.data.files || []) {
+      const n = normFolder(f.name || '');
+      // Mesma pasta do cliente: nome igual; nome CORTADO em 25 letras (versão antiga do CRM — "SILVANA REGINA FRANCA MAR"); ou nome + sufixo de banco ("… SILVA- BRB", "…-INTER").
+      const cortada = n.length === 25 && n.length < alvo.length && alvo.startsWith(n);
+      const comBanco = n.length > alvo.length && n.startsWith(alvo) && /^\s*-/.test(n.slice(alvo.length));
+      if (n === alvo || cortada || comBanco) achadas.push({ id: f.id!, createdTime: f.createdTime || '' });
+    }
     pageToken = res.data.nextPageToken || undefined;
   } while (pageToken);
   achadas.sort((a, b) => a.createdTime.localeCompare(b.createdTime));
@@ -435,6 +441,7 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   // Já existe a pasta desse cliente em LEADS ATIVOS (feita à mão ou numa organização anterior)? Usa ELA — antes a pasta de anexos do cliente era movida e renomeada pra cá sem olhar,
   // e o cliente ficava com duas pastas de mesmo nome (Robison, Rosana, Calixto, Antonio…, Fabio 15/10). Os arquivos entram nas subpastas dela; a pasta de anexos fica vazia.
   const jaExiste = await findFolderByNormalizedName(accountId, params.activeLeadsFolderId, params.clientFolderName).catch(() => null);
+  const reusada = !!jaExiste;
   if (jaExiste && jaExiste !== clientFolderId) clientFolderId = jaExiste;
 
   const current = await drive.files.get({ fileId: clientFolderId, fields: 'parents', supportsAllDrives: true });
@@ -443,7 +450,7 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
     fileId: clientFolderId,
     addParents: params.activeLeadsFolderId,
     ...(oldParents ? { removeParents: oldParents } : {}),
-    requestBody: { name: params.clientFolderName },
+    ...(reusada ? {} : { requestBody: { name: params.clientFolderName } }), // pasta já existente (feita à mão / nome antigo): mantém o nome que a equipe deu
     fields: 'id',
     supportsAllDrives: true,
   });
@@ -452,7 +459,13 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   const subfolders = new Map<string, string>();
   const folderId = async (f: DocFolder): Promise<string> => {
     if (f === 'RAIZ') return clientFolderId!;
-    if (!subfolders.has(f)) subfolders.set(f, (await createFolder(accountId, f, clientFolderId!)).id);
+    if (!subfolders.has(f)) {
+      // Pasta do cliente feita à mão pode ter "COMPRADORA"/"VENDEDORA" (feminino): usa ela em vez de criar "COMPRADOR" ao lado.
+      const feminino: Partial<Record<DocFolder, string>> = { COMPRADOR: 'COMPRADORA', VENDEDOR: 'VENDEDORA' };
+      const exata = await findFolder(accountId, f, clientFolderId!).catch(() => null);
+      const alt = !exata && feminino[f] ? await findFolder(accountId, feminino[f]!, clientFolderId!).catch(() => null) : null;
+      subfolders.set(f, exata || alt || (await createFolder(accountId, f, clientFolderId!)).id);
+    }
     return subfolders.get(f)!;
   };
   await folderId('COMPRADOR');
@@ -624,7 +637,8 @@ export async function organizeLeadDocsToDrive(params: {
   }
 
   // pasta do cliente dentro do destino
-  const folder = await createFolder(accountId, clientFolderName.trim(), parentId);
+  const existente = await findFolderByNormalizedName(accountId, parentId, clientFolderName.trim()).catch(() => null); // a mais antiga, mesmo com nome cortado/sufixo de banco
+  const folder = existente ? { id: existente, name: await getFolderName(accountId, existente).catch(() => clientFolderName.trim()), existed: true } : await createFolder(accountId, clientFolderName.trim(), parentId);
 
   // anexos do lead ainda não enviados (com bytes)
   const attachments = await prisma.messageAttachment.findMany({
@@ -810,8 +824,10 @@ export const isStickerAttachment = (a: { mimeType: string; fileName?: string | n
 export const isAudioAttachment = (a: { mimeType: string }) => /^audio\//i.test(a.mimeType);
 /** Pasta lateral de um anexo que não é documento: figurinha → FIGURINHAS, áudio → AUDIOS, vídeo → VIDEOS; null = segue a regra normal (pasta do cliente). */
 export const isVideoAttachment = (a: { mimeType: string }) => /^video\//i.test(a.mimeType);
-export type SideFolder = 'FIGURINHAS' | 'AUDIOS' | 'VIDEOS';
-export const sideFolderName = (a: { mimeType: string; fileName?: string | null }): SideFolder | null => (isStickerAttachment(a) ? 'FIGURINHAS' : isAudioAttachment(a) ? 'AUDIOS' : isVideoAttachment(a) ? 'VIDEOS' : null);
+/** Captura de tela ("Captura de Tela 2026-10-14 às 17.01.10.png", "Screenshot_…", "Screen Shot …"): também NÃO vai pra pasta do cliente (Fabio 15/10) — pasta própria "CAPTURAS DE TELA". */
+export const isScreenshotAttachment = (a: { fileName?: string | null }) => /^(captura de (tela|ecr[ãa]|pantalla)|screen ?shot)/i.test((a.fileName || '').trim());
+export type SideFolder = 'FIGURINHAS' | 'AUDIOS' | 'VIDEOS' | 'CAPTURAS DE TELA';
+export const sideFolderName = (a: { mimeType: string; fileName?: string | null }): SideFolder | null => (isStickerAttachment(a) ? 'FIGURINHAS' : isAudioAttachment(a) ? 'AUDIOS' : isVideoAttachment(a) ? 'VIDEOS' : isScreenshotAttachment(a) ? 'CAPTURAS DE TELA' : null);
 async function sideFolderId(accountId: string, conn: { rootFolderId: string | null; whatsappAttachmentsFolderId: string | null }, name: SideFolder): Promise<string> {
   const parent = conn.whatsappAttachmentsFolderId || conn.rootFolderId;
   if (!parent) throw new Error('Drive sem pasta-raiz');
@@ -848,10 +864,10 @@ export async function moveExistingSideFiles(accountId: string, only?: SideFolder
   const drive = await getDrive(accountId);
   const folders: Record<string, string> = {};
   const atts = await prisma.messageAttachment.findMany({
-    where: { driveFileId: { not: null }, OR: [{ fileName: { startsWith: 'sticker-' } }, { mimeType: 'image/webp' }, { mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
+    where: { driveFileId: { not: null }, OR: [{ fileName: { startsWith: 'sticker-' } }, { mimeType: 'image/webp' }, { mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }, { fileName: { startsWith: 'Captura de', mode: 'insensitive' } }, { fileName: { startsWith: 'Screenshot', mode: 'insensitive' } }, { fileName: { startsWith: 'Screen Shot', mode: 'insensitive' } }] },
     select: { driveFileId: true, mimeType: true, fileName: true },
   });
-  const moved: Record<string, number> = { FIGURINHAS: 0, AUDIOS: 0, VIDEOS: 0 };
+  const moved: Record<string, number> = { FIGURINHAS: 0, AUDIOS: 0, VIDEOS: 0, 'CAPTURAS DE TELA': 0 };
   let errors = 0;
   for (const a of atts) {
     const name = sideFolderName(a);

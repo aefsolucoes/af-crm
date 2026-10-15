@@ -432,6 +432,12 @@ export async function proposeCallTime(params: { accountId: string; questionId: s
   const { accountId, questionId, userId, io } = params;
   const time = params.time.trim().slice(0, 120);
   if (!time) throw new Error('Escreva o horário que a Andreia consegue');
+  // 15/10 (Silas de Sena Brito): o Fabio escreveu "Pode sim !" no campo "outro horário" e o cliente recebeu "Nesse horário não vou conseguir. Pode ser Pode sim !?".
+  // "Sim/pode" sozinho é CONFIRMAÇÃO do horário pedido; e o que não parece dia/hora nem sai pro cliente.
+  if (/^(sim|pode( sim)?|consigo( sim)?|confirm\w*|ok|beleza|claro|combinado|fechado|certo|isso( mesmo)?)[\s!.?]*$/i.test(time)) return confirmCallRequest({ accountId, questionId, userId, io });
+  if (!/\d|\b(hoje|amanh[ãa]|manh[ãa]|tarde|noite|meio[- ]?dia|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|semana)\b/i.test(time)) {
+    throw new Error('Isso não parece um horário — escreva o dia e a hora que a Andreia consegue (ex.: amanhã às 14h). Se ela pode no horário do cliente, use "Sim, confirmar".');
+  }
   const q = await prisma.aiTeamQuestion.findFirst({ where: { id: questionId, accountId, kind: 'CALL_REQUEST' } });
   if (!q) throw new Error('Pedido de ligação não encontrado');
   if (q.status !== 'OPEN') throw new Error('Esse pedido já foi resolvido');

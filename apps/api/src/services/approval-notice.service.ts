@@ -696,6 +696,10 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
 // Texto simples, com o motivo OBJETIVO (terreno / valor do imóvel abaixo do mínimo / saldo devedor / análise não aprovada) — nunca o detalhe
 // interno do banco. Só 07h–21h (fora disso agenda), e só com a janela de 24 h do WhatsApp aberta (não existe template pra isso: sem janela,
 // fica nota pra equipe chamar o cliente).
+/** Fabio 15/10: "se já iniciou a conversa com o cliente não precisa ficar toda hora mandando 'Oi, Mauricio'" — a saudação só abre conversa (nada trocado nas últimas 12 h). */
+export async function conversationActive(leadId: string, hours = 12): Promise<boolean> {
+  return (await prisma.message.count({ where: { leadId, createdAt: { gte: new Date(Date.now() - hours * 3_600_000) } } })) > 0;
+}
 const REJECTION_MARK = 'não conseguimos aprovação';
 const REJECTION_MARK_OLD = 'não conseguimos aprovar agora'; // texto antigo do aviso — ainda conta como "já avisado"
 const REJECTION_TEXT = 'Oi! Tudo bem? Analisamos seu crédito junto às instituições parceiras, mas infelizmente não conseguimos aprovação para o valor solicitado no momento. Qualquer mudança na situação, estou à disposição para tentarmos novamente!';
@@ -778,7 +782,8 @@ export async function sendEarlyStatusNotice(p: { accountId: string; leadId: stri
   } else {
     const ja = await prisma.message.count({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) }, content: { contains: EARLY_MARK_WAIT } } });
     if (ja) return { ok: false, skipped: 'aviso de andamento já enviado' };
-    text = `Oi${nome ? `, ${nome}` : ''}! Passando pra te atualizar: a sua ${EARLY_MARK_WAIT}. Já enviamos a proposta aos bancos parceiros e estamos aguardando o retorno deles. Assim que sair o resultado, eu te aviso por aqui! Me responde essa mensagem só pra eu saber que chegou, tá? Qualquer dúvida, é só me chamar. 😊`;
+    const saudacao = (await conversationActive(p.leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
+    text = `${saudacao}Passando pra te atualizar: a sua ${EARLY_MARK_WAIT}. Já enviamos a proposta aos bancos parceiros e estamos aguardando o retorno deles. Assim que sair o resultado, eu te aviso por aqui! Me responde essa mensagem só pra eu saber que chegou, tá? Qualquer dúvida, é só me chamar. 😊`;
   }
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: text, io: p.io });
@@ -810,7 +815,7 @@ export async function buildRejectionText(leadId: string): Promise<{ text: string
   const motivos = reasons.length > 1 ? `${reasons.slice(0, -1).join(', ')} e ${reasons[reasons.length - 1]}` : reasons[0];
   // Fabio 14/10: "a IA não precisa dar uma negativa e depois falar que tem jeito — sempre informar a negativa e mover o card pra Perdido e marcar reprovado".
   // O texto é o do template aprovado "reprovacao" (sem motivo detalhado e sem oferecer alternativa); os motivos objetivos ficam só na nota do card.
-  const text = REJECTION_TEXT;
+  const text = (await conversationActive(leadId)) ? REJECTION_TEXT.replace(/^Oi! Tudo bem\? /, '') : REJECTION_TEXT;
   return { text, reasons };
 }
 

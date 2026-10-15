@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { getDocInfo, isStickerAttachment } from './received-docs.service';
+import { getDocInfo, isStickerAttachment, isScreenshotAttachment } from './received-docs.service';
 import { moveLeadToContracting } from './contracting.service';
 import { sendOutboundWhatsApp } from './message.service';
 import { logActivity } from './activity.service';
@@ -70,7 +70,7 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
     where: { leadId, message: { direction: 'INBOUND' } },
     orderBy: { createdAt: 'asc' },
     select: { id: true, driveFileId: true, data: true, mimeType: true, fileName: true },
-  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a));
+  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && !isScreenshotAttachment(a));
   if (!atts.length) return null;
 
   const info = await getDocInfo(accountId, leadId, atts);

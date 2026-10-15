@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
-import { organizeReceivedDocsFolder, downloadDriveFileForVision, isStickerAttachment } from './google.service';
-export { isStickerAttachment };
+import { organizeReceivedDocsFolder, downloadDriveFileForVision, isStickerAttachment, isScreenshotAttachment } from './google.service';
+export { isStickerAttachment, isScreenshotAttachment };
 import { logActivity } from './activity.service';
 
 const prisma = new PrismaClient();
@@ -180,7 +180,7 @@ async function organizeLead(lead: {
     where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'INBOUND' } },
     orderBy: { createdAt: 'asc' },
     select: { id: true, driveFileId: true, fileName: true, mimeType: true },
-  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a));
+  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && !isScreenshotAttachment(a));
   // Simulações que a equipe mandou pro cliente também vão pra pasta (raiz).
   const sentSimulations = (await prisma.messageAttachment.findMany({
     where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'OUTBOUND' } },
