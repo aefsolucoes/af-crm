@@ -777,12 +777,16 @@ const WHATSAPP_ARCHIVE_FOLDER = 'WhatsApp — arquivo automático';
 
 /** Figurinha do WhatsApp (webp / "sticker-…"): NÃO vai pra pasta do cliente nem entra em documentação — fica numa pasta própria "FIGURINHAS" (Fabio 14/10). */
 export const isStickerAttachment = (a: { mimeType: string; fileName?: string | null }) => /^sticker-/i.test(a.fileName || '') || a.mimeType === 'image/webp';
-const STICKERS_FOLDER = 'FIGURINHAS';
-async function stickersFolderId(accountId: string, conn: { rootFolderId: string | null; whatsappAttachmentsFolderId: string | null }): Promise<string> {
+/** Áudio (voz do cliente ou nossa): também NÃO vai pra pasta do cliente (Fabio 14/10) — fica na pasta própria "AUDIOS". */
+export const isAudioAttachment = (a: { mimeType: string }) => /^audio\//i.test(a.mimeType);
+/** Pasta lateral de um anexo que não é documento: figurinha → FIGURINHAS, áudio → AUDIOS; null = segue a regra normal (pasta do cliente). */
+export const sideFolderName = (a: { mimeType: string; fileName?: string | null }): 'FIGURINHAS' | 'AUDIOS' | null => (isStickerAttachment(a) ? 'FIGURINHAS' : isAudioAttachment(a) ? 'AUDIOS' : null);
+async function sideFolderId(accountId: string, conn: { rootFolderId: string | null; whatsappAttachmentsFolderId: string | null }, name: 'FIGURINHAS' | 'AUDIOS'): Promise<string> {
   const parent = conn.whatsappAttachmentsFolderId || conn.rootFolderId;
   if (!parent) throw new Error('Drive sem pasta-raiz');
-  return (await createFolder(accountId, STICKERS_FOLDER, parent)).id;
+  return (await createFolder(accountId, name, parent)).id;
 }
+const stickersFolderId = (accountId: string, conn: { rootFolderId: string | null; whatsappAttachmentsFolderId: string | null }) => sideFolderId(accountId, conn, 'FIGURINHAS');
 
 /** Leva pra pasta FIGURINHAS as figurinhas que já estavam salvas nas pastas dos clientes. */
 export async function moveExistingStickersToFolder(accountId: string): Promise<{ moved: number; errors: number; folderId: string }> {
@@ -804,6 +808,32 @@ export async function moveExistingStickersToFolder(accountId: string): Promise<{
     } catch { errors++; }
   }
   return { moved, errors, folderId };
+}
+
+/** Leva pras pastas FIGURINHAS e AUDIOS o que já estava salvo nas pastas dos clientes. Devolve o que moveu por pasta. */
+export async function moveExistingSideFiles(accountId: string): Promise<{ moved: Record<string, number>; errors: number }> {
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  if (!conn?.refreshToken || !conn.rootFolderId) throw new Error('Conecte o Google Drive e escolha a pasta-raiz primeiro');
+  const drive = await getDrive(accountId);
+  const folders: Record<string, string> = {};
+  const atts = await prisma.messageAttachment.findMany({
+    where: { driveFileId: { not: null }, OR: [{ fileName: { startsWith: 'sticker-' } }, { mimeType: 'image/webp' }, { mimeType: { startsWith: 'audio/' } }] },
+    select: { driveFileId: true, mimeType: true, fileName: true },
+  });
+  const moved: Record<string, number> = { FIGURINHAS: 0, AUDIOS: 0 };
+  let errors = 0;
+  for (const a of atts) {
+    const name = sideFolderName(a);
+    if (!name) continue;
+    try {
+      const folderId = (folders[name] ||= await sideFolderId(accountId, conn, name));
+      const r = await drive.files.get({ fileId: a.driveFileId!, fields: 'id, parents, trashed', supportsAllDrives: true });
+      if (r.data.trashed || (r.data.parents || []).includes(folderId)) continue;
+      await drive.files.update({ fileId: a.driveFileId!, addParents: folderId, ...(r.data.parents?.length ? { removeParents: r.data.parents.join(',') } : {}), fields: 'id', supportsAllDrives: true });
+      moved[name]++;
+    } catch { errors++; }
+  }
+  return { moved, errors };
 }
 
 type LeadFolderInfo = {
@@ -884,7 +914,7 @@ export async function autoUploadAttachmentToDrive(accountId: string, leadId: str
       // Onde guardar: <pasta de anexos>/<telefone do cliente> se configurada;
       // senão <raiz>/WhatsApp — arquivo automático/<nome>. Ver
       // resolveAttachmentParentFolder.
-      const parentId = isStickerAttachment(att) ? await stickersFolderId(accountId, conn) : await resolveAttachmentParentFolder(accountId, conn, lead ?? { name: null });
+      const parentId = sideFolderName(att) ? await sideFolderId(accountId, conn, sideFolderName(att)!) : await resolveAttachmentParentFolder(accountId, conn, lead ?? { name: null });
       const up = await uploadFile(accountId, {
         name: att.fileName,
         mimeType: att.mimeType,
@@ -949,7 +979,7 @@ export async function bulkArchiveOldAttachments(accountId: string): Promise<{ ar
         if (!att.data) continue;
         try {
           const up = await uploadFile(accountId, {
-            name: att.fileName, mimeType: att.mimeType, data: Buffer.from(att.data), parentId: isStickerAttachment(att) ? await stickersFolderId(accountId, conn) : folderId,
+            name: att.fileName, mimeType: att.mimeType, data: Buffer.from(att.data), parentId: sideFolderName(att) ? await sideFolderId(accountId, conn, sideFolderName(att)!) : folderId,
           });
           await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
           archived++;
@@ -1042,7 +1072,7 @@ export async function archiveOldAttachmentsAutomatic(accountId: string, olderTha
         name: att.fileName,
         mimeType: att.mimeType,
         data: Buffer.from(withData.data),
-        parentId: isStickerAttachment(att) ? await stickersFolderId(accountId, conn!) : await folderForLead(att.leadId),
+        parentId: sideFolderName(att) ? await sideFolderId(accountId, conn!, sideFolderName(att)!) : await folderForLead(att.leadId),
       });
       await prisma.messageAttachment.update({ where: { id: att.id }, data: { driveFileId: up.id, data: null } });
       archived++;
