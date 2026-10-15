@@ -305,7 +305,7 @@ const DOCS_HEADER = 'Para seguir com a contratação do crédito encaminhar os s
 const DOCS_MARK = 'encaminhar os seguintes documentos';
 const DOCS_MARK_OLD = 'o banco pede os seguintes documentos';
 const FALLBACK_PESSOAIS = ['Documento de identificação', 'Comprovante de residência', 'Comprovante de estado civil (certidão de nascimento ou casamento)'];
-const FALLBACK_IMOVEL = ['Certidão de ônus reais atualizada', 'CND de IPTU'];
+const FALLBACK_IMOVEL = ['Certidão de ônus reais/ Matrícula do imóvel', 'Inscrição Imobiliária/ IPTU', 'Capa do IPTU com as metragens'];
 
 /** Linhas "• ..." de cada seção ("*Proponente:*" / "*Imóvel:*") da Resposta rápida "Documentos Home Equity" — a equipe edita lá. */
 function parseDocsTemplate(body: string | null | undefined): { pessoais: string[]; imovel: string[] } {
