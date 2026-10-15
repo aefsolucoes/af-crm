@@ -200,6 +200,19 @@ export default function AnaliseCreditoPage() {
     }
   }
 
+  // "Conferir resultado": cliente "Em análise" — a extensão lê o resultado AGORA (adianta a conferência da fila), sem criar proposta nova.
+  async function conferirAgora(l: BoardLead, bank: Bank) {
+    try {
+      const { data: r } = await api.post('/api/credit-analysis/check-now', { leadId: l.id, bank });
+      pingExtensions(data?.extensions, [bank]);
+      toast(`${BANKS.find((b) => b.key === bank)?.short}: ${r.detail}`, 'success');
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir a conferência', 'error');
+    }
+  }
+  const emAnalise = (a?: { status: string; kind?: string }) => !!a && (a.status === 'SENT' || (a.kind === 'CHECK' && ['REQUESTED', 'RUNNING'].includes(a.status)));
+
   // Só CONFERIR o resultado no portal do Inter de uma proposta já enviada (não cria proposta nova).
   async function checkBank(l: BoardLead, bank: Bank) {
     try {
@@ -420,7 +433,10 @@ export default function AnaliseCreditoPage() {
                               <button onClick={() => toggleClientPause(l)} title={l.autoPaused ? 'Voltar o automático (e a IA, se estava ligada) pra este cliente' : 'STOP TOTAL só deste cliente: derruba as rodadas em andamento e para tudo, inclusive a IA'} className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border ${l.autoPaused ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50' : 'border-red-300 text-red-600 hover:bg-red-50'}`}>
                                 {l.autoPaused ? <><Play size={11} /> Retomar</> : <><Square size={11} className="fill-current" /> Parar</>}
                               </button>
-                              {(['INTER', 'CREDITAS', 'CREDIMORAR'] as Bank[]).filter((bk) => l.latest[bk] && !['REQUESTED', 'RUNNING'].includes(l.latest[bk]!.status)).map((bk) => (
+                              {(['INTER', 'CREDITAS', 'CREDIMORAR'] as Bank[]).filter((bk) => emAnalise(l.latest[bk])).map((bk) => (
+                                <button key={`ra-${bk}`} onClick={() => conferirAgora(l, bk)} title={`A extensão lê AGORA o resultado da proposta no ${BANKS.find((b) => b.key === bk)?.short} (sem criar proposta nova)`} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-indigo-300 text-indigo-700 hover:bg-indigo-50"><RefreshCw size={11} /> Conferir resultado {BANKS.find((b) => b.key === bk)?.short}</button>
+                              ))}
+                              {(['INTER', 'CREDITAS', 'CREDIMORAR'] as Bank[]).filter((bk) => l.latest[bk] && !['REQUESTED', 'RUNNING'].includes(l.latest[bk]!.status) && !emAnalise(l.latest[bk])).map((bk) => (
                                 <button key={bk} onClick={() => checkBank(l, bk)} title={`Ler o resultado no portal do ${BANKS.find((b) => b.key === bk)?.short} sem criar proposta nova`} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><RefreshCw size={11} /> Conferir {BANKS.find((b) => b.key === bk)?.short}</button>
                               ))}
                               {(() => {
@@ -481,6 +497,7 @@ export default function AnaliseCreditoPage() {
                                         <button onClick={() => setModal({ lead: l, bank: b.key, analysis: a })} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50">
                                           {a ? <><Pencil size={11} /> Resultado</> : <><Plus size={11} /> Registrar</>}
                                         </button>
+                                        {emAnalise(a) && <button onClick={() => conferirAgora(l, b.key)} title="A extensão lê AGORA o resultado da proposta (sem criar proposta nova)" className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-indigo-300 text-indigo-700 hover:bg-indigo-50"><RefreshCw size={11} /> Conferir resultado</button>}
                                         {(!a || ['FAILED', 'INCOMPLETE', 'CHECK'].includes(a.status) || (a.bank === 'INTER' && a.status === 'SENT' && !a.proposalNumber && a.source !== 'MANUAL')) && (
                                           <button onClick={() => rerunBank(l, b.key, who)} disabled={!!rerunKey} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50">
                                             <RefreshCw size={11} className={rerunKey === `${l.id}-${b.key}-${who}` ? 'animate-spin' : ''} /> {a ? 'Rodar de novo' : who === 'p2' ? 'Rodar no 2º participante' : 'Rodar'}

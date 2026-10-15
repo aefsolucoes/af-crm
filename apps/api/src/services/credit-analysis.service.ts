@@ -588,6 +588,24 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
   });
 }
 
+/** "Conferir resultado" (Fabio 15/10): a extensão lê AGORA o resultado de uma proposta já enviada (cliente "Em análise"), sem esperar os 10 min da conferência automática e sem criar proposta nova.
+ *  Adianta a conferência que já está na fila (notBefore = agora) ou cria uma; fica como pedido de PESSOA, então vale até com pausa geral ou cliente parado. */
+export async function expediteCheck(db: Db, p: { accountId: string; leadId: string; bank: string; userId?: string }): Promise<{ mode: 'adiantada' | 'criada' | 'lendo'; detail: string }> {
+  if (!BANK_KEYS.includes(p.bank) || !CHECK_BANKS.includes(p.bank)) throw new Error('banco inválido');
+  const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
+  if (!lead) throw new Error('card não encontrado');
+  const abertas = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, bank: p.bank, status: { in: ACTIVE } }, select: { id: true, kind: true, status: true } });
+  if (abertas.some((a) => a.kind === 'CHECK' && a.status === 'RUNNING')) return { mode: 'lendo', detail: 'a extensão já está lendo o resultado agora' };
+  const check = abertas.find((a) => a.kind === 'CHECK' && a.status === 'REQUESTED');
+  if (check) {
+    await db.creditAnalysis.update({ where: { id: check.id }, data: { notBefore: null, requestedById: p.userId || null } });
+    return { mode: 'adiantada', detail: 'a conferência que estava marcada foi adiantada: a extensão lê na próxima consulta à fila (até ~1 min)' };
+  }
+  const out = await createRequests(db, { accountId: p.accountId, userId: p.userId, leadIds: [p.leadId], banks: [p.bank], dryRun: false, kind: 'CHECK' });
+  if (!out.created) throw new Error('não deu pra pedir a conferência (nenhuma proposta enviada nesse banco?)');
+  return { mode: 'criada', detail: 'conferência pedida: a extensão lê na próxima consulta à fila (até ~1 min)' };
+}
+
 /** STOP TOTAL só deste cliente (Fabio 14/10): derruba as rodadas em andamento, para conferências/refações/avisos/fechamento e a IA; o que uma PESSOA pedir continua valendo. Retomar volta tudo (inclusive a IA, se estava ligada). */
 export async function setLeadAutoPause(db: Db, p: { accountId: string; leadId: string; paused: boolean; userId?: string; userName?: string }) {
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, customFields: true } });

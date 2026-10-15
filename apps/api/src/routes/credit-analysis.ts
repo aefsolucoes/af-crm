@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
-import { setLeadAutoPause } from '../services/credit-analysis.service';
+import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.service';
 import { getAutoSetting, setAutoSetting, setPaused } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
@@ -46,6 +46,18 @@ router.get('/overrides', async (req: AuthRequest, res: Response) => {
   try {
     res.json({ data: await getOverride(prisma, { accountId: req.user!.accountId, leadId, bank }) });
   } catch (err) { fail(res, err, 'Erro ao buscar o ajuste'); }
+});
+
+// "Conferir resultado": a extensão lê agora o resultado de uma proposta já enviada (cliente "Em análise").
+router.post('/check-now', async (req: AuthRequest, res: Response) => {
+  const b = req.body || {};
+  const bank = String(b.bank || '').toUpperCase();
+  if (!b.leadId || !BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'leadId e banco são obrigatórios' });
+  try {
+    const out = await expediteCheck(prisma, { accountId: req.user!.accountId, leadId: String(b.leadId), bank, userId: req.user!.id });
+    emit(req, { leadId: String(b.leadId) });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao pedir a conferência', 400); }
 });
 
 // Pausa/retoma a análise automática SÓ de um cliente (botão "Pausar" no cartão do cliente).
