@@ -242,14 +242,16 @@ const BOOT_AT = Date.now();
 const lastPollAt = new Map<string, number>();
 const bankAlive = (accountId: string, bank?: string) => !!bank && (Date.now() - BOOT_AT < 5 * 60_000 || Date.now() - (lastPollAt.get(`${accountId}:${bank}`) || 0) < 3 * 60_000);
 
-/** Card PAUSADO pelo botão da tela (Fabio 14/10, "pausar apenas aquele cliente"): customFields._autoPaused. */
-const PAUSED_LEAD = { lead: { customFields: { path: ['_autoPaused'], equals: true } } };
+/** Card PAUSADO pelo botão da tela (Fabio 14/10, "pausar apenas aquele cliente"): customFields._autoPaused.
+ *  ATENÇÃO (15/10): o filtro por caminho JSON do Prisma (`path: ['_autoPaused'], equals: true`) devolve NULL — e não "falso" — pra card que NUNCA teve essa chave, e dentro de um NOT
+ *  isso tirava da fila TODO pedido automático de card não pausado (Maria, Arlan, Gabriela esperando 4 h). Por isso os ids pausados/travados vêm de SQL (null-safe) e entram como `leadId in [...]`. */
+const pausedLeadIds = async (db: Db, accountId: string) => (await db.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->>'_autoPaused' = 'true'`).map((r) => r.id);
 /** Fora da fila: pedido AUTOMÁTICO (sem requestedById) de card pausado. O que uma PESSOA pediu na tela (Rodar/Conferir) continua valendo. */
-const NOT_PAUSED_AUTO = { NOT: { AND: [{ requestedById: null }, PAUSED_LEAD] } };
+const notPausedAuto = (pausedIds: string[]) => ({ NOT: { AND: [{ requestedById: null }, { leadId: { in: pausedIds } }] } });
 /** TRAVA da consulta do Creditas (Fabio 15/10): a Creditas pediu a Autorização SCR Bacen assinada e o cliente ainda não devolveu/enviamos — ler o portal a cada 10 min não adianta.
  *  As conferências AUTOMÁTICAS do Creditas desse card ficam paradas até o SCR ser enviado à Creditas; "Conferir resultado" pedido por uma pessoa passa. */
-const SCR_LOCKED_LEAD = { lead: { OR: ['PENDING', 'ASKED', 'SENDING'].map((st) => ({ customFields: { path: ['_scrCreditas', 'status'], equals: st } })) } };
-const NOT_SCR_LOCKED = { NOT: { AND: [{ bank: 'CREDITAS' }, { kind: 'CHECK' }, { requestedById: null }, SCR_LOCKED_LEAD] } };
+const scrLockedLeadIds = async (db: Db, accountId: string) => (await db.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_scrCreditas'->>'status' IN ('PENDING', 'ASKED', 'SENDING')`).map((r) => r.id);
+const notScrLocked = (lockedIds: string[]) => ({ NOT: { AND: [{ bank: 'CREDITAS' }, { kind: 'CHECK' }, { requestedById: null }, { leadId: { in: lockedIds } }] } });
 
 export async function claimQueue(db: Db, p: { accountId: string; bank: string; limit?: number; caps?: string[] }) {
   if (!BANK_KEYS.includes(p.bank)) return [];
@@ -258,6 +260,8 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   // Em PAUSA GERAL só sai da fila o que uma pessoa pediu (requestedById): reconferências e pedidos automáticos ficam parados.
   await expireStuck(db, { accountId: p.accountId }); // execução parada não segura a fila: aqui (e não só ao abrir a tela) é o que a destrava
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { paused: true } }))?.paused;
+  const NOT_PAUSED_AUTO = notPausedAuto(await pausedLeadIds(db, p.accountId));
+  const NOT_SCR_LOCKED = notScrLocked(await scrLockedLeadIds(db, p.accountId));
   // "Um cliente por vez": os pedidos de RODAR de outros clientes esperam o cliente atual terminar em todos os bancos.
   const abertos = await db.creditAnalysis.findMany({
     where: { accountId: p.accountId, kind: 'RUN', status: { in: ['REQUESTED', 'RUNNING'] }, source: { notIn: ['AI', 'AI_SIM'] }, OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }], ...NOT_PAUSED_AUTO },
