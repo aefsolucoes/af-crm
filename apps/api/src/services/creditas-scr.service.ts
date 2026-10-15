@@ -233,13 +233,16 @@ function sameName(holder: string, participant: string): boolean {
 
 const fmtCpf = (s: string) => { const d = digits(s); return d.length === 11 ? `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}` : String(s || ''); };
 
-/** Cidade do imóvel em garantia (linha "Imóvel em garantia: Cidade/UF" da proposta do card) — é o "local" da data no formulário. */
+/** "Cidade/UF" do local da data no formulário (Fabio 15/10: "tem que ser a cidade/UF e a data"): a cidade/UF de RESIDÊNCIA da proposta do card; sem ela, a do imóvel em garantia ("Imóvel em garantia: Eusébio/CE"). */
 async function formCity(leadId: string): Promise<string> {
-  const msgs = await prisma.message.findMany({ where: { leadId, content: { contains: 'Imóvel em garantia' } }, orderBy: { createdAt: 'desc' }, take: 3, select: { content: true } });
-  for (const m of msgs) {
-    const r = /Im[óo]vel em garantia:\s*([^\n]+)/i.exec(m.content || '');
-    const city = r ? r[1].split('/')[0].trim() : '';
-    if (city && city.length < 60) return city;
+  const msgs = await prisma.message.findMany({ where: { leadId, OR: [{ content: { contains: 'Cidade/UF' } }, { content: { contains: 'Imóvel em garantia' } }] }, orderBy: { createdAt: 'desc' }, take: 4, select: { content: true } });
+  const limpa = (v: string) => v.replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/').trim();
+  for (const rx of [/Cidade\/UF resid[êe]ncia:\s*([^\n]+)/i, /Im[óo]vel em garantia:\s*([^\n]+)/i]) {
+    for (const m of msgs) {
+      const r = rx.exec(m.content || '');
+      const v = r ? limpa(r[1]) : '';
+      if (v && v.length < 60 && /[A-Za-zÀ-ú]/.test(v)) return v;
+    }
   }
   return '';
 }
