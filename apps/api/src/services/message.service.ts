@@ -247,6 +247,8 @@ export async function sendOutboundWhatsApp(params: {
     include: { contact: true, pipeline: { select: { departmentId: true } } },
   });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
+  // STOP TOTAL do cliente (botão "Parar" na Análise de Crédito, Fabio 14/10): nada AUTOMÁTICO (sem usuário) vai pra ele — IA, avisos, lembretes, automações. A equipe segue podendo escrever.
+  if (!userId && (lead.customFields as any)?._autoPaused) return { success: false, code: 'LEAD_STOPPED', error: 'Cliente PARADO (Stop total): envio automático bloqueado' };
 
   // A API Oficial exige um número de verdade — @lid (só existia por Baileys/QR) não serve.
   const cloudPhone = plainPhone(lead.contact);
@@ -312,6 +314,7 @@ export async function sendOutboundWhatsAppTemplate(params: {
 
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true, pipeline: { select: { departmentId: true } } } });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
+  if (!userId && (lead.customFields as any)?._autoPaused) return { success: false, code: 'LEAD_STOPPED', error: 'Cliente PARADO (Stop total): envio automático bloqueado' };
 
   // Template só vai pela API Oficial — precisa de telefone de verdade, não @lid.
   const phone = plainPhone(lead.contact);

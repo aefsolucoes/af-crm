@@ -1450,8 +1450,8 @@ async function sendTypingIndicator(accountId: string, departmentId: string | nul
 
 async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
   try {
-    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
-    if (!lead?.aiAutoReplyActive) return;
+    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
+    if (!lead?.aiAutoReplyActive || (lead.customFields as any)?._autoPaused) return; // Stop total do cliente: a IA não responde
 
     const latestInbound = () => prisma.message.findFirst({
       where: { leadId, direction: 'INBOUND' }, orderBy: { createdAt: 'desc' }, select: { id: true, externalId: true },
@@ -1486,8 +1486,8 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     )).filter((x): x is NonNullable<typeof x> => !!x).reverse();
 
     // Ainda ligada? (alguém pode ter desligado a IA nesses 2s)
-    const still = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
-    if (!still?.aiAutoReplyActive) return;
+    const still = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
+    if (!still?.aiAutoReplyActive || (still.customFields as any)?._autoPaused) return;
 
     const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer, images);
     if (!genResult) return;

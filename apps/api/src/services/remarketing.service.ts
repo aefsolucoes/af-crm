@@ -260,6 +260,7 @@ export async function processRemarketing(io: any): Promise<void> {
     const due: typeof leads = [];
     for (const l of leads) {
       const cf = (l.customFields || {}) as Cf;
+      if (cf._autoPaused) continue; // Stop total do cliente
       const replied = await prisma.message.findFirst({
         where: { leadId: l.id, direction: 'INBOUND', createdAt: { gt: new Date(cf._rmkStartedAt) } },
         select: { id: true },

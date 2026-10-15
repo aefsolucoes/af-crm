@@ -179,7 +179,7 @@ router.post('/report', async (req: AuthRequest, res: Response) => {
     renewLock(req.user!.accountId, bank);
     const row = await reportAnalysis(prisma, { accountId: req.user!.accountId, requestId: b.requestId ? String(b.requestId) : undefined, leadId: String(b.leadId), bank, status, detail: b.detail ? String(b.detail) : undefined, result: b.result && typeof b.result === 'object' ? b.result : {} });
     emit(req, { leadId: row.leadId });
-    res.json({ ok: true, id: row.id, status: row.status });
+    res.json({ ok: true, id: row.id, status: row.status, ...((row as any).cancelled ? { cancel: true } : {}) });
   } catch (err) { fail(res, err, 'Erro ao registrar a análise', 400); }
 });
 

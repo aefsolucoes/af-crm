@@ -289,6 +289,7 @@ async function ackPendingProposals(accountId: string, io: any) {
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused) continue; // Stop total do cliente
     if (cf._ackRetryAt) continue;
     const email = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'EMAIL', content: { startsWith: '📋 Proposta preenchida no site' } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
     if (!email || Date.now() - email.createdAt.getTime() < 90_000) continue; // dá tempo do fluxo normal

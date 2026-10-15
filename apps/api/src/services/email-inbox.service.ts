@@ -837,8 +837,9 @@ export async function sendFollowUpEmail(params: {
   try {
     const lead = await prisma.lead.findFirst({
       where: { id: params.leadId, accountId: params.accountId },
-      select: { pipeline: { select: { department: { select: { name: true } } } } },
+      select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } },
     });
+    if ((lead?.customFields as any)?._autoPaused) return false; // Stop total do cliente
     const dept = (lead?.pipeline?.department?.name || '').toLowerCase();
     const subject = params.subject?.trim() || PRODUCT_SUBJECT[dept] || 'A&F Soluções Financeiras';
     const body = params.text

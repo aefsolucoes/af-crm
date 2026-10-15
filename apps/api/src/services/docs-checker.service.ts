@@ -137,6 +137,7 @@ ${history}`;
 export async function checkDocsComplete(accountId: string, leadId: string, io: Io): Promise<void> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
   if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return;
+  if ((lead.customFields as any)?._autoPaused) return; // Stop total do cliente: não confere, não move, não avisa
 
   // Conferência de CONTEÚDO (Fabio 14/10): a IA LÊ cada arquivo e vê se está legível, atualizado e no nome certo (RG/CNH com frente e verso). Documento com
   // problema NÃO deixa o card avançar, mesmo que "chegou tudo": o cliente é avisado do que corrigir (uma vez por conjunto de problemas).

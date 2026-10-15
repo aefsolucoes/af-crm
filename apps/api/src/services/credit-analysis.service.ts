@@ -384,7 +384,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
 /** Relato da extensão: status (já em inglês do CRM) + texto + números que ela conseguir ler. */
 export async function reportAnalysis(db: Db, p: { accountId: string; requestId?: string; leadId: string; bank: string; status: string; detail?: string; result?: Record<string, any> }) {
   if (!BANK_KEYS.includes(p.bank)) throw new Error('banco desconhecido');
-  const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
+  const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, customFields: true } });
   if (!lead) throw new Error('card não encontrado');
   let row = p.requestId ? await db.creditAnalysis.findFirst({ where: { id: p.requestId, accountId: p.accountId, leadId: p.leadId } }) : null;
   if (!row) {
@@ -395,9 +395,17 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
       orderBy: { createdAt: 'desc' },
     });
   }
+  // Cliente com STOP TOTAL: passo/falha de uma execução AUTOMÁTICA que ainda está rodando na extensão não vira registro nenhum — o CRM só manda ela parar (`cancel` na resposta).
+  // Execução pedida por uma PESSOA na tela (requestedById) continua valendo; resultado de verdade (aprovado/reprovado) e "enviada" também são gravados.
+  if ((lead.customFields as any)?._autoPaused && !['APPROVED', 'CONDITIONAL', 'REJECTED', 'SENT'].includes(p.status) && (!row || !row.requestedById)) {
+    return (row ? Object.assign(row, { cancelled: true }) : { id: '', leadId: p.leadId, status: 'FAILED', cancelled: true }) as any;
+  }
   if (!row) {
     row = await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: p.leadId, bank: p.bank, status: 'RUNNING', source: 'EXTENSION', startedAt: new Date(), dryRun: p.status === 'TEST' } });
   }
+  // Rodada CANCELADA pela pausa do cliente (setLeadAutoPause): a extensão ainda manda passo/falha da execução que está sendo derrubada — ignora e manda ela parar (`cancelled`).
+  // Resultado de verdade (aprovado/reprovado) e "enviada" (a proposta chegou a ser enviada antes do corte) ainda valem.
+  if (row.status === 'FAILED' && /pausada pelo usu[aá]rio/i.test(row.detail || '') && !['APPROVED', 'CONDITIONAL', 'REJECTED', 'SENT'].includes(p.status)) return Object.assign(row, { cancelled: true }) as typeof row;
   // Relato atrasado (ex.: um "passo" que chegou depois do resultado) não pode desfazer um resultado final.
   if (FINAL.has(row.status) && !FINAL.has(p.status)) return row;
   // Aprovado "condicionado" (Inter pede documentos; Santander "Aprovado Condicional") é um status próprio: aprovou, mas falta algo.
@@ -580,15 +588,31 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
   });
 }
 
-/** Pausa/retoma a análise automática SÓ deste cliente (nada novo é rodado, refeito, avisado nem fechado sozinho; o que está rodando termina e o que uma pessoa pedir continua valendo). */
+/** STOP TOTAL só deste cliente (Fabio 14/10): derruba as rodadas em andamento, para conferências/refações/avisos/fechamento e a IA; o que uma PESSOA pedir continua valendo. Retomar volta tudo (inclusive a IA, se estava ligada). */
 export async function setLeadAutoPause(db: Db, p: { accountId: string; leadId: string; paused: boolean; userId?: string; userName?: string }) {
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, customFields: true } });
   if (!lead) throw new Error('card não encontrado');
   const cf = { ...((lead.customFields || {}) as Record<string, any>) };
-  if (p.paused) cf._autoPaused = new Date().toISOString(); else delete cf._autoPaused;
-  await db.lead.update({ where: { id: lead.id }, data: { customFields: cf as any } });
-  await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: p.paused ? `⏸️ Análise automática PAUSADA só pra este cliente${p.userName ? ` por ${p.userName}` : ''}: nada novo roda, refaz, avisa o cliente nem fecha o card sozinho até retomar.` : `▶️ Análise automática RETOMADA pra este cliente${p.userName ? ` por ${p.userName}` : ''}.` } }).catch(() => {});
-  return { paused: p.paused };
+  const aiAntes = (await db.lead.findUnique({ where: { id: lead.id }, select: { aiAutoReplyActive: true } }))?.aiAutoReplyActive;
+  if (p.paused) { cf._autoPaused = new Date().toISOString(); if (cf._autoPausedAiWas === undefined) cf._autoPausedAiWas = !!aiAntes; } else delete cf._autoPaused;
+  const voltaIa = !p.paused && cf._autoPausedAiWas === true; // retomar devolve a IA do card ao estado de antes
+  if (!p.paused) delete cf._autoPausedAiWas;
+  await db.lead.update({ where: { id: lead.id }, data: { customFields: cf as any, ...(p.paused ? { aiAutoReplyActive: false } : voltaIa ? { aiAutoReplyActive: true } : {}) } });
+  // Pausar NO MEIO do processo: as rodadas de RODAR que estão executando são derrubadas (a extensão recebe `cancel` no próximo passo e tira a aba do banco do meio do formulário).
+  // Fica FAILED com "RODADA ANULADA" (a refação automática não mexe nisso); ao retomar a equipe decide: "Conferir" (se a proposta chegou a ser enviada) ou "Rodar de novo".
+  // Conferências (só leitura) em andamento terminam sozinhas.
+  let interrompidas = 0;
+  if (p.paused) {
+    const r = await db.creditAnalysis.updateMany({
+      where: { leadId: lead.id, kind: 'RUN', status: 'RUNNING' },
+      data: { status: 'FAILED', finishedAt: new Date(), detail: 'RODADA ANULADA: pausada pelo usuário no meio do processo. O banco pode ter ficado com um rascunho/proposta incompleta — ao retomar, use "Conferir" (se a proposta chegou a ser enviada) ou "Rodar de novo".' },
+    });
+    interrompidas = r.count;
+    // Conferências (só leitura) que estavam rodando voltam pra fila (o relato delas é ignorado enquanto o cliente estiver parado) e continuam quando retomar.
+    await db.creditAnalysis.updateMany({ where: { leadId: lead.id, kind: 'CHECK', status: 'RUNNING' }, data: { status: 'REQUESTED', startedAt: null } });
+  }
+  await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: p.paused ? `⏹️ STOP TOTAL só pra este cliente${p.userName ? ` por ${p.userName}` : ''}${interrompidas ? ` — ${interrompidas} rodada(s) em andamento foram interrompidas no meio` : ''}: nada roda, refaz, confere, avisa nem responde sozinho (nem a IA) e o card não é movido sozinho até retomar.` : `▶️ Cliente RETOMADO${p.userName ? ` por ${p.userName}` : ''}: o automático volta a valer${voltaIa ? ' (a IA do card voltou a ficar ligada)' : ''}.` } }).catch(() => {});
+  return { paused: p.paused, interrompidas };
 }
 
 // ─── Ajustes do cliente na análise (inverter titular, valores, renda, prazo) ───

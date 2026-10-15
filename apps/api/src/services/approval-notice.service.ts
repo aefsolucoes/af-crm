@@ -165,6 +165,7 @@ export async function processApprovalReminders(io: any): Promise<void> {
     for (const item of plan) {
       const lead = await prisma.lead.findUnique({ where: { id: item.leadId }, select: { id: true, name: true, pipelineId: true, customFields: true, stage: { select: { name: true } }, contact: { select: { name: true } } } });
       if (!lead) continue;
+      if ((lead.customFields as any)?._autoPaused) continue; // Stop total do cliente: sem lembrete nem mudança de etapa
       if (item.action === 'remind') {
         const tpl = await metaTemplate(item.accountId, APPROVAL_REMINDER_TEMPLATE);
         if (!tpl.approved) continue; // ainda em análise na Meta — tenta na próxima rodada

@@ -452,6 +452,8 @@ export async function runAutomations(params: {
   context?: RunContext;
 }): Promise<void> {
   try {
+    const parado = await prisma.lead.findUnique({ where: { id: params.leadId }, select: { customFields: true } });
+    if ((parado?.customFields as any)?._autoPaused) return; // Stop total do cliente: nenhuma automação
     const rules = await prisma.automationRule.findMany({
       where: { accountId: params.accountId, trigger: params.trigger, active: true },
     });

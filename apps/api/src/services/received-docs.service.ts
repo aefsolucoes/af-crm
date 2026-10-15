@@ -285,6 +285,7 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
     for (const lead of leads) {
       if (!norm(lead.stage.name).includes('documentacao recebida') && !/^em contratacao/.test(norm(lead.pipeline.name))) continue;
       const cf = (lead.customFields || {}) as Record<string, string>;
+      if ((cf as any)._autoPaused) continue; // Stop total do cliente
       if (cf.link_pasta_drive || cf._driveOrganizedAt) {
         // Link colocado à mão: não mexe. Pasta montada antes (ex.: sob demanda,
         // com documentação ainda incompleta): reorganiza só se chegou
