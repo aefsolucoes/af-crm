@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { downloadDriveFileForVision } from './google.service';
-import { getDocInfo, isStickerAttachment, isScreenshotAttachment } from './received-docs.service';
+import { getDocInfo, isStickerAttachment, isScreenshotAttachment, isPropertyDocType } from './received-docs.service';
 import { todayContextLine } from './ai-shared.service';
 
 const prisma = new PrismaClient();
@@ -45,7 +45,12 @@ Critérios — aponte PROBLEMA só quando for real; documento legível e correto
 type Att = { id: string; driveFileId: string | null; data?: Uint8Array | null; mimeType: string; fileName?: string; createdAt?: Date };
 
 function cleanText(v: unknown, max: number): string {
-  return String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const t = String(v ?? '').replace(/\s+/g, ' ').trim();
+  if (t.length <= max) return t;
+  // corta no fim da última frase/palavra inteira (a mensagem ao cliente saía cortada no meio da palavra: "…não essa consulta informat")
+  const cut = t.slice(0, max);
+  const frase = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+  return frase > max * 0.5 ? cut.slice(0, frase + 1) : cut.slice(0, cut.lastIndexOf(' ') > 0 ? cut.lastIndexOf(' ') : max).replace(/[,;:\s]+$/, '') + '…';
 }
 
 /** Lê UM arquivo. undefined = não deu pra ler (tipo, tamanho, erro de rede/API) — tenta de novo na próxima conferência. */
@@ -71,7 +76,7 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-sonnet-5',
-      max_tokens: 700,
+      max_tokens: 4096, // o raciocínio do modelo conta nesse limite: com 700 matrícula e foto de IPTU saíam cortadas e ficavam sem leitura (Maria Antônia, 15/10)
       system: opts.learned ? `${SYSTEM}\n\nREGRAS APRENDIDAS COM A EQUIPE (respostas anteriores a dúvidas de documento — valem pra qualquer cliente):\n${opts.learned}` : SYSTEM,
       messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source }, { type: 'text', text: opts.teamAnswer
         ? `${context}\n\nVocê teve uma dúvida sobre ESTE arquivo e a EQUIPE já olhou e respondeu. Dúvida: ${opts.teamAnswer.pergunta}\nResposta da equipe: ${opts.teamAnswer.resposta}\nDecida agora: resultado OK (a equipe aceitou o documento) ou PROBLEMA (a equipe disse que não serve — em "problemas" escreva o que o cliente deve fazer). NÃO devolva DUVIDA. Preencha "regra" se a resposta vale pra outros clientes.`
@@ -91,9 +96,9 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     const duvida = cleanText(j.duvida, 400);
     if (resultado === 'DUVIDA' && (opts.teamAnswer || !duvida)) return undefined; // com a resposta da equipe não pode voltar a duvidar; sem pergunta não dá pra levar pra equipe
     const lado = j.lado === 'frente' || j.lado === 'verso' || j.lado === 'ambos' ? j.lado : '';
-    const problemas = (Array.isArray(j.problemas) ? j.problemas : []).map((p: unknown) => cleanText(p, 200)).filter(Boolean).slice(0, 4);
+    const problemas = (Array.isArray(j.problemas) ? j.problemas : []).map((p: unknown) => cleanText(p, 320)).filter(Boolean).slice(0, 4);
     const assinatura = j.assinatura === 'GOVBR' || j.assinatura === 'PUNHO' ? j.assinatura : undefined;
-    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 240), ...(assinatura ? { assinatura } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
+    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
   } catch { return undefined; }
 }
 
@@ -159,12 +164,17 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   const context = participantsContext(cf0, lead.name);
   const learned = await learnedDocRules(accountId).catch(() => '');
   const novas: ReviewSummary['novas'] = [];
+  // O leitor completo (com raciocínio) acerta mais que o classificador barato: documento do IMÓVEL que o classificador tratou como pessoal
+  // (capa de IPTU lida como "comprovante de residência" em nome de empresa — Maria Antônia, 15/10) passa a valer pelo que o leitor disse.
+  const infoFix: Record<string, string> = {};
   for (const a of atts) {
     if (cache[a.id] || info[a.id] === null || info[a.id] === undefined) continue;
     const r = await reviewAttachment(accountId, a, context, { learned });
     if (!r) continue;
     cache[a.id] = r;
     novas.push({ arquivo: a.fileName || a.id, r });
+    const tipoLido = r.tipo.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]/g, '').trim().toUpperCase();
+    if (tipoLido && r.resultado !== 'NAO_DOCUMENTO' && isPropertyDocType(tipoLido) && !isPropertyDocType(info[a.id]!.type)) infoFix[a.id] = `${tipoLido}|`;
     if (r.resultado === 'DUVIDA') {
       // Não chuta: leva o documento e a pergunta pra equipe (balão "Dúvidas da IA"); uma pergunta por arquivo.
       const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
@@ -173,7 +183,8 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   }
   if (novas.length) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _docReview: cache } } });
+    const freshCf = (fresh?.customFields || {}) as any;
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshCf, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
   }
 
   // Situação atual: a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some); RG/CNH somam os lados.
