@@ -59,6 +59,12 @@ const HOME_EQUITY_FIELDS: FieldMap = {
   'credito': { key: 'valor_credito', kind: 'number' },
   'prazo': { key: 'prazo_financ', kind: 'text' }, // TEXT: guarda "60 meses" como veio
   '1ª parcela estimada': { key: 'primeira_parcela', kind: 'number' },
+  // Imóvel com financiamento (Fabio 15/10): o cliente pega o crédito pra quitar o saldo + o TROCO que sobra pra ele. Valor do crédito = saldo devedor + troco (parseFicha soma).
+  'valor que falta para quitacao': { key: 'saldo_devedor', kind: 'number' },
+  'troco': { key: 'troco', kind: 'number' },
+  'troco desejado': { key: 'troco', kind: 'number' },
+  'valor do troco': { key: 'troco', kind: 'number' },
+  'quanto voce quer receber': { key: 'troco', kind: 'number' },
 };
 
 // Ficha real (2026-09-25): "Imóvel: Residencial — R$ 500.000,00 (UF: DF)",
@@ -211,6 +217,9 @@ function parseFicha(text: string, fieldMap: FieldMap): Record<string, string> {
       if (parsed !== null && parsed !== '') out[key] = parsed;
     }
   }
+  // Saldo devedor + troco informados na proposta: o crédito a analisar é a SOMA (a linha "Crédito desejado" do site, se vier, fica de lado).
+  const saldo = Number(out.saldo_devedor), troco = Number(out.troco);
+  if (saldo > 0 && troco > 0) out.valor_credito = String(Math.round((saldo + troco) * 100) / 100);
   return out;
 }
 

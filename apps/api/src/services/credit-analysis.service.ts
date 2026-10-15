@@ -193,6 +193,30 @@ export function analysisNote(a: { bank: string; status: string; detail?: string 
 /** Pede a análise de N clientes em N bancos (`kind` RUN), ou só a CONFERÊNCIA do resultado de uma proposta já enviada
  *  (`kind` CHECK — a extensão acha o cliente pelo CPF na lista do portal; não cria proposta nova). Pedido de RUN para quem JÁ foi
  *  rodado nesse banco vira só uma CONSULTA da proposta (CHECK), a não ser que venha `force` (ex.: depois de ajustar valores). A extensão busca os pedidos (claimQueue). */
+/** Idade (anos completos) a partir de "DD/MM/AAAA" ou "AAAA-MM-DD"; null se não der pra ler. */
+function ageOf(raw: unknown, now = new Date()): number | null {
+  const t = String(raw ?? '').trim();
+  const br = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const [d, m, y] = br ? [Number(br[1]), Number(br[2]), Number(br[3])] : iso ? [Number(iso[3]), Number(iso[2]), Number(iso[1])] : [0, 0, 0];
+  if (!y || y < 1900) return null;
+  let a = now.getFullYear() - y;
+  if (now.getMonth() + 1 < m || (now.getMonth() + 1 === m && now.getDate() < d)) a--;
+  return a;
+}
+
+/** Texto do motivo se NENHUM participante com nascimento conhecido está na faixa do Inter (18–69 anos); null = pode rodar. */
+async function interAgeBlock(db: Db, leadId: string): Promise<string | null> {
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const people = [
+    { name: String(cf.participante_1 || lead?.name || ''), age: ageOf(cf.nascimento_1) },
+    ...(cf.cpf_2 || cf.participante_2 ? [{ name: String(cf.participante_2 || '2º participante'), age: ageOf(cf.nascimento_2) }] : []),
+  ];
+  if (people.some((x) => x.age === null || (x.age >= 18 && x.age <= 69))) return null; // sem data de nascimento = não sabe; alguém na faixa = a extensão escolhe
+  return `idade fora da faixa do Inter (18 a 69 anos): ${people.map((x) => `${x.name} (${x.age} anos)`).join(', ')}.`;
+}
+
 export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
@@ -212,6 +236,16 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
       if (kind === 'RUN' && !p.force && CHECK_BANKS.includes(bank)) {
         const done = await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, dryRun: false, status: { in: REAL_SENT }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, select: { id: true } });
         if (done) { kind = 'CHECK'; if (!consulted.includes(bank)) consulted.push(bank); }
+      }
+      // Idade fora da faixa do Inter (18 a 69 anos — o portal recusa com "Parâmetro inválido", Admir 15/10): se NENHUM participante do card está na faixa, nem abre fila: NÃO RODEI direto.
+      // (Com 1 participante na faixa a extensão decide quem é o titular — não barra aqui.)
+      if (bank === 'INTER' && kind === 'RUN' && !p.dryRun) {
+        const idade = await interAgeBlock(db, l.id);
+        if (idade) {
+          await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, detail: `NÃO RODEI: ${idade}`, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
+          created++;
+          continue;
+        }
       }
       const prev = kind === 'CHECK' ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true } }) : null;
       const prevNumber = prev?.proposalNumber || null;

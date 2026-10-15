@@ -66,13 +66,14 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
 
   // Quanto o cliente PRECISA receber (líquido): se o crédito pedido é maior que o saldo que ele disse dever, o pedido já incluía a quitação (João Henrique: pediu R$ 270 mil = R$ 240 mil de saldo + R$ 30 mil) —
   // o líquido é a diferença; senão o pedido já é o líquido (Maria: pediu R$ 50 mil com R$ 88 mil de saldo). O valor novo é sempre SALDO REAL (print) + LÍQUIDO.
-  const liquido = declared > 0 && base > declared ? Math.round((base - declared) * 100) / 100 : base;
+  const trocoCard = Number(cf.troco) || 0; // "Troco" do card (veio da proposta nova ou foi digitado): vale mais que a dedução abaixo
+  const liquido = trocoCard > 0 ? trocoCard : (declared > 0 && base > declared ? Math.round((base - declared) * 100) / 100 : base);
   const nome = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
   const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const abertura = opts.docsReceived ? `Recebi a documentação${nome ? `, ${nome}` : ''}, obrigada! 🙏\n\n` : ((await conversationActive(leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `);
   const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de um *print do saldo devedor atualizado* (no app ou no site do banco). Esse saldo é *somado* ao valor que você precisa receber${liquido ? ` (${brl(liquido)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. Assim que você mandar, te aviso do resultado.`;
   const marker = { askedAt: new Date().toISOString(), base, liquido, declared, gravame };
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoDevedor: marker } as any } });
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoDevedor: marker, ...(liquido > 0 ? { troco: String(liquido) } : {}) } as any } }); // "Troco" = o que sobra pro cliente depois de quitar
   const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Crédito aprovado e o imóvel tem financiamento ativo (proposta: faltam ${declared ? brl(declared) : '—'}${gravame ? `; matrícula: ${gravame}` : ''}). ${sent.success ? 'Pedi ao cliente o print do saldo devedor: o saldo será somado ao valor líquido que ele precisa' + (liquido ? ` (${brl(liquido)})` : '') + ' e a análise refeita com o total.' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor.' : 'IA desligada: peça ao cliente o print do saldo devedor (será somado ao crédito pedido e a análise refeita).'}` } }).catch(() => {});
   return !!sent.success;
@@ -172,7 +173,7 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   const total = Math.round((achou.saldo + base) * 100) / 100;
   st.doneAt = new Date().toISOString();
   (st as any).saldo = achou.saldo; (st as any).total = total;
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, valor_credito: String(total), _saldoDevedor: st } as any } });
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), troco: String(base), valor_credito: String(total), _saldoDevedor: st } as any } });
   let r: { created?: number } = {};
   try {
     const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');

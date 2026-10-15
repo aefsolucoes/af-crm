@@ -851,6 +851,16 @@ router.post('/merge-same-contact', async (req: AuthRequest, res: Response) => {
 router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
   try {
     const { customFields } = req.body;
+    // Crédito com SALDO DEVEDOR (Fabio 15/10): o cliente pega o crédito pra quitar o financiamento atual + o TROCO que sobra pra ele. "Valor do crédito" = Saldo devedor + Troco —
+    // calculado aqui, na escrita, quando o saldo ou o troco mudam (editar só o "Valor do crédito" continua valendo como está).
+    if (customFields && typeof customFields === 'object' && ('saldo_devedor' in customFields || 'troco' in customFields)) {
+      const cur = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { customFields: true } });
+      const before = (cur?.customFields || {}) as Record<string, unknown>;
+      const mudou = ['saldo_devedor', 'troco'].some((k) => k in customFields && String(customFields[k] ?? '') !== String(before[k] ?? ''));
+      const saldo = parseFieldNumber(('saldo_devedor' in customFields ? customFields.saldo_devedor : before.saldo_devedor) as any);
+      const troco = parseFieldNumber(('troco' in customFields ? customFields.troco : before.troco) as any);
+      if (mudou && saldo > 0) customFields.valor_credito = String(Math.round((saldo + (troco > 0 ? troco : 0)) * 100) / 100);
+    }
     const lead = await updateLead(req.params.id, req.user!.accountId, { customFields } as any);
 
     // O nome que aparece na conversa/Inbox é o do CONTATO. Como o "Participante 1"
