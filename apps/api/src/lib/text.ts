@@ -27,7 +27,8 @@ export function callableFirstName(...raws: unknown[]): string | null {
   return null;
 }
 
-/** Arredonda PRA CIMA até o próximo múltiplo de R$ 5.000 (Fabio 15/10: "pode arredondar o valor total para até 5 mil a mais sempre que fizer isso" — saldo devedor + troco). */
-export function roundUpTo5k(v: number): number {
-  return v > 0 ? Math.ceil(v / 5000) * 5000 : v;
+/** Arredonda PRA CIMA pro próximo número inteiro de milhar (Fabio 15/10: "arredondar o valor total pra número inteiro, até 5 mil a mais" — saldo devedor + troco).
+ *  Nunca passa de R$ 5.000 a mais (aqui o máximo é R$ 999,99). */
+export function roundUpToThousand(v: number): number {
+  return v > 0 ? Math.min(Math.ceil(v / 1000) * 1000, v + 5000) : v;
 }

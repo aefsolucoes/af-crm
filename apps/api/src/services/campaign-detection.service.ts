@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { roundUpTo5k } from '../lib/text';
+import { roundUpToThousand } from '../lib/text';
 const prisma = new PrismaClient();
 
 /**
@@ -219,7 +219,7 @@ function parseFicha(text: string, fieldMap: FieldMap): Record<string, string> {
   }
   // Saldo devedor + troco informados na proposta: o crédito a analisar é a SOMA (a linha "Crédito desejado" do site, se vier, fica de lado).
   const saldo = Number(out.saldo_devedor), troco = Number(out.troco);
-  if (saldo > 0 && troco > 0) out.valor_credito = String(roundUpTo5k(Math.round((saldo + troco) * 100) / 100));
+  if (saldo > 0 && troco > 0) out.valor_credito = String(roundUpToThousand(Math.round((saldo + troco) * 100) / 100));
   return out;
 }
 

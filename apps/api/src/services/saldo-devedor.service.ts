@@ -2,7 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { downloadDriveFileForVision } from './google.service';
 import { isStickerAttachment } from './received-docs.service';
 import { sendOutboundWhatsApp } from './message.service';
-import { roundUpTo5k } from '../lib/text';
+import { roundUpToThousand } from '../lib/text';
 
 const prisma = new PrismaClient();
 
@@ -171,7 +171,7 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   }
 
   const base = st.liquido || st.base || Number(cf2.valor_credito) || 0; // valor LÍQUIDO que o cliente precisa receber
-  const total = roundUpTo5k(Math.round((achou.saldo + base) * 100) / 100); // saldo + troco, arredondado pra cima em múltiplos de R$ 5 mil
+  const total = roundUpToThousand(Math.round((achou.saldo + base) * 100) / 100); // saldo + troco, arredondado pra cima pro milhar inteiro
   st.doneAt = new Date().toISOString();
   (st as any).saldo = achou.saldo; (st as any).total = total;
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), troco: String(base), valor_credito: String(total), _saldoDevedor: st } as any } });
@@ -180,9 +180,9 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
     const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
     r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true });
   } catch (e: any) { console.error('[Saldo] não consegui pedir a análise:', e?.message); }
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}. Valor líquido que o cliente precisa ${base ? brl(base) : '—'} + saldo (${brl(achou.saldo)}) = ${brl(Math.round((achou.saldo + base) * 100) / 100)}, arredondado pra cima (múltiplo de R$ 5 mil) = ${brl(total)}: "Valor do crédito" atualizado e ${r.created ? `análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''})` : 'análise já em andamento'}. O resultado anterior não vale pro valor novo.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}. Valor líquido que o cliente precisa ${base ? brl(base) : '—'} + saldo (${brl(achou.saldo)}) = ${brl(Math.round((achou.saldo + base) * 100) / 100)}, arredondado pra cima (milhar inteiro) = ${brl(total)}: "Valor do crédito" atualizado e ${r.created ? `análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''})` : 'análise já em andamento'}. O resultado anterior não vale pro valor novo.` } }).catch(() => {});
   if (lead.aiAutoReplyActive) {
     const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-    await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você precisa receber` : ''} → vou analisar ${brl(total)} (arredondei pra dar margem aos custos). Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.`, io: io || undefined }).catch(() => {});
+    await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você precisa receber` : ''}, ou seja, ${brl(total)}. Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.`, io: io || undefined }).catch(() => {});
   }
 }
