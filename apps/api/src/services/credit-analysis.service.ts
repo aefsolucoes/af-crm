@@ -245,6 +245,8 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
   const consulted: string[] = [];
   for (const l of leads) {
     const createdBefore = created;
+    const cfPedido = ((await db.lead.findUnique({ where: { id: l.id }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+    const pedidoNaRodada = Number(String(cfPedido.valor_credito ?? '').replace(/[^\d.]/g, '')) || null; // card no momento do pedido
     if (wantedKind === 'RUN' && !p.dryRun && p.force) await alignHoldersWithApproval(db, p.accountId, l.id).catch(() => {});
     for (const bank of banks) {
       const open = await db.creditAnalysis.findFirst({
@@ -263,14 +265,14 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
       if (bank === 'INTER' && kind === 'RUN' && !p.dryRun) {
         const idade = await interAgeBlock(db, l.id);
         if (idade) {
-          await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, detail: `NÃO RODEI: ${idade}`, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
+          await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail: `NÃO RODEI: ${idade}`, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
           created++;
           continue;
         }
       }
-      const prev = kind === 'CHECK' ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true } }) : null;
+      const prev = kind === 'CHECK' ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true, requestedValue: true } }) : null;
       const prevNumber = prev?.proposalNumber || null;
-      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, proposalNumber: prevNumber, holderCpf: prev?.holderCpf || null, holderName: prev?.holderName || null, dryRun: kind === 'CHECK' ? false : p.dryRun, source: p.source || 'EXTENSION', requestedById: p.userId || null } });
+      await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, requestedValue: kind === 'CHECK' ? (prev?.requestedValue ?? null) : pedidoNaRodada, proposalNumber: prevNumber, holderCpf: prev?.holderCpf || null, holderName: prev?.holderName || null, dryRun: kind === 'CHECK' ? false : p.dryRun, source: p.source || 'EXTENSION', requestedById: p.userId || null } });
       created++;
     }
     // Guarda o crédito pedido NESTA rodada (15/10, Rafaela): se o cliente preencher a proposta de novo com OUTRO valor, o resultado antigo não vale e a análise é refeita (campaign-detection).
@@ -367,6 +369,24 @@ async function holderIfSecond(db: Db, leadId: string, holderName?: string | null
   const a = t(holderName), b = t(main);
   return a.length && b.length && a[0] === b[0] && a[a.length - 1] === b[b.length - 1] ? null : (normName(holderName) !== normName(main) ? holderName : null);
 }
+
+/** O resultado de um banco MUDOU para o mesmo participante (aprovou e depois reprovou com o valor alterado — ou o contrário): fica gravado numa anotação do card (Fabio 15/10). */
+async function noteVerdictFlip(db: Db, row: { id: string; leadId: string; bank: string; status: string; holderName?: string | null; holderCpf?: string | null; approvedValue?: number | null; netValue?: number | null; requestedValue?: number | null; dryRun: boolean; createdAt: Date }): Promise<void> {
+  const positivo = (st: string) => st === 'APPROVED' || st === 'CONDITIONAL';
+  if (row.dryRun || !(positivo(row.status) || row.status === 'REJECTED')) return;
+  const norm1 = (t?: string | null) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().split(/\s+/)[0] || '';
+  const mesmo = (r: { holderName?: string | null; holderCpf?: string | null }) => (row.holderCpf && r.holderCpf ? row.holderCpf === r.holderCpf : norm1(row.holderName) === norm1(r.holderName));
+  const antes = await db.creditAnalysis.findMany({ where: { leadId: row.leadId, bank: row.bank, dryRun: false, id: { not: row.id }, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { lt: row.createdAt } }, orderBy: { createdAt: 'desc' }, take: 8 });
+  const ant = antes.find(mesmo);
+  if (!ant || positivo(ant.status) === positivo(row.status)) return;
+  const brlN = (n?: number | null) => (n ? n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—');
+  const dia = (d: Date) => d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+  const rotulo = (r: { status: string; approvedValue?: number | null; netValue?: number | null }) => (positivo(r.status) ? `APROVADO ${brlN(r.netValue || r.approvedValue)}` : 'REPROVADO');
+  const quem = row.holderName ? ` no nome de ${row.holderName}` : '';
+  const banco = BANKS[row.bank]?.label || row.bank;
+  await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🔁 ${banco}${quem}: o resultado MUDOU. Antes: ${rotulo(ant)} (pedido ${brlN(ant.requestedValue)}, ${dia(ant.createdAt)}) → agora: ${rotulo(row)} (pedido ${brlN(row.requestedValue)}, ${dia(row.createdAt)}). O resultado anterior continua registrado na aba Análise de Crédito (Resultados anteriores).` } });
+}
+
 
 /** O banco pediu DE NOVO / não aceitou a certidão de ônus/matrícula que o cliente já mandou (Fabio 15/10: "o próprio CRM faz essa parte: anota e lê"). Lê o resultado da análise (ex.: Inter "Documentos
  *  pendentes: Certidão de ônus…" ou texto de recusa), anota no card com o marcador "🏛️ CERTIDÃO RECUSADA PELO BANCO" (a conferência de documentos lê esse marcador) e avisa o cliente UMA vez,
@@ -478,6 +498,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Creditas: este CPF já possui uma proposta ativa que NÃO está na nossa conta — precisa acionar manualmente o gestor da Creditas (contato executivo Home).' } });
   }
   if (becameFinal && updated.dryRun && updated.source === 'AI_SIM') await deliverAiSimulation(db, updated).catch((e: any) => console.error('[IA] simulação de outro prazo:', e?.message));
+  if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
   return { row: updated, becameFinal };
 }
@@ -700,7 +721,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
     select: {
       id: true, name: true, value: true, status: true, customFields: true, stageEnteredAt: true,
       stage: { select: { name: true } }, pipeline: { select: { name: true } },
-      creditAnalyses: { orderBy: { createdAt: 'desc' }, take: 30 },
+      creditAnalyses: { orderBy: { createdAt: 'desc' }, take: 60 },
       creditOverrides: { select: { bank: true, data: true } },
     },
     orderBy: { updatedAt: 'desc' },
@@ -744,9 +765,28 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       lastRunAt: l.creditAnalyses[0]?.createdAt || null,
       latest,
       history: l.creditAnalyses,
+      verdicts: buildVerdicts(l.creditAnalyses),
       chosenId: l.creditAnalyses.find((a) => a.chosen)?.id || null,
     };
   });
+}
+
+/** Resultados FINAIS (aprovou/reprovou) de cada banco por participante, do mais antigo ao mais novo, com o crédito pedido em cada um — pra ver "aprovou R$ 50 mil, depois com R$ 138 mil reprovou". */
+function buildVerdicts(rows: Array<{ id: string; bank: string; status: string; dryRun: boolean; holderName: string | null; holderCpf: string | null; approvedValue: number | null; netValue: number | null; requestedValue: number | null; createdAt: Date; finishedAt: Date | null }>) {
+  const positivo = (st: string) => st === 'APPROVED' || st === 'CONDITIONAL';
+  const fin = rows.filter((r) => !r.dryRun && (positivo(r.status) || r.status === 'REJECTED')).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  const first = (t?: string | null) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().split(/\s+/)[0] || 'titular';
+  const lastByKey = new Map<string, (typeof fin)[number]>();
+  const out: Array<{ id: string; bank: string; holderName: string | null; status: string; approvedValue: number | null; netValue: number | null; requestedValue: number | null; at: Date; flip: boolean }> = [];
+  for (const r of fin) {
+    const key = `${r.bank}|${r.holderCpf || first(r.holderName)}`;
+    const prev = lastByKey.get(key);
+    const igual = prev && prev.status === r.status && prev.approvedValue === r.approvedValue && prev.netValue === r.netValue && prev.requestedValue === r.requestedValue;
+    if (igual) continue; // leitura repetida do mesmo resultado
+    out.push({ id: r.id, bank: r.bank, holderName: r.holderName, status: r.status, approvedValue: r.approvedValue, netValue: r.netValue, requestedValue: r.requestedValue, at: r.finishedAt || r.createdAt, flip: !!prev && positivo(prev.status) !== positivo(r.status) });
+    lastByKey.set(key, r);
+  }
+  return out.slice(-16);
 }
 
 /** "Conferir resultado" (Fabio 15/10): a extensão lê AGORA o resultado de uma proposta já enviada (cliente "Em análise"), sem esperar os 10 min da conferência automática e sem criar proposta nova.

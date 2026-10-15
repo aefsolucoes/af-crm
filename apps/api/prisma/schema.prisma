@@ -1221,6 +1221,8 @@ model CreditAnalysis {
   detail           String?   @db.Text
   proposalNumber   String?
   approvedValue    Float?
+  /// Crédito PEDIDO nesta rodada (card no momento do pedido): permite mostrar "aprovou R$ X, depois com R$ Y reprovou".
+  requestedValue   Float?
   netValue         Float? // valor LÍQUIDO do contrato (Creditas: já sem IOF/tarifa/custas) — é o que o aviso ao cliente mostra quando existe
   termMonths       Int?
   rate             String?

@@ -28,7 +28,7 @@ export const MANUAL_STATUS = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CH
 
 export interface Analysis {
   id: string; bank: Bank; status: string; kind?: string; detail: string | null; dryRun: boolean; source: string; chosen: boolean;
-  holderName?: string | null; proposalNumber: string | null; approvedValue: number | null; netValue?: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
+  holderName?: string | null; requestedValue?: number | null; proposalNumber: string | null; approvedValue: number | null; netValue?: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
   firstInstallment: number | null; lastInstallment: number | null; conditions: string | null;
   requestedAt: string; finishedAt: string | null; updatedAt: string; createdAt: string;
 }
@@ -49,6 +49,9 @@ export function fmtCpf(v?: string | null): string {
   return d.length === 11 ? d.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4') : String(v || '').trim();
 }
 
+/** Resultado FINAL (aprovou/reprovou) de um banco pra um participante, com o crédito pedido naquela rodada. `flip` = mudou de aprovado↔reprovado em relação ao anterior. */
+export interface Verdict { id: string; bank: Bank; holderName: string | null; status: string; approvedValue: number | null; netValue: number | null; requestedValue: number | null; at: string; flip: boolean }
+
 export interface BoardLead {
   id: string; name: string; stage: string; status: string;
   requested: { creditValue: number; propertyValue: number; term: string | null };
@@ -57,7 +60,7 @@ export interface BoardLead {
   inPre: boolean; autoPaused?: boolean;
   /** Creditas pediu a Autorização SCR Bacen assinada: PENDING/ASKED/SENDING = consulta do Creditas TRAVADA; SENT = enviada à Creditas; NOTED = só registrado. */
   scr?: { status: 'PENDING' | 'ASKED' | 'SENDING' | 'SENT' | 'NOTED'; at: string | null; askedAt: string | null; sentAt: string | null; creditasId: string | null } | null; preAnaliseAt?: string | null; ran: boolean; lastRunAt: string | null;
-  latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; chosenId: string | null;
+  latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; verdicts?: Verdict[]; chosenId: string | null;
   /** Última análise de cada banco por participante (o 2º, rodado no nome dele, não esconde o 1º). */
   latestP1?: Partial<Record<Bank, Analysis>>; latestP2?: Partial<Record<Bank, Analysis>>;
 }

@@ -518,6 +518,34 @@ export default function AnaliseCreditoPage() {
                                   );
                                 })}
                               </div>
+                              {(l.verdicts || []).length > 1 && (() => {
+                                const vs = l.verdicts || [];
+                                const ok = (st: string) => st === 'APPROVED' || st === 'CONDITIONAL';
+                                const grupos = Array.from(new Set(vs.map((v) => `${v.bank}|${(v.holderName || '').split(' ')[0].toLowerCase()}`))).filter((k) => vs.filter((v) => `${v.bank}|${(v.holderName || '').split(' ')[0].toLowerCase()}` === k).length > 1);
+                                if (!grupos.length) return null;
+                                return (
+                                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50/60 p-3 text-xs text-slate-600">
+                                    <div className="font-medium text-slate-700 mb-1">Resultados anteriores — o resultado mudou depois que o valor/dados mudaram</div>
+                                    <ul className="space-y-1.5">
+                                      {grupos.map((k) => {
+                                        const lista = vs.filter((v) => `${v.bank}|${(v.holderName || '').split(' ')[0].toLowerCase()}` === k);
+                                        return (
+                                          <li key={k}>
+                                            <span className="font-medium">{BANKS.find((b) => b.key === lista[0].bank)?.short}{lista[0].holderName ? ` — ${lista[0].holderName}` : ''}:</span>{' '}
+                                            {lista.map((v, i) => (
+                                              <span key={v.id}>
+                                                {i > 0 && <span className="mx-1 text-slate-400">→</span>}
+                                                <span className={ok(v.status) ? 'text-emerald-600' : 'text-red-500'}>{ok(v.status) ? 'Aprovou' : 'Reprovou'}{v.netValue || v.approvedValue ? ` ${formatCurrency(Number(v.netValue || v.approvedValue))}` : ''}</span>
+                                                <span className="text-slate-400"> (pedido {v.requestedValue ? formatCurrency(Number(v.requestedValue)) : 'não registrado'}, {new Date(v.at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})</span>
+                                              </span>
+                                            ))}
+                                          </li>
+                                        );
+                                      })}
+                                    </ul>
+                                  </div>
+                                );
+                              })()}
                               {l.history.length > 1 && (
                                 <div className="mt-3 text-[11px] text-slate-400">
                                   <div className="font-medium text-slate-500 mb-1">Histórico</div>
