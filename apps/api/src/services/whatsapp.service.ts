@@ -1448,10 +1448,24 @@ async function sendTypingIndicator(accountId: string, departmentId: string | nul
   if (!res.ok) console.warn('[WhatsApp] "digitando..." não foi aceito pela Meta:', res.status, (await res.text()).slice(0, 200));
 }
 
+/** Foto/print que chega SEM texto e sem contexto (a última mensagem nossa não pediu arquivo/imagem): a IA espera o cliente perguntar (Fabio 15/10, Mauricio: respondeu "essa foto é só do formulário em branco…" antes da pergunta dele).
+ *  Quando o texto do cliente chegar, a rajada inclui a imagem e a resposta sai com tudo. */
+async function imageWithoutContext(leadId: string): Promise<boolean> {
+  const lastOut = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true, content: true } });
+  const burst = await prisma.message.findMany({
+    where: { leadId, direction: 'INBOUND', ...(lastOut ? { createdAt: { gt: lastOut.createdAt } } : {}) },
+    orderBy: { createdAt: 'desc' }, take: 5, select: { content: true, attachments: { select: { mimeType: true } } },
+  });
+  if (!burst.length || !burst.every((m) => m.attachments.some((a) => /^image\//.test(a.mimeType)) && /^📎/.test(m.content || ''))) return false;
+  const pediu = !!lastOut && Date.now() - lastOut.createdAt.getTime() < 30 * 60_000 && /(mand|envi|encaminh|anex|print|captura|foto|imagem|document|arquivo)/i.test(lastOut.content || '');
+  return !pediu;
+}
+
 async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
   try {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
     if (!lead?.aiAutoReplyActive || (lead.customFields as any)?._autoPaused) return; // Stop total do cliente: a IA não responde
+    if (await imageWithoutContext(leadId)) { console.log(`[IA] ${leadId}: imagem sem texto nem contexto — espera o cliente perguntar`); return; }
 
     const latestInbound = () => prisma.message.findFirst({
       where: { leadId, direction: 'INBOUND' }, orderBy: { createdAt: 'desc' }, select: { id: true, externalId: true },
