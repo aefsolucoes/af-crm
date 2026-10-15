@@ -452,9 +452,12 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     const cfv = (lead?.customFields || {}) as Record<string, any>;
     const toN = (v: any) => { const t = String(v ?? '').replace(/[^\d.,]/g, ''); const n = t.includes(',') ? Number(t.replace(/\./g, '').replace(',', '.')) : (/\.\d{3}$/.test(t) ? Number(t.replace(/\./g, '')) : Number(t)); return Number.isFinite(n) ? n : 0; };
     const pedido = toN(cfv._lastRunValue) || toN(cfv.valor_credito);
-    const aprovado = Number(data.approvedValue) || Number(data.netValue) || 0;
-    if (pedido > 0 && aprovado > pedido * 1.5) {
-      const lido = `${brl(Number(data.approvedValue) || Number(data.netValue))}${data.termMonths ? ` em ${data.termMonths} meses` : ''}`;
+    // Compara o que o cliente RECEBE (líquido do Creditas, já sem IOF/tarifa/custas) com o pedido; o valor bruto do Creditas vem MAIOR por causa dessas custas (+8% a +22% nos casos reais), então
+    // sem o líquido a margem é maior (1,8×) pra não barrar aprovação legítima. Caso do erro (Gabriela): 30× o pedido.
+    const aprovado = Number(data.netValue) || Number(data.approvedValue) || 0;
+    const fator = row.bank === 'CREDITAS' && !Number(data.netValue) ? 1.8 : 1.5;
+    if (pedido > 0 && aprovado > pedido * fator) {
+      const lido = `${brl(Number(data.netValue) || Number(data.approvedValue))}${data.termMonths ? ` em ${data.termMonths} meses` : ''}`;
       next = row.bank === 'CREDITAS' ? 'FAILED' : 'CHECK';
       data = {
         ...data, status: next, proposalNumber: null, approvedValue: null, netValue: null, termMonths: null, rate: null, indexer: null, firstInstallment: null, lastInstallment: null, conditions: null,
