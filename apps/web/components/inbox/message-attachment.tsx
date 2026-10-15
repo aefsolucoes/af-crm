@@ -93,7 +93,19 @@ function AudioPlayer({ url }: { url: string }) {
     if (!audio) return;
     setSpeed(readSpeed());
     const onTime = () => setCurrentTime(audio.currentTime);
-    const onLoaded = () => setDuration(audio.duration || 0);
+    // Alguns áudios (gravados no navegador, alguns .ogg) chegam sem a duração no cabeçalho: audio.duration = Infinity e a barra não deixava pular pra lugar nenhum.
+    // Truque: manda ir pro "fim do mundo", o navegador descobre a duração real, e volta pro início.
+    let descobrindo = false;
+    const onLoaded = () => {
+      const d = audio.duration;
+      if (Number.isFinite(d) && d > 0) { setDuration(d); return; }
+      if (d === Infinity && !descobrindo) {
+        descobrindo = true;
+        const volta = () => { audio.removeEventListener('timeupdate', volta); audio.currentTime = 0; descobrindo = false; if (Number.isFinite(audio.duration)) setDuration(audio.duration); };
+        audio.addEventListener('timeupdate', volta);
+        audio.currentTime = 1e7;
+      }
+    };
     const onEnd = () => { setPlaying(false); setCurrentTime(0); if (activeAudio === audio) activeAudio = null; };
     const onPlay = () => {
       if (activeAudio && activeAudio !== audio) activeAudio.pause(); // outro áudio estava tocando: pausa
@@ -104,12 +116,14 @@ function AudioPlayer({ url }: { url: string }) {
     const onPause = () => setPlaying(false); // também quando OUTRO áudio pausou este
     audio.addEventListener('timeupdate', onTime);
     audio.addEventListener('loadedmetadata', onLoaded);
+    audio.addEventListener('durationchange', onLoaded);
     audio.addEventListener('ended', onEnd);
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
     return () => {
       audio.removeEventListener('timeupdate', onTime);
       audio.removeEventListener('loadedmetadata', onLoaded);
+      audio.removeEventListener('durationchange', onLoaded);
       audio.removeEventListener('ended', onEnd);
       audio.removeEventListener('play', onPlay);
       audio.removeEventListener('pause', onPause);
@@ -132,12 +146,14 @@ function AudioPlayer({ url }: { url: string }) {
     if (audioRef.current) audioRef.current.playbackRate = next;
   }
 
-  function seek(e: React.MouseEvent<HTMLDivElement>) {
+  const dragging = useRef(false);
+  function seekTo(clientX: number, el: HTMLElement) {
     const audio = audioRef.current;
-    if (!audio || !duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    audio.currentTime = ratio * duration;
+    const d = audio?.duration;
+    if (!audio || !d || !Number.isFinite(d)) return;
+    const rect = el.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    audio.currentTime = ratio * d;
     setCurrentTime(audio.currentTime);
   }
 
@@ -158,10 +174,25 @@ function AudioPlayer({ url }: { url: string }) {
           : <Play size={14} className="text-[#e9edef] ml-0.5" fill="currentColor" />}
       </button>
       <div className="flex-1 min-w-0 flex flex-col gap-1">
-        <div onClick={seek} className="relative h-1 rounded-full cursor-pointer" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}>
-          <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${progress}%`, backgroundColor: '#00a884' }} />
+        {/* Área de clique alta (16 px) em volta da barra fina; clica ou ARRASTA pra ir pra qualquer ponto do áudio. */}
+        <div
+          role="slider"
+          aria-label="Posição do áudio"
+          aria-valuemin={0}
+          aria-valuemax={Math.round(duration)}
+          aria-valuenow={Math.round(currentTime)}
+          className="relative h-4 flex items-center cursor-pointer select-none touch-none"
+          onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); dragging.current = true; seekTo(e.clientX, e.currentTarget); }}
+          onPointerMove={(e) => { if (dragging.current) seekTo(e.clientX, e.currentTarget); }}
+          onPointerUp={() => { dragging.current = false; }}
+          onPointerCancel={() => { dragging.current = false; }}
+        >
+          <div className="relative w-full h-1 rounded-full" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}>
+            <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${progress}%`, backgroundColor: '#00a884' }} />
+            <div className="absolute top-1/2 w-3 h-3 rounded-full -translate-y-1/2 -translate-x-1/2" style={{ left: `${progress}%`, backgroundColor: '#00a884' }} />
+          </div>
         </div>
-        <span className="text-[11px] text-[#e9edef]/60">{formatAudioTime(showElapsed ? currentTime : duration)}</span>
+        <span className="text-[11px] text-[#e9edef]/60">{showElapsed ? `${formatAudioTime(currentTime)} / ${formatAudioTime(duration)}` : formatAudioTime(duration)}</span>
       </div>
       <button
         type="button"
