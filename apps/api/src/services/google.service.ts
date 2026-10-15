@@ -777,11 +777,13 @@ const WHATSAPP_ARCHIVE_FOLDER = 'WhatsApp — arquivo automático';
 
 /** Figurinha do WhatsApp (webp / "sticker-…"): NÃO vai pra pasta do cliente nem entra em documentação — fica numa pasta própria "FIGURINHAS" (Fabio 14/10). */
 export const isStickerAttachment = (a: { mimeType: string; fileName?: string | null }) => /^sticker-/i.test(a.fileName || '') || a.mimeType === 'image/webp';
-/** Áudio (voz do cliente ou nossa): também NÃO vai pra pasta do cliente (Fabio 14/10) — fica na pasta própria "AUDIOS". */
+/** Áudio e vídeo (do cliente ou nossos): também NÃO vão pra pasta do cliente (Fabio 14–15/10) — ficam nas pastas próprias "AUDIOS" e "VIDEOS". */
 export const isAudioAttachment = (a: { mimeType: string }) => /^audio\//i.test(a.mimeType);
-/** Pasta lateral de um anexo que não é documento: figurinha → FIGURINHAS, áudio → AUDIOS; null = segue a regra normal (pasta do cliente). */
-export const sideFolderName = (a: { mimeType: string; fileName?: string | null }): 'FIGURINHAS' | 'AUDIOS' | null => (isStickerAttachment(a) ? 'FIGURINHAS' : isAudioAttachment(a) ? 'AUDIOS' : null);
-async function sideFolderId(accountId: string, conn: { rootFolderId: string | null; whatsappAttachmentsFolderId: string | null }, name: 'FIGURINHAS' | 'AUDIOS'): Promise<string> {
+/** Pasta lateral de um anexo que não é documento: figurinha → FIGURINHAS, áudio → AUDIOS, vídeo → VIDEOS; null = segue a regra normal (pasta do cliente). */
+export const isVideoAttachment = (a: { mimeType: string }) => /^video\//i.test(a.mimeType);
+export type SideFolder = 'FIGURINHAS' | 'AUDIOS' | 'VIDEOS';
+export const sideFolderName = (a: { mimeType: string; fileName?: string | null }): SideFolder | null => (isStickerAttachment(a) ? 'FIGURINHAS' : isAudioAttachment(a) ? 'AUDIOS' : isVideoAttachment(a) ? 'VIDEOS' : null);
+async function sideFolderId(accountId: string, conn: { rootFolderId: string | null; whatsappAttachmentsFolderId: string | null }, name: SideFolder): Promise<string> {
   const parent = conn.whatsappAttachmentsFolderId || conn.rootFolderId;
   if (!parent) throw new Error('Drive sem pasta-raiz');
   return (await createFolder(accountId, name, parent)).id;
@@ -810,17 +812,17 @@ export async function moveExistingStickersToFolder(accountId: string): Promise<{
   return { moved, errors, folderId };
 }
 
-/** Leva pras pastas FIGURINHAS e AUDIOS o que já estava salvo nas pastas dos clientes. Devolve o que moveu por pasta. */
+/** Leva pras pastas FIGURINHAS, AUDIOS e VIDEOS o que já estava salvo nas pastas dos clientes. Devolve o que moveu por pasta. */
 export async function moveExistingSideFiles(accountId: string): Promise<{ moved: Record<string, number>; errors: number }> {
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
   if (!conn?.refreshToken || !conn.rootFolderId) throw new Error('Conecte o Google Drive e escolha a pasta-raiz primeiro');
   const drive = await getDrive(accountId);
   const folders: Record<string, string> = {};
   const atts = await prisma.messageAttachment.findMany({
-    where: { driveFileId: { not: null }, OR: [{ fileName: { startsWith: 'sticker-' } }, { mimeType: 'image/webp' }, { mimeType: { startsWith: 'audio/' } }] },
+    where: { driveFileId: { not: null }, OR: [{ fileName: { startsWith: 'sticker-' } }, { mimeType: 'image/webp' }, { mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
     select: { driveFileId: true, mimeType: true, fileName: true },
   });
-  const moved: Record<string, number> = { FIGURINHAS: 0, AUDIOS: 0 };
+  const moved: Record<string, number> = { FIGURINHAS: 0, AUDIOS: 0, VIDEOS: 0 };
   let errors = 0;
   for (const a of atts) {
     const name = sideFolderName(a);
