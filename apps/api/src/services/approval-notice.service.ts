@@ -288,7 +288,7 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     '📋 Resumo da proposta:',
     `🏦 Instituição: ${o.instituicao}`,
     o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
-    o.liquido ? `💰 Valor líquido: ${o.valor} (já descontados IOF, tarifa de cadastro e custas)` : `💰 Valor aprovado: ${o.valor}`,
+    o.liquido ? `💰 Valor líquido: ${o.valor}` : `💰 Valor aprovado: ${o.valor}`, // Fabio 15/10: sem o "(já descontados IOF, tarifa de cadastro e custas)"
     o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
     o.quitacao && `🏠 Quitação do financiamento do imóvel: ${o.quitacao}`,
     o.troco && `💸 Troco pra você: ${o.troco}`,
@@ -491,10 +491,13 @@ async function pickApprovedSimulationInstitution(leadId: string): Promise<{ inst
     where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
     orderBy: { createdAt: 'asc' },
   });
+  // O PDF TEM que ser da opção que o cliente VÊ no aviso (João Henrique 15/10: o aviso oferecia o Creditas de R$ 274 mil e o PDF foi do Inter "aprovado a menor" de R$ 114 mil).
+  const noAviso = await optionsFromAnalyses(leadId).catch(() => null);
+  const bancosDoAviso = new Set<string>((noAviso || []).map((o) => (/inter/i.test(o.instituicao) ? 'INTER' : /creditas/i.test(o.instituicao) ? 'CREDITAS' : /santander|credimorar/i.test(o.instituicao) ? 'CREDIMORAR' : '')));
   const byBank = new Map<string, (typeof rows)[number]>();
   for (const r of rows) {
     if (r.status === 'REJECTED') byBank.delete(r.bank);
-    else if (r.approvedValue != null) byBank.set(r.bank, r);
+    else if (r.approvedValue != null && (!noAviso || bancosDoAviso.has(r.bank))) byBank.set(r.bank, r);
   }
   const { pickSimulationBank } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   const pick = pickSimulationBank(Array.from(byBank.values()).map((r) => ({ bank: r.bank, rate: r.rate, chosen: r.chosen, firstInstallment: r.firstInstallment })));
@@ -593,7 +596,7 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true } });
   // Já mandamos um resumo antes (ex.: sem as parcelas certas)? Então este é uma ATUALIZAÇÃO, e o texto diz isso.
   const anterior = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
-  const corpoNovo = renderApprovalText(await withHolders(leadId, built));
+  const corpoNovo = renderApprovalText(await withPayoff(leadId, await withHolders(leadId, built)));
   const semNum = await aprovadasSemNumeros(leadId);
   if (semNum.length) {
     const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
@@ -613,7 +616,7 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   const text = `${prefixo}${corpoNovo}`;
   // O MESMO aviso (mesmas opções, mesmos números) já foi enviado? Não manda de novo igual — só se algo mudou.
   const lastSummary = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
-  const body = renderApprovalText(await withHolders(leadId, built));
+  const body = renderApprovalText(await withPayoff(leadId, await withHolders(leadId, built)));
   if (lastSummary && lastSummary.content.replace(/^(🔄|🆕)[^\n]*\n\n/, '').trim() === body.trim()) {
     warnings.push(`Esse mesmo aviso (mesmos valores) já foi enviado às ${lastSummary.createdAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })} — não vou mandar igual de novo. Se os números mudarem, o aviso novo sai como atualização.`);
   }
