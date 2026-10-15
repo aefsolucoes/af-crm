@@ -30,6 +30,8 @@ export interface ScrState {
   /** Titular da proposta na Creditas (nome e CPF que vêm no e-mail) — a partir dele se descobre quem mais entrou na proposta. */
   holderName?: string; holderCpf?: string;
   askedAt?: string; sentAt?: string; chasedAt?: string; windowNoteAt?: string; problemSig?: string; faltaSig?: string;
+  /** Última mensagem do cliente (ISO) da janela de 24 h em que o lembrete "antes de fechar" já foi mandado — 1 por janela. */
+  windowRemindFor?: string;
 }
 
 const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
@@ -463,6 +465,58 @@ async function checkAndForward(accountId: string, lead: { id: string; name: stri
   }
 }
 
+// ─── Lembrete ANTES da janela de 24 h fechar (Fabio 15/10): "senão ele fica perdido pra sempre ali — o CRM precisa colocar isso automático" ──────────────────────
+// Fora da janela só dá pra falar com template, e o cliente que não devolve o SCR assinado trava a análise da Creditas. 3 h antes de a janela fechar (e só entre 07h e 21h de Brasília:
+// se cair de noite, vai às 20h30 da véspera) o CRM cobra o que falta do SCR — uma vez por janela (se o cliente responde, abre outra janela e vale outro lembrete).
+const BRT = -3 * 3_600_000;
+function reminderTarget(lastInMs: number): number {
+  const closeAt = lastInMs + 24 * 3_600_000;
+  let t = closeAt - 3 * 3_600_000;
+  const d = new Date(t + BRT);
+  const h = d.getUTCHours();
+  if (h < 7 || h >= 21) t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + (h < 7 ? -1 : 0), 20, 30, 0) - BRT;
+  return Math.max(t, lastInMs + 30 * 60_000);
+}
+
+async function remindBeforeWindowCloses(accountId: string, lead: { id: string; name: string; customFields: any }, st: ScrState, io: Io): Promise<void> {
+  const last = await prisma.message.findFirst({ where: { leadId: lead.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  if (!last) return;
+  const lastMs = last.createdAt.getTime();
+  const now = Date.now();
+  if (now >= lastMs + 24 * 3_600_000 - 15 * 60_000) return; // a janela já fechou (ou está fechando agora)
+  if (now < reminderTarget(lastMs)) return;
+  const forWindow = last.createdAt.toISOString();
+  if (st.windowRemindFor === forWindow) return;
+
+  // O que ainda falta (mesma conta do envio à Creditas): SCR assinado + identidade de cada participante.
+  const { docs } = await collectDocs(accountId, lead, new Date(st.askedAt || st.at));
+  const nomes = await scrSigners(lead, st);
+  const faltas: string[] = [];
+  for (const p of nomes) {
+    const curto = p.split(' ').slice(0, 2).join(' ');
+    if (!docs.some((d) => d.kind === 'SCR' && d.ok && sameName(d.holder, p))) faltas.push(`a Autorização SCR assinada de ${curto}`);
+    if (!docs.some((d) => d.kind === 'ID' && d.ok && sameName(d.holder, p))) faltas.push(`uma foto do documento de identidade com foto (RG ou CNH) de ${curto}`);
+  }
+  if (!faltas.length) return; // está tudo aí: o envio à Creditas segue pelo fluxo normal
+  await saveState(lead.id, { windowRemindFor: forWindow }); // marca antes de mandar: não repete se o envio demorar
+
+  const quando = new Date(lastMs + 24 * 3_600_000).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+  const l = await prisma.lead.findUnique({ where: { id: lead.id }, select: { aiAutoReplyActive: true } });
+  if (!l?.aiAutoReplyActive) {
+    await addNote(lead.id, `⏰ A janela de 24 h do WhatsApp deste cliente fecha ${quando} e o SCR da Creditas ainda não voltou (falta: ${faltas.join('; ')}). A IA está desligada, então NÃO cobrei — chame o cliente antes que feche.`);
+    pushTeam(accountId, lead.id, lead.name, 'SCR da Creditas: janela do WhatsApp fecha em breve — cobre o documento');
+    return;
+  }
+  const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const nome = callableFirstName(nomes[0], (lead.customFields || {}).participante_1, lead.name) || '';
+  const saudacao = (await conversationActive(lead.id)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
+  const texto = `${saudacao}Passando pra lembrar do SCR Bacen da Creditas — sem ele a análise não segue. Ainda falta:\n${faltas.map((f) => `• ${f}`).join('\n')}\n\nÉ só me mandar por aqui mesmo. Se tiver dificuldade pra assinar pelo gov.br, me avisa que eu te ajudo. 😊`;
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: texto, io: io as any });
+  await addNote(lead.id, `⏰ A janela de 24 h do WhatsApp fecha ${quando}: cobrei o SCR da Creditas antes (falta: ${faltas.join('; ')}). ${r.success ? 'Cliente avisado.' : 'O envio falhou — chame o cliente.'}`);
+  if (!r.success) pushTeam(accountId, lead.id, lead.name, 'SCR da Creditas: não consegui cobrar antes da janela fechar — chame o cliente');
+}
+
 let lastSweep = 0;
 /** Poller (1 min): varre e-mails ainda não tratados, pede o SCR aos clientes e encaminha à Creditas o que voltou assinado. */
 export async function processScrFlows(accountId: string, io: Io): Promise<void> {
@@ -477,7 +531,10 @@ export async function processScrFlows(accountId: string, io: Io): Promise<void> 
     if (!st) continue;
     try {
       if (st.status === 'PENDING') await askClient(accountId, lead, st, io);
-      else if (st.status === 'ASKED') await checkAndForward(accountId, lead, st, io);
+      else if (st.status === 'ASKED') {
+        await remindBeforeWindowCloses(accountId, lead, st, io).catch((e: any) => console.warn(`[Creditas SCR] ${lead.name}: lembrete antes da janela falhou —`, e?.message));
+        await checkAndForward(accountId, lead, st, io);
+      }
     } catch (e: any) { console.warn(`[Creditas SCR] ${lead.name}:`, e?.message); }
   }
 }

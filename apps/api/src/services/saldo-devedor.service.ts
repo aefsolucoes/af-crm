@@ -33,36 +33,45 @@ async function proposalFinancing(leadId: string): Promise<{ quitado: boolean | n
   return { quitado: /^n[ãa]o/.test(q) ? false : /^sim/.test(q) ? true : null, falta };
 }
 
-/** Chamado na conferência de documentos (card em Aguardando Documentação). Devolve true se MANDOU a mensagem ao cliente (aí o aviso "recebi tudo" não precisa ir separado). */
-export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io: Io): Promise<boolean> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
+const BRT = -3 * 3_600_000;
+
+/** Pede o print do saldo devedor (1 vez por card) — SÓ DEPOIS da aprovação (Fabio 15/10: "não precisa pedir isso, só pede após aprovar"): o card já está em Aguardando Documentação e a proposta diz
+ *  "Imóvel quitado: Não". Chamado (a) pelo poller depois que o aviso de aprovação foi entregue e (b) pela conferência de documentos. Devolve true se MANDOU a mensagem ao cliente. */
+export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io: Io, opts: { docsReceived?: boolean; respectHours?: boolean } = {}): Promise<boolean> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
   if (!lead) return false;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._saldoDevedor || cf._saldoNoteAt || cf._autoPaused) return false;
-  const reviews = Object.values((cf._docReview || {}) as Record<string, any>) as { gravame?: string; tipo?: string }[];
-  const gravame = reviews.map((r) => r.gravame).filter(Boolean).slice(-1)[0];
-  if (!gravame) return false;
+  if (!/aguardando documenta/i.test(lead.stage.name.normalize('NFD').replace(/[̀-ͯ]/g, ''))) return false; // antes da aprovação não pede
+  const reviews = Object.values((cf._docReview || {}) as Record<string, any>) as { gravame?: string }[];
+  const gravame = reviews.map((r) => r.gravame).filter(Boolean).slice(-1)[0] || '';
 
   const prop = await proposalFinancing(leadId);
+  if (!prop) return false;
   const base = Number(cf.valor_credito) || Number(cf._lastRunValue) || 0;
-  const declared = prop?.falta || 0;
-  if (!prop || prop.quitado !== false) {
+  const declared = prop.falta || 0;
+  if (prop.quitado !== false) {
     // A matrícula mostra financiamento ativo mas a proposta diz quitado (ou não diz): a equipe decide — não incomoda o cliente.
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoNoteAt: new Date().toISOString() } as any } });
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A matrícula mostra gravame vigente (${gravame}), mas a proposta ${prop ? 'diz que o imóvel está quitado/não informa saldo' : 'não foi encontrada'}. Confirme com o cliente se ainda há saldo devedor — se houver, peça o print do saldo e some ao crédito pedido.` } }).catch(() => {});
+    if (gravame) {
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoNoteAt: new Date().toISOString() } as any } });
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A matrícula mostra gravame vigente (${gravame}), mas a proposta diz que o imóvel está quitado/não informa saldo. Confirme com o cliente se ainda há saldo devedor — se houver, peça o print do saldo e some ao crédito pedido.` } }).catch(() => {});
+    }
     return false;
   }
 
+  // Precisa de mensagem livre: janela de 24 h aberta (e, quando é o poller, só das 07h às 21h).
+  const lastIn = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  if (!lastIn || Date.now() - lastIn.createdAt.getTime() > 23 * 3_600_000) return false;
+  if (opts.respectHours) { const h = new Date(Date.now() + BRT).getUTCHours(); if (h < 7 || h >= 21) return false; }
+
   const nome = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-  const texto = [
-    `Recebi a documentação${nome ? `, ${nome}` : ''}, obrigada! 🙏`,
-    `Um ponto importante: na matrícula do imóvel consta um financiamento ativo (${/HIPOTECA/i.test(gravame) ? 'hipoteca' : 'alienação fiduciária'})${declared ? ` e, na proposta, você informou que faltam ${brl(declared)} pra quitar` : ''}.`,
-    `Preciso de um *print do saldo devedor atualizado* (no app ou no site do banco). Esse saldo é *somado* ao crédito que você pediu${base ? ` (${brl(base)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. Assim que você mandar, te aviso do resultado.`,
-  ].join('\n\n');
+  const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const abertura = opts.docsReceived ? `Recebi a documentação${nome ? `, ${nome}` : ''}, obrigada! 🙏\n\n` : ((await conversationActive(leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `);
+  const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de um *print do saldo devedor atualizado* (no app ou no site do banco). Esse saldo é *somado* ao crédito que você pediu${base ? ` (${brl(base)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. Assim que você mandar, te aviso do resultado.`;
   const marker = { askedAt: new Date().toISOString(), base, declared, gravame };
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoDevedor: marker } as any } });
   const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Imóvel com financiamento ativo (${gravame}); a proposta informa saldo de ${declared ? brl(declared) : '—'}. ${sent.success ? 'Pedi ao cliente o print do saldo devedor: o saldo será somado ao crédito pedido' + (base ? ` (${brl(base)})` : '') + ' e a análise refeita com o total.' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor.' : 'IA desligada: peça ao cliente o print do saldo devedor (será somado ao crédito pedido e a análise refeita).'}` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Crédito aprovado e o imóvel tem financiamento ativo (proposta: faltam ${declared ? brl(declared) : '—'}${gravame ? `; matrícula: ${gravame}` : ''}). ${sent.success ? 'Pedi ao cliente o print do saldo devedor: o saldo será somado ao crédito pedido' + (base ? ` (${brl(base)})` : '') + ' e a análise refeita com o total.' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor.' : 'IA desligada: peça ao cliente o print do saldo devedor (será somado ao crédito pedido e a análise refeita).'}` } }).catch(() => {});
   return !!sent.success;
 }
 
@@ -102,6 +111,18 @@ async function readSaldo(accountId: string, att: { driveFileId: string | null; d
 
 /** Poller (1 min): cards que esperam o print do saldo devedor — lê o que o cliente mandou, soma ao crédito pedido e refaz a análise. */
 export async function processSaldoDevedor(accountId: string, io: Io): Promise<void> {
+  // 1) Aprovados (condições já entregues, card em Aguardando Documentação) cujo imóvel tem financiamento pela proposta: pede o print do saldo.
+  const pedir = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT l.id FROM "Lead" l JOIN "Stage" s ON s.id = l."stageId"
+    WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND s.name ILIKE 'Aguardando Doc%'
+      AND (l."customFields"->>'_saldoDevedor') IS NULL AND (l."customFields"->>'_saldoNoteAt') IS NULL AND (l."customFields"->>'_autoNoticeAt') IS NOT NULL
+      AND EXISTS (SELECT 1 FROM "Message" m WHERE m."leadId" = l.id AND m.direction = 'INBOUND' AND m.content ILIKE '%quitado: n_o%')
+      AND EXISTS (SELECT 1 FROM "Message" m WHERE m."leadId" = l.id AND m.direction = 'OUTBOUND' AND m.content ILIKE '%Crédito aprovado!%')
+    LIMIT 10`;
+  for (const { id } of pedir) {
+    try { await maybeAskSaldoDevedor(accountId, id, io, { respectHours: true }); } catch (e: any) { console.error(`[Saldo] pedido ${id}:`, e?.message || e); }
+  }
+  // 2) Quem já foi pedido: lê o print que chegar.
   const rows = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->'_saldoDevedor'->>'askedAt') IS NOT NULL AND ("customFields"->'_saldoDevedor'->>'doneAt') IS NULL LIMIT 10`;
   for (const { id } of rows) {
     try { await processOne(accountId, id, io); } catch (e: any) { console.error(`[Saldo] ${id}:`, e?.message || e); }

@@ -251,7 +251,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   }
 
   // Imóvel com financiamento ativo (gravame vigente na matrícula + proposta com saldo): pede o print do saldo devedor (1 vez). Se pediu, o "recebi tudo" vai junto nessa mensagem.
-  const pediuSaldo = await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).maybeAskSaldoDevedor(accountId, leadId, io).catch((e: any) => { console.error('[Saldo] pedido:', e?.message || e); return false; });
+  const pediuSaldo = await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).maybeAskSaldoDevedor(accountId, leadId, io, { docsReceived: true }).catch((e: any) => { console.error('[Saldo] pedido:', e?.message || e); return false; });
 
   const verdict = await evaluateDocs(accountId, leadId);
   const faltando = verdict && !verdict.complete ? verdict.faltando : [];
