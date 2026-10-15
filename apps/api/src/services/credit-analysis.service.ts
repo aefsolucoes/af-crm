@@ -314,7 +314,9 @@ async function holderIfSecond(db: Db, leadId: string, holderName?: string | null
 }
 
 async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null; holderName?: string | null } & ResultFields) {
-  const next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
+  let next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
+  // Creditas: "Este CPF já possui uma proposta ativa … NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar → vira FALHA POR REGRA ("Desqualificado"), não "Conferir".
+  if (row.bank === 'CREDITAS' && (next === 'CHECK' || next === 'FAILED') && /CPF j[aá] possui uma proposta ativa na Creditas/i.test(String(data.detail || ''))) next = 'FAILED';
   const becameFinal = FINAL.has(next) && !FINAL.has(row.status);
   const updated = await db.creditAnalysis.update({
     where: { id: row.id },
@@ -772,7 +774,7 @@ export async function creditMetrics(db: Db, p: { accountId: string; scopeDepartm
     orderBy: { createdAt: 'asc' },
   });
   // "Desqualificado" (o cliente não atende às regras daquele banco: mínimo do imóvel, terreno, saldo devedor…) vale como REPROVADO (Fabio 14/10).
-  const OBJETIVA = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i;
+  const OBJETIVA = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas/i;
   const reprovou = (r: { status: string; detail?: string | null }) => r.status === 'REJECTED' || (r.status === 'FAILED' && OBJETIVA.test(r.detail || ''));
 
   const out = keys.map((key) => {

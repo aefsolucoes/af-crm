@@ -232,7 +232,10 @@ async function noticeClients(accountId: string, io: any) {
 }
 
 /** Falha OBJETIVA (regra do banco/imóvel), não técnica: "NÃO RODEI: … abaixo do mínimo / terreno / saldo devedor", "Não conformidade…". */
-const OBJECTIVE_FAIL = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i;
+const OBJECTIVE_FAIL = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas/i;
+/** Creditas: "Este CPF já possui uma proposta ativa … ela NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar na Creditas — conta como NÃO desse banco
+ *  (se os outros também não deram, o cliente é avisado e vai pra Perdido; se algum aprovou, o aviso de aprovação sai sem esperar a Creditas). */
+const CREDITAS_CPF_ATIVO = /CPF j[aá] possui uma proposta ativa na Creditas/i;
 type VRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; source: string };
 
 /** Resposta de um banco: NEG = não vai (reprovou ou a regra dele barrou), POS = aprovou, PENDING = falta resposta / falha técnica a refazer. A última rodada decide;
@@ -244,6 +247,7 @@ export function bankVerdict(rows: VRow[], bank: string): 'NEG' | 'POS' | 'PENDIN
   if (r.status === 'APPROVED' || r.status === 'CONDITIONAL') return 'POS';
   if (r.status === 'REJECTED') return 'NEG';
   if (r.status === 'FAILED' && OBJECTIVE_FAIL.test(r.detail || '')) return 'NEG';
+  if (bank === 'CREDITAS' && CREDITAS_CPF_ATIVO.test(r.detail || '')) return 'NEG'; // conferir/"verificar" com esse aviso: não tem como rodar
   return 'PENDING';
 }
 

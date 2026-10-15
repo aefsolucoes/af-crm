@@ -103,7 +103,7 @@ export function ago(d: string | null | undefined): string {
   return new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 }
 
-export const isDesqualificado = (detail?: string | null) => /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i.test(detail || '');
+export const isDesqualificado = (detail?: string | null) => /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas/i.test(detail || '');
 
 export function Badge({ a }: { a?: Analysis }) {
   if (!a) return <span className="text-xs text-slate-300">—</span>;
