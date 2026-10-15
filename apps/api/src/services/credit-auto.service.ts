@@ -401,48 +401,72 @@ async function flagInterSemNumero(accountId: string) {
   }
 }
 
-const INTER_GESTORA_EMAIL = 'vania.tavares@inter.co'; // Vania da Silva Said Tavares — gestora do Inter que resolve proposta travada (Fabio 15/10)
+const INTER_GESTORA_EMAIL = 'vania.tavares@inter.co'; // Vania da Silva Said Tavares — gestora do Inter que resolve proposta travada e vincula o cadastro (Fabio 15/10)
 
-/** Inter "enviado" 2x SEM número de proposta (no portal o cliente fica só como RASCUNHO): a proposta NÃO passou. Fabio 15/10 (Mauricio de Azevedo): "precisa encaminhar um e-mail pra Vania,
- *  e ficar de olho nisso pra quando ocorrer novamente" — manda UM e-mail à Vania por card (da conta do Fabio, cc Andreia), 1 h depois da 1ª rodada sem número, com os dados do caso. */
+/** Lê a ficha da proposta do cliente (mensagem "Nome completo: … CPF: …" mais recente no card): pares "Rótulo: valor". */
+function parseFicha(text: string): { label: string; value: string }[] {
+  return text.split('\n').map((l) => l.trim()).map((l) => { const i = l.indexOf(':'); return i > 0 && i < 48 ? { label: l.slice(0, i).trim(), value: l.slice(i + 1).trim() } : null; }).filter((x): x is { label: string; value: string } => !!x && !!x.value);
+}
+
+/** O CRM NÃO conseguiu capturar a proposta do Inter (Fabio 15/10, Mauricio de Azevedo): ao CONFERIR o resultado, o portal do Inter mostra o modal "Ocorreu um erro ao processar os dados da
+ *  sua proposta" e manda de volta pra lista. Na 1ª vez pode ser passageiro; na 2ª (ou 3ª) conferência com o mesmo erro, manda UM e-mail à Vania — da conta do Fabio, cc Andreia — com o
+ *  problema E os dados completos do cliente pra ela vincular o cadastro/proposta lá (o mesmo texto que o Fabio aprovou à mão). A extensão do Inter (2026.10.15.1+) marca esses casos com
+ *  "ERRO DO PORTAL INTER" no detalhe. 1 e-mail por card (`_interVaniaAt`), 08h–20h, máx. 5 por dia; nota + push. */
 async function emailInterSemProposta(accountId: string) {
   const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
   if (hora < 8 || hora >= 20) return; // e-mail pra gestora só em horário comercial
-  const grupos = await prisma.$queryRaw<{ leadId: string; n: number; first: Date }[]>`
-    SELECT a."leadId", count(*)::int AS n, min(a."createdAt") AS first FROM "CreditAnalysis" a
-    WHERE a."accountId" = ${accountId} AND a.bank = 'INTER' AND a.kind = 'RUN' AND a.status = 'SENT' AND a."proposalNumber" IS NULL AND a."dryRun" = false
-      AND a.source NOT IN ('AI', 'AI_SIM', 'MANUAL') AND a."createdAt" > now() - interval '3 days'
-    GROUP BY a."leadId" HAVING count(*) >= 2 AND min(a."createdAt") < now() - interval '60 minutes' LIMIT 5`;
+  const grupos = await prisma.$queryRaw<{ leadId: string; first: Date }[]>`
+    SELECT a."leadId", min(a."createdAt") AS first FROM "CreditAnalysis" a
+    WHERE a."accountId" = ${accountId} AND a.bank = 'INTER' AND a."dryRun" = false AND a."createdAt" > now() - interval '3 days' AND a.detail ~* 'ERRO DO PORTAL INTER'
+    GROUP BY a."leadId" HAVING count(*) >= 2 LIMIT 5`;
   for (const g of grupos) {
     const lead = await prisma.lead.findUnique({ where: { id: g.leadId }, select: { id: true, name: true, status: true, archived: true, customFields: true } });
     const cf = (lead?.customFields || {}) as Cf;
     if (!lead || lead.status !== 'OPEN' || lead.archived || cf._interVaniaAt || cf._autoPaused) continue;
-    const numero = await prisma.creditAnalysis.count({ where: { leadId: g.leadId, bank: 'INTER', dryRun: false, proposalNumber: { not: null }, createdAt: { gt: g.first } } });
-    if (numero) continue; // um número saiu depois: tudo certo
+    const resultado = await prisma.creditAnalysis.count({ where: { leadId: g.leadId, bank: 'INTER', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gt: g.first } } });
+    if (resultado) continue; // o Inter já deu resultado depois: o erro passou
+    const comNumero = await prisma.creditAnalysis.findFirst({ where: { leadId: g.leadId, bank: 'INTER', dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
     const hoje = await prisma.note.count({ where: { content: { startsWith: '📧 E-mail enviado à Vania' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } } });
     if (hoje >= 5) return; // freio: no máximo 5 e-mails por dia
     const acc = await prisma.emailAccount.findFirst({ where: { accountId, address: { startsWith: 'fabio@', mode: 'insensitive' } } });
-    const fabio = acc?.userId ? await prisma.user.findUnique({ where: { id: acc.userId }, select: { id: true } }) : null;
     if (!acc) { console.warn('[Inter sem proposta] conta de e-mail do Fabio não encontrada'); return; }
+    // Dados do cliente: a ficha da proposta no card (pares "Rótulo: valor"), com o que o card tem como reserva.
+    const ficha = await prisma.message.findFirst({ where: { leadId: g.leadId, direction: 'INBOUND', content: { contains: 'Nome completo:' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+    const pares = parseFicha(ficha?.content || '');
+    const pega = (rx: RegExp) => pares.find((x) => rx.test(x.label))?.value || '';
+    const cpf = pega(/^cpf$/i) || String(cf.cpf_1 || '');
     const brl = (v: unknown) => (Number(v) > 0 ? `R$ ${Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '');
-    const msg = await prisma.message.findFirst({ where: { leadId: g.leadId, content: { contains: 'Imóvel em garantia' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
-    const cidade = /Im[óo]vel em garantia:\s*([^\n]+)/i.exec(msg?.content || '')?.[1]?.trim() || '';
-    const dias = await prisma.creditAnalysis.findMany({ where: { leadId: g.leadId, bank: 'INTER', kind: 'RUN', status: 'SENT', proposalNumber: null, dryRun: false, createdAt: { gt: new Date(Date.now() - 3 * 86_400_000) } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } });
+    const cliente = [
+      ['Nome completo', pega(/^nome completo/i) || lead.name],
+      ['CPF', cpf], ['Data de nascimento', pega(/data (de )?nascimento/i) || String(cf.nascimento_1 || '')],
+      ['E-mail', pega(/^e-?mail/i) || String(cf.email_1 || '')], ['Celular', pega(/^(celular|whatsapp|telefone)/i) || String(cf.telefone_1 || '')],
+      ['Gênero', pega(/^g[êe]nero/i)], ['Nacionalidade', pega(/^nacionalidade/i)], ['Naturalidade', pega(/^naturalidade/i)], ['Estado civil', pega(/^estado civil/i)],
+      ['Renda bruta', pega(/^renda/i) || brl(cf.renda_1)],
+      ['Endereço', [pega(/^logradouro/i), pega(/^bairro/i), pega(/^cidade\/uf resid/i), pega(/^cep$/i) && `CEP ${pega(/^cep$/i)}`].filter(Boolean).join(', ')],
+    ].filter(([, v]) => v).map(([k, v]) => `• ${k}: ${v}`);
+    const operacao = [
+      ['Produto', 'Home Equity'], ['Crédito desejado', pega(/^cr[ée]dito desejado/i) || brl(cf.valor_credito)], ['Prazo', pega(/^prazo/i) || String(cf.prazo_financ || '')], ['LTV', pega(/^ltv/i)],
+      ['Tipo do imóvel', pega(/^tipo do im[óo]vel/i)], ['Valor do imóvel', pega(/^valor do im[óo]vel/i) || brl(cf.valor_imovel)],
+      ['Imóvel em garantia', [pega(/^endere[çc]o do im[óo]vel/i), pega(/^im[óo]vel em garantia/i), pega(/^cep do im[óo]vel/i) && `CEP ${pega(/^cep do im[óo]vel/i)}`].filter(Boolean).join(' — ')],
+      ['Imóvel quitado', pega(/^im[óo]vel quitado/i)],
+    ].filter(([, v]) => v).map(([k, v]) => `• ${k}: ${v}`);
+    const dias = await prisma.creditAnalysis.findMany({ where: { leadId: g.leadId, bank: 'INTER', kind: 'RUN', dryRun: false, createdAt: { gt: new Date(Date.now() - 3 * 86_400_000) } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } });
     const datas = Array.from(new Set(dias.map((d) => d.createdAt.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' })))).join(' e ');
-    const cpf = String(cf.cpf_1 || '');
-    const dados = [brl(cf.valor_credito) && `crédito de ${brl(cf.valor_credito)}`, cf.prazo_financ && `prazo de ${cf.prazo_financ}`, cidade && `imóvel em ${cidade}`, brl(cf.valor_imovel) && `valor do imóvel de ${brl(cf.valor_imovel)}`].filter(Boolean).join(', ');
-    const body = `Olá, Vania, tudo bem?\n\nPreciso da sua ajuda com o cliente ${lead.name.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity${dados ? `: ${dados}` : ''}.\n\nEnviamos a proposta pelo portal de parceiros ${datas ? `nos dias ${datas}` : 'mais de uma vez'}, mas ela não gerou número de proposta: no portal o cliente aparece só como rascunho, sem número, sem valor e sem status, então não conseguimos acompanhar a análise.\n\nVocê poderia verificar o que aconteceu com esse cadastro e, se possível, liberar/criar a proposta ou nos orientar sobre o que precisamos ajustar?\n\nObrigado!`;
+    const problema = comNumero?.proposalNumber
+      ? `a proposta nº ${comNumero.proposalNumber} foi enviada pelo portal de parceiros ${datas ? `(${datas})` : ''}, mas ao conferir o resultado o portal mostra "Ocorreu um erro ao processar os dados da sua proposta" e volta pra lista, então não conseguimos acompanhar a análise`
+      : `enviamos a proposta pelo portal de parceiros ${datas ? `nos dias ${datas}` : 'mais de uma vez'}, mas ela não gerou número de proposta: no portal o cliente aparece só como rascunho (sem número, valor ou status) e, ao conferir, o portal mostra "Ocorreu um erro ao processar os dados da sua proposta" e volta pra lista, então não conseguimos acompanhar a análise`;
+    const body = `Olá, Vania, tudo bem?\n\nPreciso da sua ajuda com o cliente ${lead.name.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity: ${problema}.\n\nSeguem os dados completos do cliente para você vincular o cadastro/proposta aí no Inter:\n\nDADOS DO CLIENTE\n${cliente.join('\n')}\n\nOPERAÇÃO\n${operacao.join('\n')}\n\nVocê poderia verificar o que aconteceu com esse cadastro e, se possível, liberar/criar a proposta ou nos orientar sobre o que precisamos ajustar?\n\nObrigado!`;
     try {
       const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-      await sendEmailFrom({ acc, userId: fabio?.id || null, to: [INTER_GESTORA_EMAIL], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${lead.name.toUpperCase()} - proposta Home Equity não gerou número no portal`, body, leadId: lead.id, io: null });
+      await sendEmailFrom({ acc, userId: acc.userId, to: [INTER_GESTORA_EMAIL], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${lead.name.toUpperCase()} - proposta Home Equity com erro no portal`, body, leadId: lead.id, io: null });
       await saveCf(lead.id, { _interVaniaAt: new Date().toISOString() });
-      await addNote(lead.id, '📧 E-mail enviado à Vania (Inter, vania.tavares@inter.co, cc Andreia) automaticamente: o Inter foi rodado 2 vezes e a proposta não gerou número (só rascunho no portal). Pedi pra verificar o cadastro e liberar/orientar.');
+      await addNote(lead.id, '📧 E-mail enviado à Vania (Inter, vania.tavares@inter.co, cc Andreia) automaticamente: o portal do Inter deu o erro "Ocorreu um erro ao processar os dados da sua proposta" em 2 conferências. Mandei os dados completos do cliente pra ela vincular o cadastro.');
       const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-      sendPushToAccount(accountId, { title: lead.name, body: 'Inter não gerou a proposta — e-mail enviado à Vania', leadId: lead.id }).catch(() => {});
-      console.log(`[Inter sem proposta] ${lead.name}: e-mail enviado à Vania`);
+      sendPushToAccount(accountId, { title: lead.name, body: 'Inter deu erro na proposta — e-mail com os dados enviado à Vania', leadId: lead.id }).catch(() => {});
+      console.log(`[Inter sem proposta] ${lead.name}: e-mail com os dados enviado à Vania`);
     } catch (e: any) {
       await saveCf(lead.id, { _interVaniaAt: new Date().toISOString() }); // não repete em laço
-      await addNote(lead.id, `⚠️ Inter sem número de proposta em 2 rodadas: NÃO consegui enviar o e-mail à Vania (${e?.message || e}). Mande à mão.`);
+      await addNote(lead.id, `⚠️ O Inter deu erro na proposta em 2 conferências: NÃO consegui enviar o e-mail à Vania (${e?.message || e}). Mande à mão.`);
     }
   }
 }
