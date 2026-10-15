@@ -27,8 +27,8 @@ export function callableFirstName(...raws: unknown[]): string | null {
   return null;
 }
 
-/** Arredonda PRA CIMA pro próximo número inteiro de milhar (Fabio 15/10: "arredondar o valor total pra número inteiro, até 5 mil a mais" — saldo devedor + troco).
- *  Nunca passa de R$ 5.000 a mais (aqui o máximo é R$ 999,99). */
+/** Total do crédito com SALDO DEVEDOR (Fabio 15/10): saldo + troco + uma folga de R$ 2 a 3 mil, sempre em número inteiro de milhar (sem centavos).
+ *  Ex.: 138.369,69 + 2.000 = 140.369,69 → 141.000 (folga de 2,6 mil); 271.082,92 → 274.000. */
 export function roundUpToThousand(v: number): number {
-  return v > 0 ? Math.min(Math.ceil(v / 1000) * 1000, v + 5000) : v;
+  return v > 0 ? Math.ceil((v + 2000) / 1000) * 1000 : v;
 }

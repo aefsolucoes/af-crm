@@ -20,7 +20,7 @@ const prisma = new PrismaClient();
 
 /** Fabio 15/10: cliente mandando documento → ESPERA 10 min sem arquivo novo (cada arquivo reinicia a contagem) pra ele mandar tudo; se não mandou tudo, confere o que chegou e COBRA o que falta.
  *  O horário da conferência fica gravado no card (`_docsCheckDue`) e um poller (processDocsChecks, 1 min) executa — o setTimeout antigo se perdia a cada deploy. */
-const CHECK_DELAY_MS = 10 * 60_000;
+const CHECK_DELAY_MS = 5 * 60_000; // Fabio 15/10: 10 min → 5 min
 
 export const DOCS_COMPLETE_MESSAGE = 'Recebi toda a documentação, obrigada! Já vou seguir com a análise. Se o banco achar necessário, pode pedir algum documento a mais, aí te aviso por aqui.';
 
@@ -76,6 +76,14 @@ export function promisedAt(text: string, now: Date): Date {
   if (/hoje a noite|a noite/.test(t)) return at(local.getUTCHours() >= 18 ? 1 : 0, local.getUTCHours() >= 18 ? 11 : 19);
   if (/mais tarde|logo mais|daqui/.test(t)) return new Date(now.getTime() + 3 * 3_600_000);
   return at(1, 11); // "depois", "quando conseguir…": amanhã de manhã
+}
+
+/** Hook do WhatsApp: o cliente respondeu (texto) depois de perguntarmos de quem é o imóvel → reabre a conferência dos documentos. */
+export async function maybeRecheckOwnerAnswer(accountId: string, leadId: string, io: Io): Promise<void> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId, status: 'OPEN' }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  if (!cf._donoAskedAt || cf._donoResolvedAt) return;
+  await scheduleDocsCheck(accountId, leadId, io);
 }
 
 /** Hook do WhatsApp: texto do cliente num card em Aguardando Documentação. */
@@ -248,6 +256,26 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   if (review?.duvidas.length && !review.problemas.length) {
     console.log(`[Docs] ${lead.name} (${leadId}): ${review.duvidas.length} documento(s) em dúvida com a equipe — conferência pausada`);
     return;
+  }
+
+  // Documento do imóvel em nome de OUTRA pessoa (Fabio 15/10): a IA pergunta ao cliente de quem é o imóvel (uma vez por proprietário) e o card espera a resposta; com a resposta a conferência reabre.
+  if (review?.donoPendente.length) {
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cfd = { ...((fresh?.customFields || {}) as Record<string, any>) };
+    const ja = new Set<string>(((cfd._donoAskedFor as string[]) || []).map((x) => String(x).toUpperCase()));
+    const novos = review.donoPendente.filter((d) => !ja.has(d.dono.toUpperCase()));
+    if (novos.length) {
+      const nomes = novos.map((d) => `*${d.dono}*`).join(' e ');
+      const texto = `Vi na matrícula que o imóvel está no nome de ${nomes}. Quem é essa pessoa pra você (pai, mãe, cônjuge, filho…)? Preciso saber pra seguir com a documentação. 🙏`;
+      const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfd, _donoAskedFor: [...ja, ...novos.map((d) => d.dono.toUpperCase())], _donoAskedAt: new Date().toISOString(), _donoResolvedAt: null } as any } });
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏠 O imóvel está em nome de ${novos.map((d) => d.dono).join(' e ')}, que não é participante. ${sent.success ? 'Perguntei ao cliente quem é essa pessoa pra ele (precisa ser parente de 1º grau ou participante); o card espera a resposta.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte de quem é o imóvel.' : 'IA desligada: pergunte ao cliente de quem é o imóvel (precisa ser parente de 1º grau ou participante).'}` } }).catch(() => {});
+    }
+    return; // card espera o dono do imóvel ser esclarecido
+  }
+  if ((lead.customFields as any)?._donoAskedAt && !(lead.customFields as any)?._donoResolvedAt) {
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _donoResolvedAt: new Date().toISOString() } as any } });
   }
 
   // Imóvel com financiamento ativo (gravame vigente na matrícula + proposta com saldo): pede o print do saldo devedor (1 vez). Se pediu, o "recebi tudo" vai junto nessa mensagem.

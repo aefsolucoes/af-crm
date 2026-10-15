@@ -206,7 +206,9 @@ const NEW_VALUE_RULES = `VALOR NOVO = ANÁLISE NOVA (Fabio 15/10, Rafaela Andrad
 
 const NO_RECEIPT_LIST_RULES = `DOCUMENTOS RECEBIDOS (Fabio 15/10): nunca enumere pro cliente os documentos que ele já mandou ("recebi sua certidão e seu comprovante…"). Fale só do que FALTA ou do que está com PROBLEMA, e só depois que ele terminar de encaminhar (a conferência automática avisa).`;
 const DOCS_ARRIVING_RULES = `O CLIENTE ESTÁ MANDANDO DOCUMENTOS AGORA (Fabio 15/10): ele ainda não terminou de encaminhar. NÃO diga o que já chegou, o que falta, nem confirme recebimento de documento — a conferência automática faz isso uma vez só, depois que ele parar de mandar. Responda APENAS a dúvida que ele fez, em 1 frase, sem listar documentos nem cobrar nada. Se a mensagem for só aviso/legenda de documento, noReply true.`;
-const PROPERTY_DOCS_RULES = `CERTIDÃO DE ÔNUS / MATRÍCULA (Fabio 15/10): se o cliente não tem a matrícula/certidão de ônus ou diz que não consegue tirar, NÃO peça pra ele ir ao cartório — a A&F emite. Peça só o ENDEREÇO COMPLETO COM CEP do imóvel (a A&F confere com o da proposta) ou, se ele tiver, o NÚMERO DA MATRÍCULA, e diga em uma frase que a A&F emite a certidão. Documento de matrícula que chegou "para simples consulta", antigo ou incompleto serve — não cobre outro. A matrícula precisa estar no nome de um participante ou de parente de 1º grau.
+const PROPERTY_DOCS_RULES = `CERTIDÃO DE ÔNUS / MATRÍCULA (Fabio 15/10): você NÃO manda o cliente ao cartório por conta própria — se ele não tem a matrícula/certidão de ônus ou não consegue mandar, a A&F emite: peça só o ENDEREÇO COMPLETO COM CEP do imóvel (a A&F confere com o da proposta) ou, se ele tiver, o NÚMERO DA MATRÍCULA, e diga em uma frase que a A&F emite a certidão. Se o PRÓPRIO cliente disser que prefere tirar direto no cartório, aceite numa boa: a A&F só emite quando o cliente não tem. Matrícula "para simples consulta", antiga ou incompleta serve — não cobre outro documento no lugar.
+
+DONO DO IMÓVEL (Fabio 15/10): a matrícula precisa estar no nome de um participante ou de parente de 1º grau dele (pai, mãe, filho/a; cônjuge também vale). Quando a conferência dos documentos disser que o proprietário é OUTRA pessoa, PERGUNTE ao cliente, curto, de quem é o imóvel e que relação essa pessoa tem com ele — e use a resposta: parente de 1º grau → segue; outro vínculo → explique que precisa de parentesco de 1º grau ou da pessoa como participante. Se continuar com dúvida depois da resposta, mande a pergunta pra equipe ("askTeam") — a resposta da equipe vira regra aprendida, igual já funciona.
 
 IMÓVEL COM FINANCIAMENTO ATIVO (proposta "Imóvel quitado: Não" — Fabio 15/10): ANTES de o crédito ser aprovado NÃO peça print do saldo devedor, não fale de somar saldo e não cobre nada disso — a pré-análise roda no valor pedido. O print do saldo só é pedido DEPOIS da aprovação (card em "Aguardando Documentação" / aviso de aprovação já enviado) e quem pede é o CRM, sozinho: ele lê o print, SOMA o saldo ao crédito pedido e refaz a análise com o total. Você só responde se o cliente perguntar: depois de aprovado, explique em 1–2 frases que o valor final é o crédito pedido + o saldo devedor e que precisa do print; antes de aprovar, diga só que isso entra depois da aprovação. NÃO mexa em valor nem marque runAnalysis por causa disso.`;
 const RETENTION_RULES = `CLIENTE APROVADO QUE RECUSA O BANCO / QUER DESISTIR (Fabio 15/10, Gabriela Messina: "clientes aprovados precisamos tentar entender ele pra achar uma solução, mas não insistir tanto — a IA já teria dispensado a cliente"): quando o crédito JÁ foi aprovado (card em Aguardando Documentação, ou aviso de aprovação enviado) e o cliente recusar o banco, disser que prefere outro banco ou que vai deixar/desistir:
@@ -367,8 +369,8 @@ export interface AiAutoReplyResult {
 }
 
 /** Fabio 15/10 (Digmar): "a IA não está aguardando o cliente encaminhar tudo antes de falar o que falta". Card em Aguardando Documentação e o cliente ainda está MANDANDO
- *  documento (arquivo nos últimos 10 min, ou a conferência de documentos ainda agendada): a conversa não diz o que chegou nem o que falta — quem faz isso é a conferência
- *  (docs-checker), 10 min depois do último arquivo, num aviso só. */
+ *  documento (arquivo nos últimos 5 min, ou a conferência de documentos ainda agendada): a conversa não diz o que chegou nem o que falta — quem faz isso é a conferência
+ *  (docs-checker), 5 min depois do último arquivo, num aviso só. */
 async function docsStillArriving(leadId: string): Promise<boolean> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } });
   if (!lead) return false;
@@ -376,7 +378,7 @@ async function docsStillArriving(leadId: string): Promise<boolean> {
   if (!stage.includes('aguardando documentacao')) return false;
   if ((lead.customFields as any)?._docsCheckDue) return true;
   const recent = await prisma.messageAttachment.findMany({
-    where: { leadId, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(Date.now() - 10 * 60_000) }, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
+    where: { leadId, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(Date.now() - 5 * 60_000) }, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
     select: { fileName: true, mimeType: true }, take: 10,
   });
   const { isStickerAttachment } = require('./google.service') as typeof import('./google.service');

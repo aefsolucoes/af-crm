@@ -217,6 +217,26 @@ async function interAgeBlock(db: Db, leadId: string): Promise<string | null> {
   return `idade fora da faixa do Inter (18 a 69 anos): ${people.map((x) => `${x.name} (${x.age} anos)`).join(', ')}.`;
 }
 
+/** SEMPRE TENTAR NO MESMO CPF QUE APROVOU O CLIENTE (Fabio 15/10): ao rodar de novo (valor novo, saldo devedor…), cada banco que já aprovou alguém usa de titular o MESMO CPF dessa aprovação —
+ *  senão a nova análise vai pro outro participante e perde a aprovação que já existia. Ajusta a inversão de titular por banco; só escreve (e anota) quando muda. */
+async function alignHoldersWithApproval(db: Db, accountId: string, leadId: string): Promise<void> {
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '');
+  const cpf1 = dig(cf.cpf_1), cpf2 = dig(cf.cpf_2);
+  if (cpf1.length !== 11 || cpf2.length !== 11 || cpf1 === cpf2) return;
+  for (const bank of BANK_KEYS) {
+    const ap = await db.creditAnalysis.findFirst({ where: { leadId, bank, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, holderCpf: { not: null } }, orderBy: { createdAt: 'desc' }, select: { holderCpf: true } });
+    const holder = dig(ap?.holderCpf);
+    if (holder !== cpf1 && holder !== cpf2) continue;
+    const ov = await db.creditOverride.findFirst({ where: { leadId, bank }, select: { data: true } });
+    const invertido = (ov?.data as any)?.inverter === true;
+    const querInvertido = holder === cpf2;
+    if (invertido === querInvertido) continue;
+    await setOverrides(db, { accountId, leadId, banks: [bank], data: { inverter: querInvertido }, merge: true, userName: 'Análise automática (mesmo CPF da aprovação)' }).catch(() => {});
+  }
+}
+
 export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
@@ -225,6 +245,7 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
   const consulted: string[] = [];
   for (const l of leads) {
     const createdBefore = created;
+    if (wantedKind === 'RUN' && !p.dryRun && p.force) await alignHoldersWithApproval(db, p.accountId, l.id).catch(() => {});
     for (const bank of banks) {
       const open = await db.creditAnalysis.findFirst({
         where: { leadId: l.id, bank, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } },
@@ -351,7 +372,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   let next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
   // Creditas: "Este CPF já possui uma proposta ativa … NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar → vira FALHA POR REGRA ("Desqualificado"), não "Conferir".
   if (row.bank === 'CREDITAS' && (next === 'CHECK' || next === 'FAILED') && /CPF j[aá] possui uma proposta ativa na Creditas/i.test(String(data.detail || ''))) next = 'FAILED';
-  // Aprovação MUITO acima do que o cliente pediu (Fabio 15/10, Gabriela: pediu R$ 50 mil e a conferência do Creditas trouxe R$ 1,6 milhão em 161 meses — era OUTRA proposta ativa do
+  // Aprovação MUITO acima do que o cliente pediu (mais de 1,5×; Fabio 15/10, Gabriela: pediu R$ 50 mil e a conferência do Creditas trouxe R$ 1,6 milhão em 161 meses — era OUTRA proposta ativa do
   // mesmo CPF no portal): não vale pra este card. No Creditas vira "CPF com proposta ativa" (Desqualificado); nos outros, volta pra conferir à mão.
   if (!row.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL')) {
     const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
@@ -359,7 +380,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     const toN = (v: any) => { const t = String(v ?? '').replace(/[^\d.,]/g, ''); const n = t.includes(',') ? Number(t.replace(/\./g, '').replace(',', '.')) : (/\.\d{3}$/.test(t) ? Number(t.replace(/\./g, '')) : Number(t)); return Number.isFinite(n) ? n : 0; };
     const pedido = toN(cfv._lastRunValue) || toN(cfv.valor_credito);
     const aprovado = Number(data.approvedValue) || Number(data.netValue) || 0;
-    if (pedido > 0 && aprovado > pedido * 3) {
+    if (pedido > 0 && aprovado > pedido * 1.5) {
       const lido = `${brl(Number(data.approvedValue) || Number(data.netValue))}${data.termMonths ? ` em ${data.termMonths} meses` : ''}`;
       next = row.bank === 'CREDITAS' ? 'FAILED' : 'CHECK';
       data = {

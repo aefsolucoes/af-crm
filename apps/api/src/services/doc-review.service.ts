@@ -22,6 +22,9 @@ export interface DocReview {
   observacao: string;
   /** Só AUTORIZACAO SCR BACEN: GOVBR = assinatura eletrônica do gov.br (não precisa de identidade); PUNHO = assinada à mão (precisa do documento com foto). */
   assinatura?: 'GOVBR' | 'PUNHO';
+  /** Documento do imóvel: nome do proprietário ATUAL e como ele se relaciona com os participantes (Home Equity). OUTRO_SEM_RELACAO = dono é outra pessoa e a conversa ainda não explica o vínculo → a conferência pergunta ao cliente. */
+  dono?: string;
+  donoSituacao?: 'PARTICIPANTE' | 'OUTRO_SEM_RELACAO' | 'PARENTE_1GRAU';
   /** Só MATRICULA/CERTIDAO DE ONUS: alienação fiduciária/hipoteca/penhora VIGENTE (sem cancelamento) que a leitura achou — ex.: "ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024)". Vazio = nada vigente. */
   gravame?: string;
   /** DUVIDA: a pergunta pra equipe (a IA não tem segurança se o documento serve). */
@@ -31,14 +34,15 @@ export interface DocReview {
 }
 
 const SYSTEM = `Você é a conferente de documentos de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional). Olhe o ARQUIVO que o cliente mandou pelo WhatsApp e diga se ele está CORRETO para seguir ao banco. Responda SOMENTE com JSON:
-{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS, MATRICULA, CND IPTU, CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","gravame":"<SÓ MATRICULA ou CERTIDAO DE ONUS: se constar alienação fiduciária, hipoteca ou penhora ainda VIGENTE (sem averbação de cancelamento/baixa), escreva curto: TIPO - CREDOR - valor original (data), ex.: ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024); senão vazio>",
+{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS, MATRICULA, CND IPTU, CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","dono":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, escritura): nome do proprietário ATUAL; senão vazio>","donoSituacao":"<SÓ documento do imóvel em Home Equity: PARTICIPANTE | OUTRO_SEM_RELACAO | PARENTE_1GRAU; senão vazio>",
+"gravame":"<SÓ MATRICULA ou CERTIDAO DE ONUS: se constar alienação fiduciária, hipoteca ou penhora ainda VIGENTE (sem averbação de cancelamento/baixa), escreva curto: TIPO - CREDOR - valor original (data), ex.: ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024); senão vazio>",
 "observacao":"<detalhe INTERNO útil pra equipe (ex.: constam ônus ou alienação fiduciária na matrícula, validade do documento); senão vazio>","duvida":"<SÓ se resultado DUVIDA: a pergunta objetiva pra equipe, 1 a 2 frases, dizendo o que você viu e o que precisa saber; senão vazio>","regra":"<SÓ quando a equipe já respondeu: a regra geral, em 1 frase, que vale pra OUTROS clientes; se foi só sobre este caso, vazio>"}
 
 Critérios — aponte PROBLEMA só quando for real; documento legível e correto é OK, não invente defeito:
 - Legibilidade: foto desfocada, escura, com reflexo, cortada ou com dado importante ilegível → PROBLEMA ("manda uma foto mais nítida/inteira").
 - RG/CNH: NÃO dê problema por mostrar só um lado (o cliente pode mandar frente e verso em fotos separadas): só preencha "lado". CNH digital (print do app) conta como "ambos". CNH vencida → PROBLEMA.
 - Atualização (use a data de hoje): comprovante de residência com mais de 90 dias; CND de IPTU vencida; contracheque que não seja dos últimos 3 meses → PROBLEMA, dizendo o prazo exigido. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA NÃO têm prazo: a A&F aceita antiga/vencida, aceita a versão "PARA SIMPLES CONSULTA, NÃO VALE COMO CERTIDÃO" (consulta do ONR) e aceita incompleta ou com páginas faltando (Fabio 15/10). NUNCA marque PROBLEMA nem peça ao cliente pra tirar outra no cartório por causa de data, marca de consulta ou páginas: se algo estiver ruim, só anote em "observacao" (a A&F emite a certidão pelo endereço ou número da matrícula). A data que vale na matrícula/certidão é a de EMISSÃO da certidão (carimbo/linha "certidão emitida em…", em geral no topo ou no fim), NÃO as datas dos registros e averbações dentro dela (um registro de 2011 não torna a certidão antiga). Se a data de emissão/validade não aparecer mas o documento parece inteiro e legível, é OK: anote "sem data de emissão visível" na observação.
-- Titular: compare com os participantes do card. RG/CNH/CPF/certidão/documento de renda em nome de OUTRA pessoa → PROBLEMA ("está no nome de X; o participante é Y"). Comprovante de residência em nome de parente/outra pessoa NÃO é problema por si só. DOCUMENTOS DO IMÓVEL (matrícula, ônus, IPTU, escritura): olhe o PROPRIETÁRIO ATUAL (o último registro de propriedade, não os antigos) e diga em "titular". Em Home Equity ele precisa ser um dos participantes do card OU parente de 1º grau deles (pai, mãe, filho/a, cônjuge): se for um participante → OK; se for outra pessoa → resultado DUVIDA, com a pergunta "A matrícula está em nome de X; os participantes são Y. X é parente de 1º grau?" (não chute parentesco por sobrenome). No Financiamento Habitacional o imóvel é do VENDEDOR e isso é normal (não é problema nem dúvida).
+- Titular: compare com os participantes do card. RG/CNH/CPF/certidão/documento de renda em nome de OUTRA pessoa → PROBLEMA ("está no nome de X; o participante é Y"). Comprovante de residência em nome de parente/outra pessoa NÃO é problema por si só. DOCUMENTOS DO IMÓVEL (matrícula, ônus, IPTU, escritura): olhe o PROPRIETÁRIO ATUAL (o último registro de propriedade, não os antigos) e preencha "dono". Em Home Equity ele precisa ser um dos participantes do card OU parente de 1º grau deles (pai, mãe, filho/a; cônjuge também vale): participante → donoSituacao PARTICIPANTE (resultado OK). Outra pessoa e a "CONVERSA RECENTE" (se vier) NÃO explica quem ela é → donoSituacao OUTRO_SEM_RELACAO e resultado OK (o documento em si está certo; a conferência vai perguntar ao cliente de quem é o imóvel — não chute parentesco por sobrenome). Se a CONVERSA RECENTE traz o cliente explicando o vínculo: pai/mãe/filho/filha/cônjuge → PARENTE_1GRAU (OK); qualquer outro vínculo (irmão, tio, amigo, empresa, ex-cônjuge…) ou resposta confusa → resultado DUVIDA, com a pergunta pra equipe citando o que o cliente disse. No Financiamento Habitacional o imóvel é do VENDEDOR e isso é normal (deixe donoSituacao vazio; não é problema nem dúvida).
 - CAPA IPTU (Home Equity: capa do IPTU/carnê com as metragens e a inscrição imobiliária): precisa mostrar as METRAGENS (área do terreno/construída) e a inscrição; se a foto/arquivo não mostrar as metragens → PROBLEMA ("manda a capa do IPTU em que apareçam as metragens"). Não exija CND de IPTU no Home Equity (a lista agora pede a capa e a inscrição; a A&F emite a CND).
 - Documento de várias páginas (matrícula, ônus, escritura, IR) que parece parcial: NÃO marque PROBLEMA; escreva em "observacao" que parece parcial.
 - Se não for documento (selfie, figurinha, print de conversa, foto qualquer): resultado NAO_DOCUMENTO.
@@ -101,9 +105,17 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     const lado = j.lado === 'frente' || j.lado === 'verso' || j.lado === 'ambos' ? j.lado : '';
     const problemas = (Array.isArray(j.problemas) ? j.problemas : []).map((p: unknown) => cleanText(p, 320)).filter(Boolean).slice(0, 4);
     const assinatura = j.assinatura === 'GOVBR' || j.assinatura === 'PUNHO' ? j.assinatura : undefined;
+    const donoSituacao = j.donoSituacao === 'PARTICIPANTE' || j.donoSituacao === 'OUTRO_SEM_RELACAO' || j.donoSituacao === 'PARENTE_1GRAU' ? j.donoSituacao : undefined;
+    const dono = cleanText(j.dono, 80);
     const gravame = /^(MATRICULA|CERTIDAO DE ONUS)/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '')) ? cleanText(j.gravame, 160) : '';
-    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
+    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(donoSituacao ? { donoSituacao, ...(dono ? { dono } : {}) } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
   } catch { return undefined; }
+}
+
+/** Conversa recente (cliente/atendente) — só entra quando a conferência já perguntou ao cliente de quem é o imóvel, pra o leitor ver a resposta. */
+async function recentConversation(leadId: string): Promise<string> {
+  const msgs = await prisma.message.findMany({ where: { leadId, callWaCallId: null }, orderBy: { createdAt: 'desc' }, take: 14, select: { direction: true, content: true } });
+  return msgs.reverse().map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Atendente'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 220)}`).join('\n');
 }
 
 function participantsContext(cf: Record<string, any>, leadName: string, setor = ''): string {
@@ -144,6 +156,8 @@ export interface ReviewSummary {
   problemas: { doc: string; texto: string[] }[];
   /** Documentos em DÚVIDA (a IA levou a pergunta pra equipe, no balão): seguram o card até a equipe responder. */
   duvidas: { attachmentId: string; arquivo: string; doc: string; pergunta: string }[];
+  /** Documento do imóvel em nome de OUTRA pessoa sem vínculo explicado: a conferência pergunta ao cliente de quem é. */
+  donoPendente: { attachmentId: string; doc: string; dono: string }[];
   /** Documentos conferidos e OK (rótulo). */
   ok: string[];
 }
@@ -165,14 +179,22 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   const info = await getDocInfo(accountId, leadId, atts); // classificação barata: pula o que não é documento
   const cf0 = (lead.customFields || {}) as Record<string, any>;
   const cache: Record<string, DocReview> = { ...((cf0._docReview as Record<string, DocReview>) || {}) };
-  const context = participantsContext(cf0, lead.name, lead.pipeline?.department?.name || '');
+  let context = participantsContext(cf0, lead.name, lead.pipeline?.department?.name || '');
+  // Já perguntamos de quem é o imóvel: com texto novo do cliente depois da pergunta, relê o documento com a conversa (a resposta dele decide).
+  const donoPerguntadoEm: string | undefined = cf0._donoAskedAt;
+  let releDono = false;
+  if (donoPerguntadoEm) {
+    releDono = (await prisma.message.count({ where: { leadId, direction: 'INBOUND', createdAt: { gt: new Date(donoPerguntadoEm) }, content: { not: '' }, attachments: { none: {} } } })) > 0;
+    context = `${context}\n\nCONVERSA RECENTE:\n${await recentConversation(leadId)}`;
+  }
   const learned = await learnedDocRules(accountId).catch(() => '');
   const novas: ReviewSummary['novas'] = [];
   // O leitor completo (com raciocínio) acerta mais que o classificador barato: documento do IMÓVEL que o classificador tratou como pessoal
   // (capa de IPTU lida como "comprovante de residência" em nome de empresa — Maria Antônia, 15/10) passa a valer pelo que o leitor disse.
   const infoFix: Record<string, string> = {};
   for (const a of atts) {
-    if (cache[a.id] || info[a.id] === null || info[a.id] === undefined) continue;
+    const reler = releDono && cache[a.id]?.donoSituacao === 'OUTRO_SEM_RELACAO';
+    if ((cache[a.id] && !reler) || info[a.id] === null || info[a.id] === undefined) continue;
     const r = await reviewAttachment(accountId, a, context, { learned });
     if (!r) continue;
     cache[a.id] = r;
@@ -228,7 +250,16 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     else ok.push(docLabel(r));
   }
   const duvidas = atts.filter((a) => cache[a.id]?.resultado === 'DUVIDA').map((a) => ({ attachmentId: a.id, arquivo: a.fileName || a.id, doc: cache[a.id].tipo || 'documento', pergunta: cache[a.id].duvida || '' }));
-  return { novas, problemas, duvidas, ok };
+  // Dono do imóvel em nome de OUTRA pessoa sem vínculo explicado (a leitura mais recente de cada documento).
+  const donoPendente: ReviewSummary['donoPendente'] = [];
+  const vistos = new Set<string>();
+  for (const a of [...atts].reverse()) {
+    const r = cache[a.id];
+    if (!r || r.donoSituacao !== 'OUTRO_SEM_RELACAO' || !r.dono || vistos.has(r.dono.toUpperCase())) continue;
+    vistos.add(r.dono.toUpperCase());
+    donoPendente.push({ attachmentId: a.id, doc: r.tipo, dono: r.dono });
+  }
+  return { novas, problemas, duvidas, donoPendente, ok };
 }
 
 /** Mensagem ao cliente com o que precisa ser corrigido (curta, educada, sem jargão). */
