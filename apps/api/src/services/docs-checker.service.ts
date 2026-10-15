@@ -159,6 +159,7 @@ Como decidir:
 5. Cônjuges/companheiros: um comprovante de residência e uma certidão de casamento servem para os dois (moram juntos), a não ser que a conversa diga que moram em endereços diferentes.
 6. Se o cliente disse na conversa que algo não se aplica a ele, considere.
 7. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA do imóvel: a A&F EMITE quando o cliente não manda (ou manda incompleta/ilegível) — pelo endereço completo com CEP ou pelo número da matrícula (Fabio 15/10). Se faltar, NÃO ponha em "faltando" (não se cobra do cliente): ponha em "emitir" ("Certidão de ônus reais/Matrícula") e decida "complete" só pelo resto da lista. Qualquer arquivo de matrícula/ônus recebido (mesmo consulta, antigo ou parcial) conta como recebido. O que sobra do imóvel (inscrição imobiliária/IPTU, capa do IPTU com as metragens) continua obrigatório.
+8a. O cliente respondeu no formulário se POSSUI certidão de ônus/matrícula (linha "Cliente informou…" abaixo). "Não"/"Não possui"/"Não sei": a A&F emite → vai em "emitir", NUNCA em "faltando". "Sim"/"Sim, possui" e nenhuma matrícula/ônus chegou: ele diz que tem, então a certidão FALTA (cobre dele). Sem resposta: vale a regra 7.
 8. A CAPA DO IPTU (carnê/guia do IPTU, "CAPA IPTU") traz a inscrição imobiliária E as metragens: ela sozinha atende os itens "Inscrição Imobiliária/IPTU" e "Capa do IPTU com as metragens" do Home Equity. Qualquer documento de IPTU recebido (capa, carnê, guia, CND de IPTU) conta como "Inscrição Imobiliária/IPTU".
 9. Seja rigoroso: "complete": true só se tiver certeza de que todos os itens obrigatórios chegaram. Se houver arquivos que não puderam ser lidos e algum item obrigatório puder estar entre eles, responda false.`;
 
@@ -201,6 +202,7 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   if (!lists.length) return null;
 
   const cf = (lead.customFields || {}) as Record<string, string>;
+  const cfAll = cf as Record<string, any>;
   const participants = [
     cf.participante_1 && `1) ${cf.participante_1}${cf.vinculo_1 ? ` — ${cf.vinculo_1}` : ''}`,
     cf.participante_2 && `2) ${cf.participante_2}${cf.vinculo_2 ? ` — ${cf.vinculo_2}` : ''}`,
@@ -217,7 +219,7 @@ ${participants}
 LISTAS DE DOCUMENTOS:
 ${lists.map((l) => `--- ${l.name} ---\n${l.body}`).join('\n\n')}
 
-DOCUMENTOS RECEBIDOS (lidos dos arquivos que o cliente mandou; "de FULANO" = titular do documento):
+${String(cfAll.possui_certidao || '').trim() ? `Cliente informou no formulário que possui certidão de ônus/matrícula: ${String(cfAll.possui_certidao).trim()}\n\n` : ''}DOCUMENTOS RECEBIDOS (lidos dos arquivos que o cliente mandou; "de FULANO" = titular do documento):
 ${receivedText}
 ${unread.length ? `\nArquivos que não puderam ser lidos: ${unread.length}` : ''}
 

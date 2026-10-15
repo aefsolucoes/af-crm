@@ -1,5 +1,4 @@
 import { PrismaClient } from '@prisma/client';
-import { roundUpToThousand } from '../lib/text';
 const prisma = new PrismaClient();
 
 /**
@@ -65,6 +64,8 @@ const HOME_EQUITY_FIELDS: FieldMap = {
   'troco desejado': { key: 'troco', kind: 'number' },
   'valor do troco': { key: 'troco', kind: 'number' },
   'quanto voce quer receber': { key: 'troco', kind: 'number' },
+  // Formulário do site (15/10): "Troco na conta do cliente (crédito − saldo)" — o prefixo "troco" é tratado em parseFicha. "Crédito desejado" já é o crédito TOTAL (inclui a quitação).
+  'certidao de onus/matricula': { key: 'possui_certidao', kind: 'text' }, // "O imóvel possui certidão de ônus/matrícula?" (Sim / Não / Sim, possui / Não possui / Não sei)
 };
 
 // Ficha real (2026-09-25): "Imóvel: Residencial — R$ 500.000,00 (UF: DF)",
@@ -208,7 +209,7 @@ function parseFicha(text: string, fieldMap: FieldMap): Record<string, string> {
       const value = part.slice(idx + 1).replace(/[*_~`]/g, '').trim();
       if (!label || !value) continue;
       if (SKIP_VALUES.has(norm(value))) continue;
-      const field = fieldMap[label];
+      const field = fieldMap[label] || (label.startsWith('troco') ? fieldMap['troco'] : undefined);
       if (!field) continue;
       const key = secondParticipant && field.key.endsWith('_1') ? field.key.replace(/_1$/, '_2') : field.key;
       if (secondParticipant && key === field.key) continue; // campo sem versão _2 (ex.: valor do imóvel) não vem dessa seção
@@ -217,9 +218,9 @@ function parseFicha(text: string, fieldMap: FieldMap): Record<string, string> {
       if (parsed !== null && parsed !== '') out[key] = parsed;
     }
   }
-  // Saldo devedor + troco informados na proposta: o crédito a analisar é a SOMA (a linha "Crédito desejado" do site, se vier, fica de lado).
+  // Saldo devedor + troco sem a linha "Crédito desejado" (formulário antigo): o crédito é a soma. Com ela, o site já manda o crédito TOTAL (= saldo + troco) e vale o que o cliente escolheu.
   const saldo = Number(out.saldo_devedor), troco = Number(out.troco);
-  if (saldo > 0 && troco > 0) out.valor_credito = String(roundUpToThousand(Math.round((saldo + troco) * 100) / 100));
+  if (saldo > 0 && troco > 0 && !out.valor_credito) out.valor_credito = String(Math.round((saldo + troco) * 100) / 100);
   return out;
 }
 
