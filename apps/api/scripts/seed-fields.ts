@@ -41,7 +41,6 @@ const fieldDefs: { tab: string; name: string; key: string; type: FieldType; opti
   { tab: 'Financiamento', name: 'Contato para Vistoria', key: 'contato_vistoria', type: 'TEXT', options: [], order: 15 },
   { tab: 'Financiamento', name: 'E-mail vendedor', key: 'email_vendedor', type: 'EMAIL', options: [], order: 16 },
   { tab: 'Financiamento', name: 'Número da proposta', key: 'num_proposta', type: 'TEXT', options: [], order: 17 },
-  { tab: 'Financiamento', name: 'Docs pendentes', key: 'docs_pendentes', type: 'TEXT', options: [], order: 18 },
   // Consórcio
   { tab: 'Consórcio', name: 'Administradora', key: 'administradora', type: 'TEXT', options: [], order: 0 },
   { tab: 'Consórcio', name: 'Crédito', key: 'credito_consorcio', type: 'NUMBER', options: [], order: 1 },

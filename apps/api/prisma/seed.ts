@@ -194,7 +194,6 @@ async function main() {
     { tab: 'Financiamento', name: 'Contato para Vistoria', key: 'contato_vistoria', type: 'TEXT' as const, options: [], order: 17 },
     { tab: 'Financiamento', name: 'E-mail vendedor', key: 'email_vendedor', type: 'EMAIL' as const, options: [], order: 18 },
     { tab: 'Financiamento', name: 'Número da proposta', key: 'num_proposta', type: 'TEXT' as const, options: [], order: 19 },
-    { tab: 'Financiamento', name: 'Docs pendentes', key: 'docs_pendentes', type: 'TEXT' as const, options: [], order: 20 },
     { tab: 'Consórcio', name: 'Administradora', key: 'administradora', type: 'TEXT' as const, options: [], order: 0 },
     { tab: 'Consórcio', name: 'Crédito', key: 'credito_consorcio', type: 'NUMBER' as const, options: [], order: 1 },
     { tab: 'Consórcio', name: 'Parcela', key: 'parcela_consorcio', type: 'NUMBER' as const, options: [], order: 2 },
