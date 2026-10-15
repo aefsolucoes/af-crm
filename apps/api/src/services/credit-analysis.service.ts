@@ -1012,13 +1012,15 @@ const simPriority = (bank: string) => SIM_BANK_PRIORITY[bank] ?? 9;
 
 /** Banco cuja simulação em PDF vai pro cliente: só UM — a proposta que o cliente ESCOLHEU (`chosen`) ou, sem escolha, o primeiro na ordem
  *  Inter > Creditas > Santander entre os aprovados (Fabio 14/10: "não há taxa alta, segue a ordem dos bancos"). */
-export function pickSimulationBank(approved: Array<{ bank: string; rate?: string | null; chosen?: boolean; firstInstallment?: number | null }>): { bank: string; why: string } | null {
+export function pickSimulationBank(all: Array<{ bank: string; rate?: string | null; chosen?: boolean; firstInstallment?: number | null }>): { bank: string; why: string } | null {
+  // CREDITAS não tem evolução das parcelas feita por eles (Fabio 15/10): nunca vai PDF — só a mensagem de aprovação.
+  const approved = all.filter((a) => a.bank !== 'CREDITAS');
   if (!approved.length) return null;
   const chosen = approved.find((a) => a.chosen);
   if (chosen) return { bank: chosen.bank, why: 'proposta escolhida' };
   if (approved.length === 1) return { bank: approved[0].bank, why: 'única aprovada' };
   const first = [...approved].sort((x, y) => simPriority(x.bank) - simPriority(y.bank))[0];
-  return { bank: first.bank, why: 'ordem Inter > Creditas > Santander' };
+  return { bank: first.bank, why: 'ordem Inter > Santander' };
 }
 
 const BANK_LABEL_IA: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
