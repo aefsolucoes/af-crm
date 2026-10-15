@@ -1456,6 +1456,11 @@ async function imageWithoutContext(leadId: string): Promise<boolean> {
     where: { leadId, direction: 'INBOUND', ...(lastOut ? { createdAt: { gt: lastOut.createdAt } } : {}) },
     orderBy: { createdAt: 'desc' }, take: 5, select: { content: true, attachments: { select: { mimeType: true } } },
   });
+  // Card em "Aguardando Documentação": arquivo sem texto (foto OU PDF) é documento chegando — a IA não responde arquivo a arquivo; a conferência vem 10 min depois do último (docs-checker).
+  const docsStage = await prisma.lead.findUnique({ where: { id: leadId }, select: { stage: { select: { name: true } } } });
+  const naFaseDeDocs = /aguardando documenta/i.test((docsStage?.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+  const soArquivos = burst.length > 0 && burst.every((m) => m.attachments.some((a) => !/^(audio|video)\//.test(a.mimeType)) && /^📎/.test(m.content || ''));
+  if (naFaseDeDocs && soArquivos) return true;
   if (!burst.length || !burst.every((m) => m.attachments.some((a) => /^image\//.test(a.mimeType)) && /^📎/.test(m.content || ''))) return false;
   const pediu = !!lastOut && Date.now() - lastOut.createdAt.getTime() < 30 * 60_000 && /(mand|envi|encaminh|anex|print|captura|foto|imagem|document|arquivo)/i.test(lastOut.content || '');
   return !pediu;

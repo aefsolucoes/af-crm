@@ -1,6 +1,8 @@
 import { PrismaClient, EmailMessage, EmailAccount } from '@prisma/client';
 import { Readable } from 'stream';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
+import { CARLITO_REGULAR_BASE64 } from './creditas-scr-font';
 import { callableFirstName } from '../lib/text';
 import { logActivity } from './activity.service';
 
@@ -19,7 +21,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 
 const CREDITAS_SENDER = /@([a-z0-9-]+\.)*creditas\.(com|com\.br|io)$/i;
 const WINDOW_MS = 23 * 3_600_000; // janela de 24 h do WhatsApp, com folga
-const QUIET_AFTER_DOC_MS = 3 * 60_000; // espera o cliente terminar de mandar os arquivos antes de conferir
+const QUIET_AFTER_DOC_MS = 10 * 60_000; // Fabio 15/10: espera 10 min o cliente mandar tudo antes de cobrar o que falta/corrigir (tudo completo = envia na hora)
 
 export interface ScrState {
   /** NOTED = e-mail ligado ao card, mas o CRM NÃO pede sozinho ao cliente (card fora da Pré-Análise); a equipe cuida. */
@@ -247,9 +249,10 @@ export async function fillScrForm(base: Buffer, people: { name: string; cpf: str
   const page = doc.getPage(0);
   const { width, height } = page.getSize();
   if (doc.getPageCount() !== 1 || Math.abs(width - 595) > 3 || Math.abs(height - 842) > 3) return base; // layout diferente do conhecido: não arrisca escrever no lugar errado
-  const font = await doc.embedFont(StandardFonts.Helvetica);
-  const ink = rgb(0.05, 0.1, 0.45);
-  const fit = (text: string, size: number, maxW: number) => { let sz = size; while (sz > 5.5 && font.widthOfTextAtSize(text, sz) > maxW) sz -= 0.25; return sz; };
+  doc.registerFontkit(fontkit);
+  const font = await doc.embedFont(Buffer.from(CARLITO_REGULAR_BASE64, 'base64'), { subset: true }); // mesma letra do formulário (Calibri)
+  const ink = rgb(0.1, 0.1, 0.1); // mesmo tom do texto do formulário
+  const fit = (text: string, size: number, maxW: number) => { let sz = size; while (sz > 8 && font.widthOfTextAtSize(text, sz) > maxW) sz -= 0.25; return sz; };
   // Linha "__________, ___ de __________ de 202_": cobre e reescreve inteira ("Cidade, 15 de outubro de 2026").
   const data = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: 'numeric', month: 'long', year: 'numeric' });
   const linha = `${city ? `${city}, ` : ''}${data}`;
@@ -257,11 +260,11 @@ export async function fillScrForm(base: Buffer, people: { name: string; cpf: str
   const sz = fit(linha, 11, 205);
   page.drawText(linha, { x: 226.36 + (213.42 - font.widthOfTextAtSize(linha, sz)) / 2, y: 442 + 4.2, size: sz, font, color: ink });
   // 1º Proponente (coluna da esquerda) e 2º Proponente (coluna da direita).
-  const cols = [{ nameX: 150.5, cpfX: 139, maxW: 172 }, { nameX: 370.5, cpfX: 357.5, maxW: 145 }];
+  const cols = [{ nameX: 149, cpfX: 139, maxW: 173 }, { nameX: 369, cpfX: 357.5, maxW: 168 }];
   people.slice(0, 2).forEach((pe, i) => {
     const c = cols[i];
-    page.drawText(pe.name, { x: c.nameX, y: 347.8, size: fit(pe.name, 9.5, c.maxW), font, color: ink });
-    if (pe.cpf) page.drawText(fmtCpf(pe.cpf), { x: c.cpfX, y: 333.2, size: 9.5, font, color: ink });
+    page.drawText(pe.name, { x: c.nameX, y: 350.4, size: fit(pe.name, 11, c.maxW), font, color: ink });
+    if (pe.cpf) page.drawText(fmtCpf(pe.cpf), { x: c.cpfX, y: 333.2, size: 11, font, color: ink });
   });
   return Buffer.from(await doc.save());
 }
@@ -360,7 +363,15 @@ async function collectDocs(accountId: string, lead: { id: string; name: string }
   return { docs, lastAt: atts.length ? atts[atts.length - 1].createdAt : null };
 }
 
+/** Fala com o cliente pelo fluxo do SCR — só com a IA LIGADA na conversa (Fabio 15/10, Mauricio: "por que a IA tá mandando algo sem estar ligada"). IA desligada = a equipe assumiu: não manda,
+ *  deixa nota + aviso com o que ia dizer. (O 1º pedido do formulário e o envio à Creditas não passam por aqui.) */
 async function tellClient(accountId: string, leadId: string, text: string, io: Io) {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true } });
+  if (!lead?.aiAutoReplyActive) {
+    await addNote(leadId, `🔕 SCR Creditas — a IA está desligada neste card, então NÃO mandei ao cliente. Ia dizer: "${text.replace(/\s+/g, ' ').slice(0, 400)}"`);
+    pushTeam(accountId, leadId, lead?.name || 'Cliente', 'SCR da Creditas: o cliente devolveu algo — confira (IA desligada, nada foi enviado)');
+    return { success: false, skipped: 'ia-desligada' } as any;
+  }
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   return sendOutboundWhatsApp({ accountId, leadId, content: text, io: io as any });
 }
@@ -370,7 +381,7 @@ async function checkAndForward(accountId: string, lead: { id: string; name: stri
   const { docs, lastAt } = await collectDocs(accountId, lead, since);
   const relevantes = docs.filter((d) => d.kind !== 'OUTRO');
   if (!relevantes.length || !lastAt) return; // cliente ainda não devolveu nada
-  if (Date.now() - lastAt.getTime() < QUIET_AFTER_DOC_MS) return; // ainda mandando arquivos
+  const aindaMandando = Date.now() - lastAt.getTime() < QUIET_AFTER_DOC_MS; // só segura o AVISO (problema/falta); estando tudo certo e completo, envia à Creditas na hora
   if (docs.some((d) => d.duvida)) return; // dúvida de documento com a equipe (balão) — espera a resposta
   const nomes = await scrSigners(lead, st);
   const cf = (lead.customFields || {}) as Record<string, any>;
@@ -379,12 +390,13 @@ async function checkAndForward(accountId: string, lead: { id: string; name: stri
   // SCR sem assinatura / ilegível etc.: pede de novo (uma vez por conjunto de problemas).
   const ruins = docs.filter((d) => d.kind !== 'OUTRO' && d.problema);
   if (ruins.length) {
+    if (aindaMandando) return;
     const sig = ruins.map((d) => `${d.attId}:${d.problema}`).join('|');
     if (sig !== st.problemSig && aberto) {
       await saveState(lead.id, { problemSig: sig });
       const linhas = ruins.map((d) => `⚠️ *${d.kind === 'SCR' ? 'Autorização SCR' : 'Documento de identidade'}${d.holder ? ` (${d.holder.split(' ').slice(0, 2).join(' ')})` : ''}* — ${d.problema}`);
-      await tellClient(accountId, lead.id, `Conferi o que você mandou e preciso de um ajuste:\n\n${linhas.join('\n')}\n\nAssim que reenviar, eu confiro de novo!`, io);
-      await addNote(lead.id, `🤖 SCR Creditas: problema nos documentos devolvidos — ${ruins.map((d) => d.problema).join(' | ')}. Cliente avisado.`);
+      const rr = await tellClient(accountId, lead.id, `Conferi o que você mandou e preciso de um ajuste:\n\n${linhas.join('\n')}\n\nAssim que reenviar, eu confiro de novo!`, io);
+      await addNote(lead.id, `🤖 SCR Creditas: problema nos documentos devolvidos — ${ruins.map((d) => d.problema).join(' | ')}. ${rr?.success ? 'Cliente avisado.' : 'Cliente NÃO avisado (IA desligada).'}`);
     }
     return;
   }
@@ -402,6 +414,7 @@ async function checkAndForward(accountId: string, lead: { id: string; name: stri
     escolhidos.push(...ident);
   }
   if (faltas.length) {
+    if (aindaMandando) return;
     const sig = faltas.join('|');
     if (sig !== st.faltaSig && aberto) {
       await saveState(lead.id, { faltaSig: sig });

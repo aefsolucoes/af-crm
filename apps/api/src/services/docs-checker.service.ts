@@ -18,8 +18,9 @@ const prisma = new PrismaClient();
  * "Documentação Recebida" e avisa o cliente. Incompleto: não faz nada — a IA
  * de conversa continua atendendo normalmente. */
 
-const CHECK_DELAY_MS = 90_000;
-const pending = new Map<string, NodeJS.Timeout>();
+/** Fabio 15/10: cliente mandando documento → ESPERA 10 min sem arquivo novo (cada arquivo reinicia a contagem) pra ele mandar tudo; se não mandou tudo, confere o que chegou e COBRA o que falta.
+ *  O horário da conferência fica gravado no card (`_docsCheckDue`) e um poller (processDocsChecks, 1 min) executa — o setTimeout antigo se perdia a cada deploy. */
+const CHECK_DELAY_MS = 10 * 60_000;
 
 export const DOCS_COMPLETE_MESSAGE = 'Recebi toda a documentação, obrigada! Já vou seguir com a análise. Se o banco achar necessário, pode pedir algum documento a mais, aí te aviso por aqui.';
 
@@ -33,14 +34,22 @@ export async function scheduleDocsCheck(accountId: string, leadId: string, io: I
   // Roda com a IA ligada OU desligada (Fabio 29/09: o Ângelo mandou os
   // documentos depois que ele respondeu pela Inbox — a IA estava desligada,
   // ninguém conferiu, o card não andou e a pasta no Drive não foi criada).
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { stage: { select: { name: true } } } });
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } });
   if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return;
-  const previous = pending.get(leadId);
-  if (previous) clearTimeout(previous);
-  pending.set(leadId, setTimeout(() => {
-    pending.delete(leadId);
-    checkDocsComplete(accountId, leadId, io).catch((err) => console.error(`[Docs] Falha ao conferir documentação do lead ${leadId}:`, err?.message || err));
-  }, CHECK_DELAY_MS));
+  const cf = { ...((lead.customFields || {}) as Record<string, unknown>), _docsCheckDue: new Date(Date.now() + CHECK_DELAY_MS).toISOString() };
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
+}
+
+/** Poller (1 min, junto com a análise automática): confere os cards cujo prazo de 10 min sem documento novo venceu. */
+export async function processDocsChecks(accountId: string, io: Io): Promise<void> {
+  const due = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->>'_docsCheckDue') IS NOT NULL AND ("customFields"->>'_docsCheckDue')::timestamptz <= now() LIMIT 10`;
+  for (const { id } of due) {
+    const fresh = await prisma.lead.findUnique({ where: { id }, select: { customFields: true } });
+    const cf = { ...((fresh?.customFields || {}) as Record<string, unknown>) };
+    delete cf._docsCheckDue;
+    await prisma.lead.update({ where: { id }, data: { customFields: cf as any } });
+    await checkDocsComplete(accountId, id, io).catch((err) => console.error(`[Docs] Falha ao conferir documentação do lead ${id}:`, err?.message || err));
+  }
 }
 
 const RULES = `Você confere se um cliente de crédito imobiliário já mandou TODA a documentação pedida. Responda SOMENTE com JSON:
@@ -146,38 +155,48 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     const linhas = review.novas.map(({ arquivo, r }) => `${r.resultado === 'OK' ? '✅' : r.resultado === 'PROBLEMA' ? '⚠️' : r.resultado === 'DUVIDA' ? '❓' : '•'} ${r.tipo}${r.titular ? ` (${r.titular})` : ''}${r.resultado === 'PROBLEMA' ? ` — ${r.problemas.join('; ')}` : ''}${r.observacao ? ` [${r.observacao}]` : ''} — ${arquivo}`);
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA leu ${review.novas.length > 1 ? 'os documentos novos' : 'o documento novo'}:\n${linhas.join('\n')}` } }).catch(() => {});
   }
-  if (review?.problemas.length) {
-    const sig = review.problemas.map((p) => `${p.doc}:${p.texto.join('/')}`).sort().join('|');
-    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-    const cf = (fresh?.customFields || {}) as Record<string, unknown>;
-    if (cf._docProblemSig !== sig) {
-      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docProblemSig: sig } as any } });
-      const texto = buildDocProblemsMessage(review);
-      const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA achou problema em documento: ${review.problemas.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}. ${sent.success ? 'Cliente avisado do que corrigir.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: avise o cliente.'}` } }).catch(() => {});
-    }
-    return;
-  }
-
-  // Documento em DÚVIDA (a pergunta está com a equipe no balão): não avança o card nem diz que está completo até a equipe responder.
-  if (review?.duvidas.length) {
+  // Documento em DÚVIDA (a pergunta está com a equipe no balão): não avança o card nem cobra nada até a equipe responder.
+  if (review?.duvidas.length && !review.problemas.length) {
     console.log(`[Docs] ${lead.name} (${leadId}): ${review.duvidas.length} documento(s) em dúvida com a equipe — conferência pausada`);
     return;
   }
 
   const verdict = await evaluateDocs(accountId, leadId);
+  const faltando = verdict && !verdict.complete ? verdict.faltando : [];
+  const faltaTxt = faltando.length ? `\n\nAinda falta mandar:\n${faltando.map((f) => `• ${f}`).join('\n')}` : '';
+
+  if (review?.problemas.length) {
+    // Um aviso só: o que está com problema + o que ainda falta (Fabio 15/10: espera tudo chegar, confere e cobra o que falta).
+    const sig = [...review.problemas.map((p) => `${p.doc}:${p.texto.join('/')}`).sort(), `falta:${faltando.join('/')}`].join('|');
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cf = (fresh?.customFields || {}) as Record<string, unknown>;
+    if (cf._docProblemSig !== sig) {
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docProblemSig: sig } as any } });
+      const texto = `${buildDocProblemsMessage(review).replace(/\n\nAssim que você reenviar, eu confiro de novo!$/, '')}${faltaTxt}\n\nAssim que você mandar, eu confiro de novo!`;
+      const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA achou problema em documento: ${review.problemas.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}.${faltando.length ? ` Ainda falta: ${faltando.join('; ')}.` : ''} ${sent.success ? 'Cliente avisado do que corrigir.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: avise o cliente.'}` } }).catch(() => {});
+    }
+    return;
+  }
+
   if (!verdict) return;
   const { receivedText } = verdict;
   if (!verdict.complete) {
     console.log(`[Docs] ${lead.name} (${leadId}): ainda falta — ${verdict.faltando.join('; ') || 'sem detalhe'}`);
-    // IA desligada: quem conversa é a equipe — deixa no card o que falta
-    // (só quando a lista muda, pra não encher de nota a cada arquivo).
-    if (!lead.aiAutoReplyActive && verdict.faltando.length) {
+    if (verdict.faltando.length) {
       const resumo = verdict.faltando.join('; ');
       const cf = (lead.customFields || {}) as Record<string, unknown>;
       if (cf._docsFaltando !== resumo) {
         await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docsFaltando: resumo } as any } });
-        await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA conferiu os documentos recebidos (lista "${verdict.listaUsada || '?'}"). Ainda falta:\n- ${verdict.faltando.join('\n- ')}` } }).catch(() => {});
+        // IA ligada: cobra o que falta (uma vez por lista); desligada: quem conversa é a equipe — só nota no card.
+        let cobrou = false;
+        if (lead.aiAutoReplyActive) {
+          const ok = review?.ok.length ? `Já recebi e conferi ✅: ${review.ok.join(', ')}.` : '';
+          const texto = `Conferi o que você mandou. ${ok}${faltaTxt}\n\nPode mandar por aqui mesmo que eu confiro!`.replace(/\s+\n/g, '\n').replace('. \n', '.\n');
+          const sent = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined });
+          cobrou = !!sent.success;
+        }
+        await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA conferiu os documentos recebidos (lista "${verdict.listaUsada || '?'}"). Ainda falta:\n- ${verdict.faltando.join('\n- ')}\n${cobrou ? 'Cliente avisado do que falta.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: cobre o cliente.'}` } }).catch(() => {});
       }
     }
     return;
