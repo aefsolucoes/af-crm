@@ -148,12 +148,13 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   if (!atts.length) return;
 
   let achou: { saldo: number; banco: string; data: string } | null = null;
+  let achouAtt = '';
   const lidos: string[] = [];
   for (const a of atts) {
     const r = await readSaldo(accountId, a);
     if (r === undefined) continue; // não deu pra ler agora: tenta na próxima rodada
     lidos.push(a.id);
-    if (r.ehSaldo && r.saldo) { achou = { saldo: r.saldo, banco: r.banco, data: r.data }; break; }
+    if (r.ehSaldo && r.saldo) { achou = { saldo: r.saldo, banco: r.banco, data: r.data }; achouAtt = a.id; break; }
   }
   st.scanned = [...scanned, ...lidos];
 
@@ -173,8 +174,11 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   const base = st.liquido || st.base || Number(cf2.valor_credito) || 0; // valor LÍQUIDO que o cliente precisa receber
   const total = roundUpToThousand(Math.round((achou.saldo + base) * 100) / 100); // saldo + troco, arredondado pra cima pro milhar inteiro
   st.doneAt = new Date().toISOString();
-  (st as any).saldo = achou.saldo; (st as any).total = total;
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), troco: String(base), valor_credito: String(total), _saldoDevedor: st } as any } });
+  (st as any).saldo = achou.saldo; (st as any).total = total; (st as any).attachmentId = achouAtt;
+  // O print fica na PASTA DO CLIENTE com o nome "SALDO DEVEDOR" (única captura de tela que vai pra lá).
+  const docInfo = { ...(cf2._docInfo || {}), ...(achouAtt ? { [achouAtt]: 'SALDO DEVEDOR|' } : {}) };
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), troco: String(base), valor_credito: String(total), _docInfo: docInfo, _saldoDevedor: st } as any } });
+  if (cf2._driveOrganizedAt) { try { const { organizeLeadDocsNow } = require('./received-docs.service') as typeof import('./received-docs.service'); await organizeLeadDocsNow(leadId); } catch (e: any) { console.error('[Saldo] não reorganizei a pasta:', e?.message || e); } }
   let r: { created?: number } = {};
   try {
     const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');

@@ -63,6 +63,11 @@ const HOME_EQUITY_FIELDS: FieldMap = {
   'troco': { key: 'troco', kind: 'number' },
   'troco desejado': { key: 'troco', kind: 'number' },
   'valor do troco': { key: 'troco', kind: 'number' },
+  // Proposta do site no formato "CPF 2º / Nascimento 2º / Celular 2º / Renda bruta 2º" (Maria Selmi 15/10: sem isso o card ficava sem 2º participante e Inter/Creditas barravam "casado sem cônjuge").
+  'cpf 2º': { key: 'cpf_2', kind: 'text' }, 'cpf 2o': { key: 'cpf_2', kind: 'text' },
+  'nascimento 2º': { key: 'nascimento_2', kind: 'date' }, 'nascimento 2o': { key: 'nascimento_2', kind: 'date' },
+  'celular 2º': { key: 'telefone_2', kind: 'text' }, 'celular 2o': { key: 'telefone_2', kind: 'text' },
+  'renda bruta 2º': { key: 'renda_2', kind: 'number' }, 'renda bruta 2o': { key: 'renda_2', kind: 'number' },
   'quanto voce quer receber': { key: 'troco', kind: 'number' },
   // Formulário do site (15/10): "Troco na conta do cliente (crédito − saldo)" — o prefixo "troco" é tratado em parseFicha. "Crédito desejado" já é o crédito TOTAL (inclui a quitação).
   'certidao de onus/matricula': { key: 'possui_certidao', kind: 'text' }, // "O imóvel possui certidão de ônus/matrícula?" (Sim / Não / Sim, possui / Não possui / Não sei)
@@ -200,7 +205,12 @@ function parseFicha(text: string, fieldMap: FieldMap): Record<string, string> {
   let secondParticipant = false;
   for (const rawLine of text.split('\n')) {
     const lineNorm = norm(rawLine.replace(/[*_~`]/g, ''));
-    if (/(2[oº°]|segundo)\s*participante|2[oº°]\s*proponente/.test(lineNorm)) { secondParticipant = true; continue; }
+    if (/(2[oº°]|segundo)\s*participante|2[oº°]\s*proponente/.test(lineNorm)) {
+      secondParticipant = true;
+      const nome2 = rawLine.includes(':') ? rawLine.slice(rawLine.indexOf(':') + 1).replace(/[*_~`]/g, '').trim() : ''; // "2º Participante: NOME"
+      if (nome2 && !SKIP_VALUES.has(norm(nome2)) && !nome2.includes('|')) out.participante_2 = nome2;
+      continue;
+    }
     if (rawLine.includes('*') && !rawLine.includes(':')) secondParticipant = false;
     for (const part of rawLine.split('|')) {
       const idx = part.indexOf(':');
@@ -212,7 +222,7 @@ function parseFicha(text: string, fieldMap: FieldMap): Record<string, string> {
       const field = fieldMap[label] || (label.startsWith('troco') ? fieldMap['troco'] : undefined);
       if (!field) continue;
       const key = secondParticipant && field.key.endsWith('_1') ? field.key.replace(/_1$/, '_2') : field.key;
-      if (secondParticipant && key === field.key) continue; // campo sem versão _2 (ex.: valor do imóvel) não vem dessa seção
+      if (secondParticipant && key === field.key && !field.key.endsWith('_2')) continue; // campo sem versão _2 (ex.: valor do imóvel) não vem dessa seção
       if (key.startsWith('prazo') && !/\d/.test(value)) continue; // "Prazo:  anos" (em branco no site)
       const parsed = field.kind === 'number' ? parseMoneyOrNumber(value) : value;
       if (parsed !== null && parsed !== '') out[key] = parsed;

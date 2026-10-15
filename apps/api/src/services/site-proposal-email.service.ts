@@ -39,6 +39,16 @@ const FIELD_MAP: { labels: string[]; key: string; kind: 'text' | 'number' | 'dat
   { labels: ['valor de entrada', 'entrada / fgts', 'entrada'], key: 'valor_entrada', kind: 'number' },
   { labels: ['prazo'], key: 'prazo_financ', kind: 'text' },
   { labels: ['1ª parcela estimada', '1a parcela estimada'], key: 'primeira_parcela', kind: 'number' },
+  // 2º participante no formato "2º Participante: NOME / CPF 2º / Nascimento 2º / Celular 2º / Relação / Renda bruta 2º" (Maria Selmi 15/10: o card ficava sem o cônjuge e Inter/Creditas barravam "casado sem cônjuge").
+  { labels: ['2º participante', '2o participante'], key: 'participante_2', kind: 'text' },
+  { labels: ['cpf 2º', 'cpf 2o'], key: 'cpf_2', kind: 'text' },
+  { labels: ['nascimento 2º', 'nascimento 2o'], key: 'nascimento_2', kind: 'date' },
+  { labels: ['celular 2º', 'celular 2o'], key: 'telefone_2', kind: 'text' },
+  { labels: ['relacao'], key: 'vinculo_2', kind: 'text' },
+  { labels: ['renda bruta 2º', 'renda bruta 2o'], key: 'renda_2', kind: 'number' },
+  // Formulário novo (15/10): saldo devedor, troco e se o imóvel tem certidão de ônus/matrícula.
+  { labels: ['valor que falta para quitacao'], key: 'saldo_devedor', kind: 'number' },
+  { labels: ['certidao de onus/matricula'], key: 'possui_certidao', kind: 'text' },
 ];
 
 export function parseFormPairs(html: string): [string, string][] {
@@ -59,7 +69,7 @@ function cardFields(pairs: [string, string][]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [label, value] of pairs) {
     const l = norm(label);
-    const f = FIELD_MAP.find((m) => m.labels.includes(l));
+    const f = FIELD_MAP.find((m) => m.labels.includes(l)) || (l.startsWith('troco') ? { labels: [], key: 'troco', kind: 'number' as const } : undefined);
     if (!f || out[f.key]) continue;
     if (f.key === 'prazo_financ' && !/\d/.test(value)) continue; // "Prazo: anos" (em branco no site)
     const parsed = f.kind === 'number' ? parseMoneyOrNumber(value) : value;

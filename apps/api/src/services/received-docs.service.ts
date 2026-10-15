@@ -30,7 +30,7 @@ function folderNameFor(lead: { name: string; customFields: unknown }): string {
 }
 
 const DOC_PROMPT = `Este arquivo foi enviado por um cliente de crédito imobiliário (financiamento ou crédito com garantia de imóvel). Diga qual documento é.
-Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, AUTORIZACAO SCR BACEN (formulário de autorização de consulta ao SCR do Banco Central, com ou sem assinatura), CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU, CAPA IPTU (capa do carnê/IPTU com as metragens e a inscrição imobiliária), CERTIDAO DE ONUS, MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE, SIMULACAO.
+Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, AUTORIZACAO SCR BACEN (formulário de autorização de consulta ao SCR do Banco Central, com ou sem assinatura), CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU, CAPA IPTU (capa do carnê/IPTU com as metragens e a inscrição imobiliária), SALDO DEVEDOR (print/extrato do app ou site do banco mostrando o saldo devedor do financiamento do imóvel), CERTIDAO DE ONUS, MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE, SIMULACAO.
 Se for outro documento, use um nome curto que o descreva (até 4 palavras).
 Depois do nome do documento, coloque " | " e o nome completo do titular como aparece no documento (a pessoa a quem ele pertence). Se não aparecer nome de pessoa, escreva só o nome do documento.
 Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
@@ -176,11 +176,13 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
 async function organizeLead(lead: {
   id: string; name: string; accountId: string; customFields: unknown; activeLeadsFolderId: string;
 }): Promise<void> {
+  // O print do SALDO DEVEDOR é a ÚNICA captura de tela que fica na pasta do cliente (Fabio 15/10) — mesmo se o arquivo se chamar "Captura de tela…".
+  const saldoPrintId: string | undefined = ((lead.customFields as any) || {})._saldoDevedor?.attachmentId;
   const attachments = (await prisma.messageAttachment.findMany({
     where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'INBOUND' } },
     orderBy: { createdAt: 'asc' },
     select: { id: true, driveFileId: true, fileName: true, mimeType: true },
-  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && !isScreenshotAttachment(a));
+  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && (!isScreenshotAttachment(a) || a.id === saldoPrintId));
   // Simulações que a equipe mandou pro cliente também vão pra pasta (raiz).
   const sentSimulations = (await prisma.messageAttachment.findMany({
     where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'OUTBOUND' } },
@@ -223,7 +225,7 @@ async function organizeLead(lead: {
       if (simulationDriveIds.has(f.driveFileId) || SIMULATION_FILE_RE.test(f.fileName)) return 'RAIZ';
       const info = docInfo[attIdByDriveId.get(f.driveFileId) || ''];
       if (!info) return 'COMPRADOR';
-      if (/SIMULACAO/.test(info.type)) return 'RAIZ';
+      if (/SIMULACAO/.test(info.type) || /^SALDO DEVEDOR/.test(info.type)) return 'RAIZ'; // simulação e print do saldo devedor: direto na pasta do cliente
       if (isPropertyDocType(info.type)) return 'IMOVEL';
       if (isHab && SELLER_DOC_RE.test(info.type) && !COMPANY_RE.test(info.holder || '') && !isBuyerHolder(info.holder, buyers)) return 'VENDEDOR';
       return 'COMPRADOR';
