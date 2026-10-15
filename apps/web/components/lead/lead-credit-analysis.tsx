@@ -14,7 +14,7 @@ import { formatCurrency } from '@/lib/utils';
 /* Bloco "Análises de crédito" dentro do card (aba Financiamento). Mostra o último resultado de
  * cada banco, dispara nova análise e escolhe a proposta. Ver a aba /analise-credito. */
 
-type SimDoc = { id: string; institution: string; status: 'REQUESTED' | 'RUNNING' | 'DONE' | 'FAILED'; detail: string | null; createdAt: string };
+type SimDoc = { id: string; institution: string; status: 'REQUESTED' | 'RUNNING' | 'READY' | 'DONE' | 'FAILED'; detail: string | null; createdAt: string };
 
 export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onChanged?: () => void }) {
   const queryClient = useQueryClient();
@@ -28,7 +28,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   const { data: simDocs } = useQuery<SimDoc[]>({
     queryKey: ['sim-docs', leadId],
     queryFn: async () => (await api.get('/api/credit-analysis/simulation-docs', { params: { leadId } })).data,
-    refetchInterval: (q) => ((q.state.data as SimDoc[] | undefined)?.some((d) => d.status === 'REQUESTED' || d.status === 'RUNNING') ? 8000 : false),
+    refetchInterval: (q) => ((q.state.data as SimDoc[] | undefined)?.some((d) => d.status === 'REQUESTED' || d.status === 'RUNNING' || d.status === 'READY') ? 8000 : false),
   });
 
   useEffect(() => {
@@ -94,7 +94,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     } finally { setSimBusy(null); }
   }
 
-  const simOpen = (simDocs || []).filter((d) => d.status === 'REQUESTED' || d.status === 'RUNNING');
+  const simOpen = (simDocs || []).filter((d) => d.status === 'REQUESTED' || d.status === 'RUNNING' || d.status === 'READY');
   const simRecent = (simDocs || []).slice(0, 3);
 
   return (

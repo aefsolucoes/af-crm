@@ -995,12 +995,15 @@ model SimulationDocRequest {
   accountId     String
   leadId        String
   institution   String // SANTANDER | INTER (colunas do portal Credimorar)
-  status        String    @default("REQUESTED") // REQUESTED | RUNNING | DONE | FAILED
+  status        String    @default("REQUESTED") // REQUESTED | RUNNING | READY (PDF pronto, esperando o aviso) | DONE | FAILED
   source        String    @default("USER") // USER | AI
   requestedById String?
   caption       String?   @db.Text
   detail        String?   @db.Text
   messageId     String? // mensagem enviada ao cliente com o PDF
+  // Aviso de aprovação automático (Fabio 15/10: "a simulação deve ir junto com a mensagem"): o PDF fica PRONTO (READY, bytes aqui) e só sai logo depois do texto do aviso.
+  hold          Boolean   @default(false)
+  pdf           Bytes?
   createdAt     DateTime  @default(now())
   startedAt     DateTime?
   finishedAt    DateTime?

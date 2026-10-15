@@ -644,7 +644,7 @@ export async function finishApprovalFollowUp(p: { accountId: string; leadId: str
 /** Manda o aviso. Dentro da janela de 24 h vai o texto com as opções (e, se marcado, a lista de documentos); fora dela vai o template
  *  de aprovação e o texto completo sai quando o cliente tocar em "Sim, quero saber". Se marcado, move o card pra Aguardando Documentação
  *  (dispara as automações da etapa: IA ligada e e-mail "pré-análise aprovada"). */
-export async function sendApprovalNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; sendDocs?: boolean; moveStage?: boolean; ignoreWindow?: boolean }): Promise<{ ok: boolean; mode?: 'text' | 'template'; options?: number; docsSent?: boolean; moved?: string | null; scheduled?: boolean; at?: string; already?: boolean; error?: string }> {
+export async function sendApprovalNoticeNow(p: { accountId: string; leadId: string; userId?: string; io?: any; sendDocs?: boolean; moveStage?: boolean; ignoreWindow?: boolean; /** aviso automático: espera o PDF da simulação ficar pronto e manda junto com o texto (Fabio 15/10) */ holdForPdf?: boolean }): Promise<{ ok: boolean; mode?: 'text' | 'template'; options?: number; docsSent?: boolean; moved?: string | null; scheduled?: boolean; at?: string; already?: boolean; waiting?: boolean; error?: string }> {
   const sendDocs = p.sendDocs !== false;
   const moveStage = p.moveStage !== false;
   const preview = await previewApprovalNotice(p.leadId);
@@ -669,13 +669,32 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
     return { ok: true, scheduled: true, at: at.toISOString() };
   }
   let docsSent = false;
+  let heldPdfId: string | undefined;
+  if (preview.mode === 'text' && p.holdForPdf && !p.userId) {
+    // O PDF da simulação vai JUNTO com o aviso (Fabio 15/10): pede antes, espera ficar pronto e só então manda texto + documentos + PDF, um atrás do outro.
+    try {
+      const pick = await pickApprovedSimulationInstitution(p.leadId);
+      if (pick) {
+        const { holdForNotice } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+        const h = await holdForNotice(prisma, { accountId: p.accountId, leadId: p.leadId, institution: pick.institution });
+        if (h.state === 'waiting') return { ok: false, waiting: true, error: 'Aguardando o PDF da simulação ficar pronto pra mandar junto com o aviso.' };
+        if (h.state === 'ready') heldPdfId = h.requestId;
+      }
+    } catch (e: any) { console.error('[Aprovação] espera do PDF falhou (segue sem esperar):', e?.message); }
+  }
   if (preview.mode === 'text') {
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const r = soComplemento ? { success: true } : await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: preview.text, userId: p.userId, io: p.io });
     if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
     // Lista de documentos (a mesma Resposta rápida da equipe), logo depois do aviso — uma vez só.
     if (sendDocs) { await new Promise((resolve) => setTimeout(resolve, 2500)); docsSent = await sendDocsList(p, preview.docsText); }
-    requestSimulationsAfterApproval({ accountId: p.accountId, leadId: p.leadId, userId: p.userId }).catch(() => {});
+    if (heldPdfId) { // PDF pronto: sai logo depois do texto e da lista de documentos
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const { releaseHeld } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+      await releaseHeld(prisma, heldPdfId, p.io).catch((e: any) => console.error('[Aprovação] PDF da simulação não saiu junto:', e?.message));
+    } else {
+      requestSimulationsAfterApproval({ accountId: p.accountId, leadId: p.leadId, userId: p.userId }).catch(() => {});
+    }
   } else {
     const tpl = await approvalTemplate(p.accountId);
     if (!tpl.approved) return { ok: false, error: 'A janela de 24 h do WhatsApp fechou e o template de aprovação ainda não foi aprovado pela Meta.' };

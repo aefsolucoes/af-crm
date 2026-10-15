@@ -39,6 +39,9 @@ async function expireStuck(db: Db, accountId: string) {
     }
   };
   await expire({ status: 'REQUESTED', createdAt: { lt: new Date(now - REQUESTED_TTL_MIN * 60_000) } }, 'Nenhuma extensão do banco pegou o pedido (extensão fechada, desligada ou desatualizada).');
+  // PDF pronto esperando o aviso que não saiu em 8 min: manda sozinho (nunca fica preso).
+  const esquecidos = await db.simulationDocRequest.findMany({ where: { accountId, status: 'READY', updatedAt: { lt: new Date(now - 8 * 60_000) } }, select: { id: true } });
+  for (const x of esquecidos) await releaseHeld(db, x.id).catch(() => {});
   await expire({ status: 'RUNNING', startedAt: { lt: new Date(now - RUNNING_TTL_MIN * 60_000) } }, 'A extensão pegou o pedido mas não devolveu os dados (janela fechada ou extensão reiniciada).');
 }
 
@@ -53,7 +56,7 @@ export function parseInstitutions(raw: unknown): string[] {
   return out;
 }
 
-export async function requestSimulationDocs(db: Db, p: { accountId: string; leadId: string; institutions: string[]; userId?: string; source?: 'USER' | 'AI'; caption?: string; /** não pede de novo se o mesmo PDF já foi enviado nas últimas N horas (envio automático) */ skipIfSentWithinHours?: number }) {
+export async function requestSimulationDocs(db: Db, p: { accountId: string; leadId: string; institutions: string[]; userId?: string; source?: 'USER' | 'AI'; caption?: string; /** guarda o PDF pronto (READY) até o aviso de aprovação sair */ hold?: boolean; /** não pede de novo se o mesmo PDF já foi enviado nas últimas N horas (envio automático) */ skipIfSentWithinHours?: number }) {
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
   if (!lead) throw new Error('Card não encontrado');
   await expireStuck(db, p.accountId);
@@ -66,7 +69,7 @@ export async function requestSimulationDocs(db: Db, p: { accountId: string; lead
       const done = await db.simulationDocRequest.findFirst({ where: { leadId: p.leadId, institution: inst, status: 'DONE', finishedAt: { gt: new Date(Date.now() - p.skipIfSentWithinHours * 3_600_000) } }, select: { id: true } });
       if (done) { skipped.push(inst); continue; }
     }
-    const row = await db.simulationDocRequest.create({ data: { accountId: p.accountId, leadId: p.leadId, institution: inst, source: p.source || 'USER', requestedById: p.userId || null, caption: p.caption?.trim() || null } });
+    const row = await db.simulationDocRequest.create({ data: { accountId: p.accountId, leadId: p.leadId, institution: inst, source: p.source || 'USER', requestedById: p.userId || null, caption: p.caption?.trim() || null, hold: !!p.hold } });
     created.push({ id: row.id, institution: inst });
   }
   return { created, skipped };
@@ -108,7 +111,11 @@ function slug(text: string): string {
 }
 
 /** Envia o PDF pronto ao cliente e fecha o pedido (DONE) — ou falha com o motivo. */
-async function deliver(db: Db, r: { id: string; accountId: string; leadId: string; institution: string; caption: string | null; requestedById: string | null }, pdf: Buffer, io?: Io) {
+async function deliver(db: Db, r: { id: string; accountId: string; leadId: string; institution: string; caption: string | null; requestedById: string | null; hold?: boolean }, pdf: Buffer, io?: Io) {
+  if (r.hold) { // aviso de aprovação automático ainda não saiu: guarda o PDF pronto; o aviso manda texto + PDF juntos (releaseHeld)
+    await db.simulationDocRequest.update({ where: { id: r.id }, data: { status: 'READY', pdf, detail: 'PDF pronto — vai junto com o aviso de aprovação' } });
+    return { ok: true as const, held: true as const, messageId: undefined as string | undefined };
+  }
   const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
   const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
   const fileName = `AeF_${r.institution}_${slug(lead?.name || 'Cliente') || 'Cliente'}.pdf`;
@@ -126,6 +133,41 @@ async function loadOpen(db: Db, accountId: string, id: string) {
   const r = await db.simulationDocRequest.findFirst({ where: { id, accountId } });
   if (!r) throw new Error('Pedido não encontrado');
   return r;
+}
+
+/** Manda ao cliente o PDF que ficou PRONTO esperando o aviso (READY) e fecha o pedido. */
+export async function releaseHeld(db: Db, id: string, io?: Io) {
+  const r = await db.simulationDocRequest.findUnique({ where: { id } });
+  if (!r || r.status !== 'READY' || !r.pdf) return { ok: false as const, error: 'sem PDF pronto' };
+  const claimed = await db.simulationDocRequest.updateMany({ where: { id, status: 'READY' }, data: { status: 'RUNNING', startedAt: new Date() } }); // trava: só um envia
+  if (!claimed.count) return { ok: false as const, error: 'já enviado' };
+  const out = await deliver(db, { ...r, hold: false }, Buffer.from(r.pdf), io);
+  if (out.ok) await db.simulationDocRequest.update({ where: { id }, data: { pdf: null } }).catch(() => {});
+  return out;
+}
+
+/** O aviso de aprovação automático quer mandar o PDF JUNTO com o texto (Fabio 15/10): 'ready' = PDF pronto (mande o texto e depois releaseHeld); 'waiting' = ainda gerando
+ *  (adie o aviso); 'none' = não tem PDF pra esperar (já enviado, falhou ou passou do tempo) — mande o aviso e siga o fluxo normal. */
+export async function holdForNotice(db: Db, p: { accountId: string; leadId: string; institution: string; maxWaitMs?: number }): Promise<{ state: 'ready' | 'waiting' | 'none'; requestId?: string }> {
+  await expireStuck(db, p.accountId);
+  const maxWait = p.maxWaitMs ?? 6 * 60_000;
+  const done = await db.simulationDocRequest.findFirst({ where: { leadId: p.leadId, institution: p.institution, status: 'DONE', finishedAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
+  if (done) return { state: 'none' };
+  const ready = await db.simulationDocRequest.findFirst({ where: { leadId: p.leadId, institution: p.institution, status: 'READY' }, orderBy: { createdAt: 'desc' }, select: { id: true } });
+  if (ready) return { state: 'ready', requestId: ready.id };
+  const open = await db.simulationDocRequest.findFirst({ where: { leadId: p.leadId, institution: p.institution, status: { in: ['REQUESTED', 'RUNNING'] } }, orderBy: { createdAt: 'desc' } });
+  if (open) {
+    if (Date.now() - open.createdAt.getTime() > maxWait) { // demorou demais: solta (o PDF sai sozinho quando chegar) e o aviso vai sem ele
+      if (open.hold) await db.simulationDocRequest.update({ where: { id: open.id }, data: { hold: false } }).catch(() => {});
+      return { state: 'none' };
+    }
+    if (!open.hold) await db.simulationDocRequest.update({ where: { id: open.id }, data: { hold: true } }).catch(() => {});
+    return { state: 'waiting', requestId: open.id };
+  }
+  const failed = await db.simulationDocRequest.findFirst({ where: { leadId: p.leadId, institution: p.institution, status: 'FAILED', createdAt: { gt: new Date(Date.now() - maxWait) } }, select: { id: true } });
+  if (failed) return { state: 'none' };
+  const r = await requestSimulationDocs(db, { accountId: p.accountId, leadId: p.leadId, institutions: [p.institution], source: 'AI', hold: true });
+  return r.created.length ? { state: 'waiting', requestId: r.created[0].id } : { state: 'none' };
 }
 
 /** SANTANDER: a extensão devolveu o PDF ORIGINAL do portal do Credimorar — troca cor/logo e manda. */

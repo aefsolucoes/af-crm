@@ -218,7 +218,8 @@ async function noticeClients(accountId: string, io: any) {
     if (!preview || preview.warnings.length) continue; // nenhuma aprovada com valor, ou ainda faltam as parcelas da nova simulação
     const sig = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${a.holderName || ''}`).sort().join('|');
     if (cf._autoNoticeSig === sig) continue;
-    const out = await sendApprovalNoticeNow({ accountId, leadId: l.id, io });
+    const out = await sendApprovalNoticeNow({ accountId, leadId: l.id, io, holdForPdf: true }); // aviso automático: o PDF da simulação sai junto (Fabio 15/10)
+    if (out.waiting) continue; // PDF ainda sendo gerado: tenta de novo no próximo minuto
     if (out.already) { // a conversa já tem esse aviso (equipe, IA ou aviso anterior): não duplica e não tenta de novo a cada minuto
       await saveCf(l.id, { _autoNoticeSig: sig, _autoNoticeAt: new Date().toISOString() });
       await addNote(l.id, `ℹ️ Aviso de aprovação NÃO reenviado: ${out.error}`);
