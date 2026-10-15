@@ -35,10 +35,16 @@ export interface Analysis {
 export interface OverrideData {
   valorImovel?: string; valorEmprestimo?: string; renda?: string; prazo?: string; rendaParticipante?: string; inverter?: boolean;
 }
+/** 00000000000 / 000.000.000-00 → 000.000.000-00 (outro formato fica como está; vazio = ''). */
+export function fmtCpf(v?: string | null): string {
+  const d = String(v || '').replace(/\D/g, '');
+  return d.length === 11 ? d.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4') : String(v || '').trim();
+}
+
 export interface BoardLead {
   id: string; name: string; stage: string; status: string;
   requested: { creditValue: number; propertyValue: number; term: string | null };
-  card: { name1: string; name2: string; income1: string; income2: string; propertyValue: string; creditValue: string; term: string };
+  card: { name1: string; name2: string; cpf1?: string; cpf2?: string; income1: string; income2: string; propertyValue: string; creditValue: string; term: string };
   overrides: Partial<Record<Bank, OverrideData>>;
   inPre: boolean; autoPaused?: boolean; preAnaliseAt?: string | null; ran: boolean; lastRunAt: string | null;
   latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; chosenId: string | null;

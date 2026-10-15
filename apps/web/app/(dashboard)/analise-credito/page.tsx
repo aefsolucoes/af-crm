@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
-import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead } from '@/components/credit/shared';
+import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead, fmtCpf } from '@/components/credit/shared';
 import { AdjustModal } from '@/components/credit/adjust-modal';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
 import { pingExtensions } from '@/lib/credit-extensions';
@@ -382,7 +382,7 @@ export default function AnaliseCreditoPage() {
                         <tr className="hover:bg-slate-50 transition-colors align-top">
                           <td className="pl-4 pr-2 py-3"><input type="checkbox" checked={selected.includes(l.id)} onChange={() => setSelected((p) => p.includes(l.id) ? p.filter((x) => x !== l.id) : [...p, l.id])} /></td>
                           <td className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}>
-                            <div className="font-medium text-slate-800">{l.name}</div>
+                            <div className="font-medium text-slate-800">{l.name}{l.card?.cpf1 && <span className="ml-2 text-[11px] font-normal text-slate-400">CPF {fmtCpf(l.card.cpf1)}</span>}</div>
                             <div className="text-[11px] text-slate-400">
                               {l.stage}{l.requested.creditValue ? ` · pediu ${formatCurrency(l.requested.creditValue)}` : ''}{l.requested.term ? ` · ${l.requested.term}` : ''}
                             </div>
@@ -394,7 +394,7 @@ export default function AnaliseCreditoPage() {
                             )}
                             {l.card?.name2 && (
                               <div className="text-[11px] text-slate-500 mt-0.5">
-                                2º participante: <span className="font-medium text-slate-600">{l.card.name2}</span>
+                                2º participante: <span className="font-medium text-slate-600">{l.card.name2}</span>{l.card.cpf2 && <span className="text-slate-400"> · CPF {fmtCpf(l.card.cpf2)}</span>}
                                 {BANKS.some((b) => l.overrides?.[b.key]?.inverter) && (
                                   <span className="text-amber-600"> · rodando no nome de <strong>{l.card.name2}</strong></span>
                                 )}
@@ -465,7 +465,7 @@ export default function AnaliseCreditoPage() {
                                   return itens.map((it) => ({ b, ...it }));
                                 }).map(({ b, a, who }) => {
                                   const hasP2 = Object.keys(l.latestP2 || {}).length > 0 || !!l.card?.name2;
-                                  const quem = who === 'p2' ? `2º participante${l.card?.name2 ? ` · ${l.card.name2}` : ''}` : `1º participante${l.card?.name1 ? ` · ${l.card.name1}` : ''}`;
+                                  const quem = who === 'p2' ? `2º participante${l.card?.name2 ? ` · ${l.card.name2}` : ''}${l.card?.cpf2 ? ` · CPF ${fmtCpf(l.card.cpf2)}` : ''}` : `1º participante${l.card?.name1 ? ` · ${l.card.name1}` : ''}${l.card?.cpf1 ? ` · CPF ${fmtCpf(l.card.cpf1)}` : ''}`;
                                   return (
                                     <div key={`${b.key}-${who}`} className="rounded-lg border border-af-border bg-white p-3 text-xs space-y-2">
                                       <div className="flex items-center justify-between">

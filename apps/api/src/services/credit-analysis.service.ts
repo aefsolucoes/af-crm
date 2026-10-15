@@ -571,6 +571,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       // Dados do card pra mostrar ao lado dos ajustes (a extensão lê a proposta na conversa; o card costuma bater).
       card: {
         name1: String(cf.participante_1 || l.name || ''), name2: String(cf.participante_2 || ''),
+        cpf1: cf.cpf_1 ? String(cf.cpf_1) : '', cpf2: cf.cpf_2 ? String(cf.cpf_2) : '',
         income1: cf.renda_1 ? String(cf.renda_1) : '', income2: cf.renda_2 ? String(cf.renda_2) : '',
         propertyValue: cf.valor_imovel ? String(cf.valor_imovel) : '', creditValue: cf.valor_credito ? String(cf.valor_credito) : '',
         term: cf.prazo_financ ? String(cf.prazo_financ) : '',
