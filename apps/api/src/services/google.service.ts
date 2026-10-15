@@ -123,7 +123,7 @@ export async function handleOAuthCallback(code: string, accountId: string): Prom
  *  Valida o refresh token de saída: se o Google recusar (invalid_grant), marca
  *  a conexão como `tokenInvalid` (dispara o popup pro admin) e lança um erro
  *  claro. Se o token voltar a funcionar, limpa a marca sozinho. */
-async function getDrive(accountId: string) {
+export async function getDrive(accountId: string) {
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
   if (!conn?.refreshToken) throw new Error('Google Drive não conectado para esta conta');
 
@@ -292,6 +292,23 @@ export async function findFolderLoose(accountId: string, name: string, parentId:
   return { id: files[0].id!, name: files[0].name! };
 }
 
+const normFolder = (n: string) => n.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+/** Pasta de MESMO NOME (sem diferença de maiúscula/acento/espaço) dentro de `parentId`; se já houver duplicadas, a mais antiga. null = não existe. */
+export async function findFolderByNormalizedName(accountId: string, parentId: string, name: string): Promise<string | null> {
+  const drive = await getDrive(accountId);
+  const alvo = normFolder(name);
+  if (!alvo) return null;
+  const achadas: { id: string; createdTime: string }[] = [];
+  let pageToken: string | undefined;
+  do {
+    const res: any = await drive.files.list({ q: `'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`, fields: 'nextPageToken, files(id, name, createdTime)', pageSize: 1000, pageToken, supportsAllDrives: true, includeItemsFromAllDrives: true });
+    for (const f of res.data.files || []) if (normFolder(f.name || '') === alvo) achadas.push({ id: f.id!, createdTime: f.createdTime || '' });
+    pageToken = res.data.nextPageToken || undefined;
+  } while (pageToken);
+  achadas.sort((a, b) => a.createdTime.localeCompare(b.createdTime));
+  return achadas[0]?.id || null;
+}
+
 /** Fila de criação por (conta+pasta-pai+nome) — ver comentário em createFolder. */
 const folderCreationLocks = new Map<string, Promise<unknown>>();
 
@@ -310,17 +327,24 @@ const folderCreationLocks = new Map<string, Promise<unknown>>();
  * a pasta pronta. Só serializa dentro deste processo — é suficiente porque a
  * API roda numa instância só.
  */
+// Pastas que ESTE processo já achou/criou (15 min): a busca do Drive demora a enxergar uma pasta recém-criada, então duas chamadas seguidas (anexos do mesmo cliente chegando juntos)
+// não achavam a 1ª e criavam outra — as pastas duplicadas "no mesmo minuto" da pasta de anexos (Fabio 15/10).
+const folderIdCache = new Map<string, { id: string; at: number }>();
+const FOLDER_CACHE_MS = 15 * 60_000;
 export async function createFolder(accountId: string, name: string, parentId: string): Promise<{ id: string; name: string; existed: boolean }> {
   const key = `${accountId}::${parentId}::${name}`;
   const run = async (): Promise<{ id: string; name: string; existed: boolean }> => {
+    const hit = folderIdCache.get(key);
+    if (hit && Date.now() - hit.at < FOLDER_CACHE_MS) return { id: hit.id, name, existed: true };
     const existing = await findFolder(accountId, name, parentId);
-    if (existing) return { id: existing, name, existed: true };
+    if (existing) { folderIdCache.set(key, { id: existing, at: Date.now() }); return { id: existing, name, existed: true }; }
     const drive = await getDrive(accountId);
     const res = await drive.files.create({
       requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
       fields: 'id, name',
       supportsAllDrives: true,
     });
+    folderIdCache.set(key, { id: res.data.id!, at: Date.now() });
     return { id: res.data.id!, name: res.data.name!, existed: false };
   };
 
@@ -407,6 +431,11 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   if (!clientFolderId || sharedFolders.has(clientFolderId)) {
     clientFolderId = (await createFolder(accountId, params.clientFolderName, params.activeLeadsFolderId)).id;
   }
+
+  // Já existe a pasta desse cliente em LEADS ATIVOS (feita à mão ou numa organização anterior)? Usa ELA — antes a pasta de anexos do cliente era movida e renomeada pra cá sem olhar,
+  // e o cliente ficava com duas pastas de mesmo nome (Robison, Rosana, Calixto, Antonio…, Fabio 15/10). Os arquivos entram nas subpastas dela; a pasta de anexos fica vazia.
+  const jaExiste = await findFolderByNormalizedName(accountId, params.activeLeadsFolderId, params.clientFolderName).catch(() => null);
+  if (jaExiste && jaExiste !== clientFolderId) clientFolderId = jaExiste;
 
   const current = await drive.files.get({ fileId: clientFolderId, fields: 'parents', supportsAllDrives: true });
   const oldParents = (current.data.parents || []).filter((p) => p !== params.activeLeadsFolderId).join(',');
