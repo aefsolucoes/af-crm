@@ -328,16 +328,12 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
   const tpl = await docsTemplate(accountId);
   const parsed = parseDocsTemplate(tpl?.body);
   const pessoais = parsed.pessoais.length ? parsed.pessoais : FALLBACK_PESSOAIS;
-  let imovel = parsed.imovel.length ? parsed.imovel : FALLBACK_IMOVEL;
-  // Cliente disse no formulário que NÃO possui a certidão de ônus/matrícula (ou não sabe): a A&F emite — não entra na lista dele (Fabio 15/10).
-  let aEmite = false;
+  const imovel = parsed.imovel.length ? parsed.imovel : FALLBACK_IMOVEL;
+  // Cliente disse no formulário que NÃO possui a certidão de ônus/matrícula (ou não sabe): ela é ESSENCIAL (sem ela a contratação não conclui) — a lista continua pedindo e ele é convidado a contar o que tem do imóvel (Fabio 15/10).
+  let semCertidao = false;
   if (leadId) {
     const l0 = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-    const semAcento = (t: string) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
-    if (/^nao/.test(semAcento(String(((l0?.customFields || {}) as Record<string, any>).possui_certidao || '')))) {
-      const sem = imovel.filter((d) => !/certidao de onus|matricula/.test(semAcento(d)));
-      if (sem.length < imovel.length) { imovel = sem; aEmite = true; }
-    }
+    semCertidao = /^nao/.test(String(((l0?.customFields || {}) as Record<string, any>).possui_certidao || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim());
   }
   const renda: string[] = [];
   for (const o of options) for (const d of o.documentos?.itens || []) if (!renda.includes(d)) renda.push(d);
@@ -348,7 +344,7 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
     const p2 = String(((lead?.customFields || {}) as Record<string, any>).participante_2 || '').trim();
     if (p2) conjuge = `\n\n*Documentos pessoais do cônjuge / 2º participante (${p2}):*\n${pessoais.map((d) => `• ${d}`).join('\n')}\n_Se moram juntos, o comprovante de residência e a certidão podem ser os mesmos._`;
   }
-  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}${conjuge}\n\n*Imóvel:*\n${imovel.map((d) => `• ${d}`).join('\n')}${aEmite ? '\n_A certidão de ônus/matrícula a gente emite pra você._' : ''}`;
+  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}${conjuge}\n\n*Imóvel:*\n${imovel.map((d) => `• ${d}`).join('\n')}${semCertidao ? '\n_Se você não tiver a certidão de ônus/matrícula, me conta o que você tem do imóvel (escritura, matrícula, IPTU ou qualquer documento com o número da matrícula) que eu te ajudo._' : ''}`;
 }
 
 /** Texto de aprovação montado pro card (notas primeiro, aba Financiamento

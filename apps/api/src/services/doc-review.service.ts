@@ -25,6 +25,9 @@ export interface DocReview {
   /** Documento do imóvel: nome do proprietário ATUAL e como ele se relaciona com os participantes (Home Equity). OUTRO_SEM_RELACAO = dono é outra pessoa e a conversa ainda não explica o vínculo → a conferência pergunta ao cliente. */
   dono?: string;
   donoSituacao?: 'PARTICIPANTE' | 'OUTRO_SEM_RELACAO' | 'PARENTE_1GRAU';
+  /** Documento do imóvel: número da matrícula e cartório de registro como aparecem (vão pro card — servem pra emitir a certidão). */
+  matricula?: string;
+  cartorio?: string;
   /** Só MATRICULA/CERTIDAO DE ONUS: alienação fiduciária/hipoteca/penhora VIGENTE (sem cancelamento) que a leitura achou — ex.: "ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024)". Vazio = nada vigente. */
   gravame?: string;
   /** DUVIDA: a pergunta pra equipe (a IA não tem segurança se o documento serve). */
@@ -34,7 +37,8 @@ export interface DocReview {
 }
 
 const SYSTEM = `Você é a conferente de documentos de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional). Olhe o ARQUIVO que o cliente mandou pelo WhatsApp e diga se ele está CORRETO para seguir ao banco. Responda SOMENTE com JSON:
-{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS, MATRICULA, CND IPTU, CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","dono":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, escritura): nome do proprietário ATUAL; senão vazio>","donoSituacao":"<SÓ documento do imóvel em Home Equity: PARTICIPANTE | OUTRO_SEM_RELACAO | PARENTE_1GRAU; senão vazio>",
+{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS, MATRICULA, CND IPTU, CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","matricula":"<SÓ documento do imóvel: número da matrícula como aparece (ex.: 36.267); senão vazio>","cartorio":"<SÓ documento do imóvel: cartório de registro de imóveis (nome/cidade); senão vazio>",
+"dono":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, escritura): nome do proprietário ATUAL; senão vazio>","donoSituacao":"<SÓ documento do imóvel em Home Equity: PARTICIPANTE | OUTRO_SEM_RELACAO | PARENTE_1GRAU; senão vazio>",
 "gravame":"<SÓ MATRICULA ou CERTIDAO DE ONUS: se constar alienação fiduciária, hipoteca ou penhora ainda VIGENTE (sem averbação de cancelamento/baixa), escreva curto: TIPO - CREDOR - valor original (data), ex.: ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024); senão vazio>",
 "observacao":"<detalhe INTERNO útil pra equipe (ex.: constam ônus ou alienação fiduciária na matrícula, validade do documento); senão vazio>","duvida":"<SÓ se resultado DUVIDA: a pergunta objetiva pra equipe, 1 a 2 frases, dizendo o que você viu e o que precisa saber; senão vazio>","regra":"<SÓ quando a equipe já respondeu: a regra geral, em 1 frase, que vale pra OUTROS clientes; se foi só sobre este caso, vazio>"}
 
@@ -105,10 +109,11 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     const lado = j.lado === 'frente' || j.lado === 'verso' || j.lado === 'ambos' ? j.lado : '';
     const problemas = (Array.isArray(j.problemas) ? j.problemas : []).map((p: unknown) => cleanText(p, 320)).filter(Boolean).slice(0, 4);
     const assinatura = j.assinatura === 'GOVBR' || j.assinatura === 'PUNHO' ? j.assinatura : undefined;
+    const matricula = cleanText(j.matricula, 40), cartorio = cleanText(j.cartorio, 80);
     const donoSituacao = j.donoSituacao === 'PARTICIPANTE' || j.donoSituacao === 'OUTRO_SEM_RELACAO' || j.donoSituacao === 'PARENTE_1GRAU' ? j.donoSituacao : undefined;
     const dono = cleanText(j.dono, 80);
     const gravame = /^(MATRICULA|CERTIDAO DE ONUS)/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '')) ? cleanText(j.gravame, 160) : '';
-    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(donoSituacao ? { donoSituacao, ...(dono ? { dono } : {}) } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
+    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(matricula ? { matricula } : {}), ...(cartorio ? { cartorio } : {}), ...(donoSituacao ? { donoSituacao, ...(dono ? { dono } : {}) } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
   } catch { return undefined; }
 }
 
@@ -210,7 +215,10 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   if (novas.length) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const freshCf = (fresh?.customFields || {}) as any;
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshCf, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
+    // Número da matrícula e cartório lidos no documento vão pro card (se ainda não estiverem preenchidos) — é o que a A&F precisa pra emitir a certidão.
+    const mat = novas.map((n) => n.r).find((r) => r.matricula);
+    const matCampos = mat && !String(freshCf.numero_matricula || '').trim() ? { numero_matricula: mat.matricula, ...(mat.cartorio && !String(freshCf.cartorio_registro || '').trim() ? { cartorio_registro: mat.cartorio } : {}) } : {};
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshCf, ...matCampos, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
   }
 
   // Situação atual: a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some); RG/CNH somam os lados.

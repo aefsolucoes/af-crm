@@ -158,8 +158,8 @@ Como decidir:
 4. RG ou CNH servem como documento de identificação; certidão de nascimento ou de casamento servem como comprovante de estado civil.
 5. Cônjuges/companheiros: um comprovante de residência e uma certidão de casamento servem para os dois (moram juntos), a não ser que a conversa diga que moram em endereços diferentes.
 6. Se o cliente disse na conversa que algo não se aplica a ele, considere.
-7. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA do imóvel: a A&F EMITE quando o cliente não manda (ou manda incompleta/ilegível) — pelo endereço completo com CEP ou pelo número da matrícula (Fabio 15/10). Se faltar, NÃO ponha em "faltando" (não se cobra do cliente): ponha em "emitir" ("Certidão de ônus reais/Matrícula") e decida "complete" só pelo resto da lista. Qualquer arquivo de matrícula/ônus recebido (mesmo consulta, antigo ou parcial) conta como recebido. O que sobra do imóvel (inscrição imobiliária/IPTU, capa do IPTU com as metragens) continua obrigatório.
-8a. O cliente respondeu no formulário se POSSUI certidão de ônus/matrícula (linha "Cliente informou…" abaixo). "Não"/"Não possui"/"Não sei": a A&F emite → vai em "emitir", NUNCA em "faltando". "Sim"/"Sim, possui" e nenhuma matrícula/ônus chegou: ele diz que tem, então a certidão FALTA (cobre dele). Sem resposta: vale a regra 7.
+7. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA do imóvel é ITEM ESSENCIAL (sem ela a contratação não conclui). Qualquer arquivo de matrícula/ônus recebido (mesmo consulta, antigo ou parcial) conta como recebido; uma escritura ou documento registrado com o número da matrícula NÃO substitui a certidão, mas ajuda a A&F a emiti-la. Se NÃO chegou, ponha em "faltando" ("Certidão de ônus/matrícula — ou escritura/documento com o número da matrícula") — a menos que a linha "Cliente autorizou a A&F a emitir a certidão" seja Sim: aí vai em "emitir" e não em "faltando". O que sobra do imóvel (inscrição imobiliária/IPTU, capa do IPTU com as metragens) continua obrigatório.
+8a. O cliente respondeu no formulário se POSSUI certidão de ônus/matrícula (linha "Cliente informou…" abaixo): é só contexto. "Não possui"/"Não sei" NÃO tira a certidão de "faltando" (a conversa vai apurar o que ele tem); "Sim, possui" e nenhum arquivo: falta mesmo.
 8. A CAPA DO IPTU (carnê/guia do IPTU, "CAPA IPTU") traz a inscrição imobiliária E as metragens: ela sozinha atende os itens "Inscrição Imobiliária/IPTU" e "Capa do IPTU com as metragens" do Home Equity. Qualquer documento de IPTU recebido (capa, carnê, guia, CND de IPTU) conta como "Inscrição Imobiliária/IPTU".
 9. Seja rigoroso: "complete": true só se tiver certeza de que todos os itens obrigatórios chegaram. Se houver arquivos que não puderam ser lidos e algum item obrigatório puder estar entre eles, responda false.`;
 
@@ -219,7 +219,7 @@ ${participants}
 LISTAS DE DOCUMENTOS:
 ${lists.map((l) => `--- ${l.name} ---\n${l.body}`).join('\n\n')}
 
-${String(cfAll.possui_certidao || '').trim() ? `Cliente informou no formulário que possui certidão de ônus/matrícula: ${String(cfAll.possui_certidao).trim()}\n\n` : ''}DOCUMENTOS RECEBIDOS (lidos dos arquivos que o cliente mandou; "de FULANO" = titular do documento):
+${/^sim/i.test(String(cfAll.autoriza_emissao_certidao || '').trim()) ? 'Cliente autorizou a A&F a emitir a certidão de ônus/matrícula (custo de R$ 40 a R$ 100 pro cliente): Sim\n\n' : ''}${String(cfAll.possui_certidao || '').trim() ? `Cliente informou no formulário que possui certidão de ônus/matrícula: ${String(cfAll.possui_certidao).trim()}\n\n` : ''}DOCUMENTOS RECEBIDOS (lidos dos arquivos que o cliente mandou; "de FULANO" = titular do documento):
 ${receivedText}
 ${unread.length ? `\nArquivos que não puderam ser lidos: ${unread.length}` : ''}
 
@@ -239,7 +239,11 @@ ${history}`;
   const raw = data.content?.find((b) => b.type === 'text')?.text || '';
   let verdict: { complete?: boolean; listaUsada?: string; faltando?: string[]; emitir?: string[] } = {};
   try { verdict = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch { return null; }
-  return { leadName: lead.name, complete: verdict.complete === true, listaUsada: verdict.listaUsada, faltando: verdict.faltando || [], emitir: Array.isArray(verdict.emitir) ? verdict.emitir.map((x) => String(x).slice(0, 120)) : [], receivedText };
+  const autorizou = /^sim/i.test(String(cfAll.autoriza_emissao_certidao || '').trim());
+  const emitirBruto = Array.isArray(verdict.emitir) ? verdict.emitir.map((x) => String(x).slice(0, 120)) : [];
+  // Sem a permissão do cliente a A&F NÃO emite (custo de R$ 40 a R$ 100 pra ele): o que o modelo pôs em "emitir" volta pra "faltando" e a certidão trava a conclusão.
+  const faltandoFinal = [...(verdict.faltando || []), ...(autorizou ? [] : emitirBruto)];
+  return { leadName: lead.name, complete: verdict.complete === true && (autorizou || !emitirBruto.length), listaUsada: verdict.listaUsada, faltando: faltandoFinal, emitir: autorizou ? emitirBruto : [], receivedText };
 }
 
 export async function checkDocsComplete(accountId: string, leadId: string, io: Io): Promise<void> {
@@ -346,7 +350,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
         `🤖 A IA conferiu a documentação (lista "${verdict.listaUsada || '?'}") e considerou completa:`,
         receivedText,
         '',
-        ...(verdict.emitir.length ? ['', `⚠️ A&F precisa EMITIR: ${verdict.emitir.join('; ')} — pelo endereço completo com CEP (conferir com o da proposta) ou pelo número da matrícula.`] : []),
+        ...(verdict.emitir.length ? ['', `⚠️ A&F precisa EMITIR (o cliente autorizou; custo de R$ 40 a R$ 100 pra ele): ${verdict.emitir.join('; ')} — pelo endereço completo com CEP (conferir com o da proposta) ou pelo número da matrícula.`] : []),
         '',
         `Card movido para "${moved.pipelineName}" (${moved.stageName}).${sent.success ? ' Cliente avisado de que o banco pode pedir algum documento a mais.' : lead.aiAutoReplyActive ? '' : ' Cliente NÃO foi avisado automaticamente (IA desligada no card) — avise pela conversa.'}`,
       ].join('\n'),
