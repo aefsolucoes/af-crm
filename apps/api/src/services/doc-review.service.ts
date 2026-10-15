@@ -278,6 +278,14 @@ export function buildDocProblemsMessage(s: ReviewSummary): string {
   return `Preciso de um ajuste:\n\n${linhas.join('\n')}\n\nAssim que você reenviar, eu confiro de novo!`;
 }
 
+/** A equipe ANOTOU no card que o banco não aceitou a certidão que o cliente mandou (muito antiga / só consulta) — Fabio 15/10: "não precisa de campo, basta fazer anotações".
+ *  Só vale anotação escrita por PESSOA (userId) dos últimos 45 dias, que fale de certidão/matrícula e de não aceitação. */
+export async function bancoRecusouCertidao(leadId: string): Promise<boolean> {
+  const notas = await prisma.note.findMany({ where: { leadId, userId: { not: null }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 30, select: { content: true } });
+  const sem = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return notas.some((n) => { const t = sem(n.content); return /(certidao|matricula|onus)/.test(t) && /(nao (foi )?aceit|nao aceita|nao aceitou|recusou|recusad|reprovou|muito antiga|simples consulta)/.test(t) && /(banco|inter|creditas|santander|caixa|bradesco|itau)/.test(t); });
+}
+
 /** Bloco pro prompt da IA de conversa: o que cada documento recebido tem de bom/ruim (só leitura). Vazio se nada foi conferido. */
 export async function aiDocsContext(leadId: string): Promise<string> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
@@ -289,7 +297,7 @@ export async function aiDocsContext(leadId: string): Promise<string> {
   for (const r of items) latest.set(docKey(r), r);
   const linhas = [...latest.values()].map((r) => `- ${docLabel(r)}: ${r.resultado === 'OK' ? 'OK' : r.resultado === 'DUVIDA' ? 'EM ANÁLISE PELA EQUIPE (não diga que está certo nem errado; diga que a equipe está conferindo e retorna)' : `PROBLEMA — ${r.problemas.join('; ')}`}${r.emissao ? ` (emissão ${r.emissao})` : ''}${r.lado ? ` [${r.lado}]` : ''}`);
   const falta = cf._docsFaltando ? `\nAinda falta (lista do banco): ${cf._docsFaltando}` : '';
-  const recusada = /^sim/i.test(String(cf.certidao_recusada_banco || '').trim()) ? '\nO BANCO NÃO ACEITOU a certidão de ônus/matrícula que o cliente enviou (muito antiga ou só consulta): avise o cliente e ofereça emitir uma nova pelo ONR (custo de R$ 40 a R$ 100, só com o OK dele).' : '';
+  const recusada = (await bancoRecusouCertidao(leadId).catch(() => false)) ? '\nO BANCO NÃO ACEITOU a certidão de ônus/matrícula que o cliente enviou (muito antiga ou só consulta): avise o cliente e ofereça emitir uma nova pelo ONR (custo de R$ 40 a R$ 100, só com o OK dele).' : '';
   return `DOCUMENTOS DESTE CLIENTE (a IA LEU os arquivos que ele mandou — frente/verso, legibilidade, validade e titular):\n${linhas.join('\n')}${falta}${recusada}`;
 }
 

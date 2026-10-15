@@ -159,7 +159,7 @@ Como decidir:
 5. Cônjuges/companheiros: um comprovante de residência e uma certidão de casamento servem para os dois (moram juntos), a não ser que a conversa diga que moram em endereços diferentes.
 6. Se o cliente disse na conversa que algo não se aplica a ele, considere.
 7. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA do imóvel é ITEM ESSENCIAL (sem ela a contratação não conclui). Qualquer arquivo de matrícula/ônus recebido (mesmo consulta, antigo ou parcial) conta como recebido; se o cliente JÁ trouxe a certidão/matrícula, ela basta — a A&F NÃO emite outra. Escritura pública ou contrato de compra e venda NÃO substituem a certidão, mas trazem o número da matrícula (normalmente a escritura pública) e permitem à A&F emiti-la, SE o cliente autorizar. Se NÃO chegou, ponha em "faltando" ("Certidão de ônus/matrícula — ou escritura/documento com o número da matrícula") — a menos que a linha "Cliente autorizou a A&F a emitir a certidão" seja Sim: aí vai em "emitir" e não em "faltando". O que sobra do imóvel (inscrição imobiliária/IPTU, capa do IPTU com as metragens) continua obrigatório.
-8b. Se a linha "O banco NÃO aceitou a certidão que o cliente enviou" aparecer, a certidão recebida NÃO vale (muito antiga ou só consulta): trate como não recebida — "faltando" (ou "emitir", se o cliente autorizou a emissão).
+8b. Se a linha "O banco NÃO aceitou a certidão que o cliente enviou" aparecer (a equipe anotou isso no card), a certidão recebida NÃO vale (muito antiga ou só consulta): trate como não recebida — "faltando" (ou "emitir", se o cliente autorizou a emissão).
 8a. O cliente respondeu no formulário se POSSUI certidão de ônus/matrícula (linha "Cliente informou…" abaixo): é só contexto. "Não possui"/"Não sei" NÃO tira a certidão de "faltando" (a conversa vai apurar o que ele tem); "Sim, possui" e nenhum arquivo: falta mesmo.
 8. A CAPA DO IPTU (carnê/guia do IPTU, "CAPA IPTU") traz a inscrição imobiliária E as metragens: ela sozinha atende os itens "Inscrição Imobiliária/IPTU" e "Capa do IPTU com as metragens" do Home Equity. Qualquer documento de IPTU recebido (capa, carnê, guia, CND de IPTU) conta como "Inscrição Imobiliária/IPTU".
 9. Seja rigoroso: "complete": true só se tiver certeza de que todos os itens obrigatórios chegaram. Se houver arquivos que não puderam ser lidos e algum item obrigatório puder estar entre eles, responda false.`;
@@ -204,6 +204,7 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
 
   const cf = (lead.customFields || {}) as Record<string, string>;
   const cfAll = cf as Record<string, any>;
+  const bancoRecusou = await (require('./doc-review.service') as typeof import('./doc-review.service')).bancoRecusouCertidao(leadId).catch(() => false); // anotação da equipe no card
   const participants = [
     cf.participante_1 && `1) ${cf.participante_1}${cf.vinculo_1 ? ` — ${cf.vinculo_1}` : ''}`,
     cf.participante_2 && `2) ${cf.participante_2}${cf.vinculo_2 ? ` — ${cf.vinculo_2}` : ''}`,
@@ -220,7 +221,7 @@ ${participants}
 LISTAS DE DOCUMENTOS:
 ${lists.map((l) => `--- ${l.name} ---\n${l.body}`).join('\n\n')}
 
-${/^sim/i.test(String(cfAll.certidao_recusada_banco || '').trim()) ? 'O banco NÃO aceitou a certidão que o cliente enviou (muito antiga ou só consulta): Sim\n\n' : ''}${/^sim/i.test(String(cfAll.autoriza_emissao_certidao || '').trim()) ? 'Cliente autorizou a A&F a emitir a certidão de ônus/matrícula (custo de R$ 40 a R$ 100 pro cliente): Sim\n\n' : ''}${String(cfAll.possui_certidao || '').trim() ? `Cliente informou no formulário que possui certidão de ônus/matrícula: ${String(cfAll.possui_certidao).trim()}\n\n` : ''}DOCUMENTOS RECEBIDOS (lidos dos arquivos que o cliente mandou; "de FULANO" = titular do documento):
+${bancoRecusou ? 'O banco NÃO aceitou a certidão que o cliente enviou (muito antiga ou só consulta): Sim\n\n' : ''}${/^sim/i.test(String(cfAll.autoriza_emissao_certidao || '').trim()) ? 'Cliente autorizou a A&F a emitir a certidão de ônus/matrícula (custo de R$ 40 a R$ 100 pro cliente): Sim\n\n' : ''}${String(cfAll.possui_certidao || '').trim() ? `Cliente informou no formulário que possui certidão de ônus/matrícula: ${String(cfAll.possui_certidao).trim()}\n\n` : ''}DOCUMENTOS RECEBIDOS (lidos dos arquivos que o cliente mandou; "de FULANO" = titular do documento):
 ${receivedText}
 ${unread.length ? `\nArquivos que não puderam ser lidos: ${unread.length}` : ''}
 
