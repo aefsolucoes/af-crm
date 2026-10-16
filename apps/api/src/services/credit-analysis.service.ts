@@ -470,9 +470,14 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   const becameFinal = FINAL.has(next) && !FINAL.has(row.status);
   // Saiu da fila do navegador compartilhado e começou a rodar de verdade: o relógio do teto de duração recomeça agora.
   let resetStart = false;
-  if (next === 'RUNNING' && data.detail !== undefined && !/^na fila/i.test(String(data.detail || ''))) {
-    const prevRow = await db.creditAnalysis.findUnique({ where: { id: row.id }, select: { detail: true } });
-    resetStart = /^na fila/i.test(String(prevRow?.detail || ''));
+  let novoSteps: Array<{ s: string; t: string }> | null = null;
+  if ((next === 'RUNNING' && data.detail !== undefined) || becameFinal) {
+    const prevRow = await db.creditAnalysis.findUnique({ where: { id: row.id }, select: { detail: true, steps: true } });
+    if (next === 'RUNNING' && !/^na fila/i.test(String(data.detail || ''))) resetStart = /^na fila/i.test(String(prevRow?.detail || ''));
+    // Linha do tempo: só registra quando o passo MUDA (a extensão repete o mesmo passo a cada poucos segundos).
+    const lista = (Array.isArray(prevRow?.steps) ? (prevRow!.steps as any[]) : []) as Array<{ s: string; t: string }>;
+    const rotulo = becameFinal ? `FIM ${next}` : String(data.detail || '').replace(/\s+/g, ' ').slice(0, 90).replace(/\(há \d+ min\)/, '');
+    if (rotulo && (!lista.length || lista[lista.length - 1].s !== rotulo)) novoSteps = [...lista, { s: rotulo, t: new Date().toISOString() }].slice(-80);
   }
   const updated = await db.creditAnalysis.update({
     where: { id: row.id },
@@ -481,6 +486,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
       ...(data.detail !== undefined ? { detail: data.detail ? String(data.detail).slice(0, 4000) : null } : {}),
       ...Object.fromEntries(RESULT_KEYS.filter((k) => k in data).map((k) => [k, (data as any)[k]])),
       ...(resetStart ? { startedAt: new Date() } : {}),
+      ...(novoSteps ? { steps: novoSteps as any } : {}),
       ...(data.holderName ? { holderName: data.holderName } : {}),
       ...(becameFinal ? { finishedAt: new Date() } : {}),
     },

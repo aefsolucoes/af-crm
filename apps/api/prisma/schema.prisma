@@ -1223,6 +1223,8 @@ model CreditAnalysis {
   approvedValue    Float?
   /// Crédito PEDIDO nesta rodada (card no momento do pedido): permite mostrar "aprovou R$ X, depois com R$ Y reprovou".
   requestedValue   Float?
+  /// Linha do tempo da rodada: [{s: passo, t: horário ISO}] — onde o tempo foi (fila, digitação, espera do resultado).
+  steps            Json?
   netValue         Float? // valor LÍQUIDO do contrato (Creditas: já sem IOF/tarifa/custas) — é o que o aviso ao cliente mostra quando existe
   termMonths       Int?
   rate             String?
