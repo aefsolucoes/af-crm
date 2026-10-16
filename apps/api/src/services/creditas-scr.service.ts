@@ -29,7 +29,7 @@ export interface ScrState {
   emailId: string; emailAccountId: string; creditasId?: string; at: string;
   /** Titular da proposta na Creditas (nome e CPF que vêm no e-mail) — a partir dele se descobre quem mais entrou na proposta. */
   holderName?: string; holderCpf?: string;
-  askedAt?: string; sentAt?: string; chasedAt?: string; templateChaseAt?: string; windowNoteAt?: string; problemSig?: string; faltaSig?: string;
+  askedAt?: string; sentAt?: string; chasedAt?: string; holdSig?: string; windowNoteAt?: string; problemSig?: string; faltaSig?: string;
   /** Última mensagem do cliente (ISO) da janela de 24 h em que o lembrete "antes de fechar" já foi mandado — 1 por janela. */
   windowRemindFor?: string;
 }
@@ -321,7 +321,51 @@ async function govbrSteps(accountId: string): Promise<string> {
   return (e?.content || '').trim() || GOVBR_STEPS_FALLBACK;
 }
 
-async function askClient(accountId: string, lead: { id: string; name: string; customFields: any }, st: ScrState, io: Io): Promise<void> {
+
+// ─── Tag "Aguardando Bacen" (Fabio 16/10): liga a automação "Follow Up Documentação" (template follow_up_doc, 3 em 3 dias, 07h–21h) pro cliente que não devolveu o SCR ──
+const BACEN_TAG = 'Aguardando Bacen';
+async function setBacenTag(leadId: string, on: boolean): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { tags: true } });
+  if (!l) return;
+  const has = l.tags.includes(BACEN_TAG);
+  if (on === has) return;
+  await prisma.lead.update({ where: { id: leadId }, data: { tags: on ? [...l.tags, BACEN_TAG] : l.tags.filter((t) => t !== BACEN_TAG) } });
+}
+
+// ─── Creditas só vai até o fim se Inter e Santander NÃO aprovaram no valor total (Fabio 16/10) ───────────────────────────────────────────────────────────────
+// Aprovou a menor (ou reprovou / desqualificou) = o Creditas ainda vale e o SCR é pedido ao cliente. Aprovação cheia em qualquer um dos dois = segura o pedido (o cliente não precisa
+// assinar nada à toa). Banco ainda sem resposta: espera até 12 h do e-mail da Creditas e segue.
+const BANCOS_ALTERNATIVOS = ['INTER', 'CREDIMORAR'];
+async function creditasVale(leadId: string, st: ScrState): Promise<{ ok: boolean; sig: string; motivo: string; ofertas: string[] }> {
+  const { whichParticipant } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const card = { name1: String(cf.participante_1 || lead?.name || ''), name2: String(cf.participante_2 || ''), cpf1: cf.cpf_1, cpf2: cf.cpf_2 };
+  const rows = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, bank: { in: BANCOS_ALTERNATIVOS }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' } });
+  const nome = (b: string) => (b === 'INTER' ? 'Inter' : 'Santander');
+  const cheios: string[] = [], pendentes: string[] = [];
+  for (const bank of BANCOS_ALTERNATIVOS) {
+    const doBanco = rows.filter((r) => r.bank === bank);
+    const decisivas = doBanco.filter((r) => ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(r.status));
+    const ultimaPorPessoa = new Map<number, (typeof rows)[number]>();
+    for (const r of decisivas) { const w = whichParticipant(card, r.holderName, r.holderCpf); if (!ultimaPorPessoa.has(w)) ultimaPorPessoa.set(w, r); } // do mais novo pro mais antigo
+    const cheio = [...ultimaPorPessoa.values()].some((r) => r.status === 'CONDITIONAL' || (r.status === 'APPROVED' && !/aprovad[oa] a menor/i.test(r.detail || '')));
+    if (cheio) cheios.push(nome(bank));
+    else if (!decisivas.length && doBanco.some((r) => ['SENT', 'CHECK', 'INCOMPLETE', 'REQUESTED', 'RUNNING'].includes(r.status))) pendentes.push(nome(bank));
+  }
+  if (cheios.length) return { ok: false, sig: `FULL:${cheios.join('+')}`, motivo: `${cheios.join(' e ')} já aprovou no valor total — a Creditas só vale se Inter e Santander não aprovarem ou aprovarem a menor`, ofertas: [] };
+  if (pendentes.length && Date.now() - new Date(st.at).getTime() < 12 * 3_600_000) return { ok: false, sig: `WAIT:${pendentes.join('+')}`, motivo: `${pendentes.join(' e ')} ainda não respondeu (espero até 12 h do e-mail da Creditas antes de pedir o SCR ao cliente)`, ofertas: [] };
+  // O que Inter/Santander já aprovaram (a menor) vai pro cliente junto com o pedido do SCR.
+  let ofertas: string[] = [];
+  try {
+    const { buildApprovalText } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+    const ab = await buildApprovalText(leadId);
+    ofertas = (ab?.options || []).filter((o: any) => !/creditas/i.test(o.instituicao)).map((o: any) => `${o.instituicao}: ${o.valor}${o.prazo ? ` em ${o.prazo}` : ''}${o.primeiraParcela ? `, 1ª parcela ${o.primeiraParcela}` : ''}${o.pedido ? ` (menor que o pedido de ${o.pedido})` : ''}`);
+  } catch { /* sem recap: o pedido do SCR segue sozinho */ }
+  return { ok: true, sig: 'GO', motivo: '', ofertas };
+}
+
+async function askClient(accountId: string, lead: { id: string; name: string; customFields: any }, st: ScrState, io: Io, ofertas: string[] = []): Promise<void> {
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (!(await whatsappWindowOpen(lead.id))) {
     // Sem a janela de 24 h não há mensagem livre: avisa a equipe (uma vez) e tenta de novo quando o cliente falar.
@@ -338,13 +382,17 @@ async function askClient(accountId: string, lead: { id: string; name: string; cu
   const outros = nomes.slice(1);
   const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const saudacao = (await conversationActive(lead.id)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
-  const texto = `${saudacao}A Creditas pediu mais um passo pra seguir com a pré-aprovação do seu crédito: a *Autorização de consulta ao SCR do Banco Central* assinada${outros.length ? ` por cada participante (você e ${outros.join(', ')})` : ''}.\n\n📎 Estou te mandando o formulário em PDF, que já está preenchido. É só *assinar pelo gov.br* (assinatura eletrônica) e me devolver aqui${outros.length ? ' — cada um assina o seu' : ''}.\n\n✍️ Se preferir assinar à mão: imprima e assine *igual à assinatura do seu documento de identidade*, e me mande o formulário assinado.\n\nJunto, preciso também de uma foto do seu *documento de identidade com foto* (RG ou CNH, frente e verso)${outros.length ? ' — e o mesmo do(a) ' + outros.join(', ') : ''}: ele serve pra validar a assinatura.\n\nAssim que chegar, eu envio pra Creditas e te aviso.`;
+  const abertura = ofertas.length
+    ? `${saudacao}Já temos condição aprovada pra você:\n${ofertas.map((o) => `• ${o}`).join('\n')}\n\nEstamos tentando *também pela Creditas*, que pode ter uma condição ainda melhor. Pra seguir com ela, a Creditas pediu mais um passo: a *Autorização de consulta ao SCR do Banco Central* assinada`
+    : `${saudacao}A Creditas pediu mais um passo pra seguir com a pré-aprovação do seu crédito: a *Autorização de consulta ao SCR do Banco Central* assinada`;
+  const texto = `${abertura}${outros.length ? ` por cada participante (você e ${outros.join(', ')})` : ''}.\n\n📎 Estou te mandando o formulário em PDF, que já está preenchido. É só *assinar pelo gov.br* (assinatura eletrônica) e me devolver aqui${outros.length ? ' — cada um assina o seu' : ''}.\n\n✍️ Se preferir assinar à mão: imprima e assine *igual à assinatura do seu documento de identidade*, e me mande o formulário assinado.\n\nJunto, preciso também de uma foto do seu *documento de identidade com foto* (RG ou CNH, frente e verso)${outros.length ? ' — e o mesmo do(a) ' + outros.join(', ') : ''}: ele serve pra validar a assinatura.\n\nAssim que chegar, eu envio pra Creditas e te aviso.`;
   const { sendOutboundWhatsApp, sendOutboundMedia } = require('./message.service') as typeof import('./message.service');
   const r1 = await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: texto, io: io as any });
   if (!r1.success) { console.warn(`[Creditas SCR] ${lead.name}: mensagem ao cliente não saiu — ${(r1 as any).error}`); return; }
   if (pdf) await sendOutboundMedia({ accountId, leadId: lead.id, buffer: pdf, fileName: 'Autorizacao SCR Bacen.pdf', mimeType: 'application/pdf', io: io as any }).catch(() => {});
   await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: await govbrSteps(accountId), io: io as any }).catch(() => {});
   await saveState(lead.id, { status: 'ASKED', askedAt: new Date().toISOString() });
+  await setBacenTag(lead.id, true); // liga o lembrete por template (Follow Up Documentação) se a janela fechar
   await addNote(lead.id, pdf ? `📨 Mandei ao cliente o formulário SCR Bacen ${preenchido ? `já preenchido (data de hoje${cidade ? `, local ${cidade}` : ', SEM local — não achei a cidade do imóvel na proposta'}, nome e CPF)` : 'EM BRANCO (não consegui preencher)'}: assinar pelo gov.br e devolver junto com a foto do documento de identidade (valida a assinatura; à mão, assinar igual ao documento).` : '📨 Pedi ao cliente a assinatura do SCR Bacen pelo gov.br, mas NÃO consegui baixar o formulário do e-mail — mande o PDF "Bacen SCR" a ele.');
 }
 
@@ -451,6 +499,7 @@ async function checkAndForward(accountId: string, lead: { id: string; name: stri
     const corpo = `Olá!\n\nSeguem a Autorização SCR Bacen assinada e as identidades dos participantes da proposta${st.creditasId ? ` (ID ${st.creditasId})` : ''}:\n${nomes.map((n) => `• ${n}`).join('\n')}\n\nConseguem seguir com a pré-aprovação do crédito? Qualquer coisa, estamos à disposição.`;
     await sendEmailFrom({ acc, userId: null, to: [row.fromAddress], cc, subject, body: corpo, replyToId: row.id, leadId: lead.id, io: io as any, attachments: arquivos });
     await saveState(lead.id, { status: 'SENT', sentAt: new Date().toISOString() });
+    await setBacenTag(lead.id, false);
     await addNote(lead.id, `📤 Autorização SCR Bacen assinada + identidades enviadas à Creditas (resposta ao e-mail de ${row.fromAddress}${cc.length ? `, com cópia pra ${cc.join(', ')}` : ''}). Anexos: ${arquivos.map((a) => a.filename).join(', ')}.`);
     logActivity({ accountId, userId: null, userName: 'Análise automática', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: 'enviou à Creditas a Autorização SCR Bacen assinada' } as any);
     if (aberto) await tellClient(accountId, lead.id, 'Já enviei sua autorização e seus documentos pra Creditas! Assim que eles retornarem, eu te aviso por aqui. 😊', io);
@@ -518,28 +567,6 @@ async function remindBeforeWindowCloses(accountId: string, lead: { id: string; n
 }
 
 
-// ─── Janela FECHOU e o cliente não devolveu: quem cobra é o template de "Follow Up Documentação" (Fabio 16/10) ─────────────────────────────────────────────
-// Mesma cadência da regra de automação "Template de documentação… repete a cada 3 dias": template aprovado `follow_up_doc` (única forma de falar fora da janela), 07h–21h,
-// 3 dias depois do último contato (fala do cliente, pedido do SCR ou o template anterior). A regra de automação só vale pra "Aguardando Documentação"; o card do SCR está na Pré-Análise.
-const CHASE_EVERY_MS = 3 * 24 * 3_600_000;
-async function chaseAfterWindowClosed(accountId: string, lead: { id: string; name: string; customFields: any }, st: ScrState, io: Io): Promise<void> {
-  const hh = new Date(Date.now() + BRT).getUTCHours();
-  if (hh < 7 || hh >= 21) return;
-  if (await whatsappWindowOpen(lead.id)) return; // janela aberta: quem fala é o lembrete de antes de fechar / a IA
-  const full = await prisma.lead.findUnique({ where: { id: lead.id }, select: { tags: true } });
-  if ((full?.tags || []).includes('Pediu pra parar lembretes')) return;
-  const last = await prisma.message.findFirst({ where: { leadId: lead.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
-  const ref = Math.max(last?.createdAt.getTime() || 0, st.templateChaseAt ? new Date(st.templateChaseAt).getTime() : 0, st.askedAt ? new Date(st.askedAt).getTime() : 0);
-  if (!ref || Date.now() - ref < CHASE_EVERY_MS) return;
-  await saveState(lead.id, { templateChaseAt: new Date().toISOString() }); // marca antes: não repete se o envio demorar
-  const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
-  const r = await sendOutboundWhatsAppTemplate({ accountId, leadId: lead.id, templateName: 'follow_up_doc', language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem? Estou enviando este lembrete sobre o envio dos documentos solicitados anteriormente para prosseguir com o processo de aprovação do seu crédito. (template follow_up_doc)', io: (io || undefined) as any });
-  await addNote(lead.id, r.success
-    ? '⏰ A janela de 24 h do WhatsApp fechou e o SCR Bacen da Creditas ainda não voltou: mandei o template de lembrete dos documentos (follow_up_doc). Repete a cada 3 dias enquanto o cliente não responder.'
-    : `⚠️ A janela de 24 h fechou e o SCR da Creditas não voltou, mas o template de lembrete não saiu (${(r as any).error || 'erro'}). Chame o cliente.`);
-  if (!r.success) pushTeam(accountId, lead.id, lead.name, 'SCR da Creditas: o template de lembrete não saiu — chame o cliente');
-}
-
 let lastSweep = 0;
 /** Poller (1 min): varre e-mails ainda não tratados, pede o SCR aos clientes e encaminha à Creditas o que voltou assinado. */
 export async function processScrFlows(accountId: string, io: Io): Promise<void> {
@@ -553,10 +580,16 @@ export async function processScrFlows(accountId: string, io: Io): Promise<void> 
     const st = stateOf(cf);
     if (!st) continue;
     try {
-      if (st.status === 'PENDING') await askClient(accountId, lead, st, io);
+      if (st.status === 'PENDING') {
+        const vale = await creditasVale(lead.id, st);
+        if (!vale.ok) {
+          if (st.holdSig !== vale.sig) { await saveState(lead.id, { holdSig: vale.sig }); await addNote(lead.id, `⏸️ A Creditas pediu o SCR Bacen, mas por ora NÃO peço ao cliente: ${vale.motivo}. O CRM volta a pedir sozinho se isso mudar.`); }
+          continue;
+        }
+        await askClient(accountId, lead, st, io, vale.ofertas);
+      }
       else if (st.status === 'ASKED') {
         await remindBeforeWindowCloses(accountId, lead, st, io).catch((e: any) => console.warn(`[Creditas SCR] ${lead.name}: lembrete antes da janela falhou —`, e?.message));
-        await chaseAfterWindowClosed(accountId, lead, st, io).catch((e: any) => console.warn(`[Creditas SCR] ${lead.name}: cobrança por template falhou —`, e?.message));
         await checkAndForward(accountId, lead, st, io);
       }
     } catch (e: any) { console.warn(`[Creditas SCR] ${lead.name}:`, e?.message); }

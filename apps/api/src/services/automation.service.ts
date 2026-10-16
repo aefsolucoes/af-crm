@@ -574,6 +574,7 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         where: {
           accountId: rule.accountId, status: 'OPEN', archived: false, isGroup: false, messages: { some: {} },
           ...(cfg.onlySiteLeads ? { tags: { has: 'Site' } } : {}),
+          ...(cfg.includeTag ? { tags: { has: String(cfg.includeTag) } } : {}), // só quem tem esta tag (ex.: "Aguardando Bacen" → lembrete dos documentos do SCR)
           ...(excludeTag ? { NOT: { tags: { has: excludeTag } } } : {}),
         },
         select: {

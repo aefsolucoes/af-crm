@@ -414,7 +414,7 @@ function parseFicha(text: string): { label: string; value: string }[] {
 /** O CRM NÃO conseguiu capturar a proposta do Inter (Fabio 15/10, Mauricio de Azevedo): ao CONFERIR o resultado, o portal do Inter mostra o modal "Ocorreu um erro ao processar os dados da
  *  sua proposta" e manda de volta pra lista. Na 1ª vez pode ser passageiro; na 2ª (ou 3ª) conferência com o mesmo erro, manda UM e-mail à Vania — da conta do Fabio, cc Andreia — com o
  *  problema E os dados completos do cliente pra ela vincular o cadastro/proposta lá (o mesmo texto que o Fabio aprovou à mão). A extensão do Inter (2026.10.15.1+) marca esses casos com
- *  "ERRO DO PORTAL INTER" no detalhe. 1 e-mail por card (`_interVaniaAt`), 08h–20h, máx. 5 por dia; nota + push. */
+ *  "ERRO DO PORTAL INTER" no detalhe. 1 e-mail por card (`_interVaniaAt`), 07h–21h, sem teto por dia (Fabio 16/10: deu erro, o e-mail vai, não importa quantos cards); nota + push. */
 async function emailInterSemProposta(accountId: string) {
   const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
   if (hora < 7 || hora >= 21) return; // e-mail pra gestora só em horário comercial
@@ -429,8 +429,6 @@ async function emailInterSemProposta(accountId: string) {
     const resultado = await prisma.creditAnalysis.count({ where: { leadId: g.leadId, bank: 'INTER', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gt: g.first } } });
     if (resultado) continue; // o Inter já deu resultado depois: o erro passou
     const comNumero = await prisma.creditAnalysis.findFirst({ where: { leadId: g.leadId, bank: 'INTER', dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
-    const hoje = await prisma.note.count({ where: { content: { startsWith: '📧 E-mail enviado à Vania' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } } });
-    if (hoje >= 5) return; // freio: no máximo 5 e-mails por dia
     const acc = await prisma.emailAccount.findFirst({ where: { accountId, address: { startsWith: 'fabio@', mode: 'insensitive' } } });
     if (!acc) { console.warn('[Inter sem proposta] conta de e-mail do Fabio não encontrada'); return; }
     // Dados do cliente: a ficha da proposta no card (pares "Rótulo: valor"), com o que o card tem como reserva.
@@ -523,12 +521,12 @@ async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS') {
     const cpf = cpfRaw.length === 11 ? `${cpfRaw.slice(0, 3)}.${cpfRaw.slice(3, 6)}.${cpfRaw.slice(6, 9)}-${cpfRaw.slice(9)}` : '';
     const numero = [...lead.creditAnalyses].reverse().find((r) => r.proposalNumber)?.proposalNumber || (bank === 'CREDITAS' ? (cf._scrCreditas as any)?.creditasId : '') || '';
     const quando = precisa.desde.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' });
-    const horas = Math.round((Date.now() - precisa.desde.getTime()) / 3_600_000); // só pra nota interna; o e-mail não cita horas
+    const horas = Math.round((Date.now() - precisa.desde.getTime()) / 3_600_000);
     const situacao = bank === 'CREDITAS'
       ? `ela segue sem as condições de aprovação (valor, prazo e parcela) — só consta a pré-qualificação`
       : `ela segue sem decisão (nem aprovada nem negada) na Análise de Crédito`;
     const pendencia = bank === 'CREDITAS' ? 'algum documento, a Autorização SCR Bacen ou qualquer pendência' : 'algum documento ou qualquer pendência';
-    const corpo = `Olá, ${cfg.quem}, tudo bem?\n\nPoderia me ajudar a verificar ${bank === 'CREDITAS' ? 'a aprovação' : 'a proposta'} do cliente ${quem.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity?${numero ? ` ${bank === 'CREDITAS' ? 'ID/proposta' : 'Proposta nº'} ${numero}.` : ''}\n\nEnviamos a proposta ${bank === 'CREDITAS' ? 'pela plataforma da Creditas' : 'pelo portal de parceiros do Inter'} em ${quando} e, até agora, ${situacao}.\n\nSe faltar ${pendencia} da nossa parte, me avise que resolvo na hora.\n\nObrigado!`;
+    const corpo = `Olá, ${cfg.quem}, tudo bem?\n\nPoderia me ajudar a verificar ${bank === 'CREDITAS' ? 'a aprovação' : 'a proposta'} do cliente ${quem.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity?${numero ? ` ${bank === 'CREDITAS' ? 'ID/proposta' : 'Proposta nº'} ${numero}.` : ''}\n\nEnviamos a proposta ${bank === 'CREDITAS' ? 'pela plataforma da Creditas' : 'pelo portal de parceiros do Inter'} em ${quando} e, há mais de 24 horas, ${situacao}.\n\nSe faltar ${pendencia} da nossa parte, me avise que resolvo na hora.\n\nObrigado!`;
     try {
       const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
       await sendEmailFrom({ acc, userId: acc.userId, to: [cfg.email], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${quem.toUpperCase()} - ${bank === 'CREDITAS' ? 'aprovação' : 'proposta'} Home Equity sem retorno no ${cfg.empresa}`, body: corpo, leadId: lead.id, io: null } as any);
