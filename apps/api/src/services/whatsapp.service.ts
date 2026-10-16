@@ -1434,13 +1434,13 @@ async function maybeAutoReplyCloudApi(accountId: string, leadId: string, incomin
  *  conversa, Lead.aiAutoReplyActive) — só entra se o gatilho de template
  *  acima não disparou pra essa mensagem. Toda resposta enviada vira uma
  *  Note no card, pra equipe acompanhar/poder desligar se algo sair errado. */
-// A IA espera 6s antes de responder, mostrando "digitando..." pro cliente
+// A IA espera 10s antes de responder, mostrando "digitando..." pro cliente
 // como uma pessoa de verdade (pedido do usuário 2026-09-25). Se o cliente
 // mandar outra mensagem nesse meio-tempo, só a última responde — e responde
 // a rajada inteira de uma vez (quem manda "Oi" / "tudo bem?" / "queria
 // saber..." em 3 mensagens recebia 3 respostas).
-// 6s (Fabio 28/09 — era 4s).
-const AI_REPLY_DELAY_MS = 6000;
+// 6s (Fabio 28/09 — era 4s). 10s (Fabio 16/10: "a IA do CRM deve atrasar algo de 10s pra falar com o cliente, ela tá respondendo muito rápido") — mais a geração da resposta.
+const AI_REPLY_DELAY_MS = 10_000;
 
 /** "digitando..." no WhatsApp do cliente (também marca a mensagem como
  *  lida). Some sozinho em até 25s ou quando a resposta é enviada. */
