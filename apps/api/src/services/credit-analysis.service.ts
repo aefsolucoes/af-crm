@@ -1,4 +1,5 @@
 import type { PrismaClient, Prisma } from '@prisma/client';
+import { whyNotRun } from './credit-not-run';
 
 /**
  * Aba "Análise de Crédito" (Fabio 14/10). As extensões do Chrome dele (Inter,
@@ -74,19 +75,31 @@ function pickResult(input: Record<string, any>): ResultFields {
   return out;
 }
 
+/** Qual participante do card é o titular de uma análise (1 = 1º, 2 = 2º). Pelo CPF gravado quando há; senão pelo NOME, que o portal abrevia ou muda:
+ *  não vale "um contém o outro" ("Douglas Rafael Santos" contém "Rafael Santos" e jogava o resultado do Douglas na coluna do Rafael — Fabio 15/10).
+ *  Vence o nome mais parecido (palavras em comum ÷ palavras de cada um); empate ou nenhum parecido = 1º participante. Pura (testável). */
+export function whichParticipant(card: { name1?: string | null; name2?: string | null; cpf1?: string | null; cpf2?: string | null }, holder?: string | null, holderCpf?: string | null): 1 | 2 {
+  const dig = (v?: string | null) => String(v || '').replace(/\D/g, '');
+  const hc = dig(holderCpf), c1 = dig(card.cpf1), c2 = dig(card.cpf2);
+  if (hc.length === 11) { if (c2.length === 11 && hc === c2) return 2; if (c1.length === 11 && hc === c1) return 1; }
+  const tok = (t?: string | null) => normName(t || '').split(' ').filter((w) => w && !['de', 'da', 'do', 'dos', 'das', 'e'].includes(w));
+  const h = tok(holder), t1 = tok(card.name1), t2 = tok(card.name2);
+  if (!h.length || !t2.length) return 1;
+  const score = (t: string[]) => {
+    if (!t.length) return 0;
+    const inter = h.filter((w) => t.includes(w)).length;
+    return inter ? inter / (h.length + t.length - inter) : 0; // Jaccard
+  };
+  return score(t2) > score(t1) ? 2 : 1;
+}
+
 /** Última análise de cada banco separada por PARTICIPANTE: o resultado do 2º participante (rodado no nome dele) aparece junto do
  *  do 1º, em vez de um esconder o outro. `rows` vem do mais novo pro mais antigo. */
-function latestByParticipant(rows: any[], name2: string): { p1: Record<string, any>; p2: Record<string, any> } {
-  const n2 = normName(name2);
-  const isP2 = (holder?: string | null) => {
-    const h = normName(holder || '');
-    return !!(n2 && h && (h === n2 || n2.includes(h) || h.includes(n2)));
-  };
-  const p1: Record<string, any> = {}, p2: Record<string, any> = {};
-  const p1Rows = rows.filter((a) => !isP2(a.holderName)), p2Rows = rows.filter((a) => isP2(a.holderName));
-  Object.assign(p1, latestPerBank(p1Rows));
-  Object.assign(p2, latestPerBank(p2Rows));
-  return { p1, p2 };
+function latestByParticipant(rows: any[], cf: Record<string, any>, leadName?: string | null): { p1: Record<string, any>; p2: Record<string, any> } {
+  const card = { name1: String(cf.participante_1 || leadName || ''), name2: String(cf.participante_2 || ''), cpf1: cf.cpf_1, cpf2: cf.cpf_2 };
+  const p1Rows: any[] = [], p2Rows: any[] = [];
+  for (const a of rows) (whichParticipant(card, a.holderName, a.holderCpf) === 2 ? p2Rows : p1Rows).push(a);
+  return { p1: latestPerBank(p1Rows), p2: latestPerBank(p2Rows) };
 }
 
 const RESULTADO_DECISIVO = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED']);
@@ -94,10 +107,12 @@ const RESULTADO_DECISIVO = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED']);
  *  resultado que já existia (Fabio 14/10: "mostra que falhou no Inter, sendo que foi aprovado no nome da Larissa"). Rodada nova de verdade (RUN) continua valendo. */
 export function latestPerBank(rows: any[]): Record<string, any> {
   const temDecisivo = new Set(rows.filter((r) => RESULTADO_DECISIVO.has(r.status)).map((r) => r.bank));
+  const jaEnviado = new Set(rows.filter((r) => r.status === 'SENT').map((r) => r.bank));
   const out: Record<string, any> = {};
   for (const a of rows) {
     if (out[a.bank]) continue;
     if (a.kind === 'CHECK' && !RESULTADO_DECISIVO.has(a.status) && temDecisivo.has(a.bank)) continue;
+    if (a.kind === 'CHECK' && a.status === 'FAILED' && jaEnviado.has(a.bank)) continue; // leitura que falhou não esconde a proposta já enviada ("Em análise")
     out[a.bank] = a;
   }
   for (const a of rows) if (!out[a.bank]) out[a.bank] = a;
@@ -491,11 +506,14 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
       ...(becameFinal ? { finishedAt: new Date() } : {}),
     },
   });
-  // Aprovada: grava o CPF de QUEM foi aprovado (a extensão manda; senão deduz pelo nome do titular da análise no card) — é por ele que o PDF da simulação
-  // é buscado no portal (Juan Reppucci, 14/10: o Santander aprovou no CPF da esposa e o PDF foi procurado no do marido).
-  if (!updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL') && !updated.holderCpf) {
-    const cpf = await resolveHolderCpf(db, updated);
-    if (cpf) { await db.creditAnalysis.update({ where: { id: updated.id }, data: { holderCpf: cpf } }).catch(() => {}); (updated as any).holderCpf = cpf; }
+  // Grava NOME e CPF de QUEM foi analisado em toda linha real (aprovada, reprovada, enviada, conferir, falha) — a tela separa os participantes por eles; antes só a aprovada tinha CPF,
+  // e "Douglas Rafael Santos" caía na coluna do "Rafael Santos" (Fabio 15/10). Também é por esse CPF que o PDF da simulação é buscado no portal (Juan Reppucci, 14/10).
+  if (!updated.dryRun && (!updated.holderCpf || !updated.holderName) && !['REQUESTED', 'RUNNING'].includes(next)) {
+    const id = await resolveHolderIdentity(db, updated);
+    const patch: Record<string, string> = {};
+    if (!updated.holderCpf && id.cpf) patch.holderCpf = id.cpf;
+    if (!updated.holderName && id.name) patch.holderName = id.name;
+    if (Object.keys(patch).length) { await db.creditAnalysis.update({ where: { id: updated.id }, data: patch }).catch(() => {}); Object.assign(updated, patch); }
   }
   // Nota automática só na primeira vez que vira aprovada/reprovada (modo teste não escreve no card).
   if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) {
@@ -512,24 +530,27 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   return { row: updated, becameFinal };
 }
 
-/** CPF (só dígitos) de quem foi analisado: o gravado na análise; senão o do participante do card cujo nome bate com o titular da análise; senão o do 1º participante. */
-export async function resolveHolderCpf(db: Db, row: { leadId: string; holderCpf?: string | null; holderName?: string | null; detail?: string | null; bank?: string }): Promise<string | null> {
-  if (row.holderCpf) return row.holderCpf;
-  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
+/** QUEM foi analisado (nome e CPF do participante do card), pelo CPF gravado, senão pelo nome do titular da análise (nome mais parecido — ver whichParticipant),
+ *  senão pela inversão ligada pro banco; sem nada disso, o 1º participante. Fabio 15/10: "precisa puxar por nome e CPF". */
+export async function resolveHolderIdentity(db: Db, row: { leadId: string; holderCpf?: string | null; holderName?: string | null; detail?: string | null; bank?: string }): Promise<{ who: 1 | 2; name: string; cpf: string | null }> {
+  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { name: true, customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
   const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '');
-  const c1 = dig(cf.cpf_1); const c2 = dig(cf.cpf_2);
-  const holder = normName(row.holderName || parseHolder(row.detail) || '');
-  const n2 = normName(String(cf.participante_2 || ''));
-  const n1 = normName(String(cf.participante_1 || ''));
-  const bate = (a: string, b: string) => !!a && !!b && (a === b || a.includes(b) || b.includes(a));
-  if (holder && bate(holder, n2) && c2.length === 11) return c2;
-  if (holder && bate(holder, n1) && c1.length === 11) return c1;
-  if (!holder) {
-    const ov = row.bank ? await db.creditOverride.findFirst({ where: { leadId: row.leadId, bank: row.bank }, select: { data: true } }) : null;
-    if ((ov?.data as any)?.inverter === true && c2.length === 11) return c2;
+  const card = { name1: String(cf.participante_1 || lead?.name || ''), name2: String(cf.participante_2 || ''), cpf1: dig(cf.cpf_1), cpf2: dig(cf.cpf_2) };
+  const nome = row.holderName || parseHolder(row.detail) || '';
+  let who: 1 | 2 = 1;
+  if (row.holderCpf || nome) who = whichParticipant(card, nome, row.holderCpf);
+  else if (row.bank) {
+    const ov = await db.creditOverride.findFirst({ where: { leadId: row.leadId, bank: row.bank }, select: { data: true } });
+    if ((ov?.data as any)?.inverter === true && card.cpf2.length === 11) who = 2;
   }
-  return c1.length === 11 ? c1 : null;
+  const cpf = row.holderCpf || (who === 2 ? card.cpf2 : card.cpf1);
+  return { who, name: nome || (who === 2 ? card.name2 : card.name1), cpf: cpf.length === 11 ? cpf : null };
+}
+
+/** CPF (só dígitos) de quem foi analisado (ver resolveHolderIdentity). */
+export async function resolveHolderCpf(db: Db, row: { leadId: string; holderCpf?: string | null; holderName?: string | null; detail?: string | null; bank?: string }): Promise<string | null> {
+  return (await resolveHolderIdentity(db, row)).cpf;
 }
 
 type AnalysisRow = NonNullable<Awaited<ReturnType<Db['creditAnalysis']['findFirst']>>>;
@@ -703,8 +724,14 @@ async function expireStuck(db: Db, where: { accountId: string; leadId?: string }
 /** A extensão acabou de (re)iniciar: o que ela tinha em execução se perdeu (recarregar a extensão, o Chrome reiniciar ou o service
  *  worker ser encerrado derruba a execução). Falha na hora, com o motivo, em vez de esperar 30 min. */
 export async function releaseOrphans(db: Db, p: { accountId: string; bank: string }) {
-  const rows = await db.creditAnalysis.findMany({ where: { accountId: p.accountId, bank: p.bank, status: 'RUNNING' }, select: { id: true, detail: true } });
+  const rows = await db.creditAnalysis.findMany({ where: { accountId: p.accountId, bank: p.bank, status: 'RUNNING' }, select: { id: true, detail: true, kind: true } });
   for (const r of rows) {
+    // Conferência (só leitura) que se perdeu NÃO falha: volta pra fila e a extensão lê de novo (Douglas, 15/10: a conferência do Creditas morreu na recarga da extensão e a proposta ficou sem
+    // ninguém olhando). Só a rodada de RODAR (que pode ter deixado rascunho no banco) fica como falha.
+    if (r.kind === 'CHECK') {
+      await db.creditAnalysis.updateMany({ where: { id: r.id, status: 'RUNNING' }, data: { status: 'REQUESTED', startedAt: null, notBefore: null, detail: 'A extensão foi recarregada no meio da conferência — vai ler o resultado de novo.' } });
+      continue;
+    }
     await db.creditAnalysis.updateMany({
       where: { id: r.id, status: 'RUNNING' },
       data: { status: 'FAILED', finishedAt: new Date(), detail: orphanDetail('A extensão foi recarregada ou reiniciada no meio desta execução (recarregar a extensão no Chrome, reiniciar o Chrome ou o Chrome encerrar a extensão).', r.detail) },
@@ -744,12 +771,26 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
   });
   const preNoteAt = new Map<string, Date>();
   for (const n of preNotes) if (!preNoteAt.has(n.leadId)) preNoteAt.set(n.leadId, n.createdAt);
+  const autoSetting = await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { enabled: true, enabledAt: true, paused: true } });
   return leads.map((l) => {
     const cf = (l.customFields || {}) as Record<string, any>;
     const preAnaliseAt = (l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '') && l.stageEnteredAt) || preNoteAt.get(l.id) || null;
     const latest: Record<string, any> = latestPerBank(l.creditAnalyses); // já vem do mais novo pro mais antigo
-    const byPart = latestByParticipant(l.creditAnalyses, String(cf.participante_2 || ''));
+    const byPart = latestByParticipant(l.creditAnalyses, cf, l.name);
+    // Por que NÃO rodou (banco × participante sem análise): a tela mostra a frase no lugar de "Nenhuma análise ainda".
+    const card = { name1: String(cf.participante_1 || l.name || ''), name2: String(cf.participante_2 || ''), cpf1: cf.cpf_1, cpf2: cf.cpf_2 };
+    const inPre = l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '');
+    const porParticipante = (who: 1 | 2) => l.creditAnalyses.filter((a) => !a.dryRun && whichParticipant(card, a.holderName, a.holderCpf) === who);
+    const notRun: Record<string, { p1?: string; p2?: string }> = {};
+    for (const bk of BANK_KEYS) {
+      const mk = (who: 1 | 2) => whyNotRun({ who, bank: bk, cf, inPre, stageEnteredAt: l.stageEnteredAt || null, settings: autoSetting, otherRows: porParticipante(who === 1 ? 2 : 1).filter((a) => a.bank === bk) });
+      const o: { p1?: string; p2?: string } = {};
+      if (!byPart.p1[bk] && !(card.name2 ? false : l.creditAnalyses.some((a) => a.bank === bk))) o.p1 = mk(1);
+      if (card.name2 && !byPart.p2[bk]) o.p2 = mk(2);
+      if (o.p1 || o.p2) notRun[bk] = o;
+    }
     return {
+      notRun,
       latestP1: byPart.p1,
       latestP2: byPart.p2,
       id: l.id,
@@ -921,7 +962,7 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   const overrides = await db.creditOverride.findMany({ where: { leadId: p.leadId }, select: { bank: true, data: true } });
   return {
     eligible: /home equity/i.test(lead.pipeline?.department?.name || ''),
-    latest, latestP1: latestByParticipant(history, String(cf.participante_2 || '')).p1, latestP2: latestByParticipant(history, String(cf.participante_2 || '')).p2, history, chosenId: history.find((a) => a.chosen)?.id || null,
+    latest, ...(() => { const bp = latestByParticipant(history, cf, lead.name); return { latestP1: bp.p1, latestP2: bp.p2 }; })(), history, chosenId: history.find((a) => a.chosen)?.id || null,
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
   };
 }
@@ -1117,9 +1158,8 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   });
   if (!rows.length) return '';
   // Leitura que FALHOU (ex.: conferência que travou) não pode esconder o último resultado conhecido: só entra se não houver nada melhor.
-  const n2 = String(cf.participante_2 || '');
-  const bons = latestByParticipant(rows.filter((r) => r.status !== 'FAILED'), n2);
-  const ruins = latestByParticipant(rows.filter((r) => r.status === 'FAILED'), n2);
+  const bons = latestByParticipant(rows.filter((r) => r.status !== 'FAILED'), cf);
+  const ruins = latestByParticipant(rows.filter((r) => r.status === 'FAILED'), cf);
   const p1 = { ...ruins.p1, ...bons.p1 };
   const p2 = { ...ruins.p2, ...bons.p2 };
   const agora = Date.now();

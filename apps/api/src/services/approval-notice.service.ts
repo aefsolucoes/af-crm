@@ -21,7 +21,7 @@ import { callableFirstName } from '../lib/text';
  *    mandar à mão (a conversa já está aberta nessa hora).
  */
 
-import { parseDocumentosExigidos } from './credit-analysis.service';
+import { parseDocumentosExigidos, whichParticipant } from './credit-analysis.service';
 
 const prisma = new PrismaClient();
 
@@ -399,11 +399,12 @@ async function withPayoff(leadId: string, options: ApprovalOption[]): Promise<Ap
 /** Opções aprovadas que a aba Análise de Crédito já registrou (a mais recente de cada banco, com valor). Números estruturados:
  *  é a fonte preferida; se não houver, cai nas notas e depois no card. */
 const normN = (t: string) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
-/** 1 = titular, 2 = 2º participante (esposa/segundo proponente), pelo nome do titular da análise. */
-async function holderBucketer(leadId: string): Promise<(holder?: string | null) => 1 | 2> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-  const n2 = normN(String(((lead?.customFields || {}) as Record<string, any>).participante_2 || ''));
-  return (holder) => { const h = normN(holder || ''); return n2 && h && (h === n2 || n2.includes(h) || h.includes(n2)) ? 2 : 1; };
+/** 1 = titular, 2 = 2º participante (esposa/segundo proponente): pelo CPF da análise, senão pelo nome mais parecido (ver whichParticipant). */
+async function holderBucketer(leadId: string): Promise<(holder?: string | null, holderCpf?: string | null) => 1 | 2> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const card = { name1: String(cf.participante_1 || lead?.name || ''), name2: String(cf.participante_2 || ''), cpf1: cf.cpf_1, cpf2: cf.cpf_2 };
+  return (holder, holderCpf) => whichParticipant(card, holder, holderCpf);
 }
 
 async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | null> {
@@ -416,7 +417,7 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
   // mais essa opção — mas a negativa do titular não apaga a aprovação do 2º participante (esposa/segundo proponente) no mesmo banco.
   const byKey = new Map<string, (typeof rows)[number]>();
   for (const r of rows) {
-    const k = `${r.bank}|${bucket(r.holderName)}`;
+    const k = `${r.bank}|${bucket(r.holderName, r.holderCpf)}`;
     if (r.status === 'REJECTED') byKey.delete(k);
     else if (r.approvedValue != null) byKey.set(k, r);
   }
@@ -462,7 +463,7 @@ export async function aprovadasSemNumeros(leadId: string): Promise<string[]> {
   const visto = new Set<string>();
   const out = new Set<string>();
   for (const r of rows) {
-    const k = `${r.bank}|${bucket(r.holderName)}`;
+    const k = `${r.bank}|${bucket(r.holderName, r.holderCpf)}`;
     if (visto.has(k)) continue;
     visto.add(k);
     if (r.status !== 'REJECTED' && r.approvedValue == null) out.add(r.bank);

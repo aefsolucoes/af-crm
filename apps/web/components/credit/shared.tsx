@@ -63,6 +63,8 @@ export interface BoardLead {
   latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; verdicts?: Verdict[]; chosenId: string | null;
   /** Última análise de cada banco por participante (o 2º, rodado no nome dele, não esconde o 1º). */
   latestP1?: Partial<Record<Bank, Analysis>>; latestP2?: Partial<Record<Bank, Analysis>>;
+  /** Por que NÃO rodou (banco × participante sem análise): frase pronta do servidor. */
+  notRun?: Partial<Record<Bank, { p1?: string; p2?: string }>>;
 }
 
 /** Resumo curto dos ajustes de um banco, pra mostrar na linha. */
@@ -107,6 +109,27 @@ export function ago(d: string | null | undefined): string {
 }
 
 export const isDesqualificado = (detail?: string | null) => /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas/i.test(detail || '');
+
+/** Resumo de UMA linha do que aconteceu (erro, recusa, motivo): o trecho útil do detalhe, sem o "Titular na análise: …". Vazio quando não há o que explicar. */
+export function reasonOf(a?: Analysis): string {
+  if (!a || !['FAILED', 'CHECK', 'INCOMPLETE', 'REJECTED'].includes(a.status)) return '';
+  const t = String(a.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/\s+/g, ' ').trim();
+  const m = /(Mas n[aã]o consegui.*|N[AÃ]O RODEI.*|RESULTADO:.*|Erro.*|A extens[aã]o.*)/i.exec(t);
+  const x = (m ? m[1] : t).replace(/^RESULTADO:\s*/i, '');
+  return x.length > 130 ? `${x.slice(0, 129)}…` : x;
+}
+
+/** Célula de um participante: o selo + o motivo (por que falhou/reprovou/ficou em conferir) ou, sem análise, por que NÃO rodou. */
+export function ParticipantCell({ a, why }: { a?: Analysis; why?: string }) {
+  const r = reasonOf(a);
+  return (
+    <div className="space-y-0.5">
+      <Badge a={a} />
+      {r && <div className="text-[10px] leading-snug text-slate-500 max-w-[190px]" title={String(a?.detail || '')}>{r}</div>}
+      {!a && why && <div className="text-[10px] leading-snug text-amber-600 max-w-[190px]" title={why}>{why.length > 130 ? `${why.slice(0, 129)}…` : why}</div>}
+    </div>
+  );
+}
 
 export function Badge({ a }: { a?: Analysis }) {
   if (!a) return <span className="text-xs text-slate-300">—</span>;
