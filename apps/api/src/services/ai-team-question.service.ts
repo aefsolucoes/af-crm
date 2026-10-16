@@ -181,6 +181,75 @@ async function answerEmailQuestion(q: { id: string; accountId: string; leadId: s
   return updated;
 }
 
+/** Reprovação automática por motivo que pode ser TEMPORÁRIO (saldo devedor, imóvel abaixo do mínimo…): ANTES de avisar o cliente e mover o card, a IA pergunta pra equipe pra onde vai
+ *  (Venda Futura com data x Perdidos) — Fabio 16/10: "antes manda pergunta pra nós na caixa da IA, pra respondermos e ele ir aprendendo". Nada vai pro cliente até a resposta. */
+export async function createRejectionQuestion(params: { accountId: string; leadId: string; reasons: string[]; io?: Io }) {
+  const { accountId, leadId, io } = params;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead) return null;
+  const ja = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, kind: 'REJECTION_QUESTION', status: 'OPEN' }, select: { id: true } });
+  if (ja) return null;
+  const departmentId = lead.pipeline?.departmentId ?? null;
+  const motivos = params.reasons.join('; ');
+  const question = `📉 ${lead.name} foi reprovado pelos bancos por um motivo que pode ser TEMPORÁRIO: ${motivos}.\nPra onde vai o card? "Venda Futura" (a IA avisa a negativa, pergunta a melhor data pra tentar de novo e move o card) ou "Perdidos" (segue como hoje)?`.slice(0, 1000);
+  const saved = await prisma.aiTeamQuestion.create({ data: { accountId, leadId, departmentId, question, kind: 'REJECTION_QUESTION', clientMessage: motivos.slice(0, 1000) }, select: SELECT });
+  const userIds = await recipientsFor(accountId, departmentId);
+  emitTo(io, userIds, 'ai_team_question', { id: saved.id, leadId, leadName: lead.name, question: saved.question, isNew: true });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Reprovado por motivo que pode ser temporário (${motivos}): perguntei à equipe no balão "Dúvidas da IA" se vai pra Venda Futura ou Perdidos. O card fica na Pré-Análise até a resposta.` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `Reprovação — ${lead.name}`, body: 'Venda Futura ou Perdidos? A IA precisa da sua resposta', leadId }, userIds).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_team_question', leadId, leadName: lead.name, summary: `perguntou à equipe: reprovação temporária (${motivos.slice(0, 80)})` });
+  return saved;
+}
+
+async function interpretRejectionAnswer(question: string, answer: string): Promise<{ acao: 'VENDA_FUTURA' | 'PERDIDO' | null; regra: { title: string; content: string } | null }> {
+  const t = answer.toLowerCase();
+  const rx: 'VENDA_FUTURA' | 'PERDIDO' | null = /venda futura|perguntar a data|tentar de novo|retomar/.test(t) && !/n[aã]o.{0,12}venda futura/.test(t) ? 'VENDA_FUTURA' : /perdid|encerr|desqualific/.test(t) ? 'PERDIDO' : null;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { acao: rx, regra: null };
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5', max_tokens: 3000,
+        system: `A IA da A&F Soluções Financeiras (correspondente bancária) perguntou à equipe pra onde vai um card reprovado pelos bancos por motivo possivelmente temporário. Interprete a resposta da equipe. Responda SÓ JSON: {"acao":"VENDA_FUTURA|PERDIDO|null","regra":{"title":"...","content":"..."} ou null}. VENDA_FUTURA = o cliente é qualificado e pode tentar de novo depois (a IA pergunta a melhor data e o card vai pra Venda Futura). PERDIDO = encerrar como hoje. null = a resposta não decide. "regra" só se a resposta vale pra casos PARECIDOS no futuro (ex.: "reprovado por saldo devedor → Venda Futura"); title curto (cite o motivo da reprovação) e content com a regra em 1–2 frases dizendo explicitamente "Venda Futura" ou "Perdidos"; senão null.`,
+        messages: [{ role: 'user', content: `Pergunta:\n${question}\n\nResposta da equipe:\n${answer}` }],
+      }),
+    });
+    if (!res.ok) return { acao: rx, regra: null };
+    const d: any = await res.json();
+    const m = String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/);
+    if (!m) return { acao: rx, regra: null };
+    const j = JSON.parse(m[0]);
+    const acao = j.acao === 'VENDA_FUTURA' || j.acao === 'PERDIDO' ? j.acao : rx;
+    const r = j.regra;
+    return { acao, regra: r && typeof r.title === 'string' && typeof r.content === 'string' && r.title.trim() && r.content.trim() ? { title: r.title.trim().slice(0, 200), content: r.content.trim().slice(0, 2000) } : null };
+  } catch { return { acao: rx, regra: null }; }
+}
+
+async function answerRejectionQuestion(q: { id: string; accountId: string; leadId: string; departmentId: string | null; question: string }, answer: string, userId: string, userName: string | null, io: Io) {
+  const dec = await interpretRejectionAnswer(q.question, answer);
+  if (!dec.acao) throw new Error('Não entendi pra onde vai o card. Responda "Venda Futura" ou "Perdidos" (e, se quiser, o motivo).');
+  const f = await prisma.lead.findUnique({ where: { id: q.leadId }, select: { customFields: true } });
+  const cf: Record<string, any> = { ...((f?.customFields || {}) as Record<string, any>), _rejDecision: dec.acao, _rejDecisionBy: userName || 'equipe' };
+  await prisma.lead.update({ where: { id: q.leadId }, data: { customFields: cf as any } });
+  let knowledgeTitle: string | null = null;
+  if (dec.regra && isVoyageConfigured()) {
+    try { const entry = await createKnowledgeEntry(q.accountId, { ...dec.regra, departmentId: q.departmentId }); knowledgeTitle = entry.title; } catch (e) { console.error('[Dúvidas da IA] Não salvou na Base de Conhecimento:', e); }
+  }
+  const feito = dec.acao === 'VENDA_FUTURA' ? 'o CRM vai avisar a negativa ao cliente, perguntar a melhor data pra tentar de novo e mover o card pra Venda Futura (em até 1 min)' : 'o CRM segue o fluxo normal: avisa a negativa e move o card pra Perdidos (em até 1 min)';
+  const updated = await prisma.aiTeamQuestion.update({
+    where: { id: q.id },
+    data: { status: 'ANSWERED', answer, answeredByUserId: userId, answeredByName: userName, answeredAt: new Date(), sendError: null, sentReply: feito, knowledgeTitle },
+    select: SELECT,
+  });
+  await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `Dúvida da reprovação respondida por ${userName || 'alguém da equipe'}: ${answer}\n🤖 ${feito}.${knowledgeTitle ? `\n📚 Aprendi: ${knowledgeTitle}` : ''}` } }).catch(() => {});
+  logActivity({ accountId: q.accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: `respondeu a dúvida da reprovação (${dec.acao === 'VENDA_FUTURA' ? 'Venda Futura' : 'Perdidos'})` });
+  emitTo(io, await recipientsFor(q.accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+  return updated;
+}
+
 /** Dúvidas que o usuário enxerga: todas as abertas + as respondidas nos
  *  últimos 7 dias (histórico curto, o balão não é arquivo). */
 export async function listAiTeamQuestions(accountId: string, scopeDepartmentIds: string[]) {
@@ -302,6 +371,7 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
 
   if (q.kind === 'DOC_QUESTION') return answerDocQuestion(q, answer, userId, user?.name || null, io);
+  if (q.kind === 'REJECTION_QUESTION') return answerRejectionQuestion(q, answer, userId, user?.name || null, io);
   if (q.kind === 'EMAIL_QUESTION') {
     const dec = await interpretEmailAnswer(q.question, q.clientMessage || '', answer);
     if (dec.acao !== 'AVISAR_CLIENTE') return answerEmailQuestion(q, answer, dec.acao, dec.regra, userId, user?.name || null, io);

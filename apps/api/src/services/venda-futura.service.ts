@@ -131,3 +131,27 @@ export async function processVendaFutura(io: Io): Promise<void> {
     running = false;
   }
 }
+
+/** Card REPROVADO por motivo temporário que a equipe mandou pra Venda Futura (balão "Dúvidas da IA" → `_rejDecision`): vai pra etapa Venda Futura (em vez de Perdidos), a IA fica ligada e,
+ *  com a janela aberta, o cliente já recebe a pergunta da melhor data pra tentar de novo (janela fechada: a IA pergunta quando ele responder — o contexto diz "Venda Futura sem data"). */
+export async function rejectedToVendaFutura(p: { accountId: string; leadId: string; reasons?: string[]; io?: Io }): Promise<boolean> {
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, status: true, pipelineId: true, customFields: true, stage: { select: { name: true } } } });
+  if (!lead || lead.status !== 'OPEN') return false;
+  const vf = await prisma.stage.findFirst({ where: { pipelineId: lead.pipelineId, name: { contains: 'Venda Futura', mode: 'insensitive' } }, select: { id: true, name: true } });
+  if (!vf) { await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: '⚠️ A equipe mandou pra Venda Futura, mas este funil não tem a etapa. Mova à mão.' } }).catch(() => {}); return false; }
+  const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+  await updateLeadStage(lead.id, p.accountId, vf.id);
+  await saveCf(lead.id, (c) => { c._vendaFuturaBaseAt = new Date().toISOString(); delete c._vendaFuturaAt; delete c._rejQuestionAt; delete c._autoCloseAfterNotice; }, { aiAutoReplyActive: true });
+  const motivos = (p.reasons || []).join('; ');
+  await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${vf.name}" — reprovado por motivo temporário${motivos ? ` (${motivos})` : ''}; a equipe decidiu Venda Futura. A IA pergunta ao cliente a melhor data pra tentar de novo.` } }).catch(() => {});
+  logActivity({ accountId: p.accountId, userId: null, userName: 'Análise automática', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: 'reprovado por motivo temporário → Venda Futura' } as any);
+  const last = await prisma.message.findFirst({ where: { leadId: lead.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  if (last && Date.now() - last.createdAt.getTime() < WINDOW_MS) {
+    const saldo = /saldo devedor/i.test(motivos), minimo = /abaixo do m[ií]nimo/i.test(motivos);
+    const ex = saldo && minimo ? 'quitando o saldo devedor do imóvel ou com outro valor de imóvel' : saldo ? 'quitando o saldo devedor do imóvel' : minimo ? 'com outro valor de imóvel' : 'se a sua situação mudar';
+    const texto = `Se a situação mudar (por exemplo ${ex}), a gente consegue tentar de novo. Qual seria a melhor data pra gente tratar o seu crédito novamente? Pode ser um mês ou uma data certinha.`;
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    await sendOutboundWhatsApp({ accountId: p.accountId, leadId: lead.id, content: texto, io: (p.io || undefined) as any }).catch(() => {});
+  }
+  return true;
+}

@@ -254,6 +254,31 @@ export function bankVerdict(rows: VRow[], bank: string): 'NEG' | 'POS' | 'PENDIN
   return 'PENDING';
 }
 
+
+/** Regra que a equipe já ENSINOU (Base de Conhecimento): reprovação por este tipo de motivo temporário vai pra Venda Futura ou Perdidos? null = não há regra clara → pergunta à equipe. */
+async function learnedRejectionRule(accountId: string, leadId: string, reasons: string[]): Promise<'VENDA_FUTURA' | 'PERDIDO' | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { departmentId: true } } } });
+  const { searchKnowledge } = require('./knowledge.service') as typeof import('./knowledge.service');
+  const hits = await searchKnowledge(accountId, `reprovado ${reasons.join(' ')} Venda Futura Perdidos`, 5, lead?.pipeline?.departmentId ?? null).catch(() => []);
+  const regras = hits.filter((h) => /venda futura|perdid/i.test(h.content) && /reprov|saldo devedor|abaixo do m[ií]nimo|negativ/i.test(h.content));
+  if (!regras.length) return null;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5', max_tokens: 2000,
+      system: 'Decida pra onde vai um card reprovado pelos bancos, SÓ com base nas regras da equipe abaixo. Responda SÓ JSON: {"acao":"VENDA_FUTURA|PERDIDO|PERGUNTAR"}. Use PERGUNTAR se nenhuma regra cobre claramente este motivo (na dúvida, PERGUNTAR).',
+      messages: [{ role: 'user', content: `Motivos da reprovação: ${reasons.join('; ')}\n\nRegras da equipe:\n${regras.map((r) => `- ${r.content.slice(0, 500)}`).join('\n')}` }],
+    }),
+  }).catch(() => null);
+  if (!res?.ok) return null;
+  const d: any = await res.json().catch(() => null);
+  const m = String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/);
+  try { const j = m ? JSON.parse(m[0]) : null; return j?.acao === 'VENDA_FUTURA' || j?.acao === 'PERDIDO' ? j.acao : null; } catch { return null; }
+}
+
 /** 4) Os 3 bancos responderam NÃO (reprovou ou a regra do banco/imóvel barrou): avisa o cliente que retornou reprovado e tira o card da Pré-Análise (Reprovado → Perdidos),
  *  senão a fila acumula (Fabio 14/10). Falha técnica (extensão, dado faltando) NÃO conta: essa fica pra refazer. */
 async function closeRejected(accountId: string, io: any) {
@@ -281,8 +306,28 @@ async function closeRejected(accountId: string, io: any) {
     // aos critérios → "desqualificado". Basta um banco ter reprovado de verdade → "reprovado".
     const ultima = (b: string) => rows.filter((r) => r.bank === b && r.source !== 'AI_SIM' && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
     const desqualificado = BANKS.every((b) => ultima(b)?.status === 'FAILED');
+    // Motivo possivelmente TEMPORÁRIO (saldo devedor, imóvel abaixo do mínimo): ANTES de avisar o cliente e mover o card, pergunta à equipe no balão "Dúvidas da IA" — Venda Futura (a IA
+    // pergunta a melhor data) ou Perdidos — e aprende com a resposta (Fabio 16/10). Regra já ensinada na Base de Conhecimento decide sozinha.
+    const built0 = await buildRejectionText(l.id).catch(() => null);
+    const temporario = !!built0 && built0.reasons.some((r) => /saldo devedor|abaixo do m[ií]nimo/i.test(r));
+    let decisao: string | null = (cf._rejDecision as string) || null;
+    if (temporario && !decisao) {
+      const auto = await learnedRejectionRule(accountId, l.id, built0!.reasons).catch(() => null);
+      if (auto) {
+        decisao = auto;
+        await saveCf(l.id, { _rejDecision: auto, _rejDecisionBy: 'Base de Conhecimento' });
+        await addNote(l.id, `📚 Reprovado por motivo temporário (${built0!.reasons.join('; ')}): pela regra que a equipe me ensinou, o card vai pra ${auto === 'VENDA_FUTURA' ? 'Venda Futura' : 'Perdidos'}.`);
+      } else {
+        if (!cf._rejQuestionAt) {
+          await saveCf(l.id, { _rejQuestionAt: new Date().toISOString() });
+          const { createRejectionQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+          await createRejectionQuestion({ accountId, leadId: l.id, reasons: built0!.reasons, io }).catch((e: any) => console.error('[Análise automática] pergunta da reprovação:', e?.message));
+        }
+        continue; // o card espera na Pré-Análise até a equipe responder no balão
+      }
+    }
     const out = await sendRejectionNoticeNow({ accountId, leadId: l.id, io });
-    if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: desqualificado ? 'DESQ' : true }); continue; } // fora das 07h–21h: o aviso sai às 07:00 e o poller dos agendados fecha o card
+    if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: decisao === 'VENDA_FUTURA' ? 'VF' : desqualificado ? 'DESQ' : true }); continue; } // fora das 07h–21h: o aviso sai às 07:00 e o poller dos agendados fecha o card
     if (out.already) await addNote(l.id, `ℹ️ Aviso de negativa NÃO reenviado: ${out.error}`); // já foi avisado: segue pro fechamento do card, sem duplicar a mensagem
     if (!out.ok && !out.already) {
       await saveCf(l.id, { _autoCloseTriedAt: new Date().toISOString() });
@@ -290,6 +335,7 @@ async function closeRejected(accountId: string, io: any) {
       continue;
     }
     const built = await buildRejectionText(l.id).catch(() => null);
+    if (decisao === 'VENDA_FUTURA') { const { rejectedToVendaFutura } = require('./venda-futura.service') as typeof import('./venda-futura.service'); await rejectedToVendaFutura({ accountId, leadId: l.id, reasons: built?.reasons, io }).catch((e: any) => console.error('[Análise automática] Venda Futura:', e?.message)); continue; }
     await markRejectedAndMove({ accountId, leadId: l.id, io, disqualify: desqualificado, motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Análise automática] mover reprovado:', e?.message));
   }
 }

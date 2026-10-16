@@ -970,6 +970,11 @@ export async function processScheduledNotices(io: any): Promise<void> {
     console.log(`[Aprovação] aviso agendado de ${l.name}: ${r.ok ? 'enviado' : `não saiu (${r.error})`}`);
     if (r.ok && cf._noticeKind === 'REJECTED' && cf._autoCloseAfterNotice) {
       const built = await buildRejectionText(l.id).catch(() => null);
+      if (cf._autoCloseAfterNotice === 'VF') {
+        const { rejectedToVendaFutura } = require('./venda-futura.service') as typeof import('./venda-futura.service');
+        await rejectedToVendaFutura({ accountId: l.accountId, leadId: l.id, reasons: built?.reasons, io }).catch((e: any) => console.error('[Aprovação] Venda Futura:', e?.message));
+        return;
+      }
       await markRejectedAndMove({ accountId: l.accountId, leadId: l.id, io, disqualify: cf._autoCloseAfterNotice === 'DESQ', motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Aprovação] mover reprovado:', e?.message));
     }
     if (!r.ok) await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: r.already ? `ℹ️ Aviso agendado não reenviado: ${r.error}` : `⚠️ O aviso agendado ao cliente não saiu: ${r.error}` } }).catch(() => {});
