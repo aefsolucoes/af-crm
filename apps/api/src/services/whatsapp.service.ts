@@ -1515,6 +1515,18 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     const still = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
     if (!still?.aiAutoReplyActive || (still.customFields as any)?._autoPaused) return;
 
+    // "Já enviei os documentos" (botão do lembrete ou texto): a IA LÊ os documentos agora e pede o que falta/está errado — nunca responde só "recebi, tô conferindo" (Fabio 16/10, Celestino:
+    // clicou no botão e só tinha a frente da CNH).
+    try {
+      const { isDocsSentClaim, checkDocsComplete } = require('./docs-checker.service') as typeof import('./docs-checker.service');
+      if (isDocsSentClaim(incomingText) || isDocsSentClaim(textToAnswer)) {
+        const stg = await prisma.lead.findUnique({ where: { id: leadId }, select: { stage: { select: { name: true } } } });
+        if (/aguardando document/i.test((stg?.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) {
+          const falou = await checkDocsComplete(accountId, leadId, io, { force: true }).catch(() => false);
+          if (falou) return; // a conferência já respondeu (o que falta / problema / documentação completa)
+        }
+      }
+    } catch (e: any) { console.error('[IA] conferência por "já enviei" falhou:', e?.message); }
     const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer, images);
     if (!genResult) return;
     // Chegou outra mensagem enquanto a resposta era gerada (leva alguns

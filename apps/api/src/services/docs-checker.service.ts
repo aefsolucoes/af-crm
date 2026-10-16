@@ -259,10 +259,17 @@ ${history}`;
   return { leadName: lead.name, complete: verdict.complete === true && (autorizou || !emitirBruto.length), listaUsada: verdict.listaUsada, faltando: faltandoFinal, emitir: autorizou ? emitirBruto : [], receivedText };
 }
 
-export async function checkDocsComplete(accountId: string, leadId: string, io: Io): Promise<void> {
+/** O cliente AVISOU que já mandou os documentos (botão "Já enviei os documentos" do lembrete, ou texto equivalente)? */
+export function isDocsSentClaim(text: string): boolean {
+  const t = String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return /\b(ja\s+)?(enviei|mandei|encaminhei|anexei)\b.{0,40}\b(document|tudo|papeis|arquivos|certidoes)/.test(t) || /\bja\s+(foi|foram|esta|estao)\s+(tudo\s+)?(enviad|mandad|encaminhad)/.test(t);
+}
+
+/** `force` = o cliente disse "já enviei": confere AGORA e responde com a situação atual (o que falta / o que está com problema), mesmo que já tenha avisado o mesmo antes. Devolve true se falou com o cliente (ou concluiu a documentação). */
+export async function checkDocsComplete(accountId: string, leadId: string, io: Io, opts: { force?: boolean } = {}): Promise<boolean> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
-  if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return;
-  if ((lead.customFields as any)?._autoPaused) return; // Stop total do cliente: não confere, não move, não avisa
+  if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return false;
+  if ((lead.customFields as any)?._autoPaused) return false; // Stop total do cliente: não confere, não move, não avisa
 
   // Conferência de CONTEÚDO (Fabio 14/10): a IA LÊ cada arquivo e vê se está legível, atualizado e no nome certo (RG/CNH com frente e verso). Documento com
   // problema NÃO deixa o card avançar, mesmo que "chegou tudo": o cliente é avisado do que corrigir (uma vez por conjunto de problemas).
@@ -274,7 +281,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   // Documento em DÚVIDA (a pergunta está com a equipe no balão): não avança o card nem cobra nada até a equipe responder.
   if (review?.duvidas.length && !review.problemas.length) {
     console.log(`[Docs] ${lead.name} (${leadId}): ${review.duvidas.length} documento(s) em dúvida com a equipe — conferência pausada`);
-    return;
+    return false;
   }
 
   // Documento do imóvel em nome de OUTRA pessoa (Fabio 15/10): a IA pergunta ao cliente de quem é o imóvel (uma vez por proprietário) e o card espera a resposta; com a resposta a conferência reabre.
@@ -290,7 +297,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfd, _donoAskedFor: [...ja, ...novos.map((d) => d.dono.toUpperCase())], _donoAskedAt: new Date().toISOString(), _donoResolvedAt: null } as any } });
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏠 O imóvel está em nome de ${novos.map((d) => d.dono).join(' e ')}, que não é participante. ${sent.success ? 'Perguntei ao cliente quem é essa pessoa pra ele (precisa ser parente de 1º grau ou participante); o card espera a resposta.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte de quem é o imóvel.' : 'IA desligada: pergunte ao cliente de quem é o imóvel (precisa ser parente de 1º grau ou participante).'}` } }).catch(() => {});
     }
-    return; // card espera o dono do imóvel ser esclarecido
+    return true; // card espera o dono do imóvel ser esclarecido (a pergunta ao cliente já foi feita)
   }
   if ((lead.customFields as any)?._donoAskedAt && !(lead.customFields as any)?._donoResolvedAt) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
@@ -309,23 +316,24 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     const sig = [...review.problemas.map((p) => `${p.doc}:${p.texto.join('/')}`).sort(), `falta:${faltando.join('/')}`].join('|');
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const cf = (fresh?.customFields || {}) as Record<string, unknown>;
-    if (cf._docProblemSig !== sig) {
+    if (cf._docProblemSig !== sig || opts.force) {
       await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docProblemSig: sig } as any } });
       const texto = `${buildDocProblemsMessage(review).replace(/\n\nAssim que você reenviar, eu confiro de novo!$/, '')}${faltaTxt}\n\nAssim que você mandar, eu confiro de novo!`;
       const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA achou problema em documento: ${review.problemas.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}.${faltando.length ? ` Ainda falta: ${faltando.join('; ')}.` : ''} ${sent.success ? 'Cliente avisado do que corrigir.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: avise o cliente.'}` } }).catch(() => {});
     }
-    return;
+    return !!lead.aiAutoReplyActive;
   }
 
-  if (!verdict) return;
+  if (!verdict) return false;
   const { receivedText } = verdict;
   if (!verdict.complete) {
     console.log(`[Docs] ${lead.name} (${leadId}): ainda falta — ${verdict.faltando.join('; ') || 'sem detalhe'}`);
+    let falouFalta = false;
     if (verdict.faltando.length) {
       const resumo = verdict.faltando.join('; ');
       const cf = (lead.customFields || {}) as Record<string, unknown>;
-      if (cf._docsFaltando !== resumo) {
+      if (cf._docsFaltando !== resumo || opts.force) {
         await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docsFaltando: resumo } as any } });
         // IA ligada: cobra o que falta (uma vez por lista); desligada: quem conversa é a equipe — só nota no card.
         let cobrou = false;
@@ -334,17 +342,18 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
           const texto = `Pra fechar a documentação ainda falta:${faltaTxt.replace(/^\n\nAinda falta mandar:/, '')}\n\nPode mandar por aqui mesmo que eu confiro!`;
           const sent = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined });
           cobrou = !!sent.success;
+          falouFalta = cobrou;
         }
         await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA conferiu os documentos recebidos (lista "${verdict.listaUsada || '?'}"). Ainda falta:\n- ${verdict.faltando.join('\n- ')}\n${cobrou ? 'Cliente avisado do que falta.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: cobre o cliente.'}` } }).catch(() => {});
       }
     }
-    return;
+    return falouFalta;
   }
 
   const moved = await moveLeadToContracting(accountId, leadId, io, 'a IA conferiu que a documentação chegou completa');
   if (!moved) {
     console.warn(`[Docs] ${lead.name} (${leadId}): documentação completa, mas o funil de contratação do setor não foi encontrado`);
-    return;
+    return false;
   }
   // Com a IA desligada a equipe está conversando com o cliente — não manda
   // o aviso automático por cima dela.
@@ -382,5 +391,6 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     summary: `conferiu a documentação completa e moveu pra "${moved.stageName}" (${moved.pipelineName})`,
   });
   console.log(`[Docs] ${lead.name} (${leadId}): documentação completa → ${moved.pipelineName} / ${moved.stageName}`);
+  return true;
 }
 
