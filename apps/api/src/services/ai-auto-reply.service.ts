@@ -232,6 +232,7 @@ function ventaFuturaRules(hoje: string, retomadaAgendada: string | null, naEtapa
 - Se ele NÃO disse quando: NÃO mova ainda (moveToStage null) e na "reply" pergunte, curto e simpático, qual seria a melhor data pra gente tratar esse crédito de novo ("Sem problema! Qual seria a melhor data pra gente retomar o seu crédito? Pode ser um mês ou uma data certinha."). Quando ele responder a data, aí sim "Venda Futura" + "resumeOn". Se ele disser que não sabe, sugira uma data razoável (ex.: daqui 60 dias) e, se ele concordar, agende.
 - Card que já está em "Venda Futura" e o cliente pede outra data ou responde "ainda não é o momento" depois da nossa mensagem de retomada: pergunte/aceite a NOVA data e devolva "resumeOn" (o card continua em Venda Futura, moveToStage null).
 - Cliente que responde "quero retomar" (ou equivalente) à mensagem de retomada: "moveToStage": "Prospecção" e siga o atendimento normal (formulário primeiro).
+- Cliente JÁ APROVADO: a aprovação pode ser contratada em até 90 dias (Base de Conhecimento). Combine uma data de retomada DENTRO desse prazo (de preferência antes de acabar) e avise o cliente da validade; se ele só puder depois dos 90 dias, diga com tato que a análise terá de ser refeita.
 - "resumeOn" é null em todos os outros casos.`;
 }
 
