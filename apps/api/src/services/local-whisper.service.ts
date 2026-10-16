@@ -50,6 +50,18 @@ async function decodeOggOpus(buffer: Buffer): Promise<Float32Array | null> {
   } finally { dec.free(); }
 }
 
+/** Memória livre do container (cgroup; sem cgroup, a do sistema) em MB. O modelo + onnxruntime pedem ~1 GB de folga: sem isso NÃO carrega (estourar a memória derrubaria a API toda). */
+function memoriaLivreMB(): number | null {
+  try {
+    const fs = require('fs') as typeof import('fs');
+    const lim = fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim();
+    if (lim === 'max') return Math.round((require('os') as typeof import('os')).freemem() / 1048576);
+    const usado = Number(fs.readFileSync('/sys/fs/cgroup/memory.current', 'utf8'));
+    return Math.round((Number(lim) - usado) / 1048576);
+  } catch { return Math.round((require('os') as typeof import('os')).freemem() / 1048576); }
+}
+let avisouMemoria = false;
+
 /** Só liga com LOCAL_WHISPER=on (variável do Railway): o modelo ocupa memória do servidor — liga depois de medir. */
 export function localWhisperAvailable(): boolean {
   return process.env.LOCAL_WHISPER === 'on';
@@ -65,11 +77,15 @@ export function transcribeLocally(buffer: Buffer, mimeType: string): Promise<str
       const pcm = await decodeOggOpus(buffer);
       if (!pcm || pcm.length < 16000 * 0.4) return null; // vazio ou < 0,4 s
       if (pcm.length / 16000 > MAX_SECONDS) return null;
+      if (!pipePromise) { // 1ª carga: confere a folga de memória antes
+        const livre = memoriaLivreMB();
+        if (livre !== null && livre < 1100) { if (!avisouMemoria) { avisouMemoria = true; console.warn(`[Transcrição local] memória livre ${livre} MB — não carrego o modelo (precisa de ~1100 MB de folga)`); } return null; }
+      }
       const pipe = await getPipeline();
       const run = pipe(pcm, { language: 'portuguese', task: 'transcribe', chunk_length_s: 30 });
       const out: any = await Promise.race([run, new Promise((_, rej) => setTimeout(() => rej(new Error('demorou demais')), TIMEOUT_MS))]);
       const text = String(Array.isArray(out) ? out.map((o: any) => o.text).join(' ') : out?.text || '').replace(/\s+/g, ' ').trim();
-      console.log(`[Transcrição local] ${Math.round(pcm.length / 16000)}s de áudio em ${Math.round((Date.now() - t0) / 1000)}s: ${text.length} caracteres`);
+      console.log(`[Transcrição local] ${Math.round(pcm.length / 16000)}s de áudio em ${Math.round((Date.now() - t0) / 1000)}s: ${text.length} caracteres (memória livre ${memoriaLivreMB() ?? 'n/d'} MB)`);
       return text || null;
     } catch (e: any) {
       console.error('[Transcrição local] erro:', e?.message);

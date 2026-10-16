@@ -43,6 +43,7 @@ import { checkInactivityAutomations, processDeferredAutomations } from './servic
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { processRemarketing } from './services/remarketing.service';
 import { processVendaFutura } from './services/venda-futura.service';
+import { backfillVoiceTranscripts } from './services/speech-to-text.service';
 import { processApprovalNotices, processApprovalReminders, processScheduledNotices } from './services/approval-notice.service';
 import { processCreditAutomation } from './services/credit-auto.service';
 import { setWhatsAppAlertIo, checkWhatsAppHealth } from './services/whatsapp-alert.service';
@@ -286,6 +287,11 @@ httpServer.listen(PORT, () => {
       processRemarketing(io).catch((err) => console.error('[Remarketing] Poll:', err?.message));
     }, 60 * 1000);
   }, 2 * 60 * 1000);
+
+  // Áudios de cliente que ficaram sem transcrição (ElevenLabs sem crédito): reprocessa 2 por rodada, a cada 2 min.
+  setTimeout(() => {
+    setInterval(() => { backfillVoiceTranscripts().catch((err) => console.error('[Transcrição] Poll:', err?.message)); }, 2 * 60 * 1000);
+  }, 4 * 60 * 1000);
 
   // Venda Futura com data (Fabio 16/10): manda a retomada no dia combinado com o cliente e depois de 30 em 30 dias, até ele responder.
   setTimeout(() => {

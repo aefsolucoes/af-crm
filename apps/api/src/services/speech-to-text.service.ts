@@ -52,3 +52,43 @@ async function transcribeElevenLabs(buffer: Buffer, mimeType: string): Promise<s
 export function voiceNoteForAi(content: string): string {
   return content.replace(/^📎 audio-[^\s]+ — 🎤 /, '(áudio) ');
 }
+
+// ─── Áudios que ficaram sem texto (crédito do ElevenLabs acabou, 16/10): relê e transcreve, um por vez, só dos últimos 3 dias ───
+const tentados = new Set<string>();
+let reprocessando = false;
+export async function backfillVoiceTranscripts(): Promise<void> {
+  if (reprocessando) return;
+  reprocessando = true;
+  try {
+    const { PrismaClient } = require('@prisma/client') as typeof import('@prisma/client');
+    const prisma = (backfillPrisma ||= new PrismaClient());
+    const msgs = await prisma.message.findMany({
+      where: { direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) }, content: { startsWith: '📎 audio-' }, NOT: { content: { contains: ' — 🎤 ' } } },
+      orderBy: { createdAt: 'desc' }, take: 30,
+      select: { id: true, content: true, lead: { select: { accountId: true } }, attachments: { select: { mimeType: true, driveFileId: true, data: true } } },
+    });
+    let feitos = 0;
+    for (const m of msgs) {
+      if (feitos >= 2) break; // poucos por rodada: o servidor continua atendendo
+      if (tentados.has(m.id)) continue;
+      tentados.add(m.id);
+      const att = m.attachments[0];
+      if (!att || !/ogg|opus|audio/i.test(att.mimeType || '')) continue;
+      let buf: Buffer | null = att.data && att.data.length ? Buffer.from(att.data) : null;
+      if (!buf && att.driveFileId) {
+        try { const { downloadDriveFile } = require('./google.service') as typeof import('./google.service'); buf = Buffer.from(await downloadDriveFile(m.lead.accountId, att.driveFileId, att.mimeType) as any); } catch { buf = null; }
+      }
+      if (!buf?.length) continue;
+      const txt = await transcribeVoiceNote(buf, att.mimeType);
+      if (!txt) continue;
+      await prisma.message.update({ where: { id: m.id }, data: { content: `${m.content.trim()} — 🎤 ${txt}` } });
+      feitos++;
+      console.log(`[Transcrição] áudio antigo transcrito (${txt.length} caracteres)`);
+    }
+  } catch (e: any) {
+    console.error('[Transcrição] reprocessar áudios:', e?.message);
+  } finally {
+    reprocessando = false;
+  }
+}
+let backfillPrisma: import('@prisma/client').PrismaClient | null = null;
