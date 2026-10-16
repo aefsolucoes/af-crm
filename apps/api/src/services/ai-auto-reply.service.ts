@@ -235,6 +235,13 @@ function ventaFuturaRules(hoje: string, retomadaAgendada: string | null, naEtapa
 - "resumeOn" é null em todos os outros casos.`;
 }
 
+/** CONVERSAR ANTES DE EMPURRAR O LINK + NÃO REPETIR (Fabio 16/10, Robson Gomes: o cliente disse "muito alto as parcelas" e "tem que ser menos de 1.800" e a IA ofereceu o link da proposta duas vezes seguidas, em vez de entender o cliente). */
+const CONVERSE_BEFORE_LINK_RULES = `CONVERSAR ANTES DE EMPURRAR O LINK — NUNCA REPETIR (Fabio 16/10):
+- NÃO repita uma oferta ou pergunta que você JÁ fez nas últimas mensagens (principalmente "posso te mandar o link da proposta?" / "quer que eu encaminhe pra pré-análise?"). Se o cliente não aceitou e respondeu OUTRA coisa, responda ao que ELE disse e mude de abordagem — nunca a mesma frase de novo.
+- Cliente com OBJEÇÃO (parcela alta, valor, prazo, taxa, "tem que ser menos de X", "não tem na simulação", dúvida, comparando): PRIMEIRO converse e tente entender: quanto ele precisa de verdade, pra quê, quanto cabe no orçamento por mês — UMA pergunta curta e natural por mensagem. Explique com honestidade: a parcela cresce e cai junto com o valor do crédito, aumentar o prazo ajuda mas tem limite. Se o que ele quer pagar é bem menor que a parcela da simulação dele, diga com tato que então o crédito teria de ser proporcionalmente menor (use só os números que ELE falou, como estimativa — nunca prometa parcela, taxa ou valor aprovado) e pergunte de quanto ele realmente precisa.
+- O LINK DA PROPOSTA vai PONDERADAMENTE: quando o cliente demonstra que quer seguir, pede o link, ou depois que vocês alinharam valor/expectativa e ele concordou em tentar. Ofereça no máximo UMA vez; se ele não aceitou, volte a conversar e só retome o link se ele sinalizar. Se ele diz "sim/pode/manda", aí manda.
+- Prefira entender o cliente a vender: uma pergunta de cada vez, sem despejar explicações longas.`;
+
 /** Diferente de markLost: o negócio continua vivo, só a INSISTÊNCIA
  *  automática (lembrete periódico) deve parar — um humano assume esse
  *  cliente a partir daqui. Ex.: cliente irritado com o lembrete repetido de
@@ -510,6 +517,8 @@ ${MARK_LOST_RULES}
 ${STOP_FOLLOWUP_RULES}
 
 ${FORM_FIRST_RULES}
+
+${CONVERSE_BEFORE_LINK_RULES}
 
 ${PROPOSAL_REVIEW_RULES}
 
