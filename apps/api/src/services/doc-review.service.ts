@@ -32,6 +32,10 @@ export interface DocReview {
   cartorio?: string;
   /** Só MATRICULA/CERTIDAO DE ONUS: alienação fiduciária/hipoteca/penhora VIGENTE (sem cancelamento) que a leitura achou — ex.: "ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024)". Vazio = nada vigente. */
   gravame?: string;
+  /** MATRICULA/CERTIDAO DE ONUS: a matrícula foi ENCERRADA (averbação "Encerramento de matrícula": o imóvel foi desmembrado/renumerado e ganhou matrícula(s) nova(s)). A certidão NÃO serve — precisa de uma nova com o número novo. */
+  encerrada?: { quando?: string; novas: string[] };
+  /** MATRICULA: números ANTERIORES da mesma matrícula (renumeração: "renumerada de Matrícula nº 159") — pra conferir com o número que o cliente mandou. */
+  anteriores?: string[];
   /** DUVIDA: a pergunta pra equipe (a IA não tem segurança se o documento serve). */
   duvida?: string;
   /** Depois da resposta da equipe: regra geral que vale pra outros clientes (vazio = foi só desse caso). */
@@ -40,7 +44,7 @@ export interface DocReview {
 
 const SYSTEM = `Você é a conferente de documentos de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional). Olhe o ARQUIVO que o cliente mandou pelo WhatsApp e diga se ele está CORRETO para seguir ao banco. Responda SOMENTE com JSON:
 {"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS, MATRICULA, CND IPTU, CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","ressalva":"<SÓ MATRICULA ou CERTIDAO DE ONUS aceita mesmo assim: CONSULTA (tem a marca \"para simples consulta\"/não vale como certidão) ou ANTIGA (emissão há mais de 30 dias); senão vazio>",
-"matricula":"<SÓ documento do imóvel: número da matrícula como aparece (ex.: 36.267); senão vazio>","cartorio":"<SÓ documento do imóvel: cartório de registro de imóveis (nome/cidade); senão vazio>",
+"matricula":"<SÓ documento do imóvel: número da matrícula como aparece (ex.: 36.267); senão vazio>","matriculasAnteriores":"<SÓ MATRICULA: se houver averbação de RENUMERAÇÃO, o(s) número(s) anterior(es) da matrícula separados por ponto e vírgula (ex.: 159); senão vazio>","matriculaEncerrada":<true SÓ se MATRICULA/CERTIDAO DE ONUS traz averbação de ENCERRAMENTO DA MATRÍCULA (sem reabertura); senão false>","encerradaEm":"<data do encerramento DD/MM/AAAA, ou vazio>","matriculasNovas":"<se encerrada: as matrículas NOVAS que a averbação diz que foram abertas, separadas por ponto e vírgula, com a descrição, ex.: 438.308 (Apartamento 203); 438.309 (Vaga de garagem); senão vazio>","cartorio":"<SÓ documento do imóvel: cartório de registro de imóveis (nome/cidade); senão vazio>",
 "dono":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, escritura): nome do proprietário ATUAL; senão vazio>","donoSituacao":"<SÓ documento do imóvel em Home Equity: PARTICIPANTE | OUTRO_SEM_RELACAO | PARENTE_1GRAU; senão vazio>",
 "gravame":"<SÓ MATRICULA ou CERTIDAO DE ONUS: se constar alienação fiduciária, hipoteca ou penhora ainda VIGENTE (sem averbação de cancelamento/baixa), escreva curto: TIPO - CREDOR - valor original (data), ex.: ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024); senão vazio>",
 "observacao":"<detalhe INTERNO útil pra equipe (ex.: constam ônus ou alienação fiduciária na matrícula, validade do documento); senão vazio>","duvida":"<SÓ se resultado DUVIDA: a pergunta objetiva pra equipe, 1 a 2 frases, dizendo o que você viu e o que precisa saber; senão vazio>","regra":"<SÓ quando a equipe já respondeu: a regra geral, em 1 frase, que vale pra OUTROS clientes; se foi só sobre este caso, vazio>"}
@@ -49,6 +53,7 @@ Critérios — aponte PROBLEMA só quando for real; documento legível e correto
 - Legibilidade: foto desfocada, escura, com reflexo, cortada ou com dado importante ilegível → PROBLEMA ("manda uma foto mais nítida/inteira").
 - RG/CNH: NÃO dê problema por mostrar só um lado (o cliente pode mandar frente e verso em fotos separadas): só preencha "lado". CNH digital (print do app) conta como "ambos". CNH vencida → PROBLEMA.
 - Atualização (use a data de hoje): comprovante de residência com mais de 90 dias; CND de IPTU vencida; contracheque que não seja dos últimos 3 meses → PROBLEMA, dizendo o prazo exigido. Para a A&F, certidão de ônus reais e matrícula (inteiro teor) são o MESMO tipo de documento: número da matrícula, metragens e todos os REGISTROS (R-) e AVERBAÇÕES (AV-) — um histórico completo do imóvel. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA NÃO têm prazo: a A&F aceita antiga/vencida, aceita a versão "PARA SIMPLES CONSULTA, NÃO VALE COMO CERTIDÃO" (consulta do ONR) e aceita incompleta ou com páginas faltando (Fabio 15/10). NUNCA marque PROBLEMA nem peça ao cliente pra tirar outra no cartório por causa de data, marca de consulta ou páginas: aceite, preencha "ressalva" (CONSULTA ou ANTIGA) quando for o caso — o banco decide e o cliente recebe uma observação — e anote detalhes em "observacao" (a A&F emite a certidão pelo endereço ou número da matrícula). A data que vale na matrícula/certidão é a de EMISSÃO da certidão (carimbo/linha "certidão emitida em…", em geral no topo ou no fim), NÃO as datas dos registros e averbações dentro dela (um registro de 2011 não torna a certidão antiga). Se a data de emissão/validade não aparecer mas o documento parece inteiro e legível, é OK: anote "sem data de emissão visível" na observação.
+- MATRÍCULA ENCERRADA (Fabio 16/10): se a MATRICULA/CERTIDAO DE ONUS tem averbação de "ENCERRAMENTO DE MATRÍCULA" (imóvel desmembrado/renumerado: "foram ABERTAS as matrículas nº …"), a certidão NÃO serve pro banco — marque "matriculaEncerrada": true, preencha "encerradaEm" e "matriculasNovas" e dê resultado PROBLEMA com o texto: "a matrícula nº X foi encerrada em DD/MM; o imóvel agora tem a matrícula nº Y — precisa da certidão da matrícula nova". Renumeração ("Av. … RENUMERAÇÃO", só muda o número) NÃO é encerramento.
 - Titular: compare com os participantes do card. RG/CNH/CPF/certidão/documento de renda em nome de OUTRA pessoa → PROBLEMA ("está no nome de X; o participante é Y"). Comprovante de residência em nome de parente/outra pessoa NÃO é problema por si só. DOCUMENTOS DO IMÓVEL (matrícula, ônus, IPTU, escritura): olhe o PROPRIETÁRIO ATUAL (o último registro de propriedade, não os antigos) e preencha "dono". Em Home Equity ele precisa ser um dos participantes do card OU parente de 1º grau deles (pai, mãe, filho/a; cônjuge também vale): participante → donoSituacao PARTICIPANTE (resultado OK). Outra pessoa e a "CONVERSA RECENTE" (se vier) NÃO explica quem ela é → donoSituacao OUTRO_SEM_RELACAO e resultado OK (o documento em si está certo; a conferência vai perguntar ao cliente de quem é o imóvel — não chute parentesco por sobrenome). Se a CONVERSA RECENTE traz o cliente explicando o vínculo: pai/mãe/filho/filha/cônjuge → PARENTE_1GRAU (OK); qualquer outro vínculo (irmão, tio, amigo, empresa, ex-cônjuge…) ou resposta confusa → resultado DUVIDA, com a pergunta pra equipe citando o que o cliente disse. No Financiamento Habitacional o imóvel é do VENDEDOR e isso é normal (deixe donoSituacao vazio; não é problema nem dúvida).
 - CAPA IPTU (Home Equity: capa do IPTU/carnê com as metragens e a inscrição imobiliária): precisa mostrar as METRAGENS (área do terreno/construída) e a inscrição; se a foto/arquivo não mostrar as metragens → PROBLEMA ("manda a capa do IPTU em que apareçam as metragens"). Não exija CND de IPTU no Home Equity (a lista agora pede a capa e a inscrição; a A&F emite a CND).
 - ESCRITURA PÚBLICA de compra e venda (Home Equity): é válida como documento do imóvel — resultado OK; leia nela o número da matrícula e o cartório ("matricula"/"cartorio") e o proprietário. CONTRATO DE COMPRA E VENDA particular ("de gaveta", sem registro em cartório) ou documento do imóvel que você não sabe se serve: resultado DUVIDA, pergunta pra equipe analisar. Nenhum dos dois substitui a certidão de ônus/matrícula; só ajudam a emiti-la.
@@ -117,8 +122,16 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     const ressalva = j.ressalva === 'CONSULTA' || j.ressalva === 'ANTIGA' ? j.ressalva : undefined;
     const donoSituacao = j.donoSituacao === 'PARTICIPANTE' || j.donoSituacao === 'OUTRO_SEM_RELACAO' || j.donoSituacao === 'PARENTE_1GRAU' ? j.donoSituacao : undefined;
     const dono = cleanText(j.dono, 80);
+    const ehMat = /^(MATRICULA|CERTIDAO DE ONUS)/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+    const novas = ehMat && j.matriculaEncerrada === true ? String(j.matriculasNovas || '').split(/\s*;\s*/).map((x) => cleanText(x, 80)).filter(Boolean).slice(0, 6) : [];
+    const anteriores = ehMat ? String(j.matriculasAnteriores || '').split(/\s*;\s*/).map((x) => cleanText(x, 40)).filter(Boolean).slice(0, 4) : [];
+    const encerrada = ehMat && j.matriculaEncerrada === true ? { quando: cleanText(j.encerradaEm, 12) || undefined, novas } : undefined;
     const gravame = /^(MATRICULA|CERTIDAO DE ONUS)/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '')) ? cleanText(j.gravame, 160) : '';
-    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado, problemas: resultado === 'PROBLEMA' ? problemas : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(matricula ? { matricula } : {}), ...(cartorio ? { cartorio } : {}), ...(ressalva ? { ressalva } : {}), ...(donoSituacao ? { donoSituacao, ...(dono ? { dono } : {}) } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
+    const resultadoFinal = encerrada ? 'PROBLEMA' : resultado;
+    const problemasFinal = encerrada
+      ? [`a matrícula${matricula ? ` nº ${matricula}` : ''} foi ENCERRADA${encerrada.quando ? ` em ${encerrada.quando}` : ''}${novas.length ? `; o imóvel agora tem ${novas.length > 1 ? 'as matrículas' : 'a matrícula'} ${novas.join(' e ')}` : ''} — precisa da certidão da matrícula nova`, ...problemas.filter((p: string) => !/encerr/i.test(p))].slice(0, 4)
+      : problemas;
+    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado: resultadoFinal, ...(encerrada ? { encerrada } : {}), ...(anteriores.length ? { anteriores } : {}), problemas: resultadoFinal === 'PROBLEMA' ? problemasFinal : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(matricula ? { matricula } : {}), ...(cartorio ? { cartorio } : {}), ...(ressalva ? { ressalva } : {}), ...(donoSituacao ? { donoSituacao, ...(dono ? { dono } : {}) } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
   } catch { return undefined; }
 }
 
@@ -161,7 +174,7 @@ export async function resolveDocDoubt(accountId: string, leadId: string, attachm
 
 export interface ReviewSummary {
   /** Revisões novas desta rodada (pra nota no card). */
-  novas: { arquivo: string; r: DocReview }[];
+  novas: { arquivo: string; r: DocReview; attId?: string }[];
   /** Problemas que valem agora (a revisão MAIS RECENTE de cada tipo+titular; frente/verso de RG/CNH somados). */
   problemas: { doc: string; texto: string[] }[];
   /** Documentos em DÚVIDA (a IA levou a pergunta pra equipe, no balão): seguram o card até a equipe responder. */
@@ -208,7 +221,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     const r = await reviewAttachment(accountId, a, context, { learned });
     if (!r) continue;
     cache[a.id] = r;
-    novas.push({ arquivo: a.fileName || a.id, r });
+    novas.push({ arquivo: a.fileName || a.id, r, attId: a.id });
     const tipoLido = r.tipo.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]/g, '').trim().toUpperCase();
     if (tipoLido && r.resultado !== 'NAO_DOCUMENTO' && isPropertyDocType(tipoLido) && !isPropertyDocType(info[a.id]!.type)) infoFix[a.id] = `${tipoLido}|`;
     if (r.resultado === 'DUVIDA') {
@@ -223,7 +236,27 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     // Número da matrícula e cartório lidos no documento vão pro card (se ainda não estiverem preenchidos) — é o que a A&F precisa pra emitir a certidão.
     const mat = novas.map((n) => n.r).find((r) => r.matricula);
     const matCampos = mat && !String(freshCf.numero_matricula || '').trim() ? { numero_matricula: mat.matricula, ...(mat.cartorio && !String(freshCf.cartorio_registro || '').trim() ? { cartorio_registro: mat.cartorio } : {}) } : {};
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshCf, ...matCampos, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
+    // MATRÍCULA ENCERRADA (16/10, Pedro: a certidão do cliente era da matrícula 383.297, encerrada na véspera; o apartamento ganhou a 438.308): marca no card pra IA e a conferência
+    // saberem que a certidão NÃO vale e que a A&F precisa emitir a da matrícula nova — antes de pedir vistoria.
+    const enc = novas.map((n) => n.r).find((r) => r.encerrada);
+    let marcador: Record<string, unknown> = {};
+    if (enc?.encerrada && !freshCf._matriculaEncerrada) {
+      marcador = { _matriculaEncerrada: { antiga: enc.matricula || '', quando: enc.encerrada.quando || '', novas: enc.encerrada.novas, at: new Date().toISOString() } };
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏛️ MATRÍCULA ENCERRADA: a certidão que o cliente enviou é da matrícula${enc.matricula ? ` nº ${enc.matricula}` : ''}, encerrada${enc.encerrada.quando ? ` em ${enc.encerrada.quando}` : ''}${enc.encerrada.novas.length ? `; o imóvel agora tem ${enc.encerrada.novas.join('; ')}` : ''}. Essa certidão NÃO serve: a A&F precisa emitir a certidão da matrícula NOVA (ONR) antes de solicitar a vistoria.` } }).catch(() => {});
+    }
+    // CONFERE O NÚMERO (Fabio 16/10): a matrícula/certidão lida tem que bater com a que o CLIENTE mandou (ou ser a mesma renumerada). Se não bate, o erro pode ser NOSSO (pedimos o número errado):
+    // NÃO avisa o cliente — leva a pergunta pra equipe.
+    const soDig = (x: string) => String(x || '').replace(/\D/g, '');
+    const jaTinha = soDig(String(freshCf.numero_matricula || ''));
+    const lida = novas.find((n) => n.r.matricula && n.r.tipo.startsWith('MATRIC'));
+    if (jaTinha && lida && lida.attId) {
+      const numeros = [lida.r.matricula!, ...(lida.r.anteriores || []), ...((lida.r.encerrada?.novas || []).map((x) => x.split(' ')[0]))].map(soDig).filter(Boolean);
+      if (!numeros.includes(jaTinha)) {
+        const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+        await createDocQuestion({ accountId, leadId, attachmentId: lida.attId || '', fileName: lida.arquivo || 'matrícula', docType: 'MATRÍCULA', question: `O número desta matrícula (${lida.r.matricula}${(lida.r.anteriores || []).length ? `, antiga ${(lida.r.anteriores || []).join('/')}` : ''}) NÃO bate com o que o cliente mandou (${freshCf.numero_matricula}). Pode ter sido erro nosso ao pedir a certidão: confira qual é o número certo. Não avisei o cliente.` }).catch(() => {});
+      }
+    }
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshCf, ...matCampos, ...marcador, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
   }
 
   // Situação atual: a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some); RG/CNH somam os lados.
@@ -305,7 +338,9 @@ export async function aiDocsContext(leadId: string): Promise<string> {
   const linhas = [...latest.values()].map((r) => `- ${docLabel(r)}: ${r.resultado === 'OK' ? 'OK' : r.resultado === 'DUVIDA' ? 'EM ANÁLISE PELA EQUIPE (não diga que está certo nem errado; diga que a equipe está conferindo e retorna)' : `PROBLEMA — ${r.problemas.join('; ')}`}${r.emissao ? ` (emissão ${r.emissao})` : ''}${r.lado ? ` [${r.lado}]` : ''}`);
   const falta = cf._docsFaltando ? `\nAinda falta (lista do banco): ${cf._docsFaltando}` : '';
   const recusada = (await bancoRecusouCertidao(leadId).catch(() => false)) ? '\nO BANCO NÃO ACEITOU a certidão de ônus/matrícula que o cliente enviou (muito antiga ou só consulta): avise o cliente e ofereça emitir uma nova pelo ONR (custo de R$ 40 a R$ 100, só com o OK dele).' : '';
-  return `DOCUMENTOS DESTE CLIENTE (a IA LEU os arquivos que ele mandou — frente/verso, legibilidade, validade e titular):\n${linhas.join('\n')}${falta}${recusada}`;
+  const me = cf._matriculaEncerrada as { antiga?: string; quando?: string; novas?: string[] } | undefined;
+  const encerrada = me ? `\nMATRÍCULA ENCERRADA: a certidão que o cliente mandou é da matrícula${me.antiga ? ` nº ${me.antiga}` : ''}, que foi ENCERRADA${me.quando ? ` em ${me.quando}` : ''} — o imóvel agora tem ${(me.novas || []).join('; ') || 'matrícula nova'}. Essa certidão NÃO serve. A A&F vai EMITIR a certidão da matrícula nova (por isso a vistoria só depois). Se o cliente perguntar, explique isso com calma; NÃO peça que ele tire outra no cartório e NÃO diga que a vistoria já foi solicitada com essa matrícula.` : '';
+  return `DOCUMENTOS DESTE CLIENTE (a IA LEU os arquivos que ele mandou — frente/verso, legibilidade, validade e titular):\n${linhas.join('\n')}${falta}${recusada}${encerrada}`;
 }
 
 export const DOCS_REVIEW_RULES = `DOCUMENTOS — quando o bloco "DOCUMENTOS DESTE CLIENTE" aparecer abaixo, ele traz o que a IA leu dos arquivos que o cliente mandou. Use SÓ ele pra dizer se um documento está certo ou o que falta corrigir ("tá certo?", "faltou alguma coisa?"): nunca diga que um documento está OK se ele não está no bloco como OK, e nunca invente defeito. Se o cliente perguntar de um documento que NÃO está no bloco, diga que ainda não chegou/ainda está sendo conferido. Quando houver PROBLEMA, peça só o ajuste que o bloco descreve, em 1 frase curta. A conferência automática já avisa o cliente do que precisa corrigir quando ele manda os arquivos — não repita a mesma cobrança se ela já está na conversa. NUNCA enumere os documentos que já chegaram ("recebi X e Y"): se falar de documentos, cite só o que FALTA ou o que está com PROBLEMA (Fabio 15/10).`;
