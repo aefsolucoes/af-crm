@@ -474,6 +474,66 @@ async function emailInterSemProposta(accountId: string) {
   }
 }
 
+const CREDITAS_SUPORTE_EMAIL = 'jonatas.carmona@creditas.com'; // Jonatas, nosso suporte na Creditas (Fabio 15/10)
+const CREDITAS_ESPERA_MS = 24 * 3_600_000;
+
+/** Quando a Creditas demora mais de 24 h pra dar a aprovação REAL (as condições: valor, prazo, parcela — pré-qualificação não conta; Fabio 15/10), o CRM manda UM e-mail ao Jonatas,
+ *  suporte da Creditas, perguntando da proposta (da conta do Fabio, cc Andreia). 1 por card (`_creditasSuporteAt`), 08h–20h, máx. 5 por dia; nota + push. Não manda se a Creditas
+ *  está esperando a Autorização SCR Bacen do cliente (aí a pendência é nossa, não deles) nem se o card está pausado/fechado. */
+export function creditasPrecisaDeSuporte(cf: Cf, rows: { bank: string; kind: string; status: string; createdAt: Date; finishedAt?: Date | null; dryRun?: boolean }[], now = Date.now()): { desde: Date } | null {
+  if (cf._autoPaused || cf._creditasSuporteAt) return null;
+  const cre = rows.filter((r) => r.bank === 'CREDITAS' && !r.dryRun);
+  if (cre.some((r) => ['APPROVED', 'CONDITIONAL'].includes(r.status))) return null; // já tem aprovação real
+  const enviados = cre.filter((r) => r.kind === 'RUN' && r.status === 'SENT');
+  if (!enviados.length) return null;
+  const primeiro = enviados.reduce((a, b) => (a.createdAt < b.createdAt ? a : b));
+  // Reprovada depois do envio = resposta dada, nada a perguntar.
+  if (cre.some((r) => r.status === 'REJECTED' && r.createdAt >= primeiro.createdAt)) return null;
+  const scr = cf._scrCreditas as { status?: string; sentAt?: string } | undefined;
+  if (scr && ['PENDING', 'ASKED', 'SENDING'].includes(String(scr.status))) return null; // esperando a autorização do cliente: pendência nossa
+  const base = scr?.status === 'SENT' && scr.sentAt ? Math.max(primeiro.createdAt.getTime(), new Date(scr.sentAt).getTime()) : primeiro.createdAt.getTime();
+  return now - base >= CREDITAS_ESPERA_MS ? { desde: new Date(base) } : null;
+}
+
+async function emailCreditasSuporte(accountId: string) {
+  const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
+  if (hora < 8 || hora >= 20) return;
+  const leads = await prisma.lead.findMany({
+    where: { accountId, status: 'OPEN', archived: false, isGroup: false, OR: [{ stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, { stage: { name: { startsWith: 'Aprovado Pr', mode: 'insensitive' } } }], creditAnalyses: { some: { bank: 'CREDITAS', kind: 'RUN', status: 'SENT', dryRun: false, createdAt: { lt: new Date(Date.now() - CREDITAS_ESPERA_MS) } } } }, // só quem ainda espera aprovação (Pré-Análise); quem já foi pra documentação não precisa
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { bank: 'CREDITAS', dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, createdAt: true, finishedAt: true, proposalNumber: true, holderName: true, holderCpf: true } } },
+    take: 40,
+  });
+  for (const lead of leads) {
+    const cf = (lead.customFields || {}) as Cf;
+    const precisa = creditasPrecisaDeSuporte(cf, lead.creditAnalyses);
+    if (!precisa) continue;
+    const hoje = await prisma.note.count({ where: { content: { startsWith: '📧 E-mail enviado ao Jonatas' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } } });
+    if (hoje >= 5) return; // freio: no máximo 5 e-mails por dia
+    const acc = await prisma.emailAccount.findFirst({ where: { accountId, address: { startsWith: 'fabio@', mode: 'insensitive' } } });
+    if (!acc) { console.warn('[Creditas suporte] conta de e-mail do Fabio não encontrada'); return; }
+    const sent = lead.creditAnalyses.filter((r) => r.kind === 'RUN' && r.status === 'SENT').pop()!;
+    const quem = sent.holderName || String(cf.participante_1 || lead.name);
+    const cpfRaw = String(sent.holderCpf || cf.cpf_1 || '').replace(/\D/g, '');
+    const cpf = cpfRaw.length === 11 ? `${cpfRaw.slice(0, 3)}.${cpfRaw.slice(3, 6)}.${cpfRaw.slice(6, 9)}-${cpfRaw.slice(9)}` : '';
+    const numero = [...lead.creditAnalyses].reverse().find((r) => r.proposalNumber)?.proposalNumber || (cf._scrCreditas as any)?.creditasId || '';
+    const quando = precisa.desde.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+    const horas = Math.round((Date.now() - precisa.desde.getTime()) / 3_600_000);
+    const body = `Olá, Jonatas, tudo bem?\n\nPoderia me ajudar a verificar a aprovação do cliente ${quem.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity?${numero ? ` ID/proposta: ${numero}.` : ''}\n\nEnviamos a proposta pela plataforma da Creditas em ${quando.replace(', ', ' às ')} e, há mais de ${horas} horas, ela segue sem as condições de aprovação (valor, prazo e parcela) — só consta a pré-qualificação.\n\nSe faltar algum documento, a Autorização SCR Bacen ou qualquer pendência da nossa parte, me avise que resolvo na hora.\n\nObrigado!`;
+    try {
+      const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+      await sendEmailFrom({ acc, userId: acc.userId, to: [CREDITAS_SUPORTE_EMAIL], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${quem.toUpperCase()} - aprovação Home Equity pendente na Creditas`, body, leadId: lead.id, io: null } as any);
+      await saveCf(lead.id, { _creditasSuporteAt: new Date().toISOString() });
+      await addNote(lead.id, `📧 E-mail enviado ao Jonatas (suporte Creditas, ${CREDITAS_SUPORTE_EMAIL}, cc Andreia) automaticamente: a Creditas está há mais de ${horas} h sem dar a aprovação real (condições). Perguntei da proposta de ${quem}.`);
+      const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+      sendPushToAccount(accountId, { title: lead.name, body: 'Creditas há +24 h sem aprovação — e-mail enviado ao Jonatas (suporte)', leadId: lead.id }).catch(() => {});
+      console.log(`[Creditas suporte] ${lead.name}: e-mail enviado ao Jonatas`);
+    } catch (e: any) {
+      await saveCf(lead.id, { _creditasSuporteAt: new Date().toISOString() }); // não repete em laço
+      await addNote(lead.id, `⚠️ A Creditas está há mais de ${horas} h sem aprovação: NÃO consegui enviar o e-mail ao Jonatas (${e?.message || e}). Mande à mão para ${CREDITAS_SUPORTE_EMAIL}.`);
+    }
+  }
+}
+
 /** Aviso ANTECIPADO (Fabio 14/10): análise demorando (Creditas/Inter levam horas) e a janela de 24 h do WhatsApp perto de fechar → o cliente recebe a aprovação que já saiu (e que
  *  seguimos esperando outros bancos pra tentar taxa menor) ou o "análise em andamento". Uma vez por janela; as regras de horário/janela/dedupe ficam em sendEarlyStatusNotice. */
 async function earlyStatusNotices(accountId: string, io: any) {
@@ -513,6 +573,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await ackPendingProposals(s.accountId, io).catch((e) => console.error('[Análise automática] confirmação da proposta:', e?.message));
       await flagInterSemNumero(s.accountId).catch((e) => console.error('[Análise automática] Inter sem número:', e?.message));
       await emailInterSemProposta(s.accountId).catch((e) => console.error('[Análise automática] e-mail Vania:', e?.message));
+      await emailCreditasSuporte(s.accountId).catch((e) => console.error('[Análise automática] e-mail Creditas suporte:', e?.message));
       await earlyStatusNotices(s.accountId, io).catch((e) => console.error('[Análise automática] aviso antecipado:', e?.message));
       { const { processDocsChecks } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsChecks(s.accountId, io).catch((e: any) => console.error('[Docs]', e?.message)); }
       { const { processDocsFollowUps } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsFollowUps(s.accountId, io).catch((e: any) => console.error('[Docs] cobrança:', e?.message)); }

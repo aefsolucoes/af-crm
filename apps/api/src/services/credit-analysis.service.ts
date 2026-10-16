@@ -35,8 +35,6 @@ const FINAL = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK',
 const ACTIVE = ['REQUESTED', 'RUNNING'];
 /** Bancos cuja extensão sabe só CONFERIR uma proposta já enviada (sem criar outra). */
 export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS'];
-const CHECK_EVERY_MS = 10 * 60_000; // conferência do resultado de 10 em 10 min (Fabio 14/10: de 1 em 1 min as conferências ocupavam o navegador e atrapalhavam os outros clientes)
-const CHECK_EVERY_CREDITAS_MS = 30 * 60_000; // Creditas leva horas: de 30 em 30 min (Fabio 15/10: "toda hora conferindo"); os outros bancos seguem de 10 em 10
 const CREDITAS_MAX_AGE_MS = 60 * 3_600_000; // e desiste de conferir sozinho 60 h depois da 1ª conferência (cobre 2 noites sem leitura)
 const BRT_MS = 3 * 3_600_000; // Brasília = UTC-3 (sem horário de verão)
 const CHECK_MAX_TRIES = 18; // 18 conferências de 10 min = ~3 h; passou disso, fica pra conferir à mão
@@ -565,12 +563,18 @@ export function pushOutOfQuiet(ms: number): Date {
   if (h >= 7 && h < 22) return new Date(ms);
   return new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), h >= 22 ? b.getUTCDate() + 1 : b.getUTCDate(), 7, 0, 0) + BRT_MS);
 }
-/** Intervalo entre conferências: 30 min no Creditas, 10 min nos outros. */
-const checkGapMs = (bank: string) => (bank === 'CREDITAS' ? CHECK_EVERY_CREDITAS_MS : CHECK_EVERY_MS);
-/** Quando a REPETIÇÃO da conferência pode rodar: o intervalo do banco, mas nunca de madrugada (Fabio 15/10: a extensão roda à noite, mas "se não saiu na primeira conferência, não precisa ficar
- *  repetindo de madrugada"). A 1ª conferência, logo depois do envio, não usa isso e roda a qualquer hora. Pura (testável). */
-export function nextCheckAt(bank: string, from = Date.now()): Date {
-  return pushOutOfQuiet(from + checkGapMs(bank));
+/** Minutos de espera ANTES da n-ésima conferência depois do envio (n=1 é a primeira). Fabio 15/10: Inter e Creditas conferem 3 vezes de 3 em 3 min (o resultado às vezes sai na hora);
+ *  depois o Inter segue de 10 em 10 min e o Creditas "aumenta": 10 min, 20 min e de 30 em 30 min (aprovação real do Creditas leva horas). Santander: 10 em 10. Pura (testável). */
+export function checkGapMin(bank: string, n: number): number {
+  if ((bank === 'INTER' || bank === 'CREDITAS') && n <= 3) return 3;
+  if (bank === 'CREDITAS') return n === 4 ? 10 : n === 5 ? 20 : 30;
+  return 10;
+}
+/** Quando a n-ésima conferência pode rodar. A 1ª, logo depois do envio, roda a qualquer hora; as REPETIÇÕES (n ≥ 2) nunca de madrugada (Fabio 15/10: a extensão roda à noite, mas "se não
+ *  saiu na primeira conferência, não precisa ficar repetindo de madrugada"). Pura (testável). */
+export function nextCheckAt(bank: string, n: number, from = Date.now()): Date {
+  const quando = from + checkGapMin(bank, n) * 60_000;
+  return n <= 1 ? new Date(quando) : pushOutOfQuiet(quando);
 }
 
 /** Depois de cada relato: (1) conferência que ainda não achou resultado volta pra fila — de 10 em 10 min (18 vezes, ~3 h; Creditas segue por mais 24 h) — pra termos certeza do resultado real; (2) rodada que terminou "enviada" (resultado ainda
@@ -586,12 +590,14 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     const velho = creditas && Date.now() - row.createdAt.getTime() > CREDITAS_MAX_AGE_MS; // Creditas: o limite é o tempo (60 h), não a contagem
     if (row.attempt < maxTries && !velho) {
       const attempt = row.attempt + 1;
-      const passo = creditas ? 'de 30 em 30 min (sem repetir das 22h às 7h)' : 'de 10 em 10 min (sem repetir das 22h às 7h)';
+      const quando = nextCheckAt(row.bank, attempt);
+      const em = Math.max(1, Math.round((quando.getTime() - Date.now()) / 60_000));
+      const proxima = em >= 120 ? `às ${new Date(quando.getTime() - BRT_MS).toISOString().slice(11, 16)} (sem repetir das 22h às 7h)` : `em ${em} min`;
       return db.creditAnalysis.update({
         where: { id: row.id },
         data: {
-          status: 'REQUESTED', notBefore: nextCheckAt(row.bank), attempt, finishedAt: null,
-          detail: `Conferindo ${passo} (conferência ${attempt}${creditas ? '' : ` de ${maxTries}`}). Última leitura: ${String(row.detail || '').replace(/^Conferindo[^:]*:\s*(Última leitura:\s*)?/i, '').slice(0, 300)}`,
+          status: 'REQUESTED', notBefore: quando, attempt, finishedAt: null,
+          detail: `Conferindo — conferência ${attempt}${creditas ? '' : ` de ${maxTries}`}, próxima ${proxima}. Última leitura: ${String(row.detail || '').replace(/^Conferindo[^:]*:\s*(Última leitura:\s*)?/i, '').slice(0, 300)}`,
         },
       });
     }
@@ -601,7 +607,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     const open = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'CHECK', status: { in: ACTIVE } }, select: { id: true } });
     if (!open) {
       await db.creditAnalysis.create({
-        data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'CHECK', attempt: 1, notBefore: new Date(Date.now() + checkGapMs(row.bank)), proposalNumber: row.proposalNumber, dryRun: false, source: 'EXTENSION', holderName: row.holderName, holderCpf: row.holderCpf, detail: `Conferindo ${row.bank === 'CREDITAS' ? 'de 30 em 30' : 'de 10 em 10'} min até sair o resultado (de madrugada, das 22h às 7h, só a 1ª conferência roda).` },
+        data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'CHECK', attempt: 1, notBefore: nextCheckAt(row.bank, 1), proposalNumber: row.proposalNumber, dryRun: false, source: 'EXTENSION', holderName: row.holderName, holderCpf: row.holderCpf, detail: `Conferindo — 1ª conferência em ${checkGapMin(row.bank, 1)} min (depois ${row.bank === 'CREDITAS' ? '3 em 3 min nas 3 primeiras, 10 min, 20 min e de 30 em 30 min' : row.bank === 'INTER' ? '3 em 3 min nas 3 primeiras e de 10 em 10 min' : 'de 10 em 10 min'}; sem repetir das 22h às 7h).` },
       });
     }
   }
