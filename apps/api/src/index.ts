@@ -42,6 +42,7 @@ import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.se
 import { checkInactivityAutomations, processDeferredAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { processRemarketing } from './services/remarketing.service';
+import { processVendaFutura } from './services/venda-futura.service';
 import { processApprovalNotices, processApprovalReminders, processScheduledNotices } from './services/approval-notice.service';
 import { processCreditAutomation } from './services/credit-auto.service';
 import { setWhatsAppAlertIo, checkWhatsAppHealth } from './services/whatsapp-alert.service';
@@ -285,6 +286,13 @@ httpServer.listen(PORT, () => {
       processRemarketing(io).catch((err) => console.error('[Remarketing] Poll:', err?.message));
     }, 60 * 1000);
   }, 2 * 60 * 1000);
+
+  // Venda Futura com data (Fabio 16/10): manda a retomada no dia combinado com o cliente e depois de 30 em 30 dias, até ele responder.
+  setTimeout(() => {
+    setInterval(() => {
+      processVendaFutura(io).catch((err) => console.error('[Venda Futura] Poll:', err?.message));
+    }, 60 * 1000);
+  }, 3 * 60 * 1000);
 
 
   // Caixa de e-mail do CRM: busca e-mails novos (IMAP) de todas as caixas

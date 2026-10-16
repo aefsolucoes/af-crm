@@ -311,6 +311,8 @@ export interface AiExtractedAction {
   moveToStage?: string | null;
   /** Motivo da mudança de etapa — vira anotação no card. */
   moveReason?: string | null;
+  /** AAAA-MM-DD combinada com o cliente pra retomar o crédito (Venda Futura): grava _vendaFuturaAt no card; o poller de Venda Futura dispara no dia. */
+  resumeOn?: string | null;
   extractedFields?: Record<string, string> | null;
   /** Motivo da perda, se a IA decidiu marcar o lead como Perdido — string
    *  não-vazia = marca; ausente/vazio = não mexe no status. */
@@ -431,6 +433,22 @@ export async function applyAiExtractedActions(
           if (io) io.to(`lead:${leadId}`).emit('lead_moved', { leadId, stageId: match.id });
         }
       }
+    }
+
+    // Venda Futura com data (Fabio 16/10): a data combinada vira o agendamento do disparo; se o card não está em "Venda Futura", vai pra lá.
+    if (action.resumeOn && /^\d{4}-\d{2}-\d{2}$/.test(action.resumeOn)) {
+      try {
+        const atual = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true, pipelineId: true, stage: { select: { name: true } } } });
+        const cfv: Record<string, any> = { ...((atual?.customFields || {}) as Record<string, any>), _vendaFuturaAt: action.resumeOn };
+        delete cfv._vendaFuturaSentAt; delete cfv._vendaFuturaFailAt; cfv._vendaFuturaCount = 0;
+        await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cfv as any } });
+        if (!/venda futura/i.test(atual?.stage?.name || '') && atual?.pipelineId) {
+          const vf = await prisma.stage.findFirst({ where: { pipelineId: atual.pipelineId, name: { contains: 'Venda Futura', mode: 'insensitive' } }, select: { id: true } });
+          if (vf) { const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service'); await updateLeadStage(lead.id, accountId, vf.id); }
+        }
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `📅 Retomada combinada com o cliente para ${action.resumeOn.split('-').reverse().join('/')}${action.moveReason ? ` (${action.moveReason})` : ''}. Nesse dia o CRM manda a mensagem de retomada (template "venda_futura_retomada").` } });
+        logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `agendou a retomada do crédito para ${action.resumeOn.split('-').reverse().join('/')}` });
+      } catch (e: any) { console.error('[IA] agendar retomada (Venda Futura) falhou:', e?.message); }
     }
 
     // Rodar a análise de crédito (a IA pediu): só com a "Análise automática" ligada, sem pausa geral e card em Pré-Análise.

@@ -225,6 +225,16 @@ SALDO DEVEDOR: se o imóvel ainda tem financiamento, o crédito PRIMEIRO quita o
 const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um motivo curto (1 frase, baseado no que o cliente disse) quando ele recusar EXPLICITAMENTE: disser que não quer mais, não tem mais interesse, desistiu, ou pedir pra não ser mais contatado. Também quando o lead for desqualificado (ex.: imóvel de garantia sem registro/irregular e sem alternativa) — aí o motivo começa com "Lead desqualificado — ". Deixe null/vazio em todos os outros casos — isso é diferente de só ficar em silêncio (isso é "Lead Sem Retorno", acima), e é definitivo, então só use quando a recusa for clara.
 - NÃO DÁ E O CLIENTE ACEITOU (Fabio 08/10, Marcelo: imóvel em usufruto): se a conversa JÁ explicou ao cliente que a operação não é possível com o que ele tem (ex.: imóvel em usufruto, sem matrícula/irregular, financiamento com parcela atrasada que ele não vai regularizar, crédito abaixo do mínimo) e ele só confirma ("ok", "entendi", "tá bom", "que pena", "beleza") sem trazer alternativa (outro imóvel, outra pessoa, regularizar) → "noReply": true e "markLost": "Lead desqualificado — <motivo>".`;
 
+/** VENDA FUTURA COM DATA (Fabio 16/10): o cliente que NÃO quer fazer agora diz a melhor data pra retomar o crédito; o CRM agenda o disparo pra ela. */
+function ventaFuturaRules(hoje: string, retomadaAgendada: string | null, naEtapa: boolean): string {
+  return `VENDA FUTURA COM DATA — Hoje é ${hoje}. ${retomadaAgendada ? `Este card JÁ tem retomada combinada para ${retomadaAgendada}.` : naEtapa ? 'Este card está em "Venda Futura" mas SEM data de retomada combinada.' : ''}
+- Cliente que quer o crédito mas NÃO agora (vai deixar pra mais pra frente, outro mês/ano, depois de um evento): se ele JÁ disse quando, use "moveToStage": "Venda Futura" e preencha "resumeOn" com a data (AAAA-MM-DD) em que devemos voltar a falar com ele: dia exato se ele deu; só o mês → dia 10 desse mês; "daqui N meses/semanas" → some a partir de hoje; evento sem data certa ("depois da reforma") → pergunte a data. A data tem que ser futura (e no máximo 3 anos).
+- Se ele NÃO disse quando: NÃO mova ainda (moveToStage null) e na "reply" pergunte, curto e simpático, qual seria a melhor data pra gente tratar esse crédito de novo ("Sem problema! Qual seria a melhor data pra gente retomar o seu crédito? Pode ser um mês ou uma data certinha."). Quando ele responder a data, aí sim "Venda Futura" + "resumeOn". Se ele disser que não sabe, sugira uma data razoável (ex.: daqui 60 dias) e, se ele concordar, agende.
+- Card que já está em "Venda Futura" e o cliente pede outra data ou responde "ainda não é o momento" depois da nossa mensagem de retomada: pergunte/aceite a NOVA data e devolva "resumeOn" (o card continua em Venda Futura, moveToStage null).
+- Cliente que responde "quero retomar" (ou equivalente) à mensagem de retomada: "moveToStage": "Prospecção" e siga o atendimento normal (formulário primeiro).
+- "resumeOn" é null em todos os outros casos.`;
+}
+
 /** Diferente de markLost: o negócio continua vivo, só a INSISTÊNCIA
  *  automática (lembrete periódico) deve parar — um humano assume esse
  *  cliente a partir daqui. Ex.: cliente irritado com o lembrete repetido de
@@ -321,9 +331,20 @@ function buildFillFieldsRules(camposTexto: string): string {
 ${camposTexto}`;
 }
 
+/** "resumeOn" vindo do JSON da IA: AAAA-MM-DD, futuro (a partir de amanhã) e no máximo 3 anos; qualquer outra coisa = null. */
+export function parseResumeOn(raw: unknown, now = Date.now()): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(raw ?? '').trim());
+  if (!m) return null;
+  const alvo = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const hojeBrt = new Date(now - 3 * 3_600_000);
+  const hoje0 = Date.UTC(hojeBrt.getUTCFullYear(), hojeBrt.getUTCMonth(), hojeBrt.getUTCDate());
+  if (!Number.isFinite(alvo) || alvo <= hoje0 || alvo > hoje0 + 3 * 366 * 86_400_000) return null;
+  return `${m[1]}-${m[2]}-${m[3]}`;
+}
+
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "simulate": <{"prazo": nº de meses} ou null — só conforme a regra SIMULAR OUTRO PRAZO>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "simulate": <{"prazo": nº de meses} ou null — só conforme a regra SIMULAR OUTRO PRAZO>}`;
 
 /** "sendSimulation" vindo do JSON da IA: aceita só SANTANDER/INTER (lista ou texto); qualquer outra coisa = null. */
 /** "simulate" vindo do JSON da IA: {prazo: meses} (ou só o número), 60 a 240; qualquer outra coisa = null. */
@@ -361,6 +382,8 @@ export interface AiAutoReplyResult {
   stopFollowUp?: boolean;
   /** Motivo da mudança de etapa (vira anotação no card). */
   moveReason?: string | null;
+  /** Data (AAAA-MM-DD) combinada com o cliente pra retomar o crédito (Venda Futura) — o CRM agenda o disparo. */
+  resumeOn?: string | null;
   /** Campos do card que a IA extraiu da conversa — aplicar via applyAiExtractedActions. */
   extractedFields?: Record<string, string> | null;
   /** true = a IA pediu pra RODAR a análise de crédito do cliente nos bancos (extensões como ponte) — aplicar via applyAiExtractedActions. */
@@ -461,6 +484,11 @@ export async function generateAiAutoReply(
     const documentos = await aiDocsContext(leadId).catch(() => '');
     const scrCreditas = await (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => '');
 
+    const hojeTxt = new Date(Date.now() - 3 * 3_600_000).toISOString().slice(0, 10);
+    const vfLead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } }).catch(() => null);
+    const vfAt = String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaAt || '');
+    const retomadaTxt = /^\d{4}-\d{2}-\d{2}$/.test(vfAt) ? vfAt.split('-').reverse().join('/') : null;
+    const naVendaFutura = /venda futura/i.test(vfLead?.stage?.name || '');
     const systemPrompt = `${ROLE_FRAMING}
 
 ${CORE_RULES}
@@ -470,6 +498,8 @@ ${HANDOFF_RULES}
 ${ASK_TEAM_RULES}
 
 ${MOVE_STAGE_RULES}
+
+${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura)}
 
 ${NEW_VALUE_RULES}
 ${PROPERTY_DOCS_RULES}
@@ -634,6 +664,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
         stopFollowUp: parsed.stopFollowUp === true,
         moveReason: typeof parsed.moveReason === 'string' && parsed.moveReason.trim() ? parsed.moveReason.trim() : null,
+        resumeOn: parseResumeOn(parsed.resumeOn),
         extractedFields,
         runAnalysis: parsed.runAnalysis === true,
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
@@ -654,6 +685,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         markLost: typeof parsed.markLost === 'string' && parsed.markLost.trim() ? parsed.markLost.trim() : null,
         stopFollowUp: parsed.stopFollowUp === true,
         moveReason: typeof parsed.moveReason === 'string' && parsed.moveReason.trim() ? parsed.moveReason.trim() : null,
+        resumeOn: parseResumeOn(parsed.resumeOn),
         extractedFields,
         runAnalysis: parsed.runAnalysis === true,
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
