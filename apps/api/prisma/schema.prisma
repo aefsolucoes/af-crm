@@ -1013,6 +1013,41 @@ model SimulationDocRequest {
   @@index([leadId, createdAt])
 }
 
+// Pedido de certidão de matrícula (inteiro teor) ao RI Digital/ONR, feito pela extensão "Certidão ONR" no Chrome do Fabio (16/10).
+// Fluxo: REQUESTED → (extensão pede no portal) RUNNING → AWAITING_PAYMENT (pedido feito, PIX capturado e enviado ao cliente) → ISSUED (certidão baixada) | FAILED | CANCELLED.
+model CertidaoRequest {
+  id              String    @id @default(cuid())
+  accountId       String
+  leadId          String
+  uf              String // "PA"
+  cidade          String // "Belém"
+  cartorio        String // "02º - BELÉM" (como aparece na lista do portal)
+  matricula       String // só dígitos
+  status          String    @default("REQUESTED")
+  source          String    @default("USER") // USER | AI
+  requestedById   String?
+  sendPix         Boolean   @default(true) // manda o PIX ao cliente assim que a extensão capturar
+  clientIntro     String?   @db.Text // 1ª frase da mensagem do PIX (padrão: "segue o PIX da certidão da matrícula")
+  protocolo       String?
+  numeroRegistral String?
+  valorCents      Int?
+  pixCode         String?   @db.Text
+  pixExpiresAt    DateTime?
+  pixSentAt       DateTime?
+  detail          String?   @db.Text
+  pdf             Bytes?
+  pdfName         String?
+  attempts        Int       @default(0) // tentativas de pegar o PIX / conferir a emissão
+  nextCheckAt     DateTime?
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  updatedAt       DateTime  @updatedAt
+
+  @@index([accountId, status])
+  @@index([leadId, createdAt])
+}
+
 // Uma linha por DISPARO da regra (não por ação individual dentro dela).
 // leadId é campo solto, sem @relation — mesmo padrão leve de
 // CommissionSuggestion.leadId/AgentTask.leadId, pra não mexer no model Lead.
