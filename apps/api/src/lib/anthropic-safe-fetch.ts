@@ -2,6 +2,8 @@
  *  (😀 = 😀) deixa só \ud83d no JSON. Cada serviço que mandava histórico de conversa cortado caía nisso e a função devolvia null em silêncio
  *  (conferência de documentos da Maria Antônia nunca avaliava, 15/10/2026). Em vez de caçar cada slice, tira os substitutos soltos de TODO corpo enviado
  *  pra api.anthropic.com. */
+import { featureFromStack, recordAnthropicUsage } from './anthropic-usage';
+
 const LONE_HIGH = /\\u[dD][89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/g;
 const LONE_LOW = /(?<!\\u[dD][89abAB][0-9a-fA-F]{2})\\u[dD][c-fC-F][0-9a-fA-F]{2}/g;
 
@@ -37,11 +39,22 @@ export function installAnthropicSafeFetch(): void {
       const url = typeof input === 'string' ? input : input?.url || String(input);
       if (url.includes('api.anthropic.com') && init && typeof init.body === 'string') init = { ...init, body: stripLoneSurrogates(init.body) };
     } catch { /* se algo estranho, manda como veio */ }
+    // quem está chamando (arquivo:função) — lido já, enquanto a pilha ainda tem o serviço
+    let feature = 'desconhecido', model = 'desconhecido';
+    try {
+      const url0 = typeof input === 'string' ? input : input?.url || String(input);
+      if (url0.includes('api.anthropic.com')) {
+        feature = featureFromStack(new Error().stack || '');
+        if (init && typeof init.body === 'string') model = (/"model":"([^"]+)"/.exec(init.body) || [])[1] || model;
+      }
+    } catch { /* ignora */ }
     const out = original(input, init);
     try {
       const url = typeof input === 'string' ? input : input?.url || String(input);
       if (url.includes('api.anthropic.com')) {
         return out.then(async (res) => {
+          // uso (tokens) por função — em segundo plano, sem atrasar quem chamou
+          res.clone().json().then((j: any) => recordAnthropicUsage(feature, j?.model || model, j?.usage || null, res.ok)).catch(() => recordAnthropicUsage(feature, model, null, res.ok));
           if (!res.ok && (res.status === 400 || res.status === 402 || res.status === 429)) {
             const txt = await res.clone().text().catch(() => '');
             if (/usage limits|credit balance|billing|quota/i.test(txt)) alertAnthropicDown(txt.slice(0, 220));

@@ -1,3 +1,4 @@
+import { cachedSystem } from '../lib/anthropic-usage';
 import { PrismaClient } from '@prisma/client';
 import { downloadDriveFileForVision } from './google.service';
 import { getDocInfo, isStickerAttachment, isScreenshotAttachment, isPropertyDocType } from './received-docs.service';
@@ -97,7 +98,7 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     body: JSON.stringify({
       model: 'claude-sonnet-5',
       max_tokens: 4096, // o raciocínio do modelo conta nesse limite: com 700 matrícula e foto de IPTU saíam cortadas e ficavam sem leitura (Maria Antônia, 15/10)
-      system: opts.learned ? `${SYSTEM}\n\nREGRAS APRENDIDAS COM A EQUIPE (respostas anteriores a dúvidas de documento — valem pra qualquer cliente):\n${opts.learned}` : SYSTEM,
+      system: cachedSystem(SYSTEM, opts.learned ? `REGRAS APRENDIDAS COM A EQUIPE (respostas anteriores a dúvidas de documento — valem pra qualquer cliente):\n${opts.learned}` : undefined),
       messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source }, { type: 'text', text: opts.teamAnswer
         ? `${context}\n\nVocê teve uma dúvida sobre ESTE arquivo e a EQUIPE já olhou e respondeu. Dúvida: ${opts.teamAnswer.pergunta}\nResposta da equipe: ${opts.teamAnswer.resposta}\nDecida agora: resultado OK (a equipe aceitou o documento) ou PROBLEMA (a equipe disse que não serve — em "problemas" escreva o que o cliente deve fazer). NÃO devolva DUVIDA. Preencha "regra" se a resposta vale pra outros clientes.`
         : context }] }],

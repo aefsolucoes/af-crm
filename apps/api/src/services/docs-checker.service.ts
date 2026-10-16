@@ -1,3 +1,4 @@
+import { cachedSystem } from '../lib/anthropic-usage';
 import { PrismaClient } from '@prisma/client';
 import { getDocInfo, isStickerAttachment, isScreenshotAttachment } from './received-docs.service';
 import { moveLeadToContracting } from './contracting.service';
@@ -238,7 +239,7 @@ ${history}`;
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 4000, system: RULES, messages: [{ role: 'user', content: prompt }] }),
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 4000, system: cachedSystem(RULES), messages: [{ role: 'user', content: prompt }] }),
   });
   if (!res.ok) {
     console.error('[Docs] Erro Anthropic:', res.status, (await res.text()).slice(0, 200));

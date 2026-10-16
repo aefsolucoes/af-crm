@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { generateReplySuggestion } from '../services/ai-reply-suggestion.service';
+import { usageReport } from '../lib/anthropic-usage';
 
 const router = Router();
 router.use(authMiddleware);
@@ -13,6 +14,12 @@ const SYSTEM_PROMPTS: Record<AIMode, string> = {
   friendly: 'Você é um especialista em comunicação. Reescreva o texto a seguir com tom amigável, caloroso e próximo ao cliente, mantendo o mesmo significado. Retorne somente o texto reescrito, sem explicações.',
   fun: 'Você é um especialista em comunicação criativa. Reescreva o texto a seguir com tom divertido, leve e descontraído, mantendo o mesmo significado. Use emojis adequados. Retorne somente o texto reescrito, sem explicações.',
 };
+
+// Uso da API da Anthropic por dia × função × modelo (só administrador) — ver lib/anthropic-usage.ts. `estUsd` usa preço de tabela SUPOSTO (confira no console da Anthropic).
+router.get('/usage', async (req: AuthRequest, res: Response) => {
+  if (req.user?.role !== 'ADMIN') { res.status(403).json({ error: 'Só administrador' }); return; }
+  try { res.json(await usageReport(Number(req.query.days) || 7)); } catch (err: any) { res.status(500).json({ error: err?.message || 'Erro ao ler o uso' }); }
+});
 
 router.post('/rewrite', async (req: AuthRequest, res: Response) => {
   const { text, mode } = req.body as { text?: string; mode?: AIMode };

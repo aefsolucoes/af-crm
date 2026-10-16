@@ -1048,6 +1048,23 @@ model CertidaoRequest {
   @@index([leadId, createdAt])
 }
 
+// Uso da API da Anthropic por dia × função × modelo (Fabio 16/10: "por que anda cobrando tanto?"). Alimentado por lib/anthropic-usage.ts a cada chamada
+// (agregado em memória, gravado a cada minuto). "feature" vem do arquivo/função que chamou (ex.: ai-auto-reply:generateAiAutoReply). Dia em Brasília.
+model AiUsage {
+  day              String
+  feature          String
+  model            String
+  calls            Int      @default(0)
+  errors           Int      @default(0)
+  inputTokens      Int      @default(0) // entrada SEM cache
+  outputTokens     Int      @default(0) // inclui o "raciocínio" do modelo
+  cacheReadTokens  Int      @default(0) // lidos do cache (custam ~10% da entrada)
+  cacheWriteTokens Int      @default(0) // gravados no cache (custam ~125% da entrada)
+  updatedAt        DateTime @updatedAt
+
+  @@id([day, feature, model])
+}
+
 // Uma linha por DISPARO da regra (não por ação individual dentro dela).
 // leadId é campo solto, sem @relation — mesmo padrão leve de
 // CommissionSuggestion.leadId/AgentTask.leadId, pra não mexer no model Lead.

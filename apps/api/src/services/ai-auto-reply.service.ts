@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { cachedSystem } from '../lib/anthropic-usage';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 import { aiCreditContext, refreshAnalysesForAi } from './credit-analysis.service';
 import { teamQuestionsContext } from './ai-team-question.service';
@@ -498,7 +499,9 @@ export async function generateAiAutoReply(
     const vfAt = String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaAt || '');
     const retomadaTxt = /^\d{4}-\d{2}-\d{2}$/.test(vfAt) ? vfAt.split('-').reverse().join('/') : null;
     const naVendaFutura = /venda futura/i.test(vfLead?.stage?.name || '');
-    const systemPrompt = `${ROLE_FRAMING}
+    // Parte FIXA (igual pra todos os clientes: vai pro CACHE de prompt — nas chamadas seguintes, em até 5 min, as ~14 mil tokens de regras custam ~10%) e parte que muda por cliente/momento.
+    // As regras condicionais (venda futura, documentos chegando/lidos, campos do card) e o formato de saída ficam na parte que muda, logo antes do contexto.
+    const systemFixed = `${ROLE_FRAMING}
 
 ${CORE_RULES}
 ${SAFETY_RULES}
@@ -507,8 +510,6 @@ ${HANDOFF_RULES}
 ${ASK_TEAM_RULES}
 
 ${MOVE_STAGE_RULES}
-
-${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura)}
 
 ${NEW_VALUE_RULES}
 ${PROPERTY_DOCS_RULES}
@@ -526,9 +527,12 @@ ${PROPOSAL_REVIEW_RULES}
 
 ${CREDIT_ANALYSIS_RULES}
 
-${chegando ? DOCS_ARRIVING_RULES + '\n\n' : ''}${NO_RECEIPT_LIST_RULES}\n\n${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${NO_REPLY_RULES}
+${NO_RECEIPT_LIST_RULES}
 
-${buildFillFieldsRules(camposTexto)}
+${NO_REPLY_RULES}`;
+    const systemDynamic = `${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura)}
+
+${chegando ? DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildFillFieldsRules(camposTexto)}
 
 ${OUTPUT_FORMAT}
 
@@ -545,6 +549,7 @@ ${duvidasEquipe}` : ''}${ligacao ? `
 ${ligacao}` : ''}${conversasPorTelefone ? `
 
 ${conversasPorTelefone}` : ''}`;
+    const systemPrompt = `${systemFixed}\n\n${systemDynamic}`; // texto completo (só pra referência)
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -555,7 +560,7 @@ ${conversasPorTelefone}` : ''}`;
         // limite: com 1024 às vezes acabava tudo no raciocínio e a resposta
         // vinha VAZIA (cliente ficava sem resposta, achado 2026-09-25).
         max_tokens: 4096,
-        system: systemPrompt,
+        system: cachedSystem(systemFixed, systemDynamic),
         messages: [{
           role: 'user',
           content: images.length
