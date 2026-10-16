@@ -48,10 +48,20 @@ const addNote = (leadId: string, content: string) => prisma.note.create({ data: 
 
 // ─── Ler o e-mail ──────────────────────────────────────────────────────────────
 
-/** E-mail da Creditas pedindo a Autorização SCR Bacen? (assunto "Autorização SCR Não Validada" ou o corpo fala de SCR + Bacen) */
+const JONATAS = /^jonatas\.carmona@creditas\.com$/i; // Fabio 16/10: "a gente NUNCA encaminha formulário pro cliente sem o Jonatas pedir antes"
+
+/** Só o texto NOVO do e-mail: corta a citação da mensagem anterior (a nossa própria pergunta ao Jonatas, que cita SCR/Bacen, não pode valer como pedido dele). */
+export function textoNovo(text: string): string {
+  const linhas = String(text || '').split('\n');
+  const corte = linhas.findIndex((l) => /^\s*>/.test(l) || /^\s*(Em .{5,120}escreveu:|On .{5,120}wrote:)\s*$/i.test(l) || /^\s*-{2,}\s*(Mensagem original|Original Message|Forwarded)/i.test(l) || /^\s*(De|From):\s+\S+.*@/i.test(l));
+  return (corte >= 0 ? linhas.slice(0, corte) : linhas).join('\n');
+}
+
+/** E-mail do JONATAS (Creditas) pedindo a Autorização SCR Bacen? (assunto "Autorização SCR Não Validada" ou o texto novo do corpo fala de SCR + Bacen) */
 export function isScrRequest(from: string | null | undefined, subject: string | null | undefined, text: string): boolean {
-  if (!from || !CREDITAS_SENDER.test(from)) return false;
-  return /\bSCR\b/i.test(subject || '') || (/\bSCR\b/i.test(text) && /bacen|banco central/i.test(text));
+  if (!from || !JONATAS.test(String(from).trim())) return false;
+  const novo = textoNovo(text);
+  return /\bSCR\b/i.test(subject || '') || (/\bSCR\b/i.test(novo) && /bacen|banco central/i.test(novo));
 }
 
 /** "Nome Completo ID: EGVK889 CPF: 603.920.513-03" — vale também nas citações (> ...) das cobranças "tivemos alguma devolutiva?". Um CPF só uma vez. */
@@ -83,6 +93,16 @@ function citedClients(subject: string | null, text: string): { name: string; cre
   const out: { name: string; creditasId?: string; cpf?: string }[] = parseScrCases(text).map((c) => ({ name: c.name, creditasId: c.creditasId, cpf: c.cpf }));
   const m = /[-–]\s*([A-Za-zÀ-ÿ' ]{6,90}?)\s+ID:\s*([A-Z0-9]{5,10})/.exec(subject || '');
   if (m && !out.some((c) => norm(c.name) === norm(m[1]))) out.push({ name: m[1].trim(), creditasId: m[2].toUpperCase() });
+  if (!out.length) {
+    // Resposta ao NOSSO e-mail ("Re: CPF 000.000.000-00 - NOME - …"): sem o formato da Creditas, vale o CPF que a gente mesmo escreveu no assunto ou na citação.
+    for (const fonte of [subject || '', text]) {
+      for (const mm of fonte.matchAll(/\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b/g)) {
+        const cpf = digits(mm[1]);
+        if (cpf.length === 11 && !out.some((c) => c.cpf === cpf)) out.push({ name: '', cpf });
+      }
+      if (out.length) break;
+    }
+  }
   return out;
 }
 
@@ -334,7 +354,7 @@ async function setBacenTag(leadId: string, on: boolean): Promise<void> {
 
 // ─── Creditas só vai até o fim se Inter e Santander NÃO aprovaram no valor total (Fabio 16/10) ───────────────────────────────────────────────────────────────
 // Aprovou a menor (ou reprovou / desqualificou) = o Creditas ainda vale e o SCR é pedido ao cliente. Aprovação cheia em qualquer um dos dois = segura o pedido (o cliente não precisa
-// assinar nada à toa). Banco ainda sem resposta: espera até 12 h do e-mail da Creditas e segue.
+// assinar nada à toa). Banco ainda sem resposta NÃO segura: quem pediu o SCR foi o Jonatas, então o pedido ao cliente segue.
 const BANCOS_ALTERNATIVOS = ['INTER', 'CREDIMORAR'];
 async function creditasVale(leadId: string, st: ScrState): Promise<{ ok: boolean; sig: string; motivo: string; ofertas: string[] }> {
   const { whichParticipant } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
@@ -354,7 +374,6 @@ async function creditasVale(leadId: string, st: ScrState): Promise<{ ok: boolean
     else if (!decisivas.length && doBanco.some((r) => ['SENT', 'CHECK', 'INCOMPLETE', 'REQUESTED', 'RUNNING'].includes(r.status))) pendentes.push(nome(bank));
   }
   if (cheios.length) return { ok: false, sig: `FULL:${cheios.join('+')}`, motivo: `${cheios.join(' e ')} já aprovou no valor total — a Creditas só vale se Inter e Santander não aprovarem ou aprovarem a menor`, ofertas: [] };
-  if (pendentes.length && Date.now() - new Date(st.at).getTime() < 12 * 3_600_000) return { ok: false, sig: `WAIT:${pendentes.join('+')}`, motivo: `${pendentes.join(' e ')} ainda não respondeu (espero até 12 h do e-mail da Creditas antes de pedir o SCR ao cliente)`, ofertas: [] };
   // O que Inter/Santander já aprovaram (a menor) vai pro cliente junto com o pedido do SCR.
   let ofertas: string[] = [];
   try {

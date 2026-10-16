@@ -525,7 +525,7 @@ async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS') {
     const situacao = bank === 'CREDITAS'
       ? `ela segue sem as condições de aprovação (valor, prazo e parcela) — só consta a pré-qualificação`
       : `ela segue sem decisão (nem aprovada nem negada) na Análise de Crédito`;
-    const pendencia = bank === 'CREDITAS' ? 'algum documento, a Autorização SCR Bacen ou qualquer pendência' : 'algum documento ou qualquer pendência';
+    const pendencia = 'algum documento ou qualquer pendência'; // não cita o SCR: o formulário só vai ao cliente se o Jonatas pedir por conta dele
     const corpo = `Olá, ${cfg.quem}, tudo bem?\n\nPoderia me ajudar a verificar ${bank === 'CREDITAS' ? 'a aprovação' : 'a proposta'} do cliente ${quem.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity?${numero ? ` ${bank === 'CREDITAS' ? 'ID/proposta' : 'Proposta nº'} ${numero}.` : ''}\n\nEnviamos a proposta ${bank === 'CREDITAS' ? 'pela plataforma da Creditas' : 'pelo portal de parceiros do Inter'} em ${quando} e, há mais de 24 horas, ${situacao}.\n\nSe faltar ${pendencia} da nossa parte, me avise que resolvo na hora.\n\nObrigado!`;
     try {
       const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
