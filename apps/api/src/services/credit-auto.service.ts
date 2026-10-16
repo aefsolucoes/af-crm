@@ -417,7 +417,7 @@ function parseFicha(text: string): { label: string; value: string }[] {
  *  "ERRO DO PORTAL INTER" no detalhe. 1 e-mail por card (`_interVaniaAt`), 08h–20h, máx. 5 por dia; nota + push. */
 async function emailInterSemProposta(accountId: string) {
   const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
-  if (hora < 8 || hora >= 20) return; // e-mail pra gestora só em horário comercial
+  if (hora < 7 || hora >= 21) return; // e-mail pra gestora só em horário comercial
   const grupos = await prisma.$queryRaw<{ leadId: string; first: Date }[]>`
     SELECT a."leadId", min(a."createdAt") AS first FROM "CreditAnalysis" a
     WHERE a."accountId" = ${accountId} AND a.bank = 'INTER' AND a."dryRun" = false AND a."createdAt" > now() - interval '3 days' AND a.detail ~* 'ERRO DO PORTAL INTER'
@@ -501,11 +501,11 @@ export function semRetornoHa24h(bank: 'INTER' | 'CREDITAS', cf: Cf, rows: { bank
   return now - base >= SEM_RETORNO_MS ? { desde: new Date(base) } : null;
 }
 
-/** 1 e-mail por card e banco (fabio@, cc Andreia), 08h–20h, máx. 5 por dia por destinatário; nota + push. Só card que ainda espera aprovação (Pré-Análise). */
+/** 1 e-mail por card e banco (fabio@, cc Andreia), 07h–21h; nota + push. Só card que ainda espera aprovação (Pré-Análise). */
 async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS') {
   const cfg = SEM_RETORNO[bank];
   const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
-  if (hora < 8 || hora >= 20) return;
+  if (hora < 7 || hora >= 21) return;
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, isGroup: false, OR: [{ stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, { stage: { name: { startsWith: 'Aprovado Pr', mode: 'insensitive' } } }], creditAnalyses: { some: { bank, kind: 'RUN', status: { in: ['SENT', 'CHECK'] }, dryRun: false, createdAt: { lt: new Date(Date.now() - SEM_RETORNO_MS) } } } },
     select: { id: true, name: true, customFields: true, creditAnalyses: { where: { bank, dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, createdAt: true, finishedAt: true, proposalNumber: true, holderName: true, holderCpf: true } } },
@@ -515,8 +515,6 @@ async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS') {
     const cf = (lead.customFields || {}) as Cf;
     const precisa = semRetornoHa24h(bank, cf, lead.creditAnalyses);
     if (!precisa) continue;
-    const hoje = await prisma.note.count({ where: { content: { startsWith: cfg.notaPrefixo }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } } });
-    if (hoje >= 5) return; // freio: no máximo 5 e-mails por dia
     const acc = await prisma.emailAccount.findFirst({ where: { accountId, address: { startsWith: 'fabio@', mode: 'insensitive' } } });
     if (!acc) { console.warn(`[${cfg.empresa} sem retorno] conta de e-mail do Fabio não encontrada`); return; }
     const sent = lead.creditAnalyses.filter((r) => r.kind === 'RUN' && ['SENT', 'CHECK'].includes(r.status)).pop()!;
@@ -524,13 +522,13 @@ async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS') {
     const cpfRaw = String(sent.holderCpf || cf.cpf_1 || '').replace(/\D/g, '');
     const cpf = cpfRaw.length === 11 ? `${cpfRaw.slice(0, 3)}.${cpfRaw.slice(3, 6)}.${cpfRaw.slice(6, 9)}-${cpfRaw.slice(9)}` : '';
     const numero = [...lead.creditAnalyses].reverse().find((r) => r.proposalNumber)?.proposalNumber || (bank === 'CREDITAS' ? (cf._scrCreditas as any)?.creditasId : '') || '';
-    const quando = precisa.desde.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }).replace(', ', ' às ');
-    const horas = Math.round((Date.now() - precisa.desde.getTime()) / 3_600_000);
+    const quando = precisa.desde.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' });
+    const horas = Math.round((Date.now() - precisa.desde.getTime()) / 3_600_000); // só pra nota interna; o e-mail não cita horas
     const situacao = bank === 'CREDITAS'
       ? `ela segue sem as condições de aprovação (valor, prazo e parcela) — só consta a pré-qualificação`
       : `ela segue sem decisão (nem aprovada nem negada) na Análise de Crédito`;
     const pendencia = bank === 'CREDITAS' ? 'algum documento, a Autorização SCR Bacen ou qualquer pendência' : 'algum documento ou qualquer pendência';
-    const corpo = `Olá, ${cfg.quem}, tudo bem?\n\nPoderia me ajudar a verificar ${bank === 'CREDITAS' ? 'a aprovação' : 'a proposta'} do cliente ${quem.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity?${numero ? ` ${bank === 'CREDITAS' ? 'ID/proposta' : 'Proposta nº'} ${numero}.` : ''}\n\nEnviamos a proposta ${bank === 'CREDITAS' ? 'pela plataforma da Creditas' : 'pelo portal de parceiros do Inter'} em ${quando} e, há mais de ${horas} horas, ${situacao}.\n\nSe faltar ${pendencia} da nossa parte, me avise que resolvo na hora.\n\nObrigado!`;
+    const corpo = `Olá, ${cfg.quem}, tudo bem?\n\nPoderia me ajudar a verificar ${bank === 'CREDITAS' ? 'a aprovação' : 'a proposta'} do cliente ${quem.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity?${numero ? ` ${bank === 'CREDITAS' ? 'ID/proposta' : 'Proposta nº'} ${numero}.` : ''}\n\nEnviamos a proposta ${bank === 'CREDITAS' ? 'pela plataforma da Creditas' : 'pelo portal de parceiros do Inter'} em ${quando} e, até agora, ${situacao}.\n\nSe faltar ${pendencia} da nossa parte, me avise que resolvo na hora.\n\nObrigado!`;
     try {
       const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
       await sendEmailFrom({ acc, userId: acc.userId, to: [cfg.email], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${quem.toUpperCase()} - ${bank === 'CREDITAS' ? 'aprovação' : 'proposta'} Home Equity sem retorno no ${cfg.empresa}`, body: corpo, leadId: lead.id, io: null } as any);

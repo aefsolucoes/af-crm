@@ -29,7 +29,7 @@ export interface ScrState {
   emailId: string; emailAccountId: string; creditasId?: string; at: string;
   /** Titular da proposta na Creditas (nome e CPF que vêm no e-mail) — a partir dele se descobre quem mais entrou na proposta. */
   holderName?: string; holderCpf?: string;
-  askedAt?: string; sentAt?: string; chasedAt?: string; windowNoteAt?: string; problemSig?: string; faltaSig?: string;
+  askedAt?: string; sentAt?: string; chasedAt?: string; templateChaseAt?: string; windowNoteAt?: string; problemSig?: string; faltaSig?: string;
   /** Última mensagem do cliente (ISO) da janela de 24 h em que o lembrete "antes de fechar" já foi mandado — 1 por janela. */
   windowRemindFor?: string;
 }
@@ -517,6 +517,29 @@ async function remindBeforeWindowCloses(accountId: string, lead: { id: string; n
   if (!r.success) pushTeam(accountId, lead.id, lead.name, 'SCR da Creditas: não consegui cobrar antes da janela fechar — chame o cliente');
 }
 
+
+// ─── Janela FECHOU e o cliente não devolveu: quem cobra é o template de "Follow Up Documentação" (Fabio 16/10) ─────────────────────────────────────────────
+// Mesma cadência da regra de automação "Template de documentação… repete a cada 3 dias": template aprovado `follow_up_doc` (única forma de falar fora da janela), 07h–21h,
+// 3 dias depois do último contato (fala do cliente, pedido do SCR ou o template anterior). A regra de automação só vale pra "Aguardando Documentação"; o card do SCR está na Pré-Análise.
+const CHASE_EVERY_MS = 3 * 24 * 3_600_000;
+async function chaseAfterWindowClosed(accountId: string, lead: { id: string; name: string; customFields: any }, st: ScrState, io: Io): Promise<void> {
+  const hh = new Date(Date.now() + BRT).getUTCHours();
+  if (hh < 7 || hh >= 21) return;
+  if (await whatsappWindowOpen(lead.id)) return; // janela aberta: quem fala é o lembrete de antes de fechar / a IA
+  const full = await prisma.lead.findUnique({ where: { id: lead.id }, select: { tags: true } });
+  if ((full?.tags || []).includes('Pediu pra parar lembretes')) return;
+  const last = await prisma.message.findFirst({ where: { leadId: lead.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  const ref = Math.max(last?.createdAt.getTime() || 0, st.templateChaseAt ? new Date(st.templateChaseAt).getTime() : 0, st.askedAt ? new Date(st.askedAt).getTime() : 0);
+  if (!ref || Date.now() - ref < CHASE_EVERY_MS) return;
+  await saveState(lead.id, { templateChaseAt: new Date().toISOString() }); // marca antes: não repete se o envio demorar
+  const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsAppTemplate({ accountId, leadId: lead.id, templateName: 'follow_up_doc', language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem? Estou enviando este lembrete sobre o envio dos documentos solicitados anteriormente para prosseguir com o processo de aprovação do seu crédito. (template follow_up_doc)', io: (io || undefined) as any });
+  await addNote(lead.id, r.success
+    ? '⏰ A janela de 24 h do WhatsApp fechou e o SCR Bacen da Creditas ainda não voltou: mandei o template de lembrete dos documentos (follow_up_doc). Repete a cada 3 dias enquanto o cliente não responder.'
+    : `⚠️ A janela de 24 h fechou e o SCR da Creditas não voltou, mas o template de lembrete não saiu (${(r as any).error || 'erro'}). Chame o cliente.`);
+  if (!r.success) pushTeam(accountId, lead.id, lead.name, 'SCR da Creditas: o template de lembrete não saiu — chame o cliente');
+}
+
 let lastSweep = 0;
 /** Poller (1 min): varre e-mails ainda não tratados, pede o SCR aos clientes e encaminha à Creditas o que voltou assinado. */
 export async function processScrFlows(accountId: string, io: Io): Promise<void> {
@@ -533,6 +556,7 @@ export async function processScrFlows(accountId: string, io: Io): Promise<void> 
       if (st.status === 'PENDING') await askClient(accountId, lead, st, io);
       else if (st.status === 'ASKED') {
         await remindBeforeWindowCloses(accountId, lead, st, io).catch((e: any) => console.warn(`[Creditas SCR] ${lead.name}: lembrete antes da janela falhou —`, e?.message));
+        await chaseAfterWindowClosed(accountId, lead, st, io).catch((e: any) => console.warn(`[Creditas SCR] ${lead.name}: cobrança por template falhou —`, e?.message));
         await checkAndForward(accountId, lead, st, io);
       }
     } catch (e: any) { console.warn(`[Creditas SCR] ${lead.name}:`, e?.message); }
