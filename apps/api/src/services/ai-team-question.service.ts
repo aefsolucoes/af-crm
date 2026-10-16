@@ -113,6 +113,74 @@ export async function createDocQuestion(params: { accountId: string; leadId: str
   return saved;
 }
 
+/** Dúvida da IA sobre a RESPOSTA do Jonatas (Creditas) por e-mail (Fabio 16/10): quando ele responde à nossa cobrança de posição e NÃO é o pedido do SCR Bacen, a IA leva pra equipe
+ *  "o que devo fazer?". A resposta da equipe NÃO vai ao Jonatas: a IA decide (pedir o SCR ao cliente, avisar o cliente ou só registrar) e guarda a regra geral na Base de Conhecimento. */
+export async function createEmailQuestion(params: { accountId: string; leadId: string; resumo: string; excerpt: string; io?: Io }) {
+  const { accountId, leadId, io } = params;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead) return null;
+  const departmentId = lead.pipeline?.departmentId ?? null;
+  const question = `📧 O Jonatas (Creditas) respondeu por e-mail sobre ${lead.name}: ${params.resumo.trim()}\nO que devo fazer?`.slice(0, 1000);
+  const saved = await prisma.aiTeamQuestion.create({
+    data: { accountId, leadId, departmentId, question, kind: 'EMAIL_QUESTION', clientMessage: params.excerpt.slice(0, 2000) || null },
+    select: SELECT,
+  });
+  const userIds = await recipientsFor(accountId, departmentId);
+  emitTo(io, userIds, 'ai_team_question', { id: saved.id, leadId, leadName: lead.name, question: saved.question, isNew: true });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 O Jonatas (Creditas) respondeu por e-mail e NÃO é o pedido do SCR Bacen: levei pra equipe no balão "Dúvidas da IA" (${params.resumo.trim().slice(0, 200)}).` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `Creditas respondeu — ${lead.name}`, body: params.resumo.trim().slice(0, 140), leadId }, userIds).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_team_question', leadId, leadName: lead.name, summary: `perguntou à equipe sobre o e-mail do Jonatas: ${params.resumo.trim().slice(0, 100)}` });
+  return saved;
+}
+
+/** O que a equipe quis dizer com a resposta sobre o e-mail do Jonatas: pedir o SCR ao cliente, avisar o cliente de algo, ou só registrar. + regra geral (aprendizado). */
+async function interpretEmailAnswer(question: string, emailExcerpt: string, answer: string): Promise<{ acao: 'PEDIR_BACEN' | 'AVISAR_CLIENTE' | 'SO_REGISTRAR'; regra: { title: string; content: string } | null }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { acao: 'SO_REGISTRAR', regra: null };
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5', max_tokens: 3000,
+        system: `Você apoia a A&F Soluções Financeiras (correspondente bancária). O Jonatas, do suporte da Creditas, respondeu por e-mail sobre a análise de crédito de um cliente e a equipe disse o que fazer. Interprete a resposta da equipe. Responda SÓ JSON: {"acao":"PEDIR_BACEN|AVISAR_CLIENTE|SO_REGISTRAR","regra":{"title":"...","content":"..."} ou null}. PEDIR_BACEN = a equipe mandou pedir ao cliente a Autorização SCR Bacen assinada (e identidades). AVISAR_CLIENTE = a equipe quer que o cliente receba uma informação/pedido pelo WhatsApp (ex.: mandar um documento, avisar que o crédito foi negado). SO_REGISTRAR = nada a fazer com o cliente agora (esperar, ou a equipe cuida). "regra" só quando a resposta é uma orientação GERAL pra casos parecidos no futuro (ex.: "quando o Jonatas disser X, faça Y"); title curto e content com a regra em 1–3 frases; senão null.`,
+        messages: [{ role: 'user', content: `Pergunta que a IA fez:\n${question}\n\nTrecho do e-mail do Jonatas:\n${emailExcerpt.slice(0, 1500)}\n\nResposta da equipe:\n${answer}` }],
+      }),
+    });
+    if (!res.ok) return { acao: 'SO_REGISTRAR', regra: null };
+    const d: any = await res.json();
+    const m = String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/);
+    if (!m) return { acao: 'SO_REGISTRAR', regra: null };
+    const j = JSON.parse(m[0]);
+    const acao = ['PEDIR_BACEN', 'AVISAR_CLIENTE', 'SO_REGISTRAR'].includes(j.acao) ? j.acao : 'SO_REGISTRAR';
+    const r = j.regra;
+    return { acao, regra: r && typeof r.title === 'string' && typeof r.content === 'string' && r.title.trim() && r.content.trim() ? { title: r.title.trim().slice(0, 200), content: r.content.trim().slice(0, 2000) } : null };
+  } catch { return { acao: 'SO_REGISTRAR', regra: null }; }
+}
+
+async function answerEmailQuestion(q: { id: string; accountId: string; leadId: string; departmentId: string | null; question: string }, answer: string, acao: 'PEDIR_BACEN' | 'SO_REGISTRAR', regra: { title: string; content: string } | null, userId: string, userName: string | null, io: Io) {
+  let feito = 'a IA só registrou (nada foi enviado ao cliente)';
+  if (acao === 'PEDIR_BACEN') {
+    const { startScrFromTeam } = require('./creditas-scr.service') as typeof import('./creditas-scr.service');
+    const r = await startScrFromTeam(q.accountId, q.leadId).catch((e: any) => ({ ok: false, why: e?.message || String(e) }));
+    feito = r.ok ? 'a IA abriu o pedido do SCR Bacen: o formulário vai ao cliente' : `a IA não conseguiu abrir o pedido do SCR (${(r as any).why}) — peça ao cliente à mão`;
+  }
+  let knowledgeTitle: string | null = null;
+  if (regra && isVoyageConfigured()) {
+    try { const entry = await createKnowledgeEntry(q.accountId, { ...regra, departmentId: q.departmentId }); knowledgeTitle = entry.title; } catch (e) { console.error('[Dúvidas da IA] Não salvou na Base de Conhecimento:', e); }
+  }
+  const updated = await prisma.aiTeamQuestion.update({
+    where: { id: q.id },
+    data: { status: 'ANSWERED', answer, answeredByUserId: userId, answeredByName: userName, answeredAt: new Date(), sendError: null, sentReply: feito, knowledgeTitle },
+    select: SELECT,
+  });
+  await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `Dúvida do e-mail do Jonatas respondida por ${userName || 'alguém da equipe'}: ${answer}\n🤖 ${feito}.${knowledgeTitle ? `\n📚 Guardado na Base de Conhecimento: ${knowledgeTitle}` : ''}` } }).catch(() => {});
+  logActivity({ accountId: q.accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: 'respondeu uma dúvida da IA sobre o e-mail da Creditas' });
+  emitTo(io, await recipientsFor(q.accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+  return updated;
+}
+
 /** Dúvidas que o usuário enxerga: todas as abertas + as respondidas nos
  *  últimos 7 dias (histórico curto, o balão não é arquivo). */
 export async function listAiTeamQuestions(accountId: string, scopeDepartmentIds: string[]) {
@@ -234,6 +302,11 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
 
   if (q.kind === 'DOC_QUESTION') return answerDocQuestion(q, answer, userId, user?.name || null, io);
+  if (q.kind === 'EMAIL_QUESTION') {
+    const dec = await interpretEmailAnswer(q.question, q.clientMessage || '', answer);
+    if (dec.acao !== 'AVISAR_CLIENTE') return answerEmailQuestion(q, answer, dec.acao, dec.regra, userId, user?.name || null, io);
+    // AVISAR_CLIENTE: segue o fluxo normal abaixo (a IA escreve a mensagem pro cliente a partir da resposta da equipe, manda pelo WhatsApp e guarda a regra geral).
+  }
 
   const { reply, knowledge } = await composeClientReply(accountId, q.leadId, q.question, answer);
 

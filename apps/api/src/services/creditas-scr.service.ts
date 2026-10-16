@@ -121,6 +121,18 @@ async function findLeadByName(accountId: string, name: string): Promise<{ id: st
   return iguais.length === 1 ? iguais[0] : null;
 }
 
+/** 1º pedido de SCR desse cliente: marca como pendente (ou só anota, fora da Pré-Análise) e avisa a equipe. */
+async function openScr(acc: EmailAccount, lead: { id: string; name: string; customFields: any }, row: EmailMessage, c: { name: string; creditasId?: string; cpf?: string }): Promise<void> {
+  // 1º pedido de SCR desse cliente: marca como pendente e avisa a equipe.
+  // Só pede sozinho ao cliente quem está na PRÉ-ANÁLISE (é onde o Creditas pede o SCR); em outra etapa (vistoria, documentação…) a equipe já está tratando — só liga o e-mail e avisa.
+  const etapa = await prisma.lead.findUnique({ where: { id: lead.id }, select: { stage: { select: { name: true } } } });
+  const naPre = /^pr[eé]-?an/i.test((etapa?.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''));
+  await saveState(lead.id, { status: naPre ? 'PENDING' : 'NOTED', emailId: row.id, emailAccountId: acc.id, creditasId: c.creditasId, at: row.date.toISOString(), holderName: c.name, holderCpf: c.cpf });
+  await addNote(lead.id, `📧 A Creditas pediu a AUTORIZAÇÃO SCR BACEN assinada pelos participantes + as identidades${c.creditasId ? ` (ID ${c.creditasId})` : ''} — e-mail de ${row.date.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })}. ${naPre ? 'O CRM manda o formulário pro cliente assinar pelo gov.br, confere o que ele devolver e responde a Creditas; enquanto isso a consulta do Creditas fica TRAVADA.' : `O card está em "${etapa?.stage?.name || '?'}" (fora da Pré-Análise): o CRM NÃO pediu ao cliente sozinho — a equipe cuida.`}`);
+  pushTeam(acc.accountId, lead.id, lead.name, naPre ? 'A Creditas pediu a Autorização SCR Bacen assinada — o CRM vai pedir ao cliente' : 'A Creditas pediu a Autorização SCR Bacen — cuide à mão (card fora da Pré-Análise)');
+  logActivity({ accountId: acc.accountId, userId: null, userName: 'Análise automática', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: 'a Creditas pediu a Autorização SCR Bacen assinada' } as any);
+}
+
 /** Chamado a cada e-mail novo (e na varredura). Todo e-mail da Creditas que cita um cliente (hoje e os próximos) é LIGADO ao card dele — vai pra conversa; se for pedido de SCR
  *  (ou cobrança dele), dispara também o fluxo do SCR. true = achou card (o e-mail foi tratado). */
 export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessage, io: Io): Promise<boolean> {
@@ -140,17 +152,11 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
       try { await linkEmailToLead(acc, row.id, lead.id, io); } catch (e: any) { console.warn('[Creditas e-mail] não liguei o e-mail ao card:', e?.message); }
       if (!scr && fresh) { try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(acc.accountId, { title: `📧 Creditas — ${lead.name}`, body: row.subject || 'Novo e-mail da Creditas', leadId: lead.id }).catch(() => {}); } catch { /* push é extra */ } }
     }
+    if (!scr && JONATAS.test(String(row.fromAddress).trim())) { if (await handleSuporteReply(acc, lead, row, text, io).catch((e: any) => { console.warn('[Creditas e-mail] resposta do Jonatas:', e?.message); return false; })) continue; }
     if (!scr) continue;
     const st = stateOf(lead.customFields);
     if (!st) {
-      // 1º pedido de SCR desse cliente: marca como pendente e avisa a equipe.
-      // Só pede sozinho ao cliente quem está na PRÉ-ANÁLISE (é onde o Creditas pede o SCR); em outra etapa (vistoria, documentação…) a equipe já está tratando — só liga o e-mail e avisa.
-      const etapa = await prisma.lead.findUnique({ where: { id: lead.id }, select: { stage: { select: { name: true } } } });
-      const naPre = /^pr[eé]-?an/i.test((etapa?.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''));
-      await saveState(lead.id, { status: naPre ? 'PENDING' : 'NOTED', emailId: row.id, emailAccountId: acc.id, creditasId: c.creditasId, at: row.date.toISOString(), holderName: c.name, holderCpf: c.cpf });
-      await addNote(lead.id, `📧 A Creditas pediu a AUTORIZAÇÃO SCR BACEN assinada pelos participantes + as identidades${c.creditasId ? ` (ID ${c.creditasId})` : ''} — e-mail de ${row.date.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })}. ${naPre ? 'O CRM manda o formulário pro cliente assinar pelo gov.br, confere o que ele devolver e responde a Creditas; enquanto isso a consulta do Creditas fica TRAVADA.' : `O card está em "${etapa?.stage?.name || '?'}" (fora da Pré-Análise): o CRM NÃO pediu ao cliente sozinho — a equipe cuida.`}`);
-      pushTeam(acc.accountId, lead.id, lead.name, naPre ? 'A Creditas pediu a Autorização SCR Bacen assinada — o CRM vai pedir ao cliente' : 'A Creditas pediu a Autorização SCR Bacen — cuide à mão (card fora da Pré-Análise)');
-      logActivity({ accountId: acc.accountId, userId: null, userName: 'Análise automática', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: 'a Creditas pediu a Autorização SCR Bacen assinada' } as any);
+      await openScr(acc, lead, row, c);
     } else {
       // Cobrança ("tivemos alguma devolutiva?") ou novo e-mail do mesmo pedido: guarda o e-mail mais novo (a resposta sai no fio dele) e, se já foi enviado, só registra.
       if (new Date(st.chasedAt || st.at).getTime() < row.date.getTime()) await saveState(lead.id, { emailId: row.id, emailAccountId: acc.id, chasedAt: row.date.toISOString() });
@@ -158,6 +164,67 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
     }
   }
   return tratados > 0;
+}
+
+/** O Jonatas respondeu à NOSSA cobrança de posição (e-mail de 24 h sem retorno) e a resposta NÃO tem o pedido do SCR em formato Creditas (Fabio 16/10): a IA lê o texto novo e decide —
+ *  pedido do SCR Bacen → abre o fluxo do SCR (formulário ao cliente); qualquer outra coisa → leva pra equipe no balão "Dúvidas da IA" ("o que devo fazer?") e aprende com a resposta.
+ *  true = tratado. 1 vez por e-mail (`_creditasEmailsHandled`). */
+export async function classifyJonatasReply(subject: string | null, novo: string): Promise<{ tipo: 'BACEN' | 'OUTRO'; resumo: string }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const fallback = { tipo: 'OUTRO' as const, resumo: novo.replace(/\s+/g, ' ').trim().slice(0, 240) || '(e-mail sem texto)' };
+  if (!apiKey) return fallback;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5', max_tokens: 2500,
+        system: `Você lê a resposta do Jonatas (suporte da Creditas) à pergunta da A&F Soluções Financeiras sobre a posição da proposta de um cliente de crédito com garantia de imóvel. Responda SÓ JSON: {"tipo":"BACEN|OUTRO","resumo":"até 200 caracteres: o que ele respondeu"}. BACEN = ele está pedindo a Autorização SCR Bacen (consulta ao Banco Central) preenchida e assinada pelo(s) cliente(s) e/ou as identidades. OUTRO = qualquer outra coisa (proposta em análise, negada, falta documento, política, aprovada, pedido de retorno…).`,
+        messages: [{ role: 'user', content: `Assunto: ${subject || ''}\n\nTexto novo do e-mail (sem a citação):\n${novo.slice(0, 3000)}` }],
+      }),
+    });
+    if (!res.ok) return fallback;
+    const d: any = await res.json();
+    const m = String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/);
+    if (!m) return fallback;
+    const j = JSON.parse(m[0]);
+    return { tipo: j.tipo === 'BACEN' ? 'BACEN' : 'OUTRO', resumo: String(j.resumo || fallback.resumo).slice(0, 240) };
+  } catch { return fallback; }
+}
+
+async function handleSuporteReply(acc: EmailAccount, lead: { id: string; name: string; customFields: any }, row: EmailMessage, text: string, io: Io): Promise<boolean> {
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const askedAt = cf._creditasSuporteAt ? new Date(cf._creditasSuporteAt).getTime() : 0;
+  if (!askedAt || row.date.getTime() <= askedAt) return false; // só resposta DEPOIS do nosso e-mail
+  const handled: string[] = Array.isArray(cf._creditasEmailsHandled) ? cf._creditasEmailsHandled : [];
+  if (handled.includes(row.id)) return false;
+  const fresh = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
+  const c2 = { ...((fresh?.customFields || {}) as Record<string, any>) };
+  c2._creditasEmailsHandled = [...handled, row.id].slice(-20); // marca antes: não repete se a IA demorar
+  await prisma.lead.update({ where: { id: lead.id }, data: { customFields: c2 as any } });
+  const novo = textoNovo(text);
+  const v = await classifyJonatasReply(row.subject, novo);
+  if (v.tipo === 'BACEN') {
+    if (stateOf(c2)) { await addNote(lead.id, `📧 O Jonatas respondeu pedindo o SCR Bacen, mas esse pedido já está em andamento neste card (${stateOf(c2)!.status}).`); return true; }
+    await openScr(acc, lead, row, { name: String(c2.participante_1 || lead.name), cpf: digits(String(c2.cpf_1 || '')) || undefined });
+    return true;
+  }
+  const { createEmailQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+  await createEmailQuestion({ accountId: acc.accountId, leadId: lead.id, resumo: v.resumo, excerpt: novo.replace(/\n{3,}/g, '\n\n').trim(), io: io as any });
+  return true;
+}
+
+/** A EQUIPE (balão "Dúvidas da IA") mandou pedir o SCR ao cliente: abre o fluxo com o e-mail mais novo do Jonatas ligado ao card. */
+export async function startScrFromTeam(accountId: string, leadId: string): Promise<{ ok: boolean; why?: string }> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true } });
+  if (!lead) return { ok: false, why: 'card não encontrado' };
+  if (stateOf(lead.customFields)) return { ok: false, why: 'o pedido do SCR já está em andamento neste card' };
+  const row = await prisma.emailMessage.findFirst({ where: { leadId, fromAddress: { contains: 'jonatas.carmona@creditas', mode: 'insensitive' } }, orderBy: { date: 'desc' }, include: { emailAccount: true } });
+  if (!row) return { ok: false, why: 'não achei e-mail do Jonatas ligado a este card' };
+  const { emailAccount, ...rest } = row as any;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  await openScr(emailAccount as EmailAccount, lead, rest as EmailMessage, { name: String(cf.participante_1 || lead.name), cpf: digits(String(cf.cpf_1 || '')) || undefined });
+  return { ok: true };
 }
 
 function pushTeam(accountId: string, leadId: string, leadName: string, body: string) {

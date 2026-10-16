@@ -34,7 +34,7 @@ interface AiQuestion {
   createdAt: string;
   lead: { name: string };
   /** CALL_REQUEST = cliente quer ligação — a Andreia confirma o horário ou propõe outro. */
-  kind?: 'QUESTION' | 'CALL_REQUEST' | 'DOC_QUESTION';
+  kind?: 'QUESTION' | 'CALL_REQUEST' | 'DOC_QUESTION' | 'EMAIL_QUESTION';
   callWhen?: string | null;
   /** DOC_QUESTION = a IA ficou em dúvida sobre um documento do cliente: o arquivo vem junto pra equipe abrir, analisar e responder. */
   attachment?: { id: string; fileName: string; mimeType: string } | null;
@@ -173,6 +173,7 @@ export function AiQuestionsBubble() {
         </button>
         <span className="text-[11px] text-slate-400 flex-shrink-0">{timeAgo(q.createdAt)}</span>
         {q.kind === 'DOC_QUESTION' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 flex-shrink-0">Documento</span>}
+        {q.kind === 'EMAIL_QUESTION' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700 flex-shrink-0">E-mail Creditas</span>}
         <span className={cn('ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0',
           q.status === 'OPEN' ? 'bg-amber-100 text-amber-700' : q.status === 'ANSWERED' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
           {q.status === 'OPEN' ? 'Aguardando' : q.status === 'ANSWERED' ? (q.kind === 'CALL_REQUEST' ? 'Resolvido' : 'Respondida') : 'Assumida'}
@@ -180,7 +181,7 @@ export function AiQuestionsBubble() {
       </div>
 
       {q.clientMessage && (
-        <p className="text-xs text-slate-500 border-l-2 border-slate-200 pl-2 mb-2 line-clamp-3 whitespace-pre-line">Cliente: {q.clientMessage}</p>
+        <p className="text-xs text-slate-500 border-l-2 border-slate-200 pl-2 mb-2 line-clamp-3 whitespace-pre-line">{q.kind === 'EMAIL_QUESTION' ? 'E-mail do Jonatas' : 'Cliente'}: {q.clientMessage}</p>
       )}
 
       {q.kind === 'CALL_REQUEST' ? (
@@ -279,11 +280,11 @@ export function AiQuestionsBubble() {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); act(q, 'answer'); }
             }}
             rows={2}
-            placeholder={q.kind === 'DOC_QUESTION' ? 'Responda aqui — a IA reconfere o documento e aprende (nada vai pro cliente)' : 'Responda aqui — a IA passa pro cliente'}
+            placeholder={q.kind === 'DOC_QUESTION' ? 'Responda aqui — a IA reconfere o documento e aprende (nada vai pro cliente)' : q.kind === 'EMAIL_QUESTION' ? 'Diga o que fazer (ex.: "peça o Bacen ao cliente", "avise o cliente que…", "só aguardar") — a IA executa e aprende; nada vai ao Jonatas' : 'Responda aqui — a IA passa pro cliente'}
             className="w-full text-sm rounded-lg border border-slate-200 px-2.5 py-1.5 resize-none focus:outline-none focus:border-[#2261a8] text-slate-800"
           />
           <div className="flex items-center justify-end gap-2 mt-1.5">
-            {q.kind !== 'DOC_QUESTION' && (
+            {q.kind !== 'DOC_QUESTION' && q.kind !== 'EMAIL_QUESTION' && (
               <button
                 onClick={() => act(q, 'dismiss')}
                 disabled={!!busy}
@@ -299,7 +300,7 @@ export function AiQuestionsBubble() {
               className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50"
               style={{ backgroundColor: '#2261a8' }}
             >
-              {busy === `${q.id}:answer` ? <><Loader2 size={12} className="animate-spin" /> {q.kind === 'DOC_QUESTION' ? 'Reconferindo o documento...' : 'Passando pro cliente...'}</> : <><Send size={12} /> Responder</>}
+              {busy === `${q.id}:answer` ? <><Loader2 size={12} className="animate-spin" /> {q.kind === 'DOC_QUESTION' ? 'Reconferindo o documento...' : q.kind === 'EMAIL_QUESTION' ? 'A IA está executando...' : 'Passando pro cliente...'}</> : <><Send size={12} /> Responder</>}
             </button>
           </div>
         </div>
@@ -327,9 +328,11 @@ export function AiQuestionsBubble() {
                     ? (popupQuestions.length > 1 ? `${popupQuestions.length} pedidos de ligação` : 'Pedido de ligação')
                     : popupQuestions.every((q) => q.kind === 'DOC_QUESTION')
                     ? (popupQuestions.length > 1 ? `${popupQuestions.length} documentos em dúvida` : 'Documento em dúvida')
+                    : popupQuestions.every((q) => q.kind === 'EMAIL_QUESTION')
+                    ? (popupQuestions.length > 1 ? `${popupQuestions.length} e-mails da Creditas` : 'E-mail da Creditas')
                     : popupQuestions.length > 1 ? `A IA tem ${popupQuestions.length} pendências` : 'A IA tem uma dúvida'}
                 </p>
-                <p className="text-[11px] text-white/75 leading-tight">{popupQuestions.every((q) => q.kind === 'DOC_QUESTION') ? 'Abra o documento, analise e responda — a IA aprende com a sua resposta' : 'Ela disse ao cliente que ia verificar — responda e ela repassa'}</p>
+                <p className="text-[11px] text-white/75 leading-tight">{popupQuestions.every((q) => q.kind === 'DOC_QUESTION') ? 'Abra o documento, analise e responda — a IA aprende com a sua resposta' : popupQuestions.every((q) => q.kind === 'EMAIL_QUESTION') ? 'O Jonatas respondeu — diga o que fazer e a IA executa e aprende' : 'Ela disse ao cliente que ia verificar — responda e ela repassa'}</p>
               </div>
               <button onClick={closePopup} className="p-1 rounded-md hover:bg-white/15" aria-label="Fechar" title="Fechar (a dúvida continua no balão)">
                 <X size={18} />
