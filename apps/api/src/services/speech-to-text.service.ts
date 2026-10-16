@@ -5,9 +5,22 @@
  * Nunca lança: sem chave, erro ou demora demais → null (o áudio chega normal,
  * só sem transcrição).
  */
+let elevenSemCreditoAte = 0;
+
+/** ElevenLabs primeiro; se não tem chave, deu erro ou acabou o crédito (16/10: plano gratuito estourou), a RESERVA é o Whisper rodando no próprio servidor (local-whisper.service). */
 export async function transcribeVoiceNote(buffer: Buffer, mimeType: string): Promise<string | null> {
+  const viaEleven = await transcribeElevenLabs(buffer, mimeType);
+  if (viaEleven) return viaEleven;
+  try {
+    const { transcribeLocally } = require('./local-whisper.service') as typeof import('./local-whisper.service');
+    return await transcribeLocally(buffer, mimeType);
+  } catch { return null; }
+}
+
+async function transcribeElevenLabs(buffer: Buffer, mimeType: string): Promise<string | null> {
   const key = process.env.ELEVENLABS_API_KEY;
   if (!key || !buffer?.length || buffer.length > 25 * 1024 * 1024) return null;
+  if (Date.now() < elevenSemCreditoAte) return null; // crédito acabou há pouco: nem tenta (1 h)
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45_000);
   try {
@@ -21,6 +34,7 @@ export async function transcribeVoiceNote(buffer: Buffer, mimeType: string): Pro
     const data: any = await res.json().catch(() => ({}));
     if (!res.ok) {
       console.error(`[Transcrição] falhou (${res.status}):`, JSON.stringify(data).slice(0, 200));
+      if (/quota|credit|exceeded|limit/i.test(JSON.stringify(data)) || res.status === 401 || res.status === 429) elevenSemCreditoAte = Date.now() + 3_600_000;
       return null;
     }
     const text = String(data.text || '').replace(/\s+/g, ' ').trim();

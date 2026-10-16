@@ -15,6 +15,7 @@
     "db:generate": "prisma generate"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.1",
     "@pdf-lib/fontkit": "^1.1.1",
     "@prisma/client": "^5.10.2",
     "bcrypt": "^5.1.1",
@@ -30,6 +31,7 @@
     "jsonwebtoken": "^9.0.2",
     "mammoth": "^1.12.0",
     "nodemailer": "^9.0.3",
+    "ogg-opus-decoder": "^1.7.5",
     "opusscript": "^0.1.1",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.1",
