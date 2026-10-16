@@ -19,7 +19,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 const REQUESTED_GIVE_UP_H = 6; // ninguém pegou (extensão/Chrome fechados)
 const RUNNING_TTL_MIN = 25; // pegou e sumiu (aba fechou) — o PIX demora até ~2 min, o pedido todo cabe folgado
 const PIX_MAX_ATTEMPTS = 4; // tentativas de pegar o PIX de um pedido já feito
-const CHECK_EVERY_MIN = 15; // conferência da emissão (cada conferência abre uma janela do portal; 15 min basta: a certidão leva horas)
+const CHECK_EVERY_MIN = 300; // conferência da emissão de 5 em 5 h (Fabio 16/10); o e-mail "Resposta ao seu pedido" do RI Digital adianta (certidaoEmailArrived)
 const GIVE_UP_DAYS = 3; // depois disso não confere mais (o PIX do portal vence no dia)
 const ACTIVE = ['REQUESTED', 'RUNNING', 'AWAITING_PAYMENT'];
 
@@ -242,4 +242,20 @@ export async function cancelCertidao(db: Db, p: { accountId: string; id: string;
   if (!r) throw new Error('Pedido de certidão não encontrado');
   if (!['REQUESTED', 'RUNNING'].includes(r.status) || r.protocolo) throw new Error('Só dá pra cancelar pedido que ainda não foi feito no portal');
   return db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'CANCELLED', finishedAt: new Date(), detail: 'Cancelado pela equipe.' } });
+}
+
+/**
+ * E-mail do RI Digital (contatori@ridigital.org.br) "Resposta ao seu pedido de certidão digital" = o cartório respondeu (Fabio 16/10: "pode ser quando um e-mail desse cartório chegar").
+ * Acha o pedido pelo protocolo no assunto/corpo e libera a conferência na hora (a extensão baixa o PDF no próximo minuto, dentro de 07h–21h).
+ */
+export async function certidaoEmailArrived(db: Db, p: { accountId: string; subject?: string | null; text?: string | null }): Promise<number> {
+  if (!/resposta ao seu pedido/i.test(p.subject || '')) return 0;
+  const protos = [...new Set(`${p.subject || ''} ${p.text || ''}`.match(/\bP\d{8,14}D\b/g) || [])];
+  if (!protos.length) return 0;
+  const rows = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { in: protos } }, select: { id: true, leadId: true, matricula: true, protocolo: true } });
+  for (const r of rows) {
+    await db.certidaoRequest.update({ where: { id: r.id }, data: { nextCheckAt: new Date(), detail: 'O cartório respondeu (e-mail do RI Digital); a extensão vai baixar a certidão.' } });
+    await note(db, r.leadId, `📬 O cartório respondeu o pedido ${r.protocolo} (e-mail do RI Digital) — a extensão "Certidão ONR" vai baixar a certidão da matrícula ${r.matricula}.`);
+  }
+  return rows.length;
 }

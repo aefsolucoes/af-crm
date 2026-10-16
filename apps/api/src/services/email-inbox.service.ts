@@ -454,6 +454,12 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
     if (tratado) return;
   }
 
+  // RI Digital avisando que o cartório respondeu o pedido de certidão: libera a conferência/download na hora (certidao.service).
+  if (row && folder === 'INBOX' && from && /@([a-z0-9-]+\.)*(ridigital|onr)\.org\.br$/i.test(from.address) && !opts.initial) {
+    const { certidaoEmailArrived } = require('./certidao.service') as typeof import('./certidao.service');
+    await certidaoEmailArrived(prisma, { accountId: acc.accountId, subject: env.subject || null, text: textBody }).catch((err) => console.warn('[Certidão e-mail] falhou:', err?.message));
+  }
+
   // Proposta preenchida no site (FormSubmit) → vai pro card do cliente.
   const { SITE_FORM_SENDERS, handleSiteProposalEmail } = require('./site-proposal-email.service') as typeof import('./site-proposal-email.service');
   if (row && folder === 'INBOX' && from && SITE_FORM_SENDERS.has(from.address)) {
