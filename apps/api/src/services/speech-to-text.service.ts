@@ -8,12 +8,12 @@
 let elevenSemCreditoAte = 0;
 
 /** ElevenLabs primeiro; se não tem chave, deu erro ou acabou o crédito (16/10: plano gratuito estourou), a RESERVA é o Whisper rodando no próprio servidor (local-whisper.service). */
-export async function transcribeVoiceNote(buffer: Buffer, mimeType: string): Promise<string | null> {
+export async function transcribeVoiceNote(buffer: Buffer, mimeType: string, opts: { inline?: boolean } = {}): Promise<string | null> {
   const viaEleven = await transcribeElevenLabs(buffer, mimeType);
   if (viaEleven) return viaEleven;
   try {
     const { transcribeLocally } = require('./local-whisper.service') as typeof import('./local-whisper.service');
-    return await transcribeLocally(buffer, mimeType);
+    return await transcribeLocally(buffer, mimeType, opts.inline ? { maxWaitMs: 25_000 } : {});
   } catch { return null; }
 }
 

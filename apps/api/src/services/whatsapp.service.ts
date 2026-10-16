@@ -1120,7 +1120,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       let voiceTranscript: string | null = null;
       if (msg.type === 'audio' && mediaBuffer && mediaInfo) {
         const { transcribeVoiceNote } = require('./speech-to-text.service') as typeof import('./speech-to-text.service');
-        voiceTranscript = await transcribeVoiceNote(mediaBuffer, mediaInfo.mimeType);
+        voiceTranscript = await transcribeVoiceNote(mediaBuffer, mediaInfo.mimeType, { inline: true });
         if (voiceTranscript) {
           text = `📎 ${mediaInfo.fileName} — 🎤 ${voiceTranscript}`;
           console.log(`[Transcrição] áudio de ${from}: ${voiceTranscript.length} caracteres`);

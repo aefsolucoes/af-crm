@@ -62,13 +62,21 @@ function memoriaLivreMB(): number | null {
 }
 let avisouMemoria = false;
 
+/** Corta laços de repetição do Whisper: a mesma palavra 4+ vezes seguidas vira 1, e um trecho de até 6 palavras repetido 3+ vezes vira 1. Pura (testável). */
+export function limparRepeticoes(raw: string): string {
+  let t = String(raw || '').replace(/\s+/g, ' ').trim();
+  t = t.replace(/(^|\s)(\S+)(?:\s+\2){3,}(?=\s|$)/gi, '$1$2');
+  for (let n = 6; n >= 2; n--) t = t.replace(new RegExp(`((?:\\S+\\s+){${n - 1}}\\S+)(?:\\s+\\1){2,}`, 'gi'), '$1');
+  return t.trim();
+}
+
 /** Só liga com LOCAL_WHISPER=on (variável do Railway): o modelo ocupa memória do servidor — liga depois de medir. */
 export function localWhisperAvailable(): boolean {
   return process.env.LOCAL_WHISPER === 'on';
 }
 
 /** Transcreve um áudio de voz (OGG/Opus) no servidor. Fila de 1. */
-export function transcribeLocally(buffer: Buffer, mimeType: string): Promise<string | null> {
+export function transcribeLocally(buffer: Buffer, mimeType: string, opts: { maxWaitMs?: number } = {}): Promise<string | null> {
   if (!localWhisperAvailable() || !buffer?.length || buffer.length > 8 * 1024 * 1024) return Promise.resolve(null);
   if (!/ogg|opus/i.test(mimeType || '')) return Promise.resolve(null); // só o formato dos áudios de voz do WhatsApp
   const job = queue.then(async () => {
@@ -82,9 +90,11 @@ export function transcribeLocally(buffer: Buffer, mimeType: string): Promise<str
         if (livre !== null && livre < 1100) { if (!avisouMemoria) { avisouMemoria = true; console.warn(`[Transcrição local] memória livre ${livre} MB — não carrego o modelo (precisa de ~1100 MB de folga)`); } return null; }
       }
       const pipe = await getPipeline();
-      const run = pipe(pcm, { language: 'portuguese', task: 'transcribe', chunk_length_s: 30 });
+      const seg = pcm.length / 16000;
+      // Whisper às vezes entra em laço ("a a a a…") e gera texto de 900 caracteres pra 10 s de áudio (16/10): teto de tokens proporcional à duração + penalidade de repetição.
+      const run = pipe(pcm, { language: 'portuguese', task: 'transcribe', chunk_length_s: 30, max_new_tokens: Math.max(48, Math.ceil(seg * 7)), repetition_penalty: 1.1, no_repeat_ngram_size: 4 });
       const out: any = await Promise.race([run, new Promise((_, rej) => setTimeout(() => rej(new Error('demorou demais')), TIMEOUT_MS))]);
-      const text = String(Array.isArray(out) ? out.map((o: any) => o.text).join(' ') : out?.text || '').replace(/\s+/g, ' ').trim();
+      const text = limparRepeticoes(String(Array.isArray(out) ? out.map((o: any) => o.text).join(' ') : out?.text || ''));
       console.log(`[Transcrição local] ${Math.round(pcm.length / 16000)}s de áudio em ${Math.round((Date.now() - t0) / 1000)}s: ${text.length} caracteres (memória livre ${memoriaLivreMB() ?? 'n/d'} MB)`);
       return text || null;
     } catch (e: any) {
@@ -93,5 +103,6 @@ export function transcribeLocally(buffer: Buffer, mimeType: string): Promise<str
     }
   });
   queue = job.catch(() => null);
+  if (opts.maxWaitMs) return Promise.race([job as Promise<string | null>, new Promise<null>((r) => setTimeout(() => r(null), opts.maxWaitMs))]); // na chegada da mensagem: se demorar, segue sem texto e o reprocessamento termina depois
   return job as Promise<string | null>;
 }
