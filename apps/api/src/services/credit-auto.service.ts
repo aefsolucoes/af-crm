@@ -474,62 +474,74 @@ async function emailInterSemProposta(accountId: string) {
   }
 }
 
-const CREDITAS_SUPORTE_EMAIL = 'jonatas.carmona@creditas.com'; // Jonatas, nosso suporte na Creditas (Fabio 15/10)
-const CREDITAS_ESPERA_MS = 24 * 3_600_000;
+const SEM_RETORNO_MS = 24 * 3_600_000;
 
-/** Quando a Creditas demora mais de 24 h pra dar a aprovação REAL (as condições: valor, prazo, parcela — pré-qualificação não conta; Fabio 15/10), o CRM manda UM e-mail ao Jonatas,
- *  suporte da Creditas, perguntando da proposta (da conta do Fabio, cc Andreia). 1 por card (`_creditasSuporteAt`), 08h–20h, máx. 5 por dia; nota + push. Não manda se a Creditas
- *  está esperando a Autorização SCR Bacen do cliente (aí a pendência é nossa, não deles) nem se o card está pausado/fechado. */
-export function creditasPrecisaDeSuporte(cf: Cf, rows: { bank: string; kind: string; status: string; createdAt: Date; finishedAt?: Date | null; dryRun?: boolean }[], now = Date.now()): { desde: Date } | null {
-  if (cf._autoPaused || cf._creditasSuporteAt) return null;
-  const cre = rows.filter((r) => r.bank === 'CREDITAS' && !r.dryRun);
-  if (cre.some((r) => ['APPROVED', 'CONDITIONAL'].includes(r.status))) return null; // já tem aprovação real
-  const enviados = cre.filter((r) => r.kind === 'RUN' && r.status === 'SENT');
+/** SEM RETORNO há mais de 24 h (Fabio 15/10): Inter → e-mail à Vania (gestora); Creditas → e-mail ao Jonatas (suporte). "Sem retorno" = a conferência não achou resultado REAL: nem aprovação
+ *  (no Creditas, só vale com as condições: valor, prazo e parcela — pré-qualificação não conta) nem negativa. Aprovado ou negado = já houve retorno, nada a perguntar. */
+const SEM_RETORNO = {
+  INTER: { flag: '_interSemRetornoAt', email: INTER_GESTORA_EMAIL, quem: 'Vania', empresa: 'Inter', notaPrefixo: '📧 E-mail enviado à Vania' },
+  CREDITAS: { flag: '_creditasSuporteAt', email: 'jonatas.carmona@creditas.com', quem: 'Jonatas', empresa: 'Creditas', notaPrefixo: '📧 E-mail enviado ao Jonatas' },
+} as const;
+
+export function semRetornoHa24h(bank: 'INTER' | 'CREDITAS', cf: Cf, rows: { bank: string; kind: string; status: string; createdAt: Date; finishedAt?: Date | null; dryRun?: boolean }[], now = Date.now()): { desde: Date } | null {
+  if (cf._autoPaused || cf[SEM_RETORNO[bank].flag]) return null;
+  if (bank === 'INTER' && cf._interVaniaAt) return null; // a Vania já recebeu e-mail deste card (erro do portal)
+  const doBanco = rows.filter((r) => r.bank === bank && !r.dryRun);
+  if (doBanco.some((r) => ['APPROVED', 'CONDITIONAL'].includes(r.status))) return null; // já tem aprovação real
+  const enviados = doBanco.filter((r) => r.kind === 'RUN' && ['SENT', 'CHECK'].includes(r.status));
   if (!enviados.length) return null;
   const primeiro = enviados.reduce((a, b) => (a.createdAt < b.createdAt ? a : b));
-  // Reprovada depois do envio = resposta dada, nada a perguntar.
-  if (cre.some((r) => r.status === 'REJECTED' && r.createdAt >= primeiro.createdAt)) return null;
-  const scr = cf._scrCreditas as { status?: string; sentAt?: string } | undefined;
-  if (scr && ['PENDING', 'ASKED', 'SENDING'].includes(String(scr.status))) return null; // esperando a autorização do cliente: pendência nossa
-  const base = scr?.status === 'SENT' && scr.sentAt ? Math.max(primeiro.createdAt.getTime(), new Date(scr.sentAt).getTime()) : primeiro.createdAt.getTime();
-  return now - base >= CREDITAS_ESPERA_MS ? { desde: new Date(base) } : null;
+  if (doBanco.some((r) => r.status === 'REJECTED' && r.createdAt >= primeiro.createdAt)) return null; // negado = houve retorno
+  let base = primeiro.createdAt.getTime();
+  if (bank === 'CREDITAS') {
+    const scr = cf._scrCreditas as { status?: string; sentAt?: string } | undefined;
+    if (scr && ['PENDING', 'ASKED', 'SENDING'].includes(String(scr.status))) return null; // esperando a autorização do cliente: pendência nossa
+    if (scr?.status === 'SENT' && scr.sentAt) base = Math.max(base, new Date(scr.sentAt).getTime());
+  }
+  return now - base >= SEM_RETORNO_MS ? { desde: new Date(base) } : null;
 }
 
-async function emailCreditasSuporte(accountId: string) {
+/** 1 e-mail por card e banco (fabio@, cc Andreia), 08h–20h, máx. 5 por dia por destinatário; nota + push. Só card que ainda espera aprovação (Pré-Análise). */
+async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS') {
+  const cfg = SEM_RETORNO[bank];
   const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
   if (hora < 8 || hora >= 20) return;
   const leads = await prisma.lead.findMany({
-    where: { accountId, status: 'OPEN', archived: false, isGroup: false, OR: [{ stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, { stage: { name: { startsWith: 'Aprovado Pr', mode: 'insensitive' } } }], creditAnalyses: { some: { bank: 'CREDITAS', kind: 'RUN', status: 'SENT', dryRun: false, createdAt: { lt: new Date(Date.now() - CREDITAS_ESPERA_MS) } } } }, // só quem ainda espera aprovação (Pré-Análise); quem já foi pra documentação não precisa
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { bank: 'CREDITAS', dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, createdAt: true, finishedAt: true, proposalNumber: true, holderName: true, holderCpf: true } } },
+    where: { accountId, status: 'OPEN', archived: false, isGroup: false, OR: [{ stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, { stage: { name: { startsWith: 'Aprovado Pr', mode: 'insensitive' } } }], creditAnalyses: { some: { bank, kind: 'RUN', status: { in: ['SENT', 'CHECK'] }, dryRun: false, createdAt: { lt: new Date(Date.now() - SEM_RETORNO_MS) } } } },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { bank, dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, createdAt: true, finishedAt: true, proposalNumber: true, holderName: true, holderCpf: true } } },
     take: 40,
   });
   for (const lead of leads) {
     const cf = (lead.customFields || {}) as Cf;
-    const precisa = creditasPrecisaDeSuporte(cf, lead.creditAnalyses);
+    const precisa = semRetornoHa24h(bank, cf, lead.creditAnalyses);
     if (!precisa) continue;
-    const hoje = await prisma.note.count({ where: { content: { startsWith: '📧 E-mail enviado ao Jonatas' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } } });
+    const hoje = await prisma.note.count({ where: { content: { startsWith: cfg.notaPrefixo }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } } });
     if (hoje >= 5) return; // freio: no máximo 5 e-mails por dia
     const acc = await prisma.emailAccount.findFirst({ where: { accountId, address: { startsWith: 'fabio@', mode: 'insensitive' } } });
-    if (!acc) { console.warn('[Creditas suporte] conta de e-mail do Fabio não encontrada'); return; }
-    const sent = lead.creditAnalyses.filter((r) => r.kind === 'RUN' && r.status === 'SENT').pop()!;
+    if (!acc) { console.warn(`[${cfg.empresa} sem retorno] conta de e-mail do Fabio não encontrada`); return; }
+    const sent = lead.creditAnalyses.filter((r) => r.kind === 'RUN' && ['SENT', 'CHECK'].includes(r.status)).pop()!;
     const quem = sent.holderName || String(cf.participante_1 || lead.name);
     const cpfRaw = String(sent.holderCpf || cf.cpf_1 || '').replace(/\D/g, '');
     const cpf = cpfRaw.length === 11 ? `${cpfRaw.slice(0, 3)}.${cpfRaw.slice(3, 6)}.${cpfRaw.slice(6, 9)}-${cpfRaw.slice(9)}` : '';
-    const numero = [...lead.creditAnalyses].reverse().find((r) => r.proposalNumber)?.proposalNumber || (cf._scrCreditas as any)?.creditasId || '';
-    const quando = precisa.desde.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+    const numero = [...lead.creditAnalyses].reverse().find((r) => r.proposalNumber)?.proposalNumber || (bank === 'CREDITAS' ? (cf._scrCreditas as any)?.creditasId : '') || '';
+    const quando = precisa.desde.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }).replace(', ', ' às ');
     const horas = Math.round((Date.now() - precisa.desde.getTime()) / 3_600_000);
-    const body = `Olá, Jonatas, tudo bem?\n\nPoderia me ajudar a verificar a aprovação do cliente ${quem.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity?${numero ? ` ID/proposta: ${numero}.` : ''}\n\nEnviamos a proposta pela plataforma da Creditas em ${quando.replace(', ', ' às ')} e, há mais de ${horas} horas, ela segue sem as condições de aprovação (valor, prazo e parcela) — só consta a pré-qualificação.\n\nSe faltar algum documento, a Autorização SCR Bacen ou qualquer pendência da nossa parte, me avise que resolvo na hora.\n\nObrigado!`;
+    const situacao = bank === 'CREDITAS'
+      ? `ela segue sem as condições de aprovação (valor, prazo e parcela) — só consta a pré-qualificação`
+      : `ela segue sem decisão (nem aprovada nem negada) na Análise de Crédito`;
+    const pendencia = bank === 'CREDITAS' ? 'algum documento, a Autorização SCR Bacen ou qualquer pendência' : 'algum documento ou qualquer pendência';
+    const corpo = `Olá, ${cfg.quem}, tudo bem?\n\nPoderia me ajudar a verificar ${bank === 'CREDITAS' ? 'a aprovação' : 'a proposta'} do cliente ${quem.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity?${numero ? ` ${bank === 'CREDITAS' ? 'ID/proposta' : 'Proposta nº'} ${numero}.` : ''}\n\nEnviamos a proposta ${bank === 'CREDITAS' ? 'pela plataforma da Creditas' : 'pelo portal de parceiros do Inter'} em ${quando} e, há mais de ${horas} horas, ${situacao}.\n\nSe faltar ${pendencia} da nossa parte, me avise que resolvo na hora.\n\nObrigado!`;
     try {
       const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-      await sendEmailFrom({ acc, userId: acc.userId, to: [CREDITAS_SUPORTE_EMAIL], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${quem.toUpperCase()} - aprovação Home Equity pendente na Creditas`, body, leadId: lead.id, io: null } as any);
-      await saveCf(lead.id, { _creditasSuporteAt: new Date().toISOString() });
-      await addNote(lead.id, `📧 E-mail enviado ao Jonatas (suporte Creditas, ${CREDITAS_SUPORTE_EMAIL}, cc Andreia) automaticamente: a Creditas está há mais de ${horas} h sem dar a aprovação real (condições). Perguntei da proposta de ${quem}.`);
+      await sendEmailFrom({ acc, userId: acc.userId, to: [cfg.email], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${quem.toUpperCase()} - ${bank === 'CREDITAS' ? 'aprovação' : 'proposta'} Home Equity sem retorno no ${cfg.empresa}`, body: corpo, leadId: lead.id, io: null } as any);
+      await saveCf(lead.id, { [cfg.flag]: new Date().toISOString() });
+      await addNote(lead.id, `${cfg.notaPrefixo} (${cfg.empresa}, ${cfg.email}, cc Andreia) automaticamente: o ${cfg.empresa} está há mais de ${horas} h sem retorno (${bank === 'CREDITAS' ? 'sem as condições da proposta' : 'sem aprovação nem negativa'}). Perguntei da proposta de ${quem}.`);
       const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-      sendPushToAccount(accountId, { title: lead.name, body: 'Creditas há +24 h sem aprovação — e-mail enviado ao Jonatas (suporte)', leadId: lead.id }).catch(() => {});
-      console.log(`[Creditas suporte] ${lead.name}: e-mail enviado ao Jonatas`);
+      sendPushToAccount(accountId, { title: lead.name, body: `${cfg.empresa} há +24 h sem retorno — e-mail enviado ${bank === 'CREDITAS' ? 'ao Jonatas' : 'à Vania'}`, leadId: lead.id }).catch(() => {});
+      console.log(`[${cfg.empresa} sem retorno] ${lead.name}: e-mail enviado a ${cfg.quem}`);
     } catch (e: any) {
-      await saveCf(lead.id, { _creditasSuporteAt: new Date().toISOString() }); // não repete em laço
-      await addNote(lead.id, `⚠️ A Creditas está há mais de ${horas} h sem aprovação: NÃO consegui enviar o e-mail ao Jonatas (${e?.message || e}). Mande à mão para ${CREDITAS_SUPORTE_EMAIL}.`);
+      await saveCf(lead.id, { [cfg.flag]: new Date().toISOString() }); // não repete em laço
+      await addNote(lead.id, `⚠️ O ${cfg.empresa} está há mais de ${horas} h sem retorno: NÃO consegui enviar o e-mail ${bank === 'CREDITAS' ? 'ao Jonatas' : 'à Vania'} (${e?.message || e}). Mande à mão para ${cfg.email}.`);
     }
   }
 }
@@ -573,7 +585,8 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await ackPendingProposals(s.accountId, io).catch((e) => console.error('[Análise automática] confirmação da proposta:', e?.message));
       await flagInterSemNumero(s.accountId).catch((e) => console.error('[Análise automática] Inter sem número:', e?.message));
       await emailInterSemProposta(s.accountId).catch((e) => console.error('[Análise automática] e-mail Vania:', e?.message));
-      await emailCreditasSuporte(s.accountId).catch((e) => console.error('[Análise automática] e-mail Creditas suporte:', e?.message));
+      await emailSemRetorno(s.accountId, 'INTER').catch((e) => console.error('[Análise automática] e-mail Vania (sem retorno):', e?.message));
+      await emailSemRetorno(s.accountId, 'CREDITAS').catch((e) => console.error('[Análise automática] e-mail Jonatas (sem retorno):', e?.message));
       await earlyStatusNotices(s.accountId, io).catch((e) => console.error('[Análise automática] aviso antecipado:', e?.message));
       { const { processDocsChecks } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsChecks(s.accountId, io).catch((e: any) => console.error('[Docs]', e?.message)); }
       { const { processDocsFollowUps } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsFollowUps(s.accountId, io).catch((e: any) => console.error('[Docs] cobrança:', e?.message)); }
