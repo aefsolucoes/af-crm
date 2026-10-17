@@ -113,7 +113,7 @@ export default function AnaliseCreditoPage() {
   const [notify, setNotify] = useState<BoardLead | null>(null);
   const [forceRun, setForceRun] = useState(false);
   const isAdmin = useAuthStore((s) => s.user?.role === 'ADMIN');
-  const { data: auto } = useQuery<{ enabled: boolean; enabledAt: string | null; paused?: boolean }>({ queryKey: ['credit-auto'], queryFn: async () => (await api.get('/api/credit-analysis/auto')).data });
+  const { data: auto } = useQuery<{ enabled: boolean; enabledAt: string | null; paused?: boolean; pauseInterEmails?: boolean }>({ queryKey: ['credit-auto'], queryFn: async () => (await api.get('/api/credit-analysis/auto')).data });
   async function togglePause() {
     const next = !auto?.paused;
     try {
@@ -122,6 +122,18 @@ export default function AnaliseCreditoPage() {
       queryClient.invalidateQueries({ queryKey: ['credit-auto'] });
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao salvar a pausa', 'error');
+    }
+  }
+  // Pausa SÓ dos e-mails automáticos ao Inter (Vania): erro do portal e sem retorno há mais de 24 h. O resto da análise segue normal.
+  async function toggleInterEmails() {
+    const next = !auto?.pauseInterEmails;
+    if (!next && !window.confirm('Religar os e-mails automáticos ao Inter (Vania)?\n\nO CRM volta a mandar e-mail à Vania quando o portal do Inter der erro na proposta ou passar de 24 h sem retorno — e já manda dos cards que ficaram assim durante a pausa e ainda estão na Pré-Análise (um e-mail por card).')) return;
+    try {
+      await api.put('/api/credit-analysis/auto', { pauseInterEmails: next });
+      toast(next ? 'E-mails ao Inter PAUSADOS' : 'E-mails ao Inter religados', 'success');
+      queryClient.invalidateQueries({ queryKey: ['credit-auto'] });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao salvar a pausa dos e-mails do Inter', 'error');
     }
   }
   async function toggleAuto() {
@@ -319,9 +331,11 @@ export default function AnaliseCreditoPage() {
           {isAdmin ? (
             <div className="flex items-center gap-2">
               <Button variant={auto?.paused ? 'primary' : 'secondary'} onClick={togglePause} title="Para tudo que roda sozinho (análise automática, reconferências e as extensões por conta própria). Só roda o que você pedir na hora, um de cada vez.">{auto?.paused ? '▶ Retomar automático' : '⏸ Pausar automático'}</Button>
+              <Button variant={auto?.pauseInterEmails ? 'primary' : 'secondary'} onClick={toggleInterEmails} title="Pausa só os e-mails automáticos ao Inter (à Vania): quando o portal dá erro na proposta e quando passa de 24 h sem retorno. Análise e conferências seguem normais.">{auto?.pauseInterEmails ? 'Religar e-mails do Inter' : 'Pausar e-mails do Inter'}</Button>
               <Button variant={auto?.enabled ? 'secondary' : 'primary'} onClick={toggleAuto}>{auto?.enabled ? 'Desligar' : 'Ligar'}</Button>
             </div>
           ) : <span className="text-xs text-slate-400">Só administradores ligam.</span>}
+          {auto?.pauseInterEmails && <div className="basis-full text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">✉️ E-MAILS AUTOMÁTICOS AO INTER PAUSADOS — o CRM não escreve à Vania (erro do portal / 24 h sem retorno). A análise e as conferências do Inter seguem normais.{isAdmin ? '' : ' Só administradores religam.'}</div>}
           {auto?.paused && <div className="basis-full text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">⏸ PAUSA GERAL LIGADA — nada roda sozinho (nem a análise automática, nem as reconferências, nem as extensões por conta própria). Só o que você pedir na hora (Rodar análise / Conferir) é executado.</div>}
         </div>
 
