@@ -213,7 +213,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
   return replied === 0;
 }
 
-interface ApprovalOption { quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
+interface ApprovalOption { interCondicional?: boolean; quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -299,7 +299,9 @@ export function renderApprovalText(options: ApprovalOption[]): string {
   ].filter(Boolean).join('\n');
   const head = options.length > 1 ? `✅ Consegui ${options.length} opções de aprovação pra você escolher!` : '✅ Crédito aprovado!';
   const tail = options.length > 1 ? '\n\n👉 Qual dessas opções você prefere? É só me responder por aqui que eu sigo com a que você escolher.' : ''; // opção única: a mensagem acaba no resumo (Fabio 14/10)
-  return `${head}\n\n${options.map(block).join('\n\n')}${tail}`;
+  // Inter aprovou CONDICIONADO ao envio de documentos (sem números ainda): o aviso não espera por ele — informa a(s) aprovação(ões) que já saiu(ram) e diz que, com os documentos que o Inter pede, dá pra conseguir condição melhor lá (Fabio 17/10, Luzia).
+  const notaInter = options.some((o) => o.interCondicional) ? '\n\nℹ️ O Inter também aprovou o seu crédito, condicionado ao envio de documentos. Depois que você enviar os documentos que ele pede, podemos conseguir uma condição ainda melhor lá.' : '';
+  return `${head}\n\n${options.map(block).join('\n\n')}${notaInter}${tail}`;
 }
 
 // Texto da mensagem 2 (Fabio 14/10): cabeçalho único, "Documentos pessoais" + Imóvel, e os documentos do cônjuge/2º participante quando houver.
@@ -416,8 +418,10 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
   // O veredito MAIS RECENTE de cada banco+PARTICIPANTE vale: se depois de aprovado o banco negou (ex.: Creditas nega a análise seguinte à pré-qualificação), não oferece
   // mais essa opção — mas a negativa do titular não apaga a aprovação do 2º participante (esposa/segundo proponente) no mesmo banco.
   const byKey = new Map<string, (typeof rows)[number]>();
+  const ultimo = new Map<string, (typeof rows)[number]>(); // último veredito (qualquer status) de cada banco+participante
   for (const r of rows) {
     const k = `${r.bank}|${bucket(r.holderName, r.holderCpf)}`;
+    ultimo.set(k, r);
     if (r.status === 'REJECTED') byKey.delete(k);
     else if (r.approvedValue != null) byKey.set(k, r);
   }
@@ -428,9 +432,11 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
     if (!cur || (r.netValue || r.approvedValue || 0) > (cur.netValue || cur.approvedValue || 0)) byBank.set(r.bank, r);
   }
   const label: Record<string, string> = { INTER: 'Banco Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  const interCondicional = !byBank.has('INTER') && Array.from(ultimo.values()).some((r) => r.bank === 'INTER' && r.status === 'CONDITIONAL' && r.approvedValue == null);
   const options = Array.from(byBank.values())
     .sort((a, b) => (b.netValue || b.approvedValue || 0) - (a.netValue || a.approvedValue || 0))
     .map((r): ApprovalOption => ({
+      interCondicional,
       aMenor: /aprovad[oa] a menor/i.test(r.detail || ''),
       instituicao: label[r.bank] || r.bank,
       // Creditas: o cliente vê só o valor LÍQUIDO (regra do Fabio) — o total (bruto) não aparece no aviso.
@@ -466,7 +472,7 @@ export async function aprovadasSemNumeros(leadId: string): Promise<string[]> {
     const k = `${r.bank}|${bucket(r.holderName, r.holderCpf)}`;
     if (visto.has(k)) continue;
     visto.add(k);
-    if (r.status !== 'REJECTED' && r.approvedValue == null) out.add(r.bank);
+    if (r.status !== 'REJECTED' && r.approvedValue == null && !(r.bank === 'INTER' && r.status === 'CONDITIONAL')) out.add(r.bank); // Inter 'condicional' = pede documentos, sem números até receber: não segura o aviso (Fabio 17/10)
   }
   return Array.from(out);
 }
