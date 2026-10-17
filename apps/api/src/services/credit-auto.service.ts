@@ -24,7 +24,21 @@ const norm = (s: string) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g,
 
 export async function getAutoSetting(accountId: string) {
   const s = await prisma.creditAutoSetting.findUnique({ where: { accountId } });
-  return { enabled: !!s?.enabled, enabledAt: s?.enabledAt || null, paused: !!s?.paused };
+  return { enabled: !!s?.enabled, enabledAt: s?.enabledAt || null, paused: !!s?.paused, pauseInterEmails: s ? s.pauseInterEmails : true };
+}
+
+/** Pausa SÓ dos e-mails automáticos ao Inter (Vania: erro do portal e sem retorno >24 h). Sem registro da conta = pausado. */
+async function interEmailsPaused(accountId: string): Promise<boolean> {
+  const s = await prisma.creditAutoSetting.findUnique({ where: { accountId }, select: { pauseInterEmails: true } });
+  return s ? s.pauseInterEmails : true;
+}
+export async function setPauseInterEmails(accountId: string, pause: boolean, userId?: string) {
+  await prisma.creditAutoSetting.upsert({
+    where: { accountId },
+    create: { accountId, enabled: false, pauseInterEmails: pause, updatedById: userId || null },
+    update: { pauseInterEmails: pause, updatedById: userId || null },
+  });
+  return getAutoSetting(accountId);
 }
 
 /** Pausa geral: nada roda sozinho (nem a análise automática do CRM, nem as reconferências, nem as extensões por conta própria). */
@@ -462,6 +476,7 @@ function parseFicha(text: string): { label: string; value: string }[] {
  *  problema E os dados completos do cliente pra ela vincular o cadastro/proposta lá (o mesmo texto que o Fabio aprovou à mão). A extensão do Inter (2026.10.15.1+) marca esses casos com
  *  "ERRO DO PORTAL INTER" no detalhe. 1 e-mail por card (`_interVaniaAt`), 07h–21h, sem teto por dia (Fabio 16/10: deu erro, o e-mail vai, não importa quantos cards); nota + push. */
 async function emailInterSemProposta(accountId: string) {
+  if (await interEmailsPaused(accountId)) return; // pausa pedida pelo Fabio (17/10)
   const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
   if (hora < 7 || hora >= 21) return; // e-mail pra gestora só em horário comercial
   const grupos = await prisma.$queryRaw<{ leadId: string; first: Date }[]>`
@@ -547,6 +562,7 @@ export function semRetornoHa24h(bank: 'INTER' | 'CREDITAS', cf: Cf, rows: { bank
 
 /** 1 e-mail por card e banco (fabio@, cc Andreia), 07h–21h; nota + push. Só card que ainda espera aprovação (Pré-Análise). */
 async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS') {
+  if (bank === 'INTER' && (await interEmailsPaused(accountId))) return; // pausa pedida pelo Fabio (17/10); Creditas segue normal
   const cfg = SEM_RETORNO[bank];
   const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
   if (hora < 7 || hora >= 21) return;

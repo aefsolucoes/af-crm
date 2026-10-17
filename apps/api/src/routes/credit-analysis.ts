@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
 import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.service';
-import { getAutoSetting, setAutoSetting, setPaused } from '../services/credit-auto.service';
+import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
   BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
@@ -145,6 +145,7 @@ router.get('/auto', async (req: AuthRequest, res: Response) => {
 });
 router.put('/auto', async (req: AuthRequest, res: Response) => {
   if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores ligam a análise automática' });
+  try { if (typeof req.body?.pauseInterEmails === 'boolean') return res.json(await setPauseInterEmails(req.user!.accountId, req.body.pauseInterEmails, req.user!.id)); } catch (err) { return fail(res, err, 'Erro ao salvar a pausa dos e-mails do Inter'); }
   try { if (typeof req.body?.paused === 'boolean') return res.json(await setPaused(req.user!.accountId, req.body.paused, req.user!.id)); } catch (err) { return fail(res, err, 'Erro ao salvar a pausa'); }
   try { res.json(await setAutoSetting(req.user!.accountId, req.body?.enabled === true, req.user!.id)); } catch (err) { fail(res, err, 'Erro ao salvar a análise automática'); }
 });

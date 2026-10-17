@@ -1324,6 +1324,7 @@ model CreditAutoSetting {
   enabled     Boolean   @default(false)
   enabledAt   DateTime?
   paused      Boolean   @default(false) // PAUSA GERAL: nada roda sozinho (CRM e extensões); só o que for pedido na hora, à mão
+  pauseInterEmails Boolean @default(true) // pausa SÓ os e-mails automáticos ao Inter/Vania (erro do portal e sem retorno >24 h) — Fabio 17/10: "dá uma pausa nos e-mails do Inter"
   updatedById String?
   updatedAt   DateTime  @updatedAt
 }
