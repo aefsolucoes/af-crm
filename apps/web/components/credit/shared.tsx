@@ -122,9 +122,11 @@ export function reasonOf(a?: Analysis): string {
 /** Célula de um participante: o selo + o motivo (por que falhou/reprovou/ficou em conferir) ou, sem análise, por que NÃO rodou. */
 export function ParticipantCell({ a, why }: { a?: Analysis; why?: string }) {
   const r = reasonOf(a);
+  // Desqualificado por regra do IMÓVEL/proposta (vale pros dois participantes): o 2º participante também aparece como "Desqualificado" (Fabio 17/10), em vez de "—".
+  const herdado = !a && !!why && /regra que vale para os dois participantes/i.test(why);
   return (
     <div className="space-y-0.5">
-      <Badge a={a} />
+      {herdado ? <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-500">Desqualificado</span> : <Badge a={a} />}
       {r && <div className="text-[10px] leading-snug text-slate-500 max-w-[190px]" title={String(a?.detail || '')}>{r}</div>}
       {!a && why && <div className="text-[10px] leading-snug text-amber-600 max-w-[190px]" title={why}>{why.length > 130 ? `${why.slice(0, 129)}…` : why}</div>}
     </div>
