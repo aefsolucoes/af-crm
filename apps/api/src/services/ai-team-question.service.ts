@@ -1,7 +1,8 @@
 import { PrismaClient } from '@prisma/client';
 import { buildSharedAiContext, buildContextBlocks, CORE_RULES } from './ai-shared.service';
 import { sendOutboundWhatsApp } from './message.service';
-import { createKnowledgeEntry, deleteKnowledgeEntry } from './knowledge.service';
+import { createKnowledgeEntry, deleteKnowledgeEntry, searchKnowledge } from './knowledge.service';
+import { sendPushToAccount } from './push.service';
 import { isVoyageConfigured } from './voyage.service';
 import { logActivity } from './activity.service';
 
@@ -22,7 +23,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 const SELECT = {
   id: true, leadId: true, departmentId: true, question: true, clientMessage: true, status: true,
   answer: true, answeredByName: true, answeredAt: true, sentReply: true, sendError: true,
-  knowledgeEntryId: true, knowledgeTitle: true, createdAt: true, kind: true, callWhen: true, callAt: true, attachmentId: true,
+  knowledgeEntryId: true, knowledgeTitle: true, createdAt: true, kind: true, callWhen: true, callAt: true, attachmentId: true, payload: true,
   lead: { select: { name: true } },
 } as const;
 
@@ -250,6 +251,184 @@ async function answerRejectionQuestion(q: { id: string; accountId: string; leadI
   return updated;
 }
 
+// ───────────────────────── E-mail a banco (Vania/Jonatas) só com autorização ─────────────────────────
+// Fabio 17/10 (Admir, 75 anos): o CRM escreveu à Vania e ao Jonatas pedindo retorno de um cliente que nem tinha idade pro crédito. Agora, ANTES de qualquer e-mail
+// automático a banco, o CRM abre uma dúvida no balão com os dados do cliente e o e-mail pronto; só envia quando a equipe autoriza. A explicação vira regra na
+// Base de Conhecimento — e uma regra já ensinada decide sozinha (pode enviar / não envie) nos próximos casos parecidos.
+
+export interface BankEmailDraft {
+  bank: 'INTER' | 'CREDITAS'; empresa: string; quem: string; flag: string; emailAccountId: string; userId: string | null;
+  to: string; cc: string[]; subject: string; body: string; motivo: string; nota: string; pushBody: string;
+}
+
+const idadeDe = (raw: unknown): number | null => {
+  const m = String(raw ?? '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/) || String(raw ?? '').trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const [d, mo, y] = String(raw).includes('/') ? [Number(m[1]), Number(m[2]), Number(m[3])] : [Number(m[3]), Number(m[2]), Number(m[1])];
+  if (!y || y < 1900) return null;
+  const hoje = new Date(Date.now() - 3 * 3_600_000);
+  let a = hoje.getUTCFullYear() - y;
+  if (hoje.getUTCMonth() + 1 < mo || (hoje.getUTCMonth() + 1 === mo && hoje.getUTCDate() < d)) a--;
+  return a;
+};
+
+/** Os dados do cliente pra equipe decidir: ficha, idade (com alerta), pedido, etapa e o que cada banco respondeu. */
+async function resumoDoCliente(leadId: string): Promise<string> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true, value: true, stage: { select: { name: true } }, stageEnteredAt: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'desc' }, take: 30, select: { bank: true, status: true, kind: true, detail: true, createdAt: true, proposalNumber: true } } } });
+  if (!lead) return '';
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const idade1 = idadeDe(cf.nascimento_1);
+  const idade2 = idadeDe(cf.nascimento_2);
+  const alertas: string[] = [];
+  if (idade1 !== null && (idade1 > 69 || idade1 < 18)) alertas.push(`⚠️ IDADE ${idade1} anos: o Inter só aceita de 18 a 69.`);
+  if (idade1 !== null && idade1 >= 70) alertas.push(`⚠️ Santander: idade + prazo não pode passar de 80 anos (com ${idade1} anos o prazo máximo fica curto).`);
+  const brl = (v: unknown) => (Number(v) > 0 ? `R$ ${Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '');
+  const linhas = [
+    `👤 ${String(cf.participante_1 || lead.name)} — CPF ${cf.cpf_1 || '—'} — nascimento ${cf.nascimento_1 || '—'}${idade1 !== null ? ` (${idade1} anos)` : ''}`,
+    cf.participante_2 ? `👥 2º participante: ${cf.participante_2} — CPF ${cf.cpf_2 || '—'} — nascimento ${cf.nascimento_2 || '—'}${idade2 !== null ? ` (${idade2} anos)` : ''}` : '',
+    [cf.telefone_1 && `📞 ${cf.telefone_1}`, cf.email_1 && `✉️ ${cf.email_1}`, cf.renda_1 && `💵 renda ${brl(cf.renda_1) || cf.renda_1}`].filter(Boolean).join(' · '),
+    [brl(cf.valor_credito) && `Crédito pedido ${brl(cf.valor_credito)}`, brl(cf.valor_imovel) && `imóvel ${brl(cf.valor_imovel)}`, cf.prazo_financ && `prazo ${cf.prazo_financ}`].filter(Boolean).join(' · '),
+    `📍 Etapa: ${lead.stage?.name || '—'}`,
+  ].filter(Boolean);
+  const rotulo: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  const vistos = new Set<string>();
+  const bancos: string[] = [];
+  for (const r of lead.creditAnalyses) {
+    if (vistos.has(r.bank)) continue; vistos.add(r.bank);
+    const det = String(r.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 140);
+    bancos.push(`• ${rotulo[r.bank] || r.bank}: ${r.status}${r.proposalNumber ? ` (proposta ${r.proposalNumber})` : ''}${det ? ` — ${det}` : ''}`);
+  }
+  return `${alertas.length ? alertas.join('\n') + '\n\n' : ''}DADOS DO CLIENTE\n${linhas.join('\n')}${bancos.length ? `\n\nO QUE OS BANCOS RESPONDERAM\n${bancos.join('\n')}` : ''}`;
+}
+
+/** Regra que a equipe já ENSINOU sobre e-mail aos bancos. 'ENVIAR' | 'NAO_ENVIAR' | null (sem regra clara → pergunta). */
+async function regraDeEmailBanco(accountId: string, leadId: string, p: { empresa: string; motivo: string }, resumo: string): Promise<'ENVIAR' | 'NAO_ENVIAR' | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { departmentId: true } } } });
+  const hits = await searchKnowledge(accountId, `e-mail ao banco ${p.empresa} Vania Jonatas pedir retorno enviar não enviar`, 6, lead?.pipeline?.departmentId ?? null).catch(() => []);
+  const regras = hits.filter((h) => /e-?mail/i.test(h.content) && /vania|jonatas|banco|inter|creditas/i.test(h.content) && /(enviar|envie|mande|mandar|escrever)/i.test(h.content));
+  if (!regras.length) return null;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5', max_tokens: 2000,
+      system: 'Decida se o CRM pode enviar um e-mail de cobrança a um banco (gestora/suporte), SÓ com base nas regras da equipe abaixo. Responda SÓ JSON: {"acao":"ENVIAR|NAO_ENVIAR|PERGUNTAR"}. Use PERGUNTAR se nenhuma regra cobre claramente ESTE caso (na dúvida, PERGUNTAR). ENVIAR só se uma regra autoriza este tipo de caso; NAO_ENVIAR só se uma regra manda não enviar este tipo de caso.',
+      messages: [{ role: 'user', content: `E-mail a: ${p.empresa}\nMotivo: ${p.motivo}\n\nDados do cliente:\n${resumo.slice(0, 2500)}\n\nRegras da equipe:\n${regras.map((r) => `- ${r.content.slice(0, 500)}`).join('\n')}` }],
+    }),
+  }).catch(() => null);
+  if (!res?.ok) return null;
+  const d: any = await res.json().catch(() => null);
+  const m = String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/);
+  try { const j = m ? JSON.parse(m[0]) : null; return j?.acao === 'ENVIAR' || j?.acao === 'NAO_ENVIAR' ? j.acao : null; } catch { return null; }
+}
+
+/** Escreve de fato ao banco (depois da autorização ou por regra) — mesma ação que o envio automático sempre fez. */
+async function enviarEmailAoBanco(d: BankEmailDraft, leadId: string, accountId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const acc = await prisma.emailAccount.findUnique({ where: { id: d.emailAccountId } });
+    if (!acc) return { ok: false, error: 'conta de e-mail não encontrada' };
+    const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+    await sendEmailFrom({ acc, userId: d.userId || acc.userId, to: [d.to], cc: d.cc, subject: d.subject, body: d.body, leadId, io: null });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: d.nota } }).catch(() => {});
+    sendPushToAccount(accountId, { title: 'E-mail enviado', body: d.pushBody, leadId }).catch(() => {});
+    return { ok: true };
+  } catch (e: any) { return { ok: false, error: e?.message || String(e) }; }
+}
+
+async function marcarCard(leadId: string, patch: Record<string, any>) {
+  const f = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((f?.customFields || {}) as Record<string, any>), ...patch } as any } });
+}
+
+/** Ponto de entrada do CRM: no lugar de enviar o e-mail ao banco, decide (regra ensinada) ou pergunta à equipe. Devolve o que aconteceu. */
+export async function requestBankEmail(params: { accountId: string; leadId: string; leadName: string; draft: BankEmailDraft; io?: Io }): Promise<'enviado' | 'regra-nao-enviar' | 'perguntado' | 'ja-perguntado' | 'erro'> {
+  const { accountId, leadId, leadName, draft, io } = params;
+  const aberta = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, kind: 'BANK_EMAIL', status: 'OPEN' }, select: { id: true, payload: true } });
+  if (aberta && (aberta.payload as any)?.bank === draft.bank) return 'ja-perguntado';
+  await marcarCard(leadId, { [draft.flag]: new Date().toISOString() }); // marca já: não pergunta de novo a cada minuto
+  const resumo = await resumoDoCliente(leadId);
+  const regra = await regraDeEmailBanco(accountId, leadId, { empresa: draft.empresa, motivo: draft.motivo }, resumo).catch(() => null);
+  if (regra === 'NAO_ENVIAR') {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🚫 NÃO escrevi ao ${draft.empresa} (${draft.quem}) — ${draft.motivo}: pela regra que a equipe já ensinou, esse tipo de caso não recebe e-mail ao banco.` } }).catch(() => {});
+    return 'regra-nao-enviar';
+  }
+  if (regra === 'ENVIAR') {
+    const r = await enviarEmailAoBanco(draft, leadId, accountId);
+    if (!r.ok) { await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Regra da equipe mandava escrever ao ${draft.empresa}, mas o e-mail NÃO saiu (${r.error}). Mande à mão para ${draft.to}.` } }).catch(() => {}); return 'erro'; }
+    return 'enviado';
+  }
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { pipeline: { select: { departmentId: true } } } });
+  const departmentId = lead?.pipeline?.departmentId ?? null;
+  const preview = `Para: ${draft.to}${draft.cc.length ? ` (cc ${draft.cc.join(', ')})` : ''}\nAssunto: ${draft.subject}\n\n${draft.body.length > 900 ? draft.body.slice(0, 900) + '…' : draft.body}`;
+  const question = `📧 Posso escrever ao ${draft.empresa} (${draft.quem}) sobre ${leadName}?\nMotivo: ${draft.motivo}.\n\n${resumo}\n\n— E-MAIL PRONTO —\n${preview}\n\nResponda "pode enviar" ou "não envie" e explique o porquê: a IA guarda como regra e não pergunta de novo nos casos parecidos.`;
+  const saved = await prisma.aiTeamQuestion.create({ data: { accountId, leadId, departmentId, question, kind: 'BANK_EMAIL', clientMessage: draft.motivo.slice(0, 500), payload: { ...draft, leadName } as any }, select: SELECT });
+  const userIds = await recipientsFor(accountId, departmentId);
+  emitTo(io, userIds, 'ai_team_question', { id: saved.id, leadId, leadName, question: saved.question, isNew: true });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⏳ O CRM ia escrever ao ${draft.empresa} (${draft.motivo}), mas agora espera a sua autorização no balão "Dúvidas da IA" (com os dados do cliente e o e-mail pronto). Nada foi enviado.` } }).catch(() => {});
+  sendPushToAccount(accountId, { title: `E-mail ao ${draft.empresa} — ${leadName}`, body: 'Autoriza o envio? Os dados do cliente estão no balão', leadId }, userIds).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_team_question', leadId, leadName, summary: `pediu autorização para escrever ao ${draft.empresa}` });
+  return 'perguntado';
+}
+
+async function interpretBankEmailAnswer(question: string, answer: string): Promise<{ acao: 'ENVIAR' | 'NAO_ENVIAR' | null; regra: { title: string; content: string } | null }> {
+  const t = answer.toLowerCase();
+  const nao = /\bn[aã]o\b.{0,20}(envi|mand|escrev)|cancel|n[aã]o precisa|nem (envi|mand)|descart/.test(t);
+  const sim = /(pode|autoriz|libero|envi|mand|escrev|ok\b|sim\b)/.test(t);
+  const rx: 'ENVIAR' | 'NAO_ENVIAR' | null = nao ? 'NAO_ENVIAR' : sim ? 'ENVIAR' : null;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { acao: rx, regra: null };
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5', max_tokens: 3000,
+        system: `A IA da A&F Soluções Financeiras (correspondente bancária) pediu autorização à equipe para escrever a um banco (Vania do Inter / Jonatas da Creditas) pedindo retorno de um cliente. Interprete a resposta. Responda SÓ JSON: {"acao":"ENVIAR|NAO_ENVIAR|null","regra":{"title":"...","content":"..."}|null}. acao: ENVIAR se a equipe autoriza o envio; NAO_ENVIAR se manda não enviar; null se não deu pra entender. regra: SÓ se a equipe deu uma explicação que vale para casos parecidos (ex.: idade fora do limite dos bancos, imóvel que não atende, quando vale ou não cobrar o banco); escreva em português, GERAL, SEM nome, CPF, valor ou dado de cliente; title = pergunta curta começando por "E-mail aos bancos:"; content = a regra em 1 a 3 frases dizendo QUANDO enviar e QUANDO NÃO enviar e que se trata de e-mail ao banco (Vania/Jonatas). Sem explicação geral: regra null.`,
+        messages: [{ role: 'user', content: `Pergunta:\n${question.slice(0, 3000)}\n\nResposta da equipe:\n${answer}` }],
+      }),
+    });
+    if (!res.ok) return { acao: rx, regra: null };
+    const d: any = await res.json();
+    const m = String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/);
+    if (!m) return { acao: rx, regra: null };
+    const j = JSON.parse(m[0]);
+    const acao = j.acao === 'ENVIAR' || j.acao === 'NAO_ENVIAR' ? j.acao : rx;
+    const r = j.regra;
+    return { acao, regra: r && typeof r.title === 'string' && typeof r.content === 'string' && r.title.trim() && r.content.trim() ? { title: r.title.trim().slice(0, 200), content: r.content.trim().slice(0, 2000) } : null };
+  } catch { return { acao: rx, regra: null }; }
+}
+
+async function answerBankEmailQuestion(q: { id: string; accountId: string; leadId: string; departmentId: string | null; question: string; payload: unknown }, answer: string, userId: string, userName: string | null, io: Io) {
+  const dec = await interpretBankEmailAnswer(q.question, answer);
+  if (!dec.acao) throw new Error('Não entendi. Responda "pode enviar" ou "não envie" (e explique o porquê, que a IA guarda como regra).');
+  const draft = q.payload as BankEmailDraft | null;
+  if (!draft || !draft.to) throw new Error('O rascunho do e-mail se perdeu — peça de novo ou escreva à mão.');
+  let feito: string;
+  if (dec.acao === 'ENVIAR') {
+    const r = await enviarEmailAoBanco(draft, q.leadId, q.accountId);
+    if (!r.ok) throw new Error(`O e-mail não saiu (${r.error}). Tente de novo ou escreva à mão para ${draft.to}.`);
+    feito = `e-mail enviado ao ${draft.empresa} (${draft.to})`;
+  } else {
+    await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `🚫 E-mail ao ${draft.empresa} NÃO enviado por decisão de ${userName || 'alguém da equipe'}: ${answer}` } }).catch(() => {});
+    feito = `não escrevi ao ${draft.empresa}`;
+  }
+  let knowledgeTitle: string | null = null;
+  if (dec.regra && isVoyageConfigured()) {
+    try { const entry = await createKnowledgeEntry(q.accountId, { ...dec.regra, departmentId: q.departmentId }); knowledgeTitle = entry.title; } catch (e) { console.error('[Dúvidas da IA] Não salvou na Base de Conhecimento:', e); }
+  }
+  const updated = await prisma.aiTeamQuestion.update({
+    where: { id: q.id },
+    data: { status: 'ANSWERED', answer, answeredByUserId: userId, answeredByName: userName, answeredAt: new Date(), sendError: null, sentReply: feito, knowledgeTitle },
+    select: SELECT,
+  });
+  await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `Autorização do e-mail ao banco respondida por ${userName || 'alguém da equipe'}: ${answer}\n🤖 ${feito}.${knowledgeTitle ? `\n📚 Aprendi: ${knowledgeTitle}` : ''}` } }).catch(() => {});
+  logActivity({ accountId: q.accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: `respondeu a autorização do e-mail ao ${draft.empresa} (${dec.acao === 'ENVIAR' ? 'enviar' : 'não enviar'})` });
+  emitTo(io, await recipientsFor(q.accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+  return updated;
+}
+
 /** Dúvidas que o usuário enxerga: todas as abertas + as respondidas nos
  *  últimos 7 dias (histórico curto, o balão não é arquivo). */
 export async function listAiTeamQuestions(accountId: string, scopeDepartmentIds: string[]) {
@@ -372,6 +551,7 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
 
   if (q.kind === 'DOC_QUESTION') return answerDocQuestion(q, answer, userId, user?.name || null, io);
   if (q.kind === 'REJECTION_QUESTION') return answerRejectionQuestion(q, answer, userId, user?.name || null, io);
+  if (q.kind === 'BANK_EMAIL') return answerBankEmailQuestion(q, answer, userId, user?.name || null, io);
   if (q.kind === 'EMAIL_QUESTION') {
     const dec = await interpretEmailAnswer(q.question, q.clientMessage || '', answer);
     if (dec.acao !== 'AVISAR_CLIENTE') return answerEmailQuestion(q, answer, dec.acao, dec.regra, userId, user?.name || null, io);

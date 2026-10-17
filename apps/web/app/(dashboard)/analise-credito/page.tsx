@@ -109,6 +109,7 @@ export default function AnaliseCreditoPage() {
   const [modal, setModal] = useState<{ lead: BoardLead; bank: Bank; analysis?: Analysis } | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [view, setView] = useState<'pre' | 'ran'>('pre');
+  const [busca, setBusca] = useState(''); // "Buscar": nome (titular ou 2º participante), CPF ou nº da proposta (Fabio 17/10)
   const [adjust, setAdjust] = useState<BoardLead | null>(null);
   const [notify, setNotify] = useState<BoardLead | null>(null);
   const [forceRun, setForceRun] = useState(false);
@@ -167,9 +168,19 @@ export default function AnaliseCreditoPage() {
   }, []);
 
   const allLeads = data?.leads || [];
-  const leads = useMemo(() => (view === 'pre'
-    ? allLeads.filter((l) => l.inPre)
-    : allLeads.filter((l) => l.ran && !l.inPre).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime())), [allLeads, view]);
+  const leads = useMemo(() => {
+    const base = view === 'pre'
+      ? allLeads.filter((l) => l.inPre)
+      : allLeads.filter((l) => l.ran && !l.inPre).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime());
+    const q = busca.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    const qDig = q.replace(/\D/g, '');
+    if (!q) return base;
+    return base.filter((l) => {
+      const texto = [l.name, l.card.name1, l.card.name2, ...Object.values(l.latest).map((a) => a?.holderName || '')].join(' ').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+      const docs = [l.card.cpf1, l.card.cpf2, ...(l.history || []).flatMap((a) => [(a as any).holderCpf, a.proposalNumber])].map((v) => String(v || '').replace(/\D/g, ''));
+      return texto.includes(q) || (qDig.length >= 3 && docs.some((d) => d.includes(qDig)));
+    });
+  }, [allLeads, view, busca]);
   const allSelected = leads.length > 0 && leads.every((l) => selected.includes(l.id));
   const offline = useMemo(() => banks.filter((b) => !data?.extensions?.[b]?.online), [banks, data]);
 
@@ -368,6 +379,16 @@ export default function AnaliseCreditoPage() {
                 {label} <span className="text-xs text-slate-400">({n})</span>
               </button>
             ))}
+            <div className="ml-3 pb-1.5 flex items-center">
+              <input
+                value={busca}
+                onChange={(e) => setBusca(e.target.value)}
+                placeholder="Buscar por nome, CPF ou nº da proposta"
+                className="w-64 text-sm rounded-lg border border-slate-200 px-3 py-1.5 focus:outline-none focus:border-[#2261a8] text-slate-700 placeholder:text-slate-400"
+                aria-label="Buscar na análise de crédito"
+              />
+              {busca && <button onClick={() => setBusca('')} className="ml-1 text-xs text-slate-400 hover:text-slate-600 px-1" aria-label="Limpar a busca">✕</button>}
+            </div>
             <span className="ml-auto pb-2 text-[11px] text-slate-400 hidden md:block">
               {view === 'pre' ? 'Home Equity · clientes na etapa Pré-Análise' : 'Home Equity · quem já foi analisado nos últimos 90 dias e saiu da Pré-Análise — ajuste ou inverta participantes e rode de novo'}{dataUpdatedAt ? ` · atualizado às ${new Date(dataUpdatedAt).toLocaleTimeString('pt-BR')}` : ''}
             </span>
@@ -375,7 +396,7 @@ export default function AnaliseCreditoPage() {
           {isLoading ? (
             <div className="p-4"><Skeleton className="h-32" /></div>
           ) : leads.length === 0 ? (
-            <div className="text-center py-10 text-slate-400 text-sm">{view === 'pre' ? 'Nenhum cliente na Pré-Análise agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
+            <div className="text-center py-10 text-slate-400 text-sm">{busca.trim() ? `Nenhum cliente encontrado para "${busca.trim()}" nesta aba.` : view === 'pre' ? 'Nenhum cliente na Pré-Análise agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[860px]">

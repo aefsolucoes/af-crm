@@ -396,6 +396,8 @@ model AiTeamQuestion {
   callAt           DateTime? // o mesmo horário em data/hora (vira a tarefa)
   // "DOC_QUESTION" (dúvida da IA sobre um DOCUMENTO do cliente — Fabio 14/10): attachmentId é o arquivo em questão, que a equipe abre no balão pra analisar.
   attachmentId     String?
+  // "BANK_EMAIL" (autorização de e-mail a banco — Fabio 17/10): o rascunho (para, cc, assunto, corpo) e as marcas do card ficam aqui até a equipe autorizar ou negar.
+  payload          Json?
   createdAt        DateTime  @default(now())
 
   @@index([accountId, status])

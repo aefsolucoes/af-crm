@@ -210,7 +210,7 @@ export function analysisNote(a: { bank: string; status: string; detail?: string 
  *  (`kind` CHECK — a extensão acha o cliente pelo CPF na lista do portal; não cria proposta nova). Pedido de RUN para quem JÁ foi
  *  rodado nesse banco vira só uma CONSULTA da proposta (CHECK), a não ser que venha `force` (ex.: depois de ajustar valores). A extensão busca os pedidos (claimQueue). */
 /** Idade (anos completos) a partir de "DD/MM/AAAA" ou "AAAA-MM-DD"; null se não der pra ler. */
-function ageOf(raw: unknown, now = new Date()): number | null {
+export function ageOf(raw: unknown, now = new Date()): number | null {
   const t = String(raw ?? '').trim();
   const br = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -231,6 +231,30 @@ async function interAgeBlock(db: Db, leadId: string): Promise<string | null> {
   ];
   if (people.some((x) => x.age === null || (x.age >= 18 && x.age <= 69))) return null; // sem data de nascimento = não sabe; alguém na faixa = a extensão escolhe
   return `idade fora da faixa do Inter (18 a 69 anos): ${people.map((x) => `${x.name} (${x.age} anos)`).join(', ')}.`;
+}
+
+/** Santander/Credimorar: idade + prazo não pode passar de 80 anos (o portal recusa com "Não conformidade! … Prazo máximo para esse cliente é de N meses"; Nelson, 78 anos, 24/09/1948: 23 meses).
+ *  Prazo máximo (meses) = 80 anos − idade em meses − 1. Com o prazo MÍNIMO do Home Equity (60 meses), ninguém com 75 anos ou mais passa. Texto do motivo se NENHUM participante com nascimento conhecido
+ *  consegue ao menos 60 meses; null = pode rodar (sem nascimento = não sabe; alguém dentro = a extensão escolhe o titular). */
+export function santanderMaxTermMonths(birth: unknown, now = new Date()): number | null {
+  const t = String(birth ?? '').trim();
+  const br = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const [d, m, y] = br ? [Number(br[1]), Number(br[2]), Number(br[3])] : iso ? [Number(iso[3]), Number(iso[2]), Number(iso[1])] : [0, 0, 0];
+  if (!y || y < 1900) return null;
+  let meses = (now.getFullYear() - y) * 12 + (now.getMonth() + 1 - m);
+  if (now.getDate() < d) meses--;
+  return 80 * 12 - meses - 1;
+}
+async function santanderAgeBlock(db: Db, leadId: string): Promise<string | null> {
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const people = [
+    { name: String(cf.participante_1 || lead?.name || ''), age: ageOf(cf.nascimento_1), max: santanderMaxTermMonths(cf.nascimento_1) },
+    ...(cf.cpf_2 || cf.participante_2 ? [{ name: String(cf.participante_2 || '2º participante'), age: ageOf(cf.nascimento_2), max: santanderMaxTermMonths(cf.nascimento_2) }] : []),
+  ];
+  if (people.some((x) => x.max === null || x.max >= 60)) return null;
+  return `idade + prazo acima de 80 anos no Santander (o prazo mínimo é 60 meses): ${people.map((x) => `${x.name} (${x.age} anos: prazo máximo ${x.max} meses)`).join(', ')}.`;
 }
 
 /** SEMPRE TENTAR NO MESMO CPF QUE APROVOU O CLIENTE (Fabio 15/10): ao rodar de novo (valor novo, saldo devedor…), cada banco que já aprovou alguém usa de titular o MESMO CPF dessa aprovação —
@@ -280,6 +304,14 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
       // (Com 1 participante na faixa a extensão decide quem é o titular — não barra aqui.)
       if (bank === 'INTER' && kind === 'RUN' && !p.dryRun) {
         const idade = await interAgeBlock(db, l.id);
+        if (idade) {
+          await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail: `NÃO RODEI: ${idade}`, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
+          created++;
+          continue;
+        }
+      }
+      if (bank === 'CREDIMORAR' && kind === 'RUN' && !p.dryRun) {
+        const idade = await santanderAgeBlock(db, l.id);
         if (idade) {
           await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail: `NÃO RODEI: ${idade}`, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
           created++;
@@ -524,6 +556,26 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) {
     const holder = await holderIfSecond(db, row.leadId, updated.holderName);
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: analysisNote({ ...updated, status: next, holder }) } });
+  }
+  // PROBLEMA que pede a atenção da equipe (Fabio 17/10, Mauricio no Inter: "Simulação — Requer ação — Encontramos um problema. Entre em contato com seu consultor"): vai pro card, uma vez por
+  // problema (mesmo banco e mesmo texto) a cada 12 h — antes só aparecia dentro da aba Análise de Crédito.
+  // Falha OBJETIVA do banco/imóvel (idade + prazo, valor mínimo, terreno…): o card passa a DIZER isso (Fabio 17/10: o cliente barrado por idade ficava só na aba, parecendo "em análise").
+  if (becameFinal && !updated.dryRun && next === 'FAILED' && /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i.test(updated.detail || '')) {
+    const label = BANKS[updated.bank]?.label || updated.bank;
+    const quem = updated.holderName ? ` (${updated.holderName})` : '';
+    const motivo = String(updated.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/^"[^"]*":\s*/, '').replace(/^NÃO RODEI:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 320);
+    const conteudo = `🚫 ${label} NÃO analisa este cliente${quem}: ${motivo}`;
+    const ja = await db.note.findFirst({ where: { leadId: row.leadId, content: conteudo, createdAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
+    if (!ja) await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: conteudo } }).catch(() => {});
+  }
+  if (becameFinal && !updated.dryRun && next === 'CHECK') {
+    const label = BANKS[updated.bank]?.label || updated.bank;
+    const txt = String(updated.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/^conferir:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 360);
+    if (txt) {
+      const conteudo = `⚠️ ${label} pede atenção da equipe${updated.proposalNumber ? ` (proposta nº ${updated.proposalNumber})` : ''}: ${txt}${/PROBLEMA NO INTER|ERRO DO PORTAL INTER/i.test(txt) ? '\nSe continuar assim, o CRM pede a sua autorização pra escrever à Vania (Inter).' : ''}`;
+      const ja = await db.note.findFirst({ where: { leadId: row.leadId, content: conteudo, createdAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
+      if (!ja) await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: conteudo } }).catch(() => {});
+    }
   }
   // Creditas: CPF com proposta ativa que NÃO é nossa → observação no card (precisa acionar o gestor).
   if (becameFinal && !updated.dryRun && /acionar manualmente o gestor/i.test(updated.detail || '')) {

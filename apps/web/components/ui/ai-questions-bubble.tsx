@@ -34,7 +34,7 @@ interface AiQuestion {
   createdAt: string;
   lead: { name: string };
   /** CALL_REQUEST = cliente quer ligação — a Andreia confirma o horário ou propõe outro. */
-  kind?: 'QUESTION' | 'CALL_REQUEST' | 'DOC_QUESTION' | 'EMAIL_QUESTION' | 'REJECTION_QUESTION';
+  kind?: 'QUESTION' | 'CALL_REQUEST' | 'DOC_QUESTION' | 'EMAIL_QUESTION' | 'REJECTION_QUESTION' | 'BANK_EMAIL';
   callWhen?: string | null;
   /** DOC_QUESTION = a IA ficou em dúvida sobre um documento do cliente: o arquivo vem junto pra equipe abrir, analisar e responder. */
   attachment?: { id: string; fileName: string; mimeType: string } | null;
@@ -160,6 +160,23 @@ export function AiQuestionsBubble() {
     }
   }
 
+  // E-mail ao banco: "Autorizar envio" responde na hora; "Não enviar" exige a explicação (a IA guarda como regra).
+  async function bankEmail(q: AiQuestion, enviar: boolean) {
+    const motivo = (drafts[q.id] || '').trim();
+    if (!enviar && !motivo) { toast('Explique no campo por que NÃO enviar — a IA guarda como regra e não pergunta de novo nos casos parecidos.', 'error'); return; }
+    setBusy(`${q.id}:answer`);
+    try {
+      await api.post(`/api/ai-questions/${q.id}/answer`, { answer: enviar ? `Pode enviar. Autorizo o envio.${motivo ? ' ' + motivo : ''}` : `Não envie. ${motivo}` });
+      setDrafts((d) => ({ ...d, [q.id]: '' }));
+      toast(enviar ? 'Autorizado: o e-mail foi enviado.' : 'Ok, o e-mail não será enviado e a IA guardou a regra.', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['ai-questions'] });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não deu certo, tente de novo.', 'error');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function renderQuestion(q: AiQuestion) {
     return (
     <div key={q.id} className={cn('rounded-xl border bg-white p-3', q.status === 'OPEN' ? 'border-amber-300' : 'border-slate-200 opacity-90')}>
@@ -175,6 +192,7 @@ export function AiQuestionsBubble() {
         {q.kind === 'DOC_QUESTION' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 flex-shrink-0">Documento</span>}
         {q.kind === 'EMAIL_QUESTION' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700 flex-shrink-0">E-mail Creditas</span>}
         {q.kind === 'REJECTION_QUESTION' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 flex-shrink-0">Reprovação</span>}
+        {q.kind === 'BANK_EMAIL' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-700 flex-shrink-0">E-mail ao banco</span>}
         <span className={cn('ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0',
           q.status === 'OPEN' ? 'bg-amber-100 text-amber-700' : q.status === 'ANSWERED' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
           {q.status === 'OPEN' ? 'Aguardando' : q.status === 'ANSWERED' ? (q.kind === 'CALL_REQUEST' ? 'Resolvido' : 'Respondida') : 'Assumida'}
@@ -274,6 +292,16 @@ export function AiQuestionsBubble() {
           {q.sendError && (
             <p className="text-xs text-red-600 mb-1.5">Não foi pro cliente: {q.sendError}. Responda pela Inbox ou tente de novo.</p>
           )}
+          {q.kind === 'BANK_EMAIL' && (
+            <div className="flex gap-2 mb-1.5">
+              <button onClick={() => bankEmail(q, true)} disabled={!!busy} className="flex-1 flex items-center justify-center gap-1 text-xs px-3 py-2 rounded-lg text-white font-semibold disabled:opacity-50" style={{ backgroundColor: '#16a34a' }}>
+                {busy === `${q.id}:answer` ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />} Autorizar envio
+              </button>
+              <button onClick={() => bankEmail(q, false)} disabled={!!busy} className="flex-1 flex items-center justify-center gap-1 text-xs px-3 py-2 rounded-lg font-semibold border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50" title="Escreva o motivo no campo abaixo: a IA guarda como regra">
+                <X size={12} /> Não enviar
+              </button>
+            </div>
+          )}
           <textarea
             value={drafts[q.id] || ''}
             onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
@@ -281,11 +309,11 @@ export function AiQuestionsBubble() {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); act(q, 'answer'); }
             }}
             rows={2}
-            placeholder={q.kind === 'DOC_QUESTION' ? 'Responda aqui — a IA reconfere o documento e aprende (nada vai pro cliente)' : q.kind === 'REJECTION_QUESTION' ? 'Responda "Venda Futura" ou "Perdidos" (e por quê) — a IA executa e aprende; nada vai pro cliente agora' : q.kind === 'EMAIL_QUESTION' ? 'Diga o que fazer (ex.: "peça o Bacen ao cliente", "avise o cliente que…", "só aguardar") — a IA executa e aprende; nada vai ao Jonatas' : 'Responda aqui — a IA passa pro cliente'}
+            placeholder={q.kind === 'DOC_QUESTION' ? 'Responda aqui — a IA reconfere o documento e aprende (nada vai pro cliente)' : q.kind === 'REJECTION_QUESTION' ? 'Responda "Venda Futura" ou "Perdidos" (e por quê) — a IA executa e aprende; nada vai pro cliente agora' : q.kind === 'BANK_EMAIL' ? 'Explique o porquê (ex.: "não envie: cliente fora da idade dos bancos") — a IA guarda como regra; nada vai ao banco sem o seu OK' : q.kind === 'EMAIL_QUESTION' ? 'Diga o que fazer (ex.: "peça o Bacen ao cliente", "avise o cliente que…", "só aguardar") — a IA executa e aprende; nada vai ao Jonatas' : 'Responda aqui — a IA passa pro cliente'}
             className="w-full text-sm rounded-lg border border-slate-200 px-2.5 py-1.5 resize-none focus:outline-none focus:border-[#2261a8] text-slate-800"
           />
           <div className="flex items-center justify-end gap-2 mt-1.5">
-            {q.kind !== 'DOC_QUESTION' && q.kind !== 'EMAIL_QUESTION' && q.kind !== 'REJECTION_QUESTION' && (
+            {q.kind !== 'DOC_QUESTION' && q.kind !== 'EMAIL_QUESTION' && q.kind !== 'REJECTION_QUESTION' && q.kind !== 'BANK_EMAIL' && (
               <button
                 onClick={() => act(q, 'dismiss')}
                 disabled={!!busy}
@@ -301,7 +329,7 @@ export function AiQuestionsBubble() {
               className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50"
               style={{ backgroundColor: '#2261a8' }}
             >
-              {busy === `${q.id}:answer` ? <><Loader2 size={12} className="animate-spin" /> {q.kind === 'DOC_QUESTION' ? 'Reconferindo o documento...' : (q.kind === 'EMAIL_QUESTION' || q.kind === 'REJECTION_QUESTION') ? 'A IA está executando...' : 'Passando pro cliente...'}</> : <><Send size={12} /> Responder</>}
+              {busy === `${q.id}:answer` ? <><Loader2 size={12} className="animate-spin" /> {q.kind === 'DOC_QUESTION' ? 'Reconferindo o documento...' : (q.kind === 'EMAIL_QUESTION' || q.kind === 'REJECTION_QUESTION' || q.kind === 'BANK_EMAIL') ? 'A IA está executando...' : 'Passando pro cliente...'}</> : <><Send size={12} /> Responder</>}
             </button>
           </div>
         </div>
@@ -331,11 +359,13 @@ export function AiQuestionsBubble() {
                     ? (popupQuestions.length > 1 ? `${popupQuestions.length} documentos em dúvida` : 'Documento em dúvida')
                     : popupQuestions.every((q) => q.kind === 'REJECTION_QUESTION')
                     ? (popupQuestions.length > 1 ? `${popupQuestions.length} reprovações em dúvida` : 'Reprovação em dúvida')
+                    : popupQuestions.every((q) => q.kind === 'BANK_EMAIL')
+                    ? (popupQuestions.length > 1 ? `${popupQuestions.length} e-mails aos bancos pra autorizar` : 'Autorizar e-mail ao banco')
                     : popupQuestions.every((q) => q.kind === 'EMAIL_QUESTION')
                     ? (popupQuestions.length > 1 ? `${popupQuestions.length} e-mails da Creditas` : 'E-mail da Creditas')
                     : popupQuestions.length > 1 ? `A IA tem ${popupQuestions.length} pendências` : 'A IA tem uma dúvida'}
                 </p>
-                <p className="text-[11px] text-white/75 leading-tight">{popupQuestions.every((q) => q.kind === 'DOC_QUESTION') ? 'Abra o documento, analise e responda — a IA aprende com a sua resposta' : popupQuestions.every((q) => q.kind === 'REJECTION_QUESTION') ? 'Venda Futura ou Perdidos? A IA aprende com a sua resposta' : popupQuestions.every((q) => q.kind === 'EMAIL_QUESTION') ? 'O Jonatas respondeu — diga o que fazer e a IA executa e aprende' : 'Ela disse ao cliente que ia verificar — responda e ela repassa'}</p>
+                <p className="text-[11px] text-white/75 leading-tight">{popupQuestions.every((q) => q.kind === 'DOC_QUESTION') ? 'Abra o documento, analise e responda — a IA aprende com a sua resposta' : popupQuestions.every((q) => q.kind === 'REJECTION_QUESTION') ? 'Venda Futura ou Perdidos? A IA aprende com a sua resposta' : popupQuestions.every((q) => q.kind === 'BANK_EMAIL') ? 'Confira os dados do cliente e autorize ou não — a IA guarda a sua explicação como regra' : popupQuestions.every((q) => q.kind === 'EMAIL_QUESTION') ? 'O Jonatas respondeu — diga o que fazer e a IA executa e aprende' : 'Ela disse ao cliente que ia verificar — responda e ela repassa'}</p>
               </div>
               <button onClick={closePopup} className="p-1 rounded-md hover:bg-white/15" aria-label="Fechar" title="Fechar (a dúvida continua no balão)">
                 <X size={18} />

@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { createRequests, setOverrides, parseHolder } from './credit-analysis.service';
-import { sendApprovalNoticeNow, sendEarlyStatusNotice, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText, aprovadasSemNumeros } from './approval-notice.service';
+import { requestBankEmail } from './ai-team-question.service';
+import { inNoticeWindow, sendApprovalNoticeNow, sendEarlyStatusNotice, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText, aprovadasSemNumeros } from './approval-notice.service';
 
 /**
  * Análise automática de crédito (Fabio 14/10): assim que o cliente preenche a proposta e a IA do CRM confere que os dados estão
@@ -99,8 +100,32 @@ async function aiReadiness(leadId: string): Promise<{ ready: boolean; reason: st
   try { const j = JSON.parse(m[0]); return { ready: j.ready === true, reason: String(j.reason || '').slice(0, 300) }; } catch { return null; }
 }
 
+/** Idade a partir da qual NINGUÉM na proposta consegue crédito (todos os participantes com nascimento conhecido têm essa idade ou mais) e o card é descartado na entrada.
+ *  Regras que o CRM conhece: Inter aceita de 18 a 69 anos (o portal recusa fora disso); Santander/Credimorar exige idade + prazo ≤ 80 anos (aos 75 anos e meio o prazo máximo caiu pra 23 meses —
+ *  abaixo do mínimo); Creditas: limite NÃO confirmado (por isso 75, a idade em que Inter e Santander já barram de fato). Ajustar aqui se o Fabio confirmar outro limite. */
+export const IDADE_LIMITE_ENTRADA = 75;
+
+async function descartarPorIdade(accountId: string, l: { id: string; name: string }, cf: Cf, io: any): Promise<boolean> {
+  if (cf._ageBlockAt) return true;
+  const { ageOf } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const pessoas = [
+    { nome: String(cf.participante_1 || l.name), idade: ageOf(cf.nascimento_1) },
+    ...(cf.cpf_2 || cf.participante_2 ? [{ nome: String(cf.participante_2 || '2º participante'), idade: ageOf(cf.nascimento_2) }] : []),
+  ];
+  if (pessoas.some((x) => x.idade === null || x.idade < IDADE_LIMITE_ENTRADA)) return false; // sem nascimento = não sabe; alguém mais novo = os bancos ainda podem aceitar
+  if (!inNoticeWindow()) return false; // avisos ao cliente só das 07h às 21h: tenta de novo no próximo minuto dentro do horário
+  const resumo = pessoas.map((x) => `${x.nome} (${x.idade} anos)`).join(', ');
+  const { sendAgeBlockNotice, markRejectedAndMove } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  await saveCf(l.id, { _ageBlockAt: new Date().toISOString() }); // antes de enviar: se algo falhar, não repete em laço
+  const out = await sendAgeBlockNotice({ accountId, leadId: l.id, io });
+  await markRejectedAndMove({ accountId, leadId: l.id, motivo: `idade fora do limite dos bancos (${resumo}; Inter aceita de 18 a 69 anos e o Santander exige idade + prazo até 80 anos)`, disqualify: true, io });
+  await addNote(l.id, out.ok ? `🚫 Descartado na entrada por IDADE (${resumo}): os bancos não aprovam essa faixa de idade. O cliente foi avisado de forma amigável (${out.via === 'whatsapp' ? 'WhatsApp' : out.via === 'template' ? 'template do WhatsApp' : 'e-mail'}) e nenhuma análise foi rodada.` : `🚫 Descartado na entrada por IDADE (${resumo}), mas o aviso ao cliente NÃO saiu (${out.error}). Avise à mão.`);
+  console.log(`[Triagem de idade] ${l.name}: descartado (${resumo}); aviso ${out.ok ? out.via : 'FALHOU'}`);
+  return true;
+}
+
 /** 1) Cards novos na Pré-Análise: a IA confere os dados e, estando certos, pede as análises nos 3 bancos. */
-async function startNewLeads(accountId: string, enabledAt: Date) {
+async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
   const leads = await prisma.lead.findMany({
     where: {
       accountId, status: 'OPEN', archived: false, isGroup: false, stageEnteredAt: { gte: enabledAt, lte: new Date(Date.now() - MIN_AFTER_STAGE_MS) },
@@ -114,6 +139,8 @@ async function startNewLeads(accountId: string, enabledAt: Date) {
     const cf = (l.customFields || {}) as Cf;
     if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     if (cf._autoStartedAt || cf._autoGiveUp) continue;
+    // TRIAGEM DE IDADE NA ENTRADA (Fabio 17/10, Admir de 75 anos: o CRM sabia que o Inter e o Santander barravam e deixou o card parado, com e-mails inúteis aos bancos).
+    if (await descartarPorIdade(accountId, l, cf, io).catch((e) => { console.error('[Triagem de idade]', e?.message); return false; })) continue;
     if (cf._autoCheckedAt && Date.now() - new Date(cf._autoCheckedAt).getTime() < AI_CHECK_EVERY_MS) continue;
     const checks = Number(cf._autoChecks || 0) + 1;
     const verdict = await aiReadiness(l.id).catch(() => null);
@@ -475,13 +502,13 @@ function parseFicha(text: string): { label: string; value: string }[] {
  *  sua proposta" e manda de volta pra lista. Na 1ª vez pode ser passageiro; na 2ª (ou 3ª) conferência com o mesmo erro, manda UM e-mail à Vania — da conta do Fabio, cc Andreia — com o
  *  problema E os dados completos do cliente pra ela vincular o cadastro/proposta lá (o mesmo texto que o Fabio aprovou à mão). A extensão do Inter (2026.10.15.1+) marca esses casos com
  *  "ERRO DO PORTAL INTER" no detalhe. 1 e-mail por card (`_interVaniaAt`), 07h–21h, sem teto por dia (Fabio 16/10: deu erro, o e-mail vai, não importa quantos cards); nota + push. */
-async function emailInterSemProposta(accountId: string) {
+async function emailInterSemProposta(accountId: string, io?: any) {
   if (await interEmailsPaused(accountId)) return; // pausa pedida pelo Fabio (17/10)
   const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
   if (hora < 7 || hora >= 21) return; // e-mail pra gestora só em horário comercial
   const grupos = await prisma.$queryRaw<{ leadId: string; first: Date }[]>`
     SELECT a."leadId", min(a."createdAt") AS first FROM "CreditAnalysis" a
-    WHERE a."accountId" = ${accountId} AND a.bank = 'INTER' AND a."dryRun" = false AND a."createdAt" > now() - interval '3 days' AND a.detail ~* 'ERRO DO PORTAL INTER'
+    WHERE a."accountId" = ${accountId} AND a.bank = 'INTER' AND a."dryRun" = false AND a."createdAt" > now() - interval '3 days' AND a.detail ~* 'ERRO DO PORTAL INTER|PROBLEMA NO INTER'
     GROUP BY a."leadId" HAVING count(*) >= 2 LIMIT 5`;
   for (const g of grupos) {
     const lead = await prisma.lead.findUnique({ where: { id: g.leadId }, select: { id: true, name: true, status: true, archived: true, customFields: true } });
@@ -514,22 +541,27 @@ async function emailInterSemProposta(accountId: string) {
     ].filter(([, v]) => v).map(([k, v]) => `• ${k}: ${v}`);
     const dias = await prisma.creditAnalysis.findMany({ where: { leadId: g.leadId, bank: 'INTER', kind: 'RUN', dryRun: false, createdAt: { gt: new Date(Date.now() - 3 * 86_400_000) } }, select: { createdAt: true }, orderBy: { createdAt: 'asc' } });
     const datas = Array.from(new Set(dias.map((d) => d.createdAt.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' })))).join(' e ');
-    const problema = comNumero?.proposalNumber
+    const dProb = await prisma.creditAnalysis.findFirst({ where: { leadId: g.leadId, bank: 'INTER', dryRun: false, detail: { contains: 'PROBLEMA NO INTER' } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
+    const simul = (/Simulação:\s*([^\n]*?)(?:\.\s*O Inter pede|$)/.exec(dProb?.detail || '') || [])[1];
+    const problema = dProb && comNumero?.proposalNumber
+      ? `a proposta nº ${comNumero.proposalNumber} foi enviada pelo portal de parceiros, mas no portal ela está parada na etapa "Simulação" com "${simul || 'Requer ação — Encontramos um problema. Entre em contato com seu consultor'}", então não conseguimos seguir`
+      : comNumero?.proposalNumber
       ? `a proposta nº ${comNumero.proposalNumber} foi enviada pelo portal de parceiros ${datas ? `(${datas})` : ''}, mas ao conferir o resultado o portal mostra "Ocorreu um erro ao processar os dados da sua proposta" e volta pra lista, então não conseguimos acompanhar a análise`
       : `enviamos a proposta pelo portal de parceiros ${datas ? `nos dias ${datas}` : 'mais de uma vez'}, mas ela não gerou número de proposta: no portal o cliente aparece só como rascunho (sem número, valor ou status) e, ao conferir, o portal mostra "Ocorreu um erro ao processar os dados da sua proposta" e volta pra lista, então não conseguimos acompanhar a análise`;
     const body = `Olá, Vania, tudo bem?\n\nPreciso da sua ajuda com o cliente ${lead.name.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity: ${problema}.\n\nSeguem os dados completos do cliente para você vincular o cadastro/proposta aí no Inter:\n\nDADOS DO CLIENTE\n${cliente.join('\n')}\n\nOPERAÇÃO\n${operacao.join('\n')}\n\nVocê poderia verificar o que aconteceu com esse cadastro e, se possível, liberar/criar a proposta ou nos orientar sobre o que precisamos ajustar?\n\nObrigado!`;
-    try {
-      const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-      await sendEmailFrom({ acc, userId: acc.userId, to: [INTER_GESTORA_EMAIL], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${lead.name.toUpperCase()} - proposta Home Equity com erro no portal`, body, leadId: lead.id, io: null });
-      await saveCf(lead.id, { _interVaniaAt: new Date().toISOString() });
-      await addNote(lead.id, '📧 E-mail enviado à Vania (Inter, vania.tavares@inter.co, cc Andreia) automaticamente: o portal do Inter deu o erro "Ocorreu um erro ao processar os dados da sua proposta" em 2 conferências. Mandei os dados completos do cliente pra ela vincular o cadastro.');
-      const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-      sendPushToAccount(accountId, { title: lead.name, body: 'Inter deu erro na proposta — e-mail com os dados enviado à Vania', leadId: lead.id }).catch(() => {});
-      console.log(`[Inter sem proposta] ${lead.name}: e-mail com os dados enviado à Vania`);
-    } catch (e: any) {
-      await saveCf(lead.id, { _interVaniaAt: new Date().toISOString() }); // não repete em laço
-      await addNote(lead.id, `⚠️ O Inter deu erro na proposta em 2 conferências: NÃO consegui enviar o e-mail à Vania (${e?.message || e}). Mande à mão.`);
-    }
+    // Fabio 17/10: e-mail a banco só com a AUTORIZAÇÃO da equipe (balão "Dúvidas da IA", com os dados do cliente e o e-mail pronto); regra já ensinada decide sozinha.
+    const r = await requestBankEmail({
+      accountId, leadId: lead.id, leadName: lead.name, io,
+      draft: {
+        bank: 'INTER', empresa: 'Inter', quem: 'Vania', flag: '_interVaniaAt', emailAccountId: acc.id, userId: acc.userId,
+        to: INTER_GESTORA_EMAIL, cc: ['andreia@aefsolucoesfinanceiras.com.br'],
+        subject: `CPF ${cpf || '-'} - ${lead.name.toUpperCase()} - proposta Home Equity com erro no portal`, body,
+        motivo: 'o portal do Inter deu erro ao conferir a proposta, em 2 conferências',
+        nota: '📧 E-mail enviado à Vania (Inter, vania.tavares@inter.co, cc Andreia), com a autorização da equipe: o portal do Inter deu o erro "Ocorreu um erro ao processar os dados da sua proposta" em 2 conferências. Mandei os dados completos do cliente pra ela vincular o cadastro.',
+        pushBody: 'Inter deu erro na proposta — e-mail com os dados enviado à Vania',
+      },
+    }).catch((e: any) => { console.error('[Inter sem proposta] pedir autorização:', e?.message); return 'erro'; });
+    console.log(`[Inter sem proposta] ${lead.name}: e-mail à Vania → ${r}`);
   }
 }
 
@@ -561,7 +593,7 @@ export function semRetornoHa24h(bank: 'INTER' | 'CREDITAS', cf: Cf, rows: { bank
 }
 
 /** 1 e-mail por card e banco (fabio@, cc Andreia), 07h–21h; nota + push. Só card que ainda espera aprovação (Pré-Análise). */
-async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS') {
+async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS', io?: any) {
   if (bank === 'INTER' && (await interEmailsPaused(accountId))) return; // pausa pedida pelo Fabio (17/10); Creditas segue normal
   const cfg = SEM_RETORNO[bank];
   const hora = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }));
@@ -589,18 +621,17 @@ async function emailSemRetorno(accountId: string, bank: 'INTER' | 'CREDITAS') {
       : `ela segue sem decisão (nem aprovada nem negada) na Análise de Crédito`;
     const pendencia = 'algum documento ou qualquer pendência'; // não cita o SCR: o formulário só vai ao cliente se o Jonatas pedir por conta dele
     const corpo = `Olá, ${cfg.quem}, tudo bem?\n\nPoderia me ajudar a verificar ${bank === 'CREDITAS' ? 'a aprovação' : 'a proposta'} do cliente ${quem.toUpperCase()}${cpf ? ` (CPF ${cpf})` : ''}, Home Equity?${numero ? ` ${bank === 'CREDITAS' ? 'ID/proposta' : 'Proposta nº'} ${numero}.` : ''}\n\nEnviamos a proposta ${bank === 'CREDITAS' ? 'pela plataforma da Creditas' : 'pelo portal de parceiros do Inter'} em ${quando} e, há mais de 24 horas, ${situacao}.\n\nSe faltar ${pendencia} da nossa parte, me avise que resolvo na hora.\n\nObrigado!`;
-    try {
-      const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-      await sendEmailFrom({ acc, userId: acc.userId, to: [cfg.email], cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${quem.toUpperCase()} - ${bank === 'CREDITAS' ? 'aprovação' : 'proposta'} Home Equity sem retorno no ${cfg.empresa}`, body: corpo, leadId: lead.id, io: null } as any);
-      await saveCf(lead.id, { [cfg.flag]: new Date().toISOString() });
-      await addNote(lead.id, `${cfg.notaPrefixo} (${cfg.empresa}, ${cfg.email}, cc Andreia) automaticamente: o ${cfg.empresa} está há mais de ${horas} h sem retorno (${bank === 'CREDITAS' ? 'sem as condições da proposta' : 'sem aprovação nem negativa'}). Perguntei da proposta de ${quem}.`);
-      const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-      sendPushToAccount(accountId, { title: lead.name, body: `${cfg.empresa} há +24 h sem retorno — e-mail enviado ${bank === 'CREDITAS' ? 'ao Jonatas' : 'à Vania'}`, leadId: lead.id }).catch(() => {});
-      console.log(`[${cfg.empresa} sem retorno] ${lead.name}: e-mail enviado a ${cfg.quem}`);
-    } catch (e: any) {
-      await saveCf(lead.id, { [cfg.flag]: new Date().toISOString() }); // não repete em laço
-      await addNote(lead.id, `⚠️ O ${cfg.empresa} está há mais de ${horas} h sem retorno: NÃO consegui enviar o e-mail ${bank === 'CREDITAS' ? 'ao Jonatas' : 'à Vania'} (${e?.message || e}). Mande à mão para ${cfg.email}.`);
-    }
+    const r = await requestBankEmail({
+      accountId, leadId: lead.id, leadName: lead.name, io,
+      draft: {
+        bank, empresa: cfg.empresa, quem: cfg.quem, flag: cfg.flag, emailAccountId: acc.id, userId: acc.userId,
+        to: cfg.email, cc: ['andreia@aefsolucoesfinanceiras.com.br'], subject: `CPF ${cpf || '-'} - ${quem.toUpperCase()} - ${bank === 'CREDITAS' ? 'aprovação' : 'proposta'} Home Equity sem retorno no ${cfg.empresa}`, body: corpo,
+        motivo: `o ${cfg.empresa} está há mais de ${horas} h sem retorno ${bank === 'CREDITAS' ? '(sem as condições da proposta)' : '(sem aprovação nem negativa)'}`,
+        nota: `${cfg.notaPrefixo} (${cfg.empresa}, ${cfg.email}, cc Andreia) com a autorização da equipe: o ${cfg.empresa} está há mais de ${horas} h sem retorno (${bank === 'CREDITAS' ? 'sem as condições da proposta' : 'sem aprovação nem negativa'}). Perguntei da proposta de ${quem}.`,
+        pushBody: `${cfg.empresa} há +24 h sem retorno — e-mail enviado ${bank === 'CREDITAS' ? 'ao Jonatas' : 'à Vania'}`,
+      },
+    }).catch((e: any) => { console.error(`[${cfg.empresa} sem retorno] pedir autorização:`, e?.message); return 'erro'; });
+    console.log(`[${cfg.empresa} sem retorno] ${lead.name}: e-mail a ${cfg.quem} → ${r}`);
   }
 }
 
@@ -635,16 +666,16 @@ export async function processCreditAutomation(io: any): Promise<void> {
   try {
     const settings = await prisma.creditAutoSetting.findMany({ where: { enabled: true, paused: false, enabledAt: { not: null } } });
     for (const s of settings) {
-      await startNewLeads(s.accountId, s.enabledAt!).catch((e) => console.error('[Análise automática] início:', e?.message));
+      await startNewLeads(s.accountId, s.enabledAt!, io).catch((e) => console.error('[Análise automática] início:', e?.message));
       await cascadeToSecond(s.accountId).catch((e) => console.error('[Análise automática] 2º participante:', e?.message));
       await noticeClients(s.accountId, io).catch((e) => console.error('[Análise automática] aviso:', e?.message));
       await closeRejected(s.accountId, io).catch((e) => console.error('[Análise automática] fechar reprovados:', e?.message));
       await retryTechnicalFailures(s.accountId).catch((e) => console.error('[Análise automática] refazer falhas técnicas:', e?.message));
       await ackPendingProposals(s.accountId, io).catch((e) => console.error('[Análise automática] confirmação da proposta:', e?.message));
       await flagInterSemNumero(s.accountId).catch((e) => console.error('[Análise automática] Inter sem número:', e?.message));
-      await emailInterSemProposta(s.accountId).catch((e) => console.error('[Análise automática] e-mail Vania:', e?.message));
-      await emailSemRetorno(s.accountId, 'INTER').catch((e) => console.error('[Análise automática] e-mail Vania (sem retorno):', e?.message));
-      await emailSemRetorno(s.accountId, 'CREDITAS').catch((e) => console.error('[Análise automática] e-mail Jonatas (sem retorno):', e?.message));
+      await emailInterSemProposta(s.accountId, io).catch((e) => console.error('[Análise automática] e-mail Vania:', e?.message));
+      await emailSemRetorno(s.accountId, 'INTER', io).catch((e) => console.error('[Análise automática] e-mail Vania (sem retorno):', e?.message));
+      await emailSemRetorno(s.accountId, 'CREDITAS', io).catch((e) => console.error('[Análise automática] e-mail Jonatas (sem retorno):', e?.message));
       await earlyStatusNotices(s.accountId, io).catch((e) => console.error('[Análise automática] aviso antecipado:', e?.message));
       { const { processDocsChecks } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsChecks(s.accountId, io).catch((e: any) => console.error('[Docs]', e?.message)); }
       { const { processDocsFollowUps } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsFollowUps(s.accountId, io).catch((e: any) => console.error('[Docs] cobrança:', e?.message)); }

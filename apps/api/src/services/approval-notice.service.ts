@@ -309,14 +309,17 @@ const DOCS_HEADER = 'Para seguir com a contratação do crédito encaminhar os s
 const DOCS_MARK = 'encaminhar os seguintes documentos';
 const DOCS_MARK_OLD = 'o banco pede os seguintes documentos';
 const FALLBACK_PESSOAIS = ['Documento de identificação', 'Comprovante de residência', 'Comprovante de estado civil (certidão de nascimento ou casamento)'];
+// Renda SEMPRE na lista (Fabio 17/10, Luzia): complementa a lista com a renda pra abranger de uma vez a continuidade no Inter e a documentação pra seguir na Creditas. A equipe pode editar na Resposta rápida "Documentos Home Equity" (seção "*Renda:*").
+const FALLBACK_RENDA = ['Comprovante de renda dos últimos 3 meses (contracheque/holerite, pró-labore ou extratos bancários)', 'Declaração do Imposto de Renda (IRPF) completa, com o recibo de entrega (se declara)'];
 const FALLBACK_IMOVEL = ['Certidão de ônus reais/ Matrícula do imóvel', 'Inscrição Imobiliária/ IPTU', 'Capa do IPTU com as metragens'];
 
 /** Linhas "• ..." de cada seção ("*Proponente:*" / "*Imóvel:*") da Resposta rápida "Documentos Home Equity" — a equipe edita lá. */
-function parseDocsTemplate(body: string | null | undefined): { pessoais: string[]; imovel: string[] } {
-  const out = { pessoais: [] as string[], imovel: [] as string[] };
-  let cur: 'pessoais' | 'imovel' | null = null;
+function parseDocsTemplate(body: string | null | undefined): { pessoais: string[]; imovel: string[]; renda: string[] } {
+  const out = { pessoais: [] as string[], imovel: [] as string[], renda: [] as string[] };
+  let cur: 'pessoais' | 'imovel' | 'renda' | null = null;
   for (const raw of String(body || '').split('\n')) {
     const l = raw.trim();
+    if (/^\*?\s*(comprova[cç][aã]o de )?renda/i.test(l)) { cur = 'renda'; continue; }
     if (/^\*?\s*proponente/i.test(l)) { cur = 'pessoais'; continue; }
     if (/^\*?\s*im[oó]vel/i.test(l)) { cur = 'imovel'; continue; }
     const m = /^[•\-*]\s*(.+)$/.exec(l);
@@ -337,16 +340,17 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
     const l0 = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     semCertidao = /^nao/.test(String(((l0?.customFields || {}) as Record<string, any>).possui_certidao || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim());
   }
-  const renda: string[] = [];
-  for (const o of options) for (const d of o.documentos?.itens || []) if (!renda.includes(d)) renda.push(d);
-  const lista = [...pessoais, ...renda].map((d) => `• ${d}`).join('\n');
+  const renda: string[] = [...(parsed.renda.length ? parsed.renda : FALLBACK_RENDA)];
+  for (const o of options) for (const d of o.documentos?.itens || []) if (!renda.some((x) => normN(x) === normN(d))) renda.push(d); // + o que o banco pediu de renda (aprovado a menor)
+  const lista = pessoais.map((d) => `• ${d}`).join('\n');
+  const listaRenda = renda.map((d) => `• ${d}`).join('\n');
   let conjuge = '';
   if (leadId) {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const p2 = String(((lead?.customFields || {}) as Record<string, any>).participante_2 || '').trim();
     if (p2) conjuge = `\n\n*Documentos pessoais do cônjuge / 2º participante (${p2}):*\n${pessoais.map((d) => `• ${d}`).join('\n')}\n_Se moram juntos, o comprovante de residência e a certidão podem ser os mesmos._`;
   }
-  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}${conjuge}\n\n*Imóvel:*\n${imovel.map((d) => `• ${d}`).join('\n')}${semCertidao ? '\n_Se você não tiver a certidão de ônus/matrícula, me conta o que você tem do imóvel (escritura, matrícula, IPTU ou qualquer documento com o número da matrícula) que eu te ajudo._' : ''}`;
+  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}\n\n*Comprovação de renda*\n${listaRenda}${conjuge}\n\n*Imóvel:*\n${imovel.map((d) => `• ${d}`).join('\n')}${semCertidao ? '\n_Se você não tiver a certidão de ônus/matrícula, me conta o que você tem do imóvel (escritura, matrícula, IPTU ou qualquer documento com o número da matrícula) que eu te ajudo._' : ''}`;
 }
 
 /** Texto de aprovação montado pro card (notas primeiro, aba Financiamento
@@ -929,6 +933,34 @@ export async function sendRejectionNoticeNow(p: { accountId: string; leadId: str
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado que não foi aprovado (${built.reasons.join('; ')}).` } }).catch(() => {});
   logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou o cliente que não foi aprovado' } as any);
   return { ok: true, via: 'whatsapp' };
+}
+
+/** Aviso AMIGÁVEL de idade (Fabio 17/10, Admir de 75 anos): os bancos têm limite de idade, então o cliente é avisado na entrada, sem rodar nada e sem prometer alternativa.
+ *  WhatsApp dentro da janela de 24 h; fora dela, vai o template aprovado "reprovacao" (texto geral) — e, se falhar, e-mail; sem nada disso, nota pra equipe. */
+export async function sendAgeBlockNotice(p: { accountId: string; leadId: string; io?: any }): Promise<{ ok: boolean; via?: 'whatsapp' | 'template' | 'email'; error?: string }> {
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true, email: true } } } });
+  if (!lead) return { ok: false, error: 'Card não encontrado' };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name);
+  const texto = `Oi${nome ? `, ${nome}` : ''}! Tudo bem? 😊 Analisei o seu pedido com carinho e, infelizmente, não vamos conseguir crédito para a sua faixa de idade: os bancos parceiros têm um limite de idade para a contratação (a idade somada ao prazo do financiamento não pode passar do permitido). Agradeço muito o seu contato e o seu interesse!`;
+  if (await whatsappWindowOpen(p.leadId)) {
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: texto, io: p.io });
+    if (r.success) return { ok: true, via: 'whatsapp' };
+    return { ok: false, error: (r as any).error || 'falha ao enviar' };
+  }
+  const tpl = await metaTemplate(p.accountId, REJECTION_TEMPLATE);
+  if (tpl.approved && tpl.body) {
+    const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+    const rt = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, templateName: REJECTION_TEMPLATE, language: 'pt_BR', bodyParams: [], previewText: tpl.body, io: p.io });
+    if (rt.success) return { ok: true, via: 'template' };
+  }
+  const to = String(lead.contact?.email || cf.email_1 || '').trim();
+  if (/^\S+@\S+\.\S+$/.test(to)) {
+    const { sendFollowUpEmail } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+    if (await sendFollowUpEmail({ accountId: p.accountId, leadId: p.leadId, to, text: texto, subject: 'Sobre o seu pedido de crédito — A&F Soluções Financeiras', io: p.io })) return { ok: true, via: 'email' };
+  }
+  return { ok: false, error: 'janela de 24 h fechada, template e e-mail indisponíveis' };
 }
 
 /** Marca o card como REPROVADO e o tira do funil ativo (mesmo caminho do botão "Reprovado" da tela: status Perdido + rejectedAt + funil "Perdidos").
