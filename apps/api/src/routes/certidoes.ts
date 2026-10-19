@@ -58,6 +58,14 @@ router.post('/:id/adopt', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao adotar o pedido', 400); }
 });
 
+// Confere de novo (a IA lê o PDF do Drive: dono do imóvel). Por padrão só MOSTRA o veredito e o texto (dryRun); { dryRun: false } avisa e manda ao cliente de verdade.
+router.post('/:id/review', async (req: AuthRequest, res: Response) => {
+  try {
+    const { reviewIssuedCertidao } = await import('../services/certidao-followup.service');
+    res.json(await reviewIssuedCertidao(prisma, { accountId: req.user!.accountId, id: req.params.id, dryRun: req.body?.dryRun !== false, io: io(req) }));
+  } catch (err) { fail(res, err, 'Erro ao conferir a certidão', 400); }
+});
+
 // Botão "Buscar certidão agora": manda a extensão ao portal já (dentro do horário) pra achar a certidão e guardar no Drive.
 router.post('/:id/collect-now', async (req: AuthRequest, res: Response) => {
   try { res.json({ ok: true, ...(await requestCollectNow(prisma, { accountId: req.user!.accountId, id: req.params.id, io: io(req) })) }); } catch (err) { fail(res, err, 'Erro ao pedir a busca', 400); }

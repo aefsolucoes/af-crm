@@ -304,6 +304,8 @@ export async function finishCertidao(db: Db, p: { accountId: string; id: string;
     pushAll(p.accountId, '⚠️ Certidão emitida, mas NÃO foi pro Drive', `${nome} — matrícula ${r.matricula}: ${drive.reason}. Vou tentar de novo.`, r.leadId);
   }
   emitUpdate(p.io, p.accountId, r.leadId, r.id);
+  // Em segundo plano (não segura a extensão): a IA lê a certidão, confere o dono do imóvel e avisa/encaminha ao cliente (certidao-followup.service).
+  import('./certidao-followup.service').then((m) => m.afterCertidaoSaved(db, { accountId: p.accountId, requestId: r.id, leadId: r.leadId, matricula: r.matricula, pdf: p.pdf, io: p.io })).catch((e) => console.error('[Certidão] conferência/envio ao cliente falhou:', e?.message));
   return out;
 }
 

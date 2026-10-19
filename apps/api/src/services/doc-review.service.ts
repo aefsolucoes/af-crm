@@ -142,7 +142,7 @@ async function recentConversation(leadId: string): Promise<string> {
   return msgs.reverse().map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Atendente'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 220)}`).join('\n');
 }
 
-function participantsContext(cf: Record<string, any>, leadName: string, setor = ''): string {
+export function participantsContext(cf: Record<string, any>, leadName: string, setor = ''): string {
   const parts = [
     cf.participante_1 && `1) ${cf.participante_1}${cf.cpf_1 ? ` (CPF ${String(cf.cpf_1).replace(/\D/g, '').replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4')})` : ''}`,
     cf.participante_2 && `2) ${cf.participante_2}${cf.cpf_2 ? ` (CPF ${String(cf.cpf_2).replace(/\D/g, '').replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4')})` : ''}`,

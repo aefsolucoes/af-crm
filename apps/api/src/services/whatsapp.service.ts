@@ -1192,6 +1192,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       }
       const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
       sendPushToAccount(accountId, { title: profileName || 'Nova mensagem', body: text || '📎 Anexo recebido', leadId }).catch(() => {});
+      // Aviso + certidão de ônus que esperavam a janela de 24 h abrir (template "Olá, tudo bem?" já foi) saem quando o cliente responde (certidao-followup).
+      { const { releaseCertidaoPending } = require('./certidao-followup.service') as typeof import('./certidao-followup.service'); releaseCertidaoPending(prisma, { accountId, leadId, io }).catch((err: any) => console.warn('[Certidão] aviso pendente:', err?.message)); }
 
       // Card em "Aguardando Documentação": o cliente mandou um DOCUMENTO
       // (foto ou arquivo) → agenda a conferência (espera ele terminar de
