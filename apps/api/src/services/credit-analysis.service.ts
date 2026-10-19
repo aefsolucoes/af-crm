@@ -612,7 +612,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun && /acionar manualmente o gestor/i.test(updated.detail || '')) {
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Creditas: este CPF já possui uma proposta ativa que NÃO está na nossa conta — precisa acionar manualmente o gestor da Creditas (contato executivo Home).' } });
   }
-  if (becameFinal && !updated.dryRun && updated.source === CHANGE_ROW_SOURCE) await finishProposalChange(db, updated).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
+  if (becameFinal && !updated.dryRun) await finishProposalChange(db, updated.leadId).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
   if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
   return { row: updated, becameFinal };
@@ -1481,52 +1481,73 @@ export async function requestProposalChangeForAi(db: Db, accountId: string, lead
     const f = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const cf2: Record<string, any> = { ...((f?.customFields || {}) as Record<string, any>) };
     cf2._changeAsk = [prazo && `o prazo de ${prazo} meses`, valor && `o valor de ${fmtBRL(valor)}`].filter(Boolean).join(' e ');
+    // As linhas desta rodada: o resultado de Inter/Creditas chega numa conferência (CHECK) da proposta enviada, não na linha de quem enviou — por isso a rodada é acompanhada por aqui.
+    const ids = (await db.creditAnalysis.findMany({ where: { leadId, source: CHANGE_ROW_SOURCE, kind: 'RUN', status: 'REQUESTED' }, select: { id: true } })).map((x) => x.id);
+    cf2._changeRound = { ids, at: new Date().toISOString() };
     await db.lead.update({ where: { id: leadId }, data: { customFields: cf2 as any } });
   }
   return { ok: true, detail: `análise NOVA pedida a ${bancos.map((b) => BANKS[b]?.label || b).join(', ')} com ${ped}${motivos.length ? ` (fora: ${motivos.join('; ')})` : ''}` };
 }
 
-/** Terminou a última análise da rodada pedida pelo cliente (outro prazo/valor): o aviso padrão de aprovação sai pelo mesmo caminho de sempre (noticeClients → só com a IA do card
- *  ligada, senão fica o botão "Avisar cliente"), agora como "rodei a nova proposta"; o que NÃO foi aprovado não derruba a aprovação anterior — vira alerta pra equipe. */
-async function finishProposalChange(db: Db, row: AnalysisRow): Promise<void> {
-  const aberta = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, source: CHANGE_ROW_SOURCE, kind: 'RUN', status: { in: ACTIVE } }, select: { id: true } });
-  if (aberta) return; // falta algum banco da mesma rodada
-  const ini = new Date(row.createdAt.getTime() - 5 * 60_000);
-  const rodada = await db.creditAnalysis.findMany({ where: { leadId: row.leadId, source: CHANGE_ROW_SOURCE, kind: 'RUN', createdAt: { gte: ini } }, select: { bank: true, status: true, detail: true } });
-  const nota = (content: string) => db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content } }).catch(() => {});
-  const aprovou = rodada.filter((r) => r.status === 'APPROVED' || r.status === 'CONDITIONAL');
-  for (const r of rodada.filter((x) => !aprovou.includes(x))) {
-    const motivo = String(r.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 240);
-    await nota(`⚠️ A nova proposta pedida pelo cliente (outro prazo/valor) NÃO foi aprovada no ${BANKS[r.bank]?.label || r.bank} (${r.status}${motivo ? `: ${motivo}` : ''}). A aprovação anterior continua valendo — avise o cliente.`);
-  }
-  if (!aprovou.length) {
-    // Só recusas (Fabio 19/10): o card NÃO fecha — o CRM avisa o cliente da negativa e diz que a aprovação que ele já tem continua valendo. Só com a IA do card ligada
-    // (senão a nota leva o texto pronto pra equipe mandar). Falha técnica (login, página recarregou…) não é recusa: fica só a nota de cima.
-    const objetiva = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i;
-    const recusou = rodada.some((r) => r.status === 'REJECTED' || (r.status === 'FAILED' && objetiva.test(r.detail || '')));
-    if (recusou) {
-      const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { accountId: true, status: true, aiAutoReplyActive: true } });
-      if (lead && lead.status === 'OPEN') {
-        const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
-        if (lead.aiAutoReplyActive) {
-          const out = await an.sendChangeRefusalNow({ accountId: lead.accountId, leadId: row.leadId });
-          if (!out.ok && out.error !== 'janela de 24 h fechada') await nota(`⚠️ Não consegui avisar o cliente da nova proposta recusada: ${out.error}. Avise à mão — a aprovação anterior continua valendo.`);
-        } else {
-          const texto = await an.buildChangeRefusalText(row.leadId).catch(() => null);
-          await nota(`✋ A nova proposta pedida pelo cliente foi recusada, mas o aviso NÃO saiu sozinho: a IA deste card está desligada.${texto ? ` Texto pronto pra você mandar:\n\n${texto}` : ''}`);
-        }
-      }
-    }
+/** Acompanha a rodada pedida pelo cliente (outro prazo/valor) e, quando TODOS os bancos dela responderam, entrega: o aviso padrão de aprovação sai pelo mesmo caminho de sempre
+ *  (noticeClients → só com a IA do card ligada, senão o botão "Avisar cliente"), agora como "rodei a nova proposta". Se SÓ vieram recusas o card NÃO fecha: o CRM avisa o cliente
+ *  da negativa e repete a aprovação que continua valendo (Fabio 19/10). Chamada a cada linha que termina; sai logo se o card não tem rodada aberta (`_changeRound`).
+ *  O resultado de Inter/Creditas vem numa conferência (CHECK) da proposta enviada — a linha de quem enviou fica "enviada" — por isso olhamos as duas. */
+export async function finishProposalChange(db: Db, leadId: string): Promise<void> {
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { accountId: true, status: true, aiAutoReplyActive: true, customFields: true } });
+  const cf: Record<string, any> = { ...((lead?.customFields || {}) as Record<string, any>) };
+  const round = cf._changeRound as { ids?: string[]; at?: string } | undefined;
+  if (!lead || !round?.ids?.length) return;
+  const nota = (content: string) => db.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
+  const salvar = async (mexe: (c: Record<string, any>) => void) => { // relê o card: o aviso de recusa pode ter mexido nas marcas enquanto isso
+    const f = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const c: Record<string, any> = { ...((f?.customFields || {}) as Record<string, any>) }; mexe(c);
+    await db.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+  };
+  if (Date.now() - new Date(round.at || 0).getTime() > 72 * 3_600_000) { // banco nunca respondeu: desiste de acompanhar
+    await nota('⚠️ A nova proposta pedida pelo cliente (outro prazo/valor) ficou 72 h sem resposta de algum banco. Confira na aba Análise de Crédito.');
+    await salvar((c) => { delete c._changeRound; delete c._changeAsk; });
     return;
   }
-  const l = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
-  const cf: Record<string, any> = { ...((l?.customFields || {}) as Record<string, any>) };
+  const runs = await db.creditAnalysis.findMany({ where: { id: { in: round.ids } }, select: { leadId: true, bank: true, status: true, detail: true, proposalNumber: true, createdAt: true } });
+  const veredito: { bank: string; status: string; detail: string | null }[] = [];
+  for (const r of runs) {
+    if (ACTIVE.includes(r.status)) return; // ainda rodando
+    if (r.status === 'SENT') { // enviada: o resultado vem numa conferência da mesma proposta
+      const c = await db.creditAnalysis.findFirst({
+        where: { leadId, bank: r.bank, dryRun: false, createdAt: { gte: r.createdAt }, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, ...(r.proposalNumber ? { proposalNumber: r.proposalNumber } : {}) },
+        orderBy: { createdAt: 'desc' }, select: { status: true, detail: true },
+      });
+      if (!c) return; // o banco ainda não respondeu
+      veredito.push({ bank: r.bank, ...c });
+    } else veredito.push({ bank: r.bank, status: r.status, detail: r.detail });
+  }
+  const aprovou = veredito.filter((v) => v.status === 'APPROVED' || v.status === 'CONDITIONAL');
+  const naoAprovou = veredito.filter((v) => !aprovou.includes(v));
+  for (const v of naoAprovou) {
+    const motivo = String(v.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    await nota(`⚠️ A nova proposta pedida pelo cliente (outro prazo/valor) NÃO foi aprovada no ${BANKS[v.bank]?.label || v.bank} (${v.status}${motivo ? `: ${motivo}` : ''}). A aprovação anterior continua valendo.`);
+  }
+  if (!aprovou.length) {
+    // Só recusas: o card NÃO fecha. Falha técnica (login, página recarregou…) não é recusa: fica só a nota de cima.
+    const objetiva = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i;
+    const recusou = naoAprovou.some((v) => v.status === 'REJECTED' || (v.status === 'FAILED' && objetiva.test(v.detail || '')));
+    if (recusou && lead.status === 'OPEN') {
+      const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+      if (lead.aiAutoReplyActive) {
+        const out = await an.sendChangeRefusalNow({ accountId: lead.accountId, leadId });
+        if (!out.ok && out.error !== 'janela de 24 h fechada') await nota(`⚠️ Não consegui avisar o cliente da nova proposta recusada: ${out.error}. Avise à mão — a aprovação anterior continua valendo.`);
+      } else {
+        const texto = await an.buildChangeRefusalText(leadId).catch(() => null);
+        await nota(`✋ A nova proposta pedida pelo cliente foi recusada, mas o aviso NÃO saiu sozinho: a IA deste card está desligada.${texto ? ` Texto pronto pra você mandar:\n\n${texto}` : ''}`);
+      }
+    }
+    await salvar((c) => { delete c._changeRound; }); // `_changeAsk` fica: o aviso agendado/o texto ainda usam
+    return;
+  }
   // Libera o aviso: o resultado novo pode ter o MESMO valor aprovado (só o prazo/parcelas mudaram) e a assinatura do último aviso o esconderia.
-  delete cf._autoNoticeSig; delete cf._autoNoticeAt; delete cf._autoHeldSig;
-  if (!cf._autoStartedAt) cf._autoStartedAt = new Date().toISOString();
-  cf._changeNotice = new Date().toISOString(); delete cf._changeAsk;
-  await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });
-  await nota(`🔄 Nova proposta pedida pelo cliente (outro prazo/valor) respondida: ${aprovou.map((r) => `${BANKS[r.bank]?.label || r.bank} ${/aprovad[oa] a menor/i.test(r.detail || '') ? 'aprovou A MENOR' : 'aprovou'}`).join(', ')}. O aviso de aprovação vai ao cliente (com a IA do card ligada; senão use "Avisar cliente").`);
+  await salvar((c) => { delete c._autoNoticeSig; delete c._autoNoticeAt; delete c._autoHeldSig; delete c._changeRound; delete c._changeAsk; if (!c._autoStartedAt) c._autoStartedAt = new Date().toISOString(); c._changeNotice = new Date().toISOString(); });
+  await nota(`🔄 Nova proposta pedida pelo cliente (outro prazo/valor) respondida: ${aprovou.map((v) => `${BANKS[v.bank]?.label || v.bank} ${/aprovad[oa] a menor/i.test(v.detail || '') ? 'aprovou A MENOR' : 'aprovou'}`).join(', ')}. O aviso de aprovação vai ao cliente (com a IA do card ligada; senão use "Avisar cliente").`);
 }
 
 /** Valor de crédito pedido na última análise real (o Credimorar informa em "proposta N, R$ X") — pra saber se o cliente pediu OUTRO valor depois. */
