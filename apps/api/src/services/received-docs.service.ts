@@ -29,8 +29,16 @@ function folderNameFor(lead: { name: string; customFields: unknown }): string {
   return raw.replace(/[^\p{L}\p{N} .'-]/gu, '').replace(/\s+/g, ' ').trim().toUpperCase() || 'CLIENTE';
 }
 
-const DOC_PROMPT = `Este arquivo foi enviado por um cliente de crédito imobiliário (financiamento ou crédito com garantia de imóvel). Diga qual documento é.
+export const DOC_PROMPT = `Este arquivo foi enviado por um cliente de crédito imobiliário (financiamento ou crédito com garantia de imóvel). Diga qual documento é.
 Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, AUTORIZACAO SCR BACEN (formulário de autorização de consulta ao SCR do Banco Central, com ou sem assinatura), CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU (SOMENTE a certidão negativa de débitos do IPTU emitida pela prefeitura — documento escrito "Certidão"), GUIA IPTU (guia/carnê de PAGAMENTO do IPTU: parcelas com vencimento e código de barras — NÃO é certidão), CAPA IPTU (capa do carnê/IPTU com as metragens e a inscrição imobiliária), SALDO DEVEDOR (print/extrato do app ou site do banco mostrando o saldo devedor do financiamento do imóvel), CERTIDAO DE ONUS (SOMENTE a emitida pelo CARTORIO DE REGISTRO DE IMOVEIS: ônus reais, negativa de ônus ou inteiro teor da matrícula), CERTIDAO DE CADASTRO IMOBILIARIO (certidão da PREFEITURA/município com a inscrição imobiliária, proprietários e endereço do imóvel — NÃO é do cartório e NUNCA é certidão de ônus), MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE, SIMULACAO.
+Guia para NÃO confundir (aprendido com arquivos reais de clientes — Fabio 19/10):
+- CERTIDAO DE ONUS e MATRICULA DO IMOVEL são SÓ do CARTÓRIO de Registro de Imóveis (matrícula, registros R-, averbações AV-, selo/QR do Registro de Imóveis). Só use esses dois nomes com CERTEZA.
+- CERTIDAO DE CADASTRO IMOBILIARIO = PREFEITURA, com inscrição imobiliária, proprietários e endereço (não é do cartório).
+- Documentos de IPTU: CND IPTU = certidão negativa ("Certidão" escrita no título); GUIA IPTU = guia/carnê de pagamento (parcelas, vencimento, código de barras); NOTIFICACAO IPTU LANCAMENTO = "IPTU - Notificação de Lançamento"; CAPA IPTU = capa com metragens. CND IPTU vale também pra certidão negativa de débitos/tributos imobiliários de município, estado ou DF.
+- VERSO de certidão de casamento/nascimento com "AVERBAÇÕES/ANOTAÇÕES" (divórcio, óbito…): AVERBACAO DIVORCIO (ou AVERBACAO + o assunto) — é documento PESSOAL, não do imóvel.
+- Outros que existem: ESCRITURA PUBLICA, CARTA DE SENTENCA, EXIGENCIA NOTARIAL (do cartório), CONSULTA DE PROTOCOLO.
+- Foto CORTADA, parcial ou ilegível em que você não tem certeza do que é: escreva DOCUMENTO NAO IDENTIFICADO (e, se der, a pista: "DOCUMENTO NAO IDENTIFICADO IPTU") — NUNCA force CERTIDAO DE ONUS, MATRICULA DO IMOVEL ou CND IPTU na dúvida.
+- O titular é a pessoa a quem o documento pertence — NUNCA o escrevente, oficial, cartório, juiz, prefeito ou quem assina.
 Se for outro documento, use um nome curto que o descreva (até 4 palavras).
 Depois do nome do documento, coloque " | " e o nome completo do titular como aparece no documento (a pessoa a quem ele pertence). Se não aparecer nome de pessoa, escreva só o nome do documento.
 Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
@@ -90,8 +98,10 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5',
-      max_tokens: 80,
+      // Sonnet (Fabio 19/10): o Haiku errava documento do imóvel (certidão da prefeitura como "ônus", guia de IPTU como "CND", exigência de ITBI como "guia"...). A leitura custa centavos
+      // por semana (28 chamadas/7 dias) — vale o modelo mais forte. max_tokens folgado: o raciocínio do Sonnet 5 conta no limite e cortava a resposta.
+      model: 'claude-sonnet-5',
+      max_tokens: 2000,
       messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source }, { type: 'text', text: DOC_PROMPT }] }],
     }),
   });
@@ -100,7 +110,7 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
     return undefined;
   }
   const data = (await res.json()) as { content: { type: string; text?: string }[] };
-  const text = (data.content?.find((b) => b.type === 'text')?.text || '').split('\n')[0];
+  const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').split('\n').map((l) => l.trim()).find((l) => l) || '';
   const [typePart, holderPart] = text.split('|');
   const type = clean(typePart || '', 40);
   if (!type) return undefined;
