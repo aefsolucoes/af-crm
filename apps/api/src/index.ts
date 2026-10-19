@@ -38,6 +38,7 @@ import aiQuestionRoutes from './routes/ai-questions';
 import remarketingRoutes from './routes/remarketing';
 import creditAnalysisRoutes from './routes/credit-analysis';
 import certidaoRoutes from './routes/certidoes';
+import automationMetricsRoutes from './routes/automation-metrics';
 import emailRoutes from './routes/email';
 import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.service';
 import { checkInactivityAutomations, processDeferredAutomations } from './services/automation.service';
@@ -107,6 +108,7 @@ app.use('/api/ai-questions', aiQuestionRoutes);
 app.use('/api/remarketing', remarketingRoutes);
 app.use('/api/credit-analysis', creditAnalysisRoutes);
 app.use('/api/certidoes', certidaoRoutes);
+app.use('/api/automation-metrics', automationMetricsRoutes);
 app.use('/api/email', emailRoutes);
 
 configureWebPush();
