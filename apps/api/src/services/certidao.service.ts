@@ -325,6 +325,22 @@ export async function requestCollectNow(db: Db, p: { accountId: string; id: stri
   return { queuedUntilMorning: foraDoHorario() };
 }
 
+/**
+ * Pedido que já foi feito E pago no portal fora do CRM (ex.: a equipe pediu à mão): adota o número que está no RI Digital (P… do pedido ou S… da certidão emitida),
+ * marca como pago e manda a extensão buscar já — o PDF vai pra pasta do cliente no Drive. Não faz nada no portal além de procurar.
+ */
+export async function adoptCertidaoProtocol(db: Db, p: { accountId: string; id: string; protocolo: string; io?: Io }) {
+  const protocolo = String(p.protocolo || '').trim().toUpperCase();
+  if (!/^[PS]\d{8,14}D$/.test(protocolo)) throw new Error('Protocolo inválido (ex.: S26100543707D)');
+  const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
+  if (!r) throw new Error('Pedido de certidão não encontrado');
+  if (r.status === 'ISSUED') throw new Error('Esse pedido já foi emitido');
+  const out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'AWAITING_PAYMENT', protocolo, paidAt: new Date(), paidVia: 'MANUAL', forceCheck: true, nextCheckAt: new Date(), finishedAt: null, pixCode: r.pixCode || 'ADOTADO', detail: `Pedido ${protocolo} adotado (feito e pago fora do CRM); a extensão vai buscar a certidão no portal.` } });
+  await note(db, r.leadId, `📥 Certidão da matrícula ${r.matricula} ligada ao pedido ${protocolo} do RI Digital (feito e pago fora do CRM). A extensão "Certidão ONR" vai buscar o PDF e salvar na pasta do cliente no Drive.`);
+  emitUpdate(p.io, p.accountId, r.leadId, r.id);
+  return out;
+}
+
 /** Pagamento da certidão CONFIRMADO (comprovante do cliente, e-mail do cartório ou a equipe): só a partir daqui a extensão vai buscar a certidão — sem pagamento não há o que procurar. */
 export async function markCertidaoPaid(db: Db, p: { accountId: string; id: string; via: 'PROOF' | 'EMAIL' | 'MANUAL'; io?: Io }) {
   const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });

@@ -2,7 +2,7 @@ import express, { Router, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { createCertidaoRequest, listCertidoes, claimCertidao, reportCertidao, finishCertidao, cancelCertidao, markCertidaoPaid, requestCollectNow, validCertidaoSig } from '../services/certidao.service';
+import { createCertidaoRequest, listCertidoes, claimCertidao, reportCertidao, finishCertidao, cancelCertidao, markCertidaoPaid, requestCollectNow, adoptCertidaoProtocol, validCertidaoSig } from '../services/certidao.service';
 
 /** Certidão de matrícula pelo RI Digital/ONR — ver certidao.service.ts. A extensão "Certidão ONR" entra com o login normal do CRM. */
 const router = Router();
@@ -48,6 +48,14 @@ router.post('/:id/paid', async (req: AuthRequest, res: Response) => {
     if (!row) return res.status(400).json({ error: 'Esse pedido não está aguardando pagamento' });
     res.json({ ok: true, paidAt: row.paidAt });
   } catch (err) { fail(res, err, 'Erro ao confirmar o pagamento', 400); }
+});
+
+// Liga o pedido a um número que já existe no RI Digital (feito e pago fora do CRM) e manda a extensão buscar a certidão.
+router.post('/:id/adopt', async (req: AuthRequest, res: Response) => {
+  try {
+    const row = await adoptCertidaoProtocol(prisma, { accountId: req.user!.accountId, id: req.params.id, protocolo: String(req.body?.protocolo || ''), io: io(req) });
+    res.json({ ok: true, status: row.status, protocolo: row.protocolo });
+  } catch (err) { fail(res, err, 'Erro ao adotar o pedido', 400); }
 });
 
 // Botão "Buscar certidão agora": manda a extensão ao portal já (dentro do horário) pra achar a certidão e guardar no Drive.
