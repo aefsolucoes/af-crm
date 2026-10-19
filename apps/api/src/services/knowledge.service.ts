@@ -265,7 +265,7 @@ interface CachedChunk { content: string; fileName: string; embedding: number[]; 
 // todos os vetores do banco a cada pergunta.
 const chunkCache = new Map<string, CachedChunk[]>();
 
-interface CachedEntry { content: string; fileName: string; embedding: number[]; departmentId: string | null; }
+interface CachedEntry { content: string; fileName: string; embedding: number[]; departmentId: string | null; createdAt: number; }
 // Mesma ideia do cache acima, só que pras entradas manuais (KnowledgeEntry)
 // — invalidado junto (mesma função), porque as duas fontes alimentam a
 // mesma busca (searchKnowledge).
@@ -299,9 +299,9 @@ async function loadEntries(accountId: string): Promise<CachedEntry[]> {
   if (cached && Date.now() - (entryCacheAt.get(accountId) || 0) < ENTRY_CACHE_TTL_MS) return cached;
   const rows = await prisma.knowledgeEntry.findMany({
     where: { accountId },
-    select: { title: true, content: true, embedding: true, departmentId: true },
+    select: { title: true, content: true, embedding: true, departmentId: true, createdAt: true },
   });
-  const entries = rows.map((r) => ({ content: `${r.title}: ${r.content}`, fileName: r.title, embedding: r.embedding, departmentId: r.departmentId }));
+  const entries = rows.map((r) => ({ content: `${r.title}: ${r.content}`, fileName: r.title, embedding: r.embedding, departmentId: r.departmentId, createdAt: r.createdAt.getTime() }));
   entryCache.set(accountId, entries);
   entryCacheAt.set(accountId, Date.now());
   return entries;
@@ -313,6 +313,9 @@ function cosine(a: number[], b: number[]): number {
   for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
   return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
 }
+
+/** Quantas entradas manuais a Base ENXUTA manda (as mais parecidas com a conversa), além das criadas nos últimos 7 dias. */
+const LEAN_TOP = 24;
 
 export interface KnowledgeHit { content: string; fileName: string; score: number; }
 
@@ -337,13 +340,25 @@ export interface KnowledgeHit { content: string; fileName: string; score: number
 export async function searchKnowledge(accountId: string, query: string, topK = 6, departmentId?: string | null): Promise<KnowledgeHit[]> {
   const entries = await loadEntries(accountId);
   const scopedEntries = entries.filter((e) => !e.departmentId || e.departmentId === departmentId);
-  const alwaysInclude: KnowledgeHit[] = scopedEntries.map((e) => ({ content: e.content, fileName: e.fileName, score: 1 }));
+  let alwaysInclude: KnowledgeHit[] = scopedEntries.map((e) => ({ content: e.content, fileName: e.fileName, score: 1 }));
 
   if (!isVoyageConfigured() || !query.trim()) return alwaysInclude;
+
+  // BASE ENXUTA (chave da página Medição, Fabio 19/10): em vez de TODAS as entradas manuais (≈ 61% do que a IA lê em cada resposta e crescendo 5–8 por dia), manda as LEAN_TOP mais
+  // parecidas com a conversa + as criadas nos últimos 7 dias (regra recém-ensinada vale já). Desligada = comportamento de antes (todas).
+  const { getAiCostSettings } = require('./ai-cost-setting.service') as typeof import('./ai-cost-setting.service');
+  const lean = scopedEntries.length > LEAN_TOP && (await getAiCostSettings(accountId)).kbLean;
+  const qv = await embedQuery(query);
+  if (lean) {
+    const recente = Date.now() - 7 * 86_400_000;
+    const ranked = scopedEntries.map((e) => ({ e, score: cosine(qv, e.embedding) })).sort((a, b) => b.score - a.score);
+    const escolhidas = new Set(ranked.slice(0, LEAN_TOP).map((r) => r.e));
+    for (const r of ranked) if (r.e.createdAt >= recente) escolhidas.add(r.e);
+    alwaysInclude = scopedEntries.filter((e) => escolhidas.has(e)).map((e) => ({ content: e.content, fileName: e.fileName, score: 1 }));
+  }
   const chunks = await loadChunks(accountId);
   if (chunks.length === 0) return alwaysInclude;
 
-  const qv = await embedQuery(query);
   const scored = chunks.map((c) => ({ content: c.content, fileName: c.fileName, score: cosine(qv, c.embedding) }));
   scored.sort((a, b) => b.score - a.score);
   // Corta ruído: só trechos com similaridade minimamente relevante.

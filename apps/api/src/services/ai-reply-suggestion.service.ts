@@ -67,12 +67,15 @@ ${buildContextBlocks(ctx)}`;
     // pedir pro usuário clicar de novo) resolve a maior parte dos casos
     // transitórios sozinha; se as duas falharem, agora fica registrado o
     // motivo de verdade (status, stop_reason, tipos de bloco devolvidos).
+    // Chave de economia (página Medição, Fabio 19/10): a sugestão passa sempre pela revisão da equipe, então pode usar o modelo menor (Haiku 4.5 ≈ 70% mais barato). Desligada = Sonnet, como antes.
+    const { getAiCostSettings } = require('./ai-cost-setting.service') as typeof import('./ai-cost-setting.service');
+    const modelo = (await getAiCostSettings(accountId)).suggestHaiku ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-5';
     for (let attempt = 1; attempt <= 2; attempt++) {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
-          model: 'claude-sonnet-5',
+          model: modelo,
           // 300 acabava no raciocínio do modelo e a sugestão vinha vazia (o
           // erro intermitente do "Sugerir resposta").
           max_tokens: 2048,

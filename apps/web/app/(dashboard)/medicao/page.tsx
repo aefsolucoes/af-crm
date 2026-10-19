@@ -1,10 +1,11 @@
 'use client';
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { Topbar } from '@/components/ui/topbar';
 import { Skeleton } from '@/components/ui/skeleton';
 import api from '@/lib/api';
+import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
 
 /* Medição da automação (Fabio 19/10): só pra NÓS medirmos o quanto o processo automático acerta e onde a equipe precisa corrigir. Só administrador. Só leitura.
@@ -68,9 +69,36 @@ function Card({ title, sub, children }: { title: string; sub?: string; children:
   );
 }
 
+
+/** Chave de ligar/desligar (economia da IA). Vale na hora e dá pra voltar quando quiser. */
+function Chave({ ligada, onChange, titulo, texto, ganho, risco }: { ligada: boolean; onChange: (v: boolean) => void; titulo: string; texto: string; ganho: string; risco: string }) {
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-slate-200 p-3">
+      <button
+        type="button" role="switch" aria-checked={ligada} onClick={() => onChange(!ligada)}
+        className={cn('relative flex-shrink-0 mt-0.5 h-6 w-11 rounded-full transition-colors', ligada ? 'bg-emerald-500' : 'bg-slate-300')}
+        title={ligada ? 'Ligada — clique pra desligar' : 'Desligada — clique pra ligar'}
+      >
+        <span className={cn('absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all', ligada ? 'left-[22px]' : 'left-0.5')} />
+      </button>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-slate-800">{titulo} <span className={cn('text-[11px] font-medium', ligada ? 'text-emerald-600' : 'text-slate-400')}>{ligada ? 'ligada' : 'desligada'}</span></p>
+        <p className="text-xs text-slate-500 mt-0.5">{texto}</p>
+        <p className="text-[11px] text-slate-400 mt-1"><b>Ganho:</b> {ganho} · <b>Risco:</b> {risco}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function MedicaoPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [days, setDays] = useState(14);
+  const { data: custo } = useQuery<{ kbLean: boolean; suggestHaiku: boolean }>({ queryKey: ['ai-cost'], queryFn: async () => (await api.get('/api/automation-metrics/ai-cost')).data, retry: false });
+  async function mudarChave(patch: { kbLean?: boolean; suggestHaiku?: boolean }) {
+    try { await api.put('/api/automation-metrics/ai-cost', patch); queryClient.invalidateQueries({ queryKey: ['ai-cost'] }); toast('Salvo — vale a partir da próxima chamada da IA'); }
+    catch (e: any) { toast(e?.response?.data?.error || 'Não consegui salvar', 'error'); }
+  }
   const { data, isLoading, error } = useQuery<Metrics>({
     queryKey: ['automation-metrics', days],
     queryFn: async () => (await api.get('/api/automation-metrics', { params: { days } })).data,
@@ -232,6 +260,16 @@ export default function MedicaoPage() {
                 )}
               </Card>
             </div>
+
+            {/* Chaves de economia da IA */}
+            {custo && (
+              <Card title="Economia da IA (chaves)" sub="Ligar e desligar vale na hora, sem subir código. Os valores abaixo são estimativas.">
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                  <Chave ligada={custo.suggestHaiku} onChange={(v) => mudarChave({ suggestHaiku: v })} titulo="Sugerir resposta no modelo menor (Haiku)" texto="O balão de sugestão usa o Haiku 4.5 em vez do Sonnet. O texto sempre passa pela revisão da equipe antes de ir ao cliente." ganho="~70% do custo das sugestões (~US$ 1/dia)" risco="tom e acabamento um pouco mais simples" />
+                  <Chave ligada={custo.kbLean} onChange={(v) => mudarChave({ kbLean: v })} titulo="Base de Conhecimento enxuta" texto="A IA lê só as 24 entradas mais parecidas com a conversa (+ as criadas nos últimos 7 dias), em vez de todas as ~55 regras manuais. Vale pra resposta automática e sugestão." ganho="~7% do custo por resposta (~US$ 0,4/dia)" risco="pode deixar de fora uma regra de elegibilidade (ex.: imóvel de parente de 1º grau) — por isso vem desligada" />
+                </div>
+              </Card>
+            )}
 
             {/* Extensões */}
             <Card title="Extensões do Chrome agora">

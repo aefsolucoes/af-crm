@@ -42,6 +42,17 @@ model Account {
   callPermissions    CallPermission[]
 }
 
+/// Chaves de economia da IA (Fabio 19/10: "monta com as duas chaves" — dá pra ligar/desligar a qualquer hora, na página Medição). Uma linha por conta; sem linha = Haiku nas sugestões LIGADO, Base enxuta DESLIGADA (ela economiza só ~7% e deixou de fora regras de elegibilidade nos testes).
+model AiCostSetting {
+  accountId    String   @id
+  /// Base de Conhecimento enxuta: manda à IA só as entradas manuais mais parecidas com a conversa (+ as criadas nos últimos 7 dias), em vez de TODAS.
+  kbLean       Boolean  @default(false)
+  /// "Sugerir resposta" usa o modelo menor (Haiku 4.5): o texto sempre passa pela revisão da equipe antes de ir ao cliente.
+  suggestHaiku Boolean  @default(true)
+  updatedById  String?
+  updatedAt    DateTime @updatedAt
+}
+
 /// Histórico "reversível" do card (botão Reverter, Fabio 19/10): cada ação HUMANA no card (Perdido, mover de etapa/funil, arquivar, estrela,
 /// responsável, valor, campos, etiquetas…) grava o "antes" e o "depois" só dos campos que mudaram. Reverter devolve esses campos ao "antes" —
 /// campos que a IA/automação mexeu depois (outras chaves de customFields, outras etiquetas) são preservados. Não é FK: sobrevive ao card.
