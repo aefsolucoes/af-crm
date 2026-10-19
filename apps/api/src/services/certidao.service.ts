@@ -22,6 +22,10 @@ const GIVE_UP_DAYS = 3; // pago e a certidão não saiu em 3 DIAS ÚTEIS: para d
 const RUNNING_TTL_MIN = 25; // pegou e sumiu (aba fechou) — o PIX demora até ~2 min, o pedido todo cabe folgado
 const PIX_MAX_ATTEMPTS = 4; // tentativas de pegar o PIX de um pedido já feito
 const CHECK_EVERY_MIN = 300; // conferência da emissão de 5 em 5 h (Fabio 16/10); o e-mail "Resposta ao seu pedido" do RI Digital adianta (certidaoEmailArrived)
+// Qualquer protocolo do RI Digital (P… do pedido, S… da certidão emitida ou formato novo): 1–3 letras + 6–16 dígitos + até 3 letras. Nunca travar por formato diferente.
+const PROTO_SRC = '[A-Z]{1,3}\\d{6,16}[A-Z]{0,3}';
+const PROTO_OK = new RegExp(`^${PROTO_SRC}$`);
+const PROTO_IN_TEXT = () => new RegExp(`\\b${PROTO_SRC}\\b`, 'g');
 const PAID_CHECK_EVERY_MIN = 300; // depois do pagamento confirmado, confere a emissão de 5 em 5 h (Fabio 19/10); o e-mail do cartório adianta
 const ACTIVE = ['REQUESTED', 'RUNNING', 'AWAITING_PAYMENT'];
 
@@ -209,7 +213,7 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { detail: String(d.detail || '').slice(0, 400) } });
   } else if (d.event === 'ordered') {
     const protocolo = String(d.protocolo || '').trim();
-    if (!/^P\d{8,14}D$/i.test(protocolo)) throw new Error('protocolo inválido');
+    if (!PROTO_OK.test(protocolo.toUpperCase())) throw new Error('protocolo inválido');
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'AWAITING_PAYMENT', protocolo, numeroRegistral: d.numeroRegistral ? String(d.numeroRegistral).slice(0, 40) : r.numeroRegistral, valorCents: Number.isInteger(d.valorCents) ? d.valorCents : r.valorCents, detail: 'Pedido feito no RI Digital; pegando o código PIX.', nextCheckAt: null } });
     await note(db, r.leadId, `🏛️ Certidão da matrícula ${r.matricula} pedida no RI Digital — protocolo ${protocolo}${out.valorCents ? `, ${brl(out.valorCents)}` : ''}. Falta o pagamento do PIX.`, r.requestedById);
   } else if (d.event === 'pix') {
@@ -331,7 +335,7 @@ export async function requestCollectNow(db: Db, p: { accountId: string; id: stri
  */
 export async function adoptCertidaoProtocol(db: Db, p: { accountId: string; id: string; protocolo: string; io?: Io }) {
   const protocolo = String(p.protocolo || '').trim().toUpperCase();
-  if (!/^[PS]\d{8,14}D$/.test(protocolo)) throw new Error('Protocolo inválido (ex.: S26100543707D)');
+  if (!PROTO_OK.test(protocolo)) throw new Error('Protocolo inválido (ex.: S26100543707D)');
   const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
   if (!r) throw new Error('Pedido de certidão não encontrado');
   if (r.status === 'ISSUED') throw new Error('Esse pedido já foi emitido');
@@ -410,7 +414,7 @@ export async function cancelCertidao(db: Db, p: { accountId: string; id: string;
  */
 export async function certidaoEmailArrived(db: Db, p: { accountId: string; subject?: string | null; text?: string | null }): Promise<number> {
   if (!/resposta ao seu pedido/i.test(p.subject || '')) return 0;
-  const protos = [...new Set(`${p.subject || ''} ${p.text || ''}`.match(/\bP\d{8,14}D\b/g) || [])];
+  const protos = [...new Set(`${p.subject || ''} ${p.text || ''}`.match(PROTO_IN_TEXT()) || [])];
   if (!protos.length) return 0;
   const rows = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { in: protos } }, select: { id: true, paidAt: true } });
   for (const r of rows) {
