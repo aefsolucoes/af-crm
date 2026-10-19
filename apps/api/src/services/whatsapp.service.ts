@@ -3,7 +3,7 @@ import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
 import { applyAiExtractedActions } from './ai-shared.service';
 import { logActivity } from './activity.service';
-import { normalizeClientName } from '../lib/text';
+import { normalizeClientName, splitAiReply } from '../lib/text';
 // runAutomations/maybeMessageReceivedAutomations: require()
 // tardio (dentro da função, não aqui em cima) — automation.service.ts
 // importa de volta este arquivo (pra mandar
@@ -1552,18 +1552,28 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
 
     // A própria IA fez a pergunta das 3 opções: vai com os botões também.
     const withOptionButtons = reply.includes(INTEREST_OPTIONS_MARK) || /nova simula[cç][aã]o[^?]*aprova[cç][aã]o[^?]*\?/i.test(reply);
-    const result = withOptionButtons
-      ? await sendWhatsAppButtonsMessage(phone, reply, INTEREST_OPTION_BUTTONS, accountId, departmentId)
-      : await sendWhatsAppMessage(phone, reply, accountId, departmentId);
-    if (!result.success) {
-      console.error('[WhatsApp] Resposta de IA falhou ao enviar:', result.error);
-      return;
+    // Resposta comprida vai em várias mensagens curtas (Fabio 19/10); com botões, eles ficam só na última.
+    const partes = splitAiReply(reply);
+    let enviadas = 0;
+    for (let i = 0; i < partes.length; i++) {
+      const ehUltima = i === partes.length - 1;
+      if (i > 0) await new Promise((r) => setTimeout(r, 1500));
+      const comBotoes = withOptionButtons && ehUltima;
+      const result = comBotoes
+        ? await sendWhatsAppButtonsMessage(phone, partes[i], INTEREST_OPTION_BUTTONS, accountId, departmentId)
+        : await sendWhatsAppMessage(phone, partes[i], accountId, departmentId);
+      if (!result.success) {
+        console.error('[WhatsApp] Resposta de IA falhou ao enviar:', result.error);
+        break;
+      }
+      enviadas++;
+      const savedReply = comBotoes ? `${partes[i]}\n\n${INTEREST_OPTION_BUTTONS.map((b) => `[${b}]`).join('  ')}` : partes[i];
+      const sent = await prisma.message.create({
+        data: { content: savedReply, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT' },
+      });
+      if (io) io.to(`lead:${leadId}`).emit('new_message', sent);
     }
-    const savedReply = withOptionButtons ? `${reply}\n\n${INTEREST_OPTION_BUTTONS.map((b) => `[${b}]`).join('  ')}` : reply;
-    const sent = await prisma.message.create({
-      data: { content: savedReply, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT' },
-    });
-    if (io) io.to(`lead:${leadId}`).emit('new_message', sent);
+    if (!enviadas) return;
     await prisma.note.create({ data: { leadId, content: `Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, summary: 'a IA respondeu o cliente', channel: 'WHATSAPP' });
     console.log(`[WhatsApp] Resposta de IA enviada automaticamente para lead ${leadId}`);
