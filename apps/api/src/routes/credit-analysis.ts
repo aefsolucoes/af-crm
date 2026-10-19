@@ -8,7 +8,7 @@ import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.ser
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
-  BANK_KEYS, EXTENSION_STATUS, foraDoHorario, setLoginNeeded, alertLoginNeeded, holdRunForLogin, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
+  BANK_KEYS, EXTENSION_STATUS, foraDoHorario, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
 } from '../services/credit-analysis.service';
 
@@ -163,6 +163,10 @@ router.put('/auto', async (req: AuthRequest, res: Response) => {
 });
 
 router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));
+// Painel do topo: o que cada extensão está fazendo agora (cliente, passo, fila).
+router.get('/live', async (req: AuthRequest, res: Response) => {
+  try { res.json(await extensionsLive(prisma, req.user!.accountId)); } catch (err) { fail(res, err, 'Erro ao ler as extensões'); }
+});
 
 // Dispara a análise de vários clientes em vários bancos (a extensão busca na fila).
 router.post('/requests', async (req: AuthRequest, res: Response) => {

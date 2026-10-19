@@ -11,6 +11,7 @@ import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
 import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead, fmtCpf, sameWho, ParticipantCell } from '@/components/credit/shared';
 import { AdjustModal } from '@/components/credit/adjust-modal';
+import { ExtensionsLivePanel } from '@/components/credit/extensions-live-panel';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
 import { pingExtensions } from '@/lib/credit-extensions';
 import { useAuthStore } from '@/store/auth.store';
@@ -321,25 +322,9 @@ export default function AnaliseCreditoPage() {
     <div className="flex flex-col h-full">
       <Topbar title="Análise de Crédito" subtitle="Disparo e retorno das análises dos bancos (extensões do Chrome)" />
       <div className="flex-1 overflow-auto px-4 md:px-6 py-4 space-y-4 scrollbar-thin">
-        {/* Extensões */}
-        <div className="bg-white rounded-xl border border-af-border p-4">
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-            <span className="text-slate-600 font-medium">Extensões do Chrome</span>
-            {BANKS.map((b) => {
-              const e = data?.extensions?.[b.key];
-              return (
-                <span key={b.key} className="flex items-center gap-1.5 text-xs text-slate-600">
-                  <span className={`w-2 h-2 rounded-full ${e?.loginNeeded ? 'bg-red-500' : e?.online ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                  {b.short}
-                  {e?.loginNeeded
-                    ? <span className="text-red-600 font-medium" title="A sessão do portal venceu. Entre nele (CAPTCHA + código por e-mail) que os pedidos na fila seguem sozinhos.">deslogada — entre no portal</span>
-                    : <span className="text-slate-400">{e?.online ? 'conectada' : e?.lastSeenAt ? `vista ${ago(e.lastSeenAt)}` : 'sem sinal'}</span>}
-                </span>
-              );
-            })}
-          </div>
-          <p className="mt-2 text-xs text-slate-400">As análises rodam no Chrome do Fabio (login e código dos bancos ficam lá). Com o Chrome aberto, a extensão busca os pedidos desta tela a cada minuto.</p>
-        </div>
+        {/* Extensões: logo de cada banco e o cliente que a extensão está rodando agora */}
+        <ExtensionsLivePanel />
+        <p className="-mt-2 text-xs text-slate-400">As análises rodam no Chrome do Fabio (login e código dos bancos ficam lá), das 07h às 22h. Com o Chrome aberto, a extensão busca os pedidos desta tela a cada minuto.</p>
 
         {/* Análise automática */}
         <div className="bg-white rounded-xl border border-af-border p-4 flex flex-wrap items-center gap-3">
