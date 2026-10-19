@@ -169,6 +169,15 @@ export function fillVariables(text: string, lead: LeadForActions, context?: RunC
 // Motor de execução
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** O aviso de "recebi sua proposta" já foi dado (mesmo texto nos últimos 14 dias) ou a análise nos bancos já rodou (últimos 14 dias)? Então não é proposta nova. */
+async function proposalAckAlreadyDone(leadId: string, content: string): Promise<boolean> {
+  const since = new Date(Date.now() - 14 * 86_400_000);
+  const sent = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: since }, content }, select: { id: true } });
+  if (sent) return true;
+  const analyzed = await prisma.creditAnalysis.findFirst({ where: { leadId, kind: 'RUN', dryRun: false, createdAt: { gte: since } }, select: { id: true } });
+  return !!analyzed;
+}
+
 async function executeAction(action: AutomationAction, lead: LeadForActions, context: RunContext, io: unknown): Promise<boolean> {
   if (context.skipClientMessages && ['send_message', 'send_template', 'send_email'].includes(action.type)) {
     console.log(`[Automation] ação "${action.type}" não enviada: proposta chegou por e-mail — a confirmação sai quando chegar pelo WhatsApp`);
@@ -178,6 +187,11 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
     case 'send_message': {
       const content = fillVariables(String(action.config.message || ''), lead, context);
       if (!content.trim()) return false;
+      // "Recebi sua proposta" só vale pra proposta NOVA (Fabio 19/10, Mara: reabriu o card e moveu pra Pré-Análise à mão e o aviso saiu de novo, com a análise já feita).
+      if (action.config.onlyForNewProposal === true && (await proposalAckAlreadyDone(lead.id, content))) {
+        console.log(`[Automation] mensagem "de proposta recebida" não enviada pro lead ${lead.id}: já foi enviada ou a análise já rodou`);
+        return true; // pulou de propósito: as próximas ações da regra seguem
+      }
       const result = await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: lead.id, content, io: io as any });
       return result.success;
     }

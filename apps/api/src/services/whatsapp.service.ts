@@ -722,9 +722,11 @@ export async function processWhatsAppStatus(body: any, io: any) {
             console.error(`[WA Status] Falha ao entregar ${externalId}:`, JSON.stringify(s.errors));
           }
 
-          // Atualiza mensagem pelo externalId
+          // Atualiza mensagem pelo externalId. O status SÓ AVANÇA (enviada → entregue → lida): a Meta às vezes manda os avisos fora de ordem (ex.: "lida" e depois "enviada"),
+          // e o "enviada" atrasado sobrescrevia o "lida" — a mensagem chegou, mas ficava com um tracinho só (Fabio 19/10, Mara).
+          const previous: Record<string, string[]> = { SENT: ['SENT'], DELIVERED: ['SENT'], READ: ['SENT', 'DELIVERED'], FAILED: ['SENT'] };
           const updated = await prisma.message.updateMany({
-            where: { externalId },
+            where: { externalId, status: { in: previous[newStatus] as any } },
             data:  { status: newStatus as any, ...(statusError ? { statusError } : {}) },
           });
 
