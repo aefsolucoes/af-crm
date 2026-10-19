@@ -763,7 +763,9 @@ export async function conversationActive(leadId: string, hours = 12): Promise<bo
 }
 const REJECTION_MARK = 'não conseguimos aprovação';
 const REJECTION_MARK_OLD = 'não conseguimos aprovar agora'; // texto antigo do aviso — ainda conta como "já avisado"
-const REJECTION_TEXT = 'Oi! Tudo bem? Analisamos seu crédito junto às instituições parceiras, mas infelizmente não conseguimos aprovação para o valor solicitado no momento. Qualquer mudança na situação, estou à disposição para tentarmos novamente!';
+// Texto da negativa (Fabio 19/10, Mara Rubia): "Após a análise junto às nossas instituições parceiras, infelizmente, não foi possível aprovar o crédito solicitado neste momento. Agradecemos pela confiança e permanecemos à disposição para futuras oportunidades."
+// A saudação só abre conversa (some se já falamos nas últimas 12 h). O template da Meta "reprovacao" (janela de 24 h fechada) ainda tem o texto antigo.
+const REJECTION_TEXT = 'Oi! Tudo bem? Após a análise junto às nossas instituições parceiras, infelizmente, não foi possível aprovar o crédito solicitado neste momento. Agradecemos pela confiança e permanecemos à disposição para futuras oportunidades.';
 /** Template aprovado da Meta pro aviso de reprovado (Fabio 14/10): é o que vale quando a janela de 24 h do WhatsApp está fechada. */
 export const REJECTION_TEMPLATE = 'reprovacao';
 
@@ -772,6 +774,7 @@ export const REJECTION_TEMPLATE = 'reprovacao';
 const flat = (t: string) => t.replace(/\s+/g, ' ').trim();
 const REJECTION_RX = [
   /n[ãa]o conseguimos aprova(ç[ãa]o|r)/i,
+  /n[ãa]o foi poss[ií]vel aprovar (o )?cr[eé]dito/i, // texto de 19/10 ("…infelizmente, não foi possível aprovar o crédito solicitado…")
   /(infelizmente|lamento|sinto muito|n[ãa]o foi poss[ií]vel)[^.!?\n]{0,140}(reprov|negad|recusad|n[ãa]o (foi|ficou|est[aá]) aprovad|n[ãa]o aprovad|n[ãa]o conseguimos|n[ãa]o consegui)/i,
   /(cr[eé]dito|an[áa]lise|proposta|pedido|financiamento)[^.!?\n]{0,60}\b(foi|ficou|est[aá]|foram)\s+(reprovad|negad|recusad|n[ãa]o aprovad)/i,
 ];
