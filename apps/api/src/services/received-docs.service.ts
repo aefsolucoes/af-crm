@@ -30,7 +30,7 @@ function folderNameFor(lead: { name: string; customFields: unknown }): string {
 }
 
 const DOC_PROMPT = `Este arquivo foi enviado por um cliente de crédito imobiliário (financiamento ou crédito com garantia de imóvel). Diga qual documento é.
-Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, AUTORIZACAO SCR BACEN (formulário de autorização de consulta ao SCR do Banco Central, com ou sem assinatura), CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU, CAPA IPTU (capa do carnê/IPTU com as metragens e a inscrição imobiliária), SALDO DEVEDOR (print/extrato do app ou site do banco mostrando o saldo devedor do financiamento do imóvel), CERTIDAO DE ONUS, MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE, SIMULACAO.
+Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, AUTORIZACAO SCR BACEN (formulário de autorização de consulta ao SCR do Banco Central, com ou sem assinatura), CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU, CAPA IPTU (capa do carnê/IPTU com as metragens e a inscrição imobiliária), SALDO DEVEDOR (print/extrato do app ou site do banco mostrando o saldo devedor do financiamento do imóvel), CERTIDAO DE ONUS (SOMENTE a emitida pelo CARTORIO DE REGISTRO DE IMOVEIS: ônus reais, negativa de ônus ou inteiro teor da matrícula), CERTIDAO DE CADASTRO IMOBILIARIO (certidão da PREFEITURA/município com a inscrição imobiliária, proprietários e endereço do imóvel — NÃO é do cartório e NUNCA é certidão de ônus), MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE, SIMULACAO.
 Se for outro documento, use um nome curto que o descreva (até 4 palavras).
 Depois do nome do documento, coloque " | " e o nome completo do titular como aparece no documento (a pessoa a quem ele pertence). Se não aparecer nome de pessoa, escreva só o nome do documento.
 Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
@@ -111,7 +111,7 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
 
 /** Documento do imóvel (vai pra subpasta IMOVEL; sem nome de pessoa no arquivo). */
 export function isPropertyDocType(type: string): boolean {
-  return /IMOVEL|MATRICULA|ONUS|IPTU|ESCRITURA|HABITE|PLANTA|LAUDO|AVALIACAO|VISTORIA|CONDOMINIO|ITBI|COMPRA E VENDA|PROMESSA|VINTENARIA|INTEIRO TEOR|MEMORIAL|AVERBACAO|REGISTRO DE IMOVEIS/.test(type);
+  return /IMOVEL|MATRICULA|ONUS|IPTU|ESCRITURA|HABITE|PLANTA|LAUDO|AVALIACAO|VISTORIA|CONDOMINIO|ITBI|COMPRA E VENDA|PROMESSA|VINTENARIA|INTEIRO TEOR|MEMORIAL|AVERBACAO|REGISTRO DE IMOVEIS|CADASTRO IMOBILIARIO/.test(type);
 }
 
 // Arquivo de simulação que a equipe manda pro cliente ("simulacao CAIXA.pdf",
