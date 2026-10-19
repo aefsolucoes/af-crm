@@ -1238,27 +1238,36 @@ export function extensionStatus(accountId: string): Record<string, { lastSeenAt:
   return out;
 }
 
-/** Painel "o que cada extensão está fazendo agora" (Fabio 19/10: "um painel lá no início com o logo de cada banco, a extensão mostrando qual cliente ela está rodando"). Só leitura. */
+/** Painel "o que cada extensão está fazendo agora" (Fabio 19/10: "um painel lá no início com o logo de cada banco, a extensão mostrando qual cliente ela está rodando" e depois "coloca os que estão
+ *  na fila também, os que estão rodando e os que foram rodados"). Só leitura. */
 export async function extensionsLive(db: Db, accountId: string) {
   const ext = extensionStatus(accountId);
   const out: any[] = [];
+  const agora = new Date();
+  const passoDe = (steps: unknown) => {
+    const arr = ((steps as any[]) || []).filter((x) => x && x.s);
+    const last = arr[arr.length - 1];
+    return { step: last ? String(last.s).replace(/^passo:\s*/i, '').replace(/\s*\(\d+ s depois de abrir a proposta\)$/, '').slice(0, 120) : null, stepAt: last?.t || null };
+  };
   for (const bank of BANK_KEYS) {
-    const running = await db.creditAnalysis.findFirst({
-      where: { accountId, bank, status: 'RUNNING', dryRun: false },
-      orderBy: { startedAt: 'desc' },
+    const running = await db.creditAnalysis.findMany({
+      where: { accountId, bank, status: 'RUNNING', dryRun: false }, orderBy: { startedAt: 'desc' }, take: 3,
       select: { id: true, leadId: true, kind: true, startedAt: true, steps: true, holderName: true, lead: { select: { name: true } } },
     });
-    const steps = ((running?.steps as any[]) || []).filter((x) => x && x.s);
-    const last = steps[steps.length - 1];
-    const queued = await db.creditAnalysis.count({ where: { accountId, bank, status: 'REQUESTED', dryRun: false, OR: [{ notBefore: null }, { notBefore: { lte: new Date() } }] } });
-    const done = await db.creditAnalysis.findFirst({ where: { accountId, bank, finishedAt: { not: null }, dryRun: false }, orderBy: { finishedAt: 'desc' }, select: { status: true, finishedAt: true, lead: { select: { name: true } } } });
+    const pronta = { accountId, bank, status: 'REQUESTED', dryRun: false, OR: [{ notBefore: null }, { notBefore: { lte: agora } }] };
+    const queue = await db.creditAnalysis.findMany({ where: pronta, orderBy: { requestedAt: 'asc' }, take: 12, select: { id: true, leadId: true, kind: true, requestedAt: true, requestedById: true, detail: true, lead: { select: { name: true } } } });
+    const queuedTotal = await db.creditAnalysis.count({ where: pronta });
+    const agendadas = await db.creditAnalysis.count({ where: { accountId, bank, status: 'REQUESTED', dryRun: false, notBefore: { gt: agora } } });
+    const recent = await db.creditAnalysis.findMany({
+      where: { accountId, bank, finishedAt: { not: null }, dryRun: false }, orderBy: { finishedAt: 'desc' }, take: 10,
+      select: { id: true, leadId: true, kind: true, status: true, startedAt: true, finishedAt: true, lead: { select: { name: true } } },
+    });
     out.push({
-      bank, online: ext[bank].online, loginNeeded: ext[bank].loginNeeded, lastSeenAt: ext[bank].lastSeenAt, foraDoHorario: foraDoHorario(), queued,
-      running: running ? {
-        leadId: running.leadId, leadName: String((running.lead as any)?.name || ''), kind: running.kind, holderName: running.holderName || null, since: running.startedAt,
-        step: last ? String(last.s).replace(/^passo:\s*/i, '').replace(/\s*\(\d+ s depois de abrir a proposta\)$/, '').slice(0, 120) : null, stepAt: last?.t || null,
-      } : null,
-      lastDone: done ? { leadName: String((done.lead as any)?.name || ''), status: done.status, at: done.finishedAt } : null,
+      bank, online: ext[bank].online, loginNeeded: ext[bank].loginNeeded, lastSeenAt: ext[bank].lastSeenAt, foraDoHorario: foraDoHorario(),
+      running: running.map((r) => ({ id: r.id, leadId: r.leadId, leadName: String((r.lead as any)?.name || ''), kind: r.kind, holderName: r.holderName || null, since: r.startedAt, ...passoDe(r.steps) })),
+      queue: queue.map((r) => ({ id: r.id, leadId: r.leadId, leadName: String((r.lead as any)?.name || ''), kind: r.kind, since: r.requestedAt, manual: !!r.requestedById, aguardandoLogin: /aguardando login/i.test(r.detail || '') })),
+      queued: queuedTotal, scheduled: agendadas,
+      recent: recent.map((r) => ({ id: r.id, leadId: r.leadId, leadName: String((r.lead as any)?.name || ''), kind: r.kind, status: r.status, at: r.finishedAt, durationMin: r.startedAt && r.finishedAt ? Math.round((r.finishedAt.getTime() - r.startedAt.getTime()) / 60000) : null })),
     });
   }
   return out;
