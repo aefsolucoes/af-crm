@@ -178,10 +178,28 @@ async function proposalAckAlreadyDone(leadId: string, content: string): Promise<
   return !!analyzed;
 }
 
+/** Template aprovado na Meta? (cache curto: o "não aprovado ainda" expira em 2 min pra pegar a aprovação logo; o "aprovado" dura 15 min) */
+const tplApprovedCache = new Map<string, { at: number; ok: boolean }>();
+async function metaTemplateApproved(accountId: string, departmentId: string | undefined, name: string): Promise<boolean> {
+  const key = `${accountId}:${name}`;
+  const hit = tplApprovedCache.get(key);
+  if (hit && Date.now() - hit.at < (hit.ok ? 15 : 2) * 60_000) return hit.ok;
+  const { listMetaTemplates } = require('./whatsapp.service') as typeof import('./whatsapp.service');
+  const t: any = (await listMetaTemplates(accountId, departmentId).catch(() => [])).find((x: any) => x.name === name);
+  const ok = t?.status === 'APPROVED';
+  tplApprovedCache.set(key, { at: Date.now(), ok });
+  return ok;
+}
+
 async function executeAction(action: AutomationAction, lead: LeadForActions, context: RunContext, io: unknown): Promise<boolean> {
   if (context.skipClientMessages && ['send_message', 'send_template', 'send_email'].includes(action.type)) {
-    console.log(`[Automation] ação "${action.type}" não enviada: proposta chegou por e-mail — a confirmação sai quando chegar pelo WhatsApp`);
-    return false;
+    // Proposta que chegou por e-mail: o cliente não tem janela de 24 h no WhatsApp. Se a ação tem `windowClosedTemplate` APROVADO na Meta (ex.: "proposta_recebida"), a confirmação
+    // vai por ele; sem o template aprovado, não manda (comportamento antigo).
+    const wct = action.type === 'send_message' ? String(action.config.windowClosedTemplate || '') : '';
+    if (!(wct && (await metaTemplateApproved(lead.accountId, lead.pipeline?.departmentId || undefined, wct)))) {
+      console.log(`[Automation] ação "${action.type}" não enviada: proposta chegou por e-mail — a confirmação sai quando chegar pelo WhatsApp`);
+      return false;
+    }
   }
   switch (action.type) {
     case 'send_message': {
@@ -191,6 +209,16 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       if (action.config.onlyForNewProposal === true && (await proposalAckAlreadyDone(lead.id, content))) {
         console.log(`[Automation] mensagem "de proposta recebida" não enviada pro lead ${lead.id}: já foi enviada ou a análise já rodou`);
         return true; // pulou de propósito: as próximas ações da regra seguem
+      }
+      // Janela de 24 h fechada: texto livre não sai (erro 131047). Com `windowClosedTemplate` aprovado, o MESMO texto vai pelo template (variável {{1}} = nome).
+      const wct = String(action.config.windowClosedTemplate || '');
+      if (wct) {
+        const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+        if (!(await whatsappWindowOpen(lead.id)) && (await metaTemplateApproved(lead.accountId, lead.pipeline?.departmentId || undefined, wct))) {
+          const nome = fillVariables('{{nome}}', lead, context).trim() || 'cliente';
+          const viaTemplate = await sendOutboundWhatsAppTemplate({ accountId: lead.accountId, leadId: lead.id, templateName: wct, language: 'pt_BR', bodyParams: [nome], previewText: content, io: io as any });
+          return viaTemplate.success;
+        }
       }
       const result = await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: lead.id, content, io: io as any });
       return result.success;
