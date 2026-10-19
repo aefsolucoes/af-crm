@@ -612,7 +612,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun && /acionar manualmente o gestor/i.test(updated.detail || '')) {
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Creditas: este CPF já possui uma proposta ativa que NÃO está na nossa conta — precisa acionar manualmente o gestor da Creditas (contato executivo Home).' } });
   }
-  if (becameFinal && updated.dryRun && updated.source === 'AI_SIM') await deliverAiSimulation(db, updated).catch((e: any) => console.error('[IA] simulação de outro prazo:', e?.message));
+  if (becameFinal && !updated.dryRun && updated.source === CHANGE_ROW_SOURCE) await finishProposalChange(db, updated).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
   if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
   return { row: updated, becameFinal };
@@ -1355,7 +1355,8 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   });
   if (!rows.length) return '';
   // Leitura que FALHOU (ex.: conferência que travou) não pode esconder o último resultado conhecido: só entra se não houver nada melhor.
-  const bons = latestByParticipant(rows.filter((r) => r.status !== 'FAILED'), cf);
+  // A nova proposta que o CLIENTE pediu (outro prazo/valor) e NÃO foi aprovada não apaga a aprovação anterior no que a IA enxerga (a equipe é avisada por nota).
+  const bons = latestByParticipant(rows.filter((r) => r.status !== 'FAILED' && !(r.source === 'AI_CHANGE' && r.status === 'REJECTED')), cf);
   const ruins = latestByParticipant(rows.filter((r) => r.status === 'FAILED'), cf);
   const p1 = { ...ruins.p1, ...bons.p1 };
   const p2 = { ...ruins.p2, ...bons.p2 };
@@ -1374,7 +1375,7 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
         const docsTxt = docs ? `. Para seguir com esse valor o banco exige comprovação de renda${docs.perfil ? ` (perfil ${docs.perfil})` : ''} — documentos: ${docs.itens.join('; ')} (peça ao cliente)` : '';
         // Fabio 19/10 (Jézer): no Inter, aprovado a menor num prazo menor que o máximo → a IA explica que NO PRAZO veio a menor e aconselha o prazo todo (aprovação melhor).
         const prazoTxt = aMenor && r.bank === 'INTER' && r.termMonths && r.termMonths < 240
-          ? `. ORIENTE o cliente: no prazo de ${r.termMonths} meses a aprovação veio a menor que o pedido e você aconselha pegar o PRAZO TODO (240 meses) para conseguir uma aprovação melhor — NÃO marque "simulate" nesse caso`
+          ? `. ORIENTE o cliente: no prazo de ${r.termMonths} meses a aprovação veio a menor que o pedido e você aconselha pegar o PRAZO TODO (240 meses) para conseguir uma aprovação melhor; se ele aceitar o prazo todo, peça a nova proposta com "simulate" {"prazo": 240}`
           : '';
         return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}${docsTxt}${prazoTxt}`;
       }
@@ -1437,80 +1438,70 @@ export async function refreshAnalysesForAi(db: Db, p: { accountId: string; leadI
   }
 }
 
-// ─── Simulação em OUTRO prazo, feita pela IA (Fabio 14/10: "a IA tem autonomia de fazer a simulação e encaminhar ao cliente") ───
-// A IA marca `simulate`; aqui o CRM põe o prazo (e o valor aprovado) como ajuste do Inter, pede um teste (dryRun) à extensão — que preenche o
-// simulador do portal e PARA antes de "Solicitar análise" (nada é enviado ao banco) — lê o painel de resultado e manda os valores ao cliente.
-const SIM_ROW_NOTE = 'AI_SIM';
-
-export interface InterSimulation { prazo?: number; primeira?: number; ultima?: number; taxa?: string; cet?: string; valor?: number }
-
-/** Lê o texto do painel "Resultado da simulação" do Inter (capturado pela extensão em `| SIMULACAO: …`). */
-export function parseInterSimText(detail: string | null | undefined): InterSimulation | null {
-  const t = String(detail || '');
-  const i = t.indexOf('SIMULACAO:');
-  if (i < 0) return null;
-  const txt = t.slice(i + 10).replace(/\s+/g, ' ');
-  const money = (re: RegExp) => { const m = re.exec(txt); return m ? brNumber(m[1]) : undefined; };
-  const out: InterSimulation = {
-    primeira: money(/(?:1[ªa]|primeira)\s*parcela[^R\d]{0,40}R\$\s*([\d.]+,\d{2})/i),
-    ultima: money(/[úu]ltima\s*parcela[^R\d]{0,40}R\$\s*([\d.]+,\d{2})/i),
-    valor: money(/valor\s+(?:do\s+)?(?:financiamento|empr[ée]stimo|solicitado)[^R\d]{0,40}R\$\s*([\d.]+,\d{2})/i),
-  };
-  const taxa = /taxa[^%\d]{0,40}(\d+,\d+)\s*%/i.exec(txt); if (taxa) out.taxa = `${taxa[1]}%`;
-  const cet = /CET[^%\d]{0,40}(\d+,\d+)\s*%/i.exec(txt); if (cet) out.cet = `${cet[1]}%`;
-  return out.primeira || out.ultima ? out : null;
-}
+// ─── Prazo ou valor DIFERENTE depois da aprovação (Fabio 19/10, Jézer): "se foi aprovado um valor com um prazo X e o cliente pedir outro prazo ou outro valor, a extensão deve
+// rodar NOVA PROPOSTA com o que ele pediu; se vier menor, encaminha a aprovação e informa que NO PRAZO X foi aprovado a menor — vale pra qualquer banco".
+// (Antes a IA pedia só uma simulação de teste no Inter com o valor aprovado — que não mostrava o que o banco APROVA no novo prazo.)
+const CHANGE_ROW_SOURCE = 'AI_CHANGE';
 
 const fmtBRL = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-export async function requestSimulationForAi(db: Db, accountId: string, leadId: string, p: { prazo: number }): Promise<{ ok: boolean; detail: string }> {
-  const prazo = Math.round(Number(p.prazo));
-  if (!(prazo >= 60 && prazo <= 240)) return { ok: false, detail: `prazo de ${p.prazo} meses fora do que o Inter simula (60 a 240)` };
+/** A IA marca `simulate` {prazo?, valor?}: o CRM guarda o prazo/valor como ajuste dos bancos que já aprovaram (o escolhido pelo cliente, senão todos) e pede uma análise REAL nova.
+ *  Creditas não deixa escolher prazo (o portal oferece as opções): numa troca só de prazo ele fica de fora. O resultado vira o aviso padrão de aprovação (finishProposalChange). */
+export async function requestProposalChangeForAi(db: Db, accountId: string, leadId: string, p: { prazo?: number; valor?: number }): Promise<{ ok: boolean; detail: string }> {
+  const prazo = p.prazo ? Math.round(Number(p.prazo)) : 0;
+  const valor = p.valor ? Math.round(Number(p.valor)) : 0;
+  if (!prazo && !valor) return { ok: false, detail: 'sem prazo nem valor pra analisar' };
+  if (prazo && !(prazo >= 60 && prazo <= 240)) return { ok: false, detail: `prazo de ${p.prazo} meses fora do que os bancos aceitam (60 a 240)` };
+  const set = await db.creditAutoSetting.findUnique({ where: { accountId } });
+  if (!set?.enabled) return { ok: false, detail: 'a "Análise automática" do CRM está desligada' };
+  if (set.paused) return { ok: false, detail: 'a pausa geral das execuções automáticas está ligada' };
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto' };
   if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity' };
   if ((lead.customFields as any)?._autoPaused) return { ok: false, detail: 'este cliente está PAUSADO na Análise de Crédito (botão da tela)' };
-  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 8, select: { bank: true, approvedValue: true, chosen: true, detail: true } });
-  const banco = aprovadas.find((a) => a.chosen) || [...aprovadas].sort((a, b) => simPriority(a.bank) - simPriority(b.bank))[0];
-  if (!banco) return { ok: false, detail: 'o cliente não tem banco aprovado pra simular' };
-  if (banco.bank !== 'INTER') return { ok: false, detail: `a simulação de outro prazo só roda sozinha no Inter (o banco aprovado é ${BANKS[banco.bank]?.label || banco.bank})` };
-  // Aprovado A MENOR (Jézer 19/10): simular outro prazo com o valor menor aprovado não serve (some do mínimo do Inter e não mostra o que o cliente quer) — a IA orienta o prazo todo.
-  if (/aprovad[oa] a menor/i.test(banco.detail || '')) return { ok: false, detail: 'a aprovação do Inter veio a menor que o pedido; o caminho é aconselhar o prazo todo (240 meses), não simular outro prazo com o valor menor' };
-  const aberta = await db.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', source: SIM_ROW_NOTE, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } }, select: { id: true } });
-  if (aberta) return { ok: false, detail: 'já havia uma simulação em andamento' };
-  const anterior = await db.creditOverride.findFirst({ where: { leadId, bank: 'INTER' }, select: { data: true } });
-  const data: Record<string, any> = { prazo: String(prazo) };
-  if (banco.approvedValue) data.valorEmprestimo = fmtBRL(banco.approvedValue).replace('R$ ', '');
-  await setOverrides(db, { accountId, leadId, banks: ['INTER'], data, merge: true });
-  await createRequests(db, { accountId, leadIds: [leadId], banks: ['INTER'], dryRun: true, kind: 'RUN', source: SIM_ROW_NOTE, force: true });
-  const row = await db.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', source: SIM_ROW_NOTE, status: 'REQUESTED' }, orderBy: { createdAt: 'desc' }, select: { id: true } });
-  if (row) await db.creditAnalysis.update({ where: { id: row.id }, data: { conditions: JSON.stringify({ prazo, anterior: anterior ? anterior.data : null }) } });
-  return { ok: true, detail: `simulação de ${prazo}x pedida ao Inter (modo teste, sem enviar proposta)` };
+  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 12, select: { bank: true, chosen: true, termMonths: true } });
+  if (!aprovadas.length) return { ok: false, detail: 'o cliente não tem banco aprovado (use a análise normal)' };
+  const escolhido = aprovadas.find((a) => a.chosen)?.bank;
+  const candidatos = escolhido ? [escolhido] : Array.from(new Set(aprovadas.map((a) => a.bank)));
+  const motivos: string[] = [];
+  const bancos = candidatos.filter((b) => {
+    if (prazo && !valor && b === 'CREDITAS') { motivos.push('Creditas não deixa escolher o prazo'); return false; }
+    if (prazo && !valor && aprovadas.find((a) => a.bank === b)?.termMonths === prazo) { motivos.push(`${BANKS[b]?.label || b} já foi analisado em ${prazo} meses`); return false; }
+    return true;
+  });
+  if (!bancos.length) return { ok: false, detail: motivos.join('; ') || 'nenhum banco pra refazer' };
+  const data: Record<string, any> = {};
+  if (prazo) data.prazo = String(prazo);
+  if (valor) data.valorEmprestimo = fmtBRL(valor).replace('R$ ', '');
+  await setOverrides(db, { accountId, leadId, banks: bancos, data, merge: true, userName: 'IA (pedido do cliente)' });
+  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: bancos, dryRun: false, kind: 'RUN', source: CHANGE_ROW_SOURCE, force: true });
+  if (!r.created) return { ok: false, detail: 'já havia análise em andamento' };
+  const ped = [prazo && `${prazo} meses`, valor && fmtBRL(valor)].filter(Boolean).join(' e ');
+  return { ok: true, detail: `análise NOVA pedida a ${bancos.map((b) => BANKS[b]?.label || b).join(', ')} com ${ped}${motivos.length ? ` (fora: ${motivos.join('; ')})` : ''}` };
 }
 
-/** O teste do portal terminou: devolve o ajuste do Inter ao que era e manda os valores ao cliente (ou avisa a equipe se não deu pra ler). */
-async function deliverAiSimulation(db: Db, row: AnalysisRow): Promise<void> {
-  let prazo = 0; let anterior: any = null;
-  try { const c = JSON.parse(row.conditions || '{}'); prazo = Number(c.prazo) || 0; anterior = c.anterior ?? null; } catch { /* sem dados de volta */ }
-  const existing = await db.creditOverride.findFirst({ where: { leadId: row.leadId, bank: 'INTER' } });
-  if (anterior && existing) await db.creditOverride.update({ where: { id: existing.id }, data: { data: anterior } });
-  else if (existing) await db.creditOverride.delete({ where: { id: existing.id } });
+/** Terminou a última análise da rodada pedida pelo cliente (outro prazo/valor): o aviso padrão de aprovação sai pelo mesmo caminho de sempre (noticeClients → só com a IA do card
+ *  ligada, senão fica o botão "Avisar cliente"), agora como "rodei a nova proposta"; o que NÃO foi aprovado não derruba a aprovação anterior — vira alerta pra equipe. */
+async function finishProposalChange(db: Db, row: AnalysisRow): Promise<void> {
+  const aberta = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, source: CHANGE_ROW_SOURCE, kind: 'RUN', status: { in: ACTIVE } }, select: { id: true } });
+  if (aberta) return; // falta algum banco da mesma rodada
+  const ini = new Date(row.createdAt.getTime() - 5 * 60_000);
+  const rodada = await db.creditAnalysis.findMany({ where: { leadId: row.leadId, source: CHANGE_ROW_SOURCE, kind: 'RUN', createdAt: { gte: ini } }, select: { bank: true, status: true, detail: true } });
   const nota = (content: string) => db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content } }).catch(() => {});
-  const sim = row.status === 'TEST' ? parseInterSimText(row.detail) : null;
-  if (!sim) { await nota(`⚠️ A IA pediu a simulação de ${prazo || '?'}x no Inter, mas não consegui ler os valores do portal (${row.status}: ${String(row.detail || '').slice(0, 220)}). Mande a simulação ao cliente à mão.`); return; }
-  const linhas = [
-    `Simulação em ${prazo} parcelas (Inter):`,
-    sim.primeira ? `• 1ª parcela: ${fmtBRL(sim.primeira)}` : '',
-    sim.ultima ? `• Última parcela: ${fmtBRL(sim.ultima)}` : '',
-    sim.taxa ? `• Taxa: ${sim.taxa} a.m. + IPCA` : '',
-    sim.cet ? `• CET: ${sim.cet}` : '',
-    '',
-    'Os valores são uma simulação e podem variar um pouco na contratação. Se quiser seguir com esse prazo, é só me avisar.',
-  ].filter((l, i, a) => l !== '' || (a[i - 1] !== '' && i < a.length - 1)).join('\n');
-  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { accountId: true } });
-  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-  const r = await sendOutboundWhatsApp({ accountId: lead!.accountId, leadId: row.leadId, content: linhas });
-  await nota(r.success ? `🤖 A IA simulou ${prazo}x no Inter (modo teste, nada enviado ao banco) e mandou os valores ao cliente: 1ª parcela ${sim.primeira ? fmtBRL(sim.primeira) : '?'}, última ${sim.ultima ? fmtBRL(sim.ultima) : '?'}.` : `⚠️ Simulei ${prazo}x no Inter (1ª ${sim.primeira ? fmtBRL(sim.primeira) : '?'}, última ${sim.ultima ? fmtBRL(sim.ultima) : '?'}), mas a mensagem ao cliente não saiu: ${(r as any).error || 'falha'}.`);
+  const aprovou = rodada.filter((r) => r.status === 'APPROVED' || r.status === 'CONDITIONAL');
+  for (const r of rodada.filter((x) => !aprovou.includes(x))) {
+    const motivo = String(r.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    await nota(`⚠️ A nova proposta pedida pelo cliente (outro prazo/valor) NÃO foi aprovada no ${BANKS[r.bank]?.label || r.bank} (${r.status}${motivo ? `: ${motivo}` : ''}). A aprovação anterior continua valendo — avise o cliente.`);
+  }
+  if (!aprovou.length) return;
+  const l = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
+  const cf: Record<string, any> = { ...((l?.customFields || {}) as Record<string, any>) };
+  // Libera o aviso: o resultado novo pode ter o MESMO valor aprovado (só o prazo/parcelas mudaram) e a assinatura do último aviso o esconderia.
+  delete cf._autoNoticeSig; delete cf._autoNoticeAt; delete cf._autoHeldSig;
+  if (!cf._autoStartedAt) cf._autoStartedAt = new Date().toISOString();
+  cf._changeNotice = new Date().toISOString();
+  await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });
+  await nota(`🔄 Nova proposta pedida pelo cliente (outro prazo/valor) respondida: ${aprovou.map((r) => `${BANKS[r.bank]?.label || r.bank} ${/aprovad[oa] a menor/i.test(r.detail || '') ? 'aprovou A MENOR' : 'aprovou'}`).join(', ')}. O aviso de aprovação vai ao cliente (com a IA do card ligada; senão use "Avisar cliente").`);
 }
 
 /** Valor de crédito pedido na última análise real (o Credimorar informa em "proposta N, R$ X") — pra saber se o cliente pediu OUTRO valor depois. */

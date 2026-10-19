@@ -293,7 +293,8 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
     o.liquido ? `💰 Valor líquido: ${o.valor}` : `💰 Valor aprovado: ${o.valor}`, // Fabio 15/10: sem o "(já descontados IOF, tarifa de cadastro e custas)"
     o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
-    o.prazoTodo && `💡 No prazo de ${o.prazo} a aprovação veio a menor. Aconselho pegar o prazo todo (${o.prazoTodo}) para conseguir uma aprovação melhor.`,
+    // Qualquer banco: diz EM QUE PRAZO veio a menor (Fabio 19/10); no Inter, com prazo menor que o máximo, aconselha o prazo todo.
+    o.aMenor && o.prazo && `💡 No prazo de ${o.prazo} a aprovação veio a menor.${o.prazoTodo ? ` Aconselho pegar o prazo todo (${o.prazoTodo}) para conseguir uma aprovação melhor.` : ''}`,
     o.quitacao && `🏠 Quitação do financiamento do imóvel: ${o.quitacao}`,
     o.troco && `💸 Troco pra você: ${o.troco}`,
     o.prazo && `📅 Prazo: ${o.prazo}`,
@@ -431,7 +432,7 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
   for (const r of rows) {
     const k = `${r.bank}|${bucket(r.holderName, r.holderCpf)}`;
     ultimo.set(k, r);
-    if (r.status === 'REJECTED') byKey.delete(k);
+    if (r.status === 'REJECTED') { if (r.source !== 'AI_CHANGE') byKey.delete(k); } // recusa de outro prazo/valor pedido pelo cliente não desfaz a aprovação anterior
     else if (r.approvedValue != null) byKey.set(k, r);
   }
   // Por banco, a aprovação de MAIOR valor (titular ou 2º participante).
@@ -628,7 +629,10 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   const mudou = !!anterior && !bancoNovo && dinheiro(anterior.content) !== dinheiro(corpoNovo);
   // A aprovação anterior era PARCIAL ("a menor") e agora existe uma de valor TOTAL: o aviso novo substitui a anterior (Fabio 14/10).
   const eraParcial = !!anterior && /Valor menor que o solicitado/.test(anterior.content) && !/Valor menor que o solicitado/.test(corpoNovo);
-  const prefixo = bancoNovo && eraParcial ? '🆕 Boa notícia! Saiu a aprovação do valor TOTAL em outro banco, com condição melhor que a anterior. Considere esta:\n\n'
+  // O cliente pediu outro prazo/valor e a extensão rodou a proposta nova (requestProposalChangeForAi): o aviso diz isso.
+  const pediuMudanca = !!((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as any)?._changeNotice;
+  const prefixo = pediuMudanca ? '🔄 Rodei a nova proposta com o que você pediu. Segue o resultado:\n\n'
+    : bancoNovo && eraParcial ? '🆕 Boa notícia! Saiu a aprovação do valor TOTAL em outro banco, com condição melhor que a anterior. Considere esta:\n\n'
     : bancoNovo ? '🆕 Saiu o resultado de mais um banco para o seu pedido. Seguem as opções aprovadas:\n\n'
     : mudou ? '🔄 Atualizei os valores da sua proposta, agora com os números certos:\n\n' : '';
   const text = `${prefixo}${corpoNovo}`;
@@ -755,6 +759,11 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
     await prisma.lead.update({ where: { id: p.leadId }, data: { aiAutoReplyActive: true, customFields: { ...cf, _aprovTemplateAt: new Date().toISOString() } } });
   }
   const moved = moveStage ? await moveToAwaitingDocs(p) : null;
+  { // o aviso de "rodei a nova proposta" já saiu: tira a marca (só vale pro primeiro aviso depois da rodada)
+    const f = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
+    const c: Record<string, any> = { ...((f?.customFields || {}) as Record<string, any>) };
+    if (c._changeNotice) { delete c._changeNotice; await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: c as any } }).catch(() => {}); }
+  }
   // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado das opções de crédito (${preview.options} opç${preview.options === 1 ? 'ão' : 'ões'}) — ${preview.mode === 'text' ? 'texto enviado' : 'template enviado; o texto completo sai quando ele tocar em "Sim, quero saber"'}${docsSent ? '; lista de documentos enviada' : ''}${moved ? `; card movido para ${moved}` : ''}.` } });
   return { ok: true, mode: preview.mode, options: preview.options, docsSent, moved };

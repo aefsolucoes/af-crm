@@ -290,11 +290,14 @@ const OBJECTIVE_FAIL = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de cons
  *  (se os outros também não deram, o cliente é avisado e vai pra Perdido; se algum aprovou, o aviso de aprovação sai sem esperar a Creditas). */
 const CREDITAS_CPF_ATIVO = /CPF j[aá] possui uma proposta ativa na Creditas/i;
 type VRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; source: string };
+/** Linha que NÃO conta como veredito do banco: a simulação de teste antiga (AI_SIM) e a nova proposta que o CLIENTE pediu (outro prazo/valor — AI_CHANGE) quando NÃO foi aprovada:
+ *  recusa num prazo/valor diferente não desfaz a aprovação que o banco já deu (senão o CRM mandaria a negativa e fecharia o card de quem está aprovado). Enquanto roda, segura como pendente. */
+const semRuidoDeSimulacao = (r: { source: string; status: string }) => r.source !== 'AI_SIM' && !(r.source === 'AI_CHANGE' && !['APPROVED', 'CONDITIONAL', 'REQUESTED', 'RUNNING', 'SENT'].includes(r.status));
 
 /** Resposta de um banco: NEG = não vai (reprovou ou a regra dele barrou), POS = aprovou, PENDING = falta resposta / falha técnica a refazer. A última rodada decide;
  *  conferência sem leitura ("conferir") não conta. Pura (testável). */
 export function bankVerdict(rows: VRow[], bank: string): 'NEG' | 'POS' | 'PENDING' {
-  const mine = rows.filter((r) => r.bank === bank && r.source !== 'AI_SIM' && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  const mine = rows.filter((r) => r.bank === bank && semRuidoDeSimulacao(r) && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   const r = mine[0];
   if (!r) return 'PENDING';
   if (r.status === 'APPROVED' || r.status === 'CONDITIONAL') return 'POS';
@@ -363,7 +366,7 @@ async function closeRejected(accountId: string, io: any) {
     }
     // Desqualificado x Reprovado: se NENHUM banco chegou a reprovar (todas as respostas são regra do banco/imóvel — mínimo, terreno, saldo devedor), o lead não atende
     // aos critérios → "desqualificado". Basta um banco ter reprovado de verdade → "reprovado".
-    const ultima = (b: string) => rows.filter((r) => r.bank === b && r.source !== 'AI_SIM' && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
+    const ultima = (b: string) => rows.filter((r) => r.bank === b && semRuidoDeSimulacao(r) && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
     const desqualificado = BANKS.every((b) => ultima(b)?.status === 'FAILED');
     // Motivo possivelmente TEMPORÁRIO (saldo devedor, imóvel abaixo do mínimo): ANTES de avisar o cliente e mover o card, pergunta à equipe no balão "Dúvidas da IA" — Venda Futura (a IA
     // pergunta a melhor data) ou Perdidos — e aprende com a resposta (Fabio 16/10). Regra já ensinada na Base de Conhecimento decide sozinha.
@@ -415,7 +418,7 @@ export async function sendRejectionAndClose(p: { accountId: string; leadId: stri
   if (!l) return { ok: false, error: 'Card não encontrado ou já fechado.' };
   const rows = l.creditAnalyses;
   if (!rows.length || BANKS.some((b) => bankVerdict(rows, b) !== 'NEG')) return { ok: false, error: 'Ainda há banco sem resposta final (ou com aprovação): não dá pra avisar a negativa.' };
-  const ultima = (b: string) => rows.filter((r) => r.bank === b && r.source !== 'AI_SIM' && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
+  const ultima = (b: string) => rows.filter((r) => r.bank === b && semRuidoDeSimulacao(r) && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
   const desqualificado = BANKS.every((b) => ultima(b)?.status === 'FAILED');
   const out = await sendRejectionNoticeNow({ accountId: p.accountId, leadId: l.id, userId: p.userId, io: p.io });
   if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: desqualificado ? 'DESQ' : true }); return { ok: true, scheduled: true }; }
@@ -477,7 +480,7 @@ async function retryTechnicalFailures(accountId: string) {
     const redoCheck = new Set<string>(); // bancos cuja ÚLTIMA linha era uma CONFERÊNCIA que falhou: refaz a conferência, NUNCA cria proposta nova
     const gaveUp: string[] = [];
     for (const b of BANKS) {
-      const r = rows.filter((x) => x.bank === b && x.source !== 'AI_SIM' && !(x.kind === 'CHECK' && x.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
+      const r = rows.filter((x) => x.bank === b && semRuidoDeSimulacao(x) && !(x.kind === 'CHECK' && x.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
       if (!r || aberto(b)) continue;
       const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE';
       if (!tecnica || /RODADA ANULADA/i.test(r.detail || '')) continue;

@@ -329,7 +329,7 @@ export interface AiExtractedAction {
   /** true = a IA decidiu apresentar a aprovação: o CRM manda o aviso padrão (resumo + documentos + PDF) em vez de a IA escrever as condições. */
   sendApproval?: boolean;
   /** Prazo (meses) a simular sozinha no Inter (modo teste) e mandar ao cliente — requestSimulationForAi. */
-  simulate?: { prazo: number } | null;
+  simulate?: { prazo?: number; valor?: number } | null;
 }
 
 /** Tag usada pra excluir o lead de lembretes automáticos recorrentes
@@ -462,14 +462,15 @@ export async function applyAiExtractedActions(
       } catch (e: any) { console.error('[IA] rodar análise falhou:', e?.message); }
     }
 
-    // Simular OUTRO prazo sozinha (Fabio 14/10): a extensão roda o teste do Inter e o CRM manda os valores ao cliente.
-    if (action.simulate && action.simulate.prazo) {
+    // Prazo/valor DIFERENTE depois da aprovação (Fabio 19/10): a extensão roda NOVA PROPOSTA nos bancos que aprovaram e o CRM manda o resultado ao cliente (aviso padrão).
+    if (action.simulate && (action.simulate.prazo || action.simulate.valor)) {
+      const pedido = [action.simulate.prazo && `${action.simulate.prazo} meses`, action.simulate.valor && `R$ ${action.simulate.valor.toLocaleString('pt-BR')}`].filter(Boolean).join(' e ');
       try {
-        const { requestSimulationForAi } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-        const r = await requestSimulationForAi(prisma as any, accountId, leadId, { prazo: action.simulate.prazo });
-        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? `🤖 A IA vai simular ${action.simulate.prazo}x a pedido do cliente: ${r.detail}. Os valores seguem pro cliente sozinhos.` : `🤖 A IA quis simular ${action.simulate.prazo}x, mas não deu: ${r.detail}. Mande a simulação ao cliente à mão.` } }).catch(() => {});
-        if (r.ok) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `pediu a simulação de ${action.simulate.prazo}x no Inter` });
-      } catch (e: any) { console.error('[IA] simular outro prazo falhou:', e?.message); }
+        const { requestProposalChangeForAi } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+        const r = await requestProposalChangeForAi(prisma as any, accountId, leadId, action.simulate);
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? `🤖 A IA pediu uma NOVA PROPOSTA a pedido do cliente (${pedido}): ${r.detail}. O resultado segue pro cliente sozinho.` : `🤖 A IA quis rodar uma nova proposta (${pedido}), mas não deu: ${r.detail}. Resolva à mão.` } }).catch(() => {});
+        if (r.ok) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `pediu nova proposta nos bancos (${pedido})` });
+      } catch (e: any) { console.error('[IA] nova proposta com outro prazo/valor falhou:', e?.message); }
     }
 
     // Apresentar a aprovação (a IA decidiu): o CRM manda o MESMO aviso do botão "Avisar cliente" — mensagem 1 com o resumo, mensagem 2 com os
