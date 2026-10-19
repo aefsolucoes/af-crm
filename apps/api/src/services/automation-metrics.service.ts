@@ -65,7 +65,10 @@ export async function automationMetrics(accountId: string, days: number) {
     FROM ini JOIN fim USING ("leadId") WHERE fim.t >= ini.t`))[0] || {};
 
   const aviso = (await prisma.$queryRaw<any[]>(Prisma.sql`
-    WITH apr AS (SELECT "leadId", min("createdAt") AS t FROM "CreditAnalysis" WHERE "accountId" = ${accountId} AND "status" IN ('APPROVED','CONDITIONAL') AND "approvedValue" IS NOT NULL AND "dryRun" = false AND "createdAt" >= ${since} GROUP BY 1),
+    WITH apr AS (SELECT a."leadId", min(a."createdAt") AS t FROM "CreditAnalysis" a JOIN "Lead" ll ON ll."id" = a."leadId"
+                 WHERE a."accountId" = ${accountId} AND a."status" IN ('APPROVED','CONDITIONAL') AND a."approvedValue" IS NOT NULL AND a."dryRun" = false AND a."createdAt" >= ${since}
+                   AND jsonb_exists(COALESCE(ll."customFields", '{}'::jsonb), '_autoStartedAt') -- só cards que a análise AUTOMÁTICA iniciou (os rodados à mão têm o botão "Avisar cliente")
+                 GROUP BY 1),
          av AS (SELECT apr."leadId", apr.t AS aprovou, (SELECT min(n."createdAt") FROM "Note" n WHERE n."leadId" = apr."leadId" AND n."content" LIKE '📣 Cliente avisado das opções%' AND n."createdAt" >= apr.t) AS avisou FROM apr)
     SELECT count(*)::int AS aprovadas, count(avisou)::int AS avisadas,
       count(*) FILTER (WHERE avisou IS NOT NULL AND extract(epoch FROM (avisou - aprovou)) <= 900)::int AS ate15,
@@ -77,7 +80,7 @@ export async function automationMetrics(accountId: string, days: number) {
     SELECT l."id", l."name", l."aiAutoReplyActive" AS ia, extract(epoch FROM (now() - a.t))/3600 AS horas
     FROM (SELECT "leadId", min("createdAt") AS t FROM "CreditAnalysis" WHERE "accountId" = ${accountId} AND "status" IN ('APPROVED','CONDITIONAL') AND "approvedValue" IS NOT NULL AND "dryRun" = false AND "createdAt" >= ${since} GROUP BY 1) a
     JOIN "Lead" l ON l."id" = a."leadId"
-    WHERE l."status" = 'OPEN' AND l."archived" = false AND a.t < now() - interval '1 hour'
+    WHERE jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_autoStartedAt') AND l."status" = 'OPEN' AND l."archived" = false AND a.t < now() - interval '1 hour'
       AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_autoPaused') -- cliente pausado à mão (Stop total): não é falha da automação
       AND NOT EXISTS (SELECT 1 FROM "Stage" st WHERE st."id" = l."stageId" AND st."name" ILIKE 'Venda Futura%')
       AND NOT EXISTS (SELECT 1 FROM "Note" n WHERE n."leadId" = a."leadId" AND n."content" LIKE '📣 Cliente avisado%' AND n."createdAt" >= a.t)
