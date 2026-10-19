@@ -38,6 +38,8 @@ type PushPayload = {
   // 'call_cancel' é o inverso: a ligação foi atendida/recusada/perdida, então o service
   // worker troca (mesmo tag) a notificação "tocando" por um aviso mudo que some sozinho.
   type?: 'call' | 'call_cancel';
+  /** Pra onde o clique na notificação leva (padrão: a conversa do card, ou a Inbox). */
+  url?: string;
 };
 
 /**
@@ -47,20 +49,22 @@ type PushPayload = {
  * travar o fluxo de mensagem que chamou.
  * Autolimpa subscriptions que o provedor devolveu como expiradas (410/404).
  */
-export async function sendPushToAccount(accountId: string, payload: PushPayload, onlyUserIds?: string[]) {
+export async function sendPushToAccount(accountId: string, payload: PushPayload, onlyUserIds?: string[], opts?: { desktopOnly?: boolean }) {
   if (!configured) return;
   if (onlyUserIds && !onlyUserIds.length) return;
 
   try {
-    const subs = await prisma.pushSubscription.findMany({
+    let subs = await prisma.pushSubscription.findMany({
       where: { user: { accountId }, ...(onlyUserIds ? { userId: { in: onlyUserIds } } : {}) },
     });
+    // `desktopOnly`: só os navegadores de computador do usuário (celular/tablet ficam de fora) — ex.: o aviso de "banco deslogado" é pra quem tem as extensões no Chrome do computador.
+    if (opts?.desktopOnly) subs = subs.filter((x) => !/Android|iPhone|iPad|iPod|Mobile/i.test(x.userAgent || ''));
     if (!subs.length) return;
 
     const body = JSON.stringify({
       title: payload.title,
       body: payload.body,
-      url: payload.leadId ? `/inbox?leadId=${payload.leadId}` : '/inbox',
+      url: payload.url || (payload.leadId ? `/inbox?leadId=${payload.leadId}` : '/inbox'),
       ...(payload.type ? { type: payload.type } : {}),
     });
 

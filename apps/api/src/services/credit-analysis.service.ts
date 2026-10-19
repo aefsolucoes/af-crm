@@ -1220,13 +1220,14 @@ export function renewLock(accountId: string, bank: string) {
 }
 
 // ─── Presença das extensões (quando cada uma buscou a fila pela última vez) ───
-const lastSeen = new Map<string, { at: number; extId: string | null }>();
+const lastSeen = new Map<string, { at: number; extId: string | null; userId: string | null }>();
 const EXT_ID_RE = /^[a-p]{32}$/;
 /** `extId` = id da extensão no Chrome, que o CRM usa pra avisá-la na hora (externally_connectable). */
-export function touchExtension(accountId: string, bank: string, extId?: string | null) {
+export function touchExtension(accountId: string, bank: string, extId?: string | null, userId?: string | null) {
   const key = `${accountId}:${bank}`;
   const prev = lastSeen.get(key);
-  lastSeen.set(key, { at: Date.now(), extId: extId && EXT_ID_RE.test(extId) ? extId : prev?.extId || null });
+  // `userId` = o usuário do CRM com quem a extensão entrou (o dono do Chrome onde ela roda): é pra ele que vão os avisos da extensão (ex.: banco deslogado).
+  lastSeen.set(key, { at: Date.now(), extId: extId && EXT_ID_RE.test(extId) ? extId : prev?.extId || null, userId: userId || prev?.userId || null });
 }
 export function extensionStatus(accountId: string): Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null; loginNeeded: boolean }> {
   const out: Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null; loginNeeded: boolean }> = {};
@@ -1260,7 +1261,10 @@ export function alertLoginNeeded(accountId: string, bank: string): void {
   lastLoginAlert.set(k, Date.now());
   try {
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-    sendPushToAccount(accountId, { title: `🔐 ${BANK_LABEL[bank] || bank} deslogado`, body: 'A sessão do portal venceu: entre nele (CAPTCHA + código por e-mail) pras análises continuarem. Os clientes ficaram na fila — nada se perdeu.' }).catch(() => {});
+    // Só pra quem tem a extensão (o usuário com quem ela entrou no CRM), e só no computador dele — a Andreia e os celulares não recebem (Fabio 19/10).
+    const dono = lastSeen.get(k)?.userId;
+    if (!dono) return;
+    sendPushToAccount(accountId, { title: `🔐 ${BANK_LABEL[bank] || bank} deslogado`, body: 'A sessão do portal venceu: entre nele (CAPTCHA + código por e-mail) pras análises continuarem. Os clientes ficaram na fila — nada se perdeu.', url: '/analise-credito' }, [dono], { desktopOnly: true }).catch(() => {});
   } catch { /* push é extra */ }
 }
 /** A extensão bateu na tela de login: o pedido que ela estava rodando volta pra fila (sem falha e sem gastar tentativa) até alguém entrar no portal. */

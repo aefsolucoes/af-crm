@@ -182,7 +182,7 @@ router.get('/queue', async (req: AuthRequest, res: Response) => {
   const bank = String(req.query.bank || '');
   if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
   try {
-    touchExtension(req.user!.accountId, bank, typeof req.query.extId === 'string' ? req.query.extId : null);
+    touchExtension(req.user!.accountId, bank, typeof req.query.extId === 'string' ? req.query.extId : null, req.user!.id);
     // A extensão diz se o portal está pedindo login (sessão vencida): `login=needed` liga o aviso na tela + push; `login=ok` desliga.
     if (req.query.login === 'needed') { setLoginNeeded(req.user!.accountId, bank, true); alertLoginNeeded(req.user!.accountId, bank); }
     else if (req.query.login === 'ok') setLoginNeeded(req.user!.accountId, bank, false);
@@ -203,7 +203,7 @@ router.post('/report', async (req: AuthRequest, res: Response) => {
   const bank = String(b.bank || '').toUpperCase();
   if (!b.leadId || !BANK_KEYS.includes(bank) || !status) return res.status(400).json({ error: 'leadId, bank e status são obrigatórios' });
   try {
-    touchExtension(req.user!.accountId, bank);
+    touchExtension(req.user!.accountId, bank, null, req.user!.id);
     // Sessão do portal vencida: o pedido volta pra fila, a tela mostra "deslogada" e a equipe recebe push (nada de "Falhou").
     if (raw.toLowerCase() === 'aguardando_login') {
       await holdRunForLogin(prisma, { accountId: req.user!.accountId, requestId: b.requestId ? String(b.requestId) : undefined, leadId: String(b.leadId), bank });
