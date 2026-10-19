@@ -227,7 +227,7 @@ export function avisoCedo(rows: VRow[] & { approvedValue?: number | null; firstI
 async function noticeClients(accountId: string, io: any) {
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, creditAnalyses: { some: { status: { in: ['APPROVED', 'CONDITIONAL'] }, dryRun: false } } },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { updatedAt: 'desc' }, select: { kind: true, status: true, updatedAt: true, createdAt: true, bank: true, approvedValue: true, firstInstallment: true, holderName: true, detail: true, source: true } } },
+    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { dryRun: false }, orderBy: { updatedAt: 'desc' }, select: { kind: true, status: true, updatedAt: true, createdAt: true, bank: true, approvedValue: true, firstInstallment: true, holderName: true, detail: true, source: true } } },
     take: 80,
   });
   for (const l of leads) {
@@ -262,6 +262,15 @@ async function noticeClients(accountId: string, io: any) {
     const sig = Array.from(new Set(rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${nomeCurto(a.holderName)}`))).sort().join('|');
     const sigAntiga = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${a.holderName || ''}`).sort().join('|'); // formato antigo: não reenvia pra quem já tinha aviso gravado
     if (cf._autoNoticeSig === sig || cf._autoNoticeSig === sigAntiga) continue;
+    // O aviso automático só sai com a IA DAQUELE card ligada (Fabio 19/10, Mara: ele estava conversando com a cliente — a IA desliga sozinha quando a equipe responde — e a aprovação saiu mesmo assim).
+    // Com a IA desligada o aviso NÃO sai sozinho: fica o botão "Avisar cliente" (aba Análise de Crédito e card) pra a equipe mandar quando quiser.
+    if (!l.aiAutoReplyActive) {
+      if (cf._autoHeldSig !== sig) {
+        await saveCf(l.id, { _autoHeldSig: sig });
+        await addNote(l.id, '✋ Aprovação pronta, mas o aviso NÃO saiu sozinho: a IA deste card está desligada (alguém da equipe está na conversa). Use o botão "Avisar cliente" quando quiser enviar.');
+      }
+      continue;
+    }
     const out = await sendApprovalNoticeNow({ accountId, leadId: l.id, io, holdForPdf: true }); // aviso automático: o PDF da simulação sai junto (Fabio 15/10)
     if (out.waiting) continue; // PDF ainda sendo gerado: tenta de novo no próximo minuto
     if (out.already) { // a conversa já tem esse aviso (equipe, IA ou aviso anterior): não duplica e não tenta de novo a cada minuto
