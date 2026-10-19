@@ -8,7 +8,7 @@ import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.ser
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
-  BANK_KEYS, EXTENSION_STATUS, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
+  BANK_KEYS, EXTENSION_STATUS, foraDoHorario, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
 } from '../services/credit-analysis.service';
 
@@ -187,7 +187,7 @@ router.get('/queue', async (req: AuthRequest, res: Response) => {
     const items = req.query.claim === '0' ? [] : await claimQueue(prisma, { accountId: req.user!.accountId, bank, limit: Number(req.query.limit) || 3, caps });
     if (items.length) emit(req);
     // PDFs de simulação pedidos (só pra extensão que avisa saber atender: caps inclui "doc").
-    const docs = caps.includes('doc') && req.query.claim !== '0' ? await claimSimulationDocs(prisma, { accountId: req.user!.accountId, extBank: bank, limit: 2 }) : [];
+    const docs = caps.includes('doc') && req.query.claim !== '0' && !foraDoHorario() ? await claimSimulationDocs(prisma, { accountId: req.user!.accountId, extBank: bank, limit: 2 }) : [];
     res.json({ items, docs });
   } catch (err) { fail(res, err, 'Erro ao buscar a fila'); }
 });

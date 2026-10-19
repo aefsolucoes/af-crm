@@ -402,9 +402,10 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   const canCheck = !!p.caps?.includes('check');
   // Em PAUSA GERAL só sai da fila o que uma pessoa pediu (requestedById): reconferências e pedidos automáticos ficam parados.
   await expireStuck(db, { accountId: p.accountId }); // execução parada não segura a fila: aqui (e não só ao abrir a tela) é o que a destrava
+  if (foraDoHorario()) return []; // extensões paradas fora de 07h–22h: a fila espera (inclusive o que uma pessoa pediu)
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { paused: true } }))?.paused;
   const NOT_PAUSED_AUTO = notPausedAuto(await pausedLeadIds(db, p.accountId));
-  // Fora do horário de trabalho (07h–21h, Brasília) NADA roda sozinho (Fabio 16/10: "parece que os sistemas não funcionam de madrugada"): as rodadas e conferências automáticas esperam até as 7h;
+  // Fora do horário de trabalho (07h–22h, Brasília) NADA roda sozinho (Fabio 16/10: "parece que os sistemas não funcionam de madrugada"): as rodadas e conferências automáticas esperam até as 7h;
   // só o que uma PESSOA pediu na tela sai da fila. O que estiver em execução às 21h termina normalmente.
   const noturno = foraDoHorario();
   const NOT_SCR_LOCKED = notScrLocked(await scrLockedLeadIds(db, p.accountId));
@@ -642,16 +643,20 @@ export async function resolveHolderCpf(db: Db, row: { leadId: string; holderCpf?
 
 type AnalysisRow = NonNullable<Awaited<ReturnType<Db['creditAnalysis']['findFirst']>>>;
 
-/** Fora do horário de trabalho da A&F (07h–21h, Brasília)? Nenhuma análise/conferência automática roda nesse período (Fabio 16/10). */
+/** Horário de trabalho das EXTENSÕES dos bancos: 07h às 22h (Brasília). Fora dele elas ficam PARADAS — nada sai da fila, nem pedido de pessoa (Fabio 19/10: "passou disso ficam
+ *  paradas, porque talvez os sistemas do banco não funcionem"; a sessão do Credimorar vencia de madrugada e o CRM ficava tentando e marcando "Falhou"). O que estiver rodando às 22h termina.
+ *  Os AVISOS ao cliente continuam só das 07h às 21h (approval-notice.service.ts). */
+export const EXT_HORA_INICIO = 7;
+export const EXT_HORA_FIM = 22;
 export function foraDoHorario(ms = Date.now()): boolean {
   const h = new Date(ms - BRT_MS).getUTCHours();
-  return h < 7 || h >= 21;
+  return h < EXT_HORA_INICIO || h >= EXT_HORA_FIM;
 }
-/** Empurra um horário que cai fora de 07h–21h (Brasília) pras 7h seguintes. Pura (testável). */
+/** Empurra um horário que cai fora de 07h–22h (Brasília) pras 7h seguintes. Pura (testável). */
 export function pushOutOfQuiet(ms: number): Date {
   if (!foraDoHorario(ms)) return new Date(ms);
   const b = new Date(ms - BRT_MS);
-  return new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCHours() >= 21 ? b.getUTCDate() + 1 : b.getUTCDate(), 7, 0, 0) + BRT_MS);
+  return new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCHours() >= EXT_HORA_FIM ? b.getUTCDate() + 1 : b.getUTCDate(), EXT_HORA_INICIO, 0, 0) + BRT_MS);
 }
 
 /** Minutos de espera ANTES da n-ésima conferência depois do envio (n=1 é a primeira). Fabio 15/10: Inter e Creditas conferem 3 vezes de 3 em 3 min (o resultado às vezes sai na hora);
@@ -661,7 +666,7 @@ export function checkGapMin(bank: string, n: number): number {
   if (bank === 'CREDITAS') return n === 4 ? 10 : n === 5 ? 20 : 30;
   return 10;
 }
-/** Quando a n-ésima conferência pode rodar: o intervalo do banco, mas só dentro de 07h–21h (fora disso espera até as 7h). Pura (testável). */
+/** Quando a n-ésima conferência pode rodar: o intervalo do banco, mas só dentro de 07h–22h (fora disso espera até as 7h). Pura (testável). */
 export function nextCheckAt(bank: string, n: number, from = Date.now()): Date {
   return pushOutOfQuiet(from + checkGapMin(bank, n) * 60_000);
 }
@@ -681,7 +686,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
       const attempt = row.attempt + 1;
       const quando = nextCheckAt(row.bank, attempt);
       const em = Math.max(1, Math.round((quando.getTime() - Date.now()) / 60_000));
-      const proxima = em >= 120 ? `às ${new Date(quando.getTime() - BRT_MS).toISOString().slice(11, 16)} (só das 7h às 21h)` : `em ${em} min`;
+      const proxima = em >= 120 ? `às ${new Date(quando.getTime() - BRT_MS).toISOString().slice(11, 16)} (só das 7h às 22h)` : `em ${em} min`;
       return db.creditAnalysis.update({
         where: { id: row.id },
         data: {
