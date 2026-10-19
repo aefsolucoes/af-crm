@@ -246,52 +246,41 @@ export function santanderMaxTermMonths(birth: unknown, now = new Date()): number
   if (now.getDate() < d) meses--;
   return 80 * 12 - meses - 1;
 }
-const SANTANDER_PRAZO_PADRAO = 240;
+const PRAZO_MINIMO_HOME_EQUITY = 60;
 type AgePerson = { name: string; age: number | null; max: number | null };
 
-/** Prazo (meses) que vai pro Santander nesta rodada: o ajuste do banco, senão o da proposta ("180 meses"), senão 240; nunca acima de 240. */
-export function santanderPrazoPedido(cf: Record<string, any>, ovData?: any): number {
-  const n = (v: unknown) => Number(String(v ?? '').replace(/\D/g, '')) || 0;
-  return Math.min(n(ovData?.prazo) || n(cf.prazo_financ) || SANTANDER_PRAZO_PADRAO, SANTANDER_PRAZO_PADRAO);
+/** Santander e Creditas: idade + prazo ≤ 80 anos (Fabio 19/10: "a Creditas é a mesma regra do Santander").
+ *  NÃO barra quem só tem prazo menor — a extensão roda com o MAIOR prazo que a idade permite ("sempre ajustar pra tentar aprovar"; Santander: prazo 172 pra quem tem 65 anos).
+ *  Só barra (sem abrir o portal) quando NENHUM participante alcança nem o prazo mínimo do Home Equity (60 meses). Sem nascimento = não sabe, roda. */
+export function ageTermBlockText(bankLabel: string, people: AgePerson[]): string | null {
+  if (people.some((x) => x.max === null || x.max >= PRAZO_MINIMO_HOME_EQUITY)) return null;
+  return `idade + prazo acima de 80 anos no ${bankLabel} (o prazo mínimo é ${PRAZO_MINIMO_HOME_EQUITY} meses): ${people.map((x) => `${x.name} (${x.age} anos: prazo máximo ${x.max} meses)`).join(', ')}.`;
 }
 
-/** Barra o Santander quando NENHUM participante aceita o prazo PEDIDO pela regra idade + prazo ≤ 80 anos (Fabio 19/10: "senão vai ficar rodando a extensão à toa"). Sem nascimento = não sabe, roda.
- *  Mara, 72 anos, 180 meses pedidos: máximo 87 → barrada, sem abrir o portal. */
-export function santanderAgeBlockText(people: AgePerson[], pedido: number): string | null {
-  if (people.some((x) => x.max === null || x.max >= pedido)) return null;
-  return `idade + prazo acima de 80 anos no Santander: o prazo pedido (${pedido} meses) passa do máximo que a idade permite — ${people.map((x) => `${x.name} (${x.age} anos: prazo máximo ${x.max} meses)`).join(', ')}.`;
-}
-
-async function agePeople(db: Db, leadId: string): Promise<{ cf: Record<string, any>; people: AgePerson[] }> {
+async function agePeople(db: Db, leadId: string): Promise<AgePerson[]> {
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
-  const people: AgePerson[] = [
+  return [
     { name: String(cf.participante_1 || lead?.name || ''), age: ageOf(cf.nascimento_1), max: santanderMaxTermMonths(cf.nascimento_1) },
     ...(cf.cpf_2 || cf.participante_2 ? [{ name: String(cf.participante_2 || '2º participante'), age: ageOf(cf.nascimento_2), max: santanderMaxTermMonths(cf.nascimento_2) }] : []),
   ];
-  return { cf, people };
 }
 
-async function santanderAgeBlock(db: Db, leadId: string): Promise<string | null> {
-  const { cf, people } = await agePeople(db, leadId);
-  const ov = await db.creditOverride.findFirst({ where: { leadId, bank: 'CREDIMORAR' }, select: { data: true } });
-  return santanderAgeBlockText(people, santanderPrazoPedido(cf, ov?.data));
-}
+const ageTermBlock = async (db: Db, leadId: string, bankLabel: string) => ageTermBlockText(bankLabel, await agePeople(db, leadId));
 
-/** TITULAR PELA IDADE (Fabio 19/10): se o titular do banco NÃO passa na regra de idade e o 2º participante passa, inverte antes de rodar (a extensão não escolhe sozinha:
- *  rodava o titular de 72 anos e o portal recusava). Banco que já aprovou alguém não é mexido (vale o titular da aprovação). */
+/** TITULAR PELA IDADE (Fabio 19/10): se o titular do banco NÃO pode rodar ali (Inter: fora de 18–69; Santander/Creditas: nem o prazo mínimo) e o 2º participante pode, inverte antes de rodar
+ *  (as extensões não escolhem sozinhas: rodava o titular de 72 anos e o portal recusava). Banco que já aprovou alguém não é mexido (vale o titular da aprovação). */
 export function holderNeedsSwap(first: AgePerson, second: AgePerson, ok: (x: AgePerson) => boolean): boolean {
   return !ok(first) && ok(second);
 }
-async function alignHolderByAge(db: Db, accountId: string, leadId: string, bank: 'INTER' | 'CREDIMORAR'): Promise<void> {
+async function alignHolderByAge(db: Db, accountId: string, leadId: string, bank: 'INTER' | 'CREDIMORAR' | 'CREDITAS'): Promise<void> {
   const approved = await db.creditAnalysis.findFirst({ where: { leadId, bank, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, select: { id: true } });
   if (approved) return;
-  const { cf, people } = await agePeople(db, leadId);
+  const people = await agePeople(db, leadId);
   if (people.length < 2) return;
   const ov = await db.creditOverride.findFirst({ where: { leadId, bank }, select: { data: true } });
   const inverted = (ov?.data as any)?.inverter === true;
-  const pedido = santanderPrazoPedido(cf, ov?.data);
-  const ok = (x: AgePerson) => bank === 'INTER' ? (x.age === null || (x.age >= 18 && x.age <= 69)) : (x.max === null || x.max >= pedido);
+  const ok = (x: AgePerson) => bank === 'INTER' ? (x.age === null || (x.age >= 18 && x.age <= 69)) : (x.max === null || x.max >= PRAZO_MINIMO_HOME_EQUITY);
   const [first, second] = inverted ? [people[1], people[0]] : [people[0], people[1]];
   if (!holderNeedsSwap(first, second, ok)) return;
   await setOverrides(db, { accountId, leadId, banks: [bank], data: { inverter: !inverted }, merge: true, userName: 'Análise automática (idade)' }).catch(() => {});
@@ -342,7 +331,7 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
       }
       // Idade fora da faixa do Inter (18 a 69 anos — o portal recusa com "Parâmetro inválido", Admir 15/10): se NENHUM participante do card está na faixa, nem abre fila: NÃO RODEI direto.
       // (Com 1 participante na faixa a extensão decide quem é o titular — não barra aqui.)
-      if ((bank === 'INTER' || bank === 'CREDIMORAR') && kind === 'RUN' && !p.dryRun) await alignHolderByAge(db, p.accountId, l.id, bank).catch(() => {});
+      if ((bank === 'INTER' || bank === 'CREDIMORAR' || bank === 'CREDITAS') && kind === 'RUN' && !p.dryRun) await alignHolderByAge(db, p.accountId, l.id, bank).catch(() => {});
       if (bank === 'INTER' && kind === 'RUN' && !p.dryRun) {
         const idade = await interAgeBlock(db, l.id);
         if (idade) {
@@ -351,8 +340,8 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
           continue;
         }
       }
-      if (bank === 'CREDIMORAR' && kind === 'RUN' && !p.dryRun) {
-        const idade = await santanderAgeBlock(db, l.id);
+      if ((bank === 'CREDIMORAR' || bank === 'CREDITAS') && kind === 'RUN' && !p.dryRun) {
+        const idade = await ageTermBlock(db, l.id, bank === 'CREDITAS' ? 'Creditas' : 'Santander');
         if (idade) {
           await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail: `NÃO RODEI: ${idade}`, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
           created++;
