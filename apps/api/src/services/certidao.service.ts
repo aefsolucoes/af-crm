@@ -16,12 +16,12 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
  * Se o pedido foi feito mas o PIX não foi capturado, a fase PIX tenta de novo SEM pedir outra certidão (cada pedido é uma cobrança nova).
  */
 
-const REQUESTED_GIVE_UP_H = 6; // ninguém pegou (extensão/Chrome fechados)
+const REQUESTED_WARN_H = 6; // ninguém pegou (extensão/Chrome fechados): AVISA a equipe, mas não cancela — Fabio 19/10: sem limite, vale até o pedido sair
+const WARN_MARK = 'sem atendimento';
 const RUNNING_TTL_MIN = 25; // pegou e sumiu (aba fechou) — o PIX demora até ~2 min, o pedido todo cabe folgado
 const PIX_MAX_ATTEMPTS = 4; // tentativas de pegar o PIX de um pedido já feito
 const CHECK_EVERY_MIN = 300; // conferência da emissão de 5 em 5 h (Fabio 16/10); o e-mail "Resposta ao seu pedido" do RI Digital adianta (certidaoEmailArrived)
-const PAID_CHECK_EVERY_MIN = 60; // depois do pagamento confirmado, confere a emissão de hora em hora (o cartório leva até 4 h úteis)
-const GIVE_UP_DAYS = 3; // depois disso não confere mais (o PIX do portal vence no dia)
+const PAID_CHECK_EVERY_MIN = 300; // depois do pagamento confirmado, confere a emissão de 5 em 5 h (Fabio 19/10); o e-mail do cartório adianta
 const ACTIVE = ['REQUESTED', 'RUNNING', 'AWAITING_PAYMENT'];
 
 export const onlyDigits = (v: unknown) => String(v ?? '').replace(/\D/g, '');
@@ -112,10 +112,13 @@ async function expireStuck(db: Db, accountId: string) {
       if (u.count) await note(db, r.leadId, `⚠️ A certidão da matrícula ${r.matricula} NÃO foi concluída: a extensão parou no meio do pedido. Confira no RI Digital se o pedido existe antes de pedir de novo.`);
     }
   }
-  const velhos = await db.certidaoRequest.findMany({ where: { accountId, status: 'REQUESTED', createdAt: { lt: new Date(agora - REQUESTED_GIVE_UP_H * 3600_000) } }, select: { id: true, leadId: true, matricula: true } });
+  const velhos = await db.certidaoRequest.findMany({ where: { accountId, status: 'REQUESTED', createdAt: { lt: new Date(agora - REQUESTED_WARN_H * 3600_000) }, OR: [{ detail: null }, { detail: { not: { contains: WARN_MARK } } }] }, select: { id: true, leadId: true, matricula: true } });
   for (const r of velhos) {
-    const u = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'REQUESTED' }, data: { status: 'FAILED', finishedAt: new Date(), detail: `Ninguém pegou o pedido em ${REQUESTED_GIVE_UP_H} h (extensão "Certidão ONR" fechada ou sem login no CRM).` } });
-    if (u.count) await note(db, r.leadId, `⚠️ O pedido da certidão da matrícula ${r.matricula} não foi atendido (a extensão "Certidão ONR" não pegou em ${REQUESTED_GIVE_UP_H} h).`);
+    const u = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'REQUESTED' }, data: { detail: `Pedido ${WARN_MARK} há mais de ${REQUESTED_WARN_H} h: abra o Chrome com a extensão "Certidão ONR" (logada no CRM) que ela pega sozinha. Continua na fila, sem limite.` } });
+    if (u.count) {
+      await note(db, r.leadId, `⚠️ O pedido da certidão da matrícula ${r.matricula} está parado há mais de ${REQUESTED_WARN_H} h: a extensão "Certidão ONR" não pegou (Chrome fechado ou sem login no CRM). Continua na fila — assim que ela abrir, faz o pedido.`);
+      pushAll(accountId, '⚠️ Pedido de certidão parado', `${await leadNameOf(db, r.leadId)} — matrícula ${r.matricula}: abra o Chrome com a extensão Certidão ONR`, r.leadId);
+    }
   }
 }
 
@@ -144,7 +147,7 @@ export async function claimCertidao(db: Db, p: { accountId: string }): Promise<C
   }
   // 3) SÓ com o pagamento CONFIRMADO (comprovante do cliente ou e-mail do cartório): confere se a certidão saiu (07h–21h). Sem pagamento não há o que procurar (Fabio 19/10).
   if (foraDoHorario()) return null;
-  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', pixCode: { not: null }, paidAt: { not: null }, createdAt: { gt: new Date(now.getTime() - GIVE_UP_DAYS * 86400_000) }, OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, orderBy: { createdAt: 'asc' }, take: 3 });
+  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', pixCode: { not: null }, paidAt: { not: null }, OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, orderBy: { createdAt: 'asc' }, take: 3 });
   for (const r of aguardando) {
     const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT', pixCode: { not: null } }, data: { nextCheckAt: new Date(now.getTime() + PAID_CHECK_EVERY_MIN * 60_000) } });
     if (c.count) return toJob(r, 'COLLECT');
