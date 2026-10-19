@@ -16,6 +16,44 @@ const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const round1 = (v: unknown): number | null => (v == null || Number.isNaN(Number(v)) ? null : Math.round(Number(v) * 10) / 10);
 const pct = (a: number, b: number): number | null => (b > 0 ? Math.round((a / b) * 1000) / 10 : null);
 
+/** Os 6 indicadores do topo para uma janela [de, ate) — usados na COMPARAÇÃO com o período anterior (mesma definição nos dois lados). */
+async function kpisDoPeriodo(accountId: string, de: Date, ate: Date) {
+  const a = (await prisma.$queryRaw<any[]>(Prisma.sql`
+    SELECT count(*) FILTER (WHERE "status" IN ('APPROVED','CONDITIONAL','REJECTED') OR ("status" = 'FAILED' AND "detail" ~* ${OBJETIVA}))::int AS conclusivas,
+      count(*) FILTER (WHERE "status" = 'FAILED' AND ("detail" IS NULL OR "detail" !~* ${OBJETIVA}))::int AS falhas,
+      count(*) FILTER (WHERE "status" IN ('REQUESTED','RUNNING','SENT','CHECK','INCOMPLETE'))::int AS andamento,
+      count(DISTINCT "leadId")::int AS cards
+    FROM "CreditAnalysis" WHERE "accountId" = ${accountId} AND "kind" = 'RUN' AND "dryRun" = false AND "source" <> 'AI_SIM' AND "createdAt" >= ${de} AND "createdAt" < ${ate}`))[0] || {};
+  const fechadas = num(a.conclusivas) + num(a.falhas);
+  const prim = (await prisma.$queryRaw<any[]>(Prisma.sql`
+    WITH ini AS (SELECT "leadId", min("createdAt") AS t FROM "CreditAnalysis" WHERE "accountId" = ${accountId} AND "kind" = 'RUN' AND "dryRun" = false AND "createdAt" >= ${de} AND "createdAt" < ${ate} GROUP BY 1),
+         fim AS (SELECT "leadId", min("finishedAt") AS t FROM "CreditAnalysis" WHERE "accountId" = ${accountId} AND "kind" = 'RUN' AND "dryRun" = false AND "status" IN ('APPROVED','CONDITIONAL','REJECTED') AND "finishedAt" IS NOT NULL GROUP BY 1)
+    SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (fim.t - ini.t))/60) AS mediana FROM ini JOIN fim USING ("leadId") WHERE fim.t >= ini.t`))[0] || {};
+  const av = (await prisma.$queryRaw<any[]>(Prisma.sql`
+    WITH apr AS (SELECT a."leadId", min(a."createdAt") AS t FROM "CreditAnalysis" a JOIN "Lead" ll ON ll."id" = a."leadId"
+                 WHERE a."accountId" = ${accountId} AND a."status" IN ('APPROVED','CONDITIONAL') AND a."approvedValue" IS NOT NULL AND a."dryRun" = false AND a."createdAt" >= ${de} AND a."createdAt" < ${ate}
+                   AND jsonb_exists(COALESCE(ll."customFields", '{}'::jsonb), '_autoStartedAt') GROUP BY 1),
+         av AS (SELECT apr."leadId", apr.t AS aprovou, LEAST(
+                  (SELECT min(n."createdAt") FROM "Note" n WHERE n."leadId" = apr."leadId" AND n."content" LIKE '📣 Cliente avisado das opções%' AND n."createdAt" >= apr.t),
+                  (SELECT min(m."createdAt") FROM "Message" m WHERE m."leadId" = apr."leadId" AND m."direction" = 'OUTBOUND' AND m."createdAt" >= apr.t AND (m."templateName" = 'credito_aprovado_condicoes' OR m."content" LIKE '%Crédito aprovado!%'))) AS avisou FROM apr)
+    SELECT count(*)::int AS aprovadas, count(*) FILTER (WHERE avisou IS NOT NULL AND extract(epoch FROM (avisou - aprovou)) <= 900)::int AS ate15 FROM av`))[0] || {};
+  const wa = (await prisma.$queryRaw<any[]>(Prisma.sql`
+    SELECT count(*)::int AS total, count(*) FILTER (WHERE m."status" = 'FAILED')::int AS falhas FROM "Message" m JOIN "Lead" l ON l."id" = m."leadId"
+    WHERE l."accountId" = ${accountId} AND m."direction" = 'OUTBOUND' AND m."channel" = 'WHATSAPP' AND m."createdAt" >= ${de} AND m."createdAt" < ${ate}`))[0] || {};
+  const rv = num((await prisma.$queryRaw<any[]>(Prisma.sql`SELECT count(*)::int AS n FROM "LeadChange" WHERE "accountId" = ${accountId} AND "revertedAt" IS NOT NULL AND "revertedAt" >= ${de} AND "revertedAt" < ${ate}`))[0]?.n);
+  const re = num((await prisma.$queryRaw<any[]>(Prisma.sql`
+    SELECT count(DISTINCT n."leadId")::int AS n FROM "Note" n JOIN "Lead" l ON l."id" = n."leadId"
+    WHERE l."accountId" = ${accountId} AND n."createdAt" >= ${de} AND n."createdAt" < ${ate} AND n."content" LIKE 'Status alterado para "Aberto"%'
+      AND EXISTS (SELECT 1 FROM "Note" p WHERE p."leadId" = n."leadId" AND p."createdAt" < n."createdAt" AND p."createdAt" >= n."createdAt" - interval '14 days'
+                  AND (p."content" LIKE '%marcado como Perdido — por Análise automática%' OR p."content" LIKE '%marcado como Perdido — por Assistente IA%'))`))[0]?.n);
+  const ov = num((await prisma.$queryRaw<any[]>(Prisma.sql`SELECT count(DISTINCT "leadId")::int AS n FROM "CreditOverride" WHERE "accountId" = ${accountId} AND "updatedAt" >= ${de} AND "updatedAt" < ${ate}`))[0]?.n);
+  const cards = num(a.cards);
+  return {
+    conclusivasPct: pct(num(a.conclusivas), fechadas), falhaPct: pct(num(a.falhas), fechadas), medianaPrimeiroResultadoMin: round1(prim.mediana),
+    avisoAte15minPct: pct(num(av.ate15), num(av.aprovadas)), whatsappFalhaPct: pct(num(wa.falhas), num(wa.total)), correcoesPor100: cards > 0 ? Math.round(((rv + re + ov) / cards) * 1000) / 10 : null,
+  };
+}
+
 export async function automationMetrics(accountId: string, days: number) {
   const d = Math.min(Math.max(Math.round(days) || 14, 1), 90);
   const since = new Date(Date.now() - d * 86_400_000);
@@ -37,11 +75,22 @@ export async function automationMetrics(accountId: string, days: number) {
     FROM "CreditAnalysis"
     WHERE "accountId" = ${accountId} AND "kind" = 'RUN' AND "dryRun" = false AND "source" <> 'AI_SIM' AND "createdAt" >= ${since}
     GROUP BY "bank" ORDER BY "bank"`);
+  // Por CLIENTE (e não por tentativa): quantos ficaram sem resultado de verdade em cada banco — a última análise do cliente naquele banco terminou em falha técnica.
+  const finais = await prisma.$queryRaw<any[]>(Prisma.sql`
+    WITH ult AS (SELECT DISTINCT ON ("leadId", "bank") "leadId", "bank", "status", "detail" FROM "CreditAnalysis"
+                 WHERE "accountId" = ${accountId} AND "kind" = 'RUN' AND "dryRun" = false AND "source" <> 'AI_SIM' AND "createdAt" >= ${since}
+                 ORDER BY "leadId", "bank", "createdAt" DESC)
+    SELECT "bank", count(*)::int AS clientes,
+      count(*) FILTER (WHERE ("status" = 'FAILED' AND ("detail" IS NULL OR "detail" !~* ${OBJETIVA})) OR "status" = 'INCOMPLETE')::int AS sem_resultado
+    FROM ult GROUP BY "bank"`);
+  const finalPorBanco = new Map(finais.map((f) => [f.bank as string, { clientes: num(f.clientes), semResultado: num(f.sem_resultado) }]));
+
   const bancos = bancoRows.map((r) => {
     const fechadas = num(r.total) - num(r.andamento);
     const conclusivas = num(r.aprovadas) + num(r.reprovadas) + num(r.desqualificadas);
     return {
       bank: r.bank as string, label: BANK_LABEL[r.bank] || r.bank, total: num(r.total), aprovadas: num(r.aprovadas), reprovadas: num(r.reprovadas), desqualificadas: num(r.desqualificadas),
+      clientes: finalPorBanco.get(r.bank)?.clientes ?? 0, clientesSemResultado: finalPorBanco.get(r.bank)?.semResultado ?? 0,
       falhas: num(r.falhas), andamento: num(r.andamento), conclusivasPct: pct(conclusivas, fechadas), falhaPct: pct(num(r.falhas), fechadas),
       medianaMin: round1(r.mediana_min), p90Min: round1(r.p90_min),
     };
@@ -69,7 +118,11 @@ export async function automationMetrics(accountId: string, days: number) {
                  WHERE a."accountId" = ${accountId} AND a."status" IN ('APPROVED','CONDITIONAL') AND a."approvedValue" IS NOT NULL AND a."dryRun" = false AND a."createdAt" >= ${since}
                    AND jsonb_exists(COALESCE(ll."customFields", '{}'::jsonb), '_autoStartedAt') -- só cards que a análise AUTOMÁTICA iniciou (os rodados à mão têm o botão "Avisar cliente")
                  GROUP BY 1),
-         av AS (SELECT apr."leadId", apr.t AS aprovou, (SELECT min(n."createdAt") FROM "Note" n WHERE n."leadId" = apr."leadId" AND n."content" LIKE '📣 Cliente avisado das opções%' AND n."createdAt" >= apr.t) AS avisou FROM apr)
+         av AS (SELECT apr."leadId", apr.t AS aprovou, LEAST(
+                  (SELECT min(n."createdAt") FROM "Note" n WHERE n."leadId" = apr."leadId" AND n."content" LIKE '📣 Cliente avisado das opções%' AND n."createdAt" >= apr.t),
+                  -- aviso feito à mão (a equipe mandou a aprovação ou o template "ver condições") também conta como avisado
+                  (SELECT min(m."createdAt") FROM "Message" m WHERE m."leadId" = apr."leadId" AND m."direction" = 'OUTBOUND' AND m."createdAt" >= apr.t AND (m."templateName" = 'credito_aprovado_condicoes' OR m."content" LIKE '%Crédito aprovado!%'))
+                ) AS avisou FROM apr)
     SELECT count(*)::int AS aprovadas, count(avisou)::int AS avisadas,
       count(*) FILTER (WHERE avisou IS NOT NULL AND extract(epoch FROM (avisou - aprovou)) <= 900)::int AS ate15,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (avisou - aprovou))/60) FILTER (WHERE avisou IS NOT NULL) AS mediana_min,
@@ -186,9 +239,13 @@ export async function automationMetrics(accountId: string, days: number) {
   const abertas = duvidas.reduce((a, q) => a + num(q.abertas), 0);
   if (abertas > 0) atencao.push({ nivel: 'info', texto: `${abertas} dúvida(s) da IA esperando resposta da equipe.` });
 
+  // Comparação com os `d` dias ANTERIORES (mesma definição dos dois lados).
+  const agora2 = new Date();
+  const [kAtual, kAnterior] = await Promise.all([kpisDoPeriodo(accountId, since, agora2), kpisDoPeriodo(accountId, new Date(since.getTime() - d * 86_400_000), since)]);
+
   return {
     periodoDias: d, desde: since.toISOString(), geradoEm: new Date().toISOString(),
-    resumo, atencao,
+    resumo, comparacao: { atual: kAtual, anterior: kAnterior }, atencao,
     bancos, causasFalha: causas.map((c) => ({ bank: c.bank as string, label: BANK_LABEL[c.bank] || c.bank, causa: c.causa as string, n: num(c.n) })),
     tempos: {
       primeiroResultado: { n: num(primeiro.n), medianaMin: round1(primeiro.mediana_min), p90Min: round1(primeiro.p90_min) },

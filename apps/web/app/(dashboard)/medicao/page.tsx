@@ -11,9 +11,10 @@ import { cn } from '@/lib/utils';
 /* Medição da automação (Fabio 19/10): só pra NÓS medirmos o quanto o processo automático acerta e onde a equipe precisa corrigir. Só administrador. Só leitura.
  * Dados: GET /api/automation-metrics?days=N (automation-metrics.service.ts). */
 
-interface Banco { bank: string; label: string; total: number; aprovadas: number; reprovadas: number; desqualificadas: number; falhas: number; andamento: number; conclusivasPct: number | null; falhaPct: number | null; medianaMin: number | null; p90Min: number | null }
+interface Banco { bank: string; label: string; clientes?: number; clientesSemResultado?: number; total: number; aprovadas: number; reprovadas: number; desqualificadas: number; falhas: number; andamento: number; conclusivasPct: number | null; falhaPct: number | null; medianaMin: number | null; p90Min: number | null }
 interface Metrics {
   periodoDias: number; geradoEm: string;
+  comparacao?: { atual: Kpis; anterior: Kpis };
   resumo: { analises: number; cardsAnalisados: number; conclusivasPct: number | null; falhaPct: number | null; medianaPrimeiroResultadoMin: number | null; avisoAte15minPct: number | null; whatsappFalhaPct: number | null; correcoesPor100: number | null };
   atencao: { nivel: 'alto' | 'medio' | 'info'; texto: string }[];
   bancos: Banco[];
@@ -28,6 +29,8 @@ interface Metrics {
   correcoes: { feitas: number; desfeitas: number; principais: { acao: string; n: number }[]; reabertosAposFechamentoAutomatico: number; cardsComAjuste: number; resultadosManuais: number };
   extensoes: { bank: string; label: string; online: boolean; lastSeenAt: string | null; loginNeeded?: boolean }[];
 }
+
+interface Kpis { conclusivasPct: number | null; falhaPct: number | null; medianaPrimeiroResultadoMin: number | null; avisoAte15minPct: number | null; whatsappFalhaPct: number | null; correcoesPor100: number | null }
 
 const KIND: Record<string, string> = { QUESTION: 'Dúvida de cliente', CALL_REQUEST: 'Pedido de ligação', DOC_QUESTION: 'Dúvida de documento', EMAIL_QUESTION: 'E-mail da Creditas', REJECTION_QUESTION: 'Reprovação temporária', BANK_EMAIL: 'E-mail a banco' };
 
@@ -49,12 +52,23 @@ function tone(v: number | null | undefined, good: boolean, ok: number, bad: numb
   return pior ? 'text-red-600' : medio ? 'text-amber-600' : 'text-emerald-600';
 }
 
-function Kpi({ label, value, hint, cls }: { label: string; value: string; hint?: string; cls?: string }) {
+/** Variação contra o período anterior: `melhorSeSobe` diz qual lado é bom; `unidade` 'pts' (porcentagem), 'min' ou '' (taxa). null = sem dado de um dos lados. */
+function Delta({ atual, anterior, melhorSeSobe, unidade, dias }: { atual: number | null | undefined; anterior: number | null | undefined; melhorSeSobe: boolean; unidade: 'pts' | 'min' | ''; dias: number }) {
+  if (atual == null || anterior == null) return <p className="text-[11px] text-slate-300 mt-0.5">sem dados nos {dias} dias anteriores</p>;
+  const d = Math.round((atual - anterior) * 10) / 10;
+  if (d === 0) return <p className="text-[11px] text-slate-400 mt-0.5">igual aos {dias} dias anteriores</p>;
+  const bom = (d > 0) === melhorSeSobe;
+  const txt = unidade === 'min' ? fmtMin(Math.abs(d)) : `${Math.abs(d).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}${unidade ? ' ' + unidade : ''}`;
+  return <p className={cn('text-[11px] mt-0.5 font-medium', bom ? 'text-emerald-600' : 'text-red-600')}>{d > 0 ? '▲' : '▼'} {txt} <span className="font-normal text-slate-400">vs {dias} dias anteriores</span></p>;
+}
+
+function Kpi({ label, value, hint, cls, delta }: { label: string; value: string; hint?: string; cls?: string; delta?: React.ReactNode }) {
   return (
     <div className="bg-white rounded-xl border border-af-border p-4">
       <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
       <p className={cn('text-2xl font-bold mt-1', cls || 'text-slate-800')}>{value}</p>
       {hint && <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{hint}</p>}
+      {delta}
     </div>
   );
 }
@@ -126,12 +140,12 @@ export default function MedicaoPage() {
           <>
             {/* Indicadores principais */}
             <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-              <Kpi label="Análises conclusivas" value={fmtPct(data.resumo.conclusivasPct)} cls={tone(data.resumo.conclusivasPct, true, 85, 70)} hint="aprovou, reprovou ou o cliente não passa na regra do banco — sem erro técnico" />
-              <Kpi label="Falha técnica" value={fmtPct(data.resumo.falhaPct)} cls={tone(data.resumo.falhaPct, false, 10, 20)} hint="extensão/portal falhou (inclui as que a automação refez depois)" />
-              <Kpi label="Até o 1º resultado" value={fmtMin(data.resumo.medianaPrimeiroResultadoMin)} hint={`mediana, por cliente · 90% em até ${fmtMin(data.tempos.primeiroResultado.p90Min)}`} />
-              <Kpi label="Aprovação avisada em 15 min" value={fmtPct(data.resumo.avisoAte15minPct)} cls={tone(data.resumo.avisoAte15minPct, true, 80, 50)} hint={`mediana ${fmtMin(data.tempos.aprovacaoAteAviso.medianaMin)} · 90% em até ${fmtMin(data.tempos.aprovacaoAteAviso.p90Min)}`} />
-              <Kpi label="WhatsApp que falhou" value={fmtPct(data.resumo.whatsappFalhaPct)} cls={tone(data.resumo.whatsappFalhaPct, false, 2, 5)} hint={`${fmtN(data.avisos.whatsapp.falhas)} de ${fmtN(data.avisos.whatsapp.total)} mensagens enviadas`} />
-              <Kpi label="Correções da equipe" value={data.resumo.correcoesPor100 == null ? '—' : `${data.resumo.correcoesPor100.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} / 100`} cls={tone(data.resumo.correcoesPor100, false, 10, 30)} hint={`por 100 cards analisados (${fmtN(data.resumo.cardsAnalisados)} cards, ${fmtN(data.resumo.analises)} análises)`} />
+              <Kpi label="Análises conclusivas" value={fmtPct(data.resumo.conclusivasPct)} cls={tone(data.resumo.conclusivasPct, true, 85, 70)} hint="aprovou, reprovou ou o cliente não passa na regra do banco — sem erro técnico" delta={<Delta atual={data.comparacao?.atual.conclusivasPct} anterior={data.comparacao?.anterior.conclusivasPct} melhorSeSobe unidade="pts" dias={data.periodoDias} />} />
+              <Kpi label="Falha técnica" value={fmtPct(data.resumo.falhaPct)} cls={tone(data.resumo.falhaPct, false, 10, 20)} hint={'extensão/portal falhou (inclui as que a automação refez depois; veja "clientes sem resultado" na tabela)'} delta={<Delta atual={data.comparacao?.atual.falhaPct} anterior={data.comparacao?.anterior.falhaPct} melhorSeSobe={false} unidade="pts" dias={data.periodoDias} />} />
+              <Kpi label="Até o 1º resultado" value={fmtMin(data.resumo.medianaPrimeiroResultadoMin)} hint={`mediana, por cliente · 90% em até ${fmtMin(data.tempos.primeiroResultado.p90Min)}`} delta={<Delta atual={data.comparacao?.atual.medianaPrimeiroResultadoMin} anterior={data.comparacao?.anterior.medianaPrimeiroResultadoMin} melhorSeSobe={false} unidade="min" dias={data.periodoDias} />} />
+              <Kpi label="Aprovação avisada em 15 min" value={fmtPct(data.resumo.avisoAte15minPct)} cls={tone(data.resumo.avisoAte15minPct, true, 80, 50)} hint={`mediana ${fmtMin(data.tempos.aprovacaoAteAviso.medianaMin)} · 90% em até ${fmtMin(data.tempos.aprovacaoAteAviso.p90Min)}`} delta={<Delta atual={data.comparacao?.atual.avisoAte15minPct} anterior={data.comparacao?.anterior.avisoAte15minPct} melhorSeSobe unidade="pts" dias={data.periodoDias} />} />
+              <Kpi label="WhatsApp que falhou" value={fmtPct(data.resumo.whatsappFalhaPct)} cls={tone(data.resumo.whatsappFalhaPct, false, 2, 5)} hint={`${fmtN(data.avisos.whatsapp.falhas)} de ${fmtN(data.avisos.whatsapp.total)} mensagens enviadas`} delta={<Delta atual={data.comparacao?.atual.whatsappFalhaPct} anterior={data.comparacao?.anterior.whatsappFalhaPct} melhorSeSobe={false} unidade="pts" dias={data.periodoDias} />} />
+              <Kpi label="Correções da equipe" value={data.resumo.correcoesPor100 == null ? '—' : `${data.resumo.correcoesPor100.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} / 100`} cls={tone(data.resumo.correcoesPor100, false, 10, 30)} hint={`por 100 cards analisados (${fmtN(data.resumo.cardsAnalisados)} cards, ${fmtN(data.resumo.analises)} análises)`} delta={<Delta atual={data.comparacao?.atual.correcoesPor100} anterior={data.comparacao?.anterior.correcoesPor100} melhorSeSobe={false} unidade="" dias={data.periodoDias} />} />
             </div>
 
             {/* Pontos de atenção */}
@@ -149,7 +163,7 @@ export default function MedicaoPage() {
             <Card title="Análises por banco (extensões)" sub="Só análises de verdade (sem teste). 'Desqualificado' = o cliente não passa na regra do banco/imóvel/idade: não é erro da automação.">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead><tr className="text-left text-[11px] uppercase text-slate-400"><th className="py-1.5 pr-3">Banco</th><th className="pr-3">Análises</th><th className="pr-3">Aprovou</th><th className="pr-3">Reprovou</th><th className="pr-3">Desqualif.</th><th className="pr-3">Falha técnica</th><th className="pr-3">Andamento</th><th className="pr-3">Conclusivas</th><th className="pr-3">Tempo (mediana / 90%)</th></tr></thead>
+                  <thead><tr className="text-left text-[11px] uppercase text-slate-400"><th className="py-1.5 pr-3">Banco</th><th className="pr-3">Análises</th><th className="pr-3">Aprovou</th><th className="pr-3">Reprovou</th><th className="pr-3">Desqualif.</th><th className="pr-3">Falha técnica</th><th className="pr-3">Andamento</th><th className="pr-3" title="Clientes cuja ÚLTIMA análise nesse banco terminou em falha técnica (a automação não conseguiu resultado até agora)">Clientes sem resultado</th><th className="pr-3">Conclusivas</th><th className="pr-3">Tempo (mediana / 90%)</th></tr></thead>
                   <tbody>
                     {data.bancos.map((b) => (
                       <tr key={b.bank} className="border-t border-slate-100">
@@ -160,11 +174,12 @@ export default function MedicaoPage() {
                         <td className="pr-3 text-slate-500">{b.desqualificadas}</td>
                         <td className={cn('pr-3 font-medium', tone(b.falhaPct, false, 10, 20))}>{b.falhas} <span className="text-[11px] font-normal">({fmtPct(b.falhaPct)})</span></td>
                         <td className="pr-3 text-slate-500">{b.andamento}</td>
+                        <td className={cn('pr-3', (b.clientesSemResultado || 0) > 0 ? 'text-amber-600 font-medium' : 'text-slate-500')}>{b.clientesSemResultado ?? '—'}<span className="text-[11px] font-normal text-slate-400"> de {b.clientes ?? '—'}</span></td>
                         <td className={cn('pr-3', tone(b.conclusivasPct, true, 85, 70))}>{fmtPct(b.conclusivasPct)}</td>
                         <td className="pr-3 text-slate-600">{fmtMin(b.medianaMin)} / {fmtMin(b.p90Min)}</td>
                       </tr>
                     ))}
-                    {!data.bancos.length && <tr><td colSpan={9} className="py-3 text-slate-400">Nenhuma análise no período.</td></tr>}
+                    {!data.bancos.length && <tr><td colSpan={10} className="py-3 text-slate-400">Nenhuma análise no período.</td></tr>}
                   </tbody>
                 </table>
               </div>
