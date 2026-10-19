@@ -310,7 +310,8 @@ const DOCS_MARK = 'encaminhar os seguintes documentos';
 const DOCS_MARK_OLD = 'o banco pede os seguintes documentos';
 const FALLBACK_PESSOAIS = ['Documento de identificação', 'Comprovante de residência', 'Comprovante de estado civil (certidão de nascimento ou casamento)'];
 // Renda SEMPRE na lista (Fabio 17/10, Luzia): complementa a lista com a renda pra abranger de uma vez a continuidade no Inter e a documentação pra seguir na Creditas. A equipe pode editar na Resposta rápida "Documentos Home Equity" (seção "*Renda:*").
-const FALLBACK_RENDA = ['Comprovante de renda dos últimos 3 meses (contracheque/holerite, pró-labore ou extratos bancários)', 'Declaração do Imposto de Renda (IRPF) completa, com o recibo de entrega (se declara)'];
+// Sempre com o NÚMERO (Fabio 19/10: "3 últimos extratos bancários" pra autônomo e "3 últimos contracheques, quando for o caso" pra assalariado).
+const FALLBACK_RENDA = ['Comprovante de renda: 3 últimos contracheques (se for assalariado) ou 3 últimos extratos bancários (se for autônomo)', 'Declaração do Imposto de Renda (IRPF) completa, com o recibo de entrega (se declara)'];
 const FALLBACK_IMOVEL = ['Certidão de ônus reais/ Matrícula do imóvel', 'Inscrição Imobiliária/ IPTU', 'Capa do IPTU com as metragens'];
 
 /** Linhas "• ..." de cada seção ("*Proponente:*" / "*Imóvel:*") da Resposta rápida "Documentos Home Equity" — a equipe edita lá. */
