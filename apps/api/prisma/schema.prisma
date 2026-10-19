@@ -42,6 +42,26 @@ model Account {
   callPermissions    CallPermission[]
 }
 
+/// Histórico "reversível" do card (botão Reverter, Fabio 19/10): cada ação HUMANA no card (Perdido, mover de etapa/funil, arquivar, estrela,
+/// responsável, valor, campos, etiquetas…) grava o "antes" e o "depois" só dos campos que mudaram. Reverter devolve esses campos ao "antes" —
+/// campos que a IA/automação mexeu depois (outras chaves de customFields, outras etiquetas) são preservados. Não é FK: sobrevive ao card.
+model LeadChange {
+  id             String    @id @default(cuid())
+  accountId      String
+  leadId         String
+  userId         String?
+  userName       String
+  label          String // texto pronto: "marcou como Perdido · moveu para Perdidos → Outubro"
+  before         Json // { campo: valor } só dos campos alterados (antes)
+  after          Json // idem (depois)
+  changed        String[] // nomes dos campos alterados
+  revertedAt     DateTime?
+  revertedByName String?
+  createdAt      DateTime  @default(now())
+
+  @@index([leadId, createdAt])
+}
+
 /// Registro silencioso do que a equipe faz — mexeu num card, respondeu um
 /// cliente, criou lead, mudou status. Só acumula (sem som/popup); a sineta no
 /// topo mostra o feed. Nomes de usuário/lead ficam gravados como snapshot

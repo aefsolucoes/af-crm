@@ -10,6 +10,7 @@ import { normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { normalizeClientName, roundUpToThousand } from '../lib/text';
 import { runAutomations } from '../services/automation.service';
 import { logActivity } from '../services/activity.service';
+import { trackLeadChanges, listLeadChanges, revertLeadChange } from '../services/lead-change.service';
 import { MONTH_NAMES_PT, currentMonthNamePT, getOrCreateNamedPipeline, moveLeadToPerdidos } from '../services/named-pipeline.service';
 
 /** Formata um telefone BR (com DDI 55) pra exibição. */
@@ -37,6 +38,9 @@ router.use(async (req: AuthRequest, res: Response, next) => {
     res.status(500).json({ error: 'Erro ao verificar permissão' });
   }
 });
+
+// Botão "Reverter" (Fabio 19/10): guarda o "antes" de cada ação humana no card — ver lead-change.service.ts.
+router.use(trackLeadChanges);
 
 
 /** Converte um valor de campo do cadastro (customFields) para número. Aceita
@@ -314,6 +318,36 @@ router.post('/bulk-move', async (req: AuthRequest, res: Response) => {
     res.json({ moved: result.count, pipelineName: pipeline.name, stageName: targetStage.name });
   } catch {
     res.status(500).json({ error: 'Erro ao mover os leads' });
+  }
+});
+
+/** Não-admin só mexe em card do próprio departamento (mesma regra do GET /:id). */
+async function leadVisibleTo(req: AuthRequest, leadId: string): Promise<boolean> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { pipeline: { select: { departmentId: true } } } });
+  if (!lead) return false;
+  const scope = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+  const dept = lead.pipeline?.departmentId;
+  return !(scope.length && dept && !scope.includes(dept));
+}
+
+// Histórico reversível do card (últimas alterações feitas pela equipe).
+router.get('/:id/changes', async (req: AuthRequest, res: Response) => {
+  try {
+    if (!(await leadVisibleTo(req, req.params.id))) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
+    res.json(await listLeadChanges(req.user!.accountId, req.params.id));
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar o histórico de alterações' });
+  }
+});
+
+// Reverte a alteração escolhida (e as mais novas) — o card volta a como estava antes dela.
+router.post('/:id/changes/:changeId/revert', async (req: AuthRequest, res: Response) => {
+  try {
+    if (!(await leadVisibleTo(req, req.params.id))) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
+    const out = await revertLeadChange({ accountId: req.user!.accountId, leadId: req.params.id, changeId: req.params.changeId, userId: req.user!.id, io: req.app.get('io') });
+    res.json({ ok: true, count: out.count, labels: out.labels });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Erro ao reverter a alteração' });
   }
 });
 

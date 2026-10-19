@@ -10,7 +10,8 @@ export type ActivityAction =
   | 'lead_status_changed'
   | 'leads_bulk_moved'
   | 'client_replied'
-  | 'lead_merged';
+  | 'lead_merged'
+  | 'lead_reverted';
 
 /**
  * Registra uma atividade da equipe. Fire-and-forget: NUNCA lança — se falhar,

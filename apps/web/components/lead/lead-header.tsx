@@ -3,6 +3,7 @@ import { LeadDetail } from '@/types';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Modal } from '@/components/ui/modal';
+import { LeadRevertBar } from '@/components/lead/lead-revert-bar';
 import { formatCurrency } from '@/lib/utils';
 import { Building2, DollarSign, Trophy, XCircle, ThumbsDown, RotateCcw, X, Plus, Archive, ArchiveRestore } from 'lucide-react';
 import api from '@/lib/api';
@@ -251,6 +252,9 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
       {lead.status === 'LOST' && lead.lostReason && (
         <p className="text-[11px] text-slate-500 italic truncate" title={lead.lostReason}>Motivo: {lead.lostReason}</p>
       )}
+
+      {/* Reverter (Fabio 19/10): desfaz a última alteração feita neste card e mostra o histórico */}
+      <LeadRevertBar leadId={lead.id} version={`${(lead as any).updatedAt}|${lead.status}|${lead.stageId}|${lead.archived}`} onReverted={onStageChange} />
 
       {/* Linha 2: etiquetas (estilo label do Trello) — fora do painel da Inbox */}
       {showTags && (
