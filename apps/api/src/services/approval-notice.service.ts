@@ -1008,6 +1008,52 @@ export async function markRejectedAndMove(p: { accountId: string; leadId: string
   return { ok: true };
 }
 
+// ─── Nova proposta (outro prazo/valor, pedida pelo cliente) RECUSADA (Fabio 19/10): o card NÃO fecha — o CRM avisa o cliente da negativa e diz que a aprovação que ele já tem continua valendo ───
+// Texto sem as palavras da negativa de verdade (REJECTION_RX): este aviso NÃO conta como "cliente avisado que foi reprovado" — o card segue aprovado.
+export async function buildChangeRefusalText(leadId: string): Promise<string | null> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true, contact: { select: { name: true } } } });
+  if (!lead) return null;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const preview = await previewApprovalNotice(leadId).catch(() => null);
+  if (!preview) return null; // sem aprovação anterior pra apresentar: não há o que avisar
+  const recap = preview.text.replace(/^(🔄|🆕)[^\n]*\n\n/, '').replace(/^✅[^\n]*\n\n/, '');
+  const pediu = String(cf._changeAsk || 'o que você pediu');
+  const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name);
+  const saudacao = (await conversationActive(leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! Tudo bem? `;
+  const fecho = /Qual dessas op[çc][õo]es/.test(recap) ? '' : '\n\nSe quiser seguir com ela, é só me avisar por aqui.';
+  return `${saudacao}Rodei a nova proposta com ${pediu} e, nessas condições, o banco não aprovou. A aprovação que você já tem continua valendo para seguir:\n\n${recap}${fecho}`;
+}
+
+/** Manda o aviso acima. Só 07h–21h (fora disso agenda, como os outros avisos) e só com a janela de 24 h aberta (não existe template pra isso: sem janela, fica nota pra equipe). */
+export async function sendChangeRefusalNow(p: { accountId: string; leadId: string; userId?: string; io?: any; ignoreWindow?: boolean }): Promise<{ ok: boolean; scheduled?: boolean; at?: string; error?: string }> {
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true } });
+  if (!lead) return { ok: false, error: 'Card não encontrado' };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (!p.ignoreWindow && !inNoticeWindow()) {
+    const at = nextNoticeStart();
+    await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...cf, _noticeAt: at.toISOString(), _noticeSeq: Date.now(), _noticeBy: p.userId || null, _noticeKind: 'CHANGE_REFUSED' } } });
+    const hora = at.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+    await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `⏰ Aviso da nova proposta recusada agendado para ${hora} (os avisos só saem das ${NOTICE_START_HOUR}h às ${NOTICE_END_HOUR}h).` } }).catch(() => {});
+    return { ok: true, scheduled: true, at: at.toISOString() };
+  }
+  const text = await buildChangeRefusalText(p.leadId);
+  if (!text) return { ok: false, error: 'Não há aprovação anterior pra apresentar ao cliente.' };
+  if (!(await whatsappWindowOpen(p.leadId))) {
+    await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `⚠️ O aviso da nova proposta recusada NÃO saiu: a janela de 24 h do WhatsApp fechou (não há template pra isso). Avise o cliente à mão. Texto pronto:\n\n${text}` } }).catch(() => {});
+    return { ok: false, error: 'janela de 24 h fechada' };
+  }
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: text, userId: p.userId, io: p.io });
+  if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
+  const f = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
+  const c: Record<string, any> = { ...((f?.customFields || {}) as Record<string, any>) };
+  delete c._changeAsk;
+  await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: c as any } }).catch(() => {});
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado: a nova proposta (${cf._changeAsk || 'outro prazo/valor'}) não foi aprovada e a aprovação anterior continua valendo. O card segue aberto.` } }).catch(() => {});
+  logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou que a nova proposta não foi aprovada e que a aprovação anterior continua valendo' });
+  return { ok: true };
+}
+
 /** Manda os avisos que ficaram agendados (fora do horário), UM por rodada e na ordem em que foram agendados — a ordem Inter → Creditas → Santander
  *  é a de quem agendou. Só roda dentro das 07h–21h. */
 let runningScheduled = false;
@@ -1030,6 +1076,8 @@ export async function processScheduledNotices(io: any): Promise<void> {
     if (l.status !== 'OPEN') return;
     const r = cf._noticeKind === 'REJECTED'
       ? await sendRejectionNoticeNow({ accountId: l.accountId, leadId: l.id, userId: cf._noticeBy || undefined, io, ignoreWindow: true })
+      : cf._noticeKind === 'CHANGE_REFUSED'
+      ? await sendChangeRefusalNow({ accountId: l.accountId, leadId: l.id, userId: cf._noticeBy || undefined, io, ignoreWindow: true })
       : await sendApprovalNoticeNow({ accountId: l.accountId, leadId: l.id, userId: cf._noticeBy || undefined, io, sendDocs: cf._noticeDocs !== false, moveStage: cf._noticeMove !== false, ignoreWindow: true });
     console.log(`[Aprovação] aviso agendado de ${l.name}: ${r.ok ? 'enviado' : `não saiu (${r.error})`}`);
     if (r.ok && cf._noticeKind === 'REJECTED' && cf._autoCloseAfterNotice) {
@@ -1041,7 +1089,7 @@ export async function processScheduledNotices(io: any): Promise<void> {
       }
       await markRejectedAndMove({ accountId: l.accountId, leadId: l.id, io, disqualify: cf._autoCloseAfterNotice === 'DESQ', motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Aprovação] mover reprovado:', e?.message));
     }
-    if (!r.ok) await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: r.already ? `ℹ️ Aviso agendado não reenviado: ${r.error}` : `⚠️ O aviso agendado ao cliente não saiu: ${r.error}` } }).catch(() => {});
+    if (!r.ok) await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: (r as any).already ? `ℹ️ Aviso agendado não reenviado: ${r.error}` : `⚠️ O aviso agendado ao cliente não saiu: ${r.error}` } }).catch(() => {});
   } catch (e: any) {
     console.error('[Aprovação] avisos agendados:', e?.message);
   } finally {

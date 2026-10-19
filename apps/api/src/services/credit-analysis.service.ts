@@ -1477,6 +1477,12 @@ export async function requestProposalChangeForAi(db: Db, accountId: string, lead
   const r = await createRequests(db, { accountId, leadIds: [leadId], banks: bancos, dryRun: false, kind: 'RUN', source: CHANGE_ROW_SOURCE, force: true });
   if (!r.created) return { ok: false, detail: 'já havia análise em andamento' };
   const ped = [prazo && `${prazo} meses`, valor && fmtBRL(valor)].filter(Boolean).join(' e ');
+  { // o que o cliente pediu, em palavras: entra no aviso ("rodei a nova proposta com o prazo de 180 meses…")
+    const f = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cf2: Record<string, any> = { ...((f?.customFields || {}) as Record<string, any>) };
+    cf2._changeAsk = [prazo && `o prazo de ${prazo} meses`, valor && `o valor de ${fmtBRL(valor)}`].filter(Boolean).join(' e ');
+    await db.lead.update({ where: { id: leadId }, data: { customFields: cf2 as any } });
+  }
   return { ok: true, detail: `análise NOVA pedida a ${bancos.map((b) => BANKS[b]?.label || b).join(', ')} com ${ped}${motivos.length ? ` (fora: ${motivos.join('; ')})` : ''}` };
 }
 
@@ -1493,13 +1499,32 @@ async function finishProposalChange(db: Db, row: AnalysisRow): Promise<void> {
     const motivo = String(r.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 240);
     await nota(`⚠️ A nova proposta pedida pelo cliente (outro prazo/valor) NÃO foi aprovada no ${BANKS[r.bank]?.label || r.bank} (${r.status}${motivo ? `: ${motivo}` : ''}). A aprovação anterior continua valendo — avise o cliente.`);
   }
-  if (!aprovou.length) return;
+  if (!aprovou.length) {
+    // Só recusas (Fabio 19/10): o card NÃO fecha — o CRM avisa o cliente da negativa e diz que a aprovação que ele já tem continua valendo. Só com a IA do card ligada
+    // (senão a nota leva o texto pronto pra equipe mandar). Falha técnica (login, página recarregou…) não é recusa: fica só a nota de cima.
+    const objetiva = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar/i;
+    const recusou = rodada.some((r) => r.status === 'REJECTED' || (r.status === 'FAILED' && objetiva.test(r.detail || '')));
+    if (recusou) {
+      const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { accountId: true, status: true, aiAutoReplyActive: true } });
+      if (lead && lead.status === 'OPEN') {
+        const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+        if (lead.aiAutoReplyActive) {
+          const out = await an.sendChangeRefusalNow({ accountId: lead.accountId, leadId: row.leadId });
+          if (!out.ok && out.error !== 'janela de 24 h fechada') await nota(`⚠️ Não consegui avisar o cliente da nova proposta recusada: ${out.error}. Avise à mão — a aprovação anterior continua valendo.`);
+        } else {
+          const texto = await an.buildChangeRefusalText(row.leadId).catch(() => null);
+          await nota(`✋ A nova proposta pedida pelo cliente foi recusada, mas o aviso NÃO saiu sozinho: a IA deste card está desligada.${texto ? ` Texto pronto pra você mandar:\n\n${texto}` : ''}`);
+        }
+      }
+    }
+    return;
+  }
   const l = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
   const cf: Record<string, any> = { ...((l?.customFields || {}) as Record<string, any>) };
   // Libera o aviso: o resultado novo pode ter o MESMO valor aprovado (só o prazo/parcelas mudaram) e a assinatura do último aviso o esconderia.
   delete cf._autoNoticeSig; delete cf._autoNoticeAt; delete cf._autoHeldSig;
   if (!cf._autoStartedAt) cf._autoStartedAt = new Date().toISOString();
-  cf._changeNotice = new Date().toISOString();
+  cf._changeNotice = new Date().toISOString(); delete cf._changeAsk;
   await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });
   await nota(`🔄 Nova proposta pedida pelo cliente (outro prazo/valor) respondida: ${aprovou.map((r) => `${BANKS[r.bank]?.label || r.bank} ${/aprovad[oa] a menor/i.test(r.detail || '') ? 'aprovou A MENOR' : 'aprovou'}`).join(', ')}. O aviso de aprovação vai ao cliente (com a IA do card ligada; senão use "Avisar cliente").`);
 }
