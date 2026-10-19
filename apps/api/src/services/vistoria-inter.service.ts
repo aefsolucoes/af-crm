@@ -44,7 +44,8 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
     where: { leadId, folder: 'INBOX', OR: [{ fromAddress: { endsWith: 'inter.co', mode: 'insensitive' } }, { fromAddress: { endsWith: 'bancointer.com.br', mode: 'insensitive' } }] },
     orderBy: { date: 'desc' }, take: 12, select: { id: true, fromAddress: true, fromName: true, subject: true, textBody: true, date: true },
   });
-  const engaj = emails.find((e) => /engajamento/i.test(e.subject || ''));
+  // o engajamento pode vir no assunto ou só citado no texto de quem respondeu (ex.: assunto "Home Equity - PEDRO" com "[Inter] Engajamento Automático" embaixo)
+  const engaj = emails.find((e) => /engajamento/i.test(e.subject || '') || /Engajamento Autom[aá]tico|PR[OÓ]XIMO PASSO:\s*VISTORIA/i.test(e.textBody || ''));
   const pessoa = emails.find((e) => e.fromAddress && INTER_FROM.test(e.fromAddress) && !NO_REPLY.test(e.fromAddress));
   // consultor: quem já respondeu na conversa; senão o e-mail citado no corpo do engajamento ("entre em contato através do email …")
   const doCorpo = engaj?.textBody ? (/[\w.+-]+@inter\.co/i.exec(engaj.textBody) || [])[0]?.toLowerCase() : undefined;
