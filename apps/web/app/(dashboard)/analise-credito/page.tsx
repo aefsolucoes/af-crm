@@ -175,7 +175,9 @@ export default function AnaliseCreditoPage() {
     const q = busca.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
     const qDig = q.replace(/\D/g, '');
     if (!q) return base;
-    return base.filter((l) => {
+    // Buscando: procura nas DUAS abas (Pré-Análise e Já rodados), não só na que está aberta (Fabio 19/10: "preciso pesquisar clientes").
+    const todos = [...allLeads.filter((l) => l.inPre), ...allLeads.filter((l) => l.ran && !l.inPre).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime())];
+    return todos.filter((l) => {
       const texto = [l.name, l.card.name1, l.card.name2, ...Object.values(l.latest).map((a) => a?.holderName || '')].join(' ').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
       const docs = [l.card.cpf1, l.card.cpf2, ...(l.history || []).flatMap((a) => [(a as any).holderCpf, a.proposalNumber])].map((v) => String(v || '').replace(/\D/g, ''));
       return texto.includes(q) || (qDig.length >= 3 && docs.some((d) => d.includes(qDig)));
@@ -388,6 +390,7 @@ export default function AnaliseCreditoPage() {
                 aria-label="Buscar na análise de crédito"
               />
               {busca && <button onClick={() => setBusca('')} className="ml-1 text-xs text-slate-400 hover:text-slate-600 px-1" aria-label="Limpar a busca">✕</button>}
+              {busca.trim() && <span className="ml-2 text-[11px] text-slate-500 whitespace-nowrap">{leads.length} resultado{leads.length === 1 ? '' : 's'} (nas duas abas)</span>}
             </div>
             <span className="ml-auto pb-2 text-[11px] text-slate-400 hidden md:block">
               {view === 'pre' ? 'Home Equity · clientes na etapa Pré-Análise' : 'Home Equity · quem já foi analisado nos últimos 90 dias e saiu da Pré-Análise — ajuste ou inverta participantes e rode de novo'}{dataUpdatedAt ? ` · atualizado às ${new Date(dataUpdatedAt).toLocaleTimeString('pt-BR')}` : ''}
@@ -396,7 +399,7 @@ export default function AnaliseCreditoPage() {
           {isLoading ? (
             <div className="p-4"><Skeleton className="h-32" /></div>
           ) : leads.length === 0 ? (
-            <div className="text-center py-10 text-slate-400 text-sm">{busca.trim() ? `Nenhum cliente encontrado para "${busca.trim()}" nesta aba.` : view === 'pre' ? 'Nenhum cliente na Pré-Análise agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
+            <div className="text-center py-10 text-slate-400 text-sm">{busca.trim() ? `Nenhum cliente encontrado para "${busca.trim()}" (procurei em Pré-Análise e Já rodados).` : view === 'pre' ? 'Nenhum cliente na Pré-Análise agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[860px]">
