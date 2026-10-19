@@ -213,7 +213,10 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
   return replied === 0;
 }
 
-interface ApprovalOption { interCondicional?: boolean; quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean }
+/** Prazo máximo do Inter (meses): o simulador vai de 60 a 240. */
+export const INTER_MAX_TERM = 240;
+
+interface ApprovalOption { interCondicional?: boolean; quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean; prazoTodo?: string }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -290,6 +293,7 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
     o.liquido ? `💰 Valor líquido: ${o.valor}` : `💰 Valor aprovado: ${o.valor}`, // Fabio 15/10: sem o "(já descontados IOF, tarifa de cadastro e custas)"
     o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
+    o.prazoTodo && `💡 No prazo de ${o.prazo} a aprovação veio a menor. Aconselho pegar o prazo todo (${o.prazoTodo}) para conseguir uma aprovação melhor.`,
     o.quitacao && `🏠 Quitação do financiamento do imóvel: ${o.quitacao}`,
     o.troco && `💸 Troco pra você: ${o.troco}`,
     o.prazo && `📅 Prazo: ${o.prazo}`,
@@ -453,6 +457,8 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
       ultimaParcela: money(r.lastInstallment),
       pedido: /aprovad[oa] a menor/i.test(r.detail || '') ? (/pedido:?\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1] : undefined,
       incompleta: /aprovad[oa] a menor/i.test(r.detail || '') && !r.firstInstallment,
+      // Fabio 19/10 (Jézer): aprovado a menor no Inter num prazo menor que o máximo → o aviso diz que NO PRAZO veio a menor e aconselha o prazo todo (aprovação melhor).
+      prazoTodo: r.bank === 'INTER' && /aprovad[oa] a menor/i.test(r.detail || '') && r.termMonths && r.termMonths < INTER_MAX_TERM ? `${INTER_MAX_TERM} meses` : undefined,
       documentos: /aprovad[oa] a menor/i.test(r.detail || '') ? parseDocumentosExigidos(r.detail) || undefined : undefined,
     }));
   if (!options.length) return null;

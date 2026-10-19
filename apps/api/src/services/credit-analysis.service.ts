@@ -1372,7 +1372,11 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
         ].filter(Boolean);
         const docs = aMenor ? parseDocumentosExigidos(r.detail) : null;
         const docsTxt = docs ? `. Para seguir com esse valor o banco exige comprovação de renda${docs.perfil ? ` (perfil ${docs.perfil})` : ''} — documentos: ${docs.itens.join('; ')} (peça ao cliente)` : '';
-        return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}${docsTxt}`;
+        // Fabio 19/10 (Jézer): no Inter, aprovado a menor num prazo menor que o máximo → a IA explica que NO PRAZO veio a menor e aconselha o prazo todo (aprovação melhor).
+        const prazoTxt = aMenor && r.bank === 'INTER' && r.termMonths && r.termMonths < 240
+          ? `. ORIENTE o cliente: no prazo de ${r.termMonths} meses a aprovação veio a menor que o pedido e você aconselha pegar o PRAZO TODO (240 meses) para conseguir uma aprovação melhor — NÃO marque "simulate" nesse caso`
+          : '';
+        return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}${docsTxt}${prazoTxt}`;
       }
       case 'CONDITIONAL': return 'APROVADO COM CONDIÇÃO — o banco pede documentos para seguir';
       case 'REJECTED': return 'REPROVADO';
@@ -1466,10 +1470,12 @@ export async function requestSimulationForAi(db: Db, accountId: string, leadId: 
   if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto' };
   if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity' };
   if ((lead.customFields as any)?._autoPaused) return { ok: false, detail: 'este cliente está PAUSADO na Análise de Crédito (botão da tela)' };
-  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 8, select: { bank: true, approvedValue: true, chosen: true } });
+  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 8, select: { bank: true, approvedValue: true, chosen: true, detail: true } });
   const banco = aprovadas.find((a) => a.chosen) || [...aprovadas].sort((a, b) => simPriority(a.bank) - simPriority(b.bank))[0];
   if (!banco) return { ok: false, detail: 'o cliente não tem banco aprovado pra simular' };
   if (banco.bank !== 'INTER') return { ok: false, detail: `a simulação de outro prazo só roda sozinha no Inter (o banco aprovado é ${BANKS[banco.bank]?.label || banco.bank})` };
+  // Aprovado A MENOR (Jézer 19/10): simular outro prazo com o valor menor aprovado não serve (some do mínimo do Inter e não mostra o que o cliente quer) — a IA orienta o prazo todo.
+  if (/aprovad[oa] a menor/i.test(banco.detail || '')) return { ok: false, detail: 'a aprovação do Inter veio a menor que o pedido; o caminho é aconselhar o prazo todo (240 meses), não simular outro prazo com o valor menor' };
   const aberta = await db.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', source: SIM_ROW_NOTE, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } }, select: { id: true } });
   if (aberta) return { ok: false, detail: 'já havia uma simulação em andamento' };
   const anterior = await db.creditOverride.findFirst({ where: { leadId, bank: 'INTER' }, select: { data: true } });
