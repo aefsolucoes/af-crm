@@ -1,7 +1,7 @@
 import express, { Router, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { createCertidaoRequest, listCertidoes, claimCertidao, reportCertidao, finishCertidao, cancelCertidao, validCertidaoSig } from '../services/certidao.service';
+import { createCertidaoRequest, listCertidoes, claimCertidao, reportCertidao, finishCertidao, cancelCertidao, markCertidaoPaid, validCertidaoSig } from '../services/certidao.service';
 
 /** Certidão de matrícula pelo RI Digital/ONR — ver certidao.service.ts. A extensão "Certidão ONR" entra com o login normal do CRM. */
 const router = Router();
@@ -16,7 +16,8 @@ router.get('/:id/pdf', (req: AuthRequest, res: Response, next: NextFunction) => 
   return authMiddleware(req, res, next);
 }, async (req: AuthRequest, res: Response) => {
   try {
-    const r = await prisma.certidaoRequest.findFirst({ where: { id: req.params.id, ...(req.user ? { accountId: req.user.accountId } : {}) }, select: { pdf: true, pdfName: true } });
+    const r = await prisma.certidaoRequest.findFirst({ where: { id: req.params.id, ...(req.user ? { accountId: req.user.accountId } : {}) }, select: { pdf: true, pdfName: true, driveUrl: true } });
+    if (r?.driveUrl) return res.redirect(r.driveUrl); // o PDF mora no Drive (o CRM não guarda)
     if (!r?.pdf) return res.status(404).json({ error: 'Certidão ainda não foi emitida' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(r.pdfName || 'certidao.pdf')}"`);
@@ -38,6 +39,15 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try { res.json(await listCertidoes(prisma, { accountId: req.user!.accountId, leadId: typeof req.query.leadId === 'string' ? req.query.leadId : undefined })); } catch (err) { fail(res, err, 'Erro ao listar as certidões'); }
+});
+
+// A equipe confirma à mão que o cliente pagou o PIX (quando o comprovante não foi reconhecido sozinho).
+router.post('/:id/paid', async (req: AuthRequest, res: Response) => {
+  try {
+    const row = await markCertidaoPaid(prisma, { accountId: req.user!.accountId, id: req.params.id, via: 'MANUAL', io: io(req) });
+    if (!row) return res.status(400).json({ error: 'Esse pedido não está aguardando pagamento' });
+    res.json({ ok: true, paidAt: row.paidAt });
+  } catch (err) { fail(res, err, 'Erro ao confirmar o pagamento', 400); }
 });
 
 // A extensão pergunta "tem serviço pra mim?" (chama a cada minuto). Um trabalho por vez.

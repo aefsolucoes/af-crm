@@ -1067,9 +1067,13 @@ model CertidaoRequest {
   pixCode         String?   @db.Text
   pixExpiresAt    DateTime?
   pixSentAt       DateTime?
+  paidAt          DateTime? // pagamento CONFIRMADO (comprovante do cliente ou e-mail do cartório) — só então a extensão vai buscar a certidão
+  paidVia         String? // PROOF | EMAIL | MANUAL
   detail          String?   @db.Text
-  pdf             Bytes?
+  pdf             Bytes? // só transitório: se o Drive falhar, fica aqui até subir; depois de salvo no Drive é zerado (nada de PDF no CRM)
   pdfName         String?
+  driveFileId     String?
+  driveUrl        String?
   attempts        Int       @default(0) // tentativas de pegar o PIX / conferir a emissão
   nextCheckAt     DateTime?
   createdAt       DateTime  @default(now())

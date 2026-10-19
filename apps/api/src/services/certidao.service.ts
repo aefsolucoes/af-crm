@@ -20,6 +20,7 @@ const REQUESTED_GIVE_UP_H = 6; // ninguém pegou (extensão/Chrome fechados)
 const RUNNING_TTL_MIN = 25; // pegou e sumiu (aba fechou) — o PIX demora até ~2 min, o pedido todo cabe folgado
 const PIX_MAX_ATTEMPTS = 4; // tentativas de pegar o PIX de um pedido já feito
 const CHECK_EVERY_MIN = 300; // conferência da emissão de 5 em 5 h (Fabio 16/10); o e-mail "Resposta ao seu pedido" do RI Digital adianta (certidaoEmailArrived)
+const PAID_CHECK_EVERY_MIN = 60; // depois do pagamento confirmado, confere a emissão de hora em hora (o cartório leva até 4 h úteis)
 const GIVE_UP_DAYS = 3; // depois disso não confere mais (o PIX do portal vence no dia)
 const ACTIVE = ['REQUESTED', 'RUNNING', 'AWAITING_PAYMENT'];
 
@@ -96,7 +97,7 @@ export async function listCertidoes(db: Db, p: { accountId: string; leadId?: str
   return db.certidaoRequest.findMany({
     where: { accountId: p.accountId, ...(p.leadId ? { leadId: p.leadId } : {}) },
     orderBy: { createdAt: 'desc' }, take: Math.min(p.limit || 30, 100),
-    select: { id: true, leadId: true, uf: true, cidade: true, cartorio: true, matricula: true, status: true, source: true, sendPix: true, protocolo: true, numeroRegistral: true, valorCents: true, pixExpiresAt: true, pixSentAt: true, detail: true, pdfName: true, attempts: true, createdAt: true, startedAt: true, finishedAt: true },
+    select: { id: true, leadId: true, uf: true, cidade: true, cartorio: true, matricula: true, status: true, source: true, sendPix: true, protocolo: true, numeroRegistral: true, valorCents: true, pixExpiresAt: true, pixSentAt: true, paidAt: true, paidVia: true, detail: true, pdfName: true, driveUrl: true, attempts: true, createdAt: true, startedAt: true, finishedAt: true },
   });
 }
 
@@ -123,6 +124,7 @@ export type CertidaoJob = { id: string; phase: 'ORDER' | 'PIX' | 'COLLECT'; lead
 /** A extensão pergunta "tem serviço?" (a cada minuto). Devolve UM trabalho por vez — ela usa o navegador inteiro pra isso. */
 export async function claimCertidao(db: Db, p: { accountId: string }): Promise<CertidaoJob | null> {
   await expireStuck(db, p.accountId);
+  await retryCertidaoDrive(db, p.accountId).catch((e) => console.warn('[Certidão] reenvio ao Drive falhou:', e?.message));
   const now = new Date();
   const toJob = async (r: { id: string; leadId: string; uf: string; cidade: string; cartorio: string; matricula: string; protocolo: string | null; numeroRegistral: string | null }, phase: CertidaoJob['phase']): Promise<CertidaoJob> => {
     const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
@@ -140,11 +142,11 @@ export async function claimCertidao(db: Db, p: { accountId: string }): Promise<C
     const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT', pixCode: null, attempts: r.attempts }, data: { attempts: { increment: 1 }, nextCheckAt: new Date(now.getTime() + 4 * 60_000), startedAt: now } });
     if (c.count) return toJob(r, 'PIX');
   }
-  // 3) PIX já foi ao cliente: confere se a certidão saiu (só 07h–21h: nada automático de madrugada)
+  // 3) SÓ com o pagamento CONFIRMADO (comprovante do cliente ou e-mail do cartório): confere se a certidão saiu (07h–21h). Sem pagamento não há o que procurar (Fabio 19/10).
   if (foraDoHorario()) return null;
-  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', pixCode: { not: null }, createdAt: { gt: new Date(now.getTime() - GIVE_UP_DAYS * 86400_000) }, OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, orderBy: { createdAt: 'asc' }, take: 3 });
+  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', pixCode: { not: null }, paidAt: { not: null }, createdAt: { gt: new Date(now.getTime() - GIVE_UP_DAYS * 86400_000) }, OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, orderBy: { createdAt: 'asc' }, take: 3 });
   for (const r of aguardando) {
-    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT', pixCode: { not: null } }, data: { nextCheckAt: new Date(now.getTime() + CHECK_EVERY_MIN * 60_000) } });
+    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT', pixCode: { not: null } }, data: { nextCheckAt: new Date(now.getTime() + PAID_CHECK_EVERY_MIN * 60_000) } });
     if (c.count) return toJob(r, 'COLLECT');
   }
   return null;
@@ -225,12 +227,17 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
   return out;
 }
 
+const pushAll = (accountId: string, title: string, body: string, leadId: string) => {
+  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* push é só aviso */ }
+};
+const leadNameOf = async (db: Db, leadId: string) => (await db.lead.findUnique({ where: { id: leadId }, select: { name: true } }))?.name || 'Cliente';
+
 /**
  * Guarda a certidão emitida na pasta do cliente no Drive, subpasta IMOVEL (mesma convenção do organizador de documentos:
  * documento do imóvel vai pra IMOVEL). A pasta vem do campo "Pasta no Drive" do card; sem ele, procura pelo nome do cliente.
- * Melhor esforço: se o Drive não estiver conectado ou a pasta não existir, o PDF continua no CRM (link na nota) e a nota diz isso.
+ * O CRM NÃO guarda o PDF (Fabio 19/10): se o Drive falhar, os bytes ficam só de passagem e são reenviados até subir (retryCertidaoDrive).
  */
-export async function saveCertidaoToDrive(db: Db, r: { accountId: string; leadId: string; matricula: string }, pdf: Buffer): Promise<{ ok: true; folderUrl: string; fileName: string } | { ok: false; reason: string }> {
+export async function saveCertidaoToDrive(db: Db, r: { accountId: string; leadId: string; matricula: string }, pdf: Buffer): Promise<{ ok: true; fileId: string; fileUrl: string; folderUrl: string; fileName: string } | { ok: false; reason: string }> {
   try {
     const { createFolder, uploadFile, extractFolderId, findFolderByNameUnderRoot, folderLink } = await import('./google.service');
     const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true, customFields: true } });
@@ -241,25 +248,101 @@ export async function saveCertidaoToDrive(db: Db, r: { accountId: string; leadId
     if (!clientFolderId) return { ok: false, reason: 'não achei a pasta do cliente no Drive' };
     const imovel = await createFolder(r.accountId, 'IMOVEL', clientFolderId);
     const fileName = `CERTIDAO DE ONUS - MATRICULA ${r.matricula} (inteiro teor).pdf`.replace(/[\\/:*?"<>|]/g, ' ');
-    await uploadFile(r.accountId, { name: fileName, mimeType: 'application/pdf', data: pdf, parentId: imovel.id });
-    return { ok: true, folderUrl: folderLink(imovel.id), fileName };
+    const up = await uploadFile(r.accountId, { name: fileName, mimeType: 'application/pdf', data: pdf, parentId: imovel.id });
+    return { ok: true, fileId: up.id, fileUrl: up.webViewLink || folderLink(imovel.id), folderUrl: folderLink(imovel.id), fileName };
   } catch (err: any) {
     return { ok: false, reason: String(err?.message || err).slice(0, 160) };
   }
 }
 
-/** A extensão achou a certidão pronta e devolve o PDF. */
+/** A extensão achou a certidão pronta e devolve o PDF: vai pro Drive (e só pra lá); a equipe é avisada por push. */
 export async function finishCertidao(db: Db, p: { accountId: string; id: string; pdf: Buffer; pdfName?: string; io?: Io }) {
   const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
   if (!r) throw new Error('Pedido de certidão não encontrado');
   if (r.status === 'ISSUED') return r;
-  const name = (p.pdfName || `Certidao matricula ${r.matricula}.pdf`).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 120);
-  const out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', pdf: p.pdf, pdfName: name, finishedAt: new Date(), detail: 'Certidão emitida e guardada no CRM.', nextCheckAt: null } });
+  const nome = await leadNameOf(db, r.leadId);
   const drive = await saveCertidaoToDrive(db, r, p.pdf);
-  const driveTxt = drive.ok ? `\n📁 Também guardada no Drive (subpasta IMOVEL): ${drive.folderUrl}` : `\n⚠️ Não consegui guardar no Drive (${drive.reason}) — o PDF fica no CRM.`;
-  await note(db, r.leadId, `📄 Certidão da matrícula ${r.matricula} EMITIDA (protocolo ${out.protocolo || '—'}). Abrir o PDF: ${signCertidaoLink(r.id)}${driveTxt}`, r.requestedById);
+  let out;
+  if (drive.ok) {
+    out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', pdf: null, pdfName: drive.fileName, driveFileId: drive.fileId, driveUrl: drive.fileUrl, finishedAt: new Date(), detail: 'Certidão emitida e salva no Drive (pasta IMOVEL).', nextCheckAt: null } });
+    await note(db, r.leadId, `📄 Certidão da matrícula ${r.matricula} EMITIDA (protocolo ${out.protocolo || '—'}) e salva no Drive, subpasta IMOVEL:\n${drive.fileUrl}`, r.requestedById);
+    pushAll(p.accountId, '📄 Certidão emitida e salva no Drive', `${nome} — matrícula ${r.matricula} (pasta IMOVEL)`, r.leadId);
+  } else {
+    const name = (p.pdfName || `Certidao matricula ${r.matricula}.pdf`).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 120);
+    out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', pdf: p.pdf, pdfName: name, finishedAt: new Date(), detail: `Certidão emitida, mas NÃO subiu pro Drive (${drive.reason}); o CRM tenta de novo a cada 10 min.`, nextCheckAt: new Date(Date.now() + 10 * 60_000) } });
+    await note(db, r.leadId, `⚠️ Certidão da matrícula ${r.matricula} EMITIDA, mas NÃO consegui salvar no Drive (${drive.reason}). O CRM guarda o PDF só de passagem e tenta de novo a cada 10 minutos.`, r.requestedById);
+    pushAll(p.accountId, '⚠️ Certidão emitida, mas NÃO foi pro Drive', `${nome} — matrícula ${r.matricula}: ${drive.reason}. Vou tentar de novo.`, r.leadId);
+  }
   emitUpdate(p.io, p.accountId, r.leadId, r.id);
   return out;
+}
+
+/** PDFs que não subiram pro Drive (Drive fora do ar, pasta não achada): tenta de novo (chamada a cada minuto pela fila da extensão); ao subir, zera os bytes do banco. */
+export async function retryCertidaoDrive(db: Db, accountId: string): Promise<void> {
+  const rows = await db.certidaoRequest.findMany({ where: { accountId, status: 'ISSUED', pdf: { not: null }, driveUrl: null, OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: new Date() } }] }, take: 3 });
+  for (const r of rows) {
+    const drive = await saveCertidaoToDrive(db, r, Buffer.from(r.pdf!));
+    if (!drive.ok) { await db.certidaoRequest.update({ where: { id: r.id }, data: { nextCheckAt: new Date(Date.now() + 10 * 60_000) } }); continue; }
+    await db.certidaoRequest.update({ where: { id: r.id }, data: { pdf: null, pdfName: drive.fileName, driveFileId: drive.fileId, driveUrl: drive.fileUrl, nextCheckAt: null, detail: 'Certidão salva no Drive (pasta IMOVEL).' } });
+    await note(db, r.leadId, `📁 Agora sim: a certidão da matrícula ${r.matricula} foi salva no Drive, subpasta IMOVEL:\n${drive.fileUrl}`, r.requestedById);
+    pushAll(accountId, '📄 Certidão salva no Drive', `${await leadNameOf(db, r.leadId)} — matrícula ${r.matricula} (pasta IMOVEL)`, r.leadId);
+  }
+}
+
+/** Pagamento da certidão CONFIRMADO (comprovante do cliente, e-mail do cartório ou a equipe): só a partir daqui a extensão vai buscar a certidão — sem pagamento não há o que procurar. */
+export async function markCertidaoPaid(db: Db, p: { accountId: string; id: string; via: 'PROOF' | 'EMAIL' | 'MANUAL'; io?: Io }) {
+  const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
+  if (!r || r.status !== 'AWAITING_PAYMENT') return null;
+  if (r.paidAt) return r;
+  const how = p.via === 'PROOF' ? 'pelo comprovante que o cliente mandou' : p.via === 'EMAIL' ? 'pelo e-mail do cartório (RI Digital)' : 'pela equipe';
+  const out = await db.certidaoRequest.update({ where: { id: r.id }, data: { paidAt: new Date(), paidVia: p.via, nextCheckAt: new Date(), detail: `Pagamento confirmado ${how}; a extensão vai buscar a certidão.` } });
+  await note(db, r.leadId, `✅ Pagamento da certidão (matrícula ${r.matricula}${r.protocolo ? `, protocolo ${r.protocolo}` : ''}) CONFIRMADO ${how}. A extensão "Certidão ONR" vai buscar a certidão no portal.`);
+  pushAll(p.accountId, '💸 Pagamento da certidão confirmado', `${await leadNameOf(db, r.leadId)} — matrícula ${r.matricula}`, r.leadId);
+  emitUpdate(p.io, p.accountId, r.leadId, r.id);
+  return out;
+}
+
+/**
+ * O cliente mandou uma foto/arquivo depois de receber o PIX da certidão: se for o COMPROVANTE desse PIX (pagamento efetuado, valor do pedido, favorecido ONR),
+ * confirma o pagamento (Fabio 19/10: "ele pode confirmar através do comprovante de pagamento, igual ao do Pedro"). Qualquer dúvida: não confirma e avisa a equipe.
+ */
+export async function checkPaymentProof(db: Db, p: { accountId: string; leadId: string; att: { id: string; fileName?: string | null; mimeType: string; data?: Buffer | Uint8Array | null; driveFileId?: string | null }; io?: Io }): Promise<void> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const isPdf = p.att.mimeType === 'application/pdf';
+  if (!apiKey || (!isPdf && !/^image\//.test(p.att.mimeType))) return;
+  const pend = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, leadId: p.leadId, status: 'AWAITING_PAYMENT', paidAt: null, pixSentAt: { not: null } }, orderBy: { createdAt: 'desc' }, take: 3 });
+  if (!pend.length) return;
+  let buffer: Buffer; let mime = p.att.mimeType;
+  if (p.att.data && p.att.data.length) buffer = Buffer.from(p.att.data);
+  else if (p.att.driveFileId) ({ buffer, mimeType: mime } = await (await import('./google.service')).downloadDriveFileForVision(p.accountId, p.att.driveFileId, p.att.mimeType));
+  else return;
+  if (buffer.length > 8 * 1024 * 1024) return;
+  if (!isPdf && !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mime)) return;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5', max_tokens: 300,
+      messages: [{ role: 'user', content: [
+        { type: isPdf ? 'document' : 'image', source: { type: 'base64', media_type: isPdf ? 'application/pdf' : mime, data: buffer.toString('base64') } },
+        { type: 'text', text: 'Este arquivo é um COMPROVANTE de pagamento (PIX ou transferência)? Responda SOMENTE um JSON, sem markdown: {"comprovante": true|false, "efetuado": true|false, "valor": "67.36" ou null, "favorecido": "nome de quem recebeu" ou null}. "efetuado" é false se o pagamento está agendado, pendente, com erro ou se for só a tela com o QR code/código copia e cola. "comprovante" é false para qualquer outro tipo de documento ou foto. Valor com ponto decimal, sem R$.' },
+      ] }],
+    }),
+  });
+  if (!res.ok) return;
+  const data = await res.json() as { content: { type: string; text?: string }[] };
+  const raw = data.content?.find((b) => b.type === 'text')?.text || '';
+  let j: { comprovante?: boolean; efetuado?: boolean; valor?: string | null; favorecido?: string | null } = {};
+  try { j = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch { return; }
+  if (!j.comprovante) return;
+  const cents = j.valor ? Math.round(parseFloat(String(j.valor).replace(',', '.')) * 100) : NaN;
+  const fav = String(j.favorecido || '');
+  const favOk = !fav || /\bONR\b|OPERADOR NACIONAL|REGISTRO|RI ?DIGITAL/i.test(fav);
+  const alvo = pend.find((r) => r.valorCents && Number.isFinite(cents) && Math.abs(r.valorCents - cents) <= 1);
+  if (j.efetuado && alvo && favOk) { await markCertidaoPaid(db, { accountId: p.accountId, id: alvo.id, via: 'PROOF', io: p.io }); return; }
+  const r0 = pend[0];
+  const motivo = !j.efetuado ? 'o pagamento não aparece como efetuado' : !alvo ? `o valor (${Number.isFinite(cents) ? brl(cents) : 'ilegível'}) não bate com o do PIX (${brl(r0.valorCents)})` : `o favorecido ("${fav}") não parece ser a ONR`;
+  await note(db, p.leadId, `⚠️ O cliente mandou um comprovante, mas NÃO confirmei o pagamento da certidão (matrícula ${r0.matricula}): ${motivo}. Se estiver certo, confirme à mão (POST /api/certidoes/${r0.id}/paid).`);
 }
 
 export async function cancelCertidao(db: Db, p: { accountId: string; id: string; userId?: string }) {
@@ -270,17 +353,17 @@ export async function cancelCertidao(db: Db, p: { accountId: string; id: string;
 }
 
 /**
- * E-mail do RI Digital (contatori@ridigital.org.br) "Resposta ao seu pedido de certidão digital" = o cartório respondeu (Fabio 16/10: "pode ser quando um e-mail desse cartório chegar").
- * Acha o pedido pelo protocolo no assunto/corpo e libera a conferência na hora (a extensão baixa o PDF no próximo minuto, dentro de 07h–21h).
+ * E-mail do RI Digital (contatori@ridigital.org.br) "Resposta ao seu pedido de certidão digital" = o cartório respondeu, logo o pedido foi pago (Fabio 16/10: "pode ser quando um e-mail desse cartório chegar").
+ * Acha o pedido pelo protocolo no assunto/corpo, confirma o pagamento (se ainda não estava) e libera a conferência na hora (a extensão baixa o PDF no próximo minuto, dentro de 07h–21h).
  */
 export async function certidaoEmailArrived(db: Db, p: { accountId: string; subject?: string | null; text?: string | null }): Promise<number> {
   if (!/resposta ao seu pedido/i.test(p.subject || '')) return 0;
   const protos = [...new Set(`${p.subject || ''} ${p.text || ''}`.match(/\bP\d{8,14}D\b/g) || [])];
   if (!protos.length) return 0;
-  const rows = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { in: protos } }, select: { id: true, leadId: true, matricula: true, protocolo: true } });
+  const rows = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { in: protos } }, select: { id: true, paidAt: true } });
   for (const r of rows) {
-    await db.certidaoRequest.update({ where: { id: r.id }, data: { nextCheckAt: new Date(), detail: 'O cartório respondeu (e-mail do RI Digital); a extensão vai baixar a certidão.' } });
-    await note(db, r.leadId, `📬 O cartório respondeu o pedido ${r.protocolo} (e-mail do RI Digital) — a extensão "Certidão ONR" vai baixar a certidão da matrícula ${r.matricula}.`);
+    if (!r.paidAt) await markCertidaoPaid(db, { accountId: p.accountId, id: r.id, via: 'EMAIL' });
+    else await db.certidaoRequest.update({ where: { id: r.id }, data: { nextCheckAt: new Date(), detail: 'O cartório respondeu (e-mail do RI Digital); a extensão vai baixar a certidão.' } });
   }
   return rows.length;
 }

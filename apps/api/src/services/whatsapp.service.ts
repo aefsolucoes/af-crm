@@ -1201,6 +1201,11 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         const { scheduleDocsCheck } = require('./docs-checker.service') as typeof import('./docs-checker.service');
         scheduleDocsCheck(accountId, leadId, io).catch(() => {});
       }
+      // Comprovante do PIX da certidão (ONR): confirma o pagamento e só então a extensão vai buscar a certidão (certidao.service).
+      if (msg.type === 'document' || msg.type === 'image') {
+        const { checkPaymentProof } = require('./certidao.service') as typeof import('./certidao.service');
+        for (const att of message.attachments || []) checkPaymentProof(prisma, { accountId, leadId, att: { id: att.id, fileName: att.fileName, mimeType: att.mimeType, data: att.data, driveFileId: att.driveFileId }, io }).catch((err: any) => console.warn('[Certidão] comprovante:', err?.message));
+      }
       // "Te mando mais tarde / amanhã" em Aguardando Documentação: agenda a cobrança (antes da janela de 24 h fechar) sem tirar o card da etapa.
       if (msg.type === 'text' && text) {
         const { maybeScheduleDocsFollowUp } = require('./docs-checker.service') as typeof import('./docs-checker.service');
