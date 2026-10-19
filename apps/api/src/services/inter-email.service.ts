@@ -25,6 +25,14 @@ export function parseInterSubject(subject: string | null | undefined): { propost
   return { proposta: n ? stripZeros(n[1]) : null, nome: null };
 }
 
+/** Número da proposta e nome do cliente no CORPO (inclusive no texto citado): "…acompanhar a proposta 5674612 do cliente Pedro Francisco Martins Paiva." Pura (testável). */
+export function parseInterBody(text: string | null | undefined): { proposta: string | null; nome: string | null } {
+  const t = String(text || '').replace(/\r/g, ' ').replace(/\s+/g, ' ');
+  const p = /proposta\s+(?:n[º°o.]*\s*)?(\d{5,10})\b/i.exec(t);
+  const n = /cliente\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' ]{5,70}?)(?:\s*[.,;:\n]|\s+ANDRE|\s+será|\s+$)/.exec(t);
+  return { proposta: p ? stripZeros(p[1]) : null, nome: n ? n[1].trim() : null };
+}
+
 /** Tipo do e-mail, pelo assunto e pelo começo do texto NOVO (sem a conversa citada). Pura (testável). */
 export function classifyInterEmail(subject: string | null | undefined, freshText: string): InterEmailKind {
   const s = cleanSubject(subject);
@@ -71,10 +79,12 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   const text = row.textBody || String(row.htmlBody || '').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
   const fresh = freshPart(text);
   const kind = classifyInterEmail(subject, fresh);
-  if (kind === 'OUTRO' && !/\d{5,10}\s*[-–]/.test(cleanSubject(subject))) return false; // alinhamento semanal, newsletter etc.
+  if (kind === 'OUTRO' && !/\d{5,10}\s*[-–]/.test(cleanSubject(subject)) && !parseInterBody(text).proposta) return false; // alinhamento semanal, newsletter etc.
   const parsed = parseInterSubject(subject);
-  if (!parsed.proposta && !parsed.nome && !/[A-Za-zÀ-ÿ]{3,}\s+[A-Za-zÀ-ÿ]{3,}/.test(cleanSubject(subject))) return false;
-  const leadId = await findLeadId(acc.accountId, { ...parsed, subject });
+  const doCorpo = parseInterBody(text); // o assunto às vezes vem só "Home Equity - PEDRO"; o nº da proposta e o nome completo estão no texto citado
+  const alvo = { proposta: parsed.proposta || doCorpo.proposta, nome: parsed.nome || doCorpo.nome };
+  if (!alvo.proposta && !alvo.nome && !/[A-Za-zÀ-ÿ]{3,}\s+[A-Za-zÀ-ÿ]{3,}/.test(cleanSubject(subject))) return false;
+  const leadId = await findLeadId(acc.accountId, { ...alvo, subject });
   if (!leadId) return false;
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
   if (!lead) return false;
@@ -83,7 +93,7 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   await prisma.emailMessage.update({ where: { id: row.id }, data: { leadId } }).catch(() => {});
   const resumo = fresh.replace(/\s+/g, ' ').slice(0, 420);
   const quem = row.fromAddress ? ` (${row.fromAddress})` : '';
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📬 E-mail do Inter — ${KIND_LABEL[kind]}${parsed.proposta ? `, proposta ${parsed.proposta}` : ''}${quem}:\n${resumo}${fresh.length > 420 ? '…' : ''}` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📬 E-mail do Inter — ${KIND_LABEL[kind]}${alvo.proposta ? `, proposta ${alvo.proposta}` : ''}${quem}:\n${resumo}${fresh.length > 420 ? '…' : ''}` } }).catch(() => {});
   try {
     (require('./push.service') as typeof import('./push.service')).sendPushToAccount(acc.accountId, { title: `📬 Inter — ${KIND_LABEL[kind]}`, body: `${lead.name}: ${resumo.slice(0, 110)}`, leadId }).catch(() => {});
   } catch { /* push é só aviso */ }
