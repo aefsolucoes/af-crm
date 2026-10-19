@@ -636,35 +636,44 @@ export async function streamAttachment(acc: EmailAccount, msg: EmailMessage, par
   });
 }
 
-/** Imagens do e-mail (print colado no corpo — inline — ou anexado) pra IA LER (Fabio 19/10: "a IA não consegue ler o print?"). Lê a estrutura do e-mail no servidor na hora e baixa as maiores
- *  (ícones de assinatura, de poucos KB, ficam de fora). Devolve base64 pronto pro Claude. */
-export async function getEmailImages(acc: EmailAccount, msg: { uid: number | null; folder: string }, opts: { max?: number; minBytes?: number } = {}): Promise<{ mediaType: string; base64: string; filename?: string }[]> {
+/** Anexos do e-mail que a IA pode LER (Fabio 19/10: "não só print, mas documentos também quando for necessário"): prints/imagens (colados no corpo ou anexados) e PDFs.
+ *  Lê a estrutura do e-mail no servidor na hora e baixa os maiores (ícones de assinatura, de poucos KB, ficam de fora). Devolve base64 pronto pro Claude
+ *  (`kind` image → bloco "image"; pdf → bloco "document"). Limites: poucos arquivos e tamanho por arquivo, pra não estourar custo/limite da API. */
+export type ReadableAttachment = { kind: 'image' | 'pdf'; mediaType: string; base64: string; filename?: string };
+export async function getEmailAttachments(acc: EmailAccount, msg: { uid: number | null; folder: string }, opts: { max?: number; minImageBytes?: number; maxPdfBytes?: number } = {}): Promise<ReadableAttachment[]> {
   if (!msg.uid) return [];
-  const { max = 3, minBytes = 15_000 } = opts;
-  const out: { mediaType: string; base64: string; filename?: string }[] = [];
+  const { max = 4, minImageBytes = 15_000, maxPdfBytes = 6_000_000 } = opts;
+  const out: ReadableAttachment[] = [];
   await withImap(acc, async (client) => {
     const path = await folderPath(client, msg.folder as Folder);
     if (!path) return;
     const lock = await client.getMailboxLock(path);
     try {
       const m = await client.fetchOne(String(msg.uid), { bodyStructure: true }, { uid: true });
-      const found: { part: string; type: string; size: number; filename?: string }[] = [];
+      const found: { part: string; type: string; size: number; kind: 'image' | 'pdf'; filename?: string }[] = [];
       const walk = (n: MessageStructureObject | undefined) => {
         if (!n) return;
         if (n.childNodes?.length) { n.childNodes.forEach(walk); return; }
         const type = (n.type || '').toLowerCase();
-        if (/^image\/(png|jpe?g|gif|webp)$/.test(type) && (n.size || 0) >= minBytes) found.push({ part: n.part || '1', type, size: n.size || 0, filename: n.dispositionParameters?.filename || n.parameters?.name });
+        const size = n.size || 0;
+        const filename = n.dispositionParameters?.filename || n.parameters?.name;
+        if (/^image\/(png|jpe?g|gif|webp)$/.test(type) && size >= minImageBytes) found.push({ part: n.part || '1', type, size, kind: 'image', filename });
+        else if ((type === 'application/pdf' || (type === 'application/octet-stream' && /\.pdf$/i.test(filename || ''))) && size > 0 && size <= maxPdfBytes) found.push({ part: n.part || '1', type: 'application/pdf', size, kind: 'pdf', filename });
       };
       walk((m as any)?.bodyStructure);
-      found.sort((a, b) => b.size - a.size);
-      for (const im of found.slice(0, max)) {
-        const dl = await client.download(String(msg.uid), im.part, { uid: true });
+      // PDFs primeiro (documento de verdade), depois as imagens maiores.
+      found.sort((a, b) => (a.kind === b.kind ? b.size - a.size : a.kind === 'pdf' ? -1 : 1));
+      let total = 0;
+      for (const f of found.slice(0, max)) {
+        const dl = await client.download(String(msg.uid), f.part, { uid: true });
         if (!dl?.content) continue;
         const chunks: Buffer[] = [];
         for await (const c of dl.content) chunks.push(Buffer.from(c));
         const buf = Buffer.concat(chunks);
-        if (!buf.length || buf.length > 4_500_000) continue; // limite do Claude por imagem ~5 MB
-        out.push({ mediaType: im.type.replace('image/jpg', 'image/jpeg'), base64: buf.toString('base64'), filename: im.filename });
+        if (!buf.length || buf.length > (f.kind === 'pdf' ? maxPdfBytes : 4_500_000)) continue; // limite do Claude por imagem ~5 MB
+        total += buf.length;
+        if (total > 12_000_000) break;
+        out.push({ kind: f.kind, mediaType: f.type.replace('image/jpg', 'image/jpeg'), base64: buf.toString('base64'), filename: f.filename });
       }
     } finally {
       lock.release();
