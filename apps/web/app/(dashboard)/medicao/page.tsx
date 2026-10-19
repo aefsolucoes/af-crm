@@ -26,7 +26,7 @@ interface Metrics {
   avisos: { aprovacao: number; negativa: number; aprovacaoSegurada: number; negativaSegurada: number; duplicadosEvitados: number; negativaNaoSaiu: number; whatsapp: { total: number; falhas: number; falhaPct: number | null; erros: { motivo: string; n: number }[] } };
   ia: { respostasAutomaticas: number; perguntasAEquipe: number; humanoAssumiu: number; duvidas: { kind: string; total: number; respondidas: number; abertas: number; medianaMin: number | null }[]; uso: { feature: string; chamadas: number; erros: number; entrada: number; saida: number }[]; custo: { totalUsd: number; porDia: { day: string; usd: number; chamadas: number }[]; porFuncao: { feature: string; usd: number; chamadas: number; entradaMedia: number }[] } };
   correcoes: { feitas: number; desfeitas: number; principais: { acao: string; n: number }[]; reabertosAposFechamentoAutomatico: number; cardsComAjuste: number; resultadosManuais: number };
-  extensoes: { bank: string; label: string; online: boolean; lastSeenAt: string | null }[];
+  extensoes: { bank: string; label: string; online: boolean; lastSeenAt: string | null; loginNeeded?: boolean }[];
 }
 
 const KIND: Record<string, string> = { QUESTION: 'Dúvida de cliente', CALL_REQUEST: 'Pedido de ligação', DOC_QUESTION: 'Dúvida de documento', EMAIL_QUESTION: 'E-mail da Creditas', REJECTION_QUESTION: 'Reprovação temporária', BANK_EMAIL: 'E-mail a banco' };
@@ -275,7 +275,7 @@ export default function MedicaoPage() {
             <Card title="Extensões do Chrome agora">
               <div className="flex flex-wrap gap-2">
                 {data.extensoes.map((e) => (
-                  <span key={e.bank} className={cn('text-xs px-3 py-1 rounded-full border', e.online ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-red-50 border-red-200 text-red-700')}>{e.label}: {e.online ? 'conectada' : 'sem sinal'}</span>
+                  <span key={e.bank} className={cn('text-xs px-3 py-1 rounded-full border', e.loginNeeded ? 'bg-red-50 border-red-300 text-red-700' : e.online ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-600')}>{e.label}: {e.loginNeeded ? 'deslogada — entre no portal' : e.online ? 'conectada' : 'sem sinal (parada fora de 07h–22h ou Chrome fechado)'}</span>
                 ))}
               </div>
             </Card>

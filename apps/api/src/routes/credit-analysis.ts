@@ -8,7 +8,7 @@ import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.ser
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
-  BANK_KEYS, EXTENSION_STATUS, foraDoHorario, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
+  BANK_KEYS, EXTENSION_STATUS, foraDoHorario, setLoginNeeded, alertLoginNeeded, holdRunForLogin, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
 } from '../services/credit-analysis.service';
 
@@ -183,6 +183,9 @@ router.get('/queue', async (req: AuthRequest, res: Response) => {
   if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
   try {
     touchExtension(req.user!.accountId, bank, typeof req.query.extId === 'string' ? req.query.extId : null);
+    // A extensão diz se o portal está pedindo login (sessão vencida): `login=needed` liga o aviso na tela + push; `login=ok` desliga.
+    if (req.query.login === 'needed') { setLoginNeeded(req.user!.accountId, bank, true); alertLoginNeeded(req.user!.accountId, bank); }
+    else if (req.query.login === 'ok') setLoginNeeded(req.user!.accountId, bank, false);
     const caps = typeof req.query.caps === 'string' ? req.query.caps.split(',') : [];
     const items = req.query.claim === '0' ? [] : await claimQueue(prisma, { accountId: req.user!.accountId, bank, limit: Number(req.query.limit) || 3, caps });
     if (items.length) emit(req);
@@ -201,6 +204,14 @@ router.post('/report', async (req: AuthRequest, res: Response) => {
   if (!b.leadId || !BANK_KEYS.includes(bank) || !status) return res.status(400).json({ error: 'leadId, bank e status são obrigatórios' });
   try {
     touchExtension(req.user!.accountId, bank);
+    // Sessão do portal vencida: o pedido volta pra fila, a tela mostra "deslogada" e a equipe recebe push (nada de "Falhou").
+    if (raw.toLowerCase() === 'aguardando_login') {
+      await holdRunForLogin(prisma, { accountId: req.user!.accountId, requestId: b.requestId ? String(b.requestId) : undefined, leadId: String(b.leadId), bank });
+      setLoginNeeded(req.user!.accountId, bank, true);
+      alertLoginNeeded(req.user!.accountId, bank);
+      emit(req, { leadId: String(b.leadId) });
+      return res.json({ ok: true, hold: true });
+    }
     renewLock(req.user!.accountId, bank);
     const row = await reportAnalysis(prisma, { accountId: req.user!.accountId, requestId: b.requestId ? String(b.requestId) : undefined, leadId: String(b.leadId), bank, status, detail: b.detail ? String(b.detail) : undefined, result: b.result && typeof b.result === 'object' ? b.result : {} });
     emit(req, { leadId: row.leadId });

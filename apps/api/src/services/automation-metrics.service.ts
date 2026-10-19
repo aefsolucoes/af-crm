@@ -152,7 +152,7 @@ export async function automationMetrics(accountId: string, days: number) {
 
   // ── 6. Extensões ───────────────────────────────────────────────────────
   const ext = extensionStatus(accountId);
-  const extensoes = Object.entries(ext).map(([bank, e]) => ({ bank, label: BANK_LABEL[bank] || bank, online: e.online, lastSeenAt: e.lastSeenAt }));
+  const extensoes = Object.entries(ext).map(([bank, e]) => ({ bank, label: BANK_LABEL[bank] || bank, online: e.online, lastSeenAt: e.lastSeenAt, loginNeeded: e.loginNeeded }));
 
   // ── Resumo e pontos de atenção ─────────────────────────────────────────
   const tot = bancos.reduce((a, b) => ({ total: a.total + b.total, andamento: a.andamento + b.andamento, conclusivas: a.conclusivas + b.aprovadas + b.reprovadas + b.desqualificadas, falhas: a.falhas + b.falhas }), { total: 0, andamento: 0, conclusivas: 0, falhas: 0 });
@@ -179,7 +179,7 @@ export async function automationMetrics(accountId: string, days: number) {
   if ((resumo.whatsappFalhaPct ?? 0) >= 3) atencao.push({ nivel: 'medio', texto: `${resumo.whatsappFalhaPct}% das mensagens de WhatsApp falharam (${num(wa.falhas)} de ${num(wa.total)})${waErros[0] ? ` — principal motivo: ${waErros[0].motivo}` : ''}.` });
   if (reabertos > 0) atencao.push({ nivel: 'medio', texto: `${reabertos} card(s) que a automação mandou pra Perdidos foram reabertos pela equipe em seguida — revisar a regra que fechou.` });
   if (num(reverts.desfeitas) > 0) atencao.push({ nivel: 'info', texto: `A equipe usou "Reverter" ${num(reverts.desfeitas)} vez(es)${revertLabels[0] ? ` — mais comum: ${revertLabels[0].acao}` : ''}.` });
-  for (const e of extensoes) if (!e.online) atencao.push({ nivel: 'medio', texto: `Extensão ${e.label} sem sinal agora.` });
+  for (const e of extensoes) { if (e.loginNeeded) atencao.push({ nivel: 'alto', texto: `${e.label}: sessão do portal vencida — alguém precisa entrar (CAPTCHA + código por e-mail); os pedidos estão esperando na fila.` }); else if (!e.online) atencao.push({ nivel: 'medio', texto: `Extensão ${e.label} sem sinal agora.` }); }
   const abertas = duvidas.reduce((a, q) => a + num(q.abertas), 0);
   if (abertas > 0) atencao.push({ nivel: 'info', texto: `${abertas} dúvida(s) da IA esperando resposta da equipe.` });
 

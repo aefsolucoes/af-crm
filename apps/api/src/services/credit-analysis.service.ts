@@ -1228,13 +1228,49 @@ export function touchExtension(accountId: string, bank: string, extId?: string |
   const prev = lastSeen.get(key);
   lastSeen.set(key, { at: Date.now(), extId: extId && EXT_ID_RE.test(extId) ? extId : prev?.extId || null });
 }
-export function extensionStatus(accountId: string): Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null }> {
-  const out: Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null }> = {};
+export function extensionStatus(accountId: string): Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null; loginNeeded: boolean }> {
+  const out: Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null; loginNeeded: boolean }> = {};
   for (const bank of BANK_KEYS) {
     const seen = lastSeen.get(`${accountId}:${bank}`);
-    out[bank] = { lastSeenAt: seen ? new Date(seen.at).toISOString() : null, online: !!seen && Date.now() - seen.at < 3 * 60 * 1000, extId: seen?.extId || null };
+    out[bank] = { lastSeenAt: seen ? new Date(seen.at).toISOString() : null, online: !!seen && Date.now() - seen.at < 3 * 60 * 1000, extId: seen?.extId || null, loginNeeded: loginNeeded.has(`${accountId}:${bank}`) };
   }
   return out;
+}
+
+// ─── Sessão do banco VENCIDA (Fabio 19/10) ──────────────────────────────────────────────────────────
+// O Credimorar derruba a sessão de madrugada (login exige CAPTCHA + código por e-mail, só uma pessoa faz). Antes, a 1ª análise da manhã falhava, o CRM refazia 3 vezes e marcava "Falhou"
+// por até 3 h sem avisar ninguém. Agora a extensão avisa "preciso de login", o pedido VOLTA pra fila (nada de "Falhou"/tentativa gasta), a tela mostra "deslogada" e a equipe recebe push.
+const loginNeeded = new Map<string, number>(); // `${accountId}:${bank}` → início do episódio
+const lastLoginAlert = new Map<string, number>();
+const LOGIN_ALERT_GAP_MS = 45 * 60_000;
+const BANK_LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander (Credimorar)' };
+export const loginNeededFor = (accountId: string, bank: string) => loginNeeded.has(`${accountId}:${bank}`);
+/** Liga/desliga o estado "preciso de login" do banco. Devolve true quando um episódio NOVO começou. */
+export function setLoginNeeded(accountId: string, bank: string, needed: boolean): boolean {
+  const k = `${accountId}:${bank}`;
+  if (!needed) { loginNeeded.delete(k); return false; }
+  if (loginNeeded.has(k)) return false;
+  loginNeeded.set(k, Date.now());
+  return true;
+}
+/** Push pra equipe pedindo o login — no máximo 1 a cada 45 min por banco, e só no horário das extensões (07h–22h). */
+export function alertLoginNeeded(accountId: string, bank: string): void {
+  const k = `${accountId}:${bank}`;
+  if (foraDoHorario() || Date.now() - (lastLoginAlert.get(k) || 0) < LOGIN_ALERT_GAP_MS) return;
+  lastLoginAlert.set(k, Date.now());
+  try {
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(accountId, { title: `🔐 ${BANK_LABEL[bank] || bank} deslogado`, body: 'A sessão do portal venceu: entre nele (CAPTCHA + código por e-mail) pras análises continuarem. Os clientes ficaram na fila — nada se perdeu.' }).catch(() => {});
+  } catch { /* push é extra */ }
+}
+/** A extensão bateu na tela de login: o pedido que ela estava rodando volta pra fila (sem falha e sem gastar tentativa) até alguém entrar no portal. */
+export async function holdRunForLogin(db: Db, p: { accountId: string; requestId?: string; leadId: string; bank: string }): Promise<void> {
+  const row = (p.requestId ? await db.creditAnalysis.findFirst({ where: { id: p.requestId, accountId: p.accountId, leadId: p.leadId } }) : null)
+    || await db.creditAnalysis.findFirst({ where: { accountId: p.accountId, leadId: p.leadId, bank: p.bank, status: { in: ['RUNNING', 'REQUESTED'] } }, orderBy: { createdAt: 'desc' } });
+  if (row && ['RUNNING', 'REQUESTED'].includes(row.status)) {
+    await db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'REQUESTED', startedAt: null, notBefore: null, detail: `Aguardando login no ${BANK_LABEL[p.bank] || p.bank}: a sessão do portal venceu — entre no portal (CAPTCHA + código por e-mail) que a análise segue sozinha.` } });
+  }
+  releaseLock(p.accountId, p.bank);
 }
 
 

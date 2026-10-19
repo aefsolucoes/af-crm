@@ -86,7 +86,7 @@ export interface LeadAnalyses {
   history: Analysis[];
   chosenId: string | null;
   participants?: { name1: string; name2: string; inverted: boolean };
-  extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null }>;
+  extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null; loginNeeded?: boolean }>;
 }
 
 /** Análises de crédito de UM card (compartilhado entre o bloco do card e a barra lateral). */

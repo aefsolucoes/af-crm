@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { createRequests, setOverrides, parseHolder } from './credit-analysis.service';
+import { createRequests, setOverrides, parseHolder, loginNeededFor } from './credit-analysis.service';
 import { requestBankEmail } from './ai-team-question.service';
 import { inNoticeWindow, sendApprovalNoticeNow, sendEarlyStatusNotice, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText, aprovadasSemNumeros } from './approval-notice.service';
 
@@ -482,9 +482,14 @@ async function retryTechnicalFailures(accountId: string) {
       const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE';
       if (!tecnica || /RODADA ANULADA/i.test(r.detail || '')) continue;
       const st = retries[b] || { n: 0, at: '' };
+      // Falhas que NÃO são do cliente nem da análise não gastam tentativa (Fabio 19/10): sessão do banco vencida (enquanto o banco pedir login, nem refaz — espera alguém entrar) e extensão
+      // recarregada/reiniciada no meio (acontece quando a equipe recarrega a extensão ou o Chrome reinicia).
+      const semLogin = /n[aã]o est[aá] logada/i.test(r.detail || '');
+      if (semLogin && loginNeededFor(accountId, b)) continue;
+      const semGasto = semLogin || /foi recarregada ou reiniciada no meio/i.test(r.detail || '');
       if (st.gaveUp || Date.now() - r.updatedAt.getTime() < RETRY_GAP_MS) continue;
-      if (st.n >= RETRY_MAX) { retries[b] = { ...st, gaveUp: true }; gaveUp.push(b); continue; }
-      retries[b] = { n: st.n + 1, at: new Date().toISOString() };
+      if (st.n >= RETRY_MAX && !semGasto) { retries[b] = { ...st, gaveUp: true }; gaveUp.push(b); continue; }
+      retries[b] = { n: semGasto ? st.n : st.n + 1, at: new Date().toISOString() };
       redo.push(b);
       // Falha de um RODAR que já tinha ENVIADO a proposta ao banco (teto de tempo/extensão travada depois do envio): refazer como RODAR criaria proposta DUPLICADA no portal.
       if (r.kind === 'CHECK' || r.proposalNumber || /proposta (j[aá] )?enviada|lendo o resultado/i.test(r.detail || '')) redoCheck.add(b);

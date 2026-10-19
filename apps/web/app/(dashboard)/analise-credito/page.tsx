@@ -21,7 +21,7 @@ import api from '@/lib/api';
  * As extensões do Chrome (Credimorar/Santander, Creditas, Inter) rodam nos portais dos bancos e
  * contam o resultado pra cá; daqui o time dispara novas análises e escolhe a proposta. */
 
-interface Board { leads: BoardLead[]; extensions: Record<Bank, { lastSeenAt: string | null; online: boolean; extId?: string | null }>; }
+interface Board { leads: BoardLead[]; extensions: Record<Bank, { lastSeenAt: string | null; online: boolean; extId?: string | null; loginNeeded?: boolean }>; }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="block text-xs text-slate-500">{label}<div className="mt-1">{children}</div></label>;
@@ -329,9 +329,11 @@ export default function AnaliseCreditoPage() {
               const e = data?.extensions?.[b.key];
               return (
                 <span key={b.key} className="flex items-center gap-1.5 text-xs text-slate-600">
-                  <span className={`w-2 h-2 rounded-full ${e?.online ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                  <span className={`w-2 h-2 rounded-full ${e?.loginNeeded ? 'bg-red-500' : e?.online ? 'bg-emerald-500' : 'bg-slate-300'}`} />
                   {b.short}
-                  <span className="text-slate-400">{e?.online ? 'conectada' : e?.lastSeenAt ? `vista ${ago(e.lastSeenAt)}` : 'sem sinal'}</span>
+                  {e?.loginNeeded
+                    ? <span className="text-red-600 font-medium" title="A sessão do portal venceu. Entre nele (CAPTCHA + código por e-mail) que os pedidos na fila seguem sozinhos.">deslogada — entre no portal</span>
+                    : <span className="text-slate-400">{e?.online ? 'conectada' : e?.lastSeenAt ? `vista ${ago(e.lastSeenAt)}` : 'sem sinal'}</span>}
                 </span>
               );
             })}
