@@ -7,6 +7,7 @@ import { Plus, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
 import { cn, formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate, formatMoneyDisplay } from '@/lib/utils';
 import { LeadCreditAnalysis } from './lead-credit-analysis';
 import { LeadCertidoes } from './lead-certidoes';
+import { LeadVistoria } from './lead-vistoria';
 import { useLeadAnalyses, FIELDS_FROM_ANALYSES } from '@/components/credit/shared';
 
 interface LeadSidebarProps {
@@ -532,6 +533,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
           {/* Análises de crédito dos bancos (extensões) — só na aba Financiamento */}
           {expanded && activeTab === 'Financiamento' && <LeadCreditAnalysis leadId={lead.id} onChanged={onRefresh} />}
           {expanded && activeTab === 'Financiamento' && <LeadCertidoes leadId={lead.id} />}
+          {expanded && activeTab === 'Financiamento' && <LeadVistoria leadId={lead.id} proposta={customValues.num_proposta} instituicao={customValues.instituicao} solicitadaEm={(lead as any).customFields?._vistoriaRequestedAt} />}
 
           {/* Custom fields for this tab (ocultos no modo compacto) */}
           {expanded && fieldsForTab.map(field => (

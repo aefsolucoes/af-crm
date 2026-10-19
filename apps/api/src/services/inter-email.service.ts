@@ -52,25 +52,69 @@ export function freshPart(text: string | null | undefined): string {
 
 const KIND_LABEL: Record<InterEmailKind, string> = { ENGAJAMENTO: 'Engajamento (consultor designado)', VISTORIA: 'Vistoria', PENDENCIA: 'Pendência', OUTRO: 'Mensagem' };
 
-async function findLeadId(accountId: string, p: { proposta: string | null; nome: string | null; subject: string }): Promise<string | null> {
-  if (p.proposta) {
-    const rows = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false AND regexp_replace(coalesce("customFields"->>'num_proposta', ''), '^0+', '') = ${p.proposta} LIMIT 3`;
-    if (rows.length === 1) return rows[0].id;
-    if (rows.length > 1) return null; // mais de um card com a mesma proposta: não adivinha
+export type LeadCandidate = { id: string; name: string | null; p1: string | null; p2: string | null; cpf1: string | null; cpf2: string | null; proposta: string | null; inter: boolean; interRecent: boolean };
+export type InterSignals = { proposta: string | null; cpfs: string[]; nomes: string[] };
+
+const NOME_PARADO = /^(HOME EQUITY|ENGAJAMENTO AUTOMATICO|CORRESPONDENTE BANCARIO|FINANCIAMENTO|PROPOSTA|CLIENTE|INTER|URGENTE|VISTORIA|RE|ENC|FWD|DUVIDA|ASSUNTO)$/;
+const tokens = (s: string) => norm(s).split(' ').filter((t) => t.length > 1);
+
+/** Pistas pra achar o cliente: nº da proposta, CPF e NOMES (pode vir só o primeiro nome, ou nome e sobrenome, ou o nome completo). Pura (testável). */
+export function extractInterSignals(subject: string | null | undefined, text: string | null | undefined): InterSignals {
+  const sub = cleanSubject(subject);
+  const body = String(text || '').replace(/\r/g, ' ');
+  const ps = parseInterSubject(subject), pb = parseInterBody(body);
+  const nomes = new Set<string>();
+  if (ps.nome) nomes.add(ps.nome);
+  if (pb.nome) nomes.add(pb.nome);
+  // último pedaço do assunto, se for só letras: "Home Equity - PEDRO", "Vistoria - Pedro Paiva"
+  const ult = sub.split(/\s+[-–]\s+/).pop() || '';
+  if (/^[A-Za-zÀ-ÿ' ]{3,60}$/.test(ult) && !NOME_PARADO.test(norm(ult))) nomes.add(ult.trim());
+  // "seu cliente Sérgio", "do cliente Pedro Paiva" (palavras com inicial maiúscula)
+  for (const m of body.matchAll(/cliente\s+([A-ZÀ-Ý][a-zà-ÿ']+(?:\s+(?:d[aeo]s?\s+)?[A-ZÀ-Ý][a-zà-ÿ']+){0,4})/g)) nomes.add(m[1].trim());
+  const cpfs = [...new Set((body.match(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g) || []).map((c) => c.replace(/\D/g, '')))];
+  return { proposta: ps.proposta || pb.proposta, cpfs, nomes: [...nomes].filter((n) => tokens(n).length >= 1 && !NOME_PARADO.test(norm(n))) };
+}
+
+/** Escolhe o card entre os candidatos. Nunca adivinha: se sobrar mais de um, devolve a lista (a equipe liga à mão). Pura (testável). */
+export function pickLead(cands: LeadCandidate[], sig: InterSignals): { id: string | null; ambiguous: string[] } {
+  const nomeDe = (c: LeadCandidate) => [c.name, c.p1, c.p2].filter(Boolean) as string[];
+  const unico = (xs: LeadCandidate[]) => (xs.length === 1 ? { id: xs[0].id, ambiguous: [] as string[] } : null);
+  const nomes = (xs: LeadCandidate[]) => xs.map((c) => c.name || c.p1 || c.id).slice(0, 5);
+  // 1) nº da proposta (sem zeros à esquerda)
+  if (sig.proposta) {
+    const hit = cands.filter((c) => c.proposta && stripZeros(c.proposta) === sig.proposta);
+    const u = unico(hit); if (u) return u;
+    if (hit.length > 1) return { id: null, ambiguous: nomes(hit) };
   }
-  // pelo nome (assunto): nome completo do card ou do participante 1/2
-  const cands = await prisma.$queryRaw<{ id: string; name: string | null; p1: string | null; p2: string | null }[]>`SELECT id, name, "customFields"->>'participante_1' AS p1, "customFields"->>'participante_2' AS p2 FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false AND status = 'OPEN' AND "isGroup" = false`;
-  const subj = norm(cleanSubject(p.subject));
-  const alvo = p.nome ? norm(p.nome) : '';
-  const hits = new Set<string>();
-  for (const c of cands) {
-    for (const nm of [c.name, c.p1, c.p2]) {
-      const n = norm(nm || '');
-      if (n.split(' ').length < 2 || n.length < 9) continue; // nome curto demais: não arrisca
-      if ((alvo && n === alvo) || (!alvo && subj.includes(n))) hits.add(c.id);
-    }
+  // 2) CPF no texto
+  if (sig.cpfs.length) {
+    const hit = cands.filter((c) => [c.cpf1, c.cpf2].some((x) => x && sig.cpfs.includes(String(x).replace(/\D/g, ''))));
+    const u = unico(hit); if (u) return u;
   }
-  return hits.size === 1 ? [...hits][0] : null;
+  // 3) nome: o do e-mail precisa começar igual (1º nome) e todas as palavras dele estarem no nome do card — serve pra "PEDRO", "Pedro Paiva" ou o nome inteiro
+  let melhor: LeadCandidate[] = [];
+  let ambiguo: LeadCandidate[] = [];
+  for (const nm of sig.nomes) {
+    const st = tokens(nm);
+    if (!st.length) continue;
+    let hit = cands.filter((c) => nomeDe(c).some((n) => { const ct = tokens(n); return ct.length > 0 && ct[0] === st[0] && st.every((t) => ct.includes(t)); }));
+    if (st.length === 1) hit = hit.filter((c) => c.inter); // só o primeiro nome: só entre quem tem a ver com o Inter
+    if (hit.length > 1) { const rec = hit.filter((c) => c.interRecent); if (rec.length >= 1) hit = rec; }
+    if (hit.length === 1) { if (st.length >= 2 || !melhor.length) melhor = hit; if (st.length >= 2) break; }
+    else if (hit.length > 1 && !ambiguo.length) ambiguo = hit;
+  }
+  if (melhor.length === 1) return { id: melhor[0].id, ambiguous: [] };
+  return { id: null, ambiguous: nomes(ambiguo) };
+}
+
+async function loadCandidates(accountId: string): Promise<LeadCandidate[]> {
+  return prisma.$queryRaw<LeadCandidate[]>`
+    SELECT l.id, l.name, l."customFields"->>'participante_1' AS p1, l."customFields"->>'participante_2' AS p2,
+           l."customFields"->>'cpf_1' AS cpf1, l."customFields"->>'cpf_2' AS cpf2, l."customFields"->>'num_proposta' AS proposta,
+           (coalesce(l."customFields"->>'instituicao', '') ILIKE '%inter%' OR coalesce(l."customFields"->>'num_proposta', '') <> ''
+             OR EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank = 'INTER')) AS inter,
+           EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank = 'INTER' AND ca."createdAt" > now() - interval '30 days' AND ca.status IN ('APPROVED', 'CONDITIONAL', 'SENT', 'CHECK')) AS "interRecent"
+    FROM "Lead" l WHERE l."accountId" = ${accountId} AND l.archived = false AND l.status = 'OPEN' AND l."isGroup" = false`;
 }
 
 /** Chamado pelo leitor de e-mail para cada e-mail NOVO do Inter. Devolve true se ligou a um card. */
@@ -80,12 +124,17 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   const fresh = freshPart(text);
   const kind = classifyInterEmail(subject, fresh);
   if (kind === 'OUTRO' && !/\d{5,10}\s*[-–]/.test(cleanSubject(subject)) && !parseInterBody(text).proposta) return false; // alinhamento semanal, newsletter etc.
-  const parsed = parseInterSubject(subject);
-  const doCorpo = parseInterBody(text); // o assunto às vezes vem só "Home Equity - PEDRO"; o nº da proposta e o nome completo estão no texto citado
-  const alvo = { proposta: parsed.proposta || doCorpo.proposta, nome: parsed.nome || doCorpo.nome };
-  if (!alvo.proposta && !alvo.nome && !/[A-Za-zÀ-ÿ]{3,}\s+[A-Za-zÀ-ÿ]{3,}/.test(cleanSubject(subject))) return false;
-  const leadId = await findLeadId(acc.accountId, { ...alvo, subject });
-  if (!leadId) return false;
+  const sig = extractInterSignals(subject, text); // o assunto às vezes vem só "Home Equity - PEDRO"; nº da proposta/nome completo/CPF podem estar no texto citado
+  if (!sig.proposta && !sig.cpfs.length && !sig.nomes.length) return false;
+  const achou = pickLead(await loadCandidates(acc.accountId), sig);
+  if (!achou.id) {
+    if (achou.ambiguous.length > 1 && kind !== 'OUTRO') { // o Inter escreveu, mas há mais de um card possível: avisa a equipe pra ligar à mão (nunca adivinha)
+      try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(acc.accountId, { title: `📬 Inter — ${KIND_LABEL[kind]}: qual cliente?`, body: `"${sig.nomes[0] || subject}" pode ser: ${achou.ambiguous.join(' / ')}` }).catch(() => {}); } catch { /* aviso */ }
+    }
+    return false;
+  }
+  const leadId = achou.id;
+  const alvo = { proposta: sig.proposta };
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
   if (!lead) return false;
 
