@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, ScrollText } from 'lucide-react';
+import { ExternalLink, ScrollText, Search } from 'lucide-react';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
@@ -57,6 +57,17 @@ export function LeadCertidoes({ leadId }: { leadId: string }) {
     } finally { setBusy(null); }
   }
 
+  async function collectNow(c: Certidao) {
+    setBusy(c.id);
+    try {
+      const { data: r } = await api.post(`/api/certidoes/${c.id}/collect-now`);
+      toast(r.queuedUntilMorning ? 'Fora do horário (07h–21h): a extensão busca amanhã cedo, com o Chrome aberto' : 'A extensão vai ao portal no próximo minuto (Chrome com a extensão aberto) — se achar, já salva na pasta do cliente', 'success');
+      queryClient.invalidateQueries({ queryKey: key });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir a busca', 'error');
+    } finally { setBusy(null); }
+  }
+
   return (
     <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
       <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -83,6 +94,15 @@ export function LeadCertidoes({ leadId }: { leadId: string }) {
                     className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
                   >
                     {busy === c.id ? 'Confirmando…' : 'Confirmar pagamento'}
+                  </button>
+                )}
+                {c.status === 'AWAITING_PAYMENT' && c.protocolo && (
+                  <button
+                    onClick={() => collectNow(c)}
+                    disabled={busy === c.id}
+                    className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    <Search className="h-3 w-3" /> Buscar certidão agora
                   </button>
                 )}
                 {c.driveUrl && (

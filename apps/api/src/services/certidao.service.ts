@@ -169,9 +169,10 @@ export async function claimCertidao(db: Db, p: { accountId: string }): Promise<C
   }
   // 3) SÓ com o pagamento CONFIRMADO (comprovante do cliente ou e-mail do cartório): confere se a certidão saiu (07h–21h). Sem pagamento não há o que procurar (Fabio 19/10).
   if (foraDoHorario()) return null;
-  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', pixCode: { not: null }, paidAt: { not: null }, OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, orderBy: { createdAt: 'asc' }, take: 3 });
+  // (botão "Buscar certidão agora" = forceCheck: uma busca avulsa mesmo sem pagamento confirmado)
+  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { not: null }, AND: [{ OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, { OR: [{ pixCode: { not: null }, paidAt: { not: null } }, { forceCheck: true }] }] }, orderBy: { createdAt: 'asc' }, take: 3 });
   for (const r of aguardando) {
-    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT', pixCode: { not: null } }, data: { nextCheckAt: new Date(now.getTime() + PAID_CHECK_EVERY_MIN * 60_000) } });
+    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT' }, data: { forceCheck: false, nextCheckAt: new Date(now.getTime() + PAID_CHECK_EVERY_MIN * 60_000) } });
     if (c.count) return toJob(r, 'COLLECT');
   }
   return null;
@@ -312,6 +313,16 @@ export async function retryCertidaoDrive(db: Db, accountId: string): Promise<voi
     await note(db, r.leadId, `📁 Agora sim: a certidão da matrícula ${r.matricula} foi salva no Drive, subpasta IMOVEL:\n${drive.fileUrl}`, r.requestedById);
     pushAll(accountId, '📄 Certidão salva no Drive', `${await leadNameOf(db, r.leadId)} — matrícula ${r.matricula} (pasta IMOVEL)`, r.leadId);
   }
+}
+
+/** Botão "Buscar certidão agora" do card: a extensão vai ao portal já no próximo minuto (dentro de 07h–21h), mesmo sem pagamento confirmado, e o PDF achado vai pro Drive. */
+export async function requestCollectNow(db: Db, p: { accountId: string; id: string; io?: Io }): Promise<{ queuedUntilMorning: boolean }> {
+  const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
+  if (!r) throw new Error('Pedido de certidão não encontrado');
+  if (r.status !== 'AWAITING_PAYMENT' || !r.protocolo) throw new Error('Só dá pra buscar um pedido que já foi feito no portal e ainda não saiu');
+  await db.certidaoRequest.update({ where: { id: r.id }, data: { forceCheck: true, nextCheckAt: new Date(), detail: 'Busca imediata pedida pela equipe; a extensão vai ao portal no próximo minuto.' } });
+  emitUpdate(p.io, p.accountId, r.leadId, r.id);
+  return { queuedUntilMorning: foraDoHorario() };
 }
 
 /** Pagamento da certidão CONFIRMADO (comprovante do cliente, e-mail do cartório ou a equipe): só a partir daqui a extensão vai buscar a certidão — sem pagamento não há o que procurar. */

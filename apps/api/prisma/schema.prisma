@@ -1069,6 +1069,7 @@ model CertidaoRequest {
   pixSentAt       DateTime?
   paidAt          DateTime? // pagamento CONFIRMADO (comprovante do cliente ou e-mail do cartório) — só então a extensão vai buscar a certidão
   paidVia         String? // PROOF | EMAIL | MANUAL
+  forceCheck      Boolean   @default(false) // 'Buscar certidão agora' (botão do card): uma busca no portal mesmo sem pagamento confirmado
   detail          String?   @db.Text
   pdf             Bytes? // só transitório: se o Drive falhar, fica aqui até subir; depois de salvo no Drive é zerado (nada de PDF no CRM)
   pdfName         String?

@@ -1,7 +1,7 @@
 import express, { Router, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { createCertidaoRequest, listCertidoes, claimCertidao, reportCertidao, finishCertidao, cancelCertidao, markCertidaoPaid, validCertidaoSig } from '../services/certidao.service';
+import { createCertidaoRequest, listCertidoes, claimCertidao, reportCertidao, finishCertidao, cancelCertidao, markCertidaoPaid, requestCollectNow, validCertidaoSig } from '../services/certidao.service';
 
 /** Certidão de matrícula pelo RI Digital/ONR — ver certidao.service.ts. A extensão "Certidão ONR" entra com o login normal do CRM. */
 const router = Router();
@@ -48,6 +48,11 @@ router.post('/:id/paid', async (req: AuthRequest, res: Response) => {
     if (!row) return res.status(400).json({ error: 'Esse pedido não está aguardando pagamento' });
     res.json({ ok: true, paidAt: row.paidAt });
   } catch (err) { fail(res, err, 'Erro ao confirmar o pagamento', 400); }
+});
+
+// Botão "Buscar certidão agora": manda a extensão ao portal já (dentro do horário) pra achar a certidão e guardar no Drive.
+router.post('/:id/collect-now', async (req: AuthRequest, res: Response) => {
+  try { res.json({ ok: true, ...(await requestCollectNow(prisma, { accountId: req.user!.accountId, id: req.params.id, io: io(req) })) }); } catch (err) { fail(res, err, 'Erro ao pedir a busca', 400); }
 });
 
 // A extensão pergunta "tem serviço pra mim?" (chama a cada minuto). Um trabalho por vez.
