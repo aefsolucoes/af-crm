@@ -18,6 +18,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 
 const REQUESTED_WARN_H = 6; // ninguém pegou (extensão/Chrome fechados): AVISA a equipe, mas não cancela — Fabio 19/10: sem limite, vale até o pedido sair
 const WARN_MARK = 'sem atendimento';
+const GIVE_UP_DAYS = 3; // pago e a certidão não saiu em 3 DIAS ÚTEIS: para de procurar e AVISA a equipe por push (Fabio 19/10: "FDS ninguém trabalha"; feriado não é descontado)
 const RUNNING_TTL_MIN = 25; // pegou e sumiu (aba fechou) — o PIX demora até ~2 min, o pedido todo cabe folgado
 const PIX_MAX_ATTEMPTS = 4; // tentativas de pegar o PIX de um pedido já feito
 const CHECK_EVERY_MIN = 300; // conferência da emissão de 5 em 5 h (Fabio 16/10); o e-mail "Resposta ao seu pedido" do RI Digital adianta (certidaoEmailArrived)
@@ -70,6 +71,18 @@ export function validCertidaoSig(id: string, exp: unknown, sig: unknown): boolea
   return ok.length === sig.length && crypto.timingSafeEqual(Buffer.from(ok), Buffer.from(sig));
 }
 
+/** Soma `n` dias ÚTEIS (sábado e domingo, em Brasília, não contam). Pura (testável). */
+export function addBusinessDays(from: Date, n: number): Date {
+  const d = new Date(from.getTime());
+  let added = 0;
+  while (added < n) {
+    d.setTime(d.getTime() + 86400_000);
+    const wd = new Date(d.getTime() - 3 * 3600_000).getUTCDay(); // dia da semana em Brasília
+    if (wd !== 0 && wd !== 6) added++;
+  }
+  return d;
+}
+
 const note = (db: Db, leadId: string, content: string, userId?: string | null) =>
   db.note.create({ data: { leadId, type: 'COMMENT', content, userId: userId || undefined } }).catch(() => {});
 const emitUpdate = (io: Io | undefined, accountId: string, leadId: string, id: string) => io?.to(`account_${accountId}`).emit('certidao_updated', { id, leadId });
@@ -110,6 +123,15 @@ async function expireStuck(db: Db, accountId: string) {
     else {
       const u = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'RUNNING' }, data: { status: 'FAILED', finishedAt: new Date(), detail: 'A extensão parou no meio do pedido, antes do protocolo. Confira em "Visualizar Pedidos" do RI Digital se o pedido chegou a ser criado antes de pedir de novo (cada pedido é uma cobrança).' } });
       if (u.count) await note(db, r.leadId, `⚠️ A certidão da matrícula ${r.matricula} NÃO foi concluída: a extensão parou no meio do pedido. Confira no RI Digital se o pedido existe antes de pedir de novo.`);
+    }
+  }
+  const pagos = await db.certidaoRequest.findMany({ where: { accountId, status: 'AWAITING_PAYMENT', paidAt: { not: null } }, select: { id: true, leadId: true, matricula: true, protocolo: true, paidAt: true } });
+  const vencidos = pagos.filter((r) => addBusinessDays(r.paidAt!, GIVE_UP_DAYS).getTime() < agora);
+  for (const r of vencidos) {
+    const u = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT' }, data: { status: 'FAILED', finishedAt: new Date(), nextCheckAt: null, detail: `A certidão não saiu em ${GIVE_UP_DAYS} dias úteis depois do pagamento; parei de procurar.` } });
+    if (u.count) {
+      await note(db, r.leadId, `⚠️ A certidão da matrícula ${r.matricula}${r.protocolo ? ` (protocolo ${r.protocolo})` : ''} NÃO saiu em ${GIVE_UP_DAYS} dias úteis depois do pagamento — parei de procurar. Confira a tela do ONR/RI Digital e fale com o cartório.`);
+      pushAll(accountId, '⚠️ Certidão não saiu em 3 dias úteis', `${await leadNameOf(db, r.leadId)} — matrícula ${r.matricula}: confira o ONR`, r.leadId);
     }
   }
   const velhos = await db.certidaoRequest.findMany({ where: { accountId, status: 'REQUESTED', createdAt: { lt: new Date(agora - REQUESTED_WARN_H * 3600_000) }, OR: [{ detail: null }, { detail: { not: { contains: WARN_MARK } } }] }, select: { id: true, leadId: true, matricula: true } });
