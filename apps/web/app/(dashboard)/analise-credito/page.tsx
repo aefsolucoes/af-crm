@@ -151,6 +151,16 @@ export default function AnaliseCreditoPage() {
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['credit-board'] });
 
+  // "Avisar negativa": reprovado em todos os bancos e a IA do card desligada — a negativa não sai sozinha (Fabio 19/10).
+  async function notifyRejection(l: BoardLead) {
+    if (!window.confirm(`Avisar ${l.name} que não foi aprovado e mandar o card para Perdidos?`)) return;
+    try {
+      const { data: r } = await api.post('/api/credit-analysis/notify-rejection', { leadId: l.id });
+      toast(r?.scheduled ? 'Fora do horário: a negativa sai às 07h e o card vai pra Perdidos em seguida' : 'Negativa enviada e card movido pra Perdidos');
+      refresh();
+    } catch (e: any) { toast(e?.response?.data?.error || 'Não consegui avisar a negativa', 'error'); }
+  }
+
   useEffect(() => {
     const socket = getSocket();
     let t: ReturnType<typeof setTimeout> | null = null;
@@ -467,6 +477,9 @@ export default function AnaliseCreditoPage() {
                               {Object.values(l.latest).some((a) => a && (a.status === 'APPROVED' || a.status === 'CONDITIONAL') && !!a.approvedValue) && (
                                 <button onClick={() => setNotify(l)} title="Mandar ao cliente as opções aprovadas (todas, para ele escolher)" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg bg-af-accent text-white hover:opacity-90"><Send size={11} /> Avisar cliente</button>
               )}
+                              {l.rejectionPending && (
+                                <button onClick={() => notifyRejection(l)} title="Todos os bancos disseram não e a IA deste card está desligada: manda a negativa ao cliente e move o card pra Perdidos" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg bg-red-600 text-white hover:opacity-90"><Send size={11} /> Avisar negativa</button>
+                              )}
                               <button onClick={() => setAdjust(l)} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><SlidersHorizontal size={11} /> Ajustar</button>
                               <button onClick={() => toggleClientPause(l)} title={l.autoPaused ? 'Voltar o automático (e a IA, se estava ligada) pra este cliente' : 'STOP TOTAL só deste cliente: derruba as rodadas em andamento e para tudo, inclusive a IA'} className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border ${l.autoPaused ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50' : 'border-red-300 text-red-600 hover:bg-red-50'}`}>
                                 {l.autoPaused ? <><Play size={11} /> Retomar</> : <><Square size={11} className="fill-current" /> Parar</>}

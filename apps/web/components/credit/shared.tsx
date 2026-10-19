@@ -58,6 +58,8 @@ export interface BoardLead {
   card: { name1: string; name2: string; cpf1?: string; cpf2?: string; income1: string; income2: string; propertyValue: string; creditValue: string; term: string };
   overrides: Partial<Record<Bank, OverrideData>>;
   inPre: boolean; autoPaused?: boolean;
+  /** Reprovado em todos os bancos com a IA do card desligada: a negativa não sai sozinha — mostra o botão "Avisar negativa". */
+  rejectionPending?: boolean;
   /** Creditas pediu a Autorização SCR Bacen assinada: PENDING/ASKED/SENDING = consulta do Creditas TRAVADA; SENT = enviada à Creditas; NOTED = só registrado. */
   scr?: { status: 'PENDING' | 'ASKED' | 'SENDING' | 'SENT' | 'NOTED'; at: string | null; askedAt: string | null; sentAt: string | null; creditasId: string | null } | null; preAnaliseAt?: string | null; ran: boolean; lastRunAt: string | null;
   latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; verdicts?: Verdict[]; chosenId: string | null;
@@ -78,6 +80,7 @@ export function overrideSummary(o?: OverrideData): string {
 
 export interface LeadAnalyses {
   eligible: boolean;
+  rejectionPending?: boolean;
   latest: Partial<Record<Bank, Analysis>>;
   latestP1?: Partial<Record<Bank, Analysis>>; latestP2?: Partial<Record<Bank, Analysis>>;
   history: Analysis[];

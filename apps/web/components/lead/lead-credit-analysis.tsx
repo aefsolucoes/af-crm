@@ -104,6 +104,20 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
         {Object.values(data.latest).some((a) => a && (a.status === 'APPROVED' || a.status === 'CONDITIONAL') && !!a.approvedValue) && (
           <button onClick={() => setNotify(true)} className="text-[11px] text-white bg-af-mid hover:bg-af-dark rounded px-2 py-0.5" title="Mandar ao cliente as opções aprovadas">Avisar cliente</button>
         )}
+        {data.rejectionPending && (
+          <button
+            onClick={async () => {
+              if (!confirm('Avisar o cliente que não foi aprovado e mandar o card para Perdidos?')) return;
+              try {
+                const { data: r } = await api.post('/api/credit-analysis/notify-rejection', { leadId });
+                toast(r?.scheduled ? 'Fora do horário: a negativa sai às 07h e o card vai pra Perdidos em seguida' : 'Negativa enviada e card movido pra Perdidos');
+                refresh(); onChanged?.();
+              } catch (e: any) { toast(e?.response?.data?.error || 'Não consegui avisar a negativa', 'error'); }
+            }}
+            className="text-[11px] text-white bg-red-600 hover:opacity-90 rounded px-2 py-0.5"
+            title="Todos os bancos disseram não e a IA deste card está desligada: manda a negativa e move o card pra Perdidos"
+          >Avisar negativa</button>
+        )}
         <Link href={`/analise-credito?leadId=${leadId}`} className="flex items-center gap-1 text-[11px] text-af-mid hover:underline" title="Abrir na aba Análise de Crédito (resultado manual e histórico)">
           Abrir aba <ExternalLink size={10} />
         </Link>

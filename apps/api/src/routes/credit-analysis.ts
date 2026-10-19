@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
+import { sendRejectionAndClose } from '../services/credit-auto.service';
 import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.service';
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
@@ -137,6 +138,17 @@ router.post('/notify-client', async (req: AuthRequest, res: Response) => {
     emit(req, { leadId: String(req.body?.leadId || '') });
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao avisar o cliente'); }
+});
+
+// Botão "Avisar negativa": a negativa automática só sai com a IA do card ligada; com ela desligada a equipe manda por aqui (e o card vai pra Perdidos).
+router.post('/notify-rejection', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || '');
+    const out = await sendRejectionAndClose({ accountId: req.user!.accountId, leadId, userId: req.user!.id, io: io(req) });
+    if (!out.ok) return res.status(400).json({ error: out.error });
+    emit(req, { leadId });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao avisar a negativa'); }
 });
 
 // Chave da análise automática (só admin liga/desliga). A extensão consulta pra não rodar sozinha em duplicidade.

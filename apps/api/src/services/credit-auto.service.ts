@@ -339,7 +339,7 @@ async function closeRejected(accountId: string, io: any) {
       pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
       creditAnalyses: { some: { dryRun: false } },
     },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true } } },
+    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true } } },
     orderBy: { createdAt: 'asc' }, take: 80,
   });
   for (const l of leads) {
@@ -352,6 +352,15 @@ async function closeRejected(accountId: string, io: any) {
     const last = Math.max(...rows.map((r) => r.updatedAt.getTime()));
     if (Date.now() - last < 2 * 60_000) continue; // resultado final dos 3 bancos: só uma folga curta pra conferências em andamento
     if (cascadePlan(cf, l.name, rows as any).length) continue; // ainda falta rodar no 2º participante
+    // A negativa automática só sai com a IA DAQUELE card ligada (Fabio 19/10, mesma regra do aviso de aprovação): com a IA desligada (a equipe assumiu a conversa)
+    // o card espera e aparece o botão "Avisar negativa" (aba Análise de Crédito e card) — a equipe manda quando quiser.
+    if (!l.aiAutoReplyActive) {
+      if (!cf._rejHeldAt) {
+        await saveCf(l.id, { _rejHeldAt: new Date().toISOString() });
+        await addNote(l.id, '✋ Nenhum banco aprovou, mas o aviso de negativa NÃO saiu sozinho e o card não foi movido: a IA deste card está desligada (alguém da equipe está na conversa). Use o botão "Avisar negativa" quando quiser.');
+      }
+      continue;
+    }
     // Desqualificado x Reprovado: se NENHUM banco chegou a reprovar (todas as respostas são regra do banco/imóvel — mínimo, terreno, saldo devedor), o lead não atende
     // aos critérios → "desqualificado". Basta um banco ter reprovado de verdade → "reprovado".
     const ultima = (b: string) => rows.filter((r) => r.bank === b && r.source !== 'AI_SIM' && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
@@ -388,6 +397,32 @@ async function closeRejected(accountId: string, io: any) {
     if (decisao === 'VENDA_FUTURA') { const { rejectedToVendaFutura } = require('./venda-futura.service') as typeof import('./venda-futura.service'); await rejectedToVendaFutura({ accountId, leadId: l.id, reasons: built?.reasons, io }).catch((e: any) => console.error('[Análise automática] Venda Futura:', e?.message)); continue; }
     await markRejectedAndMove({ accountId, leadId: l.id, io, disqualify: desqualificado, motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) }).catch((e: any) => console.error('[Análise automática] mover reprovado:', e?.message));
   }
+}
+
+/** Reprovado em TODOS os bancos, card aberto na Pré-Análise e a IA dele DESLIGADA: a negativa não sai sozinha, então a tela mostra o botão "Avisar negativa". */
+export function rejectionPendingOf(rows: any[], lead: { status: string; stage?: string | null; aiOn: boolean; paused?: boolean }): boolean {
+  if (lead.status !== 'OPEN' || !/^pré-an/i.test(lead.stage || '') || lead.aiOn || lead.paused) return false;
+  const real = rows.filter((r) => !r.dryRun);
+  return real.length > 0 && BANKS.every((b) => bankVerdict(real as any, b) === 'NEG');
+}
+
+/** Botão "Avisar negativa" (equipe): manda a negativa ao cliente e fecha o card (Reprovado/Desqualificado → Perdidos), como o fechamento automático faria. */
+export async function sendRejectionAndClose(p: { accountId: string; leadId: string; userId: string; io: any }): Promise<{ ok: boolean; scheduled?: boolean; already?: boolean; error?: string }> {
+  const l = await prisma.lead.findFirst({
+    where: { id: p.leadId, accountId: p.accountId, status: 'OPEN' },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true } } },
+  });
+  if (!l) return { ok: false, error: 'Card não encontrado ou já fechado.' };
+  const rows = l.creditAnalyses;
+  if (!rows.length || BANKS.some((b) => bankVerdict(rows, b) !== 'NEG')) return { ok: false, error: 'Ainda há banco sem resposta final (ou com aprovação): não dá pra avisar a negativa.' };
+  const ultima = (b: string) => rows.filter((r) => r.bank === b && r.source !== 'AI_SIM' && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
+  const desqualificado = BANKS.every((b) => ultima(b)?.status === 'FAILED');
+  const out = await sendRejectionNoticeNow({ accountId: p.accountId, leadId: l.id, userId: p.userId, io: p.io });
+  if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: desqualificado ? 'DESQ' : true }); return { ok: true, scheduled: true }; }
+  if (!out.ok && !out.already) return { ok: false, error: out.error };
+  const built = await buildRejectionText(l.id).catch(() => null);
+  await markRejectedAndMove({ accountId: p.accountId, leadId: l.id, userId: p.userId, io: p.io, disqualify: desqualificado, motivo: `Reprovado nos bancos${built?.reasons.length ? ' — ' + built.reasons.join('; ') : ''}`.slice(0, 280) });
+  return { ok: true, already: !!out.already };
 }
 
 /** 6) Confirmação da proposta que NÃO saiu: o e-mail do formulário do site chega segundos ANTES do WhatsApp do cliente — a automação da Pré-Análise tenta falar sem a janela de 24 h

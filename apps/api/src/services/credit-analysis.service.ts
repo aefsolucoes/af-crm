@@ -870,7 +870,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])],
     },
     select: {
-      id: true, name: true, value: true, status: true, customFields: true, stageEnteredAt: true,
+      id: true, name: true, value: true, status: true, customFields: true, stageEnteredAt: true, aiAutoReplyActive: true,
       stage: { select: { name: true } }, pipeline: { select: { name: true } },
       creditAnalyses: { orderBy: { createdAt: 'desc' }, take: 60 },
       creditOverrides: { select: { bank: true, data: true } },
@@ -905,6 +905,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       if (o.p1 || o.p2) notRun[bk] = o;
     }
     return {
+      rejectionPending: (require('./credit-auto.service') as typeof import('./credit-auto.service')).rejectionPendingOf(l.creditAnalyses, { status: l.status, stage: l.stage?.name, aiOn: l.aiAutoReplyActive, paused: !!cf._autoPaused }),
       notRun,
       latestP1: byPart.p1,
       latestP2: byPart.p2,
@@ -1065,7 +1066,7 @@ export async function setOverrides(db: Db, p: { accountId: string; userId?: stri
 export async function leadAnalyses(db: Db, p: { accountId: string; leadId: string; scopeDepartmentIds: string[] }) {
   const lead = await db.lead.findFirst({
     where: { id: p.leadId, accountId: p.accountId },
-    select: { id: true, name: true, customFields: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } },
+    select: { id: true, name: true, status: true, aiAutoReplyActive: true, stage: { select: { name: true } }, customFields: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } },
   });
   if (!lead) return null;
   const deptId = lead.pipeline?.departmentId;
@@ -1077,6 +1078,7 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   const overrides = await db.creditOverride.findMany({ where: { leadId: p.leadId }, select: { bank: true, data: true } });
   return {
     eligible: /home equity/i.test(lead.pipeline?.department?.name || ''),
+    rejectionPending: (require('./credit-auto.service') as typeof import('./credit-auto.service')).rejectionPendingOf(history, { status: lead.status, stage: lead.stage?.name, aiOn: lead.aiAutoReplyActive, paused: !!(lead.customFields as any)?._autoPaused }),
     latest, ...(() => { const bp = latestByParticipant(history, cf, lead.name); return { latestP1: bp.p1, latestP2: bp.p2 }; })(), history, chosenId: history.find((a) => a.chosen)?.id || null,
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
   };
