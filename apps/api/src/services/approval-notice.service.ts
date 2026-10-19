@@ -768,6 +768,11 @@ const REJECTION_MARK_OLD = 'não conseguimos aprovar agora'; // texto antigo do 
 const REJECTION_TEXT = 'Oi! Tudo bem? Após a análise junto às nossas instituições parceiras, infelizmente, não foi possível aprovar o crédito solicitado neste momento. Agradecemos pela confiança e permanecemos à disposição para futuras oportunidades.';
 /** Template aprovado da Meta pro aviso de reprovado (Fabio 14/10): é o que vale quando a janela de 24 h do WhatsApp está fechada. */
 export const REJECTION_TEMPLATE = 'reprovacao';
+/** Versão nova do template com o texto do Fabio (19/10; enviada à Meta, em análise). Assim que a Meta aprova, passa a valer SOZINHA; até lá (ou se for recusada) segue o `reprovacao` antigo. */
+export const REJECTION_TEMPLATE_V2 = 'reprovacao_v2';
+async function rejectionTemplateName(accountId: string): Promise<string> {
+  return (await metaTemplate(accountId, REJECTION_TEMPLATE_V2)).approved ? REJECTION_TEMPLATE_V2 : REJECTION_TEMPLATE;
+}
 
 // ─── Conferir a CONVERSA antes de avisar (Fabio 14/10: "a IA do CRM precisa verificar na conversa se já não foi encaminhado alguma negativa ou aprovação, pra não duplicar") ───
 // Vale pra QUALQUER caminho (aviso automático, botão da tela, IA da conversa, agendado) e pra QUALQUER remetente (sistema, equipe pelo WhatsApp, IA, e-mail).
@@ -905,16 +910,17 @@ export async function sendRejectionNoticeNow(p: { accountId: string; leadId: str
   if (!(await whatsappWindowOpen(p.leadId))) {
     // Sem a janela de 24 h não há WhatsApp livre: vai o TEMPLATE aprovado "reprovacao" (Fabio 14/10: "tem template de reprovado"). Se ele falhar, o aviso
     // vai por e-mail (comercial@, mesmo caminho do follow-up) se o card tem e-mail; sem e-mail, fica nota pra equipe chamar o cliente.
-    const tpl = await metaTemplate(p.accountId, REJECTION_TEMPLATE);
+    const tplName = await rejectionTemplateName(p.accountId);
+    const tpl = await metaTemplate(p.accountId, tplName);
     if (tpl.approved && tpl.body) {
       const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
-      const rt = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, templateName: REJECTION_TEMPLATE, language: 'pt_BR', bodyParams: [], previewText: tpl.body, userId: p.userId, io: p.io });
+      const rt = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, templateName: tplName, language: 'pt_BR', bodyParams: [], previewText: tpl.body, userId: p.userId, io: p.io });
       if (rt.success) {
         await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado por template (a janela de 24 h do WhatsApp estava fechada) que não foi aprovado (${built.reasons.join('; ')}).` } }).catch(() => {});
         logActivity({ accountId: p.accountId, userId: p.userId || null, userName: p.userId ? undefined : 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou por template que o cliente não foi aprovado' } as any);
         return { ok: true, via: 'whatsapp' };
       }
-      console.warn(`[Aprovação] template "${REJECTION_TEMPLATE}" falhou pra ${lead.name}: ${(rt as any).error}`);
+      console.warn(`[Aprovação] template "${tplName}" falhou pra ${lead.name}: ${(rt as any).error}`);
     }
     const full = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { contact: { select: { email: true } } } });
     const to = String(full?.contact?.email || cf.email_1 || '').trim();
@@ -952,10 +958,11 @@ export async function sendAgeBlockNotice(p: { accountId: string; leadId: string;
     if (r.success) return { ok: true, via: 'whatsapp' };
     return { ok: false, error: (r as any).error || 'falha ao enviar' };
   }
-  const tpl = await metaTemplate(p.accountId, REJECTION_TEMPLATE);
+  const tplName = await rejectionTemplateName(p.accountId);
+  const tpl = await metaTemplate(p.accountId, tplName);
   if (tpl.approved && tpl.body) {
     const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
-    const rt = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, templateName: REJECTION_TEMPLATE, language: 'pt_BR', bodyParams: [], previewText: tpl.body, io: p.io });
+    const rt = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, templateName: tplName, language: 'pt_BR', bodyParams: [], previewText: tpl.body, io: p.io });
     if (rt.success) return { ok: true, via: 'template' };
   }
   const to = String(lead.contact?.email || cf.email_1 || '').trim();
