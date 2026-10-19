@@ -427,6 +427,19 @@ export async function processDeferredAutomations(io: unknown): Promise<void> {
         const falou = await prisma.message.findFirst({ where: { leadId: job.leadId, channel: 'WHATSAPP', createdAt: { gte: job.createdAt }, direction: { in: ['INBOUND', 'OUTBOUND'] } }, select: { direction: true } });
         if (falou) { await finish('SKIPPED', falou.direction === 'INBOUND' ? 'o cliente já falou com a gente: janela de 24 h aberta, sem gastar template' : 'já houve contato nosso com o cliente'); continue; }
       }
+      if (rule.trigger === 'FORM_SUBMITTED') {
+        // O lembrete das boas-vindas diz "não chegou a concluir a proposta" — falso se ela JÁ chegou (José Roberto 19/10: proposta às 19:36, lembrete às 19:40 e o cliente voltou a preencher).
+        // Nesse caso não manda o texto nem o e-mail do lembrete: abre a conversa só com o "Olá, tudo bem?" (sem janela de 24 h o WhatsApp só deixa abrir com template) e a IA, que já sabe da proposta, atende.
+        const propostaChegou = await prisma.message.findFirst({ where: { leadId: job.leadId, direction: 'INBOUND', content: { startsWith: '📋 Proposta' } }, select: { id: true } });
+        if (propostaChegou) {
+          const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+          const t = await sendOutboundWhatsAppTemplate({ accountId: lead.accountId, leadId: lead.id, templateName: 'ola_tudo_bem', language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem?' });
+          await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: t.success ? '📨 A proposta já tinha chegado: não mandei o lembrete "não concluiu a proposta"; abri a conversa só com o "Olá, tudo bem?".' : `⚠️ A proposta já tinha chegado (lembrete "não concluiu" não enviado), mas o "Olá, tudo bem?" falhou: ${(t as any).error}` } }).catch(() => {});
+          await prisma.automationLog.create({ data: { ruleId: rule.id, leadId: job.leadId, success: !!t.success, actionsResult: [{ type: action.type, ok: !!t.success, deferred: true, substituto: 'ola_tudo_bem' }] as any } }).catch(() => {});
+          await finish(t.success ? 'DONE' : 'FAILED', 'proposta já chegou: só "Olá, tudo bem?"');
+          continue;
+        }
+      }
       const ok = await executeAction(action, lead, { departmentId: lead.pipeline?.departmentId || undefined, deferredRun: true }, io);
       await prisma.automationLog.create({ data: { ruleId: rule.id, leadId: job.leadId, success: ok, actionsResult: [{ type: action.type, ok, deferred: true }] as any } }).catch(() => {});
       await finish(ok ? 'DONE' : 'FAILED', ok ? undefined : 'o envio do template falhou');

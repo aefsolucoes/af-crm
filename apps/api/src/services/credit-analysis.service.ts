@@ -1353,7 +1353,13 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
     where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 60 * 86_400_000) }, status: { notIn: ['REQUESTED', 'RUNNING', 'TEST'] } },
     orderBy: { createdAt: 'desc' }, take: 40,
   });
-  if (!rows.length) return '';
+  if (!rows.length) {
+    // Análise pedida mas ainda sem NENHUM resultado lido (fila/rodando): a IA não pode agir como se a proposta não existisse (José Roberto 19/10: o cliente voltou a preencher o
+    // formulário porque a IA mandou "preencha os campos que faltam" com a análise já rodando).
+    const emAndamento = await db.creditAnalysis.count({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 60 * 86_400_000) }, status: { in: ['REQUESTED', 'RUNNING'] } } });
+    if (!emAndamento) return '';
+    return 'ANÁLISE DE CRÉDITO DESTE CLIENTE: a proposta dele JÁ FOI RECEBIDA (veio do formulário do site) e a análise nos bancos está EM ANDAMENTO, ainda sem resultado. NÃO peça pra preencher a proposta, NÃO mande "preencher os campos que faltam" e NÃO diga "me avisa quando terminar". Se ele estiver preenchendo o formulário de novo, diga que não precisa: já recebemos. Se perguntar, diga que está em análise e que você avisa assim que sair o resultado (sem prazo exato).';
+  }
   // Leitura que FALHOU (ex.: conferência que travou) não pode esconder o último resultado conhecido: só entra se não houver nada melhor.
   // A nova proposta que o CLIENTE pediu (outro prazo/valor) e NÃO foi aprovada não apaga a aprovação anterior no que a IA enxerga (a equipe é avisada por nota).
   const bons = latestByParticipant(rows.filter((r) => r.status !== 'FAILED' && !(r.source === 'AI_CHANGE' && r.status === 'REJECTED')), cf);
