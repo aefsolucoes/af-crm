@@ -570,7 +570,7 @@ export async function maybeSendApprovalOnYes(accountId: string, leadId: string, 
 // ─── Aviso de aprovação sob demanda (botão "Avisar cliente" da aba Análise de Crédito) ───
 const WINDOW_MS = 23 * 3_600_000; // janela de 24 h do WhatsApp, com folga
 
-async function whatsappWindowOpen(leadId: string): Promise<boolean> {
+export async function whatsappWindowOpen(leadId: string): Promise<boolean> {
   const last = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
   return !!last && Date.now() - last.createdAt.getTime() < WINDOW_MS;
 }

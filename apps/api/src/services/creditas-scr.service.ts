@@ -152,6 +152,8 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
       try { await linkEmailToLead(acc, row.id, lead.id, io); } catch (e: any) { console.warn('[Creditas e-mail] não liguei o e-mail ao card:', e?.message); }
       if (!scr && fresh) { try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(acc.accountId, { title: `📧 Creditas — ${lead.name}`, body: row.subject || 'Novo e-mail da Creditas', leadId: lead.id }).catch(() => {}); } catch { /* push é extra */ } }
     }
+    // E-mail "Crédito Pré Aprovado" (Fabio 19/10): vira a aprovação da Creditas no card, com os números do banco.
+    if (!scr) { try { const { registerPreApproval } = require('./creditas-preapproval.service') as typeof import('./creditas-preapproval.service'); await registerPreApproval({ accountId: acc.accountId, leadId: lead.id, leadName: lead.name, row, io }); } catch (e: any) { console.warn('[Creditas e-mail] pré-aprovação:', e?.message); } }
     if (!scr && JONATAS.test(String(row.fromAddress).trim())) { if (await handleSuporteReply(acc, lead, row, text, io).catch((e: any) => { console.warn('[Creditas e-mail] resposta do Jonatas:', e?.message); return false; })) continue; }
     if (!scr) continue;
     const st = stateOf(lead.customFields);

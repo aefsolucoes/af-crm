@@ -165,6 +165,34 @@ async function interpretEmailAnswer(question: string, emailExcerpt: string, answ
   } catch { return { acao: 'SO_REGISTRAR', regra: null }; }
 }
 
+/** A mensagem composta pela IA anuncia APROVAÇÃO de crédito com números? (nunca vai em texto livre) */
+export function anunciaAprovacao(text: string): boolean {
+  const t = String(text || '');
+  return /(pr[eé][-\s]?aprovad|cr[eé]dito[^.\n]{0,30}aprovad|aprovad[oa][^.\n]{0,30}(creditas|santander|inter|banco))/i.test(t) && /R\$\s*[\d.]+(,\d{2})?|\d+\s*meses|parcela/i.test(t);
+}
+
+/** AVISAR_CLIENTE sobre a aprovação: registra a pré-aprovação que veio por e-mail (se ainda não está no card) e manda o aviso de aprovação do CRM — dentro da janela de 24 h o texto com as condições,
+ *  fora dela o template "ver condições" (o texto completo sai quando o cliente tocar em "Sim, quero saber"). null = não há aprovação pra avisar: segue o fluxo normal. */
+async function avisarAprovacaoPeloCrm(q: { id: string; accountId: string; leadId: string; departmentId: string | null; question: string }, answer: string, userId: string, userName: string | null, io: Io) {
+  const { backfillPreApprovals } = require('./creditas-preapproval.service') as typeof import('./creditas-preapproval.service');
+  const { previewApprovalNotice, sendApprovalNoticeNow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  await backfillPreApprovals(q.accountId, q.leadId, io).catch((e: any) => console.warn('[Dúvidas da IA] pré-aprovação do e-mail:', e?.message));
+  const preview = await previewApprovalNotice(q.leadId).catch(() => null);
+  if (!preview) return null;
+  const out = await sendApprovalNoticeNow({ accountId: q.accountId, leadId: q.leadId, userId, io });
+  if (!out.ok && !out.already) {
+    const updated = await prisma.aiTeamQuestion.update({ where: { id: q.id }, data: { answer, answeredByUserId: userId, answeredByName: userName, sendError: out.error || 'Não consegui avisar o cliente' }, select: SELECT });
+    emitTo(io, await recipientsFor(q.accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+    return updated;
+  }
+  const feito = out.already ? 'o cliente já tinha o aviso da aprovação na conversa (nada foi reenviado)' : out.scheduled ? 'aviso da aprovação agendado (sai no próximo horário de envio, 07h–21h)' : (out as any).via === 'template' || preview.mode === 'template' ? 'aprovação registrada e template "ver condições" enviado ao cliente (a janela de 24 h estava fechada)' : 'aprovação registrada e aviso com as condições enviado ao cliente';
+  const updated = await prisma.aiTeamQuestion.update({ where: { id: q.id }, data: { status: 'ANSWERED', answer, answeredByUserId: userId, answeredByName: userName, answeredAt: new Date(), sendError: null, sentReply: feito }, select: SELECT });
+  await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `Dúvida do e-mail do Jonatas respondida por ${userName || 'alguém da equipe'}: ${answer}\n🤖 ${feito}.` } }).catch(() => {});
+  logActivity({ accountId: q.accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: 'respondeu a dúvida da IA sobre o e-mail da Creditas: avisou a aprovação' });
+  emitTo(io, await recipientsFor(q.accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+  return updated;
+}
+
 async function answerEmailQuestion(q: { id: string; accountId: string; leadId: string; departmentId: string | null; question: string }, answer: string, acao: 'PEDIR_BACEN' | 'SO_REGISTRAR', regra: { title: string; content: string } | null, userId: string, userName: string | null, io: Io) {
   let feito = 'a IA só registrou (nada foi enviado ao cliente)';
   if (acao === 'PEDIR_BACEN') {
@@ -486,6 +514,7 @@ export async function composeClientReply(accountId: string, leadId: string, ques
   if (!ctx) throw new Error('Card não encontrado');
 
   const system = `Você atende clientes da A&F Soluções Financeiras pelo WhatsApp. Você tinha dito ao cliente que ia verificar uma dúvida com a equipe; a equipe respondeu pelo chat interno do CRM. Agora:
+0. NUNCA anuncie aprovação de crédito nem escreva valores/prazos/parcelas aprovados: isso o CRM envia pelo aviso padrão (se a equipe mandou "avisar da aprovação", escreva só uma frase curta dizendo que o resumo da aprovação segue em seguida).
 1. Escreva a mensagem pro cliente passando a resposta da equipe — fiel ao que a equipe disse (não acrescente fato, valor, prazo ou promessa que não esteja na resposta), no tom da conversa, curta. Não conte que perguntou pra equipe nem cite nomes; só dê a resposta, como quem voltou com a informação. Se a resposta da equipe tiver comentário interno sobre o cliente, não repasse — só a informação que responde a dúvida.
 2. Decida se a resposta é uma REGRA GERAL que vale pra outros clientes (ex.: "imóvel só com escritura, sem matrícula, não serve de garantia") ou se é só sobre a situação DESTE cliente (ex.: "o crédito dele já foi pro banco"). Se for regra geral, devolva em "knowledge" um título curto (a dúvida, genérica, sem nome de cliente) e o conteúdo (a regra, genérica, completa o suficiente pra ser entendida sozinha). Se não for, "knowledge": null.
 
@@ -560,10 +589,32 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
   if (q.kind === 'EMAIL_QUESTION') {
     const dec = await interpretEmailAnswer(q.question, q.clientMessage || '', answer);
     if (dec.acao !== 'AVISAR_CLIENTE') return answerEmailQuestion(q, answer, dec.acao, dec.regra, userId, user?.name || null, io);
-    // AVISAR_CLIENTE: segue o fluxo normal abaixo (a IA escreve a mensagem pro cliente a partir da resposta da equipe, manda pelo WhatsApp e guarda a regra geral).
+    // AVISAR_CLIENTE: se a notícia é a APROVAÇÃO, usa o aviso de aprovação do CRM (registra a pré-aprovação do e-mail, e com a janela de 24 h fechada manda o template "ver condições").
+    // Os números nunca vêm de texto livre da IA. Senão, segue o fluxo normal abaixo (a IA escreve a mensagem a partir da resposta da equipe).
+    const viaAviso = await avisarAprovacaoPeloCrm(q, answer, userId, user?.name || null, io);
+    if (viaAviso) return viaAviso;
+  }
+
+  // Texto livre só vale dentro da janela de 24 h do WhatsApp: fora dela o envio falhava DEPOIS (a Meta recusa com 131047) e a dúvida aparecia como respondida (Maria Selmi, 19/10).
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!(await whatsappWindowOpen(q.leadId))) {
+    const erro = 'Janela de 24 h do WhatsApp fechada: a mensagem não pode ir como texto livre. Reabra a conversa com um template (botão "Usar template" na conversa) e responda de novo.';
+    const updated = await prisma.aiTeamQuestion.update({ where: { id: q.id }, data: { answer, answeredByUserId: userId, answeredByName: user?.name || null, sendError: erro }, select: SELECT });
+    emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+    return updated;
   }
 
   const { reply, knowledge } = await composeClientReply(accountId, q.leadId, q.question, answer);
+
+  // Aprovação NUNCA vai em texto livre da IA (Fabio 19/10): se a mensagem anuncia aprovação com valores, vai o aviso padrão do CRM; sem aprovação registrada, não envia nada.
+  if (anunciaAprovacao(reply)) {
+    const viaAviso = await avisarAprovacaoPeloCrm(q, answer, userId, user?.name || null, io);
+    if (viaAviso) return viaAviso;
+    const erro = 'A mensagem anunciava uma aprovação por texto livre, e isso não pode: a aprovação sai sempre pelo aviso padrão. Não há aprovação registrada pra avisar — registre o resultado (Análise de Crédito → Resultado) e use "Avisar cliente".';
+    const updated = await prisma.aiTeamQuestion.update({ where: { id: q.id }, data: { answer, answeredByUserId: userId, answeredByName: user?.name || null, sendError: erro }, select: SELECT });
+    emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+    return updated;
+  }
 
   const sent = await sendOutboundWhatsApp({ accountId, leadId: q.leadId, content: reply, io: io || undefined });
   if (!sent.success) {
