@@ -169,7 +169,7 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
 /** O Jonatas respondeu à NOSSA cobrança de posição (e-mail de 24 h sem retorno) e a resposta NÃO tem o pedido do SCR em formato Creditas (Fabio 16/10): a IA lê o texto novo e decide —
  *  pedido do SCR Bacen → abre o fluxo do SCR (formulário ao cliente); qualquer outra coisa → leva pra equipe no balão "Dúvidas da IA" ("o que devo fazer?") e aprende com a resposta.
  *  true = tratado. 1 vez por e-mail (`_creditasEmailsHandled`). */
-export async function classifyJonatasReply(subject: string | null, novo: string): Promise<{ tipo: 'BACEN' | 'OUTRO'; resumo: string }> {
+export async function classifyJonatasReply(subject: string | null, novo: string, images: { mediaType: string; base64: string }[] = []): Promise<{ tipo: 'BACEN' | 'OUTRO'; resumo: string; sugestao?: string }> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   const fallback = { tipo: 'OUTRO' as const, resumo: novo.replace(/\s+/g, ' ').trim().slice(0, 240) || '(e-mail sem texto)' };
   if (!apiKey) return fallback;
@@ -178,9 +178,12 @@ export async function classifyJonatasReply(subject: string | null, novo: string)
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-        model: 'claude-sonnet-5', max_tokens: 2500,
-        system: `Você lê a resposta do Jonatas (suporte da Creditas) à pergunta da A&F Soluções Financeiras sobre a posição da proposta de um cliente de crédito com garantia de imóvel. Responda SÓ JSON: {"tipo":"BACEN|OUTRO","resumo":"até 200 caracteres: o que ele respondeu"}. BACEN = ele está pedindo a Autorização SCR Bacen (consulta ao Banco Central) preenchida e assinada pelo(s) cliente(s) e/ou as identidades. OUTRO = qualquer outra coisa (proposta em análise, negada, falta documento, política, aprovada, pedido de retorno…).`,
-        messages: [{ role: 'user', content: `Assunto: ${subject || ''}\n\nTexto novo do e-mail (sem a citação):\n${novo.slice(0, 3000)}` }],
+        model: 'claude-sonnet-5', max_tokens: 3500,
+        system: `Você lê a resposta do Jonatas (suporte da Creditas) à pergunta da A&F Soluções Financeiras sobre a posição da proposta de um cliente de crédito com garantia de imóvel. Responda SÓ JSON: {"tipo":"BACEN|OUTRO","resumo":"até 350 caracteres: o que ele respondeu — se houver PRINT/imagem no e-mail, LEIA a imagem e traga o que ela mostra (ex.: e-mail de pré-aprovação enviado em tal data, valor líquido, valor total, prazo, taxa, parcelas, status)","sugestao":"até 220 caracteres: o que você faria (ex.: registrar a aprovação da Creditas com esses valores e avisar o cliente; pedir o SCR; só aguardar)"}. BACEN = ele está pedindo a Autorização SCR Bacen (consulta ao Banco Central) preenchida e assinada pelo(s) cliente(s) e/ou as identidades. OUTRO = qualquer outra coisa (proposta em análise, negada, falta documento, política, aprovada, pedido de retorno…).`,
+        messages: [{ role: 'user', content: [
+          ...images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.mediaType, data: im.base64 } })),
+          { type: 'text', text: `Assunto: ${subject || ''}\n\nTexto novo do e-mail (sem a citação):\n${novo.slice(0, 3000)}${images.length ? `\n\n(O e-mail traz ${images.length} imagem(ns)/print(s) anexa(s): leia e use no resumo.)` : ''}` },
+        ] }],
       }),
     });
     if (!res.ok) return fallback;
@@ -188,7 +191,7 @@ export async function classifyJonatasReply(subject: string | null, novo: string)
     const m = String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/);
     if (!m) return fallback;
     const j = JSON.parse(m[0]);
-    return { tipo: j.tipo === 'BACEN' ? 'BACEN' : 'OUTRO', resumo: String(j.resumo || fallback.resumo).slice(0, 240) };
+    return { tipo: j.tipo === 'BACEN' ? 'BACEN' : 'OUTRO', resumo: String(j.resumo || fallback.resumo).slice(0, 420), sugestao: j.sugestao ? String(j.sugestao).slice(0, 260) : undefined };
   } catch { return fallback; }
 }
 
@@ -197,20 +200,25 @@ async function handleSuporteReply(acc: EmailAccount, lead: { id: string; name: s
   const askedAt = cf._creditasSuporteAt ? new Date(cf._creditasSuporteAt).getTime() : 0;
   if (!askedAt || row.date.getTime() <= askedAt) return false; // só resposta DEPOIS do nosso e-mail
   const handled: string[] = Array.isArray(cf._creditasEmailsHandled) ? cf._creditasEmailsHandled : [];
-  if (handled.includes(row.id)) return false;
+  // O MESMO e-mail chega em duas caixas (a do Fabio e a da Andreia, com ids diferentes): a chave é o Message-ID, senão a IA abria a dúvida duas vezes (Maria Selmi, 19/10).
+  const chave = row.messageId || row.id;
+  if (handled.includes(chave) || handled.includes(row.id)) return false;
   const fresh = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
   const c2 = { ...((fresh?.customFields || {}) as Record<string, any>) };
-  c2._creditasEmailsHandled = [...handled, row.id].slice(-20); // marca antes: não repete se a IA demorar
+  c2._creditasEmailsHandled = [...handled, chave].slice(-20); // marca antes: não repete se a IA demorar
   await prisma.lead.update({ where: { id: lead.id }, data: { customFields: c2 as any } });
   const novo = textoNovo(text);
-  const v = await classifyJonatasReply(row.subject, novo);
+  // O print colado no e-mail (inline) ou anexado: a IA LÊ a imagem junto com o texto.
+  const { getEmailImages } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+  const images = await getEmailImages(acc, row).catch((e: any) => { console.warn('[Creditas e-mail] não consegui ler as imagens do e-mail:', e?.message); return []; });
+  const v = await classifyJonatasReply(row.subject, novo, images);
   if (v.tipo === 'BACEN') {
     if (stateOf(c2)) { await addNote(lead.id, `📧 O Jonatas respondeu pedindo o SCR Bacen, mas esse pedido já está em andamento neste card (${stateOf(c2)!.status}).`); return true; }
     await openScr(acc, lead, row, { name: String(c2.participante_1 || lead.name), cpf: digits(String(c2.cpf_1 || '')) || undefined });
     return true;
   }
   const { createEmailQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
-  await createEmailQuestion({ accountId: acc.accountId, leadId: lead.id, resumo: v.resumo, excerpt: novo.replace(/\n{3,}/g, '\n\n').trim(), io: io as any });
+  await createEmailQuestion({ accountId: acc.accountId, leadId: lead.id, resumo: v.resumo, sugestao: v.sugestao, excerpt: novo.replace(/\n{3,}/g, '\n\n').trim(), messageId: chave, io: io as any });
   return true;
 }
 

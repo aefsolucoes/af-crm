@@ -636,6 +636,43 @@ export async function streamAttachment(acc: EmailAccount, msg: EmailMessage, par
   });
 }
 
+/** Imagens do e-mail (print colado no corpo — inline — ou anexado) pra IA LER (Fabio 19/10: "a IA não consegue ler o print?"). Lê a estrutura do e-mail no servidor na hora e baixa as maiores
+ *  (ícones de assinatura, de poucos KB, ficam de fora). Devolve base64 pronto pro Claude. */
+export async function getEmailImages(acc: EmailAccount, msg: { uid: number | null; folder: string }, opts: { max?: number; minBytes?: number } = {}): Promise<{ mediaType: string; base64: string; filename?: string }[]> {
+  if (!msg.uid) return [];
+  const { max = 3, minBytes = 15_000 } = opts;
+  const out: { mediaType: string; base64: string; filename?: string }[] = [];
+  await withImap(acc, async (client) => {
+    const path = await folderPath(client, msg.folder as Folder);
+    if (!path) return;
+    const lock = await client.getMailboxLock(path);
+    try {
+      const m = await client.fetchOne(String(msg.uid), { bodyStructure: true }, { uid: true });
+      const found: { part: string; type: string; size: number; filename?: string }[] = [];
+      const walk = (n: MessageStructureObject | undefined) => {
+        if (!n) return;
+        if (n.childNodes?.length) { n.childNodes.forEach(walk); return; }
+        const type = (n.type || '').toLowerCase();
+        if (/^image\/(png|jpe?g|gif|webp)$/.test(type) && (n.size || 0) >= minBytes) found.push({ part: n.part || '1', type, size: n.size || 0, filename: n.dispositionParameters?.filename || n.parameters?.name });
+      };
+      walk((m as any)?.bodyStructure);
+      found.sort((a, b) => b.size - a.size);
+      for (const im of found.slice(0, max)) {
+        const dl = await client.download(String(msg.uid), im.part, { uid: true });
+        if (!dl?.content) continue;
+        const chunks: Buffer[] = [];
+        for await (const c of dl.content) chunks.push(Buffer.from(c));
+        const buf = Buffer.concat(chunks);
+        if (!buf.length || buf.length > 4_500_000) continue; // limite do Claude por imagem ~5 MB
+        out.push({ mediaType: im.type.replace('image/jpg', 'image/jpeg'), base64: buf.toString('base64'), filename: im.filename });
+      }
+    } finally {
+      lock.release();
+    }
+  });
+  return out;
+}
+
 function escapeHtml(s: string) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

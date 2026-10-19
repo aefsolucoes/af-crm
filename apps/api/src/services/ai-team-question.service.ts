@@ -116,14 +116,19 @@ export async function createDocQuestion(params: { accountId: string; leadId: str
 
 /** Dúvida da IA sobre a RESPOSTA do Jonatas (Creditas) por e-mail (Fabio 16/10): quando ele responde à nossa cobrança de posição e NÃO é o pedido do SCR Bacen, a IA leva pra equipe
  *  "o que devo fazer?". A resposta da equipe NÃO vai ao Jonatas: a IA decide (pedir o SCR ao cliente, avisar o cliente ou só registrar) e guarda a regra geral na Base de Conhecimento. */
-export async function createEmailQuestion(params: { accountId: string; leadId: string; resumo: string; excerpt: string; io?: Io }) {
+export async function createEmailQuestion(params: { accountId: string; leadId: string; resumo: string; sugestao?: string; excerpt: string; messageId?: string; io?: Io }) {
   const { accountId, leadId, io } = params;
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, pipeline: { select: { departmentId: true } } } });
   if (!lead) return null;
   const departmentId = lead.pipeline?.departmentId ?? null;
-  const question = `📧 O Jonatas (Creditas) respondeu por e-mail sobre ${lead.name}: ${params.resumo.trim()}\nO que devo fazer?`.slice(0, 1000);
+  // Mesma dúvida (mesmo e-mail, que chega em mais de uma caixa) já aberta pra este card: não repete.
+  if (params.messageId) {
+    const ja = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, kind: 'EMAIL_QUESTION', payload: { path: ['messageId'], equals: params.messageId } }, select: { id: true } });
+    if (ja) return null;
+  }
+  const question = `📧 O Jonatas (Creditas) respondeu por e-mail sobre ${lead.name}: ${params.resumo.trim()}${params.sugestao ? `\n💡 Minha sugestão: ${params.sugestao.trim()}` : ''}\nO que devo fazer?`.slice(0, 1000);
   const saved = await prisma.aiTeamQuestion.create({
-    data: { accountId, leadId, departmentId, question, kind: 'EMAIL_QUESTION', clientMessage: params.excerpt.slice(0, 2000) || null },
+    data: { accountId, leadId, departmentId, question, kind: 'EMAIL_QUESTION', clientMessage: params.excerpt.slice(0, 2000) || null, ...(params.messageId ? { payload: { messageId: params.messageId } } : {}) },
     select: SELECT,
   });
   const userIds = await recipientsFor(accountId, departmentId);

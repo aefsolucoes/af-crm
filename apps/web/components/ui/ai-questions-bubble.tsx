@@ -90,6 +90,25 @@ function timeAgo(iso: string) {
   return `há ${Math.floor(h / 24)}d`;
 }
 
+/** Mensagem do cliente / e-mail do Jonatas na dúvida. Resumida em 3 linhas; "Ver completo" abre o texto inteiro (Fabio 19/10: "eu não consigo ver os e-mails"). */
+function ClientMessage({ q }: { q: { kind?: string; clientMessage: string | null } }) {
+  const [open, setOpen] = useState(false);
+  const text = q.clientMessage || '';
+  const long = text.length > 160 || text.split('\n').length > 3;
+  return (
+    <div className="mb-2">
+      <p className={cn('text-xs text-slate-500 border-l-2 border-slate-200 pl-2 whitespace-pre-line', !open && 'line-clamp-3', open && 'max-h-64 overflow-y-auto')}>
+        {q.kind === 'EMAIL_QUESTION' ? 'E-mail do Jonatas' : 'Cliente'}: {text}
+      </p>
+      {long && (
+        <button type="button" onClick={() => setOpen((v) => !v)} className="mt-0.5 ml-2 text-[11px] font-medium text-sky-700 hover:underline">
+          {open ? 'Recolher' : q.kind === 'EMAIL_QUESTION' ? 'Ver e-mail completo' : 'Ver completo'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function AiQuestionsBubble() {
   const { user } = useAuthStore();
   const router = useRouter();
@@ -199,9 +218,7 @@ export function AiQuestionsBubble() {
         </span>
       </div>
 
-      {q.clientMessage && (
-        <p className="text-xs text-slate-500 border-l-2 border-slate-200 pl-2 mb-2 line-clamp-3 whitespace-pre-line">{q.kind === 'EMAIL_QUESTION' ? 'E-mail do Jonatas' : 'Cliente'}: {q.clientMessage}</p>
-      )}
+      {q.clientMessage && <ClientMessage q={q} />}
 
       {q.kind === 'CALL_REQUEST' ? (
         <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2">
