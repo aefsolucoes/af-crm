@@ -460,6 +460,12 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
     await certidaoEmailArrived(prisma, { accountId: acc.accountId, subject: env.subject || null, text: textBody || htmlToText(htmlBody || '') }).catch((err) => console.warn('[Certidão e-mail] falhou:', err?.message));
   }
 
+  // Inter escrevendo sobre UM cliente (engajamento automático, vistoria, pendência): liga só este e-mail ao card pelo nº da proposta/nome, nota + push (inter-email.service).
+  if (row && folder === 'INBOX' && from && /@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br)$/i.test(from.address) && !opts.initial && Date.now() - date.getTime() < 48 * 3_600_000) {
+    const { handleInterEmail } = require('./inter-email.service') as typeof import('./inter-email.service');
+    await handleInterEmail(acc, { id: row.id, subject: env.subject || null, textBody, htmlBody, fromAddress: from.address, date }, opts.io as any).catch((err) => console.warn('[Inter e-mail] falhou:', err?.message));
+  }
+
   // Proposta preenchida no site (FormSubmit) → vai pro card do cliente.
   const { SITE_FORM_SENDERS, handleSiteProposalEmail } = require('./site-proposal-email.service') as typeof import('./site-proposal-email.service');
   if (row && folder === 'INBOX' && from && SITE_FORM_SENDERS.has(from.address)) {
