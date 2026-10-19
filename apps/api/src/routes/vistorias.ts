@@ -19,7 +19,7 @@ router.post('/request', async (req: AuthRequest, res: Response) => {
   try {
     res.json(await solicitarVistoria({
       accountId: req.user!.accountId, userId: req.user!.id, leadId: String(b.leadId || ''), to: String(b.to || ''), cc: typeof b.cc === 'string' ? b.cc : '',
-      subject: String(b.subject || ''), body: String(b.body || ''), replyToId: b.replyToId ? String(b.replyToId) : null, attachCertidaoId: b.attachCertidaoId ? String(b.attachCertidaoId) : null,
+      subject: String(b.subject || ''), body: String(b.body || ''), replyToId: b.replyToId ? String(b.replyToId) : null, attachDriveFileIds: Array.isArray(b.attachDriveFileIds) ? b.attachDriveFileIds.map(String) : [],
       io: (req as any).app.get('io'),
     }));
   } catch (err) { fail(res, err, 'Erro ao solicitar a vistoria'); }

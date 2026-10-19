@@ -11,6 +11,7 @@ import { toast } from '@/components/ui/toast';
 type Preview = {
   to: string; cc: string; subject: string; body: string; replyToId: string | null;
   attachment: { name: string; certidaoId: string } | null;
+  anexos: { id: string; name: string; path: string; size: number; checked: boolean }[];
   engajamentoRecebido: boolean; consultor: string | null; jaSolicitadaEm: string | null; avisos: string[];
 };
 
@@ -23,7 +24,7 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
   const [cc, setCc] = useState('');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
-  const [attach, setAttach] = useState(true);
+  const [sel, setSel] = useState<string[]>([]);
   const [sentAt, setSentAt] = useState<string | null>(solicitadaEm ? String(solicitadaEm) : null);
 
   const ehInter = /inter/i.test(String(instituicao || '')) || !!String(proposta || '').trim();
@@ -33,7 +34,7 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
     setLoading(true);
     try {
       const { data } = await api.get<Preview>('/api/vistorias/preview', { params: { leadId } });
-      setP(data); setTo(data.to); setCc(data.cc); setSubject(data.subject); setBody(data.body); setAttach(!!data.attachment);
+      setP(data); setTo(data.to); setCc(data.cc); setSubject(data.subject); setBody(data.body); setSel(data.anexos.filter((a) => a.checked).map((a) => a.id));
       setOpen(true);
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao montar o e-mail da vistoria', 'error');
@@ -45,7 +46,7 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
     if (!window.confirm(`Enviar o pedido de vistoria ao Inter (${to})?`)) return;
     setSending(true);
     try {
-      await api.post('/api/vistorias/request', { leadId, to, cc, subject, body, replyToId: p.replyToId, attachCertidaoId: attach && p.attachment ? p.attachment.certidaoId : null });
+      await api.post('/api/vistorias/request', { leadId, to, cc, subject, body, replyToId: p.replyToId, attachDriveFileIds: sel });
       toast('Vistoria solicitada ao Inter', 'success');
       setSentAt(new Date().toISOString());
       setOpen(false);
@@ -94,14 +95,19 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
             <label className="mb-2 block text-xs text-slate-600">Mensagem
               <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={13} className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" />
             </label>
-            {p.attachment && (
-              <label className="mb-3 flex items-center gap-2 text-xs text-slate-600">
-                <input type="checkbox" checked={attach} onChange={(e) => setAttach(e.target.checked)} /> Anexar {p.attachment.name}
-              </label>
-            )}
+            <div className="mb-3 rounded border border-slate-200 p-2">
+              <div className="mb-1 text-xs font-medium text-slate-600">Anexos (pasta IMOVEL do cliente) — o pedido vai sempre com anexo</div>
+              {p.anexos.length === 0 && <div className="text-xs text-red-600">Nenhum arquivo na pasta IMOVEL deste cliente.</div>}
+              {p.anexos.map((a) => (
+                <label key={a.id} className="flex items-center gap-2 py-0.5 text-xs text-slate-600">
+                  <input type="checkbox" checked={sel.includes(a.id)} onChange={(e) => setSel((cur) => (e.target.checked ? [...cur, a.id] : cur.filter((x) => x !== a.id)))} />
+                  <span>{a.name} <span className="text-slate-400">({Math.max(1, Math.round(a.size / 1024))} KB)</span></span>
+                </label>
+              ))}
+            </div>
             <div className="flex justify-end gap-2">
               <button onClick={() => setOpen(false)} disabled={sending} className="rounded border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50">Cancelar</button>
-              <button onClick={enviar} disabled={sending || !to.trim() || !body.trim()} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">
+              <button onClick={enviar} disabled={sending || !to.trim() || !body.trim() || sel.length === 0} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">
                 {sending ? 'Enviando…' : 'Enviar ao Inter'}
               </button>
             </div>

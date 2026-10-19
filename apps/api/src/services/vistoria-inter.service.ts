@@ -26,10 +26,23 @@ export interface VistoriaPreview {
   body: string;
   replyToId: string | null;
   attachment: { name: string; certidaoId: string } | null;
+  anexos: { id: string; name: string; path: string; size: number; checked: boolean }[];
   engajamentoRecebido: boolean;
   consultor: string | null;
   jaSolicitadaEm: string | null;
   avisos: string[];
+}
+
+
+/** Arquivos do imóvel na pasta do cliente no Drive (subpasta IMOVEL): PDF ou imagem de até 8 MB. */
+async function arquivosDoImovel(accountId: string, cf: Record<string, any>): Promise<{ id: string; name: string; path: string; size: number; mimeType: string }[]> {
+  const link = String(cf.link_pasta_drive || '').trim();
+  if (!link) return [];
+  try {
+    const { extractFolderId, listAllFilesInFolderTree } = await import('./google.service');
+    const files = await listAllFilesInFolderTree(accountId, extractFolderId(link), 3);
+    return files.filter((f) => /^IMOVEL/i.test(f.path) && /^(application\/pdf|image\/)/.test(f.mimeType) && (f.size || 0) <= 8 * 1024 * 1024);
+  } catch { return []; }
 }
 
 export async function vistoriaPreview(accountId: string, leadId: string): Promise<VistoriaPreview> {
@@ -60,6 +73,13 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   const mail = String(cf.email_1 || lead.contact?.email || '').trim();
   const endImovel = String(cf.endereco_imovel || cf.imovel_endereco || '').trim();
 
+  const doImovel = await arquivosDoImovel(accountId, cf);
+  const idCert = cert ? (await prisma.certidaoRequest.findUnique({ where: { id: cert.id }, select: { driveFileId: true } }))?.driveFileId : null;
+  // Marcados por padrão: a certidão de ônus da matrícula atual e o cadastro imobiliário (IPTU) do imóvel. NÃO marca "GUIA IPTU" etc.: já veio guia de OUTRO imóvel (Pedro, 19/10) — só vai se alguém conferir e marcar.
+  const anexos = doImovel.map((f) => ({ id: f.id, name: f.name, path: f.path, size: f.size, checked: f.id === idCert || (/CADASTRO IMOBILIARIO/i.test(f.name) && !/ 2\.pdf$/i.test(f.name)) }));
+  const temMat = anexos.some((a) => a.checked && a.id === idCert);
+  const temCad = anexos.some((a) => a.checked && /CADASTRO IMOBILIARIO/i.test(a.name));
+  const listaAnexos = [temMat ? 'a matrícula atualizada do imóvel (certidão de ônus)' : '', temCad ? 'o cadastro imobiliário do imóvel (IPTU)' : ''].filter(Boolean);
   const linhas = [
     `Olá${consultor ? `, ${consultor}` : ''}, tudo bem?`,
     '',
@@ -71,7 +91,8 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
     ...(mail ? [`• E-mail: ${mail}`] : []),
     '',
     `IMÓVEL: ${matricula ? `matrícula nº ${matricula}` : 'conforme a matrícula'}${cartorio ? ` — ${cartorio}` : ''}${endImovel ? `\nEndereço: ${endImovel}` : ''}`,
-    ...(cert ? ['Segue em anexo a certidão de ônus atualizada da matrícula.'] : []),
+    ...(listaAnexos.length ? [`Seguem em anexo ${listaAnexos.join(' e ')}.`] : []),
+    ...(temCad ? ['A guia do IPTU atual enviamos assim que o cliente nos mandar.'] : []),
     '',
     'Qualquer dúvida, estou à disposição.',
     'Obrigado!',
@@ -80,7 +101,7 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   const avisos: string[] = [];
   if (!engaj) avisos.push('O e-mail de engajamento do Inter ainda não chegou para este cliente. Se você enviar agora, será um e-mail novo, e não uma resposta na conversa do Inter.');
   if (!to) avisos.push('Não achei o e-mail do consultor do Inter. Preencha o campo "Para".');
-  if (!cert) avisos.push('Não há certidão de ônus emitida e salva no Drive para anexar.');
+  if (!anexos.some((a) => a.checked)) avisos.push('Nenhum documento do imóvel foi marcado para anexar. O Inter pede sempre com anexo: marque a matrícula e o IPTU.');
   if (!tel) avisos.push('O card não tem telefone do cliente para o engenheiro.');
   avisos.push('O Inter também pede, pelo PORTAL (aba Documentos da proposta), a matrícula do imóvel e a guia do IPTU atual. Este botão só responde o e-mail; o upload no portal é separado.');
 
@@ -91,11 +112,12 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
     body: linhas.join('\n'),
     replyToId: pai?.id || null,
     attachment: cert ? { name: `CERTIDAO DE ONUS - MATRICULA ${cert.matricula}.pdf`, certidaoId: cert.id } : null,
+    anexos,
     engajamentoRecebido: !!engaj, consultor, jaSolicitadaEm: sentAt, avisos,
   };
 }
 
-export async function solicitarVistoria(p: { accountId: string; userId: string; leadId: string; to: string; cc?: string; subject: string; body: string; replyToId?: string | null; attachCertidaoId?: string | null; io?: Io }) {
+export async function solicitarVistoria(p: { accountId: string; userId: string; leadId: string; to: string; cc?: string; subject: string; body: string; replyToId?: string | null; attachDriveFileIds?: string[]; io?: Io }) {
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { name: true, customFields: true } });
   if (!lead) throw new Error('Card não encontrado');
   const to = String(p.to || '').trim().toLowerCase();
@@ -106,11 +128,15 @@ export async function solicitarVistoria(p: { accountId: string; userId: string; 
   if (!acc) throw new Error('A caixa de e-mail comercial não está configurada.');
 
   const attachments: { filename: string; contentType: string; content: Buffer }[] = [];
-  if (p.attachCertidaoId) {
-    const c = await prisma.certidaoRequest.findFirst({ where: { id: p.attachCertidaoId, accountId: p.accountId, leadId: p.leadId }, select: { driveFileId: true, matricula: true } });
-    if (!c?.driveFileId) throw new Error('Certidão para anexar não encontrada no Drive.');
-    const { downloadDriveFile } = await import('./google.service');
-    attachments.push({ filename: `CERTIDAO DE ONUS - MATRICULA ${c.matricula}.pdf`, contentType: 'application/pdf', content: await downloadDriveFile(p.accountId, c.driveFileId, 'application/pdf') });
+  const ids = Array.from(new Set(p.attachDriveFileIds || []));
+  if (!ids.length) throw new Error('O pedido de vistoria vai sempre com anexo: marque ao menos a matrícula do imóvel.');
+  const lead2 = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
+  const permitidos = await arquivosDoImovel(p.accountId, (lead2?.customFields || {}) as Record<string, any>); // só arquivos da pasta IMOVEL deste cliente
+  const { downloadDriveFile } = await import('./google.service');
+  for (const id of ids) {
+    const f = permitidos.find((x) => x.id === id);
+    if (!f) throw new Error('Um dos anexos não está na pasta IMOVEL do cliente.');
+    attachments.push({ filename: f.name, contentType: f.mimeType, content: await downloadDriveFile(p.accountId, f.id, f.mimeType) });
   }
   const cc = String(p.cc || '').split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
 
@@ -119,7 +145,7 @@ export async function solicitarVistoria(p: { accountId: string; userId: string; 
 
   const fresh = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
   await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _vistoriaRequestedAt: new Date().toISOString() } } });
-  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', userId: p.userId, content: `📨 Vistoria solicitada ao Inter (e-mail para ${to}${attachments.length ? ', com a certidão de ônus em anexo' : ''}). Aguardando o engenheiro entrar em contato (até 2 dias úteis).` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', userId: p.userId, content: `📨 Vistoria solicitada ao Inter (e-mail para ${to}${attachments.length ? `, com ${attachments.length} anexo(s): ${attachments.map((a) => a.filename).join('; ')}` : ''}). Aguardando o engenheiro entrar em contato (até 2 dias úteis).` } }).catch(() => {});
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(p.accountId, { title: '📨 Vistoria solicitada ao Inter', body: lead.name, leadId: p.leadId }).catch(() => {}); } catch { /* aviso */ }
   return { ok: true, to, anexou: attachments.length > 0 };
 }
