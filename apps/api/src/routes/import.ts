@@ -158,6 +158,7 @@ router.post('/commit', async (req: AuthRequest, res: Response) => {
           contactId: contact.id,
           status: 'OPEN',
           tags: [tag],
+          aiAutoReplyActive: false, // importação de planilha = clientes antigos (ex.: Kommo): a IA não entra sozinha
           customFields: customFields as any,
         },
       });
