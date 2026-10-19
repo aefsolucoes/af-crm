@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 
 /**
  * Ligação da EQUIPE feita/atendida pelo CRM: o navegador grava os dois lados
@@ -10,7 +11,6 @@ import { PrismaClient } from '@prisma/client';
  * "quero que a IA aprenda com tudo que fazemos".
  */
 
-const prisma = new PrismaClient();
 
 type Word = { text: string; type?: string; speaker_id?: string; start?: number };
 

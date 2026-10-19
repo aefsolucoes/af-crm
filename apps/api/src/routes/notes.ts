@@ -1,10 +1,10 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { logActivity } from '../services/activity.service';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 const NOTE_INCLUDE = {

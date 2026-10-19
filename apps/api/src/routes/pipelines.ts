@@ -1,12 +1,12 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { ensureDefaultDepartments, getScopeDepartmentIds, resolveCreateDepartmentId } from '../services/department.service';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 const pipelineSchema = z.object({

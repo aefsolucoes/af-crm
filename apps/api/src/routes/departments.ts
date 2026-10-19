@@ -1,11 +1,11 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { listDepartments, findDuplicateInboxPipelines, mergeDuplicateInboxPipelines, moveInboxLeadsToStage, consolidateInboxPipelines } from '../services/department.service';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 // Leitura fica aberta pra qualquer colaborador logado — os seletores de

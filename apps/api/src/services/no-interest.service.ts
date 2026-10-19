@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { logActivity } from './activity.service';
 
 /**
@@ -15,7 +16,6 @@ import { logActivity } from './activity.service';
  * follow-up ou do remarketing — remarketing é só pra quem não deu retorno.)
  */
 
-const prisma = new PrismaClient();
 
 const NO_INTEREST_RE = /^n[ãa]o,?\s*(tenho\s+(mais\s+)?interesse|obrigad[oa])\b/i;
 // Trecho da pergunta do motivo (a mesma frase que o Fabio usa à mão).

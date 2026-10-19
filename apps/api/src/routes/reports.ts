@@ -1,10 +1,10 @@
 import { Router, Response } from 'express';
 import { PrismaClient, Prisma } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 /** Filtro de pipeline por setor(es), pra usar dentro de `where: { pipeline: {...} }`.

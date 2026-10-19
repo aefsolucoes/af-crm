@@ -1,11 +1,11 @@
 import express, { Router, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { createCertidaoRequest, listCertidoes, claimCertidao, reportCertidao, finishCertidao, cancelCertidao, markCertidaoPaid, requestCollectNow, validCertidaoSig } from '../services/certidao.service';
 
 /** Certidão de matrícula pelo RI Digital/ONR — ver certidao.service.ts. A extensão "Certidão ONR" entra com o login normal do CRM. */
 const router = Router();
-const prisma = new PrismaClient();
 
 const io = (req: AuthRequest) => (req as any).app.get('io');
 const fail = (res: Response, err: any, fallback: string, code = 500) => res.status(code).json({ error: err?.message || fallback });

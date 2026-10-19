@@ -1,12 +1,12 @@
 import { Router, Response } from 'express';
 import { PrismaClient, Role } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import bcrypt from 'bcrypt';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { PERMISSION_KEYS } from '../lib/permissions';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 const USER_SELECT = { id: true, name: true, email: true, role: true, whatsAppNumberIds: true, permissions: true, departmentIds: true, assistantProjectUrl: true } as const;

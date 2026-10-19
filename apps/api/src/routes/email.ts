@@ -9,11 +9,11 @@ import {
 } from '../services/email-inbox.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 
 /** Caixa de e-mail do CRM — ver email-inbox.service.ts. Mesma permissão da
  *  Inbox: ver (inbox_view) e mandar (inbox_reply). */
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 router.use(requirePermission('inbox_view'));
 

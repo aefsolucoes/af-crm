@@ -1,4 +1,5 @@
 import { PrismaClient, Prisma } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { extensionStatus } from './credit-analysis.service';
 
 /**
@@ -6,7 +7,6 @@ import { extensionStatus } from './credit-analysis.service';
  * Só LÊ o que o CRM já registra (análises dos bancos, notas do card, mensagens do WhatsApp, dúvidas da IA, uso da IA, histórico reversível) — nada novo é gravado.
  * Cada bloco responde: quanto a automação fez, quanto acertou sozinha e onde a equipe teve que corrigir. `atencao` junta, em frases, o que mais merece ajuste.
  */
-const prisma = new PrismaClient();
 
 /** Falha OBJETIVA (regra do banco/imóvel/idade) = o cliente "não passa": não é erro da automação. Mesmo critério do credit-auto.service (OBJECTIVE_FAIL). */
 const OBJETIVA = 'N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas';

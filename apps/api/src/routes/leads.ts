@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadPerms } from '../middleware/permission';
 import { validate } from '../middleware/validate';
@@ -22,7 +23,6 @@ function formatPhoneDisplay(e164Digits: string): string {
 }
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 // Leitura (GET) fica aberta — a Inbox e outras telas dependem dos dados do lead.

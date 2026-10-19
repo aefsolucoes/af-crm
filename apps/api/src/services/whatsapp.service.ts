@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
 import { applyAiExtractedActions } from './ai-shared.service';
@@ -10,7 +11,6 @@ import { normalizeClientName, splitAiReply } from '../lib/text';
 // mensagem), um import estático nos dois sentidos criaria dependência
 // circular.
 
-const prisma = new PrismaClient();
 
 /**
  * Config da API Oficial. Um WhatsAppConfig por DEPARTAMENTO agora (não mais

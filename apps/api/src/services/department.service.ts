@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 
-const prisma = new PrismaClient();
 
 // aiScope = produtos que a IA do WhatsApp (Lead.aiAutoReplyActive) deve
 // tratar como "dentro do assunto" neste setor — usado só como valor inicial

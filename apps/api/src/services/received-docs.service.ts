@@ -1,9 +1,9 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { organizeReceivedDocsFolder, downloadDriveFileForVision, isStickerAttachment, isScreenshotAttachment } from './google.service';
 export { isStickerAttachment, isScreenshotAttachment };
 import { logActivity } from './activity.service';
 
-const prisma = new PrismaClient();
 
 /* Card entrou em "Documentação Recebida" (qualquer setor que tenha a pasta
  * LEADS ATIVOS configurada em Department.activeLeadsFolderId): organiza a

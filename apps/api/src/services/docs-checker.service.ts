@@ -1,5 +1,6 @@
 import { cachedSystem } from '../lib/anthropic-usage';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { getDocInfo, isStickerAttachment, isScreenshotAttachment } from './received-docs.service';
 import { moveLeadToContracting } from './contracting.service';
 import { sendOutboundWhatsApp } from './message.service';
@@ -7,7 +8,6 @@ import { logActivity } from './activity.service';
 import { todayContextLine } from './ai-shared.service';
 import { reviewReceivedDocs, buildDocProblemsMessage } from './doc-review.service';
 
-const prisma = new PrismaClient();
 
 /* A IA confere se a documentação chegou completa (pedido do Fabio: a skill só
  * roda o crédito; documentação é da IA do CRM). Card em "Aguardando

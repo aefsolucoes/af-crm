@@ -1,4 +1,5 @@
 import { PrismaClient, EmailMessage, EmailAccount } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { parseScrCases } from './creditas-scr.service';
 
 /**
@@ -6,7 +7,6 @@ import { parseScrCases } from './creditas-scr.service';
  * e ninguém a transformou em aprovação — o card continuou "em análise" por 3 dias). O e-mail segue sempre o mesmo modelo (valor total, valor líquido, prazo, taxa, 1ª/2ª parcelas…).
  * Registrada a aprovação, vale o fluxo normal: aviso ao cliente (só com a IA do card ligada; senão o botão "Avisar cliente"), lista de documentos, etc.
  */
-const prisma = new PrismaClient();
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 
 const brl = (s: string | undefined): number | null => {

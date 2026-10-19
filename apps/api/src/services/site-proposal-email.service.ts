@@ -1,4 +1,5 @@
 import { PrismaClient, EmailMessage } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { normalizeBrazilianWhatsAppPhone } from './whatsapp.service';
 import { normalizeClientName } from '../lib/text';
 import { logActivity } from './activity.service';
@@ -16,7 +17,6 @@ import { parseMoneyOrNumber } from './campaign-detection.service';
  *  - proposta nova leva o card pra Pré-Análise (mesmas automações da etapa).
  */
 
-const prisma = new PrismaClient();
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 
 /** Remetentes de formulário do site — nunca são "o cliente" (não entram na

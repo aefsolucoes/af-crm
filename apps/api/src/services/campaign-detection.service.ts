@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma';
 
 /**
  * Roteamento automático de lead vindo de ficha de campanha (o site da A&F

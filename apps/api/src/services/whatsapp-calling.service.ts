@@ -1,9 +1,9 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { getWhatsAppConfig, resolveContactAndLeadByPhone, listMetaTemplates, sendWhatsAppTemplateMessage, normalizeBrazilianWhatsAppPhone } from './whatsapp.service';
 import { sendPushToAccount } from './push.service';
 import { handleAiCallAnswer, handleAiCallAccepted, handleAiCallEnded } from './ai-call-bridge.service';
 
-const prisma = new PrismaClient();
 
 const GRAPH_VERSION = 'v20.0';
 

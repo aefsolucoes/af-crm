@@ -1,10 +1,10 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { normalizeBrazilianWhatsAppPhone } from './whatsapp.service';
 import { normalizeClientName } from '../lib/text';
 import { logActivity } from './activity.service';
 import { parseMoneyOrNumber } from './campaign-detection.service';
 
-const prisma = new PrismaClient();
 
 /**
  * Lead capturado por um formulário do SITE (fora do CRM) — campanha do Meta

@@ -1,11 +1,11 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { voiceNoteForAi } from './speech-to-text.service';
 import { searchKnowledge } from './knowledge.service';
 import { parseMoneyOrNumber } from './campaign-detection.service';
 import { logActivity } from './activity.service';
 import { callableFirstName, isCallableName, normalizeClientName } from '../lib/text';
 
-const prisma = new PrismaClient();
 
 /**
  * "Cérebro" compartilhado entre as duas IAs que ajudam a responder cliente:

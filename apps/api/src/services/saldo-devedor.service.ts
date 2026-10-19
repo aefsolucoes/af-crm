@@ -1,10 +1,10 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { downloadDriveFileForVision } from './google.service';
 import { isStickerAttachment } from './received-docs.service';
 import { sendOutboundWhatsApp } from './message.service';
 import { roundUpToThousand } from '../lib/text';
 
-const prisma = new PrismaClient();
 
 /* Imóvel com FINANCIAMENTO ATIVO (alienação fiduciária/hipoteca vigente na matrícula) — Fabio 15/10, Maria Antônia:
  *  "se na proposta ela colocou que há alienação, precisa solicitar um print do saldo devedor; esse saldo devedor deverá ser somado ao valor de empréstimo que ela

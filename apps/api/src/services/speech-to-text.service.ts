@@ -5,6 +5,8 @@
  * Nunca lança: sem chave, erro ou demora demais → null (o áudio chega normal,
  * só sem transcrição).
  */
+import { prisma } from '../lib/prisma';
+
 let elevenSemCreditoAte = 0;
 
 /** ElevenLabs primeiro; se não tem chave, deu erro ou acabou o crédito (16/10: plano gratuito estourou), a RESERVA é o Whisper rodando no próprio servidor (local-whisper.service). */
@@ -60,8 +62,6 @@ export async function backfillVoiceTranscripts(): Promise<void> {
   if (reprocessando) return;
   reprocessando = true;
   try {
-    const { PrismaClient } = require('@prisma/client') as typeof import('@prisma/client');
-    const prisma = (backfillPrisma ||= new PrismaClient());
     const msgs = await prisma.message.findMany({
       where: { direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) }, content: { startsWith: '📎 audio-' }, NOT: { content: { contains: ' — 🎤 ' } } },
       orderBy: { createdAt: 'desc' }, take: 30,
@@ -91,4 +91,3 @@ export async function backfillVoiceTranscripts(): Promise<void> {
     reprocessando = false;
   }
 }
-let backfillPrisma: import('@prisma/client').PrismaClient | null = null;

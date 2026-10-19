@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { cachedSystem } from '../lib/anthropic-usage';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 import { aiCreditContext, refreshAnalysesForAi } from './credit-analysis.service';
@@ -71,7 +72,6 @@ Agora: ${agora} (horário de Brasília).${onlyWhenAboutCall}`;
   }
 }
 
-const prisma = new PrismaClient();
 
 // Mensagem que é só confirmação/encerramento ("ok", "beleza", "tá bom",
 // "obrigada", 👍). Achado real (2026-09-24): a IA respondia cada "ok" com

@@ -1,11 +1,11 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { syncKnowledgeBase, listKnowledgeEntries, createKnowledgeEntry, updateKnowledgeEntry, deleteKnowledgeEntry } from '../services/knowledge.service';
 import { isVoyageConfigured } from '../services/voyage.service';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 /** Extrai o ID da pasta de um link do Drive, ou aceita um ID já puro. */

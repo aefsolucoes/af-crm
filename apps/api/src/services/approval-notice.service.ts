@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { logActivity } from './activity.service';
 import { callableFirstName } from '../lib/text';
 
@@ -23,7 +24,6 @@ import { callableFirstName } from '../lib/text';
 
 import { parseDocumentosExigidos, whichParticipant } from './credit-analysis.service';
 
-const prisma = new PrismaClient();
 
 // ─── Horário dos avisos ao cliente (Fabio 14/10): só das 07:00 às 21:00, horário de Brasília (UTC-3, sem horário de verão) ───
 export const NOTICE_START_HOUR = 7;

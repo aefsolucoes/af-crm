@@ -1,11 +1,11 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { generateReplySuggestion } from '../services/ai-reply-suggestion.service';
 import { usageReport } from '../lib/anthropic-usage';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 /** Sugestão AUTOMÁTICA (a que aparece sozinha ao abrir a conversa): guarda a última por card + última mensagem do cliente. Abrir de novo a mesma conversa sem mensagem nova do cliente
  *  repetia a chamada à IA (~19 mil tokens, sem cache) — era a 2ª maior despesa com a Anthropic (Fabio 19/10: "o que está consumindo tanto o saldo?"). O botão manual "Sugerir resposta" gera sempre uma nova. */

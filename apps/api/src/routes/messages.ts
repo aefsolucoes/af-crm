@@ -10,8 +10,8 @@ import { runAutomations } from '../services/automation.service';
 import { logActivity } from '../services/activity.service';
 import { sendGenericEmail } from '../services/email.service';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 
-const prisma = new PrismaClient();
 
 /** Registro silencioso: "Fulano respondeu <cliente>". Fire-and-forget.
  *  Também desliga a IA da conversa (pedido do Fabio): alguém do time

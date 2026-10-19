@@ -1,5 +1,6 @@
 import { NextFunction, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import type { AuthRequest } from '../middleware/auth';
 import { logActivity } from './activity.service';
 
@@ -15,7 +16,6 @@ import { logActivity } from './activity.service';
  * Mudanças feitas por IA/automação (fora dessas rotas) não entram — o botão é pra desfazer o que a equipe fez.
  */
 
-const prisma = new PrismaClient();
 
 const TRACKED = ['name', 'value', 'rejectedAt', 'status', 'lostReason', 'pipelineId', 'stageId', 'userId', 'tags', 'archived', 'starred', 'aiAutoReplyActive', 'customFields', 'contactId', 'companyId', 'stageEnteredAt'] as const;
 type Tracked = (typeof TRACKED)[number];

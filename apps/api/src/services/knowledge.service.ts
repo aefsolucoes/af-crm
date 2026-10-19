@@ -1,10 +1,10 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import pdf from 'pdf-parse';
 import mammoth from 'mammoth';
 import { listKnowledgeFiles, downloadDriveFile, ocrDriveFileToText, uploadFile, trashDriveItem } from './google.service';
 import { embedDocuments, embedQuery, isVoyageConfigured } from './voyage.service';
 
-const prisma = new PrismaClient();
 
 /**
  * Serviço da Base de Conhecimento (treinamento do assistente).

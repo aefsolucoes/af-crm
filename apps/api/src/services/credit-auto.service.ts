@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { createRequests, setOverrides, parseHolder, loginNeededFor } from './credit-analysis.service';
 import { requestBankEmail } from './ai-team-question.service';
 import { inNoticeWindow, sendApprovalNoticeNow, sendEarlyStatusNotice, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText, aprovadasSemNumeros } from './approval-notice.service';
@@ -10,7 +11,6 @@ import { inNoticeWindow, sendApprovalNoticeNow, sendEarlyStatusNotice, previewAp
  * para escolher, e a IA do CRM dá o apoio na conversa. Vem DESLIGADA; só entram cards que chegaram na Pré-Análise depois de ligar.
  * O estado de cada cliente fica em campos escondidos do card (_auto*): iniciou, 2º participante já tentado por banco, aviso enviado.
  */
-const prisma = new PrismaClient();
 type Cf = Record<string, any>;
 
 const BANKS = ['CREDIMORAR', 'CREDITAS', 'INTER'];

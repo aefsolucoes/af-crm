@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { buildSharedAiContext, buildContextBlocks, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 
-const prisma = new PrismaClient();
 
 /**
  * Sugestão de resposta pro COLABORADOR (não confundir com ai-auto-reply.

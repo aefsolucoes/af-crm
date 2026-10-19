@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 
 /** Chaves de economia da IA (Fabio 19/10). Lidas a cada chamada da IA — cache de 60 s; mudar na página Medição vale na hora (o cache da conta é limpo). Sem linha no banco = Haiku nas sugestões ligado e Base enxuta desligada. */
-const prisma = new PrismaClient();
 
 export interface AiCostSettings { kbLean: boolean; suggestHaiku: boolean }
 const DEFAULTS: AiCostSettings = { kbLean: false, suggestHaiku: true };

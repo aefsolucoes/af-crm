@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { buildSharedAiContext, buildContextBlocks, CORE_RULES } from './ai-shared.service';
 import { sendOutboundWhatsApp } from './message.service';
 import { createKnowledgeEntry, deleteKnowledgeEntry, searchKnowledge } from './knowledge.service';
@@ -16,7 +17,6 @@ import { logActivity } from './activity.service';
  * guarda na Base de Conhecimento do setor, pra da próxima vez já saber.
  */
 
-const prisma = new PrismaClient();
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 

@@ -1,10 +1,10 @@
 import { cachedSystem } from '../lib/anthropic-usage';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { downloadDriveFileForVision } from './google.service';
 import { getDocInfo, isStickerAttachment, isScreenshotAttachment, isPropertyDocType } from './received-docs.service';
 import { todayContextLine } from './ai-shared.service';
 
-const prisma = new PrismaClient();
 
 /* A IA LÊ o conteúdo de cada documento que o cliente manda (imagem ou PDF) e diz se está CORRETO pra ir ao banco: legível, atualizado, no nome certo,
  * com frente e verso quando é RG/CNH (Fabio 14/10: "preciso que a IA também passe a ler os documentos e saiba se estão corretos ou não").

@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { buildSharedAiContext, buildContextBlocks, stripOpeningInterjection } from './ai-shared.service';
 import { searchKnowledge } from './knowledge.service';
 import { htmlToText } from './email-inbox.service';
@@ -12,7 +13,6 @@ import { htmlToText } from './email-inbox.service';
  * (o CRM coloca sozinho no envio).
  */
 
-const prisma = new PrismaClient();
 
 const EMAIL_RULES = `Você ajuda a equipe da A&F Soluções Financeiras (correspondente bancário: financiamento habitacional, crédito com garantia de imóvel/Home Equity, consórcio) a responder e-mails de clientes. Sugira o CORPO do e-mail que a pessoa deveria mandar agora — ela vai revisar antes de enviar.
 REGRAS:

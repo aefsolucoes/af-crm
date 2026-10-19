@@ -1,9 +1,9 @@
 import { PrismaClient, AutomationTrigger } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, sendOutboundEmail } from './message.service';
 import { updateLead, updateLeadStage } from './lead.service';
 import { logActivity } from './activity.service';
 
-const prisma = new PrismaClient();
 
 /** minúsculo e sem acento — mesmo critério de campaign-detection.service.ts,
  *  pra "Follow Up"/"follow-up"/"FOLLOW UP" casarem igual. */

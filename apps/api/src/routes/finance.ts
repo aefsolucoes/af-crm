@@ -1,12 +1,12 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { validate } from '../middleware/validate';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 router.use(requirePermission('finance'));
 

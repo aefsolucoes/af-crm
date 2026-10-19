@@ -1,4 +1,5 @@
 import { PrismaClient, Prisma } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { logActivity } from './activity.service';
 
 /**
@@ -22,7 +23,6 @@ import { logActivity } from './activity.service';
  * qualidade dele na Meta.
  */
 
-const prisma = new PrismaClient();
 
 export const REMARKETING_TEMPLATES = ['remarketing_credito_af_v2', 'remarketing_credito_condicoes', 'remarketing_credito_processo'];
 const INTERVAL_DAYS = 7;

@@ -1,10 +1,10 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds, resolveCreateDepartmentId } from '../services/department.service';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 function extractVariables(text: string): string[] {

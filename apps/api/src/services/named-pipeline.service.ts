@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 
 /**
  * Funis "por mês" (Concluído / Perdidos) e a ida do card pro "Perdidos" —
@@ -7,7 +8,6 @@ import { PrismaClient } from '@prisma/client';
  * venha de onde vier, some do funil ativo do mesmo jeito).
  */
 
-const prisma = new PrismaClient();
 
 export const MONTH_NAMES_PT = [
   'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',

@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { z } from 'zod';
 import crypto from 'crypto';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { getWhatsAppConfig, saveWhatsAppConfig, listMetaTemplates, createMetaTemplate, deleteMetaTemplate } from '../services/whatsapp.service';
@@ -20,7 +21,6 @@ function readDeptBody(req: AuthRequest): string | null {
 }
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 const whatsappSchema = z.object({

@@ -1,9 +1,9 @@
 import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 // GET /api/dashboard-notes?scope=PRIVATE|TEAM

@@ -1,11 +1,11 @@
 import { PrismaClient, User } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { randomInt, randomBytes, createHash } from 'crypto';
 import { isEmailConfigured, sendLoginCodeEmail, sendPasswordResetEmail } from './email.service';
 import { effectivePermissions } from '../lib/permissions';
 
-const prisma = new PrismaClient();
 
 // Códigos de acesso (2ª etapa do login) guardados em memória, com validade
 // curta. Se a API reiniciar, o usuário só pede um novo código. Não persistimos

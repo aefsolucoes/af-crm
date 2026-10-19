@@ -4,12 +4,12 @@ import WebSocket from 'ws';
 import OpusScript from 'opusscript';
 import { RTCPeerConnection, RTCRtpCodecParameters, RTCRtpTransceiver, RtpPacket, RtpHeader } from 'werift';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import {
   connectCall, terminateCall, createCallMessage, finalizeCallMessage, getCallPermissionState, pickRealPhone,
 } from './whatsapp-calling.service';
 import { getWhatsAppConfig, normalizeBrazilianWhatsAppPhone } from './whatsapp.service';
 
-const prisma = new PrismaClient();
 
 /* Ligação feita pela IA (SDR de voz): o próprio servidor liga pro cliente
  * pelo WhatsApp do CRM (mesma Graph API das ligações humanas) e faz a ponte

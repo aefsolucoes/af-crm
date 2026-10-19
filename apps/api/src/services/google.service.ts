@@ -1,9 +1,9 @@
 import { google } from 'googleapis';
 import { Readable } from 'stream';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import convertHeic from 'heic-convert';
 
-const prisma = new PrismaClient();
 
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',

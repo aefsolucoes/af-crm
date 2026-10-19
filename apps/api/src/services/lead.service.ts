@@ -1,8 +1,8 @@
 import { PrismaClient, LeadStatus } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { normalizeClientName } from '../lib/text';
 import { logActivity } from './activity.service';
 
-const prisma = new PrismaClient();
 
 export async function getLeads(
   accountId: string,

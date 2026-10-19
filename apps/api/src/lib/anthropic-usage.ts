@@ -1,4 +1,5 @@
-import { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '@prisma/client';
+import { prisma as sharedPrisma } from './prisma';
 
 /**
  * Registro de uso da API da Anthropic (Fabio 16/10: "quando iremos ver os números reais?") + cache de prompt.
@@ -34,17 +35,10 @@ export function featureFromStack(stack: string): string {
 
 type Acc = { calls: number; errors: number; input: number; output: number; cacheRead: number; cacheWrite: number };
 let pending = new Map<string, Acc>();
-let prisma: PrismaClient | null = null;
 let timer: NodeJS.Timeout | null = null;
 
 function db(): PrismaClient {
-  if (!prisma) {
-    // 1 conexão só: já tivemos queda por excesso de PrismaClient com pool cheio (09/10)
-    const url = process.env.DATABASE_URL || '';
-    const u = url ? url + (url.includes('?') ? '&' : '?') + 'connection_limit=1' : undefined;
-    prisma = u ? new PrismaClient({ datasources: { db: { url: u } } }) : new PrismaClient();
-  }
-  return prisma;
+  return sharedPrisma; // um cliente só pra API inteira (lib/prisma.ts); o remendo de 1 conexão de 09/10 não é mais necessário
 }
 
 export function recordAnthropicUsage(feature: string, model: string, usage: any | null, ok: boolean): void {

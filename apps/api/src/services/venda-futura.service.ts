@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { logActivity } from './activity.service';
 
 /**
@@ -10,7 +11,6 @@ import { logActivity } from './activity.service';
  * Fora da janela de 24 h do WhatsApp sai o template `venda_futura_retomada`; dentro dela, texto livre. Card com a IA desligada ou "Pediu pra parar lembretes" não recebe (nota + push).
  * Estado no card: _vendaFuturaAt (data combinada), _vendaFuturaSentAt (última mensagem), _vendaFuturaBaseAt (marco inicial dos cards antigos), _vendaFuturaCount.
  */
-const prisma = new PrismaClient();
 type Cf = Record<string, any>;
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 

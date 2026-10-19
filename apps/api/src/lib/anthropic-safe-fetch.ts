@@ -3,6 +3,7 @@
  *  (conferência de documentos da Maria Antônia nunca avaliava, 15/10/2026). Em vez de caçar cada slice, tira os substitutos soltos de TODO corpo enviado
  *  pra api.anthropic.com. */
 import { featureFromStack, recordAnthropicUsage } from './anthropic-usage';
+import { prisma } from './prisma';
 
 const LONE_HIGH = /\\u[dD][89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/g;
 const LONE_LOW = /(?<!\\u[dD][89abAB][0-9a-fA-F]{2})\\u[dD][c-fC-F][0-9a-fA-F]{2}/g;
@@ -20,13 +21,10 @@ export function alertAnthropicDown(detalhe: string): void {
   console.error('[ANTHROPIC SEM LIMITE/CRÉDITO] a IA do CRM parou:', detalhe);
   (async () => {
     try {
-      const { PrismaClient } = require('@prisma/client') as typeof import('@prisma/client');
-      const prisma = new PrismaClient();
       const contas = await prisma.account.findMany({ select: { id: true } });
       const { sendPushToAccount } = require('../services/push.service') as typeof import('../services/push.service');
       const quando = /regain access on ([^.]+)\./i.exec(detalhe)?.[1];
       for (const c of contas) await sendPushToAccount(c.id, { title: '🚨 A IA do CRM parou', body: `A Anthropic recusou por limite de uso/saldo${quando ? ` (volta em ${quando})` : ''}. Aumente o limite no console da Anthropic (Settings → Limits).` }).catch(() => {});
-      await prisma.$disconnect();
     } catch { /* push é extra */ }
   })();
 }

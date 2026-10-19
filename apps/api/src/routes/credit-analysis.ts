@@ -1,5 +1,6 @@
 import express, { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
@@ -14,7 +15,6 @@ import {
 
 /** Aba "Análise de Crédito" — ver credit-analysis.service.ts. As extensões do Chrome entram com o login normal do CRM. */
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 const io = (req: AuthRequest) => (req as any).app.get('io');

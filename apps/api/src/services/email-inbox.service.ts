@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import net from 'net';
 import { Readable } from 'stream';
 import { PrismaClient, EmailAccount, EmailMessage, Prisma } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { ImapFlow, FetchMessageObject, MessageStructureObject } from 'imapflow';
 import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer';
@@ -21,7 +22,6 @@ import { companySignatureHtml, companySignatureText } from './email.service';
  * direto no IMAP na hora — nada de arquivo em disco (incidentes de agosto).
  */
 
-const prisma = new PrismaClient();
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 export type Folder = 'INBOX' | 'SENT' | 'DRAFTS' | 'SPAM' | 'TRASH';

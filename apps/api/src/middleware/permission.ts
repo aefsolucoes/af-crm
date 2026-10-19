@@ -1,9 +1,9 @@
 import { Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { AuthRequest } from './auth';
 import { effectivePermissions, PermissionKey, PermissionMap } from '../lib/permissions';
 
-const prisma = new PrismaClient();
 
 // Carrega as permissões efetivas do usuário logado (papel + permissões próprias,
 // buscadas no banco para refletir mudanças na hora). Guarda em req.perms para

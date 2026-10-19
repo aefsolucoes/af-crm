@@ -1,4 +1,5 @@
 import { PrismaClient, EmailMessage, EmailAccount } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { Readable } from 'stream';
 import { PDFDocument, rgb } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
@@ -16,7 +17,6 @@ import { logActivity } from './activity.service';
  * Estado no card: customFields._scrCreditas = { status: PENDING | ASKED | SENT, emailId, emailAccountId, creditasId, at, askedAt?, sentAt?, … }.
  */
 
-const prisma = new PrismaClient();
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 
 const CREDITAS_SENDER = /@([a-z0-9-]+\.)*creditas\.(com|com\.br|io)$/i;

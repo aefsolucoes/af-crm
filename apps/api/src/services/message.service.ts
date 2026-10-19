@@ -1,11 +1,11 @@
 import { PrismaClient, Direction, Channel } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { sendWhatsAppMessage, sendWhatsAppTemplateMessage, sendWhatsAppButtonsMessage, sendWhatsAppCtaUrlMessage, sendWhatsAppReaction, sendWhatsAppMedia } from './whatsapp.service';
 import { downloadDriveFile } from './google.service';
 import { sendGenericEmail } from './email.service';
 import { normalizeClientName } from '../lib/text';
 import { brandSimulationPdf } from './simulation-pdf.service';
 
-const prisma = new PrismaClient();
 
 /** Telefone "puro" (E.164, sem sufixo @lid/@s.whatsapp.net/@g.us) — a API
  *  Oficial da Meta exige isso e rejeita qualquer outra coisa com "Message

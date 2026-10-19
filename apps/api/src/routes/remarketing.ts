@@ -1,11 +1,11 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { listRemarketingStages, startRemarketing, remarketingStatus, setRemarketingPaused, numberQuality } from '../services/remarketing.service';
 
 /** Tela Remarketing — ver remarketing.service.ts. Iniciar/pausar é só admin. */
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 router.get('/stages', async (req: AuthRequest, res: Response) => {

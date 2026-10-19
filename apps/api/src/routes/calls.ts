@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import {
@@ -12,7 +13,6 @@ import { getWhatsAppConfig, normalizeBrazilianWhatsAppPhone } from '../services/
 import { startAiCall } from '../services/ai-call-bridge.service';
 
 const router = Router();
-const prisma = new PrismaClient();
 router.use(authMiddleware);
 
 /** Busca a Call pelo waCallId, já confirmando que pertence à conta de quem

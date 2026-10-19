@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 
 /**
  * Aviso vermelho quando a Meta trava o envio do WhatsApp (Fabio 13/10: achou
@@ -15,7 +16,6 @@ import { PrismaClient } from '@prisma/client';
  * saúde volta a "disponível". Mostra no banner do CRM (só ADMIN) e manda push.
  */
 
-const prisma = new PrismaClient();
 const HEALTH_CODE = 999000;
 const PUSH_EVERY_MS = 6 * 60 * 60 * 1000;
 

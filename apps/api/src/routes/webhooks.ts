@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { processIncomingWhatsApp, processWhatsAppStatus } from '../services/whatsapp.service';
 import { processIncomingWhatsAppCall } from '../services/whatsapp-calling.service';
 import { createLeadFromSiteForm } from '../services/site-lead.service';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // ─── Meta Lead Ads ────────────────────────────────────────────────────────────
 // Canal desativado a pedido do usuário (2026-08-10) — a tela de configuração
