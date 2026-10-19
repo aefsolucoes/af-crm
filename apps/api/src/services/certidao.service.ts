@@ -225,6 +225,29 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
   return out;
 }
 
+/**
+ * Guarda a certidão emitida na pasta do cliente no Drive, subpasta IMOVEL (mesma convenção do organizador de documentos:
+ * documento do imóvel vai pra IMOVEL). A pasta vem do campo "Pasta no Drive" do card; sem ele, procura pelo nome do cliente.
+ * Melhor esforço: se o Drive não estiver conectado ou a pasta não existir, o PDF continua no CRM (link na nota) e a nota diz isso.
+ */
+export async function saveCertidaoToDrive(db: Db, r: { accountId: string; leadId: string; matricula: string }, pdf: Buffer): Promise<{ ok: true; folderUrl: string; fileName: string } | { ok: false; reason: string }> {
+  try {
+    const { createFolder, uploadFile, extractFolderId, findFolderByNameUnderRoot, folderLink } = await import('./google.service');
+    const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true, customFields: true } });
+    if (!lead) return { ok: false, reason: 'card não encontrado' };
+    const link = String(((lead.customFields || {}) as Record<string, unknown>).link_pasta_drive || '').trim();
+    let clientFolderId = link ? extractFolderId(link) : '';
+    if (!clientFolderId) clientFolderId = (await findFolderByNameUnderRoot(r.accountId, lead.name))?.folderId || '';
+    if (!clientFolderId) return { ok: false, reason: 'não achei a pasta do cliente no Drive' };
+    const imovel = await createFolder(r.accountId, 'IMOVEL', clientFolderId);
+    const fileName = `CERTIDAO DE ONUS - MATRICULA ${r.matricula} (inteiro teor).pdf`.replace(/[\\/:*?"<>|]/g, ' ');
+    await uploadFile(r.accountId, { name: fileName, mimeType: 'application/pdf', data: pdf, parentId: imovel.id });
+    return { ok: true, folderUrl: folderLink(imovel.id), fileName };
+  } catch (err: any) {
+    return { ok: false, reason: String(err?.message || err).slice(0, 160) };
+  }
+}
+
 /** A extensão achou a certidão pronta e devolve o PDF. */
 export async function finishCertidao(db: Db, p: { accountId: string; id: string; pdf: Buffer; pdfName?: string; io?: Io }) {
   const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
@@ -232,7 +255,9 @@ export async function finishCertidao(db: Db, p: { accountId: string; id: string;
   if (r.status === 'ISSUED') return r;
   const name = (p.pdfName || `Certidao matricula ${r.matricula}.pdf`).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 120);
   const out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', pdf: p.pdf, pdfName: name, finishedAt: new Date(), detail: 'Certidão emitida e guardada no CRM.', nextCheckAt: null } });
-  await note(db, r.leadId, `📄 Certidão da matrícula ${r.matricula} EMITIDA (protocolo ${out.protocolo || '—'}). Abrir o PDF: ${signCertidaoLink(r.id)}`, r.requestedById);
+  const drive = await saveCertidaoToDrive(db, r, p.pdf);
+  const driveTxt = drive.ok ? `\n📁 Também guardada no Drive (subpasta IMOVEL): ${drive.folderUrl}` : `\n⚠️ Não consegui guardar no Drive (${drive.reason}) — o PDF fica no CRM.`;
+  await note(db, r.leadId, `📄 Certidão da matrícula ${r.matricula} EMITIDA (protocolo ${out.protocolo || '—'}). Abrir o PDF: ${signCertidaoLink(r.id)}${driveTxt}`, r.requestedById);
   emitUpdate(p.io, p.accountId, r.leadId, r.id);
   return out;
 }
