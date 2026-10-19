@@ -243,6 +243,19 @@ export async function mergeLeadPair(
       if (v !== undefined && v !== null && String(v).trim() !== '') mergedCF[k] = v;
     }
 
+    // Cliente que preenche a proposta DE NOVO num card novo (ex.: voltou depois de reprovado): os dados da proposta mais recente valem — antes os do card antigo venciam e a proposta nova
+    // sumia (Marcos 19/10: imóvel R$ 120 mil, renda e nascimento corrigidos ficaram de fora; o card seguiu com R$ 100 mil e "10/02/9158").
+    const PROPOSTA_MARCAS = ['Proposta preenchida no site', 'PROPOSTA RECEBIDA', 'Preenchi a proposta', 'Proposta manual'];
+    const ultimaProposta = async (id: string) => (await prisma.message.findFirst({ where: { leadId: id, direction: 'INBOUND', OR: PROPOSTA_MARCAS.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }))?.createdAt || null;
+    const [propKeep, propSource] = await Promise.all([ultimaProposta(keepId), ultimaProposta(sourceId)]);
+    if (propSource && (!propKeep || propSource > propKeep)) {
+      const srcCf = ((source.customFields as any) || {}) as Record<string, unknown>;
+      for (const k of ['participante_1', 'cpf_1', 'nascimento_1', 'email_1', 'telefone_1', 'renda_1', 'vinculo_1', 'valor_imovel', 'valor_credito', 'prazo_financ', 'primeira_parcela', 'saldo_devedor', 'troco', 'cpf_2', 'nascimento_2', 'telefone_2', 'renda_2', 'possui_certidao', 'valor_entrada', '_reentryCheck', '_reentryHold']) {
+        const v = srcCf[k];
+        if (v !== undefined && v !== null && String(v).trim() !== '') mergedCF[k] = v;
+      }
+    }
+
     if (altPhone && !mergedCF.telefone_alt) mergedCF.telefone_alt = altPhone;
     const mergedValue = Math.max(keep.value || 0, source.value || 0) || undefined;
 

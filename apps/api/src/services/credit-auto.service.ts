@@ -141,6 +141,9 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
     if (cf._autoStartedAt || cf._autoGiveUp) continue;
     // TRIAGEM DE IDADE NA ENTRADA (Fabio 17/10, Admir de 75 anos: o CRM sabia que o Inter e o Santander barravam e deixou o card parado, com e-mails inúteis aos bancos).
     if (await descartarPorIdade(accountId, l, cf, io).catch((e) => { console.error('[Triagem de idade]', e?.message); return false; })) continue;
+    // Cliente reprovado há pouco que voltou (Fabio 19/10): a IA compara a proposta nova com a reprovada ANTES de gastar análise nos bancos.
+    const reentrada = await (require('./reentry.service') as typeof import('./reentry.service')).reentryGate(accountId, l.id).catch((e: any) => { console.error('[Reentrada]', e?.message); return { hold: false }; });
+    if (reentrada.hold) continue;
     if (cf._autoCheckedAt && Date.now() - new Date(cf._autoCheckedAt).getTime() < AI_CHECK_EVERY_MS) continue;
     const checks = Number(cf._autoChecks || 0) + 1;
     const verdict = await aiReadiness(l.id).catch(() => null);

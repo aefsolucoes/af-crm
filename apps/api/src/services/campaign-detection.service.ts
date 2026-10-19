@@ -317,6 +317,11 @@ export async function advanceLeadOnProposalForm(accountId: string, leadId: strin
     return null;
   }
 
+  // Cliente REPROVADO há pouco que voltou a preencher a proposta (Fabio 19/10): a IA confere ANTES de dar andamento — se nada mudou que possa alterar o resultado (crédito maior não adianta),
+  // o card NÃO sai de onde está, ninguém confirma "recebi sua proposta" e os bancos não rodam; a equipe é avisada.
+  const reentrada = await (require('./reentry.service') as typeof import('./reentry.service')).reentryGate(accountId, lead.id, { text }).catch((e: any) => { console.error('[Reentrada]', e?.message); return { hold: false }; });
+  if (reentrada.hold) return null;
+
   const route = await detectCampaignRoute(accountId, text);
   if (!route || (route.stageId === lead.stageId && !eraPerdido)) return null;
   const target = await prisma.stage.findUnique({ where: { id: route.stageId }, include: { pipeline: { select: { name: true } } } });

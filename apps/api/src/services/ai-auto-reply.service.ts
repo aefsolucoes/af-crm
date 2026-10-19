@@ -497,6 +497,7 @@ export async function generateAiAutoReply(
     // Pergunta de status: pede leitura NOVA nos bancos (extensão) e espera até ~2 min; depois monta o bloco com o que está mais recente.
     await refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText }).catch(() => null);
     const analiseCredito = await aiCreditContext(prisma, leadId).catch(() => '');
+    const reentrada = await (require('./reentry.service') as typeof import('./reentry.service')).aiReentryContext(leadId).catch(() => '');
     const documentos = await aiDocsContext(leadId).catch(() => '');
     const scrCreditas = await (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => '');
 
@@ -542,7 +543,9 @@ ${chegando ? DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES 
 
 ${OUTPUT_FORMAT}
 
-${buildContextBlocks(ctx)}${analiseCredito ? `
+${buildContextBlocks(ctx)}${reentrada ? `
+
+${reentrada}` : ''}${analiseCredito ? `
 
 ${analiseCredito}` : ''}${documentos ? `
 
