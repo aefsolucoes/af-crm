@@ -78,6 +78,8 @@ export async function automationMetrics(accountId: string, days: number) {
     FROM (SELECT "leadId", min("createdAt") AS t FROM "CreditAnalysis" WHERE "accountId" = ${accountId} AND "status" IN ('APPROVED','CONDITIONAL') AND "approvedValue" IS NOT NULL AND "dryRun" = false AND "createdAt" >= ${since} GROUP BY 1) a
     JOIN "Lead" l ON l."id" = a."leadId"
     WHERE l."status" = 'OPEN' AND l."archived" = false AND a.t < now() - interval '1 hour'
+      AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::json)::jsonb, '_autoPaused') -- cliente pausado à mão (Stop total): não é falha da automação
+      AND NOT EXISTS (SELECT 1 FROM "Stage" st WHERE st."id" = l."stageId" AND st."name" ILIKE 'Venda Futura%')
       AND NOT EXISTS (SELECT 1 FROM "Note" n WHERE n."leadId" = a."leadId" AND n."content" LIKE '📣 Cliente avisado%' AND n."createdAt" >= a.t)
       AND NOT EXISTS (SELECT 1 FROM "Message" m WHERE m."leadId" = a."leadId" AND m."direction" = 'OUTBOUND' AND m."createdAt" >= a.t AND (m."content" LIKE '%Crédito aprovado%' OR m."templateName" = 'credito_aprovado_condicoes'))
     ORDER BY a.t ASC LIMIT 15`);
