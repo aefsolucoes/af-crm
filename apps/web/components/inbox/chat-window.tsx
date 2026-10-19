@@ -464,7 +464,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     setSuggesting(true);
     setSuggestion(null);
     try {
-      const { data } = await api.post('/api/ai/suggest-reply', { leadId });
+      const { data } = await api.post('/api/ai/suggest-reply', { leadId, auto: silent }); // silent = disparo automático: o servidor reaproveita a sugestão da mesma mensagem do cliente
       setSuggestion(data.suggestion);
     } catch (err: any) {
       if (!silent) toast(err?.response?.data?.error || 'Erro ao gerar sugestão', 'error');

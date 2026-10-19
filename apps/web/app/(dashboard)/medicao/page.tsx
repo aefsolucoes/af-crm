@@ -23,7 +23,7 @@ interface Metrics {
     semAviso: { id: string; name: string; iaLigada: boolean; horas: number | null }[];
   };
   avisos: { aprovacao: number; negativa: number; aprovacaoSegurada: number; negativaSegurada: number; duplicadosEvitados: number; negativaNaoSaiu: number; whatsapp: { total: number; falhas: number; falhaPct: number | null; erros: { motivo: string; n: number }[] } };
-  ia: { respostasAutomaticas: number; perguntasAEquipe: number; humanoAssumiu: number; duvidas: { kind: string; total: number; respondidas: number; abertas: number; medianaMin: number | null }[]; uso: { feature: string; chamadas: number; erros: number; entrada: number; saida: number }[] };
+  ia: { respostasAutomaticas: number; perguntasAEquipe: number; humanoAssumiu: number; duvidas: { kind: string; total: number; respondidas: number; abertas: number; medianaMin: number | null }[]; uso: { feature: string; chamadas: number; erros: number; entrada: number; saida: number }[]; custo: { totalUsd: number; porDia: { day: string; usd: number; chamadas: number }[]; porFuncao: { feature: string; usd: number; chamadas: number; entradaMedia: number }[] } };
   correcoes: { feitas: number; desfeitas: number; principais: { acao: string; n: number }[]; reabertosAposFechamentoAutomatico: number; cardsComAjuste: number; resultadosManuais: number };
   extensoes: { bank: string; label: string; online: boolean; lastSeenAt: string | null }[];
 }
@@ -208,10 +208,13 @@ export default function MedicaoPage() {
                     <tbody>{data.ia.duvidas.map((q) => <tr key={q.kind} className="border-t border-slate-100"><td className="py-1.5 text-slate-700">{KIND[q.kind] || q.kind}</td><td>{q.total}</td><td>{q.respondidas}</td><td className={q.abertas ? 'text-amber-600 font-medium' : ''}>{q.abertas}</td><td>{fmtMin(q.medianaMin)}</td></tr>)}</tbody>
                   </table>
                 )}
-                {data.ia.uso.length > 0 && (
+                {data.ia.custo.porFuncao.length > 0 && (
                   <div className="mt-3">
-                    <p className="text-xs font-semibold text-slate-600 mb-1">Chamadas à IA por função</p>
-                    <ul className="space-y-0.5">{data.ia.uso.map((u) => <li key={u.feature} className="flex justify-between text-xs text-slate-600"><span className="truncate pr-2">{u.feature.split(':')[0]}</span><span className="flex-shrink-0">{fmtN(u.chamadas)} chamadas{u.erros ? <span className="text-red-600"> · {u.erros} erros</span> : ''}</span></li>)}</ul>
+                    <p className="text-xs font-semibold text-slate-600 mb-0.5">Gasto estimado com a IA (Anthropic): US$ {data.ia.custo.totalUsd.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} no período</p>
+                    <p className="text-[11px] text-slate-400 mb-1">Preço de tabela suposto — o valor real está no console da Anthropic.</p>
+                    <ul className="space-y-0.5">{data.ia.custo.porFuncao.map((u) => <li key={u.feature} className="flex justify-between text-xs text-slate-600"><span className="truncate pr-2">{u.feature.split(':')[0]}</span><span className="flex-shrink-0">US$ {u.usd.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · {fmtN(u.chamadas)} chamadas · ~{Math.round(u.entradaMedia / 1000)}k tokens cada</span></li>)}</ul>
+                    <p className="text-xs font-semibold text-slate-600 mt-2 mb-0.5">Por dia</p>
+                    <ul className="space-y-0.5">{data.ia.custo.porDia.map((d) => <li key={d.day} className="flex justify-between text-xs text-slate-600"><span>{d.day.slice(8)}/{d.day.slice(5, 7)}</span><span>US$ {d.usd.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · {fmtN(d.chamadas)} chamadas</span></li>)}</ul>
                   </div>
                 )}
               </Card>

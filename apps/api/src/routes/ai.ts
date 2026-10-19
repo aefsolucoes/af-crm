@@ -1,9 +1,16 @@
 import { Router, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { generateReplySuggestion } from '../services/ai-reply-suggestion.service';
 import { usageReport } from '../lib/anthropic-usage';
 
 const router = Router();
+const prisma = new PrismaClient();
+
+/** Sugestão AUTOMÁTICA (a que aparece sozinha ao abrir a conversa): guarda a última por card + última mensagem do cliente. Abrir de novo a mesma conversa sem mensagem nova do cliente
+ *  repetia a chamada à IA (~19 mil tokens, sem cache) — era a 2ª maior despesa com a Anthropic (Fabio 19/10: "o que está consumindo tanto o saldo?"). O botão manual "Sugerir resposta" gera sempre uma nova. */
+const autoSuggestionCache = new Map<string, { at: number; value: { suggestion: string } }>();
+const AUTO_SUGGESTION_TTL_MS = 12 * 3_600_000;
 router.use(authMiddleware);
 
 type AIMode = 'grammar' | 'professional' | 'friendly' | 'fun';
@@ -77,16 +84,27 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
 // resposta") — nunca envia nada sozinha, só devolve o texto pro balão; quem
 // manda é o colaborador, depois de revisar. Ver ai-reply-suggestion.service.ts.
 router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
-  const { leadId } = req.body as { leadId?: string };
+  const { leadId, auto } = req.body as { leadId?: string; auto?: boolean };
   if (!leadId) {
     res.status(400).json({ error: 'leadId obrigatório' });
     return;
   }
   try {
+    let cacheKey: string | null = null;
+    if (auto === true) {
+      const last = await prisma.message.findFirst({ where: { leadId, lead: { accountId: req.user!.accountId }, direction: 'INBOUND', channel: { not: 'EMAIL' } }, orderBy: { createdAt: 'desc' }, select: { id: true } });
+      cacheKey = last ? `${leadId}:${last.id}` : null;
+      const hit = cacheKey ? autoSuggestionCache.get(cacheKey) : null;
+      if (hit && Date.now() - hit.at < AUTO_SUGGESTION_TTL_MS) { res.json(hit.value); return; }
+    }
     const result = await generateReplySuggestion(req.user!.accountId, leadId);
     if (!result) {
       res.status(422).json({ error: 'Não consegui gerar uma sugestão agora (sem histórico de conversa, ou IA indisponível).' });
       return;
+    }
+    if (cacheKey) {
+      if (autoSuggestionCache.size > 500) autoSuggestionCache.delete(autoSuggestionCache.keys().next().value as string);
+      autoSuggestionCache.set(cacheKey, { at: Date.now(), value: result });
     }
     res.json(result);
   } catch (err) {

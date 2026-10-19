@@ -117,6 +117,20 @@ export async function automationMetrics(accountId: string, days: number) {
   const uso = await prisma.$queryRaw<any[]>(Prisma.sql`
     SELECT "feature", sum("calls")::int AS chamadas, sum("errors")::int AS erros, sum("inputTokens" + "cacheReadTokens" + "cacheWriteTokens")::bigint AS entrada, sum("outputTokens")::bigint AS saida
     FROM "AiUsage" WHERE "day" >= ${sinceDay} GROUP BY "feature" ORDER BY chamadas DESC LIMIT 12`);
+  // Gasto ESTIMADO com a Anthropic (preço de tabela suposto: Sonnet US$ 3/15 por milhão, Haiku 1/5; cache lido 10% e gravado 125% da entrada) — conferir o valor real no console da Anthropic.
+  const usoLinhas = await prisma.aiUsage.findMany({ where: { day: { gte: sinceDay } }, select: { day: true, feature: true, model: true, calls: true, inputTokens: true, outputTokens: true, cacheReadTokens: true, cacheWriteTokens: true } });
+  const usd = (r: (typeof usoLinhas)[number]) => { const pr = /haiku/i.test(r.model) ? { i: 1, o: 5 } : { i: 3, o: 15 }; return (r.inputTokens * pr.i + r.cacheReadTokens * pr.i * 0.1 + r.cacheWriteTokens * pr.i * 1.25 + r.outputTokens * pr.o) / 1e6; };
+  const custoDia = new Map<string, { usd: number; calls: number }>();
+  const custoFuncao = new Map<string, { usd: number; calls: number; entrada: number }>();
+  for (const r of usoLinhas) {
+    const a = custoDia.get(r.day) || { usd: 0, calls: 0 }; a.usd += usd(r); a.calls += r.calls; custoDia.set(r.day, a);
+    const f = custoFuncao.get(r.feature) || { usd: 0, calls: 0, entrada: 0 }; f.usd += usd(r); f.calls += r.calls; f.entrada += r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens; custoFuncao.set(r.feature, f);
+  }
+  const custo = {
+    totalUsd: Math.round([...custoDia.values()].reduce((a, b) => a + b.usd, 0) * 100) / 100,
+    porDia: [...custoDia].sort((a, b) => a[0].localeCompare(b[0])).map(([day, v]) => ({ day, usd: Math.round(v.usd * 100) / 100, chamadas: v.calls })),
+    porFuncao: [...custoFuncao].sort((a, b) => b[1].usd - a[1].usd).slice(0, 10).map(([feature, v]) => ({ feature, usd: Math.round(v.usd * 100) / 100, chamadas: v.calls, entradaMedia: v.calls ? Math.round(v.entrada / v.calls) : 0 })),
+  };
 
   // ── 5. Correções da equipe (sinal de erro da automação) ────────────────
   const reverts = (await prisma.$queryRaw<any[]>(Prisma.sql`
@@ -185,6 +199,7 @@ export async function automationMetrics(accountId: string, days: number) {
       respostasAutomaticas: num(ia.respostas), perguntasAEquipe: num(ia.perguntas), humanoAssumiu,
       duvidas: duvidas.map((q) => ({ kind: q.kind as string, total: num(q.total), respondidas: num(q.respondidas), abertas: num(q.abertas), medianaMin: round1(q.mediana_min) })),
       uso: uso.map((u) => ({ feature: u.feature as string, chamadas: num(u.chamadas), erros: num(u.erros), entrada: num(u.entrada), saida: num(u.saida) })),
+      custo,
     },
     correcoes: { feitas: num(reverts.feitas), desfeitas: num(reverts.desfeitas), principais: revertLabels.map((r) => ({ acao: r.acao as string, n: num(r.n) })), reabertosAposFechamentoAutomatico: reabertos, cardsComAjuste: num(ajustes.cards), resultadosManuais: manuais },
     extensoes,
