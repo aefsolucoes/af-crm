@@ -37,6 +37,9 @@ export interface DocReview {
   encerrada?: { quando?: string; novas: string[] };
   /** MATRICULA: números ANTERIORES da mesma matrícula (renumeração: "renumerada de Matrícula nº 159") — pra conferir com o número que o cliente mandou. */
   anteriores?: string[];
+  /** Documento do imóvel: endereço do imóvel como aparece (logradouro, número, complemento) e, no IPTU/cadastro imobiliário, a inscrição imobiliária — a conferência compara o IPTU com o imóvel do cliente (caso Pedro 19/10: guia de IPTU de OUTRO imóvel, nº 1834). */
+  endereco?: string;
+  inscricao?: string;
   /** DUVIDA: a pergunta pra equipe (a IA não tem segurança se o documento serve). */
   duvida?: string;
   /** Depois da resposta da equipe: regra geral que vale pra outros clientes (vazio = foi só desse caso). */
@@ -47,6 +50,7 @@ const SYSTEM = `Você é a conferente de documentos de um correspondente bancár
 {"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS (SÓ a do CARTÓRIO de Registro de Imóveis), CERTIDAO DE CADASTRO IMOBILIARIO (da PREFEITURA), MATRICULA, CND IPTU (SÓ a certidão negativa), GUIA IPTU (guia/carnê de pagamento), CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","ressalva":"<SÓ MATRICULA ou CERTIDAO DE ONUS aceita mesmo assim: CONSULTA (tem a marca \"para simples consulta\"/não vale como certidão) ou ANTIGA (emissão há mais de 30 dias); senão vazio>",
 "matricula":"<SÓ documento do imóvel: número da matrícula como aparece (ex.: 36.267); senão vazio>","matriculasAnteriores":"<SÓ MATRICULA: se houver averbação de RENUMERAÇÃO, o(s) número(s) anterior(es) da matrícula separados por ponto e vírgula (ex.: 159); senão vazio>","matriculaEncerrada":<true SÓ se MATRICULA/CERTIDAO DE ONUS traz averbação de ENCERRAMENTO DA MATRÍCULA (sem reabertura); senão false>","encerradaEm":"<data do encerramento DD/MM/AAAA, ou vazio>","matriculasNovas":"<se encerrada: as matrículas NOVAS que a averbação diz que foram abertas, separadas por ponto e vírgula, com a descrição, ex.: 438.308 (Apartamento 203); 438.309 (Vaga de garagem); senão vazio>","cartorio":"<SÓ documento do imóvel: cartório de registro de imóveis (nome/cidade); senão vazio>",
 "dono":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, escritura): nome do proprietário ATUAL; senão vazio>","donoSituacao":"<SÓ documento do imóvel em Home Equity: PARTICIPANTE | OUTRO_SEM_RELACAO | PARENTE_1GRAU; senão vazio>",
+"enderecoImovel":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, cadastro imobiliário, escritura): endereço do imóvel como está escrito (logradouro, número, complemento/apto, bairro); senão vazio>","inscricao":"<SÓ IPTU/guia/carnê/cadastro imobiliário: inscrição imobiliária exatamente como aparece; senão vazio>",
 "gravame":"<SÓ MATRICULA ou CERTIDAO DE ONUS: se constar alienação fiduciária, hipoteca ou penhora ainda VIGENTE (sem averbação de cancelamento/baixa), escreva curto: TIPO - CREDOR - valor original (data), ex.: ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024); senão vazio>",
 "observacao":"<detalhe INTERNO útil pra equipe (ex.: constam ônus ou alienação fiduciária na matrícula, validade do documento); senão vazio>","duvida":"<SÓ se resultado DUVIDA: a pergunta objetiva pra equipe, 1 a 2 frases, dizendo o que você viu e o que precisa saber; senão vazio>","regra":"<SÓ quando a equipe já respondeu: a regra geral, em 1 frase, que vale pra OUTROS clientes; se foi só sobre este caso, vazio>"}
 
@@ -125,6 +129,7 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     const ressalva = j.ressalva === 'CONSULTA' || j.ressalva === 'ANTIGA' ? j.ressalva : undefined;
     const donoSituacao = j.donoSituacao === 'PARTICIPANTE' || j.donoSituacao === 'OUTRO_SEM_RELACAO' || j.donoSituacao === 'PARENTE_1GRAU' ? j.donoSituacao : undefined;
     const dono = cleanText(j.dono, 80);
+    const endereco = cleanText(j.enderecoImovel, 140), inscricao = cleanText(j.inscricao, 40);
     const ehMat = /^(MATRICULA|CERTIDAO DE ONUS)/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
     const novas = ehMat && j.matriculaEncerrada === true ? String(j.matriculasNovas || '').split(/\s*;\s*/).map((x) => cleanText(x, 80)).filter(Boolean).slice(0, 6) : [];
     const anteriores = ehMat ? String(j.matriculasAnteriores || '').split(/\s*;\s*/).map((x) => cleanText(x, 40)).filter(Boolean).slice(0, 4) : [];
@@ -134,7 +139,7 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     const problemasFinal = encerrada
       ? [`a matrícula${matricula ? ` nº ${matricula}` : ''} foi ENCERRADA${encerrada.quando ? ` em ${encerrada.quando}` : ''}${novas.length ? `; o imóvel agora tem ${novas.length > 1 ? 'as matrículas' : 'a matrícula'} ${novas.join(' e ')}` : ''} — precisa da certidão da matrícula nova`, ...problemas.filter((p: string) => !/encerr/i.test(p))].slice(0, 4)
       : problemas;
-    return { tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado: resultadoFinal, ...(encerrada ? { encerrada } : {}), ...(anteriores.length ? { anteriores } : {}), problemas: resultadoFinal === 'PROBLEMA' ? problemasFinal : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(matricula ? { matricula } : {}), ...(cartorio ? { cartorio } : {}), ...(ressalva ? { ressalva } : {}), ...(donoSituacao ? { donoSituacao, ...(dono ? { dono } : {}) } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
+    return { ...(endereco ? { endereco } : {}), ...(inscricao ? { inscricao } : {}), tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado: resultadoFinal, ...(encerrada ? { encerrada } : {}), ...(anteriores.length ? { anteriores } : {}), problemas: resultadoFinal === 'PROBLEMA' ? problemasFinal : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(matricula ? { matricula } : {}), ...(cartorio ? { cartorio } : {}), ...(ressalva ? { ressalva } : {}), ...(donoSituacao ? { donoSituacao, ...(dono ? { dono } : {}) } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
   } catch { return undefined; }
 }
 
@@ -190,6 +195,49 @@ export interface ReviewSummary {
 
 const docKey = (r: DocReview) => `${r.tipo}|${r.titular.split(' ').slice(0, 2).join(' ')}`.toUpperCase();
 const docLabel = (r: DocReview) => (r.titular ? `${r.tipo} (${r.titular.split(' ').slice(0, 2).join(' ')})` : r.tipo);
+
+const soDigitos = (x: string | undefined) => String(x || '').replace(/\D/g, '');
+const normEnd = (x: string) => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+const STOP_END = new Set(['R', 'RUA', 'AV', 'AVENIDA', 'TRAV', 'TRAVESSA', 'DA', 'DE', 'DO', 'DAS', 'DOS', 'N', 'NO', 'APTO', 'AP', 'APT', 'APARTAMENTO', 'BLOCO', 'BL', 'ED', 'EDIFICIO', 'RES', 'RESIDENCIAL', 'BAIRRO', 'CEP']);
+
+/** Mesmo imóvel? true/false quando dá pra afirmar; null quando falta dado (nunca acusa sem certeza). Inscrição imobiliária manda; sem ela, compara rua + número da porta. Pura (testável). */
+export function sameProperty(a: { endereco?: string; inscricao?: string }, b: { endereco?: string; inscricao?: string }): boolean | null {
+  const ia = soDigitos(a.inscricao), ib = soDigitos(b.inscricao);
+  if (ia.length >= 8 && ib.length >= 8) return ia === ib;
+  if (!a.endereco || !b.endereco) return null;
+  const ta = normEnd(a.endereco).split(' '), tb = normEnd(b.endereco).split(' ');
+  const rua = (t: string[]) => t.filter((w) => !STOP_END.has(w) && !/^\d+$/.test(w));
+  const compartilhaRua = rua(ta).some((w) => w.length > 3 && rua(tb).includes(w));
+  if (!compartilhaRua) return null; // descrição de outro jeito (matrícula antiga: "esquina com..."): não dá pra afirmar
+  // números dos dois endereços (porta, apto): só acusa "outro imóvel" quando NÃO há nenhum número em comum — conservador (um doc com só a porta e outro com porta+apto contam como o mesmo)
+  const nums = (t: string[]) => t.filter((w) => /^\d{1,5}$/.test(w));
+  const na = nums(ta), nb = nums(tb);
+  if (!na.length || !nb.length) return null;
+  return na.some((n) => nb.includes(n));
+}
+
+/** IPTU/cadastro de OUTRO imóvel: compara cada documento de IPTU com o imóvel do cliente (cadastro imobiliário/matrícula em nome do participante primeiro). Devolve o texto do problema por documento. Pura (testável). */
+export function iptuDeOutroImovel(docs: DocReview[]): Map<DocReview, string> {
+  const out = new Map<DocReview, string>();
+  const ehIptu = (r: DocReview) => /IPTU|CADASTRO IMOBILIARIO/.test(r.tipo.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase());
+  const iptus = docs.filter((r) => ehIptu(r) && (r.endereco || r.inscricao));
+  if (!iptus.length) return out;
+  const emNomeDoCliente = (r: DocReview) => r.donoSituacao === 'PARTICIPANTE';
+  const refs = [
+    ...docs.filter((r) => /CADASTRO IMOBILIARIO/.test(r.tipo.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()) && emNomeDoCliente(r) && (r.endereco || r.inscricao)),
+    ...docs.filter((r) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(r.tipo) && r.endereco),
+  ];
+  for (const r of iptus) {
+    for (const ref of refs) {
+      if (ref === r) continue;
+      if (sameProperty(r, ref) === false) {
+        out.set(r, `esse IPTU é de outro imóvel${r.endereco ? ` (${r.endereco})` : ''} — o seu é ${ref.endereco ? cleanText(ref.endereco, 85) : 'o imóvel da proposta'}. Manda o IPTU do imóvel da proposta`);
+        break;
+      }
+    }
+  }
+  return out;
+}
 
 /** Lê os documentos que ainda não foram lidos e devolve a situação atual de cada um. */
 export async function reviewReceivedDocs(accountId: string, leadId: string): Promise<ReviewSummary | null> {
@@ -289,8 +337,10 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   }
   const problemas: ReviewSummary['problemas'] = [];
   const ok: string[] = [];
+  const iptuErrado = iptuDeOutroImovel([...latest.values()]);
   for (const [k, r] of latest) {
     const texto = r.resultado === 'PROBLEMA' ? [...r.problemas] : [];
+    if (iptuErrado.has(r)) texto.push(iptuErrado.get(r)!);
     if (/^(RG|CNH)\b/.test(r.tipo) && r.resultado === 'OK') {
       const s = lados.get(k) || new Set<string>();
       if (!(s.has('frente') && s.has('verso'))) texto.push(`só chegou ${s.has('frente') ? 'a frente' : s.has('verso') ? 'o verso' : 'um lado'} — manda ${s.has('frente') ? 'também o verso' : s.has('verso') ? 'também a frente' : 'frente e verso'}`);
