@@ -537,9 +537,10 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
   await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `📨 Santander (análise manual): pedi os documentos ao cliente explicando que a proposta não passou na análise automática.${itens.length ? ` Pedido: ${itens.join('; ')}.` : ''}` } }).catch(() => {});
 }
 
-/** Quais bancos ainda estão "em jogo" pra este cliente e se a COMPROVAÇÃO DE RENDA ainda faz sentido (Fabio 20/10, Luiz Fernando: "a documentação de renda foi solicitada pro Santander; como ele não vai seguir
- *  pelo Santander, seria pelo Inter, não precisa de documentos de renda"). Em jogo = banco com aprovação (a última decisão não é reprovação) ou com proposta enviada e ainda sem resultado — a análise manual do
- *  Santander ("Enviar Documentos") NÃO conta, e `cf._bancosFora` (lista de bancos que o cliente/equipe descartou) tira o banco. Santander e Creditas exigem renda; o Inter NÃO. Sem nenhum banco em jogo: renda continua necessária. */
+/** Quais bancos ainda estão "em jogo" pra este cliente (informativo) e se a COMPROVAÇÃO DE RENDA continua necessária. ATENÇÃO (Fabio 20/10, caso Luiz Fernando): a dispensa de renda foi dita pra ESSE cliente
+ *  ("a documentação de renda foi solicitada pro Santander; como ele não vai seguir pelo Santander, seria pelo Inter") — NÃO é regra geral (a regra de 17/10 continua: renda na lista). Por isso a renda só é
+ *  dispensada quando o card tem a marca explícita `_rendaDispensada` (a equipe/IA põe caso a caso). Em jogo = banco com aprovação (a última decisão não é reprovação) ou com proposta enviada e ainda sem
+ *  resultado — a análise manual do Santander ("Enviar Documentos") NÃO conta, e `cf._bancosFora` (bancos descartados pelo cliente/equipe) tira o banco. */
 export async function bancosEmJogo(db: Db, leadId: string): Promise<{ emJogo: string[]; rendaNecessaria: boolean; texto: string }> {
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
@@ -561,7 +562,7 @@ export async function bancosEmJogo(db: Db, leadId: string): Promise<{ emJogo: st
     if (/AN[ÁA]LISE MANUAL ABERTA|ENVIAR DOCUMENTOS/i.test(ult.detail || '')) { partes.push(`${nomes[b]}: pediu análise manual com documentos (fora do jogo, a menos que o cliente queira seguir por ele)`); continue; }
     if (['SENT', 'REQUESTED', 'RUNNING'].includes(ult.status)) { emJogo.push(b); partes.push(`${nomes[b]}: em análise`); } else partes.push(`${nomes[b]}: sem resultado (falha/não rodou)`);
   }
-  const rendaNecessaria = emJogo.length === 0 || emJogo.includes('CREDITAS') || emJogo.includes('CREDIMORAR');
+  const rendaNecessaria = !cf._rendaDispensada; // só some com a marca explícita deste card (caso a caso)
   return { emJogo, rendaNecessaria, texto: partes.join('; ') };
 }
 
@@ -1507,7 +1508,7 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   if (!linhas.length) return '';
   // Fabio 20/10: a IA precisa saber que renda só vale quando Santander/Creditas estão em jogo (o Inter não pede).
   const jogo = await bancosEmJogo(db, leadId).catch(() => null);
-  if (jogo && jogo.emJogo.length && !jogo.rendaNecessaria) linhas.push('- DOCUMENTOS DE RENDA: NÃO peça nem cobre (só Santander e Creditas exigem; o único banco em jogo é o Inter, que NÃO pede renda). Se o cliente já mandou renda, não aponte problema nela.');
+  if (jogo && !jogo.rendaNecessaria) linhas.push('- DOCUMENTOS DE RENDA: a equipe DISPENSOU a renda deste cliente (ele não vai seguir pelo banco que pedia). NÃO peça nem cobre renda e, se ele já mandou, não aponte problema nela.');
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };
 
