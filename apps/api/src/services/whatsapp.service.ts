@@ -1195,6 +1195,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       // Aviso + certidão de ônus que esperavam a janela de 24 h abrir (template "Olá, tudo bem?" já foi) saem quando o cliente responde (certidao-followup).
       { const { releaseCertidaoPending } = require('./certidao-followup.service') as typeof import('./certidao-followup.service'); releaseCertidaoPending(prisma, { accountId, leadId, io }).catch((err: any) => console.warn('[Certidão] aviso pendente:', err?.message)); }
 
+      // Oferta de emissão da certidão pelo ONR esperando resposta (Fabio 20/10): se o cliente aceitou, a extensão do ONR é acionada agora. Sem oferta pendente não gasta nada.
+      if (text) { const { checkCertidaoAcceptance } = require('./certidao-offer.service') as typeof import('./certidao-offer.service'); checkCertidaoAcceptance(accountId, leadId, text, io).catch((e: any) => console.warn('[Certidão] aceitação:', e?.message)); }
       // Card em "Aguardando Documentação": o cliente mandou um DOCUMENTO
       // (foto ou arquivo) → agenda a conferência (espera ele terminar de
       // mandar). Só com documento — texto/áudio não gastam crédito de IA

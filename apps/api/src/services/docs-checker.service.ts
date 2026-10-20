@@ -167,14 +167,14 @@ Como decidir:
 8b. Se a linha "O banco NÃO aceitou a certidão que o cliente enviou" aparecer (a equipe anotou isso no card), a certidão recebida NÃO vale (muito antiga ou só consulta): trate como não recebida — "faltando" (ou "emitir", se o cliente autorizou a emissão).
 8a. O cliente respondeu no formulário se POSSUI certidão de ônus/matrícula (linha "Cliente informou…" abaixo): é só contexto. "Não possui"/"Não sei" NÃO tira a certidão de "faltando" (a conversa vai apurar o que ele tem); "Sim, possui" e nenhum arquivo: falta mesmo.
 8. A CAPA DO IPTU (carnê/guia do IPTU, "CAPA IPTU") traz a inscrição imobiliária E as metragens: ela sozinha atende os itens "Inscrição Imobiliária/IPTU" e "Capa do IPTU com as metragens" do Home Equity. Qualquer documento de IPTU recebido (capa, carnê, guia, CND de IPTU) conta como "Inscrição Imobiliária/IPTU".
-8e. METRAGENS (Fabio 20/10): as metragens do imóvel normalmente estão na capa do IPTU, mas podem estar em OUTRO documento recebido (cadastro imobiliário da prefeitura, matrícula, escritura). Use a linha "Documentos recebidos que MOSTRAM as metragens": se ela citar algum documento, o item "Capa do IPTU com as metragens" está ATENDIDO — não peça a capa. Só falta se NENHUM documento mostrar as metragens.
+8e. METRAGENS (Fabio 20/10): o item "Capa do IPTU com as metragens" precisa de um documento OFICIAL DA PREFEITURA do município que mostre as metragens: a CAPA do IPTU ou a CERTIDÃO de IPTU/cadastro imobiliário com as metragens. Matrícula, escritura e outros documentos de cartório NÃO valem pra esse item. Use a linha "Documentos da PREFEITURA recebidos que MOSTRAM as metragens": se ela citar algum documento, o item está ATENDIDO; se disser "nenhum", falta (peça a capa do IPTU ou a certidão de IPTU com as metragens).
 8f. RENDA (Fabio 20/10): a linha "Comprovação de renda" diz se ela é necessária. Se disser que NÃO é necessária (a equipe dispensou a renda deste cliente), NÃO coloque nenhum item de renda em "faltando" e considere-os atendidos, mesmo que não tenham chegado.
 8g. OPERADORA (Fabio 20/10): documento de operadora/concessionária (Claro, Vivo, TIM, Oi, energia, água, gás, internet) vale como COMPROVANTE DE RESIDÊNCIA, inclusive o protegido por senha que não pôde ser lido: conte como recebido.
 8h. ESCRITURA (Fabio 20/10): se só chegou a escritura (com o número da matrícula), a certidão de ônus/matrícula NÃO é pedida ao cliente: ponha em "emitir" (a A&F pede pelo ONR com o OK dele), nunca em "faltando".
 9. Seja rigoroso: "complete": true só se tiver certeza de que todos os itens obrigatórios chegaram. Se houver arquivos que não puderam ser lidos e algum item obrigatório puder estar entre eles, responda false.`;
 
 /** Só avalia (não move nem manda nada). null = nada pra avaliar. */
-export async function evaluateDocs(accountId: string, leadId: string): Promise<{ leadName: string; complete: boolean; listaUsada?: string; faltando: string[]; emitir: string[]; receivedText: string } | null> {
+export async function evaluateDocs(accountId: string, leadId: string): Promise<{ leadName: string; complete: boolean; listaUsada?: string; faltando: string[]; emitir: string[]; emitirPendente: string[]; receivedText: string } | null> {
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
     include: { stage: true, pipeline: { include: { department: true } } },
@@ -237,7 +237,7 @@ ${participants}
 
 BANCOS EM JOGO: ${bancosTxt}
 Comprovação de renda: ${rendaNecessaria ? 'necessária (regra normal)' : 'NÃO é necessária (a equipe dispensou a renda deste cliente)'}
-Documentos recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
+Documentos da PREFEITURA recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
 
 LISTAS DE DOCUMENTOS:
 ${lists.map((l) => `--- ${l.name} ---\n${l.body}`).join('\n\n')}
@@ -269,8 +269,11 @@ ${history}`;
   }
   const emitirBruto = Array.isArray(verdict.emitir) ? verdict.emitir.map((x) => String(x).slice(0, 120)) : [];
   // Sem a permissão do cliente a A&F NÃO emite (custo de R$ 40 a R$ 100 pra ele): o que o modelo pôs em "emitir" volta pra "faltando" e a certidão trava a conclusão.
-  const faltandoFinal = [...(verdict.faltando || []), ...(autorizou ? [] : emitirBruto)];
-  return { leadName: lead.name, complete: verdict.complete === true && (autorizou || !emitirBruto.length), listaUsada: verdict.listaUsada, faltando: faltandoFinal, emitir: autorizou ? emitirBruto : [], receivedText };
+  // Escritura com a matrícula identificada (Fabio 20/10): a certidão NÃO é cobrada do cliente — a IA se OFERECE pra emitir pelo ONR (certidao-offer.service) e só emite quando ele aceita.
+  const { certidaoFromDocs } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
+  const ofertavel = !autorizou && emitirBruto.length > 0 && !!certidaoFromDocs(cfAll);
+  const faltandoFinal = [...(verdict.faltando || []), ...(autorizou || ofertavel ? [] : emitirBruto)];
+  return { leadName: lead.name, complete: verdict.complete === true && (autorizou || !emitirBruto.length), listaUsada: verdict.listaUsada, faltando: faltandoFinal, emitir: autorizou ? emitirBruto : [], emitirPendente: ofertavel ? emitirBruto : [], receivedText };
 }
 
 /** O cliente AVISOU que já mandou os documentos (botão "Já enviei os documentos" do lembrete, ou texto equivalente)? */
@@ -332,6 +335,12 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   const pediuSaldo = await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).maybeAskSaldoDevedor(accountId, leadId, io, { docsReceived: true }).catch((e: any) => { console.error('[Saldo] pedido:', e?.message || e); return false; });
 
   const verdict = await evaluateDocs(accountId, leadId);
+  // Certidão pelo ONR: autorizada → aciona a extensão (cria o pedido, 1 vez por matrícula); só escritura e ainda sem OK → a IA oferece (1 vez por matrícula).
+  if (verdict) {
+    const offer = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
+    if (verdict.emitir.length) await offer.ensureCertidaoRequest(accountId, leadId).catch((e: any) => console.error('[Certidão] pedido ONR:', e?.message || e));
+    else if (verdict.emitirPendente.length) await offer.maybeOfferCertidao(accountId, leadId, io).catch((e: any) => console.error('[Certidão] oferta:', e?.message || e));
+  }
   const faltando = verdict && !verdict.complete ? verdict.faltando : [];
   const faltaTxt = faltando.length ? `\n\nAinda falta mandar:\n${faltando.map((f) => `• ${f}`).join('\n')}` : '';
 
