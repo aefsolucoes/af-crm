@@ -537,6 +537,34 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
   await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `📨 Santander (análise manual): pedi os documentos ao cliente explicando que a proposta não passou na análise automática.${itens.length ? ` Pedido: ${itens.join('; ')}.` : ''}` } }).catch(() => {});
 }
 
+/** Quais bancos ainda estão "em jogo" pra este cliente e se a COMPROVAÇÃO DE RENDA ainda faz sentido (Fabio 20/10, Luiz Fernando: "a documentação de renda foi solicitada pro Santander; como ele não vai seguir
+ *  pelo Santander, seria pelo Inter, não precisa de documentos de renda"). Em jogo = banco com aprovação (a última decisão não é reprovação) ou com proposta enviada e ainda sem resultado — a análise manual do
+ *  Santander ("Enviar Documentos") NÃO conta, e `cf._bancosFora` (lista de bancos que o cliente/equipe descartou) tira o banco. Santander e Creditas exigem renda; o Inter NÃO. Sem nenhum banco em jogo: renda continua necessária. */
+export async function bancosEmJogo(db: Db, leadId: string): Promise<{ emJogo: string[]; rendaNecessaria: boolean; texto: string }> {
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const fora: string[] = Array.isArray(cf._bancosFora) ? cf._bancosFora : [];
+  const rows = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, select: { bank: true, kind: true, status: true, detail: true, source: true } });
+  const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  const emJogo: string[] = [];
+  const partes: string[] = [];
+  for (const b of ['INTER', 'CREDITAS', 'CREDIMORAR']) {
+    const meus = rows.filter((r) => r.bank === b && r.source !== 'AI_SIM');
+    if (fora.includes(b)) { partes.push(`${nomes[b]}: descartado pelo cliente/equipe`); continue; }
+    const dec = meus.filter((r) => ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(r.status) && !(r.source === 'AI_CHANGE' && r.status === 'REJECTED'));
+    if (dec.length) {
+      if (dec[0].status !== 'REJECTED') { emJogo.push(b); partes.push(`${nomes[b]}: aprovado`); } else partes.push(`${nomes[b]}: reprovado`);
+      continue;
+    }
+    const ult = meus.find((r) => !(r.kind === 'CHECK' && r.status === 'CHECK'));
+    if (!ult) { partes.push(`${nomes[b]}: não rodou`); continue; }
+    if (/AN[ÁA]LISE MANUAL ABERTA|ENVIAR DOCUMENTOS/i.test(ult.detail || '')) { partes.push(`${nomes[b]}: pediu análise manual com documentos (fora do jogo, a menos que o cliente queira seguir por ele)`); continue; }
+    if (['SENT', 'REQUESTED', 'RUNNING'].includes(ult.status)) { emJogo.push(b); partes.push(`${nomes[b]}: em análise`); } else partes.push(`${nomes[b]}: sem resultado (falha/não rodou)`);
+  }
+  const rendaNecessaria = emJogo.length === 0 || emJogo.includes('CREDITAS') || emJogo.includes('CREDIMORAR');
+  return { emJogo, rendaNecessaria, texto: partes.join('; ') };
+}
+
 /** O banco pediu DE NOVO / não aceitou a certidão de ônus/matrícula que o cliente já mandou (Fabio 15/10: "o próprio CRM faz essa parte: anota e lê"). Lê o resultado da análise (ex.: Inter "Documentos
  *  pendentes: Certidão de ônus…" ou texto de recusa), anota no card com o marcador "🏛️ CERTIDÃO RECUSADA PELO BANCO" (a conferência de documentos lê esse marcador) e avisa o cliente UMA vez,
  *  oferecendo emitir uma nova pelo ONR (R$ 40–100, com o OK dele). Só quando o cliente JÁ mandou matrícula/ônus — se ainda não mandou, é só documento pendente normal. */
@@ -1477,6 +1505,9 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   const escolha = aprovados.length >= 2 ? pickSimulationBank(aprovados) : null;
   if (escolha) linhas.push(`- Simulação em PDF: ${aprovados.some((a) => a.chosen) ? 'o cliente já escolheu' : 'se o cliente ainda não escolheu, mande só a do primeiro banco na ordem Inter, Creditas, Santander'} → ${BANK_LABEL_IA[escolha.bank]} (${escolha.why}).`);
   if (!linhas.length) return '';
+  // Fabio 20/10: a IA precisa saber que renda só vale quando Santander/Creditas estão em jogo (o Inter não pede).
+  const jogo = await bancosEmJogo(db, leadId).catch(() => null);
+  if (jogo && jogo.emJogo.length && !jogo.rendaNecessaria) linhas.push('- DOCUMENTOS DE RENDA: NÃO peça nem cobre (só Santander e Creditas exigem; o único banco em jogo é o Inter, que NÃO pede renda). Se o cliente já mandou renda, não aponte problema nela.');
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };
 

@@ -44,9 +44,9 @@ Depois do nome do documento, coloque " | " e o nome completo do titular como apa
 Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
 Se NÃO for documento (foto qualquer, selfie, figurinha, print de conversa), responda IGNORAR.`;
 
-type AttachmentForVision = { id: string; driveFileId: string | null; data?: Uint8Array | null; mimeType: string };
+type AttachmentForVision = { id: string; driveFileId: string | null; data?: Uint8Array | null; mimeType: string; fileName?: string | null };
 
-export interface DocInfo { type: string; holder?: string }
+export interface DocInfo { type: string; holder?: string; protegido?: boolean }
 
 const clean = (t: string, max: number) =>
   t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase().slice(0, max);
@@ -73,6 +73,15 @@ export async function imageSourceForVision(accountId: string, att: AttachmentFor
  *  "CNH", holder: "JOAO DA SILVA"}. null = não é documento; undefined = não
  *  deu pra ler (tipo de arquivo, tamanho ou erro). Lê os bytes do banco se o
  *  anexo ainda não subiu pro Drive. */
+/** Fatura/conta de operadora ou concessionária (Fabio 20/10: "sempre que vier algo de alguma operadora, pode ser comprovante de endereço") pelo NOME DO ARQUIVO — usado quando o arquivo não pôde ser lido
+ *  (PDF protegido por senha, ex.: "Fatura Claro.pdf — Senha 89262"). */
+const OPERADORA_RX = /(^|[^a-z])(claro|vivo|tim|oi|net|sky|nextel|brisanet|algar|copel|celesc|enel|cemig|cpfl|light|energisa|neoenergia|equatorial|elektro|sabesp|cedae|copasa|sanepar|casan|embasa|caesb|fatura|conta[ _-]*(de[ _-]*)?(luz|agua|energia|gas|telefone|internet))([^a-z]|$)/;
+export function faturaDeOperadora(fileName: string): boolean {
+  const n = String(fileName || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\.[a-z0-9]{2,4}$/, '');
+  return OPERADORA_RX.test(n);
+}
+const pdfProtegido = (buf: Buffer) => buf.subarray(0, Math.min(buf.length, 4_000_000)).includes('/Encrypt');
+
 export async function classifyDocument(accountId: string, att: AttachmentForVision): Promise<DocInfo | null | undefined> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return undefined;
@@ -90,6 +99,8 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
     return undefined;
   }
   if (buffer.length > MAX_VISION_BYTES) return undefined;
+  // PDF protegido por senha: a IA não abre. Fatura de operadora vale como comprovante de residência (regra do Fabio); o resto fica "não lido".
+  if (isPdf && pdfProtegido(buffer)) return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : undefined;
   const mediaType = isPdf ? 'application/pdf' : mimeType;
   if (!isPdf && !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mediaType)) return undefined;
 
@@ -107,7 +118,7 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
   });
   if (!res.ok) {
     console.error('[DocsRecebidos] Erro ao ler documento:', res.status, (await res.text()).slice(0, 200));
-    return undefined;
+    return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : undefined;
   }
   const data = (await res.json()) as { content: { type: string; text?: string }[] };
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').split('\n').map((l) => l.trim()).find((l) => l) || '';
@@ -167,6 +178,7 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
     if (info === undefined) continue;
     cache[att.id] = info === null ? 'IGNORAR' : `${info.type}|${info.holder || ''}`;
     changed = true;
+    if (info && info.protegido) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔒 "${att.fileName}" não pôde ser aberto (protegido por senha ou ilegível). Pelo nome da operadora/concessionária contei como COMPROVANTE DE RESIDÊNCIA (regra do Fabio) — abra com a senha que o cliente mandou e confira a data (até 90 dias) e o titular.` } }).catch(() => {});
   }
   if (changed) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });

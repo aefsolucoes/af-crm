@@ -167,6 +167,10 @@ Como decidir:
 8b. Se a linha "O banco NÃO aceitou a certidão que o cliente enviou" aparecer (a equipe anotou isso no card), a certidão recebida NÃO vale (muito antiga ou só consulta): trate como não recebida — "faltando" (ou "emitir", se o cliente autorizou a emissão).
 8a. O cliente respondeu no formulário se POSSUI certidão de ônus/matrícula (linha "Cliente informou…" abaixo): é só contexto. "Não possui"/"Não sei" NÃO tira a certidão de "faltando" (a conversa vai apurar o que ele tem); "Sim, possui" e nenhum arquivo: falta mesmo.
 8. A CAPA DO IPTU (carnê/guia do IPTU, "CAPA IPTU") traz a inscrição imobiliária E as metragens: ela sozinha atende os itens "Inscrição Imobiliária/IPTU" e "Capa do IPTU com as metragens" do Home Equity. Qualquer documento de IPTU recebido (capa, carnê, guia, CND de IPTU) conta como "Inscrição Imobiliária/IPTU".
+8e. METRAGENS (Fabio 20/10): as metragens do imóvel normalmente estão na capa do IPTU, mas podem estar em OUTRO documento recebido (cadastro imobiliário da prefeitura, matrícula, escritura). Use a linha "Documentos recebidos que MOSTRAM as metragens": se ela citar algum documento, o item "Capa do IPTU com as metragens" está ATENDIDO — não peça a capa. Só falta se NENHUM documento mostrar as metragens.
+8f. RENDA (Fabio 20/10): a linha "Comprovação de renda" diz se ela é necessária. Se disser que NÃO é necessária (só o Inter está em jogo e ele não pede renda), NÃO coloque nenhum item de renda em "faltando" e considere-os atendidos, mesmo que não tenham chegado.
+8g. OPERADORA (Fabio 20/10): documento de operadora/concessionária (Claro, Vivo, TIM, Oi, energia, água, gás, internet) vale como COMPROVANTE DE RESIDÊNCIA, inclusive o protegido por senha que não pôde ser lido: conte como recebido.
+8h. ESCRITURA (Fabio 20/10): se só chegou a escritura (com o número da matrícula), a certidão de ônus/matrícula NÃO é pedida ao cliente: ponha em "emitir" (a A&F pede pelo ONR com o OK dele), nunca em "faltando".
 9. Seja rigoroso: "complete": true só se tiver certeza de que todos os itens obrigatórios chegaram. Se houver arquivos que não puderam ser lidos e algum item obrigatório puder estar entre eles, responda false.`;
 
 /** Só avalia (não move nem manda nada). null = nada pra avaliar. */
@@ -213,6 +217,11 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const jaAutorizou = !!(await prisma.note.findFirst({ where: { leadId, content: { startsWith: AUTORIZOU_EMISSAO } }, select: { id: true } }));
   const bancoRecusou = await (require('./doc-review.service') as typeof import('./doc-review.service')).bancoRecusouCertidao(leadId).catch(() => false); // anotação da equipe no card
   const matriculaEncerrada = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }).then((l) => { const m = ((l?.customFields || {}) as any)._matriculaEncerrada; return m ? ((m.novas || []).join('; ') || 'número novo') : ''; }).catch(() => '');
+  const { bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const jogo = await bancosEmJogo(prisma, leadId).catch(() => ({ emJogo: [] as string[], rendaNecessaria: true, texto: 'sem leitura' }));
+  const bancosTxt = jogo.texto || 'sem leitura';
+  const rendaNecessaria = jogo.rendaNecessaria;
+  const comMetragens = Array.from(new Set(Object.values((cfAll._docReview || {}) as Record<string, any>).filter((r: any) => r && r.metragens === true).map((r: any) => String(r.tipo)))) as string[];
   const participants = [
     cf.participante_1 && `1) ${cf.participante_1}${cf.vinculo_1 ? ` — ${cf.vinculo_1}` : ''}`,
     cf.participante_2 && `2) ${cf.participante_2}${cf.vinculo_2 ? ` — ${cf.vinculo_2}` : ''}`,
@@ -225,6 +234,10 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
 Setor/produto: ${lead.pipeline.department?.name || '?'}
 Participantes:
 ${participants}
+
+BANCOS EM JOGO: ${bancosTxt}
+Comprovação de renda: ${rendaNecessaria ? 'necessária (Santander/Creditas em jogo ou nenhum banco decidido)' : 'NÃO é necessária (só o Inter está em jogo)'}
+Documentos recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
 
 LISTAS DE DOCUMENTOS:
 ${lists.map((l) => `--- ${l.name} ---\n${l.body}`).join('\n\n')}
@@ -275,6 +288,16 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   // Conferência de CONTEÚDO (Fabio 14/10): a IA LÊ cada arquivo e vê se está legível, atualizado e no nome certo (RG/CNH com frente e verso). Documento com
   // problema NÃO deixa o card avançar, mesmo que "chegou tudo": o cliente é avisado do que corrigir (uma vez por conjunto de problemas).
   const review = await reviewReceivedDocs(accountId, leadId).catch((err) => { console.error(`[Docs] leitura dos documentos falhou (${leadId}):`, err?.message || err); return null; });
+  // Renda só vale quando Santander/Creditas estão em jogo (Fabio 20/10): com só o Inter, problema/dúvida em documento de RENDA não segura o card nem gera cobrança.
+  if (review) {
+    const { bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    const jogo = await bancosEmJogo(prisma, leadId).catch(() => null);
+    if (jogo && jogo.emJogo.length && !jogo.rendaNecessaria) {
+      const RENDA_RX = /EXTRATO BANCARIO|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA|PRO.?LABORE|DECORE/;
+      review.problemas = review.problemas.filter((p) => !RENDA_RX.test(String(p.doc).toUpperCase()));
+      review.duvidas = review.duvidas.filter((d) => !RENDA_RX.test(String(d.doc).toUpperCase()));
+    }
+  }
   if (review?.novas.length) {
     const linhas = review.novas.map(({ arquivo, r }) => `${r.resultado === 'OK' ? '✅' : r.resultado === 'PROBLEMA' ? '⚠️' : r.resultado === 'DUVIDA' ? '❓' : '•'} ${r.tipo}${r.titular ? ` (${r.titular})` : ''}${r.resultado === 'PROBLEMA' ? ` — ${r.problemas.join('; ')}` : ''}${r.observacao ? ` [${r.observacao}]` : ''} — ${arquivo}`);
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA leu ${review.novas.length > 1 ? 'os documentos novos' : 'o documento novo'}:\n${linhas.join('\n')}` } }).catch(() => {});
