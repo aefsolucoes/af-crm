@@ -457,17 +457,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // sozinha. "Usar" só coloca o texto no campo de digitar.
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [suggesting, setSuggesting] = useState(false);
-  // silent=true (disparo automático) não mostra toast de erro — uma falha
-  // em segundo plano não deve incomodar quem nem pediu; o botão manual
-  // continua ali pra tentar de novo quando quiser.
-  async function handleSuggestReply(silent = false) {
+  async function handleSuggestReply() {
     setSuggesting(true);
     setSuggestion(null);
     try {
-      const { data } = await api.post('/api/ai/suggest-reply', { leadId, auto: silent }); // silent = disparo automático: o servidor reaproveita a sugestão da mesma mensagem do cliente
+      const { data } = await api.post('/api/ai/suggest-reply', { leadId });
       setSuggestion(data.suggestion);
     } catch (err: any) {
-      if (!silent) toast(err?.response?.data?.error || 'Erro ao gerar sugestão', 'error');
+      toast(err?.response?.data?.error || 'Erro ao gerar sugestão', 'error');
     } finally {
       setSuggesting(false);
     }
@@ -479,39 +476,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     inputRef.current?.focus();
   }
 
-  // Sugestão AUTOMÁTICA — dispara sozinha sempre que a última mensagem é do
-  // CLIENTE (nunca depois de uma mensagem minha, isso já evita sugerir numa
-  // conversa que eu já respondi). Dois gatilhos: (a) mensagem nova chega com
-  // a conversa JÁ aberta (grew), e (b) acabei de ABRIR uma conversa que já
-  // está com uma mensagem do cliente esperando resposta (isNewConversation)
-  // — sem o (b), só funcionava se eu já estivesse com o chat aberto no
-  // instante exato em que a mensagem chegasse, o que quase nunca acontece:
-  // na prática o colaborador abre a conversa DEPOIS de ser notificado, não
-  // antes (bug real reportado: "a sugestão não aparece mais sozinha").
-  // Agrupa rajada de mensagens rápidas do cliente numa sugestão só (debounce),
-  // em vez de uma chamada por mensagem.
-  const autoSuggestLeadIdRef = useRef<string | null>(null);
-  const autoSuggestCountRef = useRef(0);
-  const autoSuggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    const isNewConversation = autoSuggestLeadIdRef.current !== leadId;
-    const grew = messages.length > autoSuggestCountRef.current;
-    autoSuggestCountRef.current = messages.length;
-    const lastMsg = messages[messages.length - 1];
+  // Sugestão de resposta SÓ no clique (Fabio 20/10): antes disparava sozinha a cada mensagem do cliente e ao abrir a conversa — custo de IA à toa. Só o botão "Sugerir resposta" gera.
 
-    // Mesma corrida do efeito de rolagem: o 1º render de uma conversa nova
-    // chega com messages=[] (a query ainda não resolveu) — só marca como
-    // "vista" depois de ter mensagem de verdade.
-    if (messages.length > 0) autoSuggestLeadIdRef.current = leadId;
-
-    const shouldSuggest = messages.length > 0 && lastMsg?.direction === 'INBOUND' && (grew || isNewConversation);
-    if (!shouldSuggest) return;
-
-    if (autoSuggestTimerRef.current) clearTimeout(autoSuggestTimerRef.current);
-    autoSuggestTimerRef.current = setTimeout(() => { handleSuggestReply(true); }, 800);
-    return () => { if (autoSuggestTimerRef.current) clearTimeout(autoSuggestTimerRef.current); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, leadId]);
 
   // Disponibilidade da API Oficial do WhatsApp
   const { data: apiConfig } = useQuery({
