@@ -33,6 +33,19 @@ export function parseInterBody(text: string | null | undefined): { proposta: str
   return { proposta: p ? stripZeros(p[1]) : null, nome: n ? n[1].trim() : null };
 }
 
+/** Link do laudo digital que o Inter/BPO manda no e-mail ("LINK: https://avaliacaoimovel.bancointer.com.br/…") — NUNCA é montado pelo CRM: o link muda de caso pra caso (Fabio 20/10). Só aceita https no domínio bancointer.com.br. Pura (testável). */
+export function extractLaudoLink(text: string | null | undefined): string | null {
+  const urls = String(text || '').match(/https?:\/\/[^\s<>"')\]]+/gi) || [];
+  for (const raw of urls) {
+    const u = raw.replace(/[.,;:!]+$/, '');
+    try {
+      const h = new URL(u);
+      if (h.protocol === 'https:' && /(^|\.)bancointer\.com\.br$/i.test(h.hostname) && /avaliacao|laudo/i.test(h.hostname + h.pathname)) return u;
+    } catch { /* URL inválida */ }
+  }
+  return null;
+}
+
 /** Tipo do e-mail, pelo assunto e pelo começo do texto NOVO (sem a conversa citada). Pura (testável). */
 export function classifyInterEmail(subject: string | null | undefined, freshText: string): InterEmailKind {
   const s = cleanSubject(subject);
@@ -146,6 +159,16 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   try {
     (require('./push.service') as typeof import('./push.service')).sendPushToAccount(acc.accountId, { title: `📬 Inter — ${KIND_LABEL[kind]}`, body: `${lead.name}: ${resumo.slice(0, 110)}`, leadId }).catch(() => {});
   } catch { /* push é só aviso */ }
+  // Link do laudo digital (apartamento): guarda no card — a extensão "Vistoria Inter" abre exatamente esse link.
+  const link = extractLaudoLink(fresh) || extractLaudoLink(text);
+  if (link) {
+    const cur = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cfAtual = (cur?.customFields || {}) as Record<string, any>;
+    if (cfAtual.link_laudo_inter !== link) {
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfAtual, link_laudo_inter: link } } });
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔗 Link do laudo digital recebido do Inter e guardado no card (campo "Link do laudo Inter"): ${link}` } }).catch(() => {});
+    }
+  }
   io?.to(`account_${acc.accountId}`).emit('lead_updated', { leadId });
   return true;
 }
