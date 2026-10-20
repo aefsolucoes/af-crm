@@ -268,6 +268,15 @@ async function agePeople(db: Db, leadId: string): Promise<AgePerson[]> {
 
 const ageTermBlock = async (db: Db, leadId: string, bankLabel: string) => ageTermBlockText(bankLabel, await agePeople(db, leadId));
 
+/** CREDITAS: o próprio portal recusa na tela "O Pagador não pode ter mais de 75 anos" e "O cônjuge não pode ter mais de 75 anos" (José Roberto 76/74 e Maria Celma, 20/10): vale para CADA pessoa da proposta
+ *  (pagador + cônjuge), então um participante acima de 75 já barra a Creditas — trocar o titular não resolve. Sem nascimento = não sabe, roda. */
+export function creditasAgeBlockText(people: AgePerson[]): string | null {
+  const velhos = people.filter((x) => x.age !== null && x.age > 75);
+  if (!velhos.length) return null;
+  return `a Creditas não aceita participante com mais de 75 anos (pagador e cônjuge): ${velhos.map((x) => `${x.name} (${x.age} anos)`).join(', ')}.`;
+}
+const creditasAgeBlock = async (db: Db, leadId: string) => { const people = await agePeople(db, leadId); return creditasAgeBlockText(people) || ageTermBlockText('Creditas', people); };
+
 /** TITULAR PELA IDADE (Fabio 19/10): se o titular do banco NÃO pode rodar ali (Inter: fora de 18–69; Santander/Creditas: nem o prazo mínimo) e o 2º participante pode, inverte antes de rodar
  *  (as extensões não escolhem sozinhas: rodava o titular de 72 anos e o portal recusava). Banco que já aprovou alguém não é mexido (vale o titular da aprovação). */
 export function holderNeedsSwap(first: AgePerson, second: AgePerson, ok: (x: AgePerson) => boolean): boolean {
@@ -341,7 +350,7 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
         }
       }
       if ((bank === 'CREDIMORAR' || bank === 'CREDITAS') && kind === 'RUN' && !p.dryRun) {
-        const idade = await ageTermBlock(db, l.id, bank === 'CREDITAS' ? 'Creditas' : 'Santander');
+        const idade = bank === 'CREDITAS' ? await creditasAgeBlock(db, l.id) : await ageTermBlock(db, l.id, 'Santander');
         if (idade) {
           await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail: `NÃO RODEI: ${idade}`, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
           created++;

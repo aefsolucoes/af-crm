@@ -289,6 +289,8 @@ async function noticeClients(accountId: string, io: any) {
 
 /** Falha OBJETIVA (regra do banco/imóvel), não técnica: "NÃO RODEI: … abaixo do mínimo / terreno / saldo devedor", "Não conformidade…". */
 const OBJECTIVE_FAIL = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas/i;
+/** O portal do banco recusou um dado do cadastro ("DADO PARA CORRIGIR: telefone do cônjuge inválido"): não é falha técnica, não gasta tentativa — fica pendente até corrigirem o card. */
+export const DADO_PARA_CORRIGIR = /DADO PARA CORRIGIR/i;
 /** Creditas: "Este CPF já possui uma proposta ativa … ela NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar na Creditas — conta como NÃO desse banco
  *  (se os outros também não deram, o cliente é avisado e vai pra Perdido; se algum aprovou, o aviso de aprovação sai sem esperar a Creditas). */
 const CREDITAS_CPF_ATIVO = /CPF j[aá] possui uma proposta ativa na Creditas/i;
@@ -487,6 +489,8 @@ async function retryTechnicalFailures(accountId: string) {
       if (!r || aberto(b)) continue;
       const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE';
       if (!tecnica || /RODADA ANULADA/i.test(r.detail || '')) continue;
+      // O portal recusou um DADO do cadastro (telefone/e-mail inválido…): refazer sem corrigir o dado dá o mesmo erro. Espera alguém corrigir o card (que gera pedido novo).
+      if (DADO_PARA_CORRIGIR.test(r.detail || '')) continue;
       const st = retries[b] || { n: 0, at: '' };
       // Falhas que NÃO são do cliente nem da análise não gastam tentativa (Fabio 19/10): sessão do banco vencida (enquanto o banco pedir login, nem refaz — espera alguém entrar) e extensão
       // recarregada/reiniciada no meio (acontece quando a equipe recarrega a extensão ou o Chrome reinicia).
