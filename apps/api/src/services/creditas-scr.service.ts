@@ -32,6 +32,8 @@ export interface ScrState {
   askedAt?: string; sentAt?: string; chasedAt?: string; holdSig?: string; windowNoteAt?: string; problemSig?: string; faltaSig?: string;
   /** Última mensagem do cliente (ISO) da janela de 24 h em que o lembrete "antes de fechar" já foi mandado — 1 por janela. */
   windowRemindFor?: string;
+  /** Fabio mandou pedir o SCR mesmo com outro banco aprovado no valor total (ISO da ordem): ignora a trava "a Creditas só vale se…" (Mauricio, 20/10). */
+  forced?: string;
 }
 
 const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
@@ -678,7 +680,7 @@ export async function processScrFlows(accountId: string, io: Io): Promise<void> 
     try {
       if (st.status === 'PENDING') {
         const vale = await creditasVale(lead.id, st);
-        if (!vale.ok) {
+        if (!vale.ok && !st.forced) {
           if (st.holdSig !== vale.sig) { await saveState(lead.id, { holdSig: vale.sig }); await addNote(lead.id, `⏸️ A Creditas pediu o SCR Bacen, mas por ora NÃO peço ao cliente: ${vale.motivo}. O CRM volta a pedir sozinho se isso mudar.`); }
           continue;
         }
