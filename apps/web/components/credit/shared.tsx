@@ -122,11 +122,28 @@ export function reasonOf(a?: Analysis): string {
   return x.length > 130 ? `${x.slice(0, 129)}…` : x;
 }
 
+/** Card que JÁ SEGUIU adiante com aprovação (saiu da Pré-Análise e algum banco aprovou): o banco que nunca rodou ou só tem falha técnica antiga NÃO é pendência
+ *  (Fabio 20/10: "esconde os falsos pendentes"). Quem ainda está na Pré-Análise continua mostrando tudo. */
+export function jaSeguiuAprovado(l: Pick<BoardLead, 'inPre' | 'latest'>): boolean {
+  return !l.inPre && Object.values(l.latest || {}).some((a) => !!a && (a.status === 'APPROVED' || a.status === 'CONDITIONAL'));
+}
+const falhaTecnicaAntiga = (a?: Analysis) => !!a && a.status === 'FAILED' && !isDesqualificado(a.detail);
+
 /** Célula de um participante: o selo + o motivo (por que falhou/reprovou/ficou em conferir) ou, sem análise, por que NÃO rodou. */
-export function ParticipantCell({ a, why }: { a?: Analysis; why?: string }) {
+export function ParticipantCell({ a, why, quieto }: { a?: Analysis; why?: string; quieto?: boolean }) {
   const r = reasonOf(a);
   // Desqualificado por regra do IMÓVEL/proposta (vale pros dois participantes): o 2º participante também aparece como "Desqualificado" (Fabio 17/10), em vez de "—".
   const herdado = !a && !!why && /regra que vale para os dois participantes/i.test(why);
+  // Card já aprovado que seguiu adiante: banco que nunca rodou ou falha técnica antiga viram cinza, sem cara de pendência.
+  if (quieto && !herdado && !a) return <span className="text-[11px] text-slate-300" title={why || 'Não precisou rodar neste banco: o cliente já foi aprovado em outro'}>— não precisou</span>;
+  if (quieto && falhaTecnicaAntiga(a)) {
+    return (
+      <div className="space-y-0.5" title={String(a?.detail || '')}>
+        <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-400">Falha antiga</span>
+        <div className="text-[10px] leading-snug text-slate-400">ignorada: cliente já aprovado</div>
+      </div>
+    );
+  }
   return (
     <div className="space-y-0.5">
       {herdado ? <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-500">Desqualificado</span> : <Badge a={a} />}
