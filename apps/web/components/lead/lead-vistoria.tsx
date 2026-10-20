@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ClipboardCheck, X } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
@@ -27,8 +27,24 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
   const [sel, setSel] = useState<string[]>([]);
   const [sentAt, setSentAt] = useState<string | null>(solicitadaEm ? String(solicitadaEm) : null);
 
+  type Laudo = { job: unknown | null; faltando: string[]; status: string; requestedAt: string | null; filledAt: string | null; link: string | null };
+  const [laudo, setLaudo] = useState<Laudo | null>(null);
+  const [laudoBusy, setLaudoBusy] = useState(false);
   const ehInter = /inter/i.test(String(instituicao || '')) || !!String(proposta || '').trim();
+  const carregarLaudo = () => api.get<Laudo>('/api/vistorias/laudo/preview', { params: { leadId } }).then((r) => setLaudo(r.data)).catch(() => {});
+  useEffect(() => { if (ehInter) { carregarLaudo(); const t = setInterval(carregarLaudo, 20_000); return () => clearInterval(t); } }, [leadId, ehInter]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!ehInter) return null;
+
+  async function pedirLaudo() {
+    if (!laudo) return;
+    if (laudo.faltando.length) { toast(`Faltam no card: ${laudo.faltando.join(', ')}`, 'error'); return; }
+    if (!window.confirm('A extensão "Vistoria Inter" vai preencher o laudo digital do apartamento no site do Inter e PARAR na tela de conferência. Você confere e envia. Pedir agora?')) return;
+    setLaudoBusy(true);
+    try { await api.post('/api/vistorias/laudo/request', { leadId }); toast('Na fila: a extensão preenche em até 1 minuto (Chrome aberto, 07h–22h)', 'success'); await carregarLaudo(); }
+    catch (err: any) { toast(err?.response?.data?.error || 'Erro ao pedir o laudo', 'error'); }
+    finally { setLaudoBusy(false); }
+  }
+  const stTxt: Record<string, string> = { REQUESTED: 'Na fila da extensão…', RUNNING: 'A extensão está preenchendo…', FILLED: 'Preenchido — falta conferir e ENVIAR no site do Inter', FAILED: 'A extensão não conseguiu preencher (veja a nota do card)' };
 
   async function abrir() {
     setLoading(true);
@@ -70,6 +86,20 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
       >
         {loading ? 'Montando o e-mail…' : quando ? 'Solicitar de novo' : 'Solicitar vistoria'}
       </button>
+
+      {laudo && (laudo.job || laudo.faltando.length > 0) && (
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <div className="mb-1 text-xs font-medium text-slate-600">Laudo digital do apartamento (formulário do Inter)</div>
+          {laudo.status && <div className={`mb-1 text-xs ${laudo.status === 'FILLED' ? 'text-emerald-700' : laudo.status === 'FAILED' ? 'text-red-600' : 'text-slate-500'}`}>{stTxt[laudo.status] || laudo.status}</div>}
+          {laudo.faltando.length > 0 && <div className="mb-1 text-xs text-amber-700">Faltam no card: {laudo.faltando.join(', ')}</div>}
+          <div className="flex flex-wrap gap-2">
+            <button onClick={pedirLaudo} disabled={laudoBusy || laudo.status === 'REQUESTED' || laudo.status === 'RUNNING'} className="rounded bg-slate-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+              {laudo.status === 'FILLED' || laudo.status === 'FAILED' ? 'Preencher de novo' : 'Preencher laudo (extensão)'}
+            </button>
+            {laudo.link && <a href={laudo.link} target="_blank" rel="noreferrer" className="rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50">Abrir formulário do Inter</a>}
+          </div>
+        </div>
+      )}
 
       {open && p && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !sending && setOpen(false)}>

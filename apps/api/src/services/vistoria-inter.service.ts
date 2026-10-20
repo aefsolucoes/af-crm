@@ -151,3 +151,112 @@ export async function solicitarVistoria(p: { accountId: string; userId: string; 
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(p.accountId, { title: '📨 Vistoria solicitada ao Inter', body: lead.name, leadId: p.leadId }).catch(() => {}); } catch { /* aviso */ }
   return { ok: true, to, anexou: attachments.length > 0 };
 }
+
+
+// ─── Laudo digital do Inter (apartamento): a extensão "Vistoria Inter" preenche o formulário avaliacaoimovel.bancointer.com.br/<proposta> ───────────────────────────
+// Fabio 20/10 (caso Pedro): a IA junta os dados do imóvel no card, a extensão preenche as 6 etapas e PARA na tela "Confira os dados preenchidos" — quem marca "me responsabilizo" e envia é a equipe.
+// Respostas FIXAS decididas pelo Fabio ("sempre"): condição do imóvel = "Não apresenta nenhuma dessas condições"; conservação do apto = Bom; padrão de acabamento = Normal; conservação do condomínio = Bom.
+
+export type LaudoJob = {
+  leadId: string; leadName: string; proposta: string; cep: string; numero: string; complemento: string;
+  area: number; quartos: number; banheiros: number; suites: number; vagas: number; ano: string;
+  fixos: { condicao: string; conservacao: string; padrao: string; condominio: string };
+};
+
+const LAUDO_FIXOS = { condicao: 'Não apresenta nenhuma dessas condições', conservacao: 'BOM', padrao: 'NORMAL', condominio: 'BOM' };
+const inteiro = (v: unknown): number => { const m = String(v ?? '').match(/\d+/); return m ? parseInt(m[0], 10) : NaN; };
+
+/** Monta o job do laudo a partir do card; devolve também o que falta. Pura nos dados (testável). */
+export function buildLaudoJob(leadId: string, leadName: string, cf: Record<string, any>): { job: LaudoJob | null; faltando: string[] } {
+  const faltando: string[] = [];
+  const proposta = String(cf.num_proposta || '').trim();
+  if (!proposta) faltando.push('número da proposta do Inter');
+  if (!/inter/i.test(String(cf.instituicao || '')) && !proposta) faltando.push('proposta do Inter');
+  if (!/apart/i.test(String(cf.imovel_tipo || ''))) faltando.push('tipo do imóvel = Apartamento (casa tem visita de engenheiro, não laudo digital)');
+  const cep = String(cf.imovel_cep || '').replace(/\D/g, '');
+  if (cep.length !== 8) faltando.push('CEP do imóvel');
+  const numero = String(cf.imovel_numero || '').trim();
+  if (!numero) faltando.push('número do imóvel');
+  const areaNum = parseFloat(String(cf.imovel_area_util || '').replace(/\./g, '').replace(',', '.'));
+  if (!Number.isFinite(areaNum) || areaNum <= 0) faltando.push('área útil (m²)');
+  const ano = String(cf.imovel_ano_construcao || '').match(/\d{4}/)?.[0] || '';
+  if (!ano) faltando.push('ano de construção');
+  const q = inteiro(cf.imovel_dormitorios), b = inteiro(cf.imovel_banheiros), su = inteiro(cf.imovel_suites);
+  if (!Number.isFinite(q)) faltando.push('dormitórios');
+  if (!Number.isFinite(b)) faltando.push('banheiros');
+  if (!Number.isFinite(su)) faltando.push('suítes');
+  const vTxt = String(cf.imovel_vagas_exclusivas ?? '').trim();
+  const v = /^(nenhum|n[aã]o|sem)/i.test(vTxt) ? 0 : inteiro(vTxt);
+  if (!vTxt) faltando.push('vagas de garagem');
+  if (faltando.length) return { job: null, faltando };
+  return {
+    faltando: [],
+    job: { leadId, leadName, proposta, cep, numero, complemento: String(cf.imovel_complemento || '').trim(), area: Math.round(areaNum), quartos: q, banheiros: b, suites: su, vagas: Number.isFinite(v) ? v : 0, ano, fixos: LAUDO_FIXOS },
+  };
+}
+
+const laudoLink = (proposta: string) => `https://avaliacaoimovel.bancointer.com.br/${proposta}`;
+
+export async function laudoPreview(accountId: string, leadId: string) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const r = buildLaudoJob(leadId, lead.name, cf);
+  return { ...r, status: String(cf._laudoStatus || ''), requestedAt: cf._laudoRequestedAt || null, filledAt: cf._laudoFilledAt || null, link: r.job ? laudoLink(r.job.proposta) : null };
+}
+
+export async function requestLaudo(accountId: string, leadId: string, userId: string) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const { job, faltando } = buildLaudoJob(leadId, lead.name, cf);
+  if (!job) throw new Error(`Faltam dados no card: ${faltando.join(', ')}.`);
+  if (cf._laudoStatus === 'REQUESTED' || cf._laudoStatus === 'RUNNING') throw new Error('O laudo já está na fila da extensão.');
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'REQUESTED', _laudoRequestedAt: new Date().toISOString(), _laudoFilledAt: null } } });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', userId, content: '📝 Laudo digital do Inter na fila: a extensão "Vistoria Inter" vai preencher o formulário e parar na tela de conferência (quem envia é a equipe).' } }).catch(() => {});
+  return { ok: true };
+}
+
+const horaBrasilia = () => new Date(Date.now() - 3 * 3600_000).getUTCHours();
+
+/** A extensão pergunta "tem laudo pra preencher?" (a cada minuto, 07h–22h). Um por vez; RUNNING há mais de 20 min é dado como falha. */
+export async function claimLaudo(accountId: string): Promise<LaudoJob | null> {
+  const h = horaBrasilia();
+  if (h < 7 || h >= 22) return null;
+  const rows = await prisma.$queryRaw<{ id: string; name: string; customFields: any }[]>`SELECT id, name, "customFields" FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false AND "customFields"->>'_laudoStatus' IN ('REQUESTED', 'RUNNING') ORDER BY ("customFields"->>'_laudoRequestedAt') ASC LIMIT 5`;
+  for (const r of rows) {
+    const cf = (r.customFields || {}) as Record<string, any>;
+    if (cf._laudoStatus === 'RUNNING') {
+      if (Date.now() - new Date(String(cf._laudoClaimedAt || 0)).getTime() > 20 * 60_000) {
+        await prisma.lead.update({ where: { id: r.id }, data: { customFields: { ...cf, _laudoStatus: 'FAILED' } } });
+        await prisma.note.create({ data: { leadId: r.id, type: 'COMMENT', content: '⚠️ O preenchimento do laudo do Inter não terminou em 20 min (a janela da extensão fechou ou travou). Peça de novo no botão do card.' } }).catch(() => {});
+      }
+      continue;
+    }
+    const { job } = buildLaudoJob(r.id, r.name, cf);
+    if (!job) { await prisma.lead.update({ where: { id: r.id }, data: { customFields: { ...cf, _laudoStatus: 'FAILED' } } }); continue; }
+    await prisma.lead.update({ where: { id: r.id }, data: { customFields: { ...cf, _laudoStatus: 'RUNNING', _laudoClaimedAt: new Date().toISOString() } } });
+    return job;
+  }
+  return null;
+}
+
+export async function reportLaudo(accountId: string, leadId: string, d: { event: string; detail?: string; reason?: string }) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const proposta = String(cf.num_proposta || '').trim();
+  const push = (title: string, body: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
+  if (d.event === 'filled') {
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'FILLED', _laudoFilledAt: new Date().toISOString() } } });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📝 Laudo digital do Inter PREENCHIDO pela extensão — falta a equipe conferir e ENVIAR (marcar "me responsabilizo" e clicar em enviar): ${laudoLink(proposta)}${d.detail ? `\n${String(d.detail).slice(0, 500)}` : ''}` } }).catch(() => {});
+    push('📝 Laudo do Inter preenchido', `${lead.name}: falta conferir e enviar`);
+  } else if (d.event === 'failed') {
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'FAILED' } } });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A extensão NÃO conseguiu preencher o laudo digital do Inter: ${String(d.reason || 'erro').slice(0, 400)}. Link: ${laudoLink(proposta)}` } }).catch(() => {});
+    push('⚠️ Laudo do Inter não foi preenchido', `${lead.name}: ${String(d.reason || '').slice(0, 90)}`);
+  } else if (d.event === 'step') {
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoClaimedAt: new Date().toISOString() } } }); // sinal de vida (evita o "RUNNING há 20 min")
+  }
+  return { ok: true };
+}
