@@ -251,6 +251,10 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
     } else {
       out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'FAILED', finishedAt: new Date(), detail: reason } });
       await note(db, r.leadId, `⚠️ A certidão da matrícula ${r.matricula} NÃO foi pedida: ${reason}`, r.requestedById);
+      // A escritura não dizia qual é o cartório (ou o nome não bateu) e a cidade tem mais de um: confirma com o cliente (Fabio 20/10).
+      if (/cart[óo]rios? no portal|n[ãa]o existe em/i.test(reason)) {
+        try { await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).askClientCartorio(p.accountId, { id: r.id, leadId: r.leadId, matricula: r.matricula, cidade: r.cidade, uf: r.uf }, reason, p.io as any); } catch (e: any) { console.warn('[Certidão] pergunta do cartório:', e?.message); }
+      }
     }
   }
   emitUpdate(p.io, p.accountId, r.leadId, r.id);

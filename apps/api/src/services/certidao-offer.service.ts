@@ -30,6 +30,16 @@ export function cidadeUfDe(txt: string): { cidade: string; uf: string } | null {
 
 type Rev = { tipo?: string; resultado?: string; matricula?: string; cartorio?: string; endereco?: string; encerrada?: unknown };
 
+const ORDINAIS: Record<string, number> = { primeiro: 1, segundo: 2, terceiro: 3, quarto: 4, quinto: 5, sexto: 6, setimo: 7, oitavo: 8, nono: 9, decimo: 10 };
+/** Número do cartório ("1º Ofício", "2º Registro de Imóveis", "Segundo Ofício") escrito na escritura; null se for o cartório único da comarca. Pura (testável). */
+export function numeroDoCartorio(txt: string): number | null {
+  const t = String(txt || '');
+  const a = /\b(\d{1,2})\s*[º°ª]/.exec(t) || /\b(\d{1,2})\s*o?\s+(?:of[íi]cio|cart[óo]rio|registro|servi[çc]o)/i.exec(t);
+  if (a) return parseInt(a[1], 10);
+  const w = /\b(primeiro|segundo|terceiro|quarto|quinto|sexto|s[ée]timo|oitavo|nono|d[ée]cimo)\b/i.exec(t.normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+  return w ? ORDINAIS[w[1].toLowerCase()] || null : null;
+}
+
 /** O cliente já tem em mãos certidão de ônus/matrícula do cartório que vale? Pura. */
 export function temCertidaoEmMaos(cf: Record<string, any>): boolean {
   const revs = Object.values((cf._docReview || {}) as Record<string, Rev>);
@@ -45,7 +55,11 @@ export function certidaoFromDocs(cf: Record<string, any>): { matricula: string; 
   const ordenado = [...comMat].sort((a, b) => (/ESCRITURA/.test(String(b.tipo)) ? 1 : 0) - (/ESCRITURA/.test(String(a.tipo)) ? 1 : 0));
   for (const r of ordenado) {
     const cu = cidadeUfDe(String(r.cartorio || '')) || cidadeUfDe(String(r.endereco || ''));
-    if (cu) return { matricula: digits(r.matricula), cartorio: 'AUTO', cidade: cu.cidade, uf: cu.uf };
+    if (cu) {
+      // O nome do cartório vem NA ESCRITURA (Fabio 20/10): usa o número dele ("1º Ofício") pra a extensão achar o cartório na lista do portal; sem número (cartório único) vai 'AUTO'.
+      const n = numeroDoCartorio(String(r.cartorio || ''));
+      return { matricula: digits(r.matricula), cartorio: n ? `${n}º - ${cu.cidade.toUpperCase()}` : 'AUTO', cidade: cu.cidade, uf: cu.uf };
+    }
   }
   return null;
 }
@@ -110,6 +124,78 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string): 
   }
 }
 
+/** Opções de cartório que a extensão listou ao falhar ("… (opções: 1º OFÍCIO - X | 2º OFÍCIO - X)"). Pura (testável). */
+export function opcoesDeCartorio(reason: string): string[] {
+  const m = /\(op[cç][õo]es:\s*(.+?)\)\s*(?:—|-|$)/i.exec(String(reason || ''));
+  if (!m) return [];
+  return m[1].split('|').map((x) => x.trim()).filter((x) => x && !/selecione|^-+$/i.test(x));
+}
+
+/** A extensão não soube qual cartório pedir (a escritura não diz e a cidade tem mais de um): CONFIRMA COM O CLIENTE (Fabio 20/10: "pode confirmar com o cliente também se não souber"). Uma vez por matrícula. */
+export async function askClientCartorio(accountId: string, req: { id: string; leadId: string; matricula: string; cidade: string; uf: string }, reason: string, io: Io): Promise<boolean> {
+  const opcoes = opcoesDeCartorio(reason);
+  if (opcoes.length < 2 || opcoes.length > 12) return false;
+  const lead = await carrega(req.leadId);
+  if (!lead || lead.accountId !== accountId) return false;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const antes = cf._certidaoCartorio as { matricula?: string; askedAt?: string } | undefined;
+  if (antes?.matricula === req.matricula && antes?.askedAt) return false;
+  if (cf._autoPaused || !lead.aiAutoReplyActive) return false;
+  const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow() || !(await whatsappWindowOpen(req.leadId))) return false;
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.participante_1, lead.name) || null;
+  const saud = (await conversationActive(req.leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
+  const texto = `${saud}Pra pedir a certidão da matrícula ${req.matricula} preciso saber o cartório de registro de imóveis. Em ${req.cidade} o portal tem estas opções:\n${opcoes.map((o) => `• ${o}`).join('\n')}\n\nNa sua escritura ou matrícula aparece qual deles? Se não souber, sem problema, é só me avisar.`;
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId, leadId: req.leadId, content: texto, io: (io || undefined) as any });
+  if (!r.success) return false;
+  const fresh = await prisma.lead.findUnique({ where: { id: req.leadId }, select: { customFields: true } });
+  const c2 = { ...((fresh?.customFields || {}) as Record<string, any>), _certidaoCartorio: { requestId: req.id, matricula: req.matricula, cidade: req.cidade, uf: req.uf, opcoes, askedAt: new Date().toISOString() } };
+  await prisma.lead.update({ where: { id: req.leadId }, data: { customFields: c2 as any } });
+  await note(req.leadId, `🏛️ A escritura não diz qual é o cartório de ${req.cidade} (o portal tem ${opcoes.length}). Perguntei ao cliente qual aparece na escritura/matrícula; com a resposta o pedido é refeito sozinho.`);
+  return true;
+}
+
+/** Resposta do cliente à pergunta do cartório: escolheu uma opção → refaz o pedido no ONR com ela; "não sei" → avisa a equipe. */
+async function respondeCartorio(accountId: string, leadId: string, text: string, pend: { requestId?: string; matricula: string; cidade: string; uf: string; opcoes: string[] }, io: Io): Promise<void> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5', max_tokens: 1000,
+      system: 'O cliente respondeu qual é o cartório de registro de imóveis do imóvel dele. Escolha, entre as OPÇÕES numeradas, a que a resposta indica. Responda SÓ JSON: {"opcao": <número da opção, ou 0 se a resposta não indica nenhuma>, "naoSei": <true se o cliente disse que não sabe/não lembra>}. Se a resposta for pergunta ou outro assunto: {"opcao":0,"naoSei":false}.',
+      messages: [{ role: 'user', content: `OPÇÕES:\n${pend.opcoes.map((o, i) => `${i + 1}) ${o}`).join('\n')}\n\nRESPOSTA DO CLIENTE: ${text}` }],
+    }),
+  }).catch(() => null);
+  if (!res?.ok) return;
+  const d: any = await res.json().catch(() => null);
+  let j: any = {};
+  try { j = JSON.parse(String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch { /* indefinido */ }
+  const idx = Number(j.opcao) || 0;
+  const salva = async (patch: Record<string, unknown>) => {
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
+    c._certidaoCartorio = { ...(c._certidaoCartorio || {}), ...patch };
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+  };
+  if (idx >= 1 && idx <= pend.opcoes.length) {
+    const escolhido = pend.opcoes[idx - 1];
+    await salva({ answeredAt: new Date().toISOString(), escolhido });
+    try {
+      const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: pend.uf, cidade: pend.cidade, cartorio: escolhido, matricula: pend.matricula, source: 'AI' });
+      await note(leadId, `🏛️ O cliente confirmou o cartório: ${escolhido}. Pedido refeito no ONR${out.duplicate ? ' (já havia um andando)' : ''}.`);
+      io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
+    } catch (e: any) { await note(leadId, `⚠️ O cliente confirmou o cartório (${escolhido}), mas não consegui refazer o pedido: ${e?.message || e}.`); }
+  } else if (j.naoSei === true) {
+    await salva({ answeredAt: new Date().toISOString(), naoSei: true });
+    await note(leadId, `⚠️ O cliente NÃO sabe qual é o cartório (${pend.cidade}/${pend.uf}). Confira na escritura/matrícula (nome do cartório de registro) e peça a certidão pelo card.`);
+    try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏛️ Cartório da certidão', body: 'O cliente não sabe qual é o cartório — confira na escritura', leadId }).catch(() => {}); } catch { /* push é só aviso */ }
+  }
+}
+
 /** Mensagem do cliente depois da oferta: aceitou? Aceitou → autorização anotada + extensão do ONR acionada. Roda a cada texto inbound, mas só gasta IA enquanto há oferta esperando resposta. */
 export async function checkCertidaoAcceptance(accountId: string, leadId: string, text: string, io: Io): Promise<void> {
   const clean = String(text || '').trim();
@@ -117,6 +203,8 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
+  const pend = cf._certidaoCartorio as { requestId?: string; matricula: string; cidade: string; uf: string; opcoes: string[]; askedAt?: string; answeredAt?: string } | undefined;
+  if (pend?.askedAt && !pend.answeredAt && !cf._autoPaused) { await respondeCartorio(accountId, leadId, clean, pend, io); return; }
   const of = cf._certidaoOffer as { matricula?: string; at?: string; acceptedAt?: string; declinedAt?: string } | undefined;
   if (!of?.at || of.acceptedAt || of.declinedAt || cf._autoPaused) return;
   const apiKey = process.env.ANTHROPIC_API_KEY;
