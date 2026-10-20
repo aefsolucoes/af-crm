@@ -482,7 +482,7 @@ async function noteVerdictFlip(db: Db, row: { id: string; leadId: string; bank: 
 
 /** Santander "Ação pendente — Contatar Consultor" (Fabio 20/10, Luiz Fernando): a proposta NÃO passou na análise automática e o banco liberou a ANÁLISE MANUAL. A extensão escolhe "Análise manual" e lê os
  *  documentos que o portal pede (marcador "ANÁLISE MANUAL ABERTA" + "[DOCUMENTOS (perfil de renda X): a ; b]" no detalhe). Aqui o CRM avisa a equipe e PEDE os documentos ao cliente, explicando que não passou
- *  na análise automática. O "Enviar" depois de escolher "Análise manual" é clicado pela extensão (Fabio 20/10); a anexação dos documentos fica pra equipe. Uma vez por proposta; se o cliente não pôde ser avisado agora (IA do card desligada, janela de 24 h fechada, fora das 07h–21h),
+ *  na análise automática. O "Enviar" no portal é SEMPRE manual (regra do Fabio, confirmada 20/10). Uma vez por proposta; se o cliente não pôde ser avisado agora (IA do card desligada, janela de 24 h fechada, fora das 07h–21h),
  *  tenta de novo na próxima leitura da extensão. */
 const SANTANDER_MANUAL = /AN[ÁA]LISE MANUAL ABERTA/i;
 const docDoPortal = (t: string): string => {
@@ -516,7 +516,7 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
   const texto = santanderManualClientText(nome, !(await conversationActive(lead.id)), itens);
   // Equipe: nota + push, uma vez por proposta.
   if (st.proposta !== numero || !st.teamAt) {
-    await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🏦 Santander: a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente) e foi liberada pra ANÁLISE MANUAL. A extensão escolheu "Análise manual" e clicou em "Enviar" no portal (o detalhe da análise diz se o clique deu certo).${itens.length ? ` Documentos que o portal pede: ${itens.join('; ')}.` : ''} Peço os documentos ao cliente; quando chegarem, anexe no portal e finalize com o "Comentário de defesa".` } }).catch(() => {});
+    await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🏦 Santander: a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente) e foi liberada pra ANÁLISE MANUAL. A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".${itens.length ? ` Documentos que o portal pede: ${itens.join('; ')}.` : ''} Depois que o cliente mandar: anexe no portal, escreva o "Comentário de defesa" e clique em ENVIAR (o envio é sempre manual).` } }).catch(() => {});
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
     sendPushToAccount(lead.accountId, { title: '🏦 Santander pede análise manual', body: `${lead.name}: não passou na análise automática — documentos pedidos ao cliente`, leadId: lead.id }).catch(() => {});
     await salvar({ teamAt: new Date().toISOString() });
@@ -1457,7 +1457,7 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
       case 'SENT': {
         if (SANTANDER_MANUAL.test(r.detail || '')) {
           const dd = (parseDocumentosExigidos(r.detail)?.itens || []).map(docDoPortal);
-          return `NÃO PASSOU NA ANÁLISE AUTOMÁTICA — o banco liberou ANÁLISE MANUAL e só segue com os documentos do cliente${dd.length ? ` (${dd.join('; ')})` : ''}. Peça/confirme esses documentos; quando chegarem, a EQUIPE anexa no portal e finaliza o envio ao banco. NÃO diga que foi aprovado`;
+          return `NÃO PASSOU NA ANÁLISE AUTOMÁTICA — o banco liberou ANÁLISE MANUAL e só segue com os documentos do cliente${dd.length ? ` (${dd.join('; ')})` : ''}. Peça/confirme esses documentos; quando chegarem, a EQUIPE anexa no portal e envia ao banco. NÃO diga que foi aprovado`;
         }
         return 'ENVIADO ao banco, EM ANÁLISE — ainda sem resultado';
       }
