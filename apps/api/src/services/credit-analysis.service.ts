@@ -480,6 +480,63 @@ async function noteVerdictFlip(db: Db, row: { id: string; leadId: string; bank: 
 }
 
 
+/** Santander "Ação pendente — Contatar Consultor" (Fabio 20/10, Luiz Fernando): a proposta NÃO passou na análise automática e o banco liberou a ANÁLISE MANUAL. A extensão escolhe "Análise manual" e lê os
+ *  documentos que o portal pede (marcador "ANÁLISE MANUAL ABERTA" + "[DOCUMENTOS (perfil de renda X): a ; b]" no detalhe). Aqui o CRM avisa a equipe e PEDE os documentos ao cliente, explicando que não passou
+ *  na análise automática. O "Enviar" no portal é SEMPRE manual (regra do Fabio). Uma vez por proposta; se o cliente não pôde ser avisado agora (IA do card desligada, janela de 24 h fechada, fora das 07h–21h),
+ *  tenta de novo na próxima leitura da extensão. */
+const SANTANDER_MANUAL = /AN[ÁA]LISE MANUAL ABERTA/i;
+const docDoPortal = (t: string): string => {
+  const x = t.replace(/\s*\(obrigat[oó]rio\)\s*$/i, '').trim();
+  if (/holerite/i.test(x)) return 'Os 3 últimos holerites (contracheques)';
+  if (/irpf|imposto de renda/i.test(x)) return 'Declaração de Imposto de Renda (IRPF) do último exercício + extrato da conta corrente dos últimos 3 meses';
+  return x;
+};
+export function santanderManualClientText(nome: string | null, saudar: boolean, itens: string[]): string {
+  const lista = itens.length ? itens : ['Os documentos de comprovação de renda'];
+  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Sobre o seu crédito: a proposta não passou na análise automática do Santander, mas o banco liberou a *análise manual* (feita por um analista), que é o caminho pra conseguir uma resposta. Pra encaminhar ao banco, preciso que você me envie por aqui:\n${lista.map((i) => `• ${i}`).join('\n')}\n\nAssim que eu receber, encaminho ao banco e te aviso o retorno. 😊`;
+}
+async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; dryRun: boolean; detail?: string | null; proposalNumber?: string | null; accountId: string }): Promise<void> {
+  if (row.dryRun || row.bank !== 'CREDIMORAR' || !SANTANDER_MANUAL.test(row.detail || '')) return;
+  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { id: true, name: true, accountId: true, aiAutoReplyActive: true, status: true, customFields: true } });
+  if (!lead || lead.status !== 'OPEN') return;
+  const cf = { ...((lead.customFields || {}) as Record<string, any>) };
+  const numero = row.proposalNumber || (/proposta\s+(\d{6,})/i.exec(row.detail || '') || [])[1] || 'sem-numero';
+  const st = (cf._santanderManual || {}) as { proposta?: string; teamAt?: string; askedAt?: string };
+  if (st.proposta === numero && st.askedAt) return; // já pedi os documentos ao cliente desta proposta
+  const itens = (parseDocumentosExigidos(row.detail)?.itens || []).map(docDoPortal);
+  const salvar = async (patch: Record<string, any>) => {
+    const fresh = await db.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
+    const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
+    c._santanderManual = { ...(c._santanderManual || {}), proposta: numero, ...patch };
+    await db.lead.update({ where: { id: lead.id }, data: { customFields: c as any } });
+  };
+  const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.participante_1, lead.name) || null;
+  const texto = santanderManualClientText(nome, !(await conversationActive(lead.id)), itens);
+  // Equipe: nota + push, uma vez por proposta.
+  if (st.proposta !== numero || !st.teamAt) {
+    await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🏦 Santander: a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente) e foi liberada pra ANÁLISE MANUAL. A extensão escolheu "Análise manual" no portal.${itens.length ? ` Documentos que o portal pede: ${itens.join('; ')}.` : ''} Depois que o cliente mandar: anexe no portal, escreva o "Comentário de defesa" e clique em ENVIAR (o envio é sempre manual).` } }).catch(() => {});
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(lead.accountId, { title: '🏦 Santander pede análise manual', body: `${lead.name}: não passou na análise automática — documentos pedidos ao cliente`, leadId: lead.id }).catch(() => {});
+    await salvar({ teamAt: new Date().toISOString() });
+  }
+  // Cliente: só com a IA do card ligada, sem STOP TOTAL, dentro das 07h–21h e com a janela de 24 h aberta (senão fica o texto pronto na nota).
+  const motivo = cf._autoPaused ? 'o card está em STOP TOTAL' : !lead.aiAutoReplyActive ? 'a IA deste card está desligada' : !inNoticeWindow() ? 'fora do horário dos avisos (07h–21h)' : !(await whatsappWindowOpen(lead.id)) ? 'a janela de 24 h do WhatsApp está fechada' : '';
+  if (motivo) {
+    if (!st.askedAt && !(cf._santanderManual as any)?.heldNoteFor) {
+      await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `⏳ Santander (análise manual): NÃO pedi os documentos ao cliente agora — ${motivo}. ${motivo.includes('janela') || motivo.includes('IA') ? 'Chame o cliente e mande:' : 'Tento de novo na próxima leitura; se preferir, mande você:'}\n\n${texto}` } }).catch(() => {});
+      await salvar({ heldNoteFor: numero });
+    }
+    return;
+  }
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: lead.id, content: texto });
+  if (!r.success) { console.warn(`[Santander manual] ${lead.name}: pedido de documentos não saiu — ${(r as any).error}`); return; }
+  await salvar({ askedAt: new Date().toISOString() });
+  await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `📨 Santander (análise manual): pedi os documentos ao cliente explicando que a proposta não passou na análise automática.${itens.length ? ` Pedido: ${itens.join('; ')}.` : ''}` } }).catch(() => {});
+}
+
 /** O banco pediu DE NOVO / não aceitou a certidão de ônus/matrícula que o cliente já mandou (Fabio 15/10: "o próprio CRM faz essa parte: anota e lê"). Lê o resultado da análise (ex.: Inter "Documentos
  *  pendentes: Certidão de ônus…" ou texto de recusa), anota no card com o marcador "🏛️ CERTIDÃO RECUSADA PELO BANCO" (a conferência de documentos lê esse marcador) e avisa o cliente UMA vez,
  *  oferecendo emitir uma nova pelo ONR (R$ 40–100, com o OK dele). Só quando o cliente JÁ mandou matrícula/ônus — se ainda não mandou, é só documento pendente normal. */
@@ -624,6 +681,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun) await finishProposalChange(db, updated.leadId).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
   if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
+  await santanderManualFlow(db, updated as any).catch((e: any) => console.error('[Santander manual]', e?.message || e));
   return { row: updated, becameFinal };
 }
 
@@ -1396,7 +1454,13 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
       }
       case 'CONDITIONAL': return 'APROVADO COM CONDIÇÃO — o banco pede documentos para seguir';
       case 'REJECTED': return 'REPROVADO';
-      case 'SENT': return 'ENVIADO ao banco, EM ANÁLISE — ainda sem resultado';
+      case 'SENT': {
+        if (SANTANDER_MANUAL.test(r.detail || '')) {
+          const dd = (parseDocumentosExigidos(r.detail)?.itens || []).map(docDoPortal);
+          return `NÃO PASSOU NA ANÁLISE AUTOMÁTICA — o banco liberou ANÁLISE MANUAL e só segue com os documentos do cliente${dd.length ? ` (${dd.join('; ')})` : ''}. Peça/confirme esses documentos; quando chegarem, a EQUIPE anexa no portal e envia ao banco. NÃO diga que foi aprovado`;
+        }
+        return 'ENVIADO ao banco, EM ANÁLISE — ainda sem resultado';
+      }
       case 'INCOMPLETE': return 'EM ANÁLISE — o banco pediu mais dados do cliente (a equipe está completando)';
       case 'CHECK': return 'EM ANÁLISE — ainda sem resultado conclusivo';
       default: return 'NÃO ANALISADO nesse banco (assunto interno: não explique o motivo ao cliente)';
