@@ -286,7 +286,7 @@ async function optionFromCard(leadId: string): Promise<ApprovalOption[] | null> 
   }];
 }
 
-export function renderApprovalText(options: ApprovalOption[]): string {
+export function renderApprovalText(options: ApprovalOption[], pendentes: string[] = []): string {
   const block = (o: ApprovalOption) => [
     '📋 Resumo da proposta:',
     `🏦 Instituição: ${o.instituicao}`,
@@ -301,12 +301,16 @@ export function renderApprovalText(options: ApprovalOption[]): string {
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
     o.primeiraParcela && `💵 1ª parcela: ${o.primeiraParcela}`,
     o.ultimaParcela && `💵 Última parcela: ${o.ultimaParcela}`,
+    // Inter aprovado a menor: as parcelas exatas só saem depois do aceite no portal.
+    o.aMenor && !o.primeiraParcela && `🧾 As parcelas exatas são confirmadas na formalização, conforme o valor e o prazo aprovados.`,
   ].filter(Boolean).join('\n');
   const head = options.length > 1 ? `✅ Consegui ${options.length} opções de aprovação pra você escolher!` : '✅ Crédito aprovado!';
   const tail = options.length > 1 ? '\n\n👉 Qual dessas opções você prefere? É só me responder por aqui que eu sigo com a que você escolher.' : ''; // opção única: a mensagem acaba no resumo (Fabio 14/10)
   // Inter aprovou CONDICIONADO ao envio de documentos (sem números ainda): o aviso não espera por ele — informa a(s) aprovação(ões) que já saiu(ram) e diz que, com os documentos que o Inter pede, dá pra conseguir condição melhor lá (Fabio 17/10, Luzia).
   const notaInter = options.some((o) => o.interCondicional) ? '\n\nℹ️ O Inter também aprovou o seu crédito, condicionado ao envio de documentos. Depois que você enviar os documentos que ele pede, podemos conseguir uma condição ainda melhor lá.' : '';
-  return `${head}\n\n${options.map(block).join('\n\n')}${notaInter}${tail}`;
+  // Bancos que ainda estão analisando (Fabio 20/10: "dizer que está em análise na Creditas"): o cliente sabe que pode vir outra opção.
+  const notaPend = pendentes.length ? `\n\n⏳ Ainda em análise: ${pendentes.join(' e ')}. Se sair uma condição melhor, te aviso por aqui.` : '';
+  return `${head}\n\n${options.map(block).join('\n\n')}${notaInter}${notaPend}${tail}`;
 }
 
 // Texto da mensagem 2 (Fabio 14/10): cabeçalho único, "Documentos pessoais" + Imóvel, e os documentos do cônjuge/2º participante quando houver.
@@ -457,7 +461,9 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
       primeiraParcela: money(r.firstInstallment),
       ultimaParcela: money(r.lastInstallment),
       pedido: /aprovad[oa] a menor/i.test(r.detail || '') ? (/pedido:?\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1] : undefined,
-      incompleta: /aprovad[oa] a menor/i.test(r.detail || '') && !r.firstInstallment,
+      // Aprovado a menor SEM parcelas segura o aviso só onde a extensão refaz a simulação (Santander). No INTER as parcelas só existem depois que o cliente aceita a proposta no portal
+      // ("Seguir com proposta"): segurar o aviso por isso era um beco sem saída — o cliente nunca ficava sabendo da aprovação (Luiz Fernando e Jézer, 20/10; Fabio: "o CRM deveria dizer que houve aprovação a menor no Inter").
+      incompleta: /aprovad[oa] a menor/i.test(r.detail || '') && !r.firstInstallment && r.bank !== 'INTER',
       // Fabio 19/10 (Jézer): aprovado a menor no Inter num prazo menor que o máximo → o aviso diz que NO PRAZO veio a menor e aconselha o prazo todo (aprovação melhor).
       prazoTodo: r.bank === 'INTER' && /aprovad[oa] a menor/i.test(r.detail || '') && r.termMonths && r.termMonths < INTER_MAX_TERM ? `${INTER_MAX_TERM} meses` : undefined,
       documentos: /aprovad[oa] a menor/i.test(r.detail || '') ? parseDocumentosExigidos(r.detail) || undefined : undefined,
@@ -606,6 +612,23 @@ async function awaitingDocsMove(leadId: string): Promise<{ from: string; to: str
   return { from: current.name, to: target.name, targetId: target.id };
 }
 
+/** Bancos que ainda estão ANALISANDO este cliente (proposta enviada, sem resultado): entram no aviso como "Ainda em análise: X". Não conta banco que nunca rodou, falha técnica, dado a corrigir
+ *  nem a análise manual da Santander (essa tem o próprio pedido de documentos ao cliente). */
+async function bancosEmAnalise(leadId: string): Promise<string[]> {
+  const { bankVerdict } = require('./credit-auto.service') as typeof import('./credit-auto.service');
+  const rows = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, select: { bank: true, kind: true, status: true, detail: true, source: true, createdAt: true } });
+  const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  const out: string[] = [];
+  for (const b of ['INTER', 'CREDITAS', 'CREDIMORAR']) {
+    if (bankVerdict(rows as any, b) !== 'PENDING') continue;
+    const ultima = rows.find((r) => r.bank === b && r.source !== 'AI_SIM' && !(r.kind === 'CHECK' && r.status === 'CHECK'));
+    if (!ultima || !['SENT', 'REQUESTED', 'RUNNING'].includes(ultima.status)) continue;
+    if (/AN[ÁA]LISE MANUAL ABERTA|ENVIAR DOCUMENTOS|DADO PARA CORRIGIR/i.test(ultima.detail || '')) continue;
+    out.push(nomes[b]);
+  }
+  return out;
+}
+
 /** O que seria enviado: texto com TODAS as opções aprovadas (cada uma com o nome em que saiu, se for o 2º participante) e como vai. */
 export async function previewApprovalNotice(leadId: string): Promise<{ text: string; docsText: string; options: number; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] } | null> {
   const built = await optionsFromAnalyses(leadId).catch(() => null);
@@ -615,7 +638,10 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true } });
   // Já mandamos um resumo antes (ex.: sem as parcelas certas)? Então este é uma ATUALIZAÇÃO, e o texto diz isso.
   const anterior = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
-  const corpoNovo = renderApprovalText(await withPayoff(leadId, await withHolders(leadId, built)));
+  const pendentes = await bancosEmAnalise(leadId).catch(() => [] as string[]);
+  const optsComNomes = await withPayoff(leadId, await withHolders(leadId, built));
+  const corpoNovo = renderApprovalText(optsComNomes, pendentes);
+  const corpoBase = renderApprovalText(optsComNomes); // sem a linha de bancos em análise: é o que se compara pra não repetir o mesmo aviso
   const semNum = await aprovadasSemNumeros(leadId);
   if (semNum.length) {
     const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
@@ -638,8 +664,9 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   const text = `${prefixo}${corpoNovo}`;
   // O MESMO aviso (mesmas opções, mesmos números) já foi enviado? Não manda de novo igual — só se algo mudou.
   const lastSummary = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
-  const body = renderApprovalText(await withPayoff(leadId, await withHolders(leadId, built)));
-  if (lastSummary && lastSummary.content.replace(/^(🔄|🆕)[^\n]*\n\n/, '').trim() === body.trim()) {
+  const body = corpoBase;
+  const semPend = (t: string) => t.replace(/\n\n⏳ Ainda em análise:[^\n]*/, '').trim();
+  if (lastSummary && semPend(lastSummary.content.replace(/^(🔄|🆕)[^\n]*\n\n/, '')) === body.trim()) {
     warnings.push(`Esse mesmo aviso (mesmos valores) já foi enviado às ${lastSummary.createdAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })} — não vou mandar igual de novo. Se os números mudarem, o aviso novo sai como atualização.`);
   }
   const [mode, tpl, already, move] = await Promise.all([
