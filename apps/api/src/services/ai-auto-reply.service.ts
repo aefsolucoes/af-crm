@@ -219,6 +219,18 @@ DONO DO IMÓVEL (Fabio 15/10): a matrícula precisa estar no nome de um particip
 
 IMÓVEL COM FINANCIAMENTO ATIVO (proposta "Imóvel quitado: Não" — Fabio 15/10): ANTES de o crédito ser aprovado NÃO peça print do saldo devedor, não fale de somar saldo e não cobre nada disso — a pré-análise roda no valor pedido. O print do saldo só é pedido DEPOIS da aprovação (card em "Aguardando Documentação" / aviso de aprovação já enviado) e quem pede é o CRM, sozinho: ele lê o print, SOMA o saldo ao crédito pedido e refaz a análise com o total. Você só responde se o cliente perguntar: depois de aprovado, explique em 1–2 frases que o valor final é o crédito pedido + o saldo devedor e que precisa do print; antes de aprovar, diga só que isso entra depois da aprovação. NÃO mexa em valor nem marque runAnalysis por causa disso.
 - CUSTO DA CERTIDÃO NOVA (Fabio 16/10): quando a A&F precisar emitir uma certidão nova (matrícula encerrada, antiga, só consulta), diga apenas que VAMOS SOLICITAR uma nova e que VAMOS ENCAMINHAR O PIX pra pagamento. NUNCA escreva "o pagamento é por sua conta", "por conta dele" ou parecido — e não cite valor se a equipe não passou.`;
+// Fabio 20/10 (caso Pedro): o Inter faz o laudo de APARTAMENTO 100% digital (link com formulário); se a equipe já tem os dados do imóvel, preenche por ele e não depende do cliente.
+const APARTMENT_APPRAISAL_RULES = `AVALIAÇÃO DIGITAL DE APARTAMENTO (Fabio 20/10: "a IA também verifica se o imóvel é casa ou apto; se for apto, já pergunta as 4 regrinhas pra ir adiantando, assim fica fácil pra gente preencher e não depender de cliente"):
+- Descubra se o imóvel é CASA ou APARTAMENTO: pelo card (campo "imovel_tipo"), pela proposta, pela matrícula/IPTU que o cliente mandou ou pela conversa (edifício, condomínio, apto, bloco, andar). Quando tiver certeza, registre em "extractedFields": {"imovel_tipo": "Apartamento"} ou {"imovel_tipo": "Casa"}. Se ainda não souber, NÃO faça pergunta solta logo de cara (vale o FORMULÁRIO PRIMEIRO); na fase de documentos, uma pergunta curta resolve.
+- Se for APARTAMENTO e o card estiver em "Aguardando Documentação", "Documentação Recebida" ou no funil "Em contratação" (crédito já aprovado): junto do pedido de documentos (ou logo depois, na mesma conversa) pergunte UMA vez estas 4 informações, pra equipe preencher o formulário da avaliação por ele:
+  1. Dormitórios: quantos no total (quartos simples + suítes), SEM contar o quarto de empregada.
+  2. Banheiros: quantos no total (suítes + sociais + lavabo + o de empregada, se houver).
+  3. Suítes: quantas, só suíte de verdade (semisuíte não conta como suíte).
+  4. Vagas de garagem: só as com uso exclusivo — quantas e qual o documento/matrícula da vaga (0 se não tiver).
+  Diga em uma frase que o laudo do apartamento é digital e que, com essas informações, a equipe preenche tudo por ele. Pode ser numa mensagem só, com a lista numerada.
+- Quando o cliente responder, registre em "extractedFields": "imovel_dormitorios", "imovel_banheiros", "imovel_suites" (só o número) e "imovel_vagas_exclusivas" (quantidade e documento; "0" se não tiver). Agradeça em uma frase. NÃO repita a pergunta se já foi feita nesta conversa ou se esses campos já estão preenchidos no card.
+- CASA: não faça essas perguntas (a avaliação de casa é com visita do engenheiro; a equipe combina o contato depois).`;
+
 const RETENTION_RULES = `CLIENTE APROVADO QUE RECUSA O BANCO / QUER DESISTIR (Fabio 15/10, Gabriela Messina: "clientes aprovados precisamos tentar entender ele pra achar uma solução, mas não insistir tanto — a IA já teria dispensado a cliente"): quando o crédito JÁ foi aprovado (card em Aguardando Documentação, ou aviso de aprovação enviado) e o cliente recusar o banco, disser que prefere outro banco ou que vai deixar/desistir:
 1) NÃO dispense nem marque Perdido de primeira. Primeiro ENTENDA, com UMA pergunta curta (o que pesou: taxa, o banco, valor, a dívida?) ou, se ele já disse o banco que prefere, ofereça tentar por ele ("Quer que a gente tente pela Caixa?").
 2) Faça UMA proposta de solução concreta (outro banco que ele citou, ajustar valor/prazo, esclarecer a dúvida que travou).
@@ -521,6 +533,8 @@ ${MOVE_STAGE_RULES}
 ${NEW_VALUE_RULES}
 ${PROPERTY_DOCS_RULES}
 ${RETENTION_RULES}
+
+${APARTMENT_APPRAISAL_RULES}
 
 ${MARK_LOST_RULES}
 

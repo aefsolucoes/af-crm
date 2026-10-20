@@ -71,6 +71,7 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   const cartorio = String(cf.cartorio_registro || '').trim();
   const tel = String(cf.telefone_1 || lead.contact?.phone || '').trim();
   const mail = String(cf.email_1 || lead.contact?.email || '').trim();
+  const contatoCard = String(cf.contato_vistoria || '').trim(); // campo "Contato vistoria" do card: manda mais que o telefone do cliente
   const endImovel = String(cf.endereco_imovel || cf.imovel_endereco || '').trim();
 
   const doImovel = await arquivosDoImovel(accountId, cf);
@@ -86,8 +87,9 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
     `Seguem os dados para o agendamento da vistoria do imóvel do cliente ${nome}${proposta ? ` (proposta ${proposta})` : ''}.`,
     '',
     'CONTATO',
-    `• Responsável para receber o engenheiro: ${nome}`,
-    `• Telefone para agendamento: ${tel || '(informar)'}`,
+    ...(contatoCard
+      ? [`• Responsável para receber o engenheiro / telefone para agendamento: ${contatoCard}`]
+      : [`• Responsável para receber o engenheiro: ${nome}`, `• Telefone para agendamento: ${tel || '(informar)'}`]),
     ...(mail ? [`• E-mail: ${mail}`] : []),
     '',
     `IMÓVEL: ${matricula ? `matrícula nº ${matricula}` : 'conforme a matrícula'}${cartorio ? ` — ${cartorio}` : ''}${endImovel ? `\nEndereço: ${endImovel}` : ''}`,
