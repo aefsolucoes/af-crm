@@ -26,7 +26,8 @@ function identityOf(l: { customFields: unknown; contact?: { email?: string | nul
   return { cpfs, emails, phones };
 }
 const intersects = (a: Set<string>, b: Set<string>) => [...a].some((x) => b.has(x));
-const REJECT_RX = /reprov|negad|recusad|n[aã]o aprov/i;
+// Inclui DESQUALIFICADO (idade/regra do banco, caso José Roberto 20/10): voltar com a mesma proposta também não adianta.
+const REJECT_RX = /reprov|negad|recusad|n[aã]o aprov|desqualific/i;
 
 export interface PriorRejection { leadId: string; name: string; at: Date; reason: string; self: boolean }
 
@@ -45,7 +46,7 @@ export async function findRecentRejection(accountId: string, leadId: string): Pr
   const mine = identityOf(me);
   if (!mine.cpfs.size && !mine.emails.size && !mine.phones.size) return null;
   const outros = await prisma.lead.findMany({
-    where: { accountId, id: { not: leadId }, isGroup: false, OR: [{ rejectedAt: { gte: cutoff } }, { status: 'LOST', lostReason: { contains: 'reprov', mode: 'insensitive' }, updatedAt: { gte: cutoff } }] },
+    where: { accountId, id: { not: leadId }, isGroup: false, OR: [{ rejectedAt: { gte: cutoff } }, { status: 'LOST', OR: [{ lostReason: { contains: 'reprov', mode: 'insensitive' } }, { lostReason: { contains: 'desqualific', mode: 'insensitive' } }], updatedAt: { gte: cutoff } }] },
     select: { id: true, name: true, lostReason: true, rejectedAt: true, stageEnteredAt: true, updatedAt: true, customFields: true, pipeline: { select: { name: true } }, contact: { select: { email: true, phone: true, whatsappPhone: true } } },
   });
   let best: PriorRejection | null = null;
@@ -79,6 +80,7 @@ const RULES = `REGRA DO FABIO (dono do correspondente bancário): este cliente f
 - AUMENTAR o valor do crédito NÃO adianta: se o banco não aprovou o valor menor, não aprova o maior.
 - NÃO adianta: mesma proposta de novo, mesmos dados, só mudar prazo, telefone, e-mail, corrigir data de nascimento, número/complemento do endereço do MESMO imóvel, ou renda só um pouco maior.
 - Pode adiantar: crédito MENOR que o da proposta reprovada; OUTRO imóvel (outro endereço/CEP/cidade/tipo); valor do imóvel que agora passe a atender o MÍNIMO dos bancos (Creditas R$ 150 mil; Inter R$ 200 mil — o CRM sobe imóvel de R$ 180 mil a R$ 199.999 pro mínimo; crédito costuma ir até 58–60% do valor do imóvel) quando antes não atendia; SEGUNDO participante com CPF/renda novos; imóvel que tinha financiamento/dívida e foi quitado/regularizado; motivo da reprovação conhecido que foi corrigido.
+- Se o motivo foi DESQUALIFICADO por IDADE (participante acima do limite do banco: Inter 69, Creditas 75), só adianta se a proposta nova tirou ou trocou esse participante (ou o prazo/idade deixou de ser problema); a mesma proposta de novo NÃO adianta.
 - Na dúvida: SEGURAR (a equipe decide).`;
 
 /** A IA lê a proposta antiga e a nova e decide. Sem chave/resposta: regra simples (SEGURAR). */
