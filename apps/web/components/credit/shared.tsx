@@ -178,3 +178,32 @@ export function Badge({ a }: { a?: Analysis }) {
   );
 }
 
+
+
+/** Números das propostas já rodadas num banco (do participante `who`, se informado), da mais nova pra mais antiga, sem repetir; cada uma com o último resultado conhecido (Fabio 21/10: o card
+ *  "Reprovado" também mostra o número das propostas que foram rodadas). */
+export function propostasRodadas(history: Analysis[] | undefined, bank: Bank, who?: 'p1' | 'p2', name1?: string | null): { numero: string; status: string }[] {
+  const ehP1 = (a: Analysis) => !a.holderName || !name1 || sameWho(a.holderName, name1);
+  const rows = (history || [])
+    .filter((a) => a.bank === bank && !a.dryRun && !!a.proposalNumber && a.source !== 'AI_SIM' && (!who || (who === 'p1' ? ehP1(a) : !ehP1(a))))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const out: { numero: string; status: string }[] = [];
+  for (const a of rows) {
+    const n = String(a.proposalNumber);
+    if (out.some((o) => o.numero === n)) continue;
+    const doMesmo = rows.filter((r) => r.proposalNumber === n);
+    out.push({ numero: n, status: (doMesmo.find((r) => ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(r.status)) || doMesmo[0]).status });
+  }
+  return out;
+}
+
+export function PropostasRodadas({ lista }: { lista: { numero: string; status: string }[] }) {
+  if (!lista.length) return null;
+  return (
+    <p className="text-[11px] text-slate-500 mt-0.5">
+      Proposta{lista.length > 1 ? 's' : ''} rodada{lista.length > 1 ? 's' : ''}: {lista.map((p, i) => (
+        <span key={p.numero}>{i > 0 ? ' · ' : ''}<span className="font-medium text-slate-600">nº {p.numero}</span> <span className="text-slate-400">({(STATUS[p.status]?.label || p.status).toLowerCase()})</span></span>
+      ))}
+    </p>
+  );
+}

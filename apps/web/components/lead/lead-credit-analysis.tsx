@@ -8,7 +8,7 @@ import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { pingExtensions } from '@/lib/credit-extensions';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
-import { BANKS, Badge, STATUS, useLeadAnalyses, sameWho, overrideSummary, type Analysis, type Bank } from '@/components/credit/shared';
+import { BANKS, Badge, STATUS, useLeadAnalyses, sameWho, overrideSummary, PropostasRodadas, propostasRodadas, type Analysis, type Bank } from '@/components/credit/shared';
 import { formatCurrency } from '@/lib/utils';
 
 /* Bloco "Análises de crédito" dentro do card (aba Financiamento). Mostra o último resultado de
@@ -220,6 +220,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
                   {letter.map(([k, v]) => <div key={k} className="contents"><dt className="text-slate-400">{k}</dt><dd className="text-slate-700 text-right">{v}</dd></div>)}
                 </dl>
               )}
+              {a && !['APPROVED', 'CONDITIONAL'].includes(a.status) && <PropostasRodadas lista={propostasRodadas(data.history, b.key, hasP2 ? who : undefined, data.participants?.name1)} />}
               {a && a.status !== 'APPROVED' && a.detail && ['CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE'].includes(a.status) && (
                 <div className="text-[11px] text-slate-400 mt-0.5 line-clamp-2" title={a.detail}>{a.detail}</div>
               )}

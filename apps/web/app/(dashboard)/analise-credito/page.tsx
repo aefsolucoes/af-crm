@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
-import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead, fmtCpf, sameWho, ParticipantCell, jaSeguiuAprovado } from '@/components/credit/shared';
+import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead, fmtCpf, sameWho, ParticipantCell, jaSeguiuAprovado, PropostasRodadas, propostasRodadas } from '@/components/credit/shared';
 import { AdjustModal } from '@/components/credit/adjust-modal';
 import { ExtensionsLivePanel } from '@/components/credit/extensions-live-panel';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
@@ -541,6 +541,7 @@ export default function AnaliseCreditoPage() {
                                           {a.status === 'CONDITIONAL' && <p className="text-teal-700">Aprovada com condição: o banco pede documentação para seguir.</p>}
                                         </>
                                       ) : quieto ? <p className="text-slate-400">Não precisou rodar neste banco: o cliente já foi aprovado em outro e seguiu adiante.</p> : <p className="text-amber-600">{(who === 'p2' ? l.notRun?.[b.key]?.p2 : l.notRun?.[b.key]?.p1) || (who === 'p2' ? 'Não rodou no 2º participante.' : 'Nenhuma análise ainda.')}</p>}
+                                      {a && !['APPROVED', 'CONDITIONAL'].includes(a.status) && <PropostasRodadas lista={propostasRodadas(l.history, b.key, who, l.card?.name1)} />}
                                       <div className="flex flex-wrap gap-2 pt-1">
                                         <button onClick={() => setModal({ lead: l, bank: b.key, analysis: a })} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50">
                                           {a ? <><Pencil size={11} /> Resultado</> : <><Plus size={11} /> Registrar</>}
