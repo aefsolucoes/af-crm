@@ -263,6 +263,16 @@ export async function reportLaudo(accountId: string, leadId: string, d: { event:
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'FILLED', _laudoFilledAt: new Date().toISOString() } } });
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📝 Laudo digital do Inter PREENCHIDO pela extensão — falta a equipe conferir e ENVIAR (marcar "me responsabilizo" e clicar em enviar): ${laudoLink(cf)}${d.detail ? `\n${String(d.detail).slice(0, 500)}` : ''}` } }).catch(() => {});
     push('📝 Laudo do Inter preenchido', `${lead.name}: falta conferir e enviar`);
+    // Laudo preenchido = o card vai pra "Vistoria do Imóvel" (Fabio 21/10: "após o preenchimento, encaminhar o card para Vistoria").
+    try {
+      const card = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipelineId: true, stageId: true, stage: { select: { name: true } } } });
+      const vist = card ? await prisma.stage.findFirst({ where: { pipelineId: card.pipelineId, name: { contains: 'Vistoria', mode: 'insensitive' } }, select: { id: true, name: true } }) : null;
+      if (card && vist && vist.id !== card.stageId && /documenta[cç][aã]o recebida|cr[eé]dito/i.test(card.stage?.name || '')) {
+        const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+        await updateLeadStage(leadId, accountId, vist.id);
+        await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `Estágio: "${card.stage?.name || '—'}" → "${vist.name}" — laudo digital do Inter preenchido` } }).catch(() => {});
+      }
+    } catch (e: any) { console.warn('[Laudo] não consegui mover o card:', e?.message); }
   } else if (d.event === 'failed') {
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'FAILED' } } });
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A extensão NÃO conseguiu preencher o laudo digital do Inter: ${String(d.reason || 'erro').slice(0, 400)}. Link: ${laudoLink(cf)}` } }).catch(() => {});

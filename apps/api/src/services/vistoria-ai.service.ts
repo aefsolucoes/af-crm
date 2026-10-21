@@ -64,6 +64,14 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
     }
     return;
   }
+  // 2a) Santander: fluxo próprio por e-mail à Letícia (autorização USECASA assinada pelo cliente no gov.br + cadastro WEB CASAS + documentos) — vistoria-santander.service
+  if (banco === 'CREDIMORAR') {
+    if (st.status !== 'SANTANDER') await salva(leadId, { status: 'SANTANDER', banco, since: st.since || new Date().toISOString() });
+    const { processVistoriaSantander } = require('./vistoria-santander.service') as typeof import('./vistoria-santander.service');
+    const enviado = await processVistoriaSantander(accountId, leadId, io as any);
+    if (enviado) await salva(leadId, { status: 'ENVIADA', banco, at: new Date().toISOString(), por: 'IA' });
+    return;
+  }
   // 2) só o Inter tem solicitação automática
   if (banco !== 'INTER') {
     await salva(leadId, { status: 'MANUAL', banco, at: new Date().toISOString() });

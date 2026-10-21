@@ -13,6 +13,8 @@ type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'];
  * (ela preenche e PARA na tela de conferência — quem envia é a equipe).
  */
 
+/** Só cards que entraram no funil de contratação a partir daqui: os que já estavam em "Vistoria do Imóvel" (Digmar, Rosana…) ficam como estão (Fabio 21/10: "deixa esses como estão"). */
+export const LAUDO_ASK_FROM = new Date('2026-10-21T13:00:00Z');
 const asked = (cf: Record<string, any>) => !!cf._laudoAsk;
 const vazio = (v: unknown) => v === undefined || v === null || String(v).trim() === '';
 const CAMPOS_REGRINHAS = ['imovel_dormitorios', 'imovel_banheiros', 'imovel_suites', 'imovel_vagas_exclusivas'];
@@ -53,6 +55,7 @@ export async function processLaudoAsk(accountId: string, io: Io): Promise<void> 
   const ids = await prisma.$queryRaw<{ id: string }[]>`
     SELECT l.id FROM "Lead" l
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false AND l."aiAutoReplyActive" = true
+      AND l."stageEnteredAt" >= ${LAUDO_ASK_FROM}
       AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_laudoAsk')
       AND (jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), 'link_laudo_inter') OR jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaRequestedAt')
            OR COALESCE(l."customFields"->'_vistoriaAi'->>'status', '') IN ('AGUARDA_ENGAJAMENTO', 'ENVIADA'))
@@ -64,6 +67,7 @@ export async function processLaudoAsk(accountId: string, io: Io): Promise<void> 
   const prontos = await prisma.$queryRaw<{ id: string }[]>`
     SELECT l.id FROM "Lead" l
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
+      AND l."stageEnteredAt" >= ${LAUDO_ASK_FROM}
       AND jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), 'link_laudo_inter')
       AND COALESCE(l."customFields"->>'_laudoStatus', '') = '' AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_laudoAutoQueuedAt')
     LIMIT 20`;
