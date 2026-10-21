@@ -62,7 +62,7 @@ export async function processDocsChecks(accountId: string, io: Io): Promise<void
 
 const WINDOW_MS = 23 * 3_600_000;
 const BRT = -3 * 3_600_000; // Brasília = UTC−3 (sem horário de verão)
-const TIME_RX = /(amanh[ãa]|mais tarde|\bdepois\b|hoje (à|a) noite|[àa] noite|daqui (a )?(pouco|uns?|\d+)|logo mais|\bsegunda\b|\bter[çc]a\b|\bquarta\b|\bquinta\b|\bsexta\b|s[áa]bado|domingo|semana que vem|fim de semana|quando (chegar|sair|puder|conseguir|tiver))/i;
+const TIME_RX = /(amanh[ãa]|mais tarde|\bdepois\b|hoje (à|a) noite|[àa] noite|daqui (a )?(pouco|uns?|\d+)|logo mais|\bsegunda\b|\bter[çc]a\b|\bquarta\b|\bquinta\b|\bsexta\b|s[áa]bado|domingo|semana que vem|fim de semana|quando (chegar|sair|puder|conseguir|tiver)|assim que (puder|conseguir|chegar|sair|tiver)|estou no trabalho|n[ãa]o (tenho como|consigo|posso) (enviar|mandar|encaminhar)( agora)?|agora n[ãa]o|depois do (trabalho|expediente)|quando eu (chegar|sair|puder))/i;
 const SEND_RX = /(mand|envi|encaminh|pass(o|ar)|trag|junt|separ|entreg|forne|te dou|consigo|tir(o|ar)|escane|fotograf)/i;
 const NEGATIVE_RX = /(n[ãa]o (tenho|quero|vou) (mais )?(interesse|seguir|continuar)|desist|cancel)/i;
 
@@ -77,6 +77,8 @@ export function promisedAt(text: string, now: Date): Date {
   if (wd >= 0) { const diff = ((wd - local.getUTCDay()) + 7) % 7 || 7; return at(diff, 11); }
   if (/semana que vem|proxima semana/.test(t)) return at(5, 11);
   if (/hoje a noite|a noite/.test(t)) return at(local.getUTCHours() >= 18 ? 1 : 0, local.getUTCHours() >= 18 ? 11 : 19);
+  // "estou no trabalho", "não tenho como enviar agora", "assim que puder" (Vicente Paulo 21/10): à noite do mesmo dia (19h); depois das 17h, amanhã de manhã.
+  if (/trabalho|expediente|servico|agora nao|assim que (puder|conseguir|chegar|sair|tiver)|nao (tenho como|consigo|posso)/.test(t)) return at(local.getUTCHours() >= 17 ? 1 : 0, local.getUTCHours() >= 17 ? 11 : 19);
   if (/mais tarde|logo mais|daqui/.test(t)) return new Date(now.getTime() + 3 * 3_600_000);
   return at(1, 11); // "depois", "quando conseguir…": amanhã de manhã
 }
