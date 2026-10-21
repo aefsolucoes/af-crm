@@ -13,7 +13,8 @@ import { BankLogo } from './bank-logo';
 
 interface Item { id: string; leadId: string; leadName: string; kind: string }
 interface Live {
-  bank: Bank; online: boolean; loginNeeded: boolean; lastSeenAt: string | null; foraDoHorario: boolean; queued: number; scheduled: number;
+  bank: Bank; online: boolean; loginNeeded: boolean; lastSeenAt: string | null; foraDoHorario: boolean; queued: number; queuedRuns?: number; scheduled: number;
+  scheduledList?: (Item & { at: string })[];
   running: (Item & { holderName: string | null; since: string; step: string | null; stepAt: string | null })[];
   queue: (Item & { since: string; manual: boolean; aguardandoLogin: boolean })[];
   recent: (Item & { status: string; at: string; durationMin: number | null })[];
@@ -55,7 +56,28 @@ export function ExtensionsLivePanel() {
   const abrir = (leadId: string) => router.push(`/inbox?leadId=${leadId}`);
   const nome = (n: string, id: string) => <button onClick={() => abrir(id)} className="hover:underline text-left truncate min-w-0" title={`${n} — abrir a conversa`}>{n}</button>;
 
+  // Resumo da fila de todos os bancos: quantos clientes diferentes estão esperando (agora + agendados).
+  const esperando = new Map<string, { nome: string; bancos: string[] }>();
+  for (const l of data || []) for (const q of [...l.queue, ...(l.scheduledList || [])]) {
+    const e = esperando.get(q.leadId) || { nome: q.leadName, bancos: [] };
+    const bk = BANKS.find((x) => x.key === l.bank)?.short || l.bank;
+    if (!e.bancos.includes(bk)) e.bancos.push(bk);
+    esperando.set(q.leadId, e);
+  }
+  const hora = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
   return (
+    <div className="space-y-3">
+    {esperando.size > 0 && (
+      <div className="bg-white rounded-xl border border-af-border px-3 py-2">
+        <Titulo n={esperando.size}>Clientes na fila (todos os bancos)</Titulo>
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-slate-700">
+          {Array.from(esperando.entries()).map(([id, e]) => (
+            <span key={id} className="inline-flex items-center gap-1 min-w-0">{nome(e.nome, id)}<span className="text-[10px] text-slate-400 flex-shrink-0">{e.bancos.join(' · ')}</span></span>
+          ))}
+        </div>
+      </div>
+    )}
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
       {BANKS.map((b) => {
         const l = data?.find((x) => x.bank === b.key);
@@ -98,7 +120,7 @@ export function ExtensionsLivePanel() {
             {/* Na fila */}
             {l && (l.queued > 0 || l.scheduled > 0) && (
               <div className="mt-2.5">
-                <Titulo n={l.queued}>Na fila</Titulo>
+                <Titulo n={l.queued}>Na fila{l.queuedRuns ? ` · ${l.queuedRuns} análise(s)` : ''}</Titulo>
                 {l.queue.length > 0 && (
                   <ul className="space-y-0.5 max-h-36 overflow-y-auto pr-1">
                     {l.queue.map((q, i) => (
@@ -111,7 +133,20 @@ export function ExtensionsLivePanel() {
                     {l.queued > l.queue.length && <li className="text-[11px] text-slate-400 pl-5">+ {l.queued - l.queue.length} na fila</li>}
                   </ul>
                 )}
-                {l.scheduled > 0 && <p className="text-[11px] text-slate-400 mt-0.5">{l.scheduled} conferência(s) agendada(s) pra mais tarde</p>}
+                {(l.scheduledList || []).length > 0 && (
+                  <div className="mt-1">
+                    <p className="text-[10px] text-slate-400">Agendadas ({l.scheduled})</p>
+                    <ul className="space-y-0.5 max-h-24 overflow-y-auto pr-1">
+                      {(l.scheduledList || []).map((q) => (
+                        <li key={q.id} className="flex items-center gap-1.5 text-xs text-slate-600">
+                          {nome(q.leadName, q.leadId)}
+                          <span className="text-[10px] text-slate-400 flex-shrink-0">{tipo(q.kind)} · às {hora(q.at)}</span>
+                        </li>
+                      ))}
+                      {l.scheduled > (l.scheduledList || []).length && <li className="text-[11px] text-slate-400">+ {l.scheduled - (l.scheduledList || []).length} agendada(s)</li>}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
 
@@ -136,6 +171,7 @@ export function ExtensionsLivePanel() {
           </div>
         );
       })}
+    </div>
     </div>
   );
 }

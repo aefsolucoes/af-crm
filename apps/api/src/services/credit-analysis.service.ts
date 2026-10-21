@@ -1387,8 +1387,12 @@ export async function extensionsLive(db: Db, accountId: string) {
       select: { id: true, leadId: true, kind: true, startedAt: true, steps: true, holderName: true, lead: { select: { name: true } } },
     });
     const pronta = { accountId, bank, status: 'REQUESTED', dryRun: false, OR: [{ notBefore: null }, { notBefore: { lte: agora } }] };
-    const queue = await db.creditAnalysis.findMany({ where: pronta, orderBy: { requestedAt: 'asc' }, take: 12, select: { id: true, leadId: true, kind: true, requestedAt: true, requestedById: true, detail: true, lead: { select: { name: true } } } });
+    // Fila (Fabio 21/10: "quero que mostre no painel os clientes que estão na fila"): análises (RODAR) primeiro e depois as conferências, cada grupo por ordem de pedido — antes as conferências antigas
+    // ocupavam os 12 lugares e escondiam quem estava esperando pra rodar. As conferências agendadas (daqui a alguns minutos) também aparecem com o nome e a hora, não só o número.
+    const queue = await db.creditAnalysis.findMany({ where: pronta, orderBy: [{ kind: 'desc' }, { requestedAt: 'asc' }], take: 20, select: { id: true, leadId: true, kind: true, requestedAt: true, requestedById: true, detail: true, lead: { select: { name: true } } } });
     const queuedTotal = await db.creditAnalysis.count({ where: pronta });
+    const queuedRuns = await db.creditAnalysis.count({ where: { ...pronta, kind: 'RUN' } });
+    const agendadasLista = await db.creditAnalysis.findMany({ where: { accountId, bank, status: 'REQUESTED', dryRun: false, notBefore: { gt: agora } }, orderBy: { notBefore: 'asc' }, take: 10, select: { id: true, leadId: true, kind: true, notBefore: true, lead: { select: { name: true } } } });
     const agendadas = await db.creditAnalysis.count({ where: { accountId, bank, status: 'REQUESTED', dryRun: false, notBefore: { gt: agora } } });
     const recent = await db.creditAnalysis.findMany({
       where: { accountId, bank, finishedAt: { not: null }, dryRun: false }, orderBy: { finishedAt: 'desc' }, take: 10,
@@ -1398,7 +1402,8 @@ export async function extensionsLive(db: Db, accountId: string) {
       bank, online: ext[bank].online, loginNeeded: ext[bank].loginNeeded, lastSeenAt: ext[bank].lastSeenAt, foraDoHorario: foraDoHorario(),
       running: running.map((r) => ({ id: r.id, leadId: r.leadId, leadName: String((r.lead as any)?.name || ''), kind: r.kind, holderName: r.holderName || null, since: r.startedAt, ...passoDe(r.steps) })),
       queue: queue.map((r) => ({ id: r.id, leadId: r.leadId, leadName: String((r.lead as any)?.name || ''), kind: r.kind, since: r.requestedAt, manual: !!r.requestedById, aguardandoLogin: /aguardando login/i.test(r.detail || '') })),
-      queued: queuedTotal, scheduled: agendadas,
+      queued: queuedTotal, queuedRuns, scheduled: agendadas,
+      scheduledList: agendadasLista.map((r) => ({ id: r.id, leadId: r.leadId, leadName: String((r.lead as any)?.name || ''), kind: r.kind, at: r.notBefore })),
       recent: recent.map((r) => ({ id: r.id, leadId: r.leadId, leadName: String((r.lead as any)?.name || ''), kind: r.kind, status: r.status, at: r.finishedAt, durationMin: r.startedAt && r.finishedAt ? Math.round((r.finishedAt.getTime() - r.startedAt.getTime()) / 60000) : null })),
     });
   }
