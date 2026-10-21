@@ -354,14 +354,16 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
       const s = lados.get(k) || new Set<string>();
       if (!(s.has('frente') && s.has('verso'))) texto.push(`só chegou ${s.has('frente') ? 'a frente' : s.has('verso') ? 'o verso' : 'um lado'} — manda ${s.has('frente') ? 'também o verso' : s.has('verso') ? 'também a frente' : 'frente e verso'}`);
     }
-    if (texto.length) problemas.push({ doc: docLabel(r), texto });
+    // Documento que "não serve pro processo" (ex.: declaração de quitação do condomínio — resposta da equipe) NÃO é um problema a corrigir: não trava a documentação nem volta a ser cobrado (Fabio 21/10).
+    const bloqueantes = texto.filter((t) => !/n[ãa]o serve (pro|para o|para) processo/i.test(t));
+    if (bloqueantes.length) problemas.push({ doc: docLabel(r), texto: bloqueantes });
     else ok.push(docLabel(r));
   }
   const duvidas = atts.filter((a) => cache[a.id]?.resultado === 'DUVIDA').map((a) => ({ attachmentId: a.id, arquivo: a.fileName || a.id, doc: cache[a.id].tipo || 'documento', pergunta: cache[a.id].duvida || '' }));
   // Dono do imóvel em nome de OUTRA pessoa sem vínculo explicado (a leitura mais recente de cada documento).
   const donoPendente: ReviewSummary['donoPendente'] = [];
   const vistos = new Set<string>();
-  for (const a of [...atts].reverse()) {
+  for (const a of (cf0._transferenciaPendente ? [] : [...atts].reverse())) { // cliente já disse que não transferiu a escritura: não pergunta de quem é o imóvel
     const r = cache[a.id];
     if (!r || r.donoSituacao !== 'OUTRO_SEM_RELACAO' || !r.dono || vistos.has(r.dono.toUpperCase())) continue;
     vistos.add(r.dono.toUpperCase());

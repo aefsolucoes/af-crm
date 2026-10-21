@@ -245,3 +245,20 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   if (out.created) io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
   else if (out.why) console.warn(`[Certidão] ${lead.name}: aceitou, mas o pedido não foi criado — ${out.why}`);
 }
+
+
+/** Cliente comprou o imóvel e AINDA NÃO transferiu/registrou a escritura no nome dele (Fabio 21/10, Luiz: "ele informou que não transferiu ainda"): o dono na matrícula é o VENDEDOR — a conferência NÃO pergunta de quem é o imóvel
+ *  (ele já explicou) e não trava por isso. Marca `_transferenciaPendente` e dá o assunto da "pergunta do dono" por resolvido. Pura no regex (testável). */
+export const TRANSFERENCIA_PENDENTE_RX = /\b(?:ainda\s+)?n[aã]o\s+(?:registrei|transferi|averbei|passei\s+(?:pro|para\s+o)\s+meu\s+nome|fiz\s+(?:o\s+)?(?:registro|transfer[eê]ncia))|ainda\s+consta\s+o\s+antigo\s+propriet[aá]rio|n[aã]o\s+(?:est[aá]|foi)\s+(?:registrad[oa]|transferid[oa])\s+(?:no|em)\s+meu\s+nome|escritura\s+(?:ainda\s+)?n[aã]o\s+(?:foi\s+)?registrada/i;
+export async function marcarTransferenciaPendente(accountId: string, leadId: string, text: string): Promise<void> {
+  const t = String(text || '').trim();
+  if (!t || t.length > 600 || !TRANSFERENCIA_PENDENTE_RX.test(t)) return;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, stage: { select: { name: true } } } });
+  if (!lead) return;
+  const cf = { ...((lead.customFields || {}) as Record<string, any>) };
+  if (cf._transferenciaPendente) return;
+  cf._transferenciaPendente = { at: new Date().toISOString(), disse: t.slice(0, 160) };
+  cf._donoResolvedAt = new Date().toISOString();
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
+  await note(leadId, `🏠 O cliente disse que AINDA NÃO transferiu/registrou a escritura no nome dele ("${t.slice(0, 120)}"): o dono na matrícula é o vendedor. Não pergunto mais de quem é o imóvel e isso não trava a documentação — o registro precisa sair antes da liberação do valor.`);
+}

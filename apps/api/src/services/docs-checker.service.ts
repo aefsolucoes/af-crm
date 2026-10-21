@@ -345,15 +345,19 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   const faltaTxt = faltando.length ? `\n\nAinda falta mandar:\n${faltando.map((f) => `• ${f}`).join('\n')}` : '';
 
   if (review?.problemas.length) {
-    // Um aviso só: o que está com problema + o que ainda falta (Fabio 15/10: espera tudo chegar, confere e cobra o que falta).
-    const sig = [...review.problemas.map((p) => `${p.doc}:${p.texto.join('/')}`).sort(), `falta:${faltando.join('/')}`].join('|');
+    // Um aviso só, e CADA problema é dito UMA vez (Fabio 21/10, Luiz: a IA repetiu "me mande a matrícula e a capa do IPTU" 3 vezes — texto velho de um documento que não serve — depois de ele já ter mandado). O que já foi dito
+    // não volta; o card continua parado esperando o cliente (ou o que ainda falta é cobrado pelo caminho normal abaixo).
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-    const cf = (fresh?.customFields || {}) as Record<string, unknown>;
-    if (cf._docProblemSig !== sig || opts.force) {
-      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docProblemSig: sig } as any } });
-      const texto = `${buildDocProblemsMessage(review).replace(/\n\nAssim que você reenviar, eu confiro de novo!$/, '')}${faltaTxt}\n\nAssim que você mandar, eu confiro de novo!`;
+    const cf = (fresh?.customFields || {}) as Record<string, any>;
+    const chave = (p: { doc: string; texto: string[] }) => `${p.doc}:${p.texto.join('/')}`;
+    const ditos = new Set<string>(Array.isArray(cf._docProblemsTold) ? cf._docProblemsTold : []);
+    const novos = review.problemas.filter((p) => !ditos.has(chave(p)));
+    if (novos.length || opts.force) {
+      const alvo = novos.length ? novos : review.problemas;
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docProblemsTold: Array.from(new Set([...ditos, ...alvo.map(chave)])) } as any } });
+      const texto = `${buildDocProblemsMessage({ ...review, problemas: alvo }).replace(/\n\nAssim que você reenviar, eu confiro de novo!$/, '')}${faltaTxt}\n\nAssim que você mandar, eu confiro de novo!`;
       const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA achou problema em documento: ${review.problemas.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}.${faltando.length ? ` Ainda falta: ${faltando.join('; ')}.` : ''} ${sent.success ? 'Cliente avisado do que corrigir.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: avise o cliente.'}` } }).catch(() => {});
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA achou problema em documento: ${alvo.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}.${faltando.length ? ` Ainda falta: ${faltando.join('; ')}.` : ''} ${sent.success ? 'Cliente avisado do que corrigir.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: avise o cliente.'}` } }).catch(() => {});
     }
     return !!lead.aiAutoReplyActive;
   }
