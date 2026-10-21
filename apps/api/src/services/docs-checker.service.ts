@@ -170,6 +170,7 @@ Como decidir:
 8e. METRAGENS (Fabio 20/10): o item "Capa do IPTU com as metragens" precisa de um documento OFICIAL DA PREFEITURA do município que mostre as metragens: a CAPA do IPTU ou a CERTIDÃO de IPTU/cadastro imobiliário com as metragens. Matrícula, escritura e outros documentos de cartório NÃO valem pra esse item. Use a linha "Documentos da PREFEITURA recebidos que MOSTRAM as metragens": se ela citar algum documento, o item está ATENDIDO; se disser "nenhum", falta (peça a capa do IPTU ou a certidão de IPTU com as metragens).
 8f. RENDA (Fabio 20/10): a linha "Comprovação de renda" diz se ela é necessária. Se disser que NÃO é necessária (a equipe dispensou a renda deste cliente), NÃO coloque nenhum item de renda em "faltando" e considere-os atendidos, mesmo que não tenham chegado.
 8g. OPERADORA (Fabio 20/10): documento de operadora/concessionária (Claro, Vivo, TIM, Oi, energia, água, gás, internet) vale como COMPROVANTE DE RESIDÊNCIA, inclusive o protegido por senha que não pôde ser lido: conte como recebido.
+8i. PROTEGIDO (Fabio 21/10): arquivo do tipo PROTEGIDO (senha) não conta como nenhum item da lista e NÃO impede de completar se o resto chegou — a IA pergunta ao cliente o que é e a equipe confere depois (fica na pasta como "VERIFICAR").
 8h. ESCRITURA (Fabio 20/10): se só chegou a escritura (com o número da matrícula), a certidão de ônus/matrícula NÃO é pedida ao cliente: ponha em "emitir" (a A&F pede pelo ONR com o OK dele), nunca em "faltando".
 9. Seja rigoroso: "complete": true só se tiver certeza de que todos os itens obrigatórios chegaram. Se houver arquivos que não puderam ser lidos e algum item obrigatório puder estar entre eles, responda false.`;
 
@@ -283,6 +284,26 @@ export function isDocsSentClaim(text: string): boolean {
 }
 
 /** `force` = o cliente disse "já enviei": confere AGORA e responde com a situação atual (o que falta / o que está com problema), mesmo que já tenha avisado o mesmo antes. Devolve true se falou com o cliente (ou concluiu a documentação). */
+/** Arquivos que não abrem (senha): UMA mensagem ao cliente perguntando o que são (Fabio 21/10). Só com IA do card ligada, 07h–21h e janela de 24 h aberta; senão tenta de novo na próxima conferência. */
+async function perguntarProtegidos(accountId: string, leadId: string, io: Io): Promise<void> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { aiAutoReplyActive: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const prot = (cf._docsProtegidos || {}) as Record<string, { fileName?: string; guess?: string; askedAt?: string }>;
+  const pend = Object.entries(prot).filter(([, v]) => !v.askedAt);
+  if (!lead || !lead.aiAutoReplyActive || cf._autoPaused || !pend.length) return;
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return;
+  const nomes = pend.map(([, v]) => `• ${v.fileName}`).join('\n');
+  const texto = `${pend.length > 1 ? 'Os arquivos abaixo estão protegidos' : 'O arquivo abaixo está protegido'} por senha e eu não consigo abrir:\n${nomes}\n\nPode me dizer que documento ${pend.length > 1 ? 'é cada um' : 'é esse'}? Se der, manda de novo sem senha.`;
+  const sent = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined });
+  if (!sent.success) return;
+  const next: Record<string, any> = {};
+  for (const [id, v] of Object.entries(prot)) next[id] = v.askedAt ? v : { ...v, askedAt: new Date().toISOString() };
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _docsProtegidos: next } as any } });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔒 Perguntei ao cliente o que são os arquivos protegidos por senha (${pend.map(([, v]) => v.fileName).join('; ')}). Eles ficam na pasta do Drive como "VERIFICAR - …" pra você conferir depois.` } }).catch(() => {});
+}
+
 export async function checkDocsComplete(accountId: string, leadId: string, io: Io, opts: { force?: boolean } = {}): Promise<boolean> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
   if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return false;
@@ -305,6 +326,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     const linhas = review.novas.map(({ arquivo, r }) => `${r.resultado === 'OK' ? '✅' : r.resultado === 'PROBLEMA' ? '⚠️' : r.resultado === 'DUVIDA' ? '❓' : '•'} ${r.tipo}${r.titular ? ` (${r.titular})` : ''}${r.resultado === 'PROBLEMA' ? ` — ${r.problemas.join('; ')}` : ''}${r.observacao ? ` [${r.observacao}]` : ''} — ${arquivo}`);
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA leu ${review.novas.length > 1 ? 'os documentos novos' : 'o documento novo'}:\n${linhas.join('\n')}` } }).catch(() => {});
   }
+  await perguntarProtegidos(accountId, leadId, io).catch((e: any) => console.error('[Docs] arquivos protegidos:', e?.message || e));
   // Documento em DÚVIDA (a pergunta está com a equipe no balão): não avança o card nem cobra nada até a equipe responder.
   if (review?.duvidas.length && !review.problemas.length) {
     console.log(`[Docs] ${lead.name} (${leadId}): ${review.duvidas.length} documento(s) em dúvida com a equipe — conferência pausada`);

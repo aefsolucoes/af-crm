@@ -101,7 +101,7 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
   // PDF pode ter até ~20 MB (a API aceita; a matrícula do ONR do Luiz tinha 5 MB e ficava "não lida" com o teto de 4,5 MB); imagem segue no teto de 5 MB da API.
   if (buffer.length > (isPdf ? 20_000_000 : MAX_VISION_BYTES)) return undefined;
   // PDF protegido por senha: a IA não abre. Fatura de operadora vale como comprovante de residência (regra do Fabio); o resto fica "não lido".
-  if (isPdf && pdfProtegido(buffer)) return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : undefined;
+  if (isPdf && pdfProtegido(buffer)) return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : { type: 'PROTEGIDO', protegido: true };
   const mediaType = isPdf ? 'application/pdf' : mimeType;
   if (!isPdf && !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mediaType)) return undefined;
 
@@ -118,7 +118,9 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
     }),
   });
   if (!res.ok) {
-    console.error('[DocsRecebidos] Erro ao ler documento:', res.status, (await res.text()).slice(0, 200));
+    const corpoErro = (await res.text()).slice(0, 400);
+    console.error('[DocsRecebidos] Erro ao ler documento:', res.status, corpoErro.slice(0, 200));
+    if (res.status === 400 && /password/i.test(corpoErro)) return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : { type: 'PROTEGIDO', protegido: true }; // protegido por senha que o /Encrypt não pegou
     return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : undefined;
   }
   const data = (await res.json()) as { content: { type: string; text?: string }[] };
@@ -129,6 +131,19 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
   if (type === 'IGNORAR') return null;
   const holder = clean(holderPart || '', 60);
   return holder ? { type, holder } : { type };
+}
+
+/** Palpite do tipo de documento pelo NOME do arquivo (só pra anotar na pasta quando o arquivo não abre). */
+export function chuteTipoPeloNome(fileName: string): string {
+  const n = String(fileName || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (faturaDeOperadora(fileName)) return 'COMPROVANTE DE RESIDENCIA';
+  if (/extrato|nubank|\bnu[_ -]\d/.test(n)) return 'EXTRATO BANCARIO';
+  if (/holerite|contracheque|contra-cheque/.test(n)) return 'CONTRACHEQUE';
+  if (/\birpf\b|imposto de renda|declaracao|recibo/.test(n)) return 'IMPOSTO DE RENDA';
+  if (/\b(rg|cnh|identidade|cpf)\b/.test(n)) return 'DOCUMENTO DE IDENTIFICACAO';
+  if (/matricula|onus/.test(n)) return 'MATRICULA DO IMOVEL';
+  if (/iptu|cadastro/.test(n)) return 'IPTU';
+  return 'DOCUMENTO PROTEGIDO';
 }
 
 /** Documento do imóvel (vai pra subpasta IMOVEL; sem nome de pessoa no arquivo). */
@@ -179,7 +194,14 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
     if (info === undefined) continue;
     cache[att.id] = info === null ? 'IGNORAR' : `${info.type}|${info.holder || ''}`;
     changed = true;
-    if (info && info.protegido) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔒 "${att.fileName}" não pôde ser aberto (protegido por senha ou ilegível). Pelo nome da operadora/concessionária contei como COMPROVANTE DE RESIDÊNCIA (regra do Fabio) — abra com a senha que o cliente mandou e confira a data (até 90 dias) e o titular.` } }).catch(() => {});
+    if (info && info.protegido) {
+      // Arquivo que não abre (senha): vai pro card pra a IA PERGUNTAR ao cliente o que é e pra pasta do Drive sair como "VERIFICAR - …" (Fabio 21/10: "a IA pergunta ao cliente e anota o nome do documento na pasta, depois eu verifico").
+      const fr = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+      const cfp = { ...((fr?.customFields || {}) as Record<string, any>) };
+      cfp._docsProtegidos = { ...(cfp._docsProtegidos || {}), [att.id]: { fileName: att.fileName || att.id, guess: chuteTipoPeloNome(att.fileName || '') } };
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: cfp as any } });
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: info.type === 'PROTEGIDO' ? `🔒 "${att.fileName}" está protegido por senha e a IA não consegue abrir. Vou perguntar ao cliente o que é e o arquivo fica na pasta como "VERIFICAR - …" pra você conferir depois.` : `🔒 "${att.fileName}" não pôde ser aberto (protegido por senha ou ilegível). Pelo nome da operadora/concessionária contei como COMPROVANTE DE RESIDÊNCIA (regra do Fabio) — fica na pasta como "VERIFICAR - …": abra com a senha que o cliente mandou e confira a data (até 90 dias) e o titular.` } }).catch(() => {});
+    }
   }
   if (changed) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
@@ -240,7 +262,10 @@ async function organizeLead(lead: {
     clientFolderName,
     activeLeadsFolderId: lead.activeLeadsFolderId,
     nameFor: async (f) => {
-      const info = docInfo[attIdByDriveId.get(f.driveFileId) || ''];
+      const attId = attIdByDriveId.get(f.driveFileId) || '';
+      const prot = ((cf._docsProtegidos || {}) as Record<string, { fileName?: string; guess?: string }>)[attId];
+      if (prot) return `VERIFICAR - ${prot.guess || 'DOCUMENTO PROTEGIDO'} (${String(prot.fileName || f.fileName).replace(/\.[a-z0-9]{2,4}$/i, '').slice(0, 40)})`;
+      const info = docInfo[attId];
       if (info === null) return null;
       return info ? docLabel(info) : '';
     },
