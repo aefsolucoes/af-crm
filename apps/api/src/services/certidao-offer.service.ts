@@ -65,8 +65,9 @@ export function certidaoFromDocs(cf: Record<string, any>): { matricula: string; 
 }
 
 export function certidaoOfferText(nome: string | null, saudar: boolean, matricula: string): string {
-  // Fabio 21/10: SEM nome de empresa nem de pessoa, SEM falar de custo (se o cliente perguntar: varia de região pra região, em torno de R$ 40 a R$ 100) e dizendo que a certidão é essencial pra SOLICITAR A VISTORIA.
-  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Recebi a escritura do imóvel e já identifiquei a matrícula (nº ${matricula}). A certidão de ônus/matrícula é essencial para que possamos solicitar a vistoria. Posso emitir ela por aqui, através do cartório digital?`;
+  // Texto do Fabio (21/10): SEM nome de empresa nem de pessoa, SEM custo (se o cliente perguntar: varia de região pra região, em torno de R$ 40 a R$ 100), diz que a certidão é essencial pra SOLICITAR A VISTORIA
+  // e pergunta primeiro se o cliente TEM a certidão, ou se pode emitir pelo cartório digital.
+  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Recebi a escritura do imóvel e já identifiquei o número da matrícula (nº ${matricula}), porém não recebi a certidão de ônus/matrícula, ela é essencial para que possamos solicitar a vistoria. Você teria ela aí ou posso emitir ela por aqui, através do cartório digital?`;
 }
 
 async function carrega(leadId: string) {
@@ -209,6 +210,7 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   if (pend?.askedAt && !pend.answeredAt && !cf._autoPaused) { await respondeCartorio(accountId, leadId, clean, pend, io); return; }
   const of = cf._certidaoOffer as { matricula?: string; at?: string; acceptedAt?: string; declinedAt?: string } | undefined;
   if (!of?.at || of.acceptedAt || of.declinedAt || cf._autoPaused) return;
+  if (Date.now() - new Date(of.at).getTime() > 7 * 86_400_000) return; // oferta velha: não gasta IA lendo toda mensagem
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return;
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -216,7 +218,7 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-sonnet-5', max_tokens: 1000,
-      system: 'A atendente de um correspondente bancário ofereceu ao cliente emitir a certidão de ônus/matrícula do imóvel pelo cartório digital (ONR). Leia a RESPOSTA do cliente e classifique. Responda SÓ JSON: {"r":"SIM"|"NAO"|"INDEFINIDO"}. SIM = aceitou/autorizou (ex.: "pode", "sim", "pode emitir", "ok", "manda o pix"). NAO = recusou ou prefere tirar sozinho no cartório. INDEFINIDO = pergunta, dúvida, assunto diferente ou resposta que não decide.',
+      system: 'A atendente de um correspondente bancário perguntou ao cliente se ele tem a certidão de ônus/matrícula do imóvel ou se pode emitir pelo cartório digital (ONR). Leia a RESPOSTA do cliente e classifique. Responda SÓ JSON: {"r":"SIM"|"NAO"|"TEM"|"INDEFINIDO"}. SIM = aceitou que se emita (ex.: "pode", "sim", "pode emitir", "ok", "manda o pix"). TEM = disse que TEM a certidão e vai mandar. NAO = recusou ou prefere tirar sozinho no cartório. INDEFINIDO = pergunta (inclusive sobre o custo), dúvida, assunto diferente ou resposta que não decide.',
       messages: [{ role: 'user', content: `OFERTA: emitir a certidão da matrícula ${of.matricula} pelo cartório digital (ONR).\nRESPOSTA DO CLIENTE: ${clean}` }],
     }),
   }).catch(() => null);
@@ -228,6 +230,12 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   if (r === 'NAO') {
     await salvaOferta(leadId, { declinedAt: new Date().toISOString() });
     await note(leadId, `🏛️ O cliente NÃO quer que a A&F emita a certidão ("${clean.slice(0, 120)}"): ele prefere tirar direto no cartório. Nada foi pedido no ONR.`);
+    return;
+  }
+  if (r === 'TEM') {
+    const jaAvisou = !!(cf._certidaoOffer as any)?.temAt;
+    await salvaOferta(leadId, { temAt: new Date().toISOString() }); // a oferta continua valendo: se depois ele pedir pra emitir, vale
+    if (!jaAvisou) await note(leadId, `🏛️ O cliente diz que TEM a certidão de ônus/matrícula e vai mandar ("${clean.slice(0, 120)}"). Nada foi pedido no ONR; se ele não mandar, a oferta de emitir continua valendo.`);
     return;
   }
   if (r !== 'SIM') return;
