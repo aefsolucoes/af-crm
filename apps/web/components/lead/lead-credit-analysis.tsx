@@ -90,7 +90,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
       if ((who === 'p2') !== inverted) await api.put('/api/credit-analysis/overrides', { leadId, banks: [bank], data: { inverter: who === 'p2' }, merge: true });
       const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: [bank], force: true });
       pingExtensions(data?.extensions, [bank]);
-      toast(r.created ? `${short} na fila` : `${short}: já tem uma análise rodando`, r.created ? 'success' : 'error');
+      toast(r.created ? `${short} na fila${r.queuedBehind ? ' — a extensão está ocupada, roda quando ela terminar' : ''}` : `${short}: já está na fila ou rodando`, r.created ? 'success' : 'error');
       refresh();
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao pedir a análise', 'error');

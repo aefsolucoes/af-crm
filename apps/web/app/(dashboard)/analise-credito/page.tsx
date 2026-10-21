@@ -302,7 +302,7 @@ export default function AnaliseCreditoPage() {
       const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: [bank], force: true }); // o participante foi escolhido pelo botão: não deixa a regra do CPF aprovado trocar
       pingExtensions(data?.extensions, [bank]);
       const short = BANKS.find((b) => b.key === bank)?.short;
-      toast(r.created ? `${short} na fila para ${who === 'p2' ? (l.card?.name2 || '2º participante') : (l.card?.name1 || l.name)}` : `${short}: já tem uma análise rodando`, r.created ? 'success' : 'error');
+      toast(r.created ? `${short} na fila para ${who === 'p2' ? (l.card?.name2 || '2º participante') : (l.card?.name1 || l.name)}${r.queuedBehind ? ' — a extensão está ocupada, roda quando ela terminar' : ''}` : `${short}: já está na fila ou rodando`, r.created ? 'success' : 'error');
       refresh();
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao pedir a análise', 'error');

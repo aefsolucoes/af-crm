@@ -315,11 +315,11 @@ async function alignHoldersWithApproval(db: Db, accountId: string, leadId: strin
   }
 }
 
-export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; alignApproval?: boolean }) {
+export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; alignApproval?: boolean; queueIfBusy?: boolean }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
   const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true } });
-  let created = 0, skipped = 0;
+  let created = 0, skipped = 0, queuedBehind = 0;
   const consulted: string[] = [];
   for (const l of leads) {
     const createdBefore = created;
@@ -332,9 +332,18 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
     for (const bank of banks) {
       const open = await db.creditAnalysis.findFirst({
         where: { leadId: l.id, bank, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } },
-        select: { id: true },
+        select: { id: true, kind: true, status: true },
       });
-      if (open) { skipped++; continue; }
+      if (open) {
+        // "Rodar de novo" clicado por uma PESSOA com a extensão ocupada (Fabio 21/10): em vez de descartar o pedido ("já tem uma análise rodando"), ele entra NA FILA e roda quando a extensão terminar.
+        // Só rodada manual (queueIfBusy): as automáticas continuam sem duplicar proposta. Pedido de rodar já esperando na fila, não duplica; conferência marcada vira a nova rodada.
+        if (!(wantedKind === 'RUN' && p.queueIfBusy && !p.dryRun)) { skipped++; continue; }
+        const jaNaFila = await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, kind: 'RUN', status: 'REQUESTED', dryRun: false }, select: { id: true } });
+        if (jaNaFila) { skipped++; continue; }
+        if (open.kind === 'CHECK' && open.status === 'REQUESTED') {
+          await db.creditAnalysis.updateMany({ where: { id: open.id, status: 'REQUESTED' }, data: { status: 'CHECK', finishedAt: new Date(), detail: 'Conferência encerrada: nova rodada pedida por uma pessoa.' } });
+        } else if (open.status === 'RUNNING') queuedBehind++; // a extensão está nesse banco agora: o pedido espera ela terminar
+      }
       // Já foi rodada nesse banco? Então só consulta a proposta (não cria de novo), a menos que seja pra rodar de novo de propósito.
       let kind: 'RUN' | 'CHECK' = wantedKind;
       if (kind === 'RUN' && !p.force && CHECK_BANKS.includes(bank)) {
@@ -373,7 +382,7 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
       if (v > 0) { cf._lastRunValue = v; await db.lead.update({ where: { id: l.id }, data: { customFields: cf as any } }).catch(() => {}); }
     }
   }
-  return { created, skipped, consulted, banks, leads: leads.length, kind: wantedKind };
+  return { created, skipped, queuedBehind, consulted, banks, leads: leads.length, kind: wantedKind };
 }
 
 /** A extensão do banco pergunta: "tem pedido pra mim?". Marca como RUNNING o que entregar. Pedidos de só conferir
