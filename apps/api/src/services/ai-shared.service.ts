@@ -453,8 +453,22 @@ export async function applyAiExtractedActions(
         delete cfv._vendaFuturaSentAt; delete cfv._vendaFuturaFailAt; cfv._vendaFuturaCount = 0;
         await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cfv as any } });
         if (!/venda futura/i.test(atual?.stage?.name || '') && atual?.pipelineId) {
-          const vf = await prisma.stage.findFirst({ where: { pipelineId: atual.pipelineId, name: { contains: 'Venda Futura', mode: 'insensitive' } }, select: { id: true } });
-          if (vf) { const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service'); await updateLeadStage(lead.id, accountId, vf.id); }
+          let vf = await prisma.stage.findFirst({ where: { pipelineId: atual.pipelineId, name: { contains: 'Venda Futura', mode: 'insensitive' } }, select: { id: true } });
+          // Card em "Perdidos" (ou em funil sem a etapa): a retomada combinada leva pro funil de VENDAS do setor e REABRE o card — senão o disparo nunca sai, porque o poller só olha cards abertos em
+          // "Venda Futura" (Fábio Roberto 21/10: disse "no início do ano eu vejo", a IA combinou 10/01/2027 e o card ficou Perdido).
+          let reabriu = false;
+          if (!vf) {
+            const dept = (await prisma.pipeline.findUnique({ where: { id: atual.pipelineId }, select: { departmentId: true } }))?.departmentId;
+            vf = dept ? await prisma.stage.findFirst({ where: { name: { contains: 'Venda Futura', mode: 'insensitive' }, pipeline: { departmentId: dept, name: { contains: 'Vendas', mode: 'insensitive' } } }, select: { id: true } }) : null;
+            const st = await prisma.lead.findUnique({ where: { id: lead.id }, select: { status: true } });
+            if (vf && st?.status !== 'OPEN') { await prisma.lead.update({ where: { id: lead.id }, data: { status: 'OPEN', lostReason: null, archived: false } }); reabriu = true; }
+          }
+          if (vf) {
+            const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+            await updateLeadStage(lead.id, accountId, vf.id);
+            await prisma.lead.update({ where: { id: lead.id }, data: { stageEnteredAt: new Date() } }).catch(() => {});
+            await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `🤖 IA moveu o card pra "Venda Futura"${reabriu ? ' (reabriu o card que estava Perdido)' : ''} — retomada combinada com o cliente` } }).catch(() => {});
+          }
         }
         await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `📅 Retomada combinada com o cliente para ${action.resumeOn.split('-').reverse().join('/')}${action.moveReason ? ` (${action.moveReason})` : ''}. Nesse dia o CRM manda a mensagem de retomada (template "venda_futura_retomada").` } });
         logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `agendou a retomada do crédito para ${action.resumeOn.split('-').reverse().join('/')}` });
