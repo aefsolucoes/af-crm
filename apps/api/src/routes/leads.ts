@@ -885,6 +885,7 @@ router.post('/merge-same-contact', async (req: AuthRequest, res: Response) => {
 router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
   try {
     const { customFields } = req.body;
+    let trocoRecalculado: { total: number; antes: number } | null = null;
     // Crédito com SALDO DEVEDOR (Fabio 15/10): o cliente pega o crédito pra quitar o financiamento atual + o TROCO que sobra pra ele. "Valor do crédito" = Saldo devedor + Troco —
     // calculado aqui, na escrita, quando o saldo ou o troco mudam (editar só o "Valor do crédito" continua valendo como está).
     if (customFields && typeof customFields === 'object' && ('saldo_devedor' in customFields || 'troco' in customFields)) {
@@ -893,9 +894,20 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
       const mudou = ['saldo_devedor', 'troco'].some((k) => k in customFields && String(customFields[k] ?? '') !== String(before[k] ?? ''));
       const saldo = parseFieldNumber(('saldo_devedor' in customFields ? customFields.saldo_devedor : before.saldo_devedor) as any);
       const troco = parseFieldNumber(('troco' in customFields ? customFields.troco : before.troco) as any);
-      if (mudou && saldo > 0) customFields.valor_credito = String(roundUpToThousand(Math.round((saldo + (troco > 0 ? troco : 0)) * 100) / 100));
+      if (mudou && saldo > 0) {
+        // Mesma conta do ajuste pela IA (saldo-devedor.service): antes do print = saldo declarado + troco no milhar acima (sem folga); depois do print = saldo real + troco + folga.
+        const { creditoComTroco } = require('../services/saldo-devedor.service') as typeof import('../services/saldo-devedor.service');
+        const total = creditoComTroco(saldo, troco > 0 ? troco : 0, !!(before as any)._saldoDevedor?.doneAt);
+        customFields.valor_credito = String(total);
+        trocoRecalculado = { total, antes: Number((before as any).valor_credito) || 0 };
+      }
     }
     const lead = await updateLead(req.params.id, req.user!.accountId, { customFields } as any);
+    // A equipe mudou o saldo/troco e o valor do crédito mudou (Fabio 21/10): se a análise já rodou com o valor antigo, refaz sozinha.
+    if (trocoRecalculado && Math.abs(trocoRecalculado.total - trocoRecalculado.antes) >= 1) {
+      const { refazAnaliseComValorNovo } = require('../services/saldo-devedor.service') as typeof import('../services/saldo-devedor.service');
+      refazAnaliseComValorNovo(req.user!.accountId, req.params.id, trocoRecalculado.total, req.app.get('io')).catch((e: any) => console.error('[Troco] refazer análise:', e?.message));
+    }
 
     // O nome que aparece na conversa/Inbox é o do CONTATO. Como o "Participante 1"
     // é o nome da pessoa, mantemos o contato em sincronia: renomear o Participante 1

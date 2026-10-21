@@ -162,9 +162,15 @@ export async function aplicarTrocoCorrigido(accountId: string, leadId: string, n
   const linhaValor = Math.abs(total - antes) < 1 ? `o crédito segue ${brl(total)}` : `crédito a analisar ${antes ? brl(antes) : '—'} → ${brl(total)} (saldo ${brl(saldo)} + troco ${brl(novoTroco)}${st?.doneAt ? ' + folga' : ''})`;
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `💸 O cliente corrigiu o troco${trocoAntes ? ` (${brl(trocoAntes)} → ${brl(novoTroco)})` : ` para ${brl(novoTroco)}`}: ${linhaValor}.` } }).catch(() => {});
   if (Math.abs(total - antes) < 1) return;
-  // Se a análise já rodou com o valor antigo, refaz; se ainda não rodou, a análise automática já parte do valor novo.
+  await refazAnaliseComValorNovo(accountId, leadId, total, io);
+}
+
+/** O valor do crédito mudou (troco corrigido pelo cliente OU editado pela equipe): se a análise já rodou com o valor antigo, refaz nos 3 bancos; se ainda não rodou, a análise automática já parte do valor novo. */
+export async function refazAnaliseComValorNovo(accountId: string, leadId: string, total: number, io: Io): Promise<void> {
   const rodou = await prisma.creditAnalysis.count({ where: { leadId, dryRun: false } });
   if (!rodou) return;
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  if (((lead?.customFields || {}) as Record<string, any>)._autoPaused) return;
   const setting = await prisma.creditAutoSetting.findUnique({ where: { accountId }, select: { enabled: true } });
   if (!setting?.enabled) { await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ A análise automática está desligada: refaça a análise nos bancos com o valor novo (aba Análise de Crédito).' } }).catch(() => {}); return; }
   try {
