@@ -73,6 +73,18 @@ async function bytesDoAnexo(accountId: string, a: { data: Uint8Array | Buffer | 
   try { const { downloadDriveFile } = await import('./google.service'); return await downloadDriveFile(accountId, a.driveFileId, a.mimeType); } catch { return null; }
 }
 
+/** Guarda um formulário na subpasta FORMULARIOS da pasta do cliente no Drive (Fabio 21/10: "abre uma pasta FORMULARIOS no Drive do cliente e coloca esses formulários lá"). Sem pasta do cliente: não guarda (não trava o fluxo). */
+async function guardaFormulario(accountId: string, cf: Record<string, any>, nome: string, mimeType: string, data: Buffer): Promise<boolean> {
+  const link = String(cf.link_pasta_drive || '').trim();
+  if (!link) return false;
+  try {
+    const { extractFolderId, createFolder, uploadFile } = await import('./google.service');
+    const pasta = await createFolder(accountId, 'FORMULARIOS', extractFolderId(link));
+    await uploadFile(accountId, { name: nome, mimeType, parentId: pasta.id, data });
+    return true;
+  } catch (e: any) { console.warn('[Vistoria Santander] não consegui guardar o formulário no Drive:', e?.message); return false; }
+}
+
 /** Chamado pelo vigia da vistoria (um card por vez) quando o cliente segue pelo Santander. Devolve true quando o pedido já foi enviado. */
 export async function processVistoriaSantander(accountId: string, leadId: string, io: Io): Promise<boolean> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true, contact: { select: { phone: true } } } });
@@ -104,7 +116,8 @@ export async function processVistoriaSantander(accountId: string, leadId: string
     const sent = await sendOutboundMedia({ accountId, leadId, buffer: pdf, fileName: 'Autorizacao USECASA - assinar pelo gov.br.pdf', mimeType: 'application/pdf', caption: textoPedidoAssinatura(primeiroNome, !!p2), io });
     if (!sent.success) return false;
     await salva(leadId, { status: 'ASSINATURA_PEDIDA', askedAt: new Date().toISOString() });
-    await note(leadId, '🏦 Santander: mandei ao cliente a autorização USECASA (já com nomes e CPFs) pra assinar pelo gov.br. Quando o PDF assinado voltar, o CRM junta os documentos e pede a vistoria por e-mail à Letícia.');
+    const guardou = await guardaFormulario(accountId, cf, 'AUTORIZACAO USECASA - PARA ASSINAR.pdf', 'application/pdf', pdf);
+    await note(leadId, `🏦 Santander: mandei ao cliente a autorização USECASA (já com nomes e CPFs) pra assinar pelo gov.br${guardou ? ' (cópia na pasta FORMULARIOS do Drive)' : ''}. Quando o PDF assinado voltar, o CRM junta os documentos e pede a vistoria por e-mail à Letícia.`);
     return false;
   }
 
@@ -115,7 +128,12 @@ export async function processVistoriaSantander(accountId: string, leadId: string
       const bytes = await bytesDoAnexo(accountId, a);
       if (!bytes) continue;
       const r = await inspecionarRetornoUsecasa(bytes, leadId);
-      if (r.nosso && r.assinado) { await salva(leadId, { status: 'ASSINADA', signedAt: new Date().toISOString(), signedName: a.fileName }); await note(leadId, `🏦 Santander: o cliente devolveu a autorização USECASA ASSINADA (${a.fileName}). Agora o CRM junta os documentos da pasta do Drive.`); break; }
+      if (r.nosso && r.assinado) {
+        await salva(leadId, { status: 'ASSINADA', signedAt: new Date().toISOString(), signedName: a.fileName });
+        const guardou = await guardaFormulario(accountId, cf, 'AUTORIZACAO USECASA - ASSINADA.pdf', 'application/pdf', bytes);
+        await note(leadId, `🏦 Santander: o cliente devolveu a autorização USECASA ASSINADA (${a.fileName})${guardou ? ' — guardada na pasta FORMULARIOS do Drive' : ''}. Agora o CRM junta os documentos da pasta do Drive.`);
+        break;
+      }
       if (r.nosso && !r.assinado && faz(st.semAssinaturaNoteAt) > AVISO_REPETIR_MS) { await salva(leadId, { semAssinaturaNoteAt: new Date().toISOString() }); await note(leadId, `🏦 Santander: o cliente mandou de volta a autorização (${a.fileName}), mas SEM assinatura digital do gov.br. Peça pra ele assinar em assinador.iti.br e mandar de novo.`); }
     }
     const depois = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as any)?._vistoriaSant as St | undefined;
@@ -152,16 +170,8 @@ export async function processVistoriaSantander(accountId: string, leadId: string
   if (essenciais.length) {
     if (faz(st.faltaNoteAt) > AVISO_REPETIR_MS || st.status !== 'FALTAM_DADOS') {
       await salva(leadId, { status: 'FALTAM_DADOS', faltaNoteAt: new Date().toISOString() });
-      try {
-        const link = String(cf.link_pasta_drive || '').trim();
-        if (link) {
-          const { extractFolderId, findFolder, uploadFile } = await import('./google.service');
-          const raiz = extractFolderId(link);
-          const imovel = (await findFolder(accountId, 'IMOVEL', raiz)) || raiz;
-          await uploadFile(accountId, { name: 'WEB CASAS - CADASTRO PARA COMPLETAR.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', parentId: imovel, data: docx });
-        }
-      } catch (e: any) { console.warn('[Vistoria Santander] não consegui guardar o Word no Drive:', e?.message); }
-      await note(leadId, `🏦 Santander: tudo pronto pra pedir a vistoria, mas o cadastro WEB CASAS ficou sem dado essencial: ${essenciais.join('; ')}. Guardei o Word preenchido na pasta IMOVEL do Drive ("WEB CASAS - CADASTRO PARA COMPLETAR"): complete e envie à Letícia com os documentos, ou me diga o que preencher.`);
+      const guardou = await guardaFormulario(accountId, cf, 'WEB CASAS - CADASTRO PARA COMPLETAR.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', docx);
+      await note(leadId, `🏦 Santander: tudo pronto pra pedir a vistoria, mas o cadastro WEB CASAS ficou sem dado essencial: ${essenciais.join('; ')}.${guardou ? ' Guardei o Word preenchido na pasta FORMULARIOS do Drive ("WEB CASAS - CADASTRO PARA COMPLETAR"): complete e envie à Letícia com os documentos, ou me diga o que preencher.' : ' Complete o cadastro e envie à Letícia com os documentos, ou me diga o que preencher.'}`);
       push(accountId, '🏦 Vistoria Santander: cadastro incompleto', `${lead.name}: ${essenciais.join('; ').slice(0, 110)}`, leadId);
     }
     return false;
@@ -181,6 +191,7 @@ export async function processVistoriaSantander(accountId: string, leadId: string
     for (const f of arr) anexos.push({ filename: f.name, contentType: f.mimeType, content: await downloadDriveFile(accountId, f.id, f.mimeType) });
     lista.push({ cnd: 'CND de IPTU', capa: 'capa do IPTU', onus: 'certidão de ônus/matrícula do imóvel', ident: 'documento de identidade', civil: 'certidão de estado civil' }[k]);
   }
+  await guardaFormulario(accountId, cf, 'WEB CASAS - CADASTRO PREENCHIDO.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', docx);
   const prop = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'CREDIMORAR', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
   const nomeCliente = p1.nome.replace(/\s+/g, ' ').trim();
   const corpo = [
