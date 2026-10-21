@@ -2,13 +2,13 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { ExternalLink, FileText, Landmark, Play, Star } from 'lucide-react';
+import { ExternalLink, FileText, Landmark, Play, Square, Star } from 'lucide-react';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
 import { pingExtensions } from '@/lib/credit-extensions';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
-import { BANKS, Badge, STATUS, useLeadAnalyses, sameWho, type Analysis, type Bank } from '@/components/credit/shared';
+import { BANKS, Badge, STATUS, useLeadAnalyses, sameWho, overrideSummary, type Analysis, type Bank } from '@/components/credit/shared';
 import { formatCurrency } from '@/lib/utils';
 
 /* Bloco "Análises de crédito" dentro do card (aba Financiamento). Mostra o último resultado de
@@ -64,16 +64,31 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     } finally { setBusy(false); }
   }
 
+  // STOP (Fabio 21/10: "um botão escrito stop, pra parar no meio caso a extensão esteja rodando"): STOP TOTAL só deste cliente — derruba a rodada em andamento (a extensão tira a aba do banco do meio do formulário)
+  // e para tudo que roda sozinho, inclusive a IA. Retomar volta o automático.
+  const rodandoAgora = BANKS.some((b) => ['REQUESTED', 'RUNNING'].includes(data.latest[b.key]?.status || ''));
+  async function togglePause() {
+    const next = !data?.autoPaused;
+    if (next && !window.confirm('STOP: parar TUDO deste cliente?\n\n• A rodada em andamento nos bancos é interrompida no meio (o banco pode ficar com um rascunho/proposta incompleta).\n• Nada roda, refaz, confere nem avisa o cliente sozinho; a IA para de responder.\n• Só este cliente. Para voltar, clique em Retomar.')) return;
+    try {
+      const { data: r } = await api.put('/api/credit-analysis/pause', { leadId, paused: next });
+      toast(next ? `PARADO${r?.interrompidas ? ` — ${r.interrompidas} rodada(s) interrompida(s)` : ''}. A extensão derruba a aba do banco no próximo passo (até ~10 s).` : 'Retomado', 'success');
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao parar o cliente', 'error');
+    }
+  }
+
   // Botão da linha REPROVADA (Fabio 21/10): roda de novo só aquele banco, daquele participante (no 2º liga a inversão só naquele banco), com proposta nova.
   const [rerunKey, setRerunKey] = useState<string | null>(null);
   async function rerunBank(bank: Bank, who: 'p1' | 'p2') {
     const short = BANKS.find((x) => x.key === bank)?.short;
-    if (rerunKey || !window.confirm(`Rodar de novo no ${short}? O cliente foi reprovado ali; isso cria uma proposta nova no banco.`)) return;
+    if (rerunKey || !window.confirm(`Rodar de novo no ${short}? Isso cria uma proposta nova no banco${overrideSummary(data?.overrides?.[bank]) ? ', com o ajuste que você fez' : ''}.`)) return;
     setRerunKey(`${bank}-${who}`);
     try {
       const inverted = !!data?.overrides?.[bank]?.inverter;
       if ((who === 'p2') !== inverted) await api.put('/api/credit-analysis/overrides', { leadId, banks: [bank], data: { inverter: who === 'p2' }, merge: true });
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: [bank], force: true });
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: [bank], force: true, keepHolder: true });
       pingExtensions(data?.extensions, [bank]);
       toast(r.created ? `${short} na fila` : `${short}: já tem uma análise rodando`, r.created ? 'success' : 'error');
       refresh();
@@ -136,6 +151,11 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
             className="text-[11px] text-white bg-red-600 hover:opacity-90 rounded px-2 py-0.5"
             title="Todos os bancos disseram não e a IA deste card está desligada: manda a negativa e move o card pra Perdidos"
           >Avisar negativa</button>
+        )}
+        {(rodandoAgora || data.autoPaused) && (
+          <button onClick={togglePause} className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded font-semibold ${data.autoPaused ? 'border border-emerald-300 text-emerald-700 hover:bg-emerald-50' : 'bg-red-600 text-white hover:opacity-90'}`} title="STOP TOTAL só deste cliente: derruba a rodada em andamento e para tudo, inclusive a IA">
+            {data.autoPaused ? <><Play size={10} /> Retomar</> : <><Square size={10} className="fill-current" /> STOP</>}
+          </button>
         )}
         <Link href={`/analise-credito?leadId=${leadId}`} className="flex items-center gap-1 text-[11px] text-af-mid hover:underline" title="Abrir na aba Análise de Crédito (resultado manual e histórico)">
           Abrir aba <ExternalLink size={10} />
@@ -203,9 +223,9 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
               {a && a.status !== 'APPROVED' && a.detail && ['CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE'].includes(a.status) && (
                 <div className="text-[11px] text-slate-400 mt-0.5 line-clamp-2" title={a.detail}>{a.detail}</div>
               )}
-              {a?.status === 'REJECTED' && (
+              {(a?.status === 'REJECTED' || (!!a && !!overrideSummary(data.overrides?.[b.key]))) && (
                 <div className="mt-1">
-                  <button onClick={() => rerunBank(b.key, who)} disabled={!!rerunKey} className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50"><Play size={10} className={rerunKey === `${b.key}-${who}` ? 'animate-pulse' : ''} /> Rodar de novo</button>
+                  <button onClick={() => rerunBank(b.key, who)} disabled={!!rerunKey} className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50"><Play size={10} className={rerunKey === `${b.key}-${who}` ? 'animate-pulse' : ''} /> {a?.status !== 'REJECTED' ? 'Rodar de novo com o ajuste' : 'Rodar de novo'}</button>
                 </div>
               )}
               {(a?.status === 'APPROVED' || a?.status === 'CONDITIONAL') && (

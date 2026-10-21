@@ -278,7 +278,7 @@ export default function AnaliseCreditoPage() {
   // "Salvar e rodar de novo" do modal de ajuste.
   async function runAgain(leadId: string, bks: Bank[]) {
     try {
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: bks, force: true }); // depois de ajustar: roda de novo de propósito
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: bks, force: true, keepHolder: true }); // depois de ajustar: roda de novo de propósito, com o titular que o ajuste definiu
       pingExtensions(data?.extensions, bks);
       toast(`${r.created} análise(s) na fila${r.skipped ? ` · ${r.skipped} já estavam rodando` : ''}`, 'success');
       refresh();
@@ -290,16 +290,16 @@ export default function AnaliseCreditoPage() {
   // Botão dentro do cartão do banco: roda SÓ aquele banco, daquele participante (Fabio 14/10). No 2º participante liga a inversão só naquele banco
   // (a mesma que a cascata automática usa); no 1º desliga, pra não rodar no nome errado.
   const [rerunKey, setRerunKey] = useState<string | null>(null);
-  async function rerunBank(l: BoardLead, bank: Bank, who: 'p1' | 'p2', reprovado = false) {
+  async function rerunBank(l: BoardLead, bank: Bank, who: 'p1' | 'p2', jaTemResultado = false, comAjuste = false) {
     const key = `${l.id}-${bank}-${who}`;
     if (rerunKey) return;
-    // Reprovado: roda de novo = proposta NOVA no banco (Fabio 21/10); confirma pra não clicar sem querer.
-    if (reprovado && !window.confirm(`Rodar de novo no ${BANKS.find((b) => b.key === bank)?.short}? O cliente foi reprovado ali; isso cria uma proposta nova no banco.`)) return;
+    // Já tem resultado nesse banco (reprovado, aprovado ou enviado): roda de novo = proposta NOVA no banco (Fabio 21/10); confirma pra não clicar sem querer.
+    if (jaTemResultado && !window.confirm(`Rodar de novo no ${BANKS.find((b) => b.key === bank)?.short}? Isso cria uma proposta nova no banco${comAjuste ? ', com o ajuste que você fez' : ''}.`)) return;
     setRerunKey(key);
     try {
       const inverted = !!l.overrides?.[bank]?.inverter;
       if (who === 'p2' !== inverted) await api.put('/api/credit-analysis/overrides', { leadId: l.id, banks: [bank], data: { inverter: who === 'p2' }, merge: true });
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: [bank], force: true });
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: [bank], force: true, keepHolder: true }); // o participante foi escolhido pelo botão: não deixa a regra do CPF aprovado trocar
       pingExtensions(data?.extensions, [bank]);
       const short = BANKS.find((b) => b.key === bank)?.short;
       toast(r.created ? `${short} na fila para ${who === 'p2' ? (l.card?.name2 || '2º participante') : (l.card?.name1 || l.name)}` : `${short}: já tem uma análise rodando`, r.created ? 'success' : 'error');
@@ -471,8 +471,8 @@ export default function AnaliseCreditoPage() {
                                 <button onClick={() => notifyRejection(l)} title="Todos os bancos disseram não e a IA deste card está desligada: manda a negativa ao cliente e move o card pra Perdidos" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg bg-red-600 text-white hover:opacity-90"><Send size={11} /> Avisar negativa</button>
                               )}
                               <button onClick={() => setAdjust(l)} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><SlidersHorizontal size={11} /> Ajustar</button>
-                              <button onClick={() => toggleClientPause(l)} title={l.autoPaused ? 'Voltar o automático (e a IA, se estava ligada) pra este cliente' : 'STOP TOTAL só deste cliente: derruba as rodadas em andamento e para tudo, inclusive a IA'} className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border ${l.autoPaused ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50' : 'border-red-300 text-red-600 hover:bg-red-50'}`}>
-                                {l.autoPaused ? <><Play size={11} /> Retomar</> : <><Square size={11} className="fill-current" /> Parar</>}
+                              <button onClick={() => toggleClientPause(l)} title={l.autoPaused ? 'Voltar o automático (e a IA, se estava ligada) pra este cliente' : 'STOP TOTAL só deste cliente: derruba as rodadas em andamento e para tudo, inclusive a IA'} className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border ${l.autoPaused ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50' : BANKS.some((b) => ['REQUESTED', 'RUNNING'].includes(l.latest[b.key]?.status || '')) ? 'border-red-600 bg-red-600 text-white font-semibold hover:opacity-90' : 'border-red-300 text-red-600 hover:bg-red-50'}`}>
+                                {l.autoPaused ? <><Play size={11} /> Retomar</> : <><Square size={11} className="fill-current" /> STOP</>}
                               </button>
                               {(['INTER', 'CREDITAS', 'CREDIMORAR'] as Bank[]).filter((bk) => emAnalise(l.latest[bk])).map((bk) => (
                                 <button key={`ra-${bk}`} onClick={() => conferirAgora(l, bk)} title={`A extensão lê AGORA o resultado da proposta no ${BANKS.find((b) => b.key === bk)?.short} (sem criar proposta nova)`} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-indigo-300 text-indigo-700 hover:bg-indigo-50"><RefreshCw size={11} /> Conferir resultado {BANKS.find((b) => b.key === bk)?.short}</button>
@@ -546,9 +546,9 @@ export default function AnaliseCreditoPage() {
                                           {a ? <><Pencil size={11} /> Resultado</> : <><Plus size={11} /> Registrar</>}
                                         </button>
                                         {emAnalise(a) && <button onClick={() => conferirAgora(l, b.key)} title="A extensão lê AGORA o resultado da proposta (sem criar proposta nova)" className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-indigo-300 text-indigo-700 hover:bg-indigo-50"><RefreshCw size={11} /> Conferir resultado</button>}
-                                        {(!a || ['FAILED', 'INCOMPLETE', 'CHECK', 'REJECTED'].includes(a.status) || (a.bank === 'INTER' && a.status === 'SENT' && !a.proposalNumber && a.source !== 'MANUAL')) && (
-                                          <button onClick={() => rerunBank(l, b.key, who, a?.status === 'REJECTED')} disabled={!!rerunKey} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50">
-                                            <RefreshCw size={11} className={rerunKey === `${l.id}-${b.key}-${who}` ? 'animate-spin' : ''} /> {a ? 'Rodar de novo' : who === 'p2' ? 'Rodar no 2º participante' : 'Rodar'}
+                                        {(!a || ['FAILED', 'INCOMPLETE', 'CHECK', 'REJECTED'].includes(a.status) || !!overrideSummary(l.overrides?.[b.key]) || (a.bank === 'INTER' && a.status === 'SENT' && !a.proposalNumber && a.source !== 'MANUAL')) && (
+                                          <button onClick={() => rerunBank(l, b.key, who, !!a && ['REJECTED', 'APPROVED', 'CONDITIONAL', 'SENT'].includes(a.status), !!overrideSummary(l.overrides?.[b.key]))} disabled={!!rerunKey} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50">
+                                            <RefreshCw size={11} className={rerunKey === `${l.id}-${b.key}-${who}` ? 'animate-spin' : ''} /> {a ? (overrideSummary(l.overrides?.[b.key]) && !['FAILED', 'INCOMPLETE', 'CHECK', 'REJECTED'].includes(a.status) ? 'Rodar de novo com o ajuste' : 'Rodar de novo') : who === 'p2' ? 'Rodar no 2º participante' : 'Rodar'}
                                           </button>
                                         )}
                                         {(a?.status === 'APPROVED' || a?.status === 'CONDITIONAL') && (a.chosen

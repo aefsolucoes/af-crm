@@ -315,7 +315,7 @@ async function alignHoldersWithApproval(db: Db, accountId: string, leadId: strin
   }
 }
 
-export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string }) {
+export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; keepHolder?: boolean }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
   const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true } });
@@ -325,7 +325,9 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
     const createdBefore = created;
     const cfPedido = ((await db.lead.findUnique({ where: { id: l.id }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
     const pedidoNaRodada = Number(String(cfPedido.valor_credito ?? '').replace(/[^\d.]/g, '')) || null; // card no momento do pedido
-    if (wantedKind === 'RUN' && !p.dryRun && p.force) await alignHoldersWithApproval(db, p.accountId, l.id).catch(() => {});
+    // keepHolder = a PESSOA escolheu o titular de propósito (botão "Rodar de novo" de um participante, "Salvar e rodar de novo" do ajuste): a regra "mesmo CPF da aprovação" NÃO sobrescreve
+    // (Fabio 21/10: pediu pra rodar o 1º participante e o CRM puxou pro nome do 2º, que já tinha aprovado no Inter).
+    if (wantedKind === 'RUN' && !p.dryRun && p.force && !p.keepHolder) await alignHoldersWithApproval(db, p.accountId, l.id).catch(() => {});
     for (const bank of banks) {
       const open = await db.creditAnalysis.findFirst({
         where: { leadId: l.id, bank, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } },
@@ -1209,11 +1211,11 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   const followed = baseSeguida ? (aprovadas.find((r) => r.bank === baseSeguida.bank && r.proposalNumber === baseSeguida.proposalNumber && !!r.firstInstallment) || baseSeguida) : null;
   const posAprovacao = /aguardando documenta|fechado|documenta[cç][aã]o recebida|vistoria|an[aá]lise jur|registro em cart|pagamento|cr[eé]dito aprovado|cr[eé]dito em an/i.test(lead.stage?.name || '') || /contrata/i.test(lead.pipeline?.name || '');
   return {
-    followed, onlyFollowed: !!followed && posAprovacao,
+    followed, onlyFollowed: !!followed && posAprovacao, autoPaused: !!cf._autoPaused,
     eligible: /home equity/i.test(lead.pipeline?.department?.name || ''),
     rejectionPending: (require('./credit-auto.service') as typeof import('./credit-auto.service')).rejectionPendingOf(history, { status: lead.status, stage: lead.stage?.name, aiOn: lead.aiAutoReplyActive, paused: !!(lead.customFields as any)?._autoPaused }),
     latest, ...(() => { const bp = latestByParticipant(history, cf, lead.name); return { latestP1: bp.p1, latestP2: bp.p2 }; })(), history, chosenId: history.find((a) => a.chosen)?.id || null,
-    overrides: Object.fromEntries(overrides.map((o) => [o.bank, { inverter: (o.data as any)?.inverter === true }])),
+    overrides: Object.fromEntries(overrides.map((o) => [o.bank, o.data])),
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
   };
 }
