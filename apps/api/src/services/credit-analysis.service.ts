@@ -117,6 +117,18 @@ export function latestPerBank(rows: any[]): Record<string, any> {
     out[a.bank] = a;
   }
   for (const a of rows) if (!out[a.bank]) out[a.bank] = a;
+  // APROVAÇÃO NÃO SOME POR RODADA DE TESTE (Fabio 21/10: "mostrar a proposta aprovada a qual o cliente irá seguir — ele pediu 55 mil, foi recusada e o painel não mostra a aprovada"): se o banco já aprovou, uma rodada
+  // MAIS NOVA que falhou ou foi reprovada em OUTRA proposta (valor/prazo/renda diferentes, "Não conformidade") não esconde a aprovação. Só a vira reprovação quando a MESMA proposta aprovada passa a reprovada
+  // (o banco mudou de ideia). Rodada em andamento (na fila/rodando) continua aparecendo.
+  const positivo = (st: string) => st === 'APPROVED' || st === 'CONDITIONAL';
+  for (const bank of Object.keys(out)) {
+    const cur = out[bank];
+    if (positivo(cur.status) || cur.status === 'REQUESTED' || cur.status === 'RUNNING') continue;
+    const ap = rows.find((r) => r.bank === bank && positivo(r.status) && r.approvedValue && !r.dryRun && r.source !== 'AI_SIM');
+    if (!ap) continue;
+    const virou = ap.proposalNumber && rows.some((r) => r.bank === bank && r.proposalNumber === ap.proposalNumber && r.status === 'REJECTED' && new Date(r.createdAt).getTime() > new Date(ap.createdAt).getTime());
+    if (!virou) out[bank] = ap;
+  }
   return out;
 }
 
