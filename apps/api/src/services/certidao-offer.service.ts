@@ -6,7 +6,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 /**
  * ESCRITURA → MATRÍCULA → ONR (Fabio 20/10, Luiz Fernando). O cliente manda a escritura (traz o número da matrícula e o cartório) em vez da certidão de ônus/matrícula:
  *  1) a conferência dos documentos acha a matrícula e a cidade/UF na escritura (`certidaoFromDocs`);
- *  2) a IA SE OFERECE pra emitir pelo ONR ("custo entre R$ 40 e R$ 100, eu te mando o PIX") — UMA vez por matrícula (`maybeOfferCertidao`);
+ *  2) a IA SE OFERECE pra emitir pelo ONR ("é essencial pra solicitar a vistoria; posso emitir por aqui, pelo cartório digital?" — sem custo e sem nome de empresa) — UMA vez por matrícula (`maybeOfferCertidao`);
  *  3) QUANDO O CLIENTE ACEITA ("sim, pode"), é nesse momento que a extensão do ONR é acionada: cria o CertidaoRequest (`ensureCertidaoRequest`), a extensão pede no RI Digital, captura o PIX e o CRM manda o PIX ao cliente;
  *  4) recusa ("prefiro tirar no cartório") só anota. A A&F NUNCA emite sem esse OK (regra de 15/10).
  * O cartório vai como 'AUTO': a extensão escolhe o único cartório da cidade (se houver mais de um, ela avisa as opções e não conclui).
@@ -65,7 +65,8 @@ export function certidaoFromDocs(cf: Record<string, any>): { matricula: string; 
 }
 
 export function certidaoOfferText(nome: string | null, saudar: boolean, matricula: string): string {
-  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Recebi a escritura do imóvel e já identifiquei a matrícula (nº ${matricula}). A certidão de ônus/matrícula é essencial pro banco, e a A&F consegue emitir por meio digital, pelo ONR. Tem um custo pra você, entre R$ 40 e R$ 100, e eu te mando o PIX pra pagamento. Posso solicitar a certidão pra você? Se preferir tirar direto no cartório, sem problema.`;
+  // Fabio 21/10: SEM nome de empresa nem de pessoa, SEM falar de custo (se o cliente perguntar: varia de região pra região, em torno de R$ 40 a R$ 100) e dizendo que a certidão é essencial pra SOLICITAR A VISTORIA.
+  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Recebi a escritura do imóvel e já identifiquei a matrícula (nº ${matricula}). A certidão de ônus/matrícula é essencial para que possamos solicitar a vistoria. Posso emitir ela por aqui, através do cartório digital?`;
 }
 
 async function carrega(leadId: string) {
@@ -103,7 +104,7 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: (io || undefined) as any });
   if (!r.success) return false;
   await salvaOferta(leadId, { matricula: d.matricula, cidade: d.cidade, uf: d.uf, at: new Date().toISOString() });
-  await note(leadId, `🏛️ O cliente mandou a escritura (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) e não a certidão de ônus. Ofereci emitir pelo ONR (custo R$ 40 a R$ 100, PIX pra ele). Quando ele aceitar, a extensão do ONR é acionada sozinha.`);
+  await note(leadId, `🏛️ O cliente mandou a escritura (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) e não a certidão de ônus. Ofereci emitir pelo cartório digital (ONR); o PIX vai ao cliente. Quando ele aceitar, a extensão do ONR é acionada sozinha.`);
   return true;
 }
 
@@ -215,8 +216,8 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-sonnet-5', max_tokens: 1000,
-      system: 'A atendente de um correspondente bancário ofereceu ao cliente emitir a certidão de ônus/matrícula do imóvel pelo ONR (custo de R$ 40 a R$ 100, com PIX). Leia a RESPOSTA do cliente e classifique. Responda SÓ JSON: {"r":"SIM"|"NAO"|"INDEFINIDO"}. SIM = aceitou/autorizou (ex.: "pode", "sim", "pode emitir", "ok", "manda o pix"). NAO = recusou ou prefere tirar sozinho no cartório. INDEFINIDO = pergunta, dúvida, assunto diferente ou resposta que não decide.',
-      messages: [{ role: 'user', content: `OFERTA: emitir a certidão da matrícula ${of.matricula} pelo ONR (R$ 40 a R$ 100, PIX).\nRESPOSTA DO CLIENTE: ${clean}` }],
+      system: 'A atendente de um correspondente bancário ofereceu ao cliente emitir a certidão de ônus/matrícula do imóvel pelo cartório digital (ONR). Leia a RESPOSTA do cliente e classifique. Responda SÓ JSON: {"r":"SIM"|"NAO"|"INDEFINIDO"}. SIM = aceitou/autorizou (ex.: "pode", "sim", "pode emitir", "ok", "manda o pix"). NAO = recusou ou prefere tirar sozinho no cartório. INDEFINIDO = pergunta, dúvida, assunto diferente ou resposta que não decide.',
+      messages: [{ role: 'user', content: `OFERTA: emitir a certidão da matrícula ${of.matricula} pelo cartório digital (ONR).\nRESPOSTA DO CLIENTE: ${clean}` }],
     }),
   }).catch(() => null);
   if (!res?.ok) return;
@@ -231,7 +232,7 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   }
   if (r !== 'SIM') return;
   await salvaOferta(leadId, { acceptedAt: new Date().toISOString() });
-  await note(leadId, `${AUTORIZOU_EMISSAO} — o cliente aceitou a oferta ("${clean.slice(0, 120)}"): a A&F emite pelo ONR (custo de R$ 40 a R$ 100 pra ele, PIX enviado a ele).`);
+  await note(leadId, `${AUTORIZOU_EMISSAO} — o cliente aceitou a oferta ("${clean.slice(0, 120)}"): a emissão pelo ONR foi autorizada (o PIX vai ao cliente).`);
   const out = await ensureCertidaoRequest(accountId, leadId);
   if (out.created) io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
   else if (out.why) console.warn(`[Certidão] ${lead.name}: aceitou, mas o pedido não foi criado — ${out.why}`);

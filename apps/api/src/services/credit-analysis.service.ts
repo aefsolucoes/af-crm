@@ -590,7 +590,7 @@ async function flagCertidaoRecusada(db: Db, row: { id: string; leadId: string; b
     const last = await db.message.findFirst({ where: { leadId: row.leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
     const aberta = !!last && Date.now() - last.createdAt.getTime() < 23 * 3_600_000;
     if (lead?.aiAutoReplyActive && aberta && !cf._autoPaused) {
-      await sendOutboundWhatsApp({ accountId: row.accountId, leadId: row.leadId, content: `Sobre a matrícula/certidão do imóvel que você enviou: o banco não aceitou essa versão (por ser só consulta ou antiga). Pra seguir, a gente emite uma nova pra você pelo sistema dos cartórios (ONR) — tem um custo de R$ 40 a R$ 100. Posso emitir?` });
+      await sendOutboundWhatsApp({ accountId: row.accountId, leadId: row.leadId, content: `Sobre a matrícula/certidão do imóvel que você enviou: o banco não aceitou essa versão (por ser só consulta ou antiga). Pra seguir, preciso de uma nova certidão. Posso emitir ela por aqui, através do cartório digital?` });
     } else {
       await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Não avisei o cliente da certidão recusada (IA desligada, card parado ou janela do WhatsApp fechada) — avise e peça o OK pra emitir uma nova (R$ 40–100).' } });
     }
