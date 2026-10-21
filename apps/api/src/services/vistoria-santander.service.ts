@@ -144,10 +144,21 @@ export async function processVistoriaSantander(accountId: string, leadId: string
   // 3) documentos da pasta do Drive
   const files = await arquivosDoDrive(accountId, cf);
   const cat = categoriasDoDrive(files);
+  // Matrícula divergente (o termo de quitação cita outra matrícula): a certidão antiga NÃO vale — só a da matrícula correta (do cliente ou emitida pelo ONR).
+  const dv = cf._matriculaDivergente as { correta?: string } | undefined;
+  if (dv?.correta) {
+    const alvo = String(dv.correta).replace(/\D/g, '');
+    const revs = (cf._docReview || {}) as Record<string, any>;
+    const atts = await prisma.messageAttachment.findMany({ where: { leadId, driveFileId: { not: null } }, select: { id: true, driveFileId: true } });
+    const idsOk = new Set<string>(atts.filter((a) => { const r = revs[a.id]; return r && /MATRICULA|ONUS/.test(String(r.tipo || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')) && String(r.matricula || '').replace(/\D/g, '') === alvo; }).map((a) => a.driveFileId!));
+    const emitidas = await prisma.certidaoRequest.findMany({ where: { accountId, leadId, status: 'ISSUED', driveFileId: { not: null } }, select: { matricula: true, driveFileId: true } });
+    for (const c of emitidas) if (String(c.matricula || '').replace(/\D/g, '') === alvo) idsOk.add(c.driveFileId!);
+    cat.onus = files.filter((f) => idsOk.has(f.id) && OK_ARQ.test(f.mimeType)).slice(0, 2);
+  }
   const faltam: string[] = [];
   if (!cat.cnd.length) faltam.push('CND de IPTU (a A&F emite)');
   if (!cat.capa.length) faltam.push('capa do IPTU');
-  if (!cat.onus.length) faltam.push('certidão de ônus/matrícula');
+  if (!cat.onus.length) faltam.push(dv?.correta ? `certidão de ônus da matrícula correta (nº ${dv.correta})` : 'certidão de ônus/matrícula');
   if (cat.ident.length < (p2 ? 2 : 1)) faltam.push(`documento de identidade${p2 ? ' (dos dois)' : ''}`);
   if (!cat.civil.length) faltam.push('certidão de estado civil');
   if (faltam.length) {

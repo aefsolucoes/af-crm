@@ -42,12 +42,19 @@ export function numeroDoCartorio(txt: string): number | null {
 
 /** O cliente já tem em mãos certidão de ônus/matrícula do cartório que vale? Pura. */
 export function temCertidaoEmMaos(cf: Record<string, any>): boolean {
+  if (cf._matriculaDivergente) return false; // a certidão que ele tem é de OUTRA matrícula (o termo de quitação cita a correta): precisa de uma nova
   const revs = Object.values((cf._docReview || {}) as Record<string, Rev>);
   return revs.some((r) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(String(r?.tipo || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '')) && r.resultado !== 'PROBLEMA' && !r.encerrada);
 }
 
 /** Matrícula + cartório + cidade/UF lidos nos documentos do cliente (escritura, IPTU, cadastro). null se não der pra pedir. Pura. */
 export function certidaoFromDocs(cf: Record<string, any>): { matricula: string; cartorio: string; cidade: string; uf: string } | null {
+  // Matrícula DIVERGENTE (Fabio 21/10, Edson: a certidão do cliente é da 70.617 e o termo de quitação cita a 94168 — antiga, transporte, matrícula-mãe ou nova): pede a certidão da matrícula CORRETA.
+  const dv = cf._matriculaDivergente as { correta?: string; cidade?: string; uf?: string; cartorio?: string } | undefined;
+  if (dv?.correta && dv.cidade && dv.uf) {
+    const n = numeroDoCartorio(String(dv.cartorio || ''));
+    return { matricula: digits(dv.correta), cartorio: n ? `${n}º - ${dv.cidade.toUpperCase()}` : 'AUTO', cidade: dv.cidade, uf: dv.uf };
+  }
   const revs = (Object.values((cf._docReview || {}) as Record<string, Rev>) as Rev[]).filter((r) => r && r.resultado !== 'NAO_DOCUMENTO');
   const comMat = revs.filter((r) => digits(r.matricula).length >= 1 && digits(r.matricula).length <= 12);
   if (!comMat.length) return null;
