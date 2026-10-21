@@ -175,7 +175,7 @@ export async function refazAnaliseComValorNovo(accountId: string, leadId: string
   if (!setting?.enabled) { await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ A análise automática está desligada: refaça a análise nos bancos com o valor novo (aba Análise de Crédito).' } }).catch(() => {}); return; }
   try {
     const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-    const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true });
+    const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true, alignApproval: true });
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔁 Refiz a análise com o valor novo (${brl(total)}): o resultado antigo não vale pro troco corrigido. ${r.created ? `${r.created} pedido(s) na fila das extensões.` : 'Nada novo foi pedido (já havia análise em andamento).'}` } }).catch(() => {});
     io?.to?.(`account_${accountId}`)?.emit?.('new_conversation', { leadId });
   } catch (e: any) { console.error('[Troco] não consegui refazer a análise:', e?.message); }
@@ -256,7 +256,7 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   let r: { created?: number } = {};
   try {
     const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-    r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true });
+    r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true, alignApproval: true });
   } catch (e: any) { console.error('[Saldo] não consegui pedir a análise:', e?.message); }
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}. Valor líquido que o cliente precisa ${base ? brl(base) : '—'} + saldo (${brl(achou.saldo)}) = ${brl(Math.round((achou.saldo + base) * 100) / 100)}, arredondado pra cima (milhar inteiro) = ${brl(total)}: "Valor do crédito" atualizado e ${r.created ? `análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''})` : 'análise já em andamento'}. O resultado anterior não vale pro valor novo.` } }).catch(() => {});
   if (lead.aiAutoReplyActive) {

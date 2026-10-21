@@ -278,7 +278,7 @@ export default function AnaliseCreditoPage() {
   // "Salvar e rodar de novo" do modal de ajuste.
   async function runAgain(leadId: string, bks: Bank[]) {
     try {
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: bks, force: true, keepHolder: true }); // depois de ajustar: roda de novo de propósito, com o titular que o ajuste definiu
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: bks, force: true }); // depois de ajustar: roda de novo de propósito, com o titular que o ajuste definiu
       pingExtensions(data?.extensions, bks);
       toast(`${r.created} análise(s) na fila${r.skipped ? ` · ${r.skipped} já estavam rodando` : ''}`, 'success');
       refresh();
@@ -299,7 +299,7 @@ export default function AnaliseCreditoPage() {
     try {
       const inverted = !!l.overrides?.[bank]?.inverter;
       if (who === 'p2' !== inverted) await api.put('/api/credit-analysis/overrides', { leadId: l.id, banks: [bank], data: { inverter: who === 'p2' }, merge: true });
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: [bank], force: true, keepHolder: true }); // o participante foi escolhido pelo botão: não deixa a regra do CPF aprovado trocar
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: [bank], force: true }); // o participante foi escolhido pelo botão: não deixa a regra do CPF aprovado trocar
       pingExtensions(data?.extensions, [bank]);
       const short = BANKS.find((b) => b.key === bank)?.short;
       toast(r.created ? `${short} na fila para ${who === 'p2' ? (l.card?.name2 || '2º participante') : (l.card?.name1 || l.name)}` : `${short}: já tem uma análise rodando`, r.created ? 'success' : 'error');

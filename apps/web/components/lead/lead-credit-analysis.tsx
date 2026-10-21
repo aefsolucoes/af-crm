@@ -88,7 +88,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     try {
       const inverted = !!data?.overrides?.[bank]?.inverter;
       if ((who === 'p2') !== inverted) await api.put('/api/credit-analysis/overrides', { leadId, banks: [bank], data: { inverter: who === 'p2' }, merge: true });
-      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: [bank], force: true, keepHolder: true });
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: [bank], force: true });
       pingExtensions(data?.extensions, [bank]);
       toast(r.created ? `${short} na fila` : `${short}: já tem uma análise rodando`, r.created ? 'success' : 'error');
       refresh();

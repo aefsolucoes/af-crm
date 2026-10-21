@@ -175,7 +175,7 @@ router.post('/requests', async (req: AuthRequest, res: Response) => {
   if (!leadIds.length) return res.status(400).json({ error: 'Escolha pelo menos um cliente' });
   if (!banks.length) return res.status(400).json({ error: 'Escolha pelo menos um banco' });
   try {
-    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds, banks, dryRun: req.body?.dryRun === true, kind: req.body?.kind === 'CHECK' ? 'CHECK' : 'RUN', force: req.body?.force === true, keepHolder: req.body?.keepHolder === true });
+    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds, banks, dryRun: req.body?.dryRun === true, kind: req.body?.kind === 'CHECK' ? 'CHECK' : 'RUN', force: req.body?.force === true });
     emit(req);
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao pedir as análises'); }

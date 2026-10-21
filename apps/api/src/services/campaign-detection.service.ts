@@ -258,7 +258,7 @@ async function rerunIfCreditChanged(accountId: string, leadId: string): Promise<
     const setting = await prisma.creditAutoSetting.findUnique({ where: { accountId }, select: { enabled: true } });
     if (!setting?.enabled) return;
     const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-    const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true });
+    const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true, alignApproval: true });
     const brl = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔁 O cliente preencheu a proposta de novo com OUTRO valor de crédito (${brl(base)} → ${brl(novo)}): o resultado antigo não vale pro valor novo. ${r.created ? `Análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''}).` : 'Já havia análise em andamento.'}` } }).catch(() => {});
   } catch (e: any) { console.error('[Proposta nova] não consegui refazer a análise:', e?.message); }

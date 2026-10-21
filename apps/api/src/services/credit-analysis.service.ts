@@ -315,7 +315,7 @@ async function alignHoldersWithApproval(db: Db, accountId: string, leadId: strin
   }
 }
 
-export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; keepHolder?: boolean }) {
+export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; alignApproval?: boolean }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
   const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true } });
@@ -325,9 +325,10 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
     const createdBefore = created;
     const cfPedido = ((await db.lead.findUnique({ where: { id: l.id }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
     const pedidoNaRodada = Number(String(cfPedido.valor_credito ?? '').replace(/[^\d.]/g, '')) || null; // card no momento do pedido
-    // keepHolder = a PESSOA escolheu o titular de propósito (botão "Rodar de novo" de um participante, "Salvar e rodar de novo" do ajuste): a regra "mesmo CPF da aprovação" NÃO sobrescreve
-    // (Fabio 21/10: pediu pra rodar o 1º participante e o CRM puxou pro nome do 2º, que já tinha aprovado no Inter).
-    if (wantedKind === 'RUN' && !p.dryRun && p.force && !p.keepHolder) await alignHoldersWithApproval(db, p.accountId, l.id).catch(() => {});
+    // "Sempre tentar no MESMO CPF que aprovou o cliente" vale SÓ quando o CLIENTE pede a nova análise (outro valor/prazo, saldo devedor corrigido, proposta preenchida de novo) — Fabio 21/10.
+    // Rodada manual da equipe (botão de um participante, ajuste) e automáticas (cascata, retentativa, cobrança) respeitam o titular que já está escolhido; antes a regra trocava o titular
+    // por cima do clique ("pedi o 1º participante e puxou pro nome do 2º").
+    if (wantedKind === 'RUN' && !p.dryRun && p.force && p.alignApproval) await alignHoldersWithApproval(db, p.accountId, l.id).catch(() => {});
     for (const bank of banks) {
       const open = await db.creditAnalysis.findFirst({
         where: { leadId: l.id, bank, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } },
@@ -1620,7 +1621,7 @@ export async function requestProposalChangeForAi(db: Db, accountId: string, lead
   if (prazo) data.prazo = String(prazo);
   if (valor) data.valorEmprestimo = fmtBRL(valor).replace('R$ ', '');
   await setOverrides(db, { accountId, leadId, banks: bancos, data, merge: true, userName: 'IA (pedido do cliente)' });
-  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: bancos, dryRun: false, kind: 'RUN', source: CHANGE_ROW_SOURCE, force: true });
+  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: bancos, dryRun: false, kind: 'RUN', source: CHANGE_ROW_SOURCE, force: true, alignApproval: true });
   if (!r.created) return { ok: false, detail: 'já havia análise em andamento' };
   const ped = [prazo && `${prazo} meses`, valor && fmtBRL(valor)].filter(Boolean).join(' e ');
   { // o que o cliente pediu, em palavras: entra no aviso ("rodei a nova proposta com o prazo de 180 meses…")
@@ -1727,7 +1728,7 @@ export async function requestRunForAi(db: Db, accountId: string, leadId: string)
   if (mudou) {
     await setOverrides(db, { accountId, leadId, banks: BANK_KEYS, merge: true, data: { valorEmprestimo: atual.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) } });
   }
-  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: BANK_KEYS, dryRun: false, kind: 'RUN', source: mudou ? 'EXTENSION' : 'AI', force: mudou });
+  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: BANK_KEYS, dryRun: false, kind: 'RUN', source: mudou ? 'EXTENSION' : 'AI', force: mudou, alignApproval: true });
   if (!r.created) return { ok: false, detail: 'já havia análise em andamento' };
   // A IA disparou a análise (cliente concordou, ex.: ajuste do troco): o card passa a valer como "iniciado pelo automático" — sem isso o 2º participante não roda sozinho, o aviso de aprovação não sai
   // e a negativa fica esperando a cascata pra sempre (Fernanda karita Batista Costa, 21/10: "por que não foi iniciado pelo automático?").
