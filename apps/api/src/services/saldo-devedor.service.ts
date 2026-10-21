@@ -72,7 +72,7 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
   const nome = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
   const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const abertura = opts.docsReceived ? `Recebi a documentação${nome ? `, ${nome}` : ''}, obrigada! 🙏\n\n` : ((await conversationActive(leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `);
-  const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de um *print do saldo devedor atualizado* (no app ou no site do banco). Esse saldo é *somado* ao valor que você precisa receber${liquido ? ` (${brl(liquido)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. Assim que você mandar, te aviso do resultado.`;
+  const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de um *print do saldo devedor atualizado* (no app ou no site do banco). Esse saldo é *somado* ao troco que você precisa receber${liquido ? ` (${brl(liquido)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. ${liquido ? `O troco de ${brl(liquido)} está correto? Se não, me diz quanto você precisa receber.` : 'Quanto de troco você precisa receber, depois de quitar o financiamento?'} Assim que você mandar o print, te aviso do resultado.`;
   const marker = { askedAt: new Date().toISOString(), base, liquido, declared, gravame };
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoDevedor: marker, ...(liquido > 0 ? { troco: String(liquido) } : {}) } as any } }); // "Troco" = o que sobra pro cliente depois de quitar
   const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
@@ -134,6 +134,31 @@ export async function processSaldoDevedor(accountId: string, io: Io): Promise<vo
   }
 }
 
+/** Respostas em texto do cliente à pergunta do troco: confirmou? corrigiu o valor? (uma chamada barata, só quando o print chega). */
+async function lerTrocoCorrigido(leadId: string, since: string, trocoAtual: number): Promise<{ confirmou: boolean; novoTroco: number | null } | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+  const msgs = await prisma.message.findMany({ where: { leadId, direction: 'INBOUND', createdAt: { gt: new Date(since) }, content: { not: '' }, attachments: { none: {} } }, orderBy: { createdAt: 'asc' }, take: 8, select: { content: true } });
+  const textos = msgs.map((m) => String(m.content || '').trim()).filter((t) => t && t.length <= 300);
+  if (!textos.length) return null;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5', max_tokens: 1000,
+      system: 'Perguntamos ao cliente se o TROCO que ele precisa receber (o que sobra pra ele depois de quitar o financiamento do imóvel) está correto e citamos o valor. Leia as respostas dele e responda SÓ JSON: {"confirmou": <true se disse que o valor está certo>, "novoTroco": <número em reais se ele disse quanto precisa receber de troco (valor DIFERENTE do citado), senão null>}. Se as mensagens não falam do troco, {"confirmou": false, "novoTroco": null}. Valores como "50 mil" = 50000.',
+      messages: [{ role: 'user', content: `Troco citado: R$ ${trocoAtual}\nRESPOSTAS DO CLIENTE:\n${textos.map((t) => `- ${t}`).join('\n')}` }],
+    }),
+  }).catch(() => null);
+  if (!res?.ok) return null;
+  const d: any = await res.json().catch(() => null);
+  try {
+    const j = JSON.parse(String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}');
+    const n = Number(j.novoTroco);
+    return { confirmou: j.confirmou === true, novoTroco: Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null };
+  } catch { return null; }
+}
+
 async function processOne(accountId: string, leadId: string, io: Io): Promise<void> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
   if (!lead) return;
@@ -171,7 +196,9 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
     return;
   }
 
-  const base = st.liquido || st.base || Number(cf2.valor_credito) || 0; // valor LÍQUIDO que o cliente precisa receber
+  // O cliente pode ter corrigido o TROCO na conversa depois da pergunta (Fabio 21/10: sempre confirmar o troco): lê as respostas dele em texto antes de somar.
+  const corrigido = await lerTrocoCorrigido(leadId, st.askedAt, st.liquido || st.base || 0).catch(() => null);
+  const base = corrigido?.novoTroco || Number(cf2.troco) || st.liquido || st.base || Number(cf2.valor_credito) || 0; // valor LÍQUIDO que o cliente precisa receber
   const total = roundUpToThousand(Math.round((achou.saldo + base) * 100) / 100); // saldo + troco, arredondado pra cima pro milhar inteiro
   st.doneAt = new Date().toISOString();
   (st as any).saldo = achou.saldo; (st as any).total = total; (st as any).attachmentId = achouAtt;
@@ -187,6 +214,6 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}. Valor líquido que o cliente precisa ${base ? brl(base) : '—'} + saldo (${brl(achou.saldo)}) = ${brl(Math.round((achou.saldo + base) * 100) / 100)}, arredondado pra cima (milhar inteiro) = ${brl(total)}: "Valor do crédito" atualizado e ${r.created ? `análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''})` : 'análise já em andamento'}. O resultado anterior não vale pro valor novo.` } }).catch(() => {});
   if (lead.aiAutoReplyActive) {
     const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-    await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você precisa receber` : ''}, ou seja, ${brl(total)}. Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.`, io: io || undefined }).catch(() => {});
+    await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você precisa receber` : ''}, ou seja, ${brl(total)}.${corrigido?.novoTroco ? ' Usei o troco que você me passou.' : corrigido?.confirmou ? '' : ' Se o troco não for esse, me avisa que eu ajusto.'} Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.`, io: io || undefined }).catch(() => {});
   }
 }

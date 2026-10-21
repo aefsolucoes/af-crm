@@ -297,6 +297,7 @@ const NUMBER_FIELD_KEYS = new Set([
   'valor_avaliacao', 'valor_imovel', 'valor_credito', 'valor_entrada',
   'primeira_parcela', 'ultima_parcela', 'renda_1', 'renda_2',
   'credito_consorcio', 'parcela_consorcio', 'prazo_consorcio',
+  'troco', 'saldo_devedor',
 ]);
 
 /** Texto listando todos os campos que a IA pode preencher no card — os
