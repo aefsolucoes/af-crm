@@ -43,9 +43,12 @@ export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?:
   for (const bank of BANKS) {
     const mine = rows.filter((r) => r.bank === bank && semRuidoDeSimulacao(r)).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     if (!mine.length) continue;
-    // já tem alguém trabalhando nesse banco agora
-    if (mine.some((r) => (r.status === 'REQUESTED' || r.status === 'RUNNING') && now - r.updatedAt.getTime() < 25 * 60_000)) continue;
-    const efetivas = mine.filter((r) => !(r.kind === 'CHECK' && r.status === 'CHECK'));
+    // rodada (ou leitura) EM EXECUÇÃO nesse banco agora: espera. Só conferência na fila (as de 3–10 min, até 18 vezes) não segura uma nova rodada — senão uma proposta que nunca aparece
+    // ficaria 3 h sendo reconferida sem ninguém rodar de novo (Melissa 21/10).
+    const abertas = mine.filter((r) => (r.status === 'REQUESTED' || r.status === 'RUNNING') && now - r.updatedAt.getTime() < 25 * 60_000);
+    if (abertas.some((r) => r.status === 'RUNNING' || r.kind === 'RUN')) continue;
+    const conferenciaNaFila = abertas.length > 0;
+    const efetivas = mine.filter((r) => !(r.kind === 'CHECK' && ['CHECK', 'REQUESTED', 'RUNNING'].includes(r.status)));
     const efetiva = efetivas[efetivas.length - 1];
     if (!efetiva) continue;
     if (['APPROVED', 'CONDITIONAL', 'REJECTED', 'TEST'].includes(efetiva.status)) continue; // já tem resposta
@@ -60,6 +63,7 @@ export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?:
       if (/n[aã]o est[aá] logada/i.test(d) && opts.loginNeeded && opts.loginNeeded(bank)) continue; // banco pedindo login: espera alguém entrar
       // falha de um RODAR que já tinha ENVIADO a proposta: rodar de novo duplicaria a proposta no portal
       const jaEnviada = efetiva.kind === 'CHECK' || !!efetiva.proposalNumber || /proposta (j[aá] )?enviada|lendo o resultado/i.test(d);
+      if (jaEnviada && conferenciaNaFila) continue;
       out.push({ bank, mode: jaEnviada ? 'CHECK' : 'RUN', why: 'falha técnica na rodada (aba fechada, captcha, janela do banco…)' });
       continue;
     }
@@ -72,11 +76,12 @@ export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?:
       out.push(idadeMin >= NAO_ACHEI_MIN ? { bank, mode: 'RUN', why: 'a proposta não aparece no portal do banco' } : { bank, mode: 'CHECK', why: 'proposta recém-enviada: conferir de novo' });
     } else if (SO_SIMULACAO.test(ult)) {
       out.push(idadeMin >= SIMULACAO_MIN ? { bank, mode: 'RUN', why: 'a proposta ficou só em simulação, não foi pra análise' } : { bank, mode: 'CHECK', why: 'ainda em simulação: conferir de novo' });
-    } else {
+    } else if (!conferenciaNaFila) {
       out.push({ bank, mode: 'CHECK', why: 'conferir o resultado no portal' });
     }
   }
-  return out;
+  // conferência já na fila e o plano era só conferir: nada a criar
+  return out.filter((a) => !(a.mode === 'CHECK' && rows.some((r) => r.bank === a.bank && r.kind === 'CHECK' && r.status === 'REQUESTED' && now - r.updatedAt.getTime() < 25 * 60_000)));
 }
 
 const brt = (ms = Date.now()) => new Date(ms - 3 * 3600_000);
@@ -124,6 +129,8 @@ export async function recoverStuckAnalyses(accountId: string, leadId: string, wh
 
   const feitos: RecAction[] = [];
   if (run.length) {
+    // a cadeia de conferências marcada (3–10 min) é encerrada: a nova rodada recomeça a contagem
+    await prisma.creditAnalysis.updateMany({ where: { leadId, dryRun: false, bank: { in: run.map((a) => a.bank) }, kind: 'CHECK', status: 'REQUESTED' }, data: { status: 'CHECK', finishedAt: new Date(), detail: `Conferência encerrada: nova rodada pedida (${why === 'manha' ? 'retomada das 8h' : 'cliente cobrou'}).` } });
     const out = await createRequests(prisma, { accountId, leadIds: [leadId], banks: run.map((a) => a.bank), dryRun: false, force: true });
     if (out.created) feitos.push(...run);
   }
