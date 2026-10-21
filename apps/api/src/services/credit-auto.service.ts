@@ -288,7 +288,7 @@ async function noticeClients(accountId: string, io: any) {
 }
 
 /** Falha OBJETIVA (regra do banco/imóvel), não técnica: "NÃO RODEI: … abaixo do mínimo / terreno / saldo devedor", "Não conformidade…". */
-const OBJECTIVE_FAIL = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas/i;
+export const OBJECTIVE_FAIL = /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas/i;
 /** O portal do banco recusou um dado do cadastro ("DADO PARA CORRIGIR: telefone do cônjuge inválido"): não é falha técnica, não gasta tentativa — fica pendente até corrigirem o card. */
 export const DADO_PARA_CORRIGIR = /DADO PARA CORRIGIR/i;
 /** Creditas: "Este CPF já possui uma proposta ativa … ela NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar na Creditas — conta como NÃO desse banco
@@ -297,7 +297,7 @@ const CREDITAS_CPF_ATIVO = /CPF j[aá] possui uma proposta ativa na Creditas/i;
 type VRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; source: string };
 /** Linha que NÃO conta como veredito do banco: a simulação de teste antiga (AI_SIM) e a nova proposta que o CLIENTE pediu (outro prazo/valor — AI_CHANGE) quando NÃO foi aprovada:
  *  recusa num prazo/valor diferente não desfaz a aprovação que o banco já deu (senão o CRM mandaria a negativa e fecharia o card de quem está aprovado). Enquanto roda, segura como pendente. */
-const semRuidoDeSimulacao = (r: { source: string; status: string }) => r.source !== 'AI_SIM' && !(r.source === 'AI_CHANGE' && !['APPROVED', 'CONDITIONAL', 'REQUESTED', 'RUNNING', 'SENT'].includes(r.status));
+export const semRuidoDeSimulacao = (r: { source: string; status: string }) => r.source !== 'AI_SIM' && !(r.source === 'AI_CHANGE' && !['APPROVED', 'CONDITIONAL', 'REQUESTED', 'RUNNING', 'SENT'].includes(r.status));
 
 /** Resposta de um banco: NEG = não vai (reprovou ou a regra dele barrou), POS = aprovou, PENDING = falta resposta / falha técnica a refazer. A última rodada decide;
  *  conferência sem leitura ("conferir") não conta. Pura (testável). */
@@ -740,6 +740,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       { const { processDocsFollowUps } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsFollowUps(s.accountId, io).catch((e: any) => console.error('[Docs] cobrança:', e?.message)); }
       { const { processVistoriaAi } = require('./vistoria-ai.service') as typeof import('./vistoria-ai.service'); await processVistoriaAi(s.accountId, io).catch((e: any) => console.error('[Vistoria IA]', e?.message)); }
       { const { processCaixaAsk } = require('./caixa-screening.service') as typeof import('./caixa-screening.service'); await processCaixaAsk(s.accountId, io).catch((e: any) => console.error('[CAIXA]', e?.message)); }
+      { const { processMorningRerun } = require('./credit-recovery.service') as typeof import('./credit-recovery.service'); await processMorningRerun(s.accountId).catch((e: any) => console.error('[Retomar 8h]', e?.message)); }
       { const { processSaldoDevedor } = require('./saldo-devedor.service') as typeof import('./saldo-devedor.service'); await processSaldoDevedor(s.accountId, io).catch((e: any) => console.error('[Saldo]', e?.message)); }
       { const { processScrFlows } = require('./creditas-scr.service') as typeof import('./creditas-scr.service'); await processScrFlows(s.accountId, io).catch((e: any) => console.error('[Creditas SCR]', e?.message)); }
     }
