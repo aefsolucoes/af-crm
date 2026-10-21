@@ -1197,6 +1197,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
 
       // Oferta de emissão da certidão pelo ONR esperando resposta (Fabio 20/10): se o cliente aceitou, a extensão do ONR é acionada agora. Sem oferta pendente não gasta nada.
       if (text) { const { checkCertidaoAcceptance } = require('./certidao-offer.service') as typeof import('./certidao-offer.service'); checkCertidaoAcceptance(accountId, leadId, text, io).catch((e: any) => console.warn('[Certidão] aceitação:', e?.message)); }
+      // Cliente só com a escritura e sem a certidão de ônus (essencial pra solicitar a vistoria — Fabio 21/10, Luiz Fernando): a IA se oferece pra emitir pelo ONR. Espera 30 s pra a resposta da IA sair antes (não duplica mensagem).
+      if (text) setTimeout(() => { (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).maybeOfferCertidao(accountId, leadId, io).catch((e: any) => console.warn('[Certidão] oferta:', e?.message)); }, 30_000);
       // Card em "Aguardando Documentação": o cliente mandou um DOCUMENTO
       // (foto ou arquivo) → agenda a conferência (espera ele terminar de
       // mandar). Só com documento — texto/áudio não gastam crédito de IA

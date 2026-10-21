@@ -84,6 +84,7 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   if (!lead || lead.accountId !== accountId) return false;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._autoPaused || !lead.aiAutoReplyActive) return false;
+  if (cf._docsCheckDue) return false; // ele ainda está mandando documento: a conferência (que roda depois) é quem faz a oferta
   if (!/aguardando document/i.test((lead.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return false;
   if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return false;
   if (temCertidaoEmMaos(cf)) return false;
