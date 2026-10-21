@@ -206,7 +206,8 @@ const STOP_END = new Set(['R', 'RUA', 'AV', 'AVENIDA', 'TRAV', 'TRAVESSA', 'DA',
 /** Mesmo imóvel? true/false quando dá pra afirmar; null quando falta dado (nunca acusa sem certeza). Inscrição imobiliária manda; sem ela, compara rua + número da porta. Pura (testável). */
 export function sameProperty(a: { endereco?: string; inscricao?: string }, b: { endereco?: string; inscricao?: string }): boolean | null {
   const ia = soDigitos(a.inscricao), ib = soDigitos(b.inscricao);
-  if (ia.length >= 8 && ib.length >= 8) return ia === ib;
+  // O boletim cadastral da prefeitura traz a inscrição com sufixo ("01.02.040.0484.005 / 9560"): um número que COMEÇA com o outro é o mesmo imóvel (Luiz 21/10: o cadastro virou "IPTU de outro imóvel" por causa do "/ 9560").
+  if (ia.length >= 8 && ib.length >= 8) return ia === ib || ia.startsWith(ib) || ib.startsWith(ia);
   if (!a.endereco || !b.endereco) return null;
   const ta = normEnd(a.endereco).split(' '), tb = normEnd(b.endereco).split(' ');
   const rua = (t: string[]) => t.filter((w) => !STOP_END.has(w) && !/^\d+$/.test(w));
