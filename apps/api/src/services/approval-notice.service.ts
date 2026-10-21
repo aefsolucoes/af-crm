@@ -656,8 +656,11 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
   // A aprovação anterior era PARCIAL ("a menor") e agora existe uma de valor TOTAL: o aviso novo substitui a anterior (Fabio 14/10).
   const eraParcial = !!anterior && /Valor menor que o solicitado/.test(anterior.content) && !/Valor menor que o solicitado/.test(corpoNovo);
   // O cliente pediu outro prazo/valor e a extensão rodou a proposta nova (requestProposalChangeForAi): o aviso diz isso.
-  const pediuMudanca = !!((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as any)?._changeNotice;
-  const prefixo = pediuMudanca ? '🔄 Rodei a nova proposta com o que você pediu. Segue o resultado:\n\n'
+  const cfLead = (await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as any;
+  const pediuMudanca = !!cfLead?._changeNotice;
+  const reaberto = !!cfLead?._reopenedOnApproval; // reprovado antes e a análise refeita aprovou (Fabio 21/10)
+  const prefixo = reaberto ? '🆕 Boa notícia! Refizemos a análise e saiu uma aprovação pra você. Seguem as condições:\n\n'
+    : pediuMudanca ? '🔄 Rodei a nova proposta com o que você pediu. Segue o resultado:\n\n'
     : bancoNovo && eraParcial ? '🆕 Boa notícia! Saiu a aprovação do valor TOTAL em outro banco, com condição melhor que a anterior. Considere esta:\n\n'
     : bancoNovo ? '🆕 Saiu o resultado de mais um banco para o seu pedido. Seguem as opções aprovadas:\n\n'
     : mudou ? '🔄 Atualizei os valores da sua proposta, agora com os números certos:\n\n' : '';
@@ -789,7 +792,7 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   { // o aviso de "rodei a nova proposta" já saiu: tira a marca (só vale pro primeiro aviso depois da rodada)
     const f = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
     const c: Record<string, any> = { ...((f?.customFields || {}) as Record<string, any>) };
-    if (c._changeNotice) { delete c._changeNotice; await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: c as any } }).catch(() => {}); }
+    if (c._changeNotice || c._reopenedOnApproval) { delete c._changeNotice; delete c._reopenedOnApproval; await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: c as any } }).catch(() => {}); }
   }
   // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado das opções de crédito (${preview.options} opç${preview.options === 1 ? 'ão' : 'ões'}) — ${preview.mode === 'text' ? 'texto enviado' : 'template enviado; o texto completo sai quando ele tocar em "Sim, quero saber"'}${docsSent ? '; lista de documentos enviada' : ''}${moved ? `; card movido para ${moved}` : ''}.` } });
