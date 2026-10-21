@@ -78,6 +78,8 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
   const temMatricula = marcados.some((a) => /MATRICULA|ONUS/i.test(a.name));
   const faltas = [!pv.engajamentoRecebido && 'o e-mail de engajamento do Inter', !pv.to && 'o e-mail do consultor do Inter', !temMatricula && 'a matrícula/certidão de ônus na pasta IMOVEL do Drive'].filter(Boolean) as string[];
   if (faltas.length) {
+    // Sem o e-mail de engajamento do Inter é porque o cliente ainda não "seguiu com a proposta" no portal: o CRM pergunta a ele (uma vez) e a equipe clica depois do SIM (inter-seguir.service).
+    if (!pv.engajamentoRecebido) { try { const { ensureInterSeguir } = require('./inter-seguir.service') as typeof import('./inter-seguir.service'); await ensureInterSeguir(accountId, leadId, io as any); } catch (e: any) { console.warn('[Inter seguir]', e?.message); } }
     const desde = st.since || new Date().toISOString();
     if (Date.now() - new Date(desde).getTime() > ESPERA_MAX_MS) { await salva(leadId, { status: 'MANUAL', at: new Date().toISOString() }); await note(leadId, '🏠 Vistoria do Inter: passaram 10 dias sem o e-mail de engajamento — a IA parou de esperar. Solicite à mão.'); return; }
     if (!st.waitNoteAt) {
