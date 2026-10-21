@@ -98,7 +98,8 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
   } else {
     return undefined;
   }
-  if (buffer.length > MAX_VISION_BYTES) return undefined;
+  // PDF pode ter até ~20 MB (a API aceita; a matrícula do ONR do Luiz tinha 5 MB e ficava "não lida" com o teto de 4,5 MB); imagem segue no teto de 5 MB da API.
+  if (buffer.length > (isPdf ? 20_000_000 : MAX_VISION_BYTES)) return undefined;
   // PDF protegido por senha: a IA não abre. Fatura de operadora vale como comprovante de residência (regra do Fabio); o resto fica "não lido".
   if (isPdf && pdfProtegido(buffer)) return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : undefined;
   const mediaType = isPdf ? 'application/pdf' : mimeType;

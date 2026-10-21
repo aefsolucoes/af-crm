@@ -1717,6 +1717,12 @@ export async function requestRunForAi(db: Db, accountId: string, leadId: string)
   }
   const r = await createRequests(db, { accountId, leadIds: [leadId], banks: BANK_KEYS, dryRun: false, kind: 'RUN', source: mudou ? 'EXTENSION' : 'AI', force: mudou });
   if (!r.created) return { ok: false, detail: 'já havia análise em andamento' };
+  // A IA disparou a análise (cliente concordou, ex.: ajuste do troco): o card passa a valer como "iniciado pelo automático" — sem isso o 2º participante não roda sozinho, o aviso de aprovação não sai
+  // e a negativa fica esperando a cascata pra sempre (Fernanda karita Batista Costa, 21/10: "por que não foi iniciado pelo automático?").
+  if (!cf._autoStartedAt) {
+    const fresh = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    await db.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as Record<string, any>), _autoStartedAt: new Date().toISOString() } as any } });
+  }
   if (mudou) return { ok: true, detail: `o valor pedido mudou (de R$ ${anterior!.toLocaleString('pt-BR')} para R$ ${atual.toLocaleString('pt-BR')}): análise NOVA pedida a ${r.created} banco(s), um cliente por vez` };
   return { ok: true, detail: `pedido enviado a ${r.created} banco(s)${r.consulted.length ? ` (${r.consulted.length} já rodado(s): só consulta)` : ''}` };
 }
