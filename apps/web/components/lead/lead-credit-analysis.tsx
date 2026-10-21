@@ -25,6 +25,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   const [force, setForce] = useState(false);
   const [notify, setNotify] = useState(false);
   const [simBusy, setSimBusy] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const { data: simDocs } = useQuery<SimDoc[]>({
     queryKey: ['sim-docs', leadId],
     queryFn: async () => (await api.get('/api/credit-analysis/simulation-docs', { params: { leadId } })).data,
@@ -131,13 +132,27 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
         </div>
       )}
 
+      {data.onlyFollowed && data.followed && (
+        <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
+          <span className="font-medium text-emerald-700">Proposta aprovada que o cliente vai seguir</span>
+          <button onClick={() => setShowAll((v) => !v)} className="text-af-mid hover:underline">{showAll ? 'Mostrar só a aprovada' : 'Ver todas as análises'}</button>
+        </div>
+      )}
       <div className="space-y-2">
-        {BANKS.flatMap((b) => {
-          const a1 = data.latestP1?.[b.key], a2 = data.latestP2?.[b.key];
-          // Resultado dos dois participantes no mesmo banco: uma linha pra cada.
-          const itens = a1 && a2 ? [{ a: a1, who: 'p1' as const }, { a: a2, who: 'p2' as const }] : [{ a: data.latest[b.key], who: (a2 && !a1 ? 'p2' : 'p1') as 'p1' | 'p2' }];
-          return itens.map((it) => ({ b, ...it }));
-        }).map(({ b, a, who }) => {
+        {(data.onlyFollowed && data.followed && !showAll
+          ? (() => {
+              const f = data.followed as Analysis;
+              const bk = BANKS.find((x) => x.key === f.bank);
+              const segundo = !!(f.holderName && data.participants?.name1 && !sameWho(f.holderName, data.participants.name1));
+              return bk ? [{ b: bk, a: f as Analysis | undefined, who: (segundo ? 'p2' : 'p1') as 'p1' | 'p2' }] : [];
+            })()
+          : BANKS.flatMap((b) => {
+              const a1 = data.latestP1?.[b.key], a2 = data.latestP2?.[b.key];
+              // Resultado dos dois participantes no mesmo banco: uma linha pra cada.
+              const itens = a1 && a2 ? [{ a: a1, who: 'p1' as const }, { a: a2, who: 'p2' as const }] : [{ a: data.latest[b.key], who: (a2 && !a1 ? 'p2' : 'p1') as 'p1' | 'p2' }];
+              return itens.map((it) => ({ b, ...it }));
+            })
+        ).map(({ b, a, who }) => {
           const hasP2 = Object.keys(data.latestP2 || {}).length > 0;
           const approved = a?.status === 'APPROVED' || a?.status === 'CONDITIONAL';
           const maxParcel = a ? (/parcela m[aá]xima\s*(R\$\s*[\d.]+,\d{2})/i.exec(a.detail || '') || [])[1] : '';

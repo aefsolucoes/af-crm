@@ -1190,7 +1190,7 @@ export async function setOverrides(db: Db, p: { accountId: string; userId?: stri
 export async function leadAnalyses(db: Db, p: { accountId: string; leadId: string; scopeDepartmentIds: string[] }) {
   const lead = await db.lead.findFirst({
     where: { id: p.leadId, accountId: p.accountId },
-    select: { id: true, name: true, status: true, aiAutoReplyActive: true, stage: { select: { name: true } }, customFields: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } },
+    select: { id: true, name: true, status: true, aiAutoReplyActive: true, stage: { select: { name: true } }, customFields: true, pipeline: { select: { name: true, departmentId: true, department: { select: { name: true } } } } },
   });
   if (!lead) return null;
   const deptId = lead.pipeline?.departmentId;
@@ -1200,7 +1200,16 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   const latest: Record<string, any> = latestPerBank(history);
   const cf = (lead.customFields || {}) as Record<string, any>;
   const overrides = await db.creditOverride.findMany({ where: { leadId: p.leadId }, select: { bank: true, data: true } });
+  // PROPOSTA QUE O CLIENTE VAI SEGUIR (Fabio 21/10, caso Edson do Carmo: aprovado R$ 50 mil no Santander, pediu R$ 55 mil, a nova rodada foi recusada e o card mostrava "Reprovado", sem a aprovação):
+  // a escolhida (⭐) ou, sem escolha, a aprovada do único banco que aprovou. Depois da aprovação (Aguardando Documentação em diante) a tela mostra SÓ ela; as outras análises ficam atrás de um botão.
+  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null }, source: { not: 'AI_SIM' } }, orderBy: { createdAt: 'desc' }, take: 12 });
+  const bancosAprov = Array.from(new Set(aprovadas.map((r) => r.bank)));
+  const baseSeguida = aprovadas.find((r) => r.chosen) || (bancosAprov.length === 1 ? aprovadas[0] : null) || null;
+  // da mesma proposta, a leitura mais completa (a conferência posterior às vezes traz só valor e prazo; a da rodada traz taxa e parcelas)
+  const followed = baseSeguida ? (aprovadas.find((r) => r.bank === baseSeguida.bank && r.proposalNumber === baseSeguida.proposalNumber && !!r.firstInstallment) || baseSeguida) : null;
+  const posAprovacao = /aguardando documenta|fechado|documenta[cç][aã]o recebida|vistoria|an[aá]lise jur|registro em cart|pagamento|cr[eé]dito aprovado|cr[eé]dito em an/i.test(lead.stage?.name || '') || /contrata/i.test(lead.pipeline?.name || '');
   return {
+    followed, onlyFollowed: !!followed && posAprovacao,
     eligible: /home equity/i.test(lead.pipeline?.department?.name || ''),
     rejectionPending: (require('./credit-auto.service') as typeof import('./credit-auto.service')).rejectionPendingOf(history, { status: lead.status, stage: lead.stage?.name, aiOn: lead.aiAutoReplyActive, paused: !!(lead.customFields as any)?._autoPaused }),
     latest, ...(() => { const bp = latestByParticipant(history, cf, lead.name); return { latestP1: bp.p1, latestP2: bp.p2 }; })(), history, chosenId: history.find((a) => a.chosen)?.id || null,
