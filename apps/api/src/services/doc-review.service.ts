@@ -274,8 +274,12 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     // Leitura antiga de documento da PREFEITURA (IPTU/cadastro) sem o campo "metragens": relê uma vez pra saber se ele mostra as metragens (Fabio 20/10).
     const semMetragens = !!cache[a.id] && /IPTU|CADASTRO IMOBILIARIO/.test(String(cache[a.id].tipo || '')) && cache[a.id].metragens === undefined;
     if ((cache[a.id] && !reler && !semMetragens) || info[a.id] === null || info[a.id] === undefined) continue;
-    const r = await reviewAttachment(accountId, a, context, { learned });
+    let r = await reviewAttachment(accountId, a, context, { learned });
     if (!r) continue;
+    // Renda DISPENSADA neste card (marca _rendaDispensada, Fabio 21/10 — Luiz): documento de renda não tem o que conferir — sem problema e sem pergunta à equipe (o extrato de abril virou "dúvida" à toa).
+    if (cf0._rendaDispensada && /EXTRATO BANC|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA/.test(String(r.tipo || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')) && (r.resultado === 'DUVIDA' || r.resultado === 'PROBLEMA')) {
+      r = { ...r, resultado: 'OK', problemas: [], duvida: '', observacao: `${r.observacao ? r.observacao + ' ' : ''}(renda dispensada neste card)`.trim() };
+    }
     cache[a.id] = r;
     novas.push({ arquivo: a.fileName || a.id, r, attId: a.id });
     const tipoLido = r.tipo.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]/g, '').trim().toUpperCase();
