@@ -1213,6 +1213,7 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
     eligible: /home equity/i.test(lead.pipeline?.department?.name || ''),
     rejectionPending: (require('./credit-auto.service') as typeof import('./credit-auto.service')).rejectionPendingOf(history, { status: lead.status, stage: lead.stage?.name, aiOn: lead.aiAutoReplyActive, paused: !!(lead.customFields as any)?._autoPaused }),
     latest, ...(() => { const bp = latestByParticipant(history, cf, lead.name); return { latestP1: bp.p1, latestP2: bp.p2 }; })(), history, chosenId: history.find((a) => a.chosen)?.id || null,
+    overrides: Object.fromEntries(overrides.map((o) => [o.bank, { inverter: (o.data as any)?.inverter === true }])),
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
   };
 }

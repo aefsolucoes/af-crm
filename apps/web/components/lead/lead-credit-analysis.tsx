@@ -64,6 +64,24 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     } finally { setBusy(false); }
   }
 
+  // Botão da linha REPROVADA (Fabio 21/10): roda de novo só aquele banco, daquele participante (no 2º liga a inversão só naquele banco), com proposta nova.
+  const [rerunKey, setRerunKey] = useState<string | null>(null);
+  async function rerunBank(bank: Bank, who: 'p1' | 'p2') {
+    const short = BANKS.find((x) => x.key === bank)?.short;
+    if (rerunKey || !window.confirm(`Rodar de novo no ${short}? O cliente foi reprovado ali; isso cria uma proposta nova no banco.`)) return;
+    setRerunKey(`${bank}-${who}`);
+    try {
+      const inverted = !!data?.overrides?.[bank]?.inverter;
+      if ((who === 'p2') !== inverted) await api.put('/api/credit-analysis/overrides', { leadId, banks: [bank], data: { inverter: who === 'p2' }, merge: true });
+      const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: [bank], force: true });
+      pingExtensions(data?.extensions, [bank]);
+      toast(r.created ? `${short} na fila` : `${short}: já tem uma análise rodando`, r.created ? 'success' : 'error');
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir a análise', 'error');
+    } finally { setRerunKey(null); }
+  }
+
   async function choose(a: Analysis) {
     const bank = BANKS.find((b) => b.key === a.bank)?.short;
     if (!window.confirm(`Escolher a proposta ${bank}? Isso preenche os campos do Financiamento deste card com ela.`)) return;
@@ -184,6 +202,11 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
               )}
               {a && a.status !== 'APPROVED' && a.detail && ['CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE'].includes(a.status) && (
                 <div className="text-[11px] text-slate-400 mt-0.5 line-clamp-2" title={a.detail}>{a.detail}</div>
+              )}
+              {a?.status === 'REJECTED' && (
+                <div className="mt-1">
+                  <button onClick={() => rerunBank(b.key, who)} disabled={!!rerunKey} className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50"><Play size={10} className={rerunKey === `${b.key}-${who}` ? 'animate-pulse' : ''} /> Rodar de novo</button>
+                </div>
               )}
               {(a?.status === 'APPROVED' || a?.status === 'CONDITIONAL') && (
                 <div className="mt-1">

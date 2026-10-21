@@ -290,9 +290,11 @@ export default function AnaliseCreditoPage() {
   // Botão dentro do cartão do banco: roda SÓ aquele banco, daquele participante (Fabio 14/10). No 2º participante liga a inversão só naquele banco
   // (a mesma que a cascata automática usa); no 1º desliga, pra não rodar no nome errado.
   const [rerunKey, setRerunKey] = useState<string | null>(null);
-  async function rerunBank(l: BoardLead, bank: Bank, who: 'p1' | 'p2') {
+  async function rerunBank(l: BoardLead, bank: Bank, who: 'p1' | 'p2', reprovado = false) {
     const key = `${l.id}-${bank}-${who}`;
     if (rerunKey) return;
+    // Reprovado: roda de novo = proposta NOVA no banco (Fabio 21/10); confirma pra não clicar sem querer.
+    if (reprovado && !window.confirm(`Rodar de novo no ${BANKS.find((b) => b.key === bank)?.short}? O cliente foi reprovado ali; isso cria uma proposta nova no banco.`)) return;
     setRerunKey(key);
     try {
       const inverted = !!l.overrides?.[bank]?.inverter;
@@ -544,8 +546,8 @@ export default function AnaliseCreditoPage() {
                                           {a ? <><Pencil size={11} /> Resultado</> : <><Plus size={11} /> Registrar</>}
                                         </button>
                                         {emAnalise(a) && <button onClick={() => conferirAgora(l, b.key)} title="A extensão lê AGORA o resultado da proposta (sem criar proposta nova)" className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-indigo-300 text-indigo-700 hover:bg-indigo-50"><RefreshCw size={11} /> Conferir resultado</button>}
-                                        {(!a || ['FAILED', 'INCOMPLETE', 'CHECK'].includes(a.status) || (a.bank === 'INTER' && a.status === 'SENT' && !a.proposalNumber && a.source !== 'MANUAL')) && (
-                                          <button onClick={() => rerunBank(l, b.key, who)} disabled={!!rerunKey} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50">
+                                        {(!a || ['FAILED', 'INCOMPLETE', 'CHECK', 'REJECTED'].includes(a.status) || (a.bank === 'INTER' && a.status === 'SENT' && !a.proposalNumber && a.source !== 'MANUAL')) && (
+                                          <button onClick={() => rerunBank(l, b.key, who, a?.status === 'REJECTED')} disabled={!!rerunKey} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-af-accent text-af-accent hover:bg-af-accent/10 disabled:opacity-50">
                                             <RefreshCw size={11} className={rerunKey === `${l.id}-${b.key}-${who}` ? 'animate-spin' : ''} /> {a ? 'Rodar de novo' : who === 'p2' ? 'Rodar no 2º participante' : 'Rodar'}
                                           </button>
                                         )}

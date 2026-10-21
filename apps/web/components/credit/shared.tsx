@@ -87,6 +87,7 @@ export interface LeadAnalyses {
   chosenId: string | null;
   /** A proposta aprovada que o cliente vai seguir (escolhida ou única aprovada) e se a tela deve mostrar só ela (card já depois da aprovação). */
   followed?: Analysis | null; onlyFollowed?: boolean;
+  overrides?: Partial<Record<Bank, { inverter?: boolean }>>;
   participants?: { name1: string; name2: string; inverted: boolean };
   extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null; loginNeeded?: boolean }>;
 }
