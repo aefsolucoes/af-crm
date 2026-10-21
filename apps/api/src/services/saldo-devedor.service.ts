@@ -134,6 +134,47 @@ export async function processSaldoDevedor(accountId: string, io: Io): Promise<vo
   }
 }
 
+/** Crédito a analisar quando o TROCO muda (Fabio 21/10): saldo + troco. Antes do print o saldo é o que a proposta declarou e o crédito é a soma redonda no milhar (a proposta já traz o total, sem folga: 240 mil + 30 mil = 270 mil);
+ *  depois do print vale a regra de sempre (saldo real + troco + folga, milhar inteiro). Pura (testável). */
+export function creditoComTroco(saldo: number, troco: number, jaLeuPrint: boolean): number {
+  const bruto = Math.round((saldo + troco) * 100) / 100;
+  return jaLeuPrint ? roundUpToThousand(bruto) : Math.ceil(bruto / 1000) * 1000;
+}
+
+/** O cliente CORRIGIU o troco na conversa (a IA gravou `troco` no card): ajusta o valor do crédito (saldo + troco) e, se a análise já rodou com o valor antigo, refaz nos bancos. */
+export async function aplicarTrocoCorrigido(accountId: string, leadId: string, novoTroco: number, io: Io): Promise<void> {
+  if (!(novoTroco > 0)) return;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true } });
+  if (!lead) return;
+  const cf = { ...((lead.customFields || {}) as Record<string, any>) };
+  if (cf._autoPaused) return;
+  const st = cf._saldoDevedor as (Record<string, any> | undefined);
+  const saldo = Number(st?.saldo) || Number(cf.saldo_devedor) || 0;
+  const trocoAntes = Number(st?.liquido) || 0;
+  if (!(saldo > 0)) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `💸 O cliente corrigiu o troco para ${brl(novoTroco)}, mas o card não tem o saldo devedor pra recalcular o valor do crédito. Ajuste "Valor do crédito" (saldo + troco) à mão.` } }).catch(() => {});
+    return;
+  }
+  const total = creditoComTroco(saldo, novoTroco, !!st?.doneAt);
+  const antes = Number(cf.valor_credito) || 0;
+  const novoCf: Record<string, any> = { ...cf, troco: String(novoTroco), valor_credito: String(total), ...(st ? { _saldoDevedor: { ...st, liquido: novoTroco } } : {}) };
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: novoCf as any } });
+  const linhaValor = Math.abs(total - antes) < 1 ? `o crédito segue ${brl(total)}` : `crédito a analisar ${antes ? brl(antes) : '—'} → ${brl(total)} (saldo ${brl(saldo)} + troco ${brl(novoTroco)}${st?.doneAt ? ' + folga' : ''})`;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `💸 O cliente corrigiu o troco${trocoAntes ? ` (${brl(trocoAntes)} → ${brl(novoTroco)})` : ` para ${brl(novoTroco)}`}: ${linhaValor}.` } }).catch(() => {});
+  if (Math.abs(total - antes) < 1) return;
+  // Se a análise já rodou com o valor antigo, refaz; se ainda não rodou, a análise automática já parte do valor novo.
+  const rodou = await prisma.creditAnalysis.count({ where: { leadId, dryRun: false } });
+  if (!rodou) return;
+  const setting = await prisma.creditAutoSetting.findUnique({ where: { accountId }, select: { enabled: true } });
+  if (!setting?.enabled) { await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ A análise automática está desligada: refaça a análise nos bancos com o valor novo (aba Análise de Crédito).' } }).catch(() => {}); return; }
+  try {
+    const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔁 Refiz a análise com o valor novo (${brl(total)}): o resultado antigo não vale pro troco corrigido. ${r.created ? `${r.created} pedido(s) na fila das extensões.` : 'Nada novo foi pedido (já havia análise em andamento).'}` } }).catch(() => {});
+    io?.to?.(`account_${accountId}`)?.emit?.('new_conversation', { leadId });
+  } catch (e: any) { console.error('[Troco] não consegui refazer a análise:', e?.message); }
+}
+
 /** Respostas em texto do cliente à pergunta do troco: confirmou? corrigiu o valor? (uma chamada barata, só quando o print chega). */
 async function lerTrocoCorrigido(leadId: string, since: string, trocoAtual: number): Promise<{ confirmou: boolean; novoTroco: number | null } | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;

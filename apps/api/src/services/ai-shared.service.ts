@@ -520,6 +520,10 @@ export async function applyAiExtractedActions(
         // corrige o nome do card e do contato também (Fabio 08/10).
         const renomear = patch.participante_1 && isCallableName(patch.participante_1) && !isCallableName(lead.name);
         await prisma.lead.update({ where: { id: lead.id }, data: { customFields, ...(renomear ? { name: normalizeClientName(patch.participante_1) } : {}) } });
+        // O cliente corrigiu o TROCO (Fabio 21/10): o valor do crédito (saldo + troco) é ajustado e a análise refeita se já tinha rodado no valor antigo.
+        if (patch.troco && Number(patch.troco) > 0 && String(patch.troco) !== String(((lead.customFields as any) || {}).troco ?? '')) {
+          (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).aplicarTrocoCorrigido(accountId, lead.id, Number(patch.troco), io as any).catch((e: any) => console.error('[Troco] ajuste do crédito:', e?.message));
+        }
         if (renomear && lead.contactId) {
           await prisma.contact.update({ where: { id: lead.contactId }, data: { name: normalizeClientName(patch.participante_1) } }).catch(() => {});
           await prisma.note.create({ data: { leadId: lead.id, type: 'DATA_EDIT', content: `🤖 Nome do card corrigido pela IA: "${lead.name}" → "${normalizeClientName(patch.participante_1)}" (o cliente informou o nome).` } }).catch(() => {});
