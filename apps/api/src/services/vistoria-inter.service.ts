@@ -77,8 +77,9 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   const doImovel = await arquivosDoImovel(accountId, cf);
   const idCert = cert ? (await prisma.certidaoRequest.findUnique({ where: { id: cert.id }, select: { driveFileId: true } }))?.driveFileId : null;
   // Marcados por padrão: a certidão de ônus da matrícula atual e o cadastro imobiliário (IPTU) do imóvel. NÃO marca "GUIA IPTU" etc.: já veio guia de OUTRO imóvel (Pedro, 19/10) — só vai se alguém conferir e marcar.
-  const anexos = doImovel.map((f) => ({ id: f.id, name: f.name, path: f.path, size: f.size, checked: f.id === idCert || (/CADASTRO IMOBILIARIO/i.test(f.name) && !/ 2\.pdf$/i.test(f.name)) }));
-  const temMat = anexos.some((a) => a.checked && a.id === idCert);
+  // Sem certidão emitida pelo ONR, vale a matrícula/certidão de ônus que o CLIENTE mandou (nome "MATRICULA DO IMOVEL"/"CERTIDAO DE ONUS" na pasta IMOVEL — Luiz, 21/10).
+  const anexos = doImovel.map((f) => ({ id: f.id, name: f.name, path: f.path, size: f.size, checked: f.id === idCert || (!idCert && /^(MATRICULA DO IMOVEL|CERTIDAO DE ONUS)/i.test(f.name) && !/ \d\.pdf$/i.test(f.name)) || (/CADASTRO IMOBILIARIO/i.test(f.name) && !/ 2\.pdf$/i.test(f.name)) }));
+  const temMat = anexos.some((a) => a.checked && (a.id === idCert || /MATRICULA|ONUS/i.test(a.name)));
   const temCad = anexos.some((a) => a.checked && /CADASTRO IMOBILIARIO/i.test(a.name));
   const listaAnexos = [temMat ? 'a matrícula atualizada do imóvel (certidão de ônus)' : '', temCad ? 'o cadastro imobiliário do imóvel (IPTU)' : ''].filter(Boolean);
   const linhas = [
@@ -120,7 +121,7 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
 }
 
 export async function solicitarVistoria(p: { accountId: string; userId: string; leadId: string; to: string; cc?: string; subject: string; body: string; replyToId?: string | null; attachDriveFileIds?: string[]; io?: Io }) {
-  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { name: true, customFields: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { name: true, customFields: true, pipelineId: true, stageId: true, stage: { select: { name: true } } } });
   if (!lead) throw new Error('Card não encontrado');
   const to = String(p.to || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) throw new Error('Informe o e-mail do consultor do Inter no campo "Para".');
@@ -149,6 +150,16 @@ export async function solicitarVistoria(p: { accountId: string; userId: string; 
   await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _vistoriaRequestedAt: new Date().toISOString() } } });
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', userId: p.userId, content: `📨 Vistoria solicitada ao Inter (e-mail para ${to}${attachments.length ? `, com ${attachments.length} anexo(s): ${attachments.map((a) => a.filename).join('; ')}` : ''}). Aguardando o engenheiro entrar em contato (até 2 dias úteis).` } }).catch(() => {});
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(p.accountId, { title: '📨 Vistoria solicitada ao Inter', body: lead.name, leadId: p.leadId }).catch(() => {}); } catch { /* aviso */ }
+  // Vistoria solicitada = o card vai pra "Vistoria do Imóvel" (Fabio 21/10: "sempre que conseguir solicitar a vistoria, mover o card pra Vistoria").
+  try {
+    const vist = await prisma.stage.findFirst({ where: { pipelineId: lead.pipelineId, name: { contains: 'Vistoria', mode: 'insensitive' } }, select: { id: true, name: true } });
+    if (vist && vist.id !== lead.stageId) {
+      const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+      await updateLeadStage(p.leadId, p.accountId, vist.id);
+      await prisma.note.create({ data: { leadId: p.leadId, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '—'}" → "${vist.name}" — vistoria solicitada ao Inter` } }).catch(() => {});
+      p.io?.to?.(`account_${p.accountId}`)?.emit?.('new_conversation', { leadId: p.leadId });
+    }
+  } catch (e: any) { console.warn('[Vistoria] não consegui mover o card:', e?.message); }
   return { ok: true, to, anexou: attachments.length > 0 };
 }
 
