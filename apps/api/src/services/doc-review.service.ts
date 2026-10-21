@@ -267,6 +267,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   }
   const learned = await learnedDocRules(accountId).catch(() => '');
   const novas: ReviewSummary['novas'] = [];
+  const leituraFalhou: { id: string; nome: string }[] = [];
   // O leitor completo (com raciocínio) acerta mais que o classificador barato: documento do IMÓVEL que o classificador tratou como pessoal
   // (capa de IPTU lida como "comprovante de residência" em nome de empresa — Maria Antônia, 15/10) passa a valer pelo que o leitor disse.
   const infoFix: Record<string, string> = {};
@@ -276,7 +277,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     const semMetragens = !!cache[a.id] && /IPTU|CADASTRO IMOBILIARIO/.test(String(cache[a.id].tipo || '')) && cache[a.id].metragens === undefined;
     if ((cache[a.id] && !reler && !semMetragens) || info[a.id] === null || info[a.id] === undefined) continue;
     let r = await reviewAttachment(accountId, a, context, { learned });
-    if (!r) continue;
+    if (!r) { leituraFalhou.push({ id: a.id, nome: a.fileName || a.id }); continue; } // a leitura não saiu: conta a falha (3 seguidas viram aviso à equipe — antes ficava em silêncio e a matrícula do Edson ficou sem leitura)
     // Renda DISPENSADA neste card (marca _rendaDispensada, Fabio 21/10 — Luiz): documento de renda não tem o que conferir — sem problema e sem pergunta à equipe (o extrato de abril virou "dúvida" à toa).
     if (cf0._rendaDispensada && /EXTRATO BANC|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA/.test(String(r.tipo || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')) && (r.resultado === 'DUVIDA' || r.resultado === 'PROBLEMA')) {
       r = { ...r, resultado: 'OK', problemas: [], duvida: '', observacao: `${r.observacao ? r.observacao + ' ' : ''}(renda dispensada neste card)`.trim() };
@@ -290,6 +291,19 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
       const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
       await createDocQuestion({ accountId, leadId, attachmentId: a.id, fileName: a.fileName || 'documento', docType: r.tipo, question: r.duvida || 'Não tenho segurança se este documento serve.' }).catch((e) => console.error('[DocReview] não abriu a dúvida:', e?.message || e));
     }
+  }
+  if (leituraFalhou.length) {
+    try {
+      const fresh0 = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+      const cf1 = { ...((fresh0?.customFields || {}) as Record<string, any>) };
+      const falhas: Record<string, number> = { ...(cf1._docLeituraFalhas || {}) };
+      for (const f of leituraFalhou) {
+        falhas[f.id] = (falhas[f.id] || 0) + 1;
+        if (falhas[f.id] === 3) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A IA tentou ler "${f.nome}" 3 vezes e não conseguiu (arquivo muito grande, ilegível ou erro de leitura). Confira o documento à mão: ele fica sem conferência até alguém olhar.` } }).catch(() => {});
+      }
+      cf1._docLeituraFalhas = falhas;
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf1 as any } });
+    } catch { /* contagem é só aviso */ }
   }
   if (novas.length) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
