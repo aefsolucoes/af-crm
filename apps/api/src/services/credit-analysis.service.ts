@@ -182,13 +182,13 @@ export function parseSantanderConditions(text: string): ResultFields {
   const prazo = /prazo\s*(\d+)\s*meses/i.exec(t); if (prazo) out.termMonths = Number(prazo[1]);
   const p1 = /1[ªa]\s*parcela\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (p1) out.firstInstallment = brNumber(p1[1]);
   const pu = /[úu]ltima\s*R\$\s*([\d.]+,\d{2})/i.exec(t); if (pu) out.lastInstallment = brNumber(pu[1]);
-  // Taxa que o cliente vê é a MENSAL: nominal anual ÷ 12 (ex.: 19,80% a.a. → 1,65% a.m.; é a que dá os 21,70% a.a. efetivos).
-  // Sem a nominal, deriva da efetiva anual.
+  // Taxa MENSAL que o cliente vê = taxa EFETIVA anual ÷ 12 (Fabio 22/10: "de onde tiraram 1,65% se a efetiva é 21,70%?": o Santander mostra efetiva 21,70% e nominal 19,80% a.a.; antes o CRM usava nominal ÷ 12 = 1,65%,
+  // que fica abaixo da conta que a equipe explica ao cliente: efetiva ÷ 12 = 1,81%). Sem a efetiva, cai na nominal ÷ 12.
   const fmt = (n: number) => `${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.m.`;
   const nominal = /taxa nominal\s*([\d.]+,\d{1,2})\s*%\s*a\.a\./i.exec(t);
   const efetiva = /taxa efetiva\s*([\d.]+,\d{1,2})\s*%\s*a\.a\./i.exec(t);
-  if (nominal) out.rate = fmt(brNumber(nominal[1]) / 12);
-  else if (efetiva) out.rate = fmt((Math.pow(1 + brNumber(efetiva[1]) / 100, 1 / 12) - 1) * 100);
+  if (efetiva) out.rate = fmt(brNumber(efetiva[1]) / 12);
+  else if (nominal) out.rate = fmt(brNumber(nominal[1]) / 12);
   return out;
 }
 
