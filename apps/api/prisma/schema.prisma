@@ -1103,6 +1103,49 @@ model AiUsage {
   @@id([day, feature, model])
 }
 
+// Painel de custos (Fabio 22/10: "tudo que for ligado ao CRM"). Lançamento manual de custo que não dá pra ler por API
+// (Railway, campanhas da Meta, domínio, e-mail, ElevenLabs…) ou a fatura REAL de um fornecedor que o CRM só estima (Anthropic).
+//  - kind EXTRA: soma ao total do mês; kind ACTUAL: substitui a estimativa automática daquele fornecedor naquele mês.
+//  - recurring: vale todo mês de `month` até `endMonth` (null = sem fim) — assinaturas fixas.
+model CostEntry {
+  id          String   @id @default(cuid())
+  accountId   String
+  provider    String // RAILWAY | META_ADS | ANTHROPIC | WHATSAPP | VOYAGE | ELEVENLABS | GOOGLE | EMAIL | DOMINIO | OUTRO
+  label       String
+  amountCents Int
+  currency    String   @default("BRL") // BRL | USD
+  month       String // 'YYYY-MM' (mês de competência; início quando recorrente)
+  recurring   Boolean  @default(false)
+  endMonth    String?
+  kind        String   @default("EXTRA") // EXTRA | ACTUAL
+  campaign    String? // Meta Ads: nome da campanha
+  note        String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([accountId, month])
+}
+
+// Uso de fornecedores que cobram por volume e não passam por AiUsage (hoje: Voyage, em tokens). Dia no horário de Brasília.
+model ProviderUsage {
+  day       String
+  provider  String
+  feature   String
+  calls     Int      @default(0)
+  units     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@id([day, provider, feature])
+}
+
+// Cotação do dólar do painel de custos: usdBrl nulo = automática (cotação do dia); preenchido = fixa, definida à mão.
+model CostSetting {
+  accountId String   @id
+  usdBrl    Float?
+  updatedAt DateTime @updatedAt
+}
+
 // Uma linha por DISPARO da regra (não por ação individual dentro dela).
 // leadId é campo solto, sem @relation — mesmo padrão leve de
 // CommissionSuggestion.leadId/AgentTask.leadId, pra não mexer no model Lead.

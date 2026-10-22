@@ -40,6 +40,7 @@ import creditAnalysisRoutes from './routes/credit-analysis';
 import certidaoRoutes from './routes/certidoes';
 import vistoriaRoutes from './routes/vistorias';
 import automationMetricsRoutes from './routes/automation-metrics';
+import costsRoutes from './routes/costs';
 import emailRoutes from './routes/email';
 import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.service';
 import { checkInactivityAutomations, processDeferredAutomations } from './services/automation.service';
@@ -111,6 +112,7 @@ app.use('/api/credit-analysis', creditAnalysisRoutes);
 app.use('/api/certidoes', certidaoRoutes);
 app.use('/api/vistorias', vistoriaRoutes);
 app.use('/api/automation-metrics', automationMetricsRoutes);
+app.use('/api/costs', costsRoutes);
 app.use('/api/email', emailRoutes);
 
 configureWebPush();

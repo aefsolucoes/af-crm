@@ -4,6 +4,8 @@
  * Railway). O modelo pode ser trocado via VOYAGE_MODEL.
  */
 
+import { recordProviderUsage } from '../lib/provider-usage';
+
 const VOYAGE_URL = 'https://api.voyageai.com/v1/embeddings';
 const VOYAGE_MODEL = process.env.VOYAGE_MODEL || 'voyage-3.5';
 const MAX_BATCH = 32; // itens por chamada — lotes menores evitam limites de tamanho/taxa
@@ -33,7 +35,8 @@ async function callVoyage(inputs: string[], inputType: 'document' | 'query', att
     throw new Error(`Voyage ${res.status}: ${body.slice(0, 300)}`);
   }
 
-  const data = (await res.json()) as { data: { embedding: number[]; index: number }[] };
+  const data = (await res.json()) as { data: { embedding: number[]; index: number }[]; usage?: { total_tokens?: number } };
+  recordProviderUsage('VOYAGE', inputType === 'query' ? 'consulta' : 'indexacao', Number(data.usage?.total_tokens) || 0); // painel de custos
   // Garante a ordem original (a API devolve com o campo index).
   return data.data.slice().sort((a, b) => a.index - b.index).map((d) => d.embedding);
 }

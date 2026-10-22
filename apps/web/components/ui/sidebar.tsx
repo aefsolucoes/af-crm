@@ -10,7 +10,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, MessageSquare, CheckSquare, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown, Megaphone, Landmark, Gauge,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown, Megaphone, Landmark, Gauge, Coins,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -43,6 +43,7 @@ const NAV: NavItem[] = [
   { href: '/financeiro', label: 'Financeiro', icon: Wallet, perm: 'finance' },
   { href: '/importar', label: 'Importar', icon: Upload, perm: 'funnel_manage' },
   { href: '/medicao', label: 'Medição', icon: Gauge, perm: 'settings' },
+  { href: '/custos', label: 'Custos', icon: Coins, perm: 'settings' },
   { href: '/configuracoes', label: 'Configurações', icon: Settings, perm: 'settings' },
 ];
 
