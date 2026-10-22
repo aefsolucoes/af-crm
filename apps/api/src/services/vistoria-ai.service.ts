@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { vistoriaPreview, solicitarVistoria } from './vistoria-inter.service';
+import { contractingAutoOn, manualStep } from './contracting-auto.service';
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 
@@ -62,6 +63,19 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
       await note(leadId, `🏠 Documentação completa e o cliente tem aprovação em ${bancos.length} bancos (${bancos.map((b) => BANCO[b] || b).join(', ')}). Confirme com ele qual segue e marque a ⭐ "Escolher esta proposta": aí a IA solicita a vistoria sozinha.`);
       push(accountId, '🏠 Escolher o banco', `${lead.name}: aprovado em ${bancos.length} bancos — confirmar qual segue`, leadId);
     }
+    return;
+  }
+  // Chave geral desligada (Fabio 22/10: passos manuais por enquanto): nada sai sozinho — a equipe recebe a nota com o que fazer. Ligando a chave, o card segue daqui automaticamente.
+  if (!(await contractingAutoOn(accountId))) {
+    const nome = BANCO[banco] || banco;
+    const passos = banco === 'INTER'
+      ? 'Se o e-mail de engajamento do Inter ainda não chegou, confirme com o cliente e clique em "Seguir com proposta" no portal; com o e-mail na caixa, use o botão "Solicitar vistoria" do card (os anexos já vêm marcados).'
+      : banco === 'CREDIMORAR'
+        ? 'Envie a solicitação por e-mail à Letícia (Santander) com a autorização USECASA assinada pelo cliente no gov.br, o cadastro WEB CASAS e os documentos da pasta do Drive.'
+        : `Solicite a vistoria do ${nome} à mão.`;
+    const avisou = await manualStep({ accountId, leadId, leadName: lead.name, step: 'vistoria', pushTitle: '🏠 Solicitar a vistoria', pushBody: `${lead.name}: documentação completa, segue pelo ${nome}`,
+      note: `🏠 Documentação completa; o cliente segue pelo ${nome}. Passo manual (automação da contratação desligada): ${passos}` });
+    if (avisou) await salva(leadId, { status: 'AGUARDA_EQUIPE', banco, since: st.since || new Date().toISOString() });
     return;
   }
   // 2a) Santander: fluxo próprio por e-mail à Letícia (autorização USECASA assinada pelo cliente no gov.br + cadastro WEB CASAS + documentos) — vistoria-santander.service

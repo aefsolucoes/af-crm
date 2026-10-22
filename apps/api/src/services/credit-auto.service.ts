@@ -25,7 +25,7 @@ const norm = (s: string) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g,
 
 export async function getAutoSetting(accountId: string) {
   const s = await prisma.creditAutoSetting.findUnique({ where: { accountId } });
-  return { enabled: !!s?.enabled, enabledAt: s?.enabledAt || null, paused: !!s?.paused, pauseInterEmails: s ? s.pauseInterEmails : true };
+  return { enabled: !!s?.enabled, enabledAt: s?.enabledAt || null, paused: !!s?.paused, pauseInterEmails: s ? s.pauseInterEmails : true, contractingAuto: !!s?.contractingAuto };
 }
 
 /** Pausa SÓ dos e-mails automáticos ao Inter (Vania: erro do portal e sem retorno >24 h). Sem registro da conta = pausado. */

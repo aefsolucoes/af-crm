@@ -157,6 +157,13 @@ router.get('/auto', async (req: AuthRequest, res: Response) => {
 });
 router.put('/auto', async (req: AuthRequest, res: Response) => {
   if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores ligam a análise automática' });
+  try {
+    if (typeof req.body?.contractingAuto === 'boolean') {
+      const { setContractingAuto } = require('../services/contracting-auto.service') as typeof import('../services/contracting-auto.service');
+      await setContractingAuto(req.user!.accountId, req.body.contractingAuto, req.user!.id);
+      return res.json(await getAutoSetting(req.user!.accountId));
+    }
+  } catch (err) { return fail(res, err, 'Erro ao salvar a chave da contratação automática'); }
   try { if (typeof req.body?.pauseInterEmails === 'boolean') return res.json(await setPauseInterEmails(req.user!.accountId, req.body.pauseInterEmails, req.user!.id)); } catch (err) { return fail(res, err, 'Erro ao salvar a pausa dos e-mails do Inter'); }
   try { if (typeof req.body?.paused === 'boolean') return res.json(await setPaused(req.user!.accountId, req.body.paused, req.user!.id)); } catch (err) { return fail(res, err, 'Erro ao salvar a pausa'); }
   try { res.json(await setAutoSetting(req.user!.accountId, req.body?.enabled === true, req.user!.id)); } catch (err) { fail(res, err, 'Erro ao salvar a análise automática'); }

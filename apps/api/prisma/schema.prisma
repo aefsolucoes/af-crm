@@ -1363,6 +1363,7 @@ model CreditAutoSetting {
   enabledAt   DateTime?
   paused      Boolean   @default(false) // PAUSA GERAL: nada roda sozinho (CRM e extensões); só o que for pedido na hora, à mão
   pauseInterEmails Boolean @default(true) // pausa SÓ os e-mails automáticos ao Inter/Vania (erro do portal e sem retorno >24 h) — Fabio 17/10: "dá uma pausa nos e-mails do Inter"
+  contractingAuto Boolean @default(false) // chave geral dos passos AUTOMÁTICOS da contratação (vistoria Inter/Santander, perguntas ao cliente: laudo, transferência, quitação, CAIXA, "seguir com proposta"). Desligada = a equipe faz à mão e recebe nota + push — Fabio 22/10: "vamos seguir os passos manuais, quando tudo estiver certinho a gente coloca no automático"
   updatedById String?
   updatedAt   DateTime  @updatedAt
 }

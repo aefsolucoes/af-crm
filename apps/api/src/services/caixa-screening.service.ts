@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { sendOutboundWhatsApp } from './message.service';
+import { contractingAutoOn, manualStep } from './contracting-auto.service';
 
 type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'];
 
@@ -52,6 +53,13 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
   // O cliente já falou da CAIXA por conta própria: a IA da conversa já está no assunto (não pergunta duas vezes).
   const falou = await prisma.message.count({ where: { leadId, direction: 'INBOUND', content: { contains: 'caixa', mode: 'insensitive' }, NOT: { content: { contains: 'Bancos solicitados' } } } });
   if (falou > 0) { await marca(leadId, { skip: 'o cliente já falou da CAIXA', at: new Date().toISOString() }); return; }
+  // Chave geral desligada (Fabio 22/10): a equipe faz a triagem da CAIXA à mão; o texto vai pronto na nota.
+  if (!(await contractingAutoOn(accountId))) {
+    await manualStep({ accountId, leadId, leadName: lead.name, step: 'caixa', pushTitle: '🏦 Proposta lista a CAIXA', pushBody: `${lead.name}: perguntar se quer mesmo seguir pela CAIXA`,
+      note: `🏦 A proposta lista a CAIXA e o cliente já foi avisado da aprovação: pergunte se ele quer mesmo seguir pela CAIXA. Passo manual (automação da contratação desligada). Texto pronto:\n“${caixaAskText().replace(/\n+/g, ' ')}”` });
+    await marca(leadId, { teamAt: new Date().toISOString(), por: 'equipe (automação da contratação desligada)' });
+    return;
+  }
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return; // tenta de novo no próximo minuto (até 3 dias depois do aviso)
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: caixaAskText(), io: io as any });

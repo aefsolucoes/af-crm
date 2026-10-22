@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { sendOutboundWhatsApp } from './message.service';
+import { contractingAutoOn } from './contracting-auto.service';
 
 type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'];
 
@@ -55,6 +56,8 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
     try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏠 Pedir a transferência do imóvel', body: `${lead.name}: depois da vistoria, a escritura precisa estar registrada antes do contrato`, leadId }).catch(() => {}); } catch { /* aviso */ }
   };
   if (!lead.aiAutoReplyActive) { await marca(leadId, { teamNotifiedAt: new Date().toISOString(), por: 'equipe (IA do card desligada)' }); await avisaEquipe('O cliente ainda não transferiu o imóvel e o card já passou da vistoria (IA do card desligada, não pedi sozinha).'); return; }
+  // Chave geral desligada (Fabio 22/10): a equipe pede à mão.
+  if (!(await contractingAutoOn(accountId))) { await marca(leadId, { teamNotifiedAt: new Date().toISOString(), por: 'equipe (automação da contratação desligada)' }); await avisaEquipe(`O cliente ainda não transferiu o imóvel e o card já passou da vistoria. Passo manual (automação da contratação desligada). Texto pronto:\n“${transferenciaAskText().replace(/\n+/g, ' ')}”\n`); return; }
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return;
   if (!(await whatsappWindowOpen(leadId))) {

@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { sendOutboundWhatsApp } from './message.service';
+import { contractingAutoOn, manualStep } from './contracting-auto.service';
 import { buildLaudoJob, requestLaudo } from './vistoria-inter.service';
 
 type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'];
@@ -94,6 +95,13 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
   // a IA da conversa (ou a equipe) já fez essas perguntas
   const jaPerguntou = await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', AND: [{ content: { contains: 'suíte', mode: 'insensitive' } }, { content: { contains: 'dormit', mode: 'insensitive' } }] } });
   if (jaPerguntou > 0) { await marca(leadId, { _laudoAsk: { skip: 'já perguntado na conversa', at: new Date().toISOString() } }); return; }
+  // Chave geral desligada (Fabio 22/10): a equipe pergunta à mão; o texto vai pronto na nota. Ligando depois, esse card não é perguntado de novo (já foi registrado como da equipe).
+  if (!(await contractingAutoOn(accountId))) {
+    await manualStep({ accountId, leadId, leadName: lead.name, step: 'laudo-pergunta', pushTitle: '🏢 Laudo do apartamento', pushBody: `${lead.name}: perguntar dormitórios/banheiros/suítes/vagas`,
+      note: `🏢 Apartamento + vistoria do Inter: pergunte ao cliente dormitórios, banheiros, suítes e vagas com uso exclusivo (laudo digital). Passo manual (automação da contratação desligada). Texto pronto:\n“${laudoAskText().replace(/\n+/g, ' ')}”` });
+    await marca(leadId, { _laudoAsk: { teamAt: new Date().toISOString(), por: 'equipe (automação da contratação desligada)' } });
+    return;
+  }
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return; // fora das 07h–21h: tenta de novo no próximo minuto
   if (!(await whatsappWindowOpen(leadId))) {
@@ -123,6 +131,12 @@ async function queueIfReady(accountId: string, leadId: string): Promise<void> {
   }
   const { job } = buildLaudoJob(leadId, lead.name, cf);
   if (!job) return;
+  // Chave geral desligada: a equipe aciona o preenchimento do laudo no botão do card (uma nota avisa que já está pronto).
+  if (!(await contractingAutoOn(accountId))) {
+    await manualStep({ accountId, leadId, leadName: lead.name, step: 'laudo-fila', pushTitle: '🏢 Laudo pronto pra preencher', pushBody: `${lead.name}: card completo, falta acionar o laudo`,
+      note: '🏢 O card já tem o link do laudo e todos os dados: clique em preencher o laudo (a extensão preenche e para na conferência). Passo manual (automação da contratação desligada).' });
+    return;
+  }
   const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
   if (!dono) return;
   await marca(leadId, { _laudoAutoQueuedAt: new Date().toISOString() });
