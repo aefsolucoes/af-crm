@@ -11,7 +11,7 @@ router.use(authMiddleware);
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const scope = AI_QUESTIONS_FOR_EVERYONE ? [] : await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
-    res.json(await listAiTeamQuestions(req.user!.accountId, scope));
+    res.json(await listAiTeamQuestions(req.user!.accountId, scope, req.user!.role === 'ADMIN'));
   } catch (err: any) {
     // Foi esta rota que derrubou o servidor em 09/10 (pool de conexões esgotado).
     console.error('[Dúvidas da IA] falha ao listar:', err?.message);

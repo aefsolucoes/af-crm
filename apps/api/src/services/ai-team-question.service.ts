@@ -35,8 +35,9 @@ export const AI_QUESTIONS_FOR_EVERYONE = true;
 
 /** Quem enxerga a dúvida: admin, quem não tem setor definido (enxerga tudo,
  *  mesma regra do resto do CRM) e quem é do setor do card. */
-async function recipientsFor(accountId: string, departmentId: string | null): Promise<string[]> {
+async function recipientsFor(accountId: string, departmentId: string | null, soAdmin = false): Promise<string[]> {
   const users = await prisma.user.findMany({ where: { accountId }, select: { id: true, role: true, departmentIds: true } });
+  if (soAdmin) return users.filter((u) => u.role === 'ADMIN').map((u) => u.id);
   return users
     .filter((u) => AI_QUESTIONS_FOR_EVERYONE || u.role === 'ADMIN' || !u.departmentIds.length || !departmentId || u.departmentIds.includes(departmentId))
     .map((u) => u.id);
@@ -464,11 +465,12 @@ async function answerBankEmailQuestion(q: { id: string; accountId: string; leadI
 
 /** Dúvidas que o usuário enxerga: todas as abertas + as respondidas nos
  *  últimos 7 dias (histórico curto, o balão não é arquivo). */
-export async function listAiTeamQuestions(accountId: string, scopeDepartmentIds: string[]) {
+export async function listAiTeamQuestions(accountId: string, scopeDepartmentIds: string[], isAdmin = false) {
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const rows = await prisma.aiTeamQuestion.findMany({
     where: {
       accountId,
+      ...(isAdmin ? {} : { kind: { not: 'LEARN' } }), // aprendizado da IA (Fabio 22/10) é só do administrador
       OR: [{ status: 'OPEN' }, { createdAt: { gte: since } }],
       ...(scopeDepartmentIds.length ? { AND: [{ OR: [{ departmentId: null }, { departmentId: { in: scopeDepartmentIds } }] }] } : {}),
     },
@@ -487,7 +489,7 @@ export async function listAiTeamQuestions(accountId: string, scopeDepartmentIds:
  *  no prompt da IA pra ela não inventar nem perguntar de novo o mesmo. */
 export async function teamQuestionsContext(leadId: string): Promise<string> {
   const rows = await prisma.aiTeamQuestion.findMany({
-    where: { leadId, kind: { not: 'DOC_QUESTION' }, OR: [{ status: 'OPEN' }, { status: 'ANSWERED', answeredAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }] },
+    where: { leadId, kind: { notIn: ['DOC_QUESTION', 'LEARN'] }, OR: [{ status: 'OPEN' }, { status: 'ANSWERED', answeredAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }] },
     orderBy: { createdAt: 'desc' },
     take: 5,
     select: { status: true, question: true, answer: true, kind: true, callWhen: true },
@@ -584,6 +586,7 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
   if (q.status !== 'OPEN') throw new Error('Essa dúvida já foi resolvida');
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
 
+  if (q.kind === 'LEARN') return answerLearnQuestion(q as any, answer, userId, user?.name || null, io);
   if (q.kind === 'DOC_QUESTION') return answerDocQuestion(q, answer, userId, user?.name || null, io);
   if (q.kind === 'REJECTION_QUESTION') return answerRejectionQuestion(q, answer, userId, user?.name || null, io);
   if (q.kind === 'BANK_EMAIL') return answerBankEmailQuestion(q, answer, userId, user?.name || null, io);
@@ -692,6 +695,7 @@ export async function dismissAiTeamQuestion(params: { accountId: string; questio
     data: { status: 'DISMISSED', answeredByUserId: userId, answeredByName: user?.name || null, answeredAt: new Date() },
     select: SELECT,
   });
+  if (q.kind === 'LEARN') { emitTo(io, await recipientsFor(accountId, q.departmentId, true), 'ai_team_question_updated', { id: q.id }); return updated; } // descartar um aprendizado não mexe na IA do card
   const { count } = await prisma.lead.updateMany({ where: { id: q.leadId, accountId, aiAutoReplyActive: true }, data: { aiAutoReplyActive: false } });
   if (count) io?.to(`lead:${q.leadId}`).emit('lead_ai_toggled', { leadId: q.leadId, active: false });
   await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `${user?.name || 'Alguém da equipe'} assumiu a dúvida da IA e vai falar direto com o cliente. IA desligada neste card.` } }).catch(() => {});
@@ -836,5 +840,60 @@ export async function proposeCallTime(params: { accountId: string; questionId: s
   });
   await prisma.note.create({ data: { leadId: q.leadId, type: 'CALL', content: `📞 ${user?.name || 'Equipe'} propôs outro horário pra ligação: ${time} (cliente tinha pedido ${q.callWhen}).` } }).catch(() => {});
   emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+  return updated;
+}
+
+
+// ───────────────────────── Aprendizado (conversa relevante → push → resposta do Fabio → Base de Conhecimento) ─────────────────────────
+// Fabio 22/10: "toda conversa que a IA OU A GENTE tenha com cliente e for algo relevante, a IA do CRM mande em push pra eu ir respondendo e ela aprendendo". learning-review.service.ts acha a conversa,
+// escreve a lição que tiraria e abre este item (só administrador vê). Responder: "sim" guarda a lição como está; outro texto vira a lição corrigida; "não" descarta. NADA vai pro cliente.
+
+export async function createLearnQuestion(params: { accountId: string; leadId: string; resumo: string; licao: string; titulo: string; tipo?: string; excerpt: string; io?: Io }) {
+  const { accountId, leadId, io } = params;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead) return null;
+  const departmentId = lead.pipeline?.departmentId ?? null;
+  const question = `💡 Conversa relevante com ${lead.name}: ${params.resumo.trim()}\n📝 Lição que eu guardaria: ${params.licao.trim()}\nResponda "sim" pra guardar assim, escreva a lição certa, ou "não" pra descartar.`.slice(0, 1000);
+  const saved = await prisma.aiTeamQuestion.create({
+    data: { accountId, leadId, departmentId, question, kind: 'LEARN', clientMessage: params.excerpt.slice(0, 3000) || null, payload: { titulo: params.titulo.slice(0, 200), licao: params.licao.slice(0, 1500), tipo: params.tipo || null } },
+    select: SELECT,
+  });
+  const admins = await recipientsFor(accountId, departmentId, true);
+  emitTo(io, admins, 'ai_team_question', { id: saved.id, leadId, leadName: lead.name, question: saved.question, isNew: true });
+  sendPushToAccount(accountId, { title: `💡 Aprender — ${lead.name}`.slice(0, 90), body: params.resumo.trim().slice(0, 140), leadId }, admins).catch(() => {});
+  return saved;
+}
+
+const LEARN_SIM = /^\s*(sim|ok|okay|pode|pode sim|isso|isso mesmo|certo|confirmo|confirmado|aprovado|vale|combinado|guarda|guardar)\b/i;
+const LEARN_NAO = /^\s*(n[aã]o|nao|descarta|descartar|ignora|ignorar|n[aã]o vale|s[oó] (neste|nesse) caso|apenas (neste|nesse) caso)\b/i;
+
+/** Interpreta a resposta do Fabio a um aprendizado: guarda a lição proposta, a corrigida, ou nada. Pura (testável). */
+export function interpretarRespostaAprendizado(answer: string, licaoProposta: string): { guardar: boolean; licao: string } {
+  const a = String(answer || '').trim();
+  if (LEARN_NAO.test(a)) return { guardar: false, licao: '' };
+  if (LEARN_SIM.test(a) && a.length <= 60) return { guardar: true, licao: licaoProposta };
+  return { guardar: true, licao: a };
+}
+
+async function answerLearnQuestion(q: { id: string; accountId: string; leadId: string; departmentId: string | null; question: string; payload: any }, answer: string, userId: string, userName: string | null, io: Io) {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+  if (user?.role !== 'ADMIN') throw new Error('Só administradores respondem aprendizados da IA');
+  const proposta = String(q.payload?.licao || '');
+  const dec = interpretarRespostaAprendizado(answer, proposta);
+  let knowledgeEntryId: string | null = null;
+  let knowledgeTitle: string | null = null;
+  if (dec.guardar && dec.licao.trim()) {
+    if (!isVoyageConfigured()) throw new Error('A busca da Base de Conhecimento (Voyage) não está configurada: não dá pra guardar a lição agora.');
+    const entry = await createKnowledgeEntry(q.accountId, { title: String(q.payload?.titulo || 'Aprendizado da conversa').slice(0, 200), content: dec.licao.trim().slice(0, 2000), departmentId: q.departmentId });
+    knowledgeEntryId = entry.id; knowledgeTitle = entry.title;
+  }
+  const updated = await prisma.aiTeamQuestion.update({
+    where: { id: q.id },
+    data: { status: 'ANSWERED', answer, answeredByUserId: userId, answeredByName: userName, answeredAt: new Date(), sendError: null, knowledgeEntryId, knowledgeTitle },
+    select: SELECT,
+  });
+  await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: dec.guardar ? `📚 Aprendizado guardado por ${userName || 'o administrador'}: “${dec.licao.replace(/\s+/g, ' ').slice(0, 400)}”` : `Aprendizado descartado por ${userName || 'o administrador'}.` } }).catch(() => {});
+  logActivity({ accountId: q.accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: dec.guardar ? 'ensinou a IA (aprendizado de conversa)' : 'descartou um aprendizado da IA' });
+  emitTo(io, await recipientsFor(q.accountId, q.departmentId, true), 'ai_team_question_updated', { id: q.id });
   return updated;
 }
