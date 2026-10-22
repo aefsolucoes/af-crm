@@ -32,7 +32,7 @@ IMPORTANTE: os e-mails do banco são SEMPRE escritos pra A&F (o correspondente),
 NA DÚVIDA entre "é pro cliente" e "a A&F resolve sozinha", escolha needsClient true com "certeza":"media" (a equipe revisa antes: o custo de perder um pedido do banco é maior que o de um aviso a mais). Use "certeza":"alta" só quando o e-mail deixa claro que é algo do cliente.
 "needsClient": false para: confirmação de recebimento ("fico no aguardo", "obrigado"), e-mail só informativo, agendamento que o banco/A&F resolve, pedido que a PRÓPRIA A&F resolve sozinha E que o e-mail diz claramente ser algo que a A&F já tem ou deve fazer (reenviar anexo que já mandou, subir arquivo no portal, pedir vistoria, responder o banco) — pedido de documento/comprovação/dado novo NÃO entra aqui, mensagens automáticas, engajamento, e QUALQUER resultado de crédito (aprovado, pré-aprovado, reprovado, condições, valor liberado) — isso nunca é avisado por aqui.
 
-Se já foi avisado ao cliente o mesmo pedido (veja a conversa e os avisos anteriores abaixo), needsClient false.
+Datas importam: se o MESMO pedido foi avisado ao cliente DEPOIS da data deste e-mail (veja a conversa e os avisos abaixo, com data e hora), needsClient false. Se o pedido ao cliente foi feito ANTES deste e-mail e o banco VOLTOU a pedir/reforçar ("reforça", "novamente", "ainda falta", ou o e-mail contradiz o que o cliente disse), isso é uma INSISTÊNCIA: o banco não aceitou o que o cliente disse ou mandou — needsClient true, com "certeza":"media", e a mensagem explica o que o banco ainda precisa (ex.: "o banco informou que a matrícula não cita a vaga, então precisa de um documento que a vincule").
 
 "message" (só se needsClient): mensagem de WhatsApp em português do Brasil, BEM RESUMIDA (1 a 2 frases, até 330 caracteres), linguagem simples, tom natural da equipe, começando pelo primeiro nome do cliente. Diga SÓ o que o cliente precisa providenciar e como. Termine com um pedido claro ("Consegue me mandar?"). PROIBIDO na mensagem: dizer que o crédito foi aprovado/pré-aprovado, "parabéns", valores, taxa, juros, prazo/meses, parcela ou qualquer resultado de crédito (mesmo que o e-mail traga — o aviso de aprovação segue a regra própria do CRM); copiar o e-mail; citar nome de consultor/funcionário do banco, protocolo ou número de proposta; prometer prazo ou aprovação; usar "Show", "Perfeito" ou "Ok". "resumo": uma frase curta pra equipe do que o banco pediu (pode citar o pedido, sem valores).
 
@@ -74,8 +74,8 @@ async function ask(contexto: string, email: string): Promise<RelayDecision | nul
 }
 
 const falhas = new Map<string, number>();
-let running = false;
-export async function processEmailRelay(accountId: string, io: Io): Promise<void> {
+const quandoBr = (d: Date) => d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const falhas = new Map<string, number>();(accountId: string, io: Io): Promise<void> {
   if (running) return;
   running = true;
   try {
@@ -117,13 +117,13 @@ async function uma(accountId: string, lead: { id: string; name: string; aiAutoRe
   const limpo = cleanEmailForAi(`📧 ${e.subject || ''}\n${e.textBody || e.snippet || ''}`, 1500);
   if (limpo.body.length < 25) { await marca(lead.id, e.id, 'IGNORADO (curto)'); return; }
 
-  const recentes = await prisma.message.findMany({ where: { leadId: lead.id, channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, take: 8, select: { direction: true, content: true } });
-  const avisos = await prisma.note.findMany({ where: { leadId: lead.id, content: { startsWith: '📧 O banco pediu' }, createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 3, select: { content: true } });
+  const recentes = await prisma.message.findMany({ where: { leadId: lead.id, channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, take: 10, select: { direction: true, content: true, createdAt: true } });
+  const avisos = await prisma.note.findMany({ where: { leadId: lead.id, content: { startsWith: '📧 O banco pediu' }, createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 3, select: { content: true, createdAt: true } });
   const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
   const contexto = [
     `Cliente: ${nome || '(sem nome utilizável)'} · etapa do card: ${lead.stage?.name || '?'}`,
-    `--- CONVERSA RECENTE NO WHATSAPP ---\n${recentes.length ? recentes.reverse().map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'A&F'}: ${String(m.content).replace(/\s+/g, ' ').slice(0, 220)}`).join('\n') : '(sem conversa)'}`,
-    `--- AVISOS ANTERIORES SOBRE E-MAILS (últimos 3 dias) ---\n${avisos.length ? avisos.map((n) => n.content.replace(/\s+/g, ' ').slice(0, 260)).join('\n') : '(nenhum)'}`,
+    `--- E-MAIL RECEBIDO EM ${quandoBr(e.date)} ---\n--- CONVERSA RECENTE NO WHATSAPP (com data e hora) ---\n${recentes.length ? recentes.reverse().map((m) => `[${quandoBr(m.createdAt)}] ${m.direction === 'INBOUND' ? 'Cliente' : 'A&F'}: ${String(m.content).replace(/\s+/g, ' ').slice(0, 220)}`).join('\n') : '(sem conversa)'}`,
+    `--- AVISOS ANTERIORES SOBRE E-MAILS (últimos 3 dias) ---\n${avisos.length ? avisos.map((n) => `[${quandoBr(n.createdAt)}] ${n.content.replace(/\s+/g, ' ').slice(0, 260)}`).join('\n') : '(nenhum)'}`,
   ].join('\n\n');
   const d = await ask(contexto, `Assunto: ${limpo.subject}\n${limpo.body}`);
   if (!d) { falhas.set(e.id, (falhas.get(e.id) || 0) + 1); return; } // IA fora do ar / resposta inválida: tenta de novo no próximo minuto (até 5 vezes)
