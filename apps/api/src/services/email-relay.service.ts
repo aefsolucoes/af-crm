@@ -75,7 +75,8 @@ async function ask(contexto: string, email: string): Promise<RelayDecision | nul
 
 const falhas = new Map<string, number>();
 const quandoBr = (d: Date) => d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-const falhas = new Map<string, number>();(accountId: string, io: Io): Promise<void> {
+let running = false;
+export async function processEmailRelay(accountId: string, io: Io): Promise<void> {
   if (running) return;
   running = true;
   try {
