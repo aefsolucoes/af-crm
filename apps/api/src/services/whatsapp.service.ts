@@ -1192,6 +1192,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       }
       const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
       sendPushToAccount(accountId, { title: profileName || 'Nova mensagem', body: text || '📎 Anexo recebido', leadId }).catch(() => {});
+      // Mensagens guardadas pra sair na 1ª resposta do cliente (reply-pending.service): ex.: pedido de documento depois de um template que abriu a janela.
+      { const { releaseOnReply } = require('./reply-pending.service') as typeof import('./reply-pending.service'); releaseOnReply(prisma, { accountId, leadId, io }).catch((err: any) => console.warn('[Resposta pendente]', err?.message)); }
       // Aviso + certidão de ônus que esperavam a janela de 24 h abrir (template "Olá, tudo bem?" já foi) saem quando o cliente responde (certidao-followup).
       { const { releaseCertidaoPending } = require('./certidao-followup.service') as typeof import('./certidao-followup.service'); releaseCertidaoPending(prisma, { accountId, leadId, io }).catch((err: any) => console.warn('[Certidão] aviso pendente:', err?.message)); }
 
