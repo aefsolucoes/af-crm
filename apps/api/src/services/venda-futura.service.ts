@@ -114,6 +114,8 @@ export async function processVendaFutura(io: Io): Promise<void> {
         await saveCf(l.id, (c) => { c._vendaFuturaSentAt = new Date().toISOString(); delete c._vendaFuturaAt; c._vendaFuturaCount = Number(c._vendaFuturaCount || 0) + 1; c._vendaFuturaFails = 0; }, { aiAutoReplyActive: true });
         await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `📅 Venda Futura: mandei a mensagem de retomada (${aberta ? 'texto livre, janela aberta' : `template ${VENDA_FUTURA_TEMPLATE}`}) — ${due === 'DATA' ? 'chegou o dia combinado com o cliente' : '30 dias desde o último contato'}. Repete de 30 em 30 dias até o cliente responder.` } }).catch(() => {});
         logActivity({ accountId: l.accountId, userId: null, userName: 'Venda Futura', action: 'lead_edited', leadId: l.id, leadName: l.name, summary: 'mandou a mensagem de retomada (Venda Futura)' } as any);
+        // Aviso da equipe (Fabio 22/10: "agendamentos em push"): a retomada combinada saiu — a conversa volta a andar e alguém precisa acompanhar.
+        try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(l.accountId, { title: `📅 Retomada enviada: ${l.name}`.slice(0, 90), body: `Venda Futura${due === 'DATA' ? ' (data combinada)' : ''} — mandei a mensagem de retomada ao cliente`, leadId: l.id }).catch(() => {}); } catch { /* push é extra */ }
         console.log(`[Venda Futura] ${l.name}: retomada enviada (${due})`);
       } else {
         const fails = Number(cf._vendaFuturaFails || 0) + 1;

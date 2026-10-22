@@ -523,6 +523,8 @@ model Task {
   title  String
   dueAt  DateTime
   done   Boolean  @default(false)
+  // Quando o push de "chegou a hora da tarefa" saiu (Fabio 22/10: tarefas e agendamentos chegam em push). Nulo = ainda não avisou; mudar a data zera.
+  reminderSentAt DateTime?
   userId String
   user   User     @relation(fields: [userId], references: [id])
   leadId String?

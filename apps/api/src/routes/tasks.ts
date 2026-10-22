@@ -56,7 +56,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 router.post('/', validate(taskSchema), async (req: AuthRequest, res: Response) => {
   try {
     const task = await prisma.task.create({
-      data: { ...req.body, dueAt: new Date(req.body.dueAt) },
+      data: { ...req.body, dueAt: new Date(req.body.dueAt), ...(new Date(req.body.dueAt).getTime() <= Date.now() ? { reminderSentAt: new Date() } : {}) }, // já vencida ao criar: não dispara push
       include: { user: { select: { id: true, name: true } } },
     });
     res.status(201).json(task);
@@ -77,7 +77,8 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
       select: { done: true, title: true, leadId: true },
     });
     const data: Record<string, unknown> = { ...req.body };
-    if (req.body.dueAt) data.dueAt = new Date(req.body.dueAt);
+    if (req.body.dueAt) { data.dueAt = new Date(req.body.dueAt); data.reminderSentAt = new Date(req.body.dueAt).getTime() <= Date.now() ? new Date() : null; } // nova data: avisa na nova hora
+    if (req.body.done === false) data.reminderSentAt = data.reminderSentAt ?? null;
     const task = await prisma.task.update({ where: { id: req.params.id }, data });
     res.json(task);
 

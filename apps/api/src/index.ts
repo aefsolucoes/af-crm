@@ -47,6 +47,7 @@ import { checkInactivityAutomations, processDeferredAutomations } from './servic
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
 import { processRemarketing } from './services/remarketing.service';
 import { processVendaFutura } from './services/venda-futura.service';
+import { processTaskReminders } from './services/task-reminders.service';
 import { backfillVoiceTranscripts } from './services/speech-to-text.service';
 import { processApprovalNotices, processApprovalReminders, processScheduledNotices } from './services/approval-notice.service';
 import { processCreditAutomation } from './services/credit-auto.service';
@@ -300,6 +301,11 @@ httpServer.listen(PORT, () => {
   setTimeout(() => {
     setInterval(() => { backfillVoiceTranscripts().catch((err) => console.error('[Transcrição] Poll:', err?.message)); }, 2 * 60 * 1000);
   }, 4 * 60 * 1000);
+
+  // Push das tarefas na hora do vencimento (Fabio 22/10: "tarefas ou agendamentos em push") — só pro dono da tarefa.
+  setTimeout(() => {
+    setInterval(() => { processTaskReminders().catch((err) => console.error('[Tarefas] Lembretes:', err?.message)); }, 60 * 1000);
+  }, 90 * 1000);
 
   // Venda Futura com data (Fabio 16/10): manda a retomada no dia combinado com o cliente e depois de 30 em 30 dias, até ele responder.
   setTimeout(() => {
