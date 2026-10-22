@@ -96,6 +96,14 @@ function greetingNow(): string {
   return h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
 }
 
+/** Fecho do atendimento enquanto o card espera os documentos (Fabio 22/10, caso Vicente: o cliente disse "Entendi", a IA ficou calada e o Fabio mandou "Fico no aguardo da documentação"). */
+export const FICO_NO_AGUARDO = 'Fico no aguardo da documentação.';
+async function aguardaDocumentacao(leadId: string): Promise<boolean> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { stage: { select: { name: true } } } }).catch(() => null);
+  return /aguardando document/i.test(l?.stage?.name || '');
+}
+const jaDisseAguardo = (t?: string | null) => /aguardo d[aeo]s? documenta/i.test(String(t || ''));
+
 /** Texto de fechamento se a mensagem for despedida/agradecimento; senão null. */
 export function farewellReply(text: string): string | null {
   if (text.includes('?')) return null;
@@ -475,9 +483,11 @@ export async function generateAiAutoReply(
       // Nossa última mensagem fez uma pergunta de verdade: o "ok, obrigado"
       // pode ser a resposta — segue o fluxo normal. Já fechamos: não repete.
       if ((!lastOut || !hasRealQuestion(lastOut.content)) && !NOT_VIABLE_RE.test(lastOut?.content || '')) {
-        if (lastOut && /disponha/i.test(lastOut.content)) return { reply: '', handoff: false, noReply: true };
+        // Card esperando documento: o fecho leva "Fico no aguardo da documentação." (uma vez só)
+        const espera = (await aguardaDocumentacao(leadId)) && !jaDisseAguardo(lastOut?.content);
+        if (lastOut && /disponha/i.test(lastOut.content)) return espera ? { reply: FICO_NO_AGUARDO, handoff: false } : { reply: '', handoff: false, noReply: true };
         console.log(`[AI Auto-reply] cliente encerrou ("${incomingText.trim().slice(0, 40)}") — fechando com "${closing}"`);
-        return { reply: closing, handoff: false };
+        return { reply: espera ? `${closing} ${FICO_NO_AGUARDO}` : closing, handoff: false };
       }
     }
     if (isAcknowledgmentOnly(incomingText)) {
@@ -487,6 +497,8 @@ export async function generateAiAutoReply(
         select: { content: true },
       });
       if ((!lastOut || !hasRealQuestion(lastOut.content)) && !NOT_VIABLE_RE.test(lastOut?.content || '')) {
+        // "Entendi"/"Ok" com o card esperando documento: fecha com "Fico no aguardo da documentação." (uma vez só)
+        if ((await aguardaDocumentacao(leadId)) && !jaDisseAguardo(lastOut?.content)) { console.log(`[AI Auto-reply] cliente só confirmou ("${incomingText.trim().slice(0, 40)}") — fico no aguardo da documentação`); return { reply: FICO_NO_AGUARDO, handoff: false }; }
         console.log(`[AI Auto-reply] cliente só confirmou ("${incomingText.trim().slice(0, 40)}") — sem resposta`);
         return { reply: '', handoff: false, noReply: true };
       }
