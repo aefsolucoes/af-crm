@@ -141,7 +141,7 @@ export default function CustosPage() {
       <div className="flex-1 overflow-auto px-4 md:px-6 py-4 space-y-4 scrollbar-thin">
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setMonth(shiftMonth(month, -1))} className="p-1.5 rounded-lg border border-af-border hover:bg-af-light" title="Mês anterior"><ChevronLeft size={16} /></button>
-          <span className="text-sm font-semibold text-slate-800 capitalize min-w-[150px] text-center">{monthLabel(month)}</span>
+          <span className="text-sm font-semibold text-slate-800 min-w-[150px] text-center">{monthLabel(month).replace(/^./, (c) => c.toUpperCase())}</span>
           <button onClick={() => setMonth(shiftMonth(month, 1))} disabled={month >= nowMonth()} className="p-1.5 rounded-lg border border-af-border hover:bg-af-light disabled:opacity-30" title="Próximo mês"><ChevronRight size={16} /></button>
           {month !== nowMonth() && <button onClick={() => setMonth(nowMonth())} className="text-xs text-af-mid underline">Mês atual</button>}
           {data && (
