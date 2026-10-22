@@ -44,7 +44,7 @@ router.get('/seguir/preview', async (req: AuthRequest, res: Response) => {
   try { res.json(await seguirPreview(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao ler a proposta'); }
 });
 router.post('/seguir/request', async (req: AuthRequest, res: Response) => {
-  try { res.json(await requestSeguir(req.user!.accountId, String(req.body?.leadId || ''), req.user!.id)); } catch (err) { fail(res, err, 'Erro ao pedir a abertura da proposta'); }
+  try { res.json(await requestSeguir(req.user!.accountId, String(req.body?.leadId || ''), req.user!.id, req.body?.confirm === true)); } catch (err) { fail(res, err, 'Erro ao pedir a abertura da proposta'); }
 });
 router.get('/seguir/queue', async (req: AuthRequest, res: Response) => {
   try { res.json({ job: await claimSeguir(req.user!.accountId) }); } catch (err) { fail(res, err, 'Erro ao buscar a fila', 500); }

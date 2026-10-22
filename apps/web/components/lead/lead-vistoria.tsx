@@ -53,9 +53,9 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
   const stTxt: Record<string, string> = { REQUESTED: 'Na fila da extensão…', RUNNING: 'A extensão está preenchendo…', FILLED: 'Preenchido — falta conferir e ENVIAR no site do Inter', FAILED: 'A extensão não conseguiu preencher (veja a nota do card)' };
 
   async function pedirSeguir() {
-    if (!window.confirm('A extensão "Vistoria Inter" vai abrir a proposta no portal do Inter, ir em Detalhes e clicar em "Seguir com proposta".\n\nEla PARA no aviso de confirmação ("Aprovar" — é o aceite do cliente e não dá pra desfazer): o último clique é seu, na janela do Inter.\n\nConfirme antes que o cliente quer seguir com o Inter. Pedir agora?')) return;
+    if (!window.confirm('A extensão "Vistoria Inter" vai, SOZINHA, abrir a proposta no portal do Inter, ir em Detalhes, clicar em "Seguir com proposta" e CONFIRMAR o aceite ("Aprovar").\n\nIsso é o aceite do cliente no Inter e NÃO dá pra desfazer. Confirme que o cliente quer seguir com o Inter.\n\nSe algo estiver ambíguo na tela do portal, ela para e avisa a equipe. Pedir agora?')) return;
     setSeguirBusy(true);
-    try { await api.post('/api/vistorias/seguir/request', { leadId }); toast('Na fila: a extensão abre a proposta em até 1 minuto (Chrome aberto, 07h–22h)', 'success'); setGate(false); await carregarSeguir(); }
+    try { await api.post('/api/vistorias/seguir/request', { leadId, confirm: true }); toast('Na fila: a extensão segue com a proposta em até 1 minuto (Chrome aberto e logado no Inter, 07h–22h)', 'success'); setGate(false); await carregarSeguir(); }
     catch (err: any) { toast(err?.response?.data?.error || 'Erro ao pedir a abertura da proposta', 'error'); }
     finally { setSeguirBusy(false); }
   }
@@ -81,7 +81,8 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
   const seguirTxt: Record<string, string> = {
     REQUESTED: 'Na fila da extensão…',
     RUNNING: 'A extensão está abrindo a proposta no Inter…',
-    READY: 'Proposta aberta em "Seguir com proposta": falta o último clique ("Aprovar", aceite do cliente) na janela do Inter',
+    READY: 'Proposta aberta no Inter, mas a extensão parou: falta o último clique ("Aprovar", aceite do cliente) na janela do Inter',
+    DONE: 'Proposta SEGUIDA no Inter (aceite feito). Agora é aguardar o e-mail de engajamento (1–2 dias) e solicitar a vistoria',
     FAILED: 'A extensão não conseguiu abrir/seguir a proposta',
   };
 
@@ -108,7 +109,7 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
       </div>
       {quando && <div className="mb-2 text-xs text-emerald-700">Vistoria solicitada em {quando}. O engenheiro entra em contato em até 2 dias úteis.</div>}
       {seguir?.status && (
-        <div className={`mb-2 text-xs ${seguir.status === 'READY' ? 'text-emerald-700' : seguir.status === 'FAILED' ? 'text-red-600' : 'text-slate-500'}`}>
+        <div className={`mb-2 text-xs ${seguir.status === 'DONE' ? 'text-emerald-700' : seguir.status === 'READY' ? 'text-amber-700' : seguir.status === 'FAILED' ? 'text-red-600' : 'text-slate-500'}`}>
           🤝 {seguirTxt[seguir.status] || seguir.status}{seguir.status === 'FAILED' && seguir.erro ? ` — ${seguir.erro}` : ''}
         </div>
       )}
@@ -122,11 +123,11 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
       {seguir?.proposta && !quando && (
         <button
           onClick={pedirSeguir}
-          disabled={seguirBusy || seguir.status === 'REQUESTED' || seguir.status === 'RUNNING'}
-          title="Abre a proposta no portal do Inter, vai em Detalhes e clica em Seguir com proposta (para no aviso de confirmação)"
+          disabled={seguirBusy || seguir.status === 'REQUESTED' || seguir.status === 'RUNNING' || seguir.status === 'DONE'}
+          title="A extensão abre a proposta no portal do Inter, vai em Detalhes, clica em Seguir com proposta e confirma o aceite"
           className="ml-2 rounded border border-orange-300 px-3 py-1.5 text-xs font-medium text-orange-700 hover:bg-orange-50 disabled:opacity-50"
         >
-          {seguir.status === 'READY' || seguir.status === 'FAILED' ? 'Abrir proposta no Inter de novo' : 'Abrir proposta no Inter (Seguir)'}
+          {seguir.status === 'READY' || seguir.status === 'FAILED' ? 'Seguir com proposta de novo' : 'Seguir com proposta no Inter'}
         </button>
       )}
 
@@ -152,10 +153,10 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
               <button onClick={() => setGate(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
             </div>
             <p className="text-sm text-slate-600">O Inter ainda não mandou o e-mail de engajamento: a vistoria só é liberada depois que a proposta é <b>seguida no portal</b> (Detalhes da proposta → "Seguir com proposta").</p>
-            <p className="mt-2 text-xs text-slate-500">A extensão abre a proposta <b>{seguir?.proposta}</b> no portal e clica em "Seguir com proposta". Ela para no aviso de confirmação: o último clique ("Aprovar", aceite do cliente, sem volta) é seu.</p>
+            <p className="mt-2 text-xs text-slate-500">A extensão abre a proposta <b>{seguir?.proposta}</b> no portal, clica em "Seguir com proposta" e confirma o aceite ("Aprovar" — aceite do cliente, sem volta). Se algo ficar ambíguo na tela, ela para e avisa.</p>
             <div className="mt-3 flex flex-wrap justify-end gap-2">
               <button onClick={montarEmail} className="rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50">Montar o e-mail mesmo assim</button>
-              <button onClick={pedirSeguir} disabled={seguirBusy} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">{seguirBusy ? 'Pedindo…' : 'Abrir proposta no Inter'}</button>
+              <button onClick={pedirSeguir} disabled={seguirBusy} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">{seguirBusy ? 'Pedindo…' : 'Seguir com proposta no Inter'}</button>
             </div>
           </div>
         </div>
