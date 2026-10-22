@@ -138,6 +138,32 @@ function fillMetaTemplate(text: string, vars: Record<number, string>): string {
 
 const JANELA_24H_MS = 24 * 60 * 60 * 1000;
 
+/** Categoria do template na Meta, escrita (Fabio 22/10: "tem que vir escrito quais são de marketing e quais são de utilidade").
+ *  Marketing custa mais e a Meta recusa repetição (erro 131049); Utilidade é pra assunto de um processo em andamento. */
+const META_CATEGORY: Record<string, { label: string; cls: string; hint: string }> = {
+  UTILITY: { label: 'Utilidade', cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30', hint: 'Utilidade: assunto de um processo em andamento. Custa bem menos e não sofre o limite de repetição da Meta.' },
+  MARKETING: { label: 'Marketing', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30', hint: 'Marketing: reativar interesse. Custa mais e a Meta pode recusar se o mesmo template foi mandado há pouco sem resposta (erro 131049).' },
+  AUTHENTICATION: { label: 'Autenticação', cls: 'bg-slate-500/20 text-slate-300 border-slate-500/30', hint: 'Autenticação' },
+};
+function MetaCategoryPill({ category }: { category: string }) {
+  const c = META_CATEGORY[category] || { label: category || '—', cls: 'bg-white/10 text-[#8696a0] border-white/10', hint: category };
+  return <span title={c.hint} className={cn('text-[10px] font-semibold px-1.5 py-0.5 rounded-full border flex-shrink-0 uppercase tracking-wide', c.cls)}>{c.label}</span>;
+}
+
+/** Sugestão de template pra conversa fechada (POST /api/ai/suggest-template). */
+interface TemplateSuggestion {
+  template: MetaTemplate | null;
+  categoryLabel: string | null;
+  vars: Record<string, string>;
+  preview: string;
+  reason: string;
+  alternatives: { name: string; categoryLabel: string }[];
+  warnings: string[];
+  noneFits: boolean;
+  missing: string;
+  candidates: number;
+}
+
 /** Trecho curto pra mostrar como citação (barra de resposta / bolha citada) —
  *  mesma lógica que já separa "legenda" de anexo, com fallback pra anexo/contato. */
 function messagePreviewText(msg: Message): string {
@@ -457,7 +483,18 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   // sozinha. "Usar" só coloca o texto no campo de digitar.
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [suggesting, setSuggesting] = useState(false);
+  // Template sugerido pra conversa FECHADA (janela de 24 h): aparece ao abrir "Templates" (Fabio 22/10).
+  const [tplSuggestion, setTplSuggestion] = useState<TemplateSuggestion | null>(null);
+  const [tplSuggesting, setTplSuggesting] = useState(false);
+  const [tplSuggestError, setTplSuggestError] = useState<string | null>(null);
+  const [tplCategoryFilter, setTplCategoryFilter] = useState<'ALL' | 'UTILITY' | 'MARKETING'>('ALL');
   async function handleSuggestReply() {
+    // Janela de 24 h fechada: texto livre não sai, só template — a sugestão vem no painel de Templates.
+    if (windowClosedForApi) {
+      if (!showTemplates) handleOpenTemplates();
+      else loadTemplateSuggestion();
+      return;
+    }
     setSuggesting(true);
     setSuggestion(null);
     try {
@@ -496,7 +533,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
 
   // Some com a sugestão ao trocar de conversa — sem isso, uma sugestão gerada
   // pra um cliente ficava visível (e clicável em "Usar") ao abrir outro.
-  useEffect(() => { setSuggestion(null); }, [leadId]);
+  useEffect(() => { setSuggestion(null); setTplSuggestion(null); setTplSuggestError(null); }, [leadId]);
   const [aiLoading, setAiLoading] = useState<AIMode | null>(null);
   const [showAI, setShowAI] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -632,12 +669,12 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   const filteredTemplates = !templateQuery
     ? templates
     : templates.filter((t) => t.name.toLowerCase().includes(templateQuery) || t.body.toLowerCase().includes(templateQuery));
-  const filteredMetaTemplates = !templateQuery
+  const filteredMetaTemplates = (!templateQuery
     ? metaTemplates
     : (metaTemplates || []).filter((t) => {
         const body = t.components.find((c) => c.type === 'BODY')?.text || '';
         return t.name.toLowerCase().includes(templateQuery) || body.toLowerCase().includes(templateQuery);
-      });
+      }))?.filter((t) => tplCategoryFilter === 'ALL' || t.category === tplCategoryFilter) ?? null;
 
   // Só para o contador de 24h "tickar" (recalcula a cada minuto).
   const [, setNowTick] = useState(0);
@@ -1123,7 +1160,31 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
       });
   }
 
+  async function loadTemplateSuggestion() {
+    setTplSuggesting(true);
+    setTplSuggestError(null);
+    try {
+      const { data } = await api.post('/api/ai/suggest-template', { leadId });
+      setTplSuggestion(data as TemplateSuggestion);
+    } catch (err: any) {
+      setTplSuggestError(err?.response?.data?.error || 'Não consegui sugerir um template agora.');
+    } finally {
+      setTplSuggesting(false);
+    }
+  }
+
+  /** "Usar este template": abre o template já com as variáveis preenchidas, pra revisar e enviar. */
+  function useTemplateSuggestion() {
+    const t = tplSuggestion?.template;
+    if (!t) return;
+    const nums = extractMetaVariables(t.components.find((c) => c.type === 'BODY')?.text || '');
+    setPendingMetaTemplate(t);
+    setMetaTemplateVars(Object.fromEntries(nums.map((n) => [n, tplSuggestion.vars[String(n)] || (n === 1 ? leadName : '')])));
+  }
+
   function handleOpenTemplates() {
+    const opening = !showTemplates;
+    if (opening && windowClosedForApi && !tplSuggestion && !tplSuggesting) loadTemplateSuggestion();
     setShowTemplates(v => !v);
     setShowAI(false);
     setPendingMetaTemplate(null);
@@ -2012,7 +2073,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
             // ── Preenche as variáveis do template Meta escolhido, antes de enviar ──
             <div className="p-3 space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-[#e9edef]">{pendingMetaTemplate.name}</span>
+                <span className="text-sm font-medium text-[#e9edef] flex items-center gap-2 min-w-0"><span className="truncate">{pendingMetaTemplate.name}</span><MetaCategoryPill category={pendingMetaTemplate.category} /></span>
                 <button onClick={() => setPendingMetaTemplate(null)} className="text-xs text-[#8696a0] hover:text-[#e9edef]">Cancelar</button>
               </div>
               {Object.keys(metaTemplateVars).map((n) => (
@@ -2059,6 +2120,46 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                 </div>
               </div>
 
+              {windowClosedForApi && (
+                <div className="m-2 p-3 rounded-lg border border-amber-500/30 bg-[#1f2c34] space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] uppercase tracking-wide font-semibold text-amber-400 flex items-center gap-1"><Lightbulb size={12} /> Template sugerido pra este cliente</p>
+                    <button onClick={loadTemplateSuggestion} disabled={tplSuggesting} className="text-[11px] text-[#8696a0] hover:text-[#e9edef] disabled:opacity-50">{tplSuggesting ? 'Pensando…' : 'Sugerir de novo'}</button>
+                  </div>
+                  {tplSuggesting && !tplSuggestion && <div className="flex items-center gap-2 text-xs text-[#8696a0]"><Loader2 size={13} className="animate-spin" /> Escolhendo pelo histórico, pela etapa e pelo que já foi enviado…</div>}
+                  {tplSuggestError && <p className="text-xs text-amber-400">{tplSuggestError}</p>}
+                  {tplSuggestion && (
+                    <div className={cn('space-y-2', tplSuggesting && 'opacity-50')}>
+                      {tplSuggestion.template ? (
+                        <>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-sm font-semibold text-[#e9edef] truncate">{tplSuggestion.template.name}</span>
+                            <MetaCategoryPill category={tplSuggestion.template.category} />
+                          </div>
+                          <div className="p-2 rounded-lg bg-[#111b21] text-xs text-[#d1d7db] whitespace-pre-wrap">{tplSuggestion.preview}</div>
+                          {tplSuggestion.reason && <p className="text-xs text-[#8696a0]">{tplSuggestion.reason}</p>}
+                          {tplSuggestion.warnings.map((w, i) => <p key={i} className="text-xs text-amber-400">⚠️ {w}</p>)}
+                        </>
+                      ) : (
+                        <p className="text-xs text-[#e9edef]">Nenhum dos {tplSuggestion.candidates} templates aprovados serve bem agora.{tplSuggestion.missing ? <span className="text-[#8696a0]"> {tplSuggestion.missing}</span> : null}</p>
+                      )}
+                      {tplSuggestion.alternatives.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] text-[#8696a0] uppercase tracking-wide">Outras opções:</span>
+                          {tplSuggestion.alternatives.map((a) => {
+                            const full = (metaTemplates || []).find((t) => t.name === a.name);
+                            return <button key={a.name} disabled={!full} onClick={() => full && handleSelectMetaTemplate(full)} className="text-[11px] px-2 py-0.5 rounded-full border border-[#33434c] text-[#e9edef] hover:bg-[#2a3942] disabled:opacity-50">{a.name} · {a.categoryLabel}</button>;
+                          })}
+                        </div>
+                      )}
+                      {tplSuggestion.template && (
+                        <button onClick={useTemplateSuggestion} className="w-full px-3 py-1.5 rounded-lg bg-[#00a884] text-[#111b21] text-sm font-medium hover:bg-[#02c093]">Usar este template</button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="p-2 space-y-1">
                 <p className="px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#8696a0]">Respostas rápidas</p>
                 {filteredTemplates.length === 0 ? (
@@ -2088,7 +2189,14 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
               </div>
 
               <div className="border-t border-[#222e35] p-2 space-y-1">
-                <p className="px-1 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#8696a0]">Templates Meta (aprovados)</p>
+                <div className="flex items-center justify-between gap-2 px-1 pt-1 pb-0.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#8696a0]">Templates Meta (aprovados)</p>
+                  <div className="flex items-center gap-1">
+                    {([['ALL', 'Todos'], ['UTILITY', 'Utilidade'], ['MARKETING', 'Marketing']] as const).map(([k, label]) => (
+                      <button key={k} onClick={() => setTplCategoryFilter(k)} className={cn('text-[10px] px-2 py-0.5 rounded-full border transition-colors', tplCategoryFilter === k ? 'bg-[#00a884] text-[#111b21] border-[#00a884]' : 'border-[#33434c] text-[#8696a0] hover:text-[#e9edef]')}>{label}</button>
+                    ))}
+                  </div>
+                </div>
                 {metaTemplates === null ? (
                   <div className="px-2 py-2 text-xs text-[#8696a0]">Carregando...</div>
                 ) : metaTemplatesError ? (
@@ -2115,7 +2223,10 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
                     >
                       <BadgeCheck size={14} className="text-emerald-400 flex-shrink-0 mt-0.5" />
                       <div className="min-w-0 flex-1">
-                        <span className="text-sm font-medium text-[#e9edef] truncate block">{t.name}</span>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium text-[#e9edef] truncate">{t.name}</span>
+                          <MetaCategoryPill category={t.category} />
+                        </div>
                         <p className="text-xs text-[#8696a0] truncate">{body.replace(/\n/g, ' ')}</p>
                       </div>
                     </button>

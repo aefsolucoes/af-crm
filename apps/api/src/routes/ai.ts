@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { generateReplySuggestion } from '../services/ai-reply-suggestion.service';
+import { generateReplySuggestion, generateTemplateSuggestion } from '../services/ai-reply-suggestion.service';
 import { usageReport } from '../lib/anthropic-usage';
 
 const router = Router();
@@ -97,6 +97,20 @@ router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[AI] Erro ao sugerir resposta:', err);
     res.status(500).json({ error: 'Erro interno ao gerar sugestão' });
+  }
+});
+
+// Sugestão de TEMPLATE pra conversa fechada (janela de 24 h do WhatsApp) — Inbox → "Sugerir resposta" quando a janela está fechada. Nunca envia: devolve o template (com a categoria) pro balão.
+router.post('/suggest-template', async (req: AuthRequest, res: Response) => {
+  const { leadId } = req.body as { leadId?: string };
+  if (!leadId) { res.status(400).json({ error: 'leadId obrigatório' }); return; }
+  try {
+    const result = await generateTemplateSuggestion(req.user!.accountId, leadId);
+    if (!result) { res.status(422).json({ error: 'Não consegui sugerir um template agora (IA ou Meta indisponível).' }); return; }
+    res.json(result);
+  } catch (err) {
+    console.error('[AI] Erro ao sugerir template:', err);
+    res.status(500).json({ error: 'Erro interno ao sugerir template' });
   }
 });
 

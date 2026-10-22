@@ -18,6 +18,7 @@ import { usePipelineStore } from '@/store/pipeline.store';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
+import { askVendaFuturaDate, isVendaFuturaStage } from '@/store/venda-futura.store';
 
 interface KanbanBoardProps {
   pipeline: Pipeline;
@@ -134,6 +135,9 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
       // Equity") — recarrega a lista de funis pra ele aparecer no seletor.
       queryClient.invalidateQueries({ queryKey: ['pipelines'] });
       onRefresh();
+      const alvo = pipeline.stages.find((s) => s.id === stageId);
+      const card = leads.find((l) => l.id === leadId);
+      if (isVendaFuturaStage(alvo?.name) && card) askVendaFuturaDate({ leadId, leadName: card.name, current: String((card.customFields as any)?._vendaFuturaAt || '') || null, aiOn: (card as any).aiAutoReplyActive });
     } catch {
       toast('Erro ao mover lead', 'error');
       onRefresh();

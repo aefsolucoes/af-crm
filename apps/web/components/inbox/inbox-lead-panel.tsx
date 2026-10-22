@@ -12,6 +12,7 @@ import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { ListChecks, LayoutList, PanelRightClose } from 'lucide-react';
 import { LeadTasks } from '@/components/lead/lead-tasks';
+import { askVendaFuturaDate, isVendaFuturaStage } from '@/store/venda-futura.store';
 
 interface InboxLeadPanelProps {
   lead: LeadDetail;
@@ -43,6 +44,8 @@ export function InboxLeadPanel({ lead, onRefresh, onHide, className }: InboxLead
       await api.patch(`/api/leads/${lead.id}/stage`, { stageId });
       toast('Etapa atualizada!');
       onRefresh();
+      const alvo = lead.pipeline.stages.find((s: Stage) => s.id === stageId);
+      if (isVendaFuturaStage(alvo?.name)) askVendaFuturaDate({ leadId: lead.id, leadName: displayName, current: cf._vendaFuturaAt || null, aiOn: (lead as any).aiAutoReplyActive });
     } catch {
       toast('Erro ao atualizar etapa', 'error');
     } finally {

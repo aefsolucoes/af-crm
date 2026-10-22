@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query';
 import { StageGateModal } from '@/components/kanban/stage-gate-modal';
 import { getMissingFields, ValidationField } from '@/lib/stage-validation';
 import { LeadPlacementFields } from './lead-placement-fields';
+import { askVendaFuturaDate, isVendaFuturaStage } from '@/store/venda-futura.store';
 
 interface LeadMetaPanelProps {
   lead: LeadDetail;
@@ -48,6 +49,8 @@ export function LeadMetaPanel({ lead, onRefresh }: LeadMetaPanelProps) {
       await api.patch(`/api/leads/${lead.id}/stage`, { stageId });
       toast('Estágio atualizado!');
       onRefresh();
+      const alvo = lead.pipeline.stages.find((s: Stage) => s.id === stageId);
+      if (isVendaFuturaStage(alvo?.name)) askVendaFuturaDate({ leadId: lead.id, leadName: lead.name, current: String((lead.customFields as any)?._vendaFuturaAt || '') || null, aiOn: (lead as any).aiAutoReplyActive });
     } catch {
       toast('Erro ao atualizar estágio', 'error');
     } finally {

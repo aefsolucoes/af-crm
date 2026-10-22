@@ -5,6 +5,8 @@ import { LeadDetail, Pipeline, Stage } from '@/types';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
+import { askVendaFuturaDate, isVendaFuturaStage } from '@/store/venda-futura.store';
+import { VendaFuturaDateRow } from './venda-futura-prompt';
 
 const NO_DEPARTMENT = '__none__';
 
@@ -86,6 +88,8 @@ export function LeadPlacementFields({ lead, onRefresh, onStageChange, changingSt
       toast(`Lead movido para "${target?.name}"!`);
       cancel();
       onRefresh();
+      const alvo = target?.stages?.find((s: Stage) => s.id === stageId);
+      if (isVendaFuturaStage(alvo?.name)) askVendaFuturaDate({ leadId: lead.id, leadName: lead.name, current: null, aiOn: (lead as any).aiAutoReplyActive });
     } catch {
       toast('Erro ao mover lead', 'error');
     } finally {
@@ -152,6 +156,8 @@ export function LeadPlacementFields({ lead, onRefresh, onStageChange, changingSt
             ))}
           </select>
         ))}
+
+      {!editing && <VendaFuturaDateRow leadId={lead.id} leadName={lead.name} stageName={lead.stage?.name} customFields={lead.customFields as any} aiOn={(lead as any).aiAutoReplyActive} />}
 
       {editing && (
         <div className="flex justify-end">

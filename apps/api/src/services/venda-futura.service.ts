@@ -76,19 +76,19 @@ export async function processVendaFutura(io: Io): Promise<void> {
     for (const l of leads) {
       if (enviados >= PER_TICK) break;
       const cf = (l.customFields || {}) as Cf;
-      if (cf._autoPaused) continue;
       const lastIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
       const due = vendaFuturaDue({ cf, stageEnteredAt: l.stageEnteredAt, lastInboundAt: lastIn?.createdAt || null });
       if (!due) continue;
       if (!hasPhone(l.contact)) continue;
       if (cf._vendaFuturaFailAt && Date.now() - new Date(cf._vendaFuturaFailAt).getTime() < 10 * 60_000) continue; // falhou há pouco: tenta de novo em 10 min
       const hoje = new Date(Date.now() - BRT_MS).toISOString().slice(0, 10);
-      // IA desligada no card = nada automático pro cliente (Fabio 15/10): avisa a equipe uma vez por dia.
-      if (!l.aiAutoReplyActive) {
+      // IA desligada no card, ou STOP TOTAL no cliente = nada automático pro cliente (Fabio 15/10): avisa a equipe uma vez por dia. O STOP TOTAL antes pulava o card em silêncio e a data marcada
+      // à mão (Fabio 22/10, Ronaldo/Andrea: "preciso mandar uma msg na segunda") nunca avisava ninguém.
+      if (!l.aiAutoReplyActive || cf._autoPaused) {
         if (cf._vendaFuturaNotifiedAt !== hoje) {
           await saveCf(l.id, (c) => { c._vendaFuturaNotifiedAt = hoje; });
-          await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `📅 Chegou a hora de retomar o crédito deste cliente (Venda Futura${due === 'DATA' ? `, data combinada ${String(cf._vendaFuturaAt).split('-').reverse().join('/')}` : ', 30 dias sem contato'}), mas a IA está desligada neste card — NÃO mandei. Fale com o cliente.` } }).catch(() => {});
-          try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(l.accountId, { title: l.name, body: 'Hora de retomar o crédito (Venda Futura) — IA desligada, fale com o cliente', leadId: l.id }).catch(() => {}); } catch { /* push é extra */ }
+          await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `📅 Chegou a hora de retomar o crédito deste cliente (Venda Futura${due === 'DATA' ? `, data combinada ${String(cf._vendaFuturaAt).split('-').reverse().join('/')}` : ', 30 dias sem contato'}), mas ${cf._autoPaused ? 'o cliente está com STOP TOTAL' : 'a IA está desligada neste card'} — NÃO mandei. Fale com o cliente.` } }).catch(() => {});
+          try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(l.accountId, { title: l.name, body: `Hora de retomar o crédito (Venda Futura) — ${cf._autoPaused ? 'STOP TOTAL' : 'IA desligada'}, fale com o cliente`, leadId: l.id }).catch(() => {}); } catch { /* push é extra */ }
         }
         continue;
       }

@@ -526,6 +526,40 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
   }
 });
 
+// Data de retomada da Venda Futura marcada À MÃO (Fabio 22/10: "a mensagem automática da Venda Futura está no automático, mas eu não consigo colocar a data manualmente").
+// Grava customFields._vendaFuturaAt (AAAA-MM-DD): no dia o poller da Venda Futura manda a mensagem de retomada (IA do card ligada) ou avisa a equipe (IA desligada).
+// date = null → sem data: a retomada segue de 30 em 30 dias a partir de agora.
+router.put('/:id/venda-futura', async (req: AuthRequest, res: Response) => {
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true, name: true, customFields: true, stage: { select: { name: true } } } });
+    if (!lead) return res.status(404).json({ error: 'Lead não encontrado' });
+    if (!/venda futura/i.test(lead.stage?.name || '')) return res.status(400).json({ error: 'O card não está na etapa Venda Futura' });
+    const raw = req.body?.date;
+    const hoje = new Date(Date.now() - 3 * 3_600_000).toISOString().slice(0, 10);
+    let date: string | null = null;
+    if (raw) {
+      const t = String(raw);
+      const ok = /^\d{4}-\d{2}-\d{2}$/.test(t) && !Number.isNaN(Date.parse(`${t}T12:00:00Z`)) && new Date(`${t}T12:00:00Z`).toISOString().slice(0, 10) === t;
+      if (!ok) return res.status(400).json({ error: 'Data inválida' });
+      if (t < hoje) return res.status(400).json({ error: 'Escolha uma data de hoje em diante' });
+      if (t > new Date(Date.now() + 3 * 365 * 86_400_000).toISOString().slice(0, 10)) return res.status(400).json({ error: 'Data longe demais' });
+      date = t;
+    }
+    const cf: Record<string, any> = { ...((lead.customFields || {}) as Record<string, any>) };
+    if (date) { cf._vendaFuturaAt = date; delete cf._vendaFuturaFailAt; cf._vendaFuturaFails = 0; }
+    else { delete cf._vendaFuturaAt; cf._vendaFuturaBaseAt = new Date().toISOString(); }
+    await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf as any } });
+    const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário';
+    const br = date ? date.split('-').reverse().join('/') : null;
+    await auditNote(lead.id, req.user!.id, br ? `📅 Venda Futura: retomada marcada para ${br} — por ${userName}. Nesse dia o CRM manda a mensagem de retomada ao cliente (com a IA do card ligada).` : `📅 Venda Futura: sem data marcada — por ${userName}. A retomada segue de 30 em 30 dias.`);
+    logActivity({ accountId: req.user!.accountId, userId: req.user!.id, userName, action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: br ? `marcou a retomada da Venda Futura para ${br}` : 'tirou a data da Venda Futura' } as any);
+    res.json({ ok: true, date });
+  } catch (err: any) {
+    console.error('[Venda Futura] data manual:', err?.message);
+    res.status(500).json({ error: 'Erro ao salvar a data' });
+  }
+});
+
 router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: Response) => {
   try {
     // Captura estágio anterior para auditoria + setor do número de WhatsApp

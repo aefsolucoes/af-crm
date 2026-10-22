@@ -8,6 +8,7 @@ import { toast } from '@/components/ui/toast';
 import { GoogleDriveAlert } from '@/components/ui/google-drive-alert';
 import { WhatsAppAlertBanner } from '@/components/ui/whatsapp-alert-banner';
 import { ContractingLeadAlert } from '@/components/ui/contracting-lead-alert';
+import { VendaFuturaPrompt } from '@/components/lead/venda-futura-prompt';
 import { IncomingCallRinger } from '@/components/ui/incoming-call-ringer';
 import { OutboundCallBar } from '@/components/ui/outbound-call-bar';
 import { AiQuestionsBubble } from '@/components/ui/ai-questions-bubble';
@@ -131,6 +132,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <ToastContainer />
       <GoogleDriveAlert />
       <ContractingLeadAlert />
+      <VendaFuturaPrompt />
       <IncomingCallRinger />
       <OutboundCallBar />
       <AiQuestionsBubble />
