@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { vistoriaPreview, solicitarVistoria, laudoPreview, requestLaudo, claimLaudo, reportLaudo } from '../services/vistoria-inter.service';
+import { vistoriaPreview, solicitarVistoria, laudoPreview, requestLaudo, claimLaudo, reportLaudo, seguirPreview, requestSeguir, claimSeguir, reportSeguir } from '../services/vistoria-inter.service';
 
 /** Botão "Solicitar vistoria" do card — ver vistoria-inter.service.ts. */
 const router = Router();
@@ -37,6 +37,20 @@ router.get('/laudo/queue', async (req: AuthRequest, res: Response) => {
 });
 router.post('/laudo/:leadId/report', async (req: AuthRequest, res: Response) => {
   try { res.json(await reportLaudo(req.user!.accountId, req.params.leadId, req.body || {})); } catch (err) { fail(res, err, 'Erro ao registrar o laudo'); }
+});
+
+// ── "Seguir com proposta" no portal do Inter — a extensão "Vistoria Inter" abre a proposta, clica em "Seguir com proposta" e PARA no aviso de confirmação (a equipe dá o último clique) ──
+router.get('/seguir/preview', async (req: AuthRequest, res: Response) => {
+  try { res.json(await seguirPreview(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao ler a proposta'); }
+});
+router.post('/seguir/request', async (req: AuthRequest, res: Response) => {
+  try { res.json(await requestSeguir(req.user!.accountId, String(req.body?.leadId || ''), req.user!.id)); } catch (err) { fail(res, err, 'Erro ao pedir a abertura da proposta'); }
+});
+router.get('/seguir/queue', async (req: AuthRequest, res: Response) => {
+  try { res.json({ job: await claimSeguir(req.user!.accountId) }); } catch (err) { fail(res, err, 'Erro ao buscar a fila', 500); }
+});
+router.post('/seguir/:leadId/report', async (req: AuthRequest, res: Response) => {
+  try { res.json(await reportSeguir(req.user!.accountId, req.params.leadId, req.body || {})); } catch (err) { fail(res, err, 'Erro ao registrar'); }
 });
 
 export default router;

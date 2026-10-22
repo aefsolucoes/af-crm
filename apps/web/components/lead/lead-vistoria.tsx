@@ -31,7 +31,13 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
   const [laudo, setLaudo] = useState<Laudo | null>(null);
   const [laudoBusy, setLaudoBusy] = useState(false);
   const ehInter = /inter/i.test(String(instituicao || '')) || !!String(proposta || '').trim();
-  const carregarLaudo = () => api.get<Laudo>('/api/vistorias/laudo/preview', { params: { leadId } }).then((r) => setLaudo(r.data)).catch(() => {});
+  // "Seguir com proposta" no portal do Inter (Fabio 22/10): a extensão abre a proposta, vai em Detalhes e clica em "Seguir com proposta"; PARA no aviso de confirmação (o último clique é da equipe).
+  type Seguir = { proposta: string | null; status: string; requestedAt: string | null; readyAt: string | null; erro: string | null };
+  const [seguir, setSeguir] = useState<Seguir | null>(null);
+  const [seguirBusy, setSeguirBusy] = useState(false);
+  const [gate, setGate] = useState(false);
+  const carregarSeguir = () => api.get<Seguir>('/api/vistorias/seguir/preview', { params: { leadId } }).then((r) => setSeguir(r.data)).catch(() => {});
+  const carregarLaudo = () => { carregarSeguir(); return api.get<Laudo>('/api/vistorias/laudo/preview', { params: { leadId } }).then((r) => setLaudo(r.data)).catch(() => {}); };
   useEffect(() => { if (ehInter) { carregarLaudo(); const t = setInterval(carregarLaudo, 20_000); return () => clearInterval(t); } }, [leadId, ehInter]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!ehInter) return null;
 
@@ -46,16 +52,38 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
   }
   const stTxt: Record<string, string> = { REQUESTED: 'Na fila da extensão…', RUNNING: 'A extensão está preenchendo…', FILLED: 'Preenchido — falta conferir e ENVIAR no site do Inter', FAILED: 'A extensão não conseguiu preencher (veja a nota do card)' };
 
+  async function pedirSeguir() {
+    if (!window.confirm('A extensão "Vistoria Inter" vai abrir a proposta no portal do Inter, ir em Detalhes e clicar em "Seguir com proposta".\n\nEla PARA no aviso de confirmação ("Aprovar" — é o aceite do cliente e não dá pra desfazer): o último clique é seu, na janela do Inter.\n\nConfirme antes que o cliente quer seguir com o Inter. Pedir agora?')) return;
+    setSeguirBusy(true);
+    try { await api.post('/api/vistorias/seguir/request', { leadId }); toast('Na fila: a extensão abre a proposta em até 1 minuto (Chrome aberto, 07h–22h)', 'success'); setGate(false); await carregarSeguir(); }
+    catch (err: any) { toast(err?.response?.data?.error || 'Erro ao pedir a abertura da proposta', 'error'); }
+    finally { setSeguirBusy(false); }
+  }
+
   async function abrir() {
     setLoading(true);
     try {
       const { data } = await api.get<Preview>('/api/vistorias/preview', { params: { leadId } });
+      // Sem o e-mail de engajamento o Inter ainda não liberou a vistoria: a proposta ainda precisa ser SEGUIDA no portal (Detalhes → "Seguir com proposta"). O e-mail só faz sentido depois.
+      if (!data.engajamentoRecebido && !data.jaSolicitadaEm && seguir?.proposta) { setP(data); setGate(true); return; }
       setP(data); setTo(data.to); setCc(data.cc); setSubject(data.subject); setBody(data.body); setSel(data.anexos.filter((a) => a.checked).map((a) => a.id));
       setOpen(true);
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao montar o e-mail da vistoria', 'error');
     } finally { setLoading(false); }
   }
+
+  function montarEmail() {
+    if (!p) return;
+    setTo(p.to); setCc(p.cc); setSubject(p.subject); setBody(p.body); setSel(p.anexos.filter((a) => a.checked).map((a) => a.id));
+    setGate(false); setOpen(true);
+  }
+  const seguirTxt: Record<string, string> = {
+    REQUESTED: 'Na fila da extensão…',
+    RUNNING: 'A extensão está abrindo a proposta no Inter…',
+    READY: 'Proposta aberta em "Seguir com proposta": falta o último clique ("Aprovar", aceite do cliente) na janela do Inter',
+    FAILED: 'A extensão não conseguiu abrir/seguir a proposta',
+  };
 
   async function enviar() {
     if (!p) return;
@@ -79,6 +107,11 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
         <ClipboardCheck className="h-3.5 w-3.5" /> Vistoria do imóvel (Inter)
       </div>
       {quando && <div className="mb-2 text-xs text-emerald-700">Vistoria solicitada em {quando}. O engenheiro entra em contato em até 2 dias úteis.</div>}
+      {seguir?.status && (
+        <div className={`mb-2 text-xs ${seguir.status === 'READY' ? 'text-emerald-700' : seguir.status === 'FAILED' ? 'text-red-600' : 'text-slate-500'}`}>
+          🤝 {seguirTxt[seguir.status] || seguir.status}{seguir.status === 'FAILED' && seguir.erro ? ` — ${seguir.erro}` : ''}
+        </div>
+      )}
       <button
         onClick={abrir}
         disabled={loading}
@@ -86,6 +119,16 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
       >
         {loading ? 'Montando o e-mail…' : quando ? 'Solicitar de novo' : 'Solicitar vistoria'}
       </button>
+      {seguir?.proposta && !quando && (
+        <button
+          onClick={pedirSeguir}
+          disabled={seguirBusy || seguir.status === 'REQUESTED' || seguir.status === 'RUNNING'}
+          title="Abre a proposta no portal do Inter, vai em Detalhes e clica em Seguir com proposta (para no aviso de confirmação)"
+          className="ml-2 rounded border border-orange-300 px-3 py-1.5 text-xs font-medium text-orange-700 hover:bg-orange-50 disabled:opacity-50"
+        >
+          {seguir.status === 'READY' || seguir.status === 'FAILED' ? 'Abrir proposta no Inter de novo' : 'Abrir proposta no Inter (Seguir)'}
+        </button>
+      )}
 
       {laudo && (laudo.job || laudo.faltando.length > 0) && (
         <div className="mt-3 border-t border-slate-100 pt-3">
@@ -97,6 +140,23 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
               {laudo.status === 'FILLED' || laudo.status === 'FAILED' ? 'Preencher de novo' : 'Preencher laudo (extensão)'}
             </button>
             {laudo.link && <a href={laudo.link} target="_blank" rel="noreferrer" className="rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50">Abrir formulário do Inter</a>}
+          </div>
+        </div>
+      )}
+
+      {gate && p && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setGate(false)}>
+          <div className="w-full max-w-md rounded-xl bg-white p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-800">Antes da vistoria: seguir com a proposta</h3>
+              <button onClick={() => setGate(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
+            </div>
+            <p className="text-sm text-slate-600">O Inter ainda não mandou o e-mail de engajamento: a vistoria só é liberada depois que a proposta é <b>seguida no portal</b> (Detalhes da proposta → "Seguir com proposta").</p>
+            <p className="mt-2 text-xs text-slate-500">A extensão abre a proposta <b>{seguir?.proposta}</b> no portal e clica em "Seguir com proposta". Ela para no aviso de confirmação: o último clique ("Aprovar", aceite do cliente, sem volta) é seu.</p>
+            <div className="mt-3 flex flex-wrap justify-end gap-2">
+              <button onClick={montarEmail} className="rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50">Montar o e-mail mesmo assim</button>
+              <button onClick={pedirSeguir} disabled={seguirBusy} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">{seguirBusy ? 'Pedindo…' : 'Abrir proposta no Inter'}</button>
+            </div>
           </div>
         </div>
       )}

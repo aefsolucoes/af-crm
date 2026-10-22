@@ -282,3 +282,76 @@ export async function reportLaudo(accountId: string, leadId: string, d: { event:
   }
   return { ok: true };
 }
+
+// ─── "Seguir com proposta" no portal do Inter (Fabio 22/10, caso Luiz Fernando) ──────────────────────────────────────────────────────────────────────
+// "Quando clico em solicitar vistoria, ele deveria abrir a proposta do cliente no Inter, ir em Detalhes e prosseguir com a proposta — no Luiz ele abre um e-mail." O e-mail de engajamento (que libera a vistoria) só
+// chega DEPOIS do "Seguir com proposta" no portal. A extensão "Vistoria Inter" abre a proposta (portalparceiros…/propostas#/proposta/<nº>/geral), acha o botão "Seguir com proposta", clica e PARA no modal de
+// confirmação ("Aprovar" — o aceite do cliente, que não dá pra desfazer): quem dá o último clique é a equipe. Estado em customFields._seguirStatus: REQUESTED | RUNNING | READY | FAILED.
+export type SeguirJob = { leadId: string; leadName: string; proposta: string };
+
+async function propostaDoInter(leadId: string, cf: Record<string, any>): Promise<string> {
+  const direto = String(cf.num_proposta || '').replace(/\D/g, '');
+  if (direto.length >= 6) return direto;
+  const r = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
+  return String(r?.proposalNumber || '').replace(/\D/g, '');
+}
+
+export async function seguirPreview(accountId: string, leadId: string) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  return { proposta: (await propostaDoInter(leadId, cf)) || null, status: String(cf._seguirStatus || ''), requestedAt: cf._seguirRequestedAt || null, readyAt: cf._seguirReadyAt || null, erro: cf._seguirErro || null };
+}
+
+export async function requestSeguir(accountId: string, leadId: string, userId: string) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const proposta = await propostaDoInter(leadId, cf);
+  if (!proposta) throw new Error('Este card não tem o número da proposta do Inter.');
+  if (cf._seguirStatus === 'REQUESTED' || cf._seguirStatus === 'RUNNING') throw new Error('A proposta já está na fila da extensão.');
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _seguirStatus: 'REQUESTED', _seguirRequestedAt: new Date().toISOString(), _seguirReadyAt: null, _seguirErro: null } } });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', userId, content: `🤝 Pedi à extensão "Vistoria Inter" que abra a proposta ${proposta} no portal do Inter, vá em Detalhes e clique em "Seguir com proposta". Ela PARA no aviso de confirmação ("Aprovar" — aceite do cliente, não dá pra desfazer): quem confirma é a equipe. Depois disso o Inter manda o e-mail de engajamento e a vistoria pode ser solicitada.` } }).catch(() => {});
+  return { ok: true, proposta };
+}
+
+/** A extensão pergunta "tem proposta pra seguir?" (07h–22h). Um por vez; RUNNING há mais de 10 min é dado como falha. */
+export async function claimSeguir(accountId: string): Promise<SeguirJob | null> {
+  const h = horaBrasilia();
+  if (h < 7 || h >= 22) return null;
+  const rows = await prisma.$queryRaw<{ id: string; name: string; customFields: any }[]>`SELECT id, name, "customFields" FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false AND "customFields"->>'_seguirStatus' IN ('REQUESTED','RUNNING') ORDER BY "updatedAt" ASC LIMIT 5`;
+  for (const r of rows) {
+    const cf = (r.customFields || {}) as Record<string, any>;
+    if (cf._seguirStatus === 'RUNNING') {
+      if (Date.now() - new Date(String(cf._seguirClaimedAt || 0)).getTime() > 10 * 60_000) {
+        await prisma.lead.update({ where: { id: r.id }, data: { customFields: { ...cf, _seguirStatus: 'FAILED', _seguirErro: 'a extensão não terminou em 10 min' } } });
+        await prisma.note.create({ data: { leadId: r.id, type: 'COMMENT', content: '⚠️ A extensão não terminou de abrir a proposta no Inter em 10 min (janela fechada ou travou). Clique de novo.' } }).catch(() => {});
+      }
+      continue;
+    }
+    const proposta = await propostaDoInter(r.id, cf);
+    if (!proposta) { await prisma.lead.update({ where: { id: r.id }, data: { customFields: { ...cf, _seguirStatus: 'FAILED', _seguirErro: 'sem número da proposta' } } }); continue; }
+    await prisma.lead.update({ where: { id: r.id }, data: { customFields: { ...cf, _seguirStatus: 'RUNNING', _seguirClaimedAt: new Date().toISOString() } } });
+    return { leadId: r.id, leadName: r.name, proposta };
+  }
+  return null;
+}
+
+export async function reportSeguir(accountId: string, leadId: string, d: { event: string; detail?: string; reason?: string }) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const push = (title: string, body: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
+  if (d.event === 'ready') {
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _seguirStatus: 'READY', _seguirReadyAt: new Date().toISOString(), _seguirErro: null } } });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤝 A proposta do Inter está ABERTA no portal, em "Seguir com proposta", com o aviso de confirmação na tela. Falta o último clique ("Aprovar" — aceite do cliente, não dá pra desfazer): confira com o cliente e confirme na janela da extensão. Depois o Inter manda o e-mail de engajamento (1–2 dias) e a vistoria pode ser solicitada.` } }).catch(() => {});
+    push('🤝 Inter: confirmar "Seguir com proposta"', `${lead.name}: a proposta está aberta no portal, falta o clique final`);
+  } else if (d.event === 'failed') {
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _seguirStatus: 'FAILED', _seguirErro: String(d.reason || 'erro').slice(0, 300) } } });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A extensão NÃO conseguiu seguir com a proposta do Inter: ${String(d.reason || 'erro').slice(0, 400)}. Abra a proposta no portal e faça à mão, ou clique de novo.` } }).catch(() => {});
+    push('⚠️ Inter: proposta não aberta', `${lead.name}: ${String(d.reason || '').slice(0, 90)}`);
+  } else if (d.event === 'step') {
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _seguirClaimedAt: new Date().toISOString() } } }); // sinal de vida
+  }
+  return { ok: true };
+}
