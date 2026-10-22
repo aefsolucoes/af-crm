@@ -55,6 +55,10 @@ const CHANNEL_LABELS: Record<Channel, string> = {
 interface ChatWindowProps {
   leadId: string;
   leadName: string;
+  /** Nome pra cumprimentar (variável {{1}} dos templates): o de QUEM ESTÁ FALANDO quando não é o titular (campo "Quem fala no WhatsApp" do card). */
+  greetingName?: string;
+  /** "Andrea · esposa de Ronaldo" — aparece no cabeçalho quando quem fala não é o titular. */
+  speakerLabel?: string;
   messages: Message[];
   notes?: Note[];
   /** true = a IA responde esse cliente SOZINHA no WhatsApp, sem revisão humana. */
@@ -253,7 +257,7 @@ function StagedFileChip({ file, onRemove, disabled }: { file: File; onRemove: ()
   );
 }
 
-export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId, hasOlderMessages, loadingOlderMessages, onLoadOlderMessages }: ChatWindowProps) {
+export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId, hasOlderMessages, loadingOlderMessages, onLoadOlderMessages }: ChatWindowProps) {
   const router = useRouter();
   // O listener de socket que atualiza o card de ligação (mais abaixo) roda
   // dentro de um useEffect que só depende de [leadId, onNewMessage] (não
@@ -1179,7 +1183,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     if (!t) return;
     const nums = extractMetaVariables(t.components.find((c) => c.type === 'BODY')?.text || '');
     setPendingMetaTemplate(t);
-    setMetaTemplateVars(Object.fromEntries(nums.map((n) => [n, tplSuggestion.vars[String(n)] || (n === 1 ? leadName : '')])));
+    setMetaTemplateVars(Object.fromEntries(nums.map((n) => [n, tplSuggestion.vars[String(n)] || (n === 1 ? (greetingName || leadName) : '')])));
   }
 
   function handleOpenTemplates() {
@@ -1203,8 +1207,8 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
   }
 
   function handleUseTemplate(template: MessageTemplate) {
-    const firstName = leadName?.split(' ')[0] || leadName || '';
-    const filled = fillTemplate(template.body, { nome: leadName, primeiro_nome: firstName });
+    const firstName = greetingName || leadName?.split(' ')[0] || leadName || '';
+    const filled = fillTemplate(template.body, { nome: greetingName || leadName, primeiro_nome: firstName });
     // Com botão: o botão precisa ir JUNTO na mesma mensagem, então não dá pra
     // só jogar na caixa de texto pro colaborador editar livre e mandar depois
     // — mostra o preview com "Enviar" (igual ao template Meta).
@@ -1253,7 +1257,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
     // {{1}} é sempre o nome do cliente por convenção em todos os templates
     // daqui — já vem preenchido pra não esquecer (foi exatamente isso que
     // rejeitou o envio: Meta exige o parâmetro, campo vazio dá erro 131008).
-    setMetaTemplateVars(Object.fromEntries(vars.map((n) => [n, n === 1 ? leadName : ''])));
+    setMetaTemplateVars(Object.fromEntries(vars.map((n) => [n, n === 1 ? (greetingName || leadName) : ''])));
   }
 
   async function handleSendMetaTemplate() {
@@ -1450,6 +1454,7 @@ export function ChatWindow({ leadId, leadName, messages, notes = [], aiAutoReply
           <Avatar name={leadName} size="md" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold truncate">{leadName}</p>
+            {speakerLabel && <p className="text-[11px] font-medium text-amber-300 truncate" title="Quem está escrevendo não é o titular do crédito">💬 Quem fala: {speakerLabel}</p>}
             <p className="text-xs opacity-80">
               {CHANNEL_ICONS[channel]} {CHANNEL_LABELS[channel]}
             </p>

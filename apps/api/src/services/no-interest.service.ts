@@ -28,7 +28,7 @@ function normalize(s: string): string {
 function firstName(lead: { name: string; customFields: unknown }): string {
   const cf = (lead.customFields || {}) as Record<string, unknown>;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  return callableFirstName(cf.participante_1, lead.name) || '';
+  return callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
 }
 
 /** Retorna true se tratou o clique (quem chama não passa pra IA/automação). */

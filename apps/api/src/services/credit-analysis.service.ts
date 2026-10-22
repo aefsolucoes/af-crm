@@ -558,7 +558,7 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
   };
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.participante_1, lead.name) || null;
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
   const texto = santanderManualClientText(nome, !(await conversationActive(lead.id)), itens);
   // Equipe: nota + push, uma vez por proposta.
   if (st.proposta !== numero || !st.teamAt) {

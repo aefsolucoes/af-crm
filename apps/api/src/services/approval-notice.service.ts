@@ -99,7 +99,7 @@ export async function processApprovalNotices(io: any): Promise<void> {
       if (already > 0) continue;
       const tpl = await approvalTemplate(l.accountId);
       if (!tpl.approved) return; // ainda em análise na Meta — tenta na próxima rodada
-      const nome = callableFirstName(cf.participante_1, l.name, l.contact?.name) || 'cliente';
+      const nome = callableFirstName(cf.falando_com, cf.participante_1, l.name, l.contact?.name) || 'cliente';
       const previewText = `${(tpl.body || '').replace(/\{\{1\}\}/g, nome)}\n\n[Sim, quero saber]  [Não tenho interesse]`;
       const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
       const r = await sendOutboundWhatsAppTemplate({ accountId: l.accountId, leadId: l.id, templateName: APPROVAL_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText, io });
@@ -170,7 +170,7 @@ export async function processApprovalReminders(io: any): Promise<void> {
         const tpl = await metaTemplate(item.accountId, APPROVAL_REMINDER_TEMPLATE);
         if (!tpl.approved) continue; // ainda em análise na Meta — tenta na próxima rodada
         const cf = (lead.customFields || {}) as Record<string, any>;
-        const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || 'cliente';
+        const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name, lead.contact?.name) || 'cliente';
         const previewText = `${(tpl.body || '').replace(/\{\{1\}\}/g, nome)}\n\n[Sim, quero saber]  [Não tenho interesse]`;
         const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
         const r = await sendOutboundWhatsAppTemplate({ accountId: item.accountId, leadId: lead.id, templateName: APPROVAL_REMINDER_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText, io });
@@ -781,7 +781,7 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   } else {
     const tpl = await approvalTemplate(p.accountId);
     if (!tpl.approved) return { ok: false, error: 'A janela de 24 h do WhatsApp fechou e o template de aprovação ainda não foi aprovado pela Meta.' };
-    const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || 'cliente';
+    const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name, lead.contact?.name) || 'cliente';
     const previewText = `${(tpl.body || '').replace(/\{\{1\}\}/g, nome)}\n\n[Sim, quero saber]  [Não tenho interesse]`;
     const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
     const r = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, templateName: APPROVAL_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText, userId: p.userId, io: p.io });
@@ -887,7 +887,7 @@ export async function sendEarlyStatusNotice(p: { accountId: string; leadId: stri
   const recente = await prisma.message.count({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 60 * 60_000) } } });
   if (recente) return { ok: false, skipped: 'conversa recente (última hora)' };
 
-  const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || '';
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name, lead.contact?.name) || '';
   let text: string;
   if (p.variant === 'APPROVED_PARTIAL') {
     const preview = await previewApprovalNotice(p.leadId).catch(() => null);
@@ -926,7 +926,7 @@ export async function buildRejectionText(leadId: string): Promise<{ text: string
   if (!reasons.length && rows.length) reasons.push('o pedido não atendeu às regras dos bancos parceiros');
   if (!reasons.length) return null;
   const cf = (lead.customFields || {}) as Record<string, any>;
-  const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name) || 'tudo bem';
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name, lead.contact?.name) || 'tudo bem';
   const motivos = reasons.length > 1 ? `${reasons.slice(0, -1).join(', ')} e ${reasons[reasons.length - 1]}` : reasons[0];
   // Fabio 14/10: "a IA não precisa dar uma negativa e depois falar que tem jeito — sempre informar a negativa e mover o card pra Perdido e marcar reprovado".
   // O texto é o do template aprovado "reprovacao" (sem motivo detalhado e sem oferecer alternativa); os motivos objetivos ficam só na nota do card.
@@ -996,7 +996,7 @@ export async function sendAgeBlockNotice(p: { accountId: string; leadId: string;
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true, email: true } } } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
-  const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name);
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name, lead.contact?.name);
   const texto = `Oi${nome ? `, ${nome}` : ''}! Tudo bem? 😊 Analisei o seu pedido com carinho e, infelizmente, não vamos conseguir crédito para a sua faixa de idade: os bancos parceiros têm um limite de idade para a contratação (a idade somada ao prazo do financiamento não pode passar do permitido). Agradeço muito o seu contato e o seu interesse!`;
   if (await whatsappWindowOpen(p.leadId)) {
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
@@ -1048,7 +1048,7 @@ export async function buildChangeRefusalText(leadId: string): Promise<string | n
   if (!preview) return null; // sem aprovação anterior pra apresentar: não há o que avisar
   const recap = preview.text.replace(/^(🔄|🆕)[^\n]*\n\n/, '').replace(/^✅[^\n]*\n\n/, '');
   const pediu = String(cf._changeAsk || 'o que você pediu');
-  const nome = callableFirstName(cf.participante_1, lead.name, lead.contact?.name);
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name, lead.contact?.name);
   const saudacao = (await conversationActive(leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! Tudo bem? `;
   const fecho = /Qual dessas op[çc][õo]es/.test(recap) ? '' : '\n\nSe quiser seguir com ela, é só me avisar por aqui.';
   return `${saudacao}Rodei a nova proposta com ${pediu} e, nessas condições, o banco não aprovou. A aprovação que você já tem continua valendo para seguir:\n\n${recap}${fecho}`;

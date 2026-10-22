@@ -18,7 +18,7 @@ interface LeadSidebarProps {
   compact?: boolean;
 }
 
-const COMPACT_MAIN_KEYS = ['participante_1', 'telefone_1', 'cpf_1'];
+const COMPACT_MAIN_KEYS = ['participante_1', 'falando_com', 'telefone_1', 'cpf_1'];
 
 type FieldValue = string | number | null | undefined;
 
@@ -440,6 +440,9 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
 
             const builtinFields: { key: string; label: string; type?: 'select'; options?: string[] }[] = [
               { key: 'participante_1', label: 'Participante 1' },
+              // Quem escreve no WhatsApp quando NÃO é o titular (ex.: a esposa que preencheu a proposta): o CRM e a IA cumprimentam por esse nome.
+              { key: 'falando_com',   label: 'Quem fala no WhatsApp' },
+              { key: 'falando_com_relacao', label: 'Relação com o titular', type: 'select', options: ['Esposa', 'Marido', 'Filho(a)', 'Pai/Mãe', 'Sócio(a)', 'Contador(a)', 'Outro'] },
               { key: 'telefone_1',    label: 'Telefone' },
               { key: 'cpf_1',         label: 'CPF' },
               { key: 'nascimento_1',  label: 'Nascimento', type: undefined },

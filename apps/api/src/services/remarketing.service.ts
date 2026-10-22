@@ -42,7 +42,7 @@ export function remarketingFirstName(lead: { name: string; customFields: unknown
   const cf = (lead.customFields || {}) as Cf;
   // Nome com número/emoji/símbolo não é nome — card fica fora do rodízio ("sem nome").
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  return callableFirstName(cf.participante_1, lead.name, lead.contact?.name);
+  return callableFirstName(cf.falando_com, cf.participante_1, lead.name, lead.contact?.name);
 }
 
 function hasPhone(contact: { whatsappPhone: string | null; phone: string | null } | null): boolean {

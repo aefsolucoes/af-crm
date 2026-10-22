@@ -106,7 +106,7 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return false;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.participante_1, lead.name) || null;
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
   const texto = certidaoOfferText(nome, !(await conversationActive(leadId)), d.matricula);
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: (io || undefined) as any });
@@ -154,7 +154,7 @@ export async function askClientCartorio(accountId: string, req: { id: string; le
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow() || !(await whatsappWindowOpen(req.leadId))) return false;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.participante_1, lead.name) || null;
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
   const saud = (await conversationActive(req.leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
   const texto = `${saud}Pra pedir a certidão da matrícula ${req.matricula} preciso saber o cartório de registro de imóveis. Em ${req.cidade} o portal tem estas opções:\n${opcoes.map((o) => `• ${o}`).join('\n')}\n\nNa sua escritura ou matrícula aparece qual deles? Se não souber, sem problema, é só me avisar.`;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');

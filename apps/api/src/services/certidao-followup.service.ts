@@ -99,7 +99,7 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
   const cf = (lead.customFields || {}) as Record<string, any>;
   const setor = lead.pipeline?.department?.name || '';
   const homeEquity = /home equity/i.test(setor);
-  const nome = firstName(cf.participante_1 || lead.name);
+  const nome = firstName(cf.falando_com || cf.participante_1 || lead.name);
 
   const context = `${participantsContext(cf, lead.name, setor)}\n\nEste arquivo é a CERTIDÃO DE ÔNUS / matrícula do imóvel que a A&F pediu ao cartório. Leia o proprietário ATUAL (campo "dono"), diga se ele é um dos participantes do card (donoSituacao) e confira se a matrícula foi encerrada.`;
   const rev = await reviewAttachment(p.accountId, { id: `certidao-${p.requestId}`, data: p.pdf, mimeType: 'application/pdf', driveFileId: null, fileName: `certidao-${p.matricula}.pdf` }, context, { learned: await learnedDocRules(p.accountId).catch(() => '') });

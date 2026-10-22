@@ -225,6 +225,11 @@ function InboxPageInner() {
   }, [conversations, sector]);
   const cf = ((lead as any)?.customFields || {}) as Record<string, string>;
   const displayName = cf.participante_1 || lead?.contact?.name || lead?.name || '';
+  // Quem está falando no WhatsApp pode não ser o titular (ex.: a esposa que preencheu a proposta — Fabio 22/10): o cumprimento e os templates usam o nome dela.
+  const firstCap = (v: unknown) => { const w = String(v || '').trim().split(/\s+/)[0]; return w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ''; };
+  const speaker = cf.falando_com
+    ? { first: firstCap(cf.falando_com), label: `${String(cf.falando_com).trim()}${cf.falando_com_relacao ? ` · ${String(cf.falando_com_relacao).toLowerCase()} de ${firstCap(cf.participante_1 || lead?.name)}` : ''}` }
+    : undefined;
 
   // No mobile: lista cheia quando nada selecionado, chat cheio quando
   // selecionado (nunca os dois ao mesmo tempo — não cabe). No desktop os
@@ -252,6 +257,8 @@ function InboxPageInner() {
             <ChatWindow
               leadId={selectedId}
               leadName={selectedConv?.contact?.name || selectedConv?.name || displayName}
+              greetingName={speaker?.first}
+              speakerLabel={speaker?.label}
               messages={allMessages}
               notes={lead.notes}
               aiAutoReplyActive={(lead as any).aiAutoReplyActive}
