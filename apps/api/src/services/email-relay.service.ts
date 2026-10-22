@@ -22,20 +22,21 @@ const AUTOMATICO = /^(no-?reply|nao-?responda|do-?not-?reply|noreply|notificacao
 const PER_TICK = 4;
 const MODEL = 'claude-haiku-4-5-20251001';
 
-export type RelayDecision = { needsClient: boolean; message: string; resumo: string };
+export type RelayDecision = { needsClient: boolean; message: string; resumo: string; certeza: 'alta' | 'media' };
 
 const SYSTEM = `Você ajuda a A&F Soluções Financeiras (correspondente bancário, crédito com garantia de imóvel e financiamento habitacional). Chegou um E-MAIL de um banco/consultor sobre o processo de um cliente. Decida se o e-mail PEDE ALGO AO CLIENTE e, se pedir, escreva o aviso pro cliente.
 
 IMPORTANTE: os e-mails do banco são SEMPRE escritos pra A&F (o correspondente), mesmo quando pedem algo que só o cliente consegue providenciar ("Prezado, se faz necessário documentação que…", "favor enviar…", "precisamos do aceite/dados do cliente…"). O que importa é QUEM consegue providenciar o que foi pedido.
 
 "needsClient": true quando o que o e-mail pede só o CLIENTE consegue providenciar ou fazer: enviar/atualizar documento dele ou do imóvel (matrícula da vaga, certidão, comprovante, CNH, IPTU…), informar um dado pessoal, corrigir uma declaração dele, assinar, dar um aceite, comparecer, resolver uma pendência do imóvel ou da pessoa. Exemplo real: "Se faz necessário documentação que vincule a vaga de garagem à unidade. A matrícula não informa sobre vaga de garagem e o formulário indica 1 vaga." → needsClient true (o documento é do cliente/do imóvel), mensagem: "Pedro, o banco pediu um documento que mostre que a vaga de garagem pertence ao apartamento (a matrícula não cita a vaga). Pode ser a matrícula da vaga ou a escritura/convenção que fale dela. Consegue me mandar?".
-"needsClient": false para: confirmação de recebimento ("fico no aguardo", "obrigado"), e-mail só informativo, agendamento que o banco/A&F resolve, pedido que a PRÓPRIA A&F resolve sozinha (reenviar documento que já temos, subir arquivo no portal, pedir vistoria, responder o banco), mensagens automáticas, engajamento, e QUALQUER resultado de crédito (aprovado, pré-aprovado, reprovado, condições, valor liberado) — isso nunca é avisado por aqui.
+NA DÚVIDA entre "é pro cliente" e "a A&F resolve sozinha", escolha needsClient true com "certeza":"media" (a equipe revisa antes: o custo de perder um pedido do banco é maior que o de um aviso a mais). Use "certeza":"alta" só quando o e-mail deixa claro que é algo do cliente.
+"needsClient": false para: confirmação de recebimento ("fico no aguardo", "obrigado"), e-mail só informativo, agendamento que o banco/A&F resolve, pedido que a PRÓPRIA A&F resolve sozinha E que o e-mail diz claramente ser algo que a A&F já tem ou deve fazer (reenviar anexo que já mandou, subir arquivo no portal, pedir vistoria, responder o banco) — pedido de documento/comprovação/dado novo NÃO entra aqui, mensagens automáticas, engajamento, e QUALQUER resultado de crédito (aprovado, pré-aprovado, reprovado, condições, valor liberado) — isso nunca é avisado por aqui.
 
 Se já foi avisado ao cliente o mesmo pedido (veja a conversa e os avisos anteriores abaixo), needsClient false.
 
 "message" (só se needsClient): mensagem de WhatsApp em português do Brasil, BEM RESUMIDA (1 a 2 frases, até 330 caracteres), linguagem simples, tom natural da equipe, começando pelo primeiro nome do cliente. Diga SÓ o que o cliente precisa providenciar e como. Termine com um pedido claro ("Consegue me mandar?"). PROIBIDO na mensagem: dizer que o crédito foi aprovado/pré-aprovado, "parabéns", valores, taxa, juros, prazo/meses, parcela ou qualquer resultado de crédito (mesmo que o e-mail traga — o aviso de aprovação segue a regra própria do CRM); copiar o e-mail; citar nome de consultor/funcionário do banco, protocolo ou número de proposta; prometer prazo ou aprovação; usar "Show", "Perfeito" ou "Ok". "resumo": uma frase curta pra equipe do que o banco pediu (pode citar o pedido, sem valores).
 
-Responda SOMENTE com JSON, sem markdown: {"needsClient":true|false,"resumo":"...","message":"..."}`;
+Responda SOMENTE com JSON, sem markdown: {"needsClient":true|false,"certeza":"alta|media","resumo":"...","message":"..."}`;
 
 /** O aviso nunca pode trazer resultado de crédito (regra do Fabio 19/10: aprovação só pelo aviso padrão do CRM). Pura (testável). */
 export const temResultadoDeCredito = (t: string): boolean => /(aprovad|pr[eé]-?aprov|parab[eé]ns|cr[eé]dito (foi )?liberad|R\$\s*\d|\d+[.,]\d+\s*%|\bipca\b|\btaxa\b|\bjuros\b|\b\d{2,3}\s*(meses|parcelas)\b|\bparcelas? de\b)/i.test(String(t || ''));
@@ -49,7 +50,7 @@ export function parseRelayDecision(raw: string): RelayDecision | null {
     const needs = j.needsClient === true;
     const message = String(j.message || '').replace(/\s+\n/g, '\n').trim().slice(0, 600);
     if (needs && message.length < 15) return null; // pediu algo mas não escreveu o aviso: não arrisca
-    return { needsClient: needs, message: needs ? message : '', resumo: String(j.resumo || '').trim().slice(0, 240) };
+    return { needsClient: needs, message: needs ? message : '', resumo: String(j.resumo || '').trim().slice(0, 240), certeza: j.certeza === 'media' ? 'media' : 'alta' };
   } catch { return null; }
 }
 
@@ -126,7 +127,7 @@ async function uma(accountId: string, lead: { id: string; name: string; aiAutoRe
   ].join('\n\n');
   const d = await ask(contexto, `Assunto: ${limpo.subject}\n${limpo.body}`);
   if (!d) { falhas.set(e.id, (falhas.get(e.id) || 0) + 1); return; } // IA fora do ar / resposta inválida: tenta de novo no próximo minuto (até 5 vezes)
-  if (!d.needsClient) { await marca(lead.id, e.id, 'IGNORADO (não pede nada ao cliente)'); return; }
+  if (!d.needsClient) { await marca(lead.id, e.id, `IGNORADO (não pede nada ao cliente) — ${d.resumo || 'sem resumo'}`.slice(0, 280)); return; }
 
   // Texto com resultado de crédito (aprovado, valor, taxa, prazo): NUNCA sai — a equipe escreve só o pedido (o resultado segue o aviso padrão de aprovação).
   const semTexto = temResultadoDeCredito(d.message);
@@ -136,6 +137,7 @@ async function uma(accountId: string, lead: { id: string; name: string; aiAutoRe
   let motivo = '';
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (semTexto) motivo = 'o texto sugerido trazia resultado de crédito (aprovação/valores) e foi descartado — escreva só o pedido, sem falar de aprovação';
+  else if (d.certeza !== 'alta') motivo = 'não tenho certeza se o pedido é pro cliente — confira o e-mail antes de mandar';
   else if (!(await contractingAutoOn(accountId))) motivo = 'automação da contratação desligada — mande você';
   else if (!lead.aiAutoReplyActive) motivo = 'a IA deste card está desligada — mande você';
   else if (cf._autoPaused) motivo = 'o cliente está com STOP TOTAL — mande você';
