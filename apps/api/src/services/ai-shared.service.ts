@@ -245,6 +245,53 @@ export function todayContextLine(): string {
 HORÁRIO AGORA: ${hora} — ${dentro ? 'DENTRO do horário comercial (07h às 21h): se a equipe precisar emitir um documento, você pode dizer que a gente vai emitir.' : 'FORA do horário comercial (07h às 21h): se a equipe precisar emitir um documento, diga SÓ que consegue emitir (ex.: "dá pra emitir aqui com a inscrição", "consigo emitir") sem citar o nome da empresa — NÃO diga que vai emitir, NÃO diga "já te envio", "te mando assim que sair" nem "só um instante".'}`;
 }
 
+// ─── E-mails do processo (Fabio 22/10: "ela pode ler e interpretar e repassar informações sobre o e-mail ao cliente, algo bem resumido") ────────────────────────────────────────────────────────────
+// Antes (regra de 27/09) a IA não lia e-mail nenhum. Caso Pedro: o Inter pediu por e-mail o documento que vincule a vaga de garagem ao apartamento e a IA, sem saber, diria "está tudo certo".
+// Agora os e-mails recentes entram só no momento de RESPONDER o cliente (nunca disparam mensagem sozinhos) e a IA repassa o que o cliente precisa fazer, em 1–2 frases.
+export const EMAIL_RELAY_RULES = `E-MAILS DO PROCESSO (Fabio 22/10): abaixo estão os e-mails recentes deste cliente (do banco/consultor, ou nossos). Leia, interprete e, quando fizer sentido na conversa, REPASSE ao cliente o que ele precisa saber — BEM RESUMIDO (1 a 2 frases), em linguagem simples:
+- Repasse o que o e-mail PEDE AO CLIENTE (documento, informação, correção, assinatura, comparecimento) e diga como resolver. Ex.: o banco diz que a matrícula não cita a vaga de garagem e pede documento que a vincule ao apartamento → "O banco pediu um documento que mostre que a vaga de garagem pertence ao apartamento (a matrícula não cita a vaga). Pode ser a matrícula da vaga ou a escritura/convenção que fale dela. Consegue me mandar?".
+- Se o cliente perguntar de andamento/vistoria/prazo, use o e-mail pra responder o que ele REALMENTE diz; sem e-mail que responda, não invente.
+- NÃO copie o e-mail, NÃO cite nome de consultor/funcionário do banco, nem termos internos do banco, protocolo, número de proposta ou e-mail de engajamento. Se o cliente já foi avisado do mesmo assunto na conversa (veja o histórico), não repita.
+- NÃO repasse por aqui resultado de crédito (aprovado, reprovado, condições): isso segue a regra de aprovação do CRM. E-mail que é só da A&F pro banco (envio de documentos, solicitação de vistoria) não é pro cliente.
+- Se o e-mail pedir algo que você não entendeu bem ou que muda o processo, deixe a equipe resolver (pergunte à equipe) em vez de arriscar.`;
+
+/** Texto limpo de um e-mail (corpo sem assinatura, aviso de confidencialidade, citações e imagens), curto. Pura (testável). */
+export function cleanEmailForAi(content: string, max = 750): { subject: string; body: string } {
+  const [first, ...rest] = String(content || '').split('\n');
+  const subject = first.replace(/^📧\s*/, '').trim();
+  const lines: string[] = [];
+  for (const line of rest) {
+    const t = line.trim();
+    if (/^(Esta mensagem pode conter|This message may contain|De:|From:|Enviado:|Sent:|-----\s*Original|On .{5,80} wrote:|Em .{5,80} escreveu:)/i.test(t)) break;
+    if (t.startsWith('>') || /^\[Imagem\]$/i.test(t) || /^📎\s*(image\d+\.\w+[,\s]*)+$/i.test(t)) continue;
+    lines.push(t);
+  }
+  const body = lines.join(' ').replace(/\s+/g, ' ').trim();
+  return { subject, body: body.length > max ? `${body.slice(0, max)}…` : body };
+}
+
+/** Bloco com os e-mails recentes do card (até 5, últimos 10 dias) pra IA que conversa com o cliente. '' se não houver nenhum relevante. */
+export async function aiEmailsContext(leadId: string): Promise<string> {
+  const rows = await prisma.message.findMany({
+    where: { leadId, channel: 'EMAIL', createdAt: { gte: new Date(Date.now() - 10 * 86_400_000) } },
+    orderBy: { createdAt: 'desc' },
+    take: 12,
+    select: { direction: true, content: true, createdAt: true },
+  });
+  const itens = rows
+    .filter((m) => /^📧/.test(m.content) && !/Engajamento Autom[aá]tico/i.test(m.content.split('\n')[0]))
+    .slice(0, 5)
+    .reverse()
+    .map((m) => {
+      const { subject, body } = cleanEmailForAi(m.content);
+      if (!body) return '';
+      const quando = m.createdAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+      return `- ${m.direction === 'INBOUND' ? 'RECEBIDO (do banco/consultor)' : 'ENVIADO pela A&F'} em ${quando} — assunto "${subject.slice(0, 90)}": ${body}`;
+    })
+    .filter(Boolean);
+  return itens.length ? `--- E-MAILS RECENTES DO PROCESSO ---\n${itens.join('\n')}` : '';
+}
+
 export function buildContextBlocks(ctx: SharedAiContext): string {
   return `--- ${todayContextLine()} ---
 

@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { buildSharedAiContext, buildContextBlocks, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
+import { buildSharedAiContext, buildContextBlocks, aiEmailsContext, EMAIL_RELAY_RULES, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 
 
 /**
@@ -50,12 +50,13 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
     });
     if (!ctx) return null;
 
+    const emailsProcesso = await aiEmailsContext(leadId).catch(() => '');
     const systemPrompt = `${ROLE_FRAMING}
 
 ${CORE_RULES}
-${OUTPUT_FORMAT}
+${emailsProcesso ? `\n${EMAIL_RELAY_RULES}\n` : ''}${OUTPUT_FORMAT}
 
-${buildContextBlocks(ctx)}`;
+${buildContextBlocks(ctx)}${emailsProcesso ? `\n\n${emailsProcesso}` : ''}`;
 
     // Achado real (2026-09-24): "às vezes" a sugestão falhava com o erro
     // genérico "sem histórico ou IA indisponível" mesmo numa conversa cheia

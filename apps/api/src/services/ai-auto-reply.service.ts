@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { cachedSystem } from '../lib/anthropic-usage';
-import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
+import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, aiEmailsContext, EMAIL_RELAY_RULES, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 import { aiCreditContext, refreshAnalysesForAi } from './credit-analysis.service';
 import { teamQuestionsContext } from './ai-team-question.service';
 import { callSummaryContext } from './call-recording.service';
@@ -515,6 +515,7 @@ export async function generateAiAutoReply(
     const reentrada = await (require('./reentry.service') as typeof import('./reentry.service')).aiReentryContext(leadId).catch(() => '');
     const documentos = await aiDocsContext(leadId).catch(() => '');
     const scrCreditas = await (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => '');
+    const emailsProcesso = await aiEmailsContext(leadId).catch(() => '');
 
     const hojeTxt = new Date(Date.now() - 3 * 3_600_000).toISOString().slice(0, 10);
     const vfLead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } }).catch(() => null);
@@ -568,7 +569,11 @@ ${analiseCredito}` : ''}${documentos ? `
 
 ${documentos}` : ''}${scrCreditas ? `
 
-${scrCreditas}` : ''}${duvidasEquipe ? `
+${scrCreditas}` : ''}${emailsProcesso ? `
+
+${EMAIL_RELAY_RULES}
+
+${emailsProcesso}` : ''}${duvidasEquipe ? `
 
 ${duvidasEquipe}` : ''}${ligacao ? `
 
