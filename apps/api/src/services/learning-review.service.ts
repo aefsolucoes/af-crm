@@ -62,6 +62,7 @@ async function ask(contexto: string): Promise<LearnCandidate | null> {
 
 let running = false;
 export async function processLearningReview(io: Io): Promise<void> {
+  if (process.env.LEARNING_REVIEW !== 'on') return; // DESLIGADO (Fabio 22/10: "desabilita o push de aprendizado por enquanto"): só roda com a variável LEARNING_REVIEW=on na Railway
   if (running) return;
   running = true;
   try {
