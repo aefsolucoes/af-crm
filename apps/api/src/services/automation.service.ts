@@ -36,6 +36,14 @@ export interface AutomationAction {
  *  "respondida" por automação. */
 const COMMUNICATION_ACTION_TYPES = new Set<AutomationActionType>(['send_message', 'send_template', 'send_email']);
 
+/** O cliente JÁ mandou mensagem de verdade pelo WhatsApp? (o "Proposta preenchida no site"/"🔔 Lead" é o site avisando, não o cliente falando). Decide Utilidade x Marketing. */
+export async function clienteJaFalou(leadId: string): Promise<boolean> {
+  const n = await prisma.message.count({
+    where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', NOT: [{ content: { contains: 'Proposta preenchida no site' } }, { content: { startsWith: '🔔' } }] },
+  });
+  return n > 0;
+}
+
 /** Contexto do disparo — o que muda de gatilho pra gatilho (texto da
  *  mensagem recebida, novo estágio, tag adicionada). */
 export interface RunContext {
@@ -224,9 +232,20 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       return result.success;
     }
     case 'send_template': {
-      const templateName = String(action.config.templateName || '');
+      let templateName = String(action.config.templateName || '');
       if (!templateName) return false;
       const language = String(action.config.language || 'pt_BR');
+      // Utilidade em vez de Marketing pra quem JÁ conversou com a gente (Fabio 23/10): `utilityTemplateName` na ação = versão de UTILIDADE do template; vale só se o cliente já mandou mensagem de verdade no WhatsApp
+      // e a Meta mantém o template APROVADO como UTILITY. Quem nunca falou recebe o de marketing de sempre (`templateName`).
+      let templatesMeta: any[] | null = null;
+      try {
+        const { listMetaTemplates } = require('./whatsapp.service') as typeof import('./whatsapp.service');
+        templatesMeta = await listMetaTemplates(lead.accountId, lead.pipeline.departmentId);
+      } catch { /* sem a lista da Meta: segue com o template configurado */ }
+      const utilName = String(action.config.utilityTemplateName || '');
+      if (utilName && templatesMeta && templatesMeta.some((t: any) => t.name === utilName && t.language === language && t.status === 'APPROVED' && t.category === 'UTILITY') && (await clienteJaFalou(lead.id))) {
+        templateName = utilName;
+      }
       const rawParams = Array.isArray(action.config.bodyParams) ? (action.config.bodyParams as unknown[]).map(String) : [];
       // Variável de template não pode ir vazia pra Meta: sem nome de verdade, "cliente".
       const bodyParams = rawParams.map((p) => fillVariables(p, lead, context).trim() || 'cliente');
@@ -237,8 +256,8 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       // fora do ar), cai no rótulo genérico — nunca impede o envio em si.
       let previewText = `Template "${templateName}" enviado`;
       try {
-        const { listMetaTemplates } = require('./whatsapp.service') as typeof import('./whatsapp.service');
-        const templates = await listMetaTemplates(lead.accountId, lead.pipeline.departmentId);
+        const templates = templatesMeta;
+        if (!templates) throw new Error('sem lista de templates');
         const tpl = templates.find((t: any) => t.name === templateName && t.language === language);
         const bodyComponent = tpl?.components?.find((c: any) => c.type === 'BODY');
         if (bodyComponent?.text) {

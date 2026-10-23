@@ -37,17 +37,17 @@ export function vendaFuturaDue(p: { cf: Cf; stageEnteredAt: Date | null; lastInb
   return base && now - base >= EVERY_MS ? 'CICLO' : null;
 }
 
-let tplCache: { at: number; ok: boolean; body: string | null; name: string } | null = null;
+let tplCache: { at: number; ok: boolean; body: string | null; name: string; engaged?: boolean } | null = null;
 /** O template de retomada está APROVADO na Meta? (cache de 10 min) — enquanto não estiver, o poller não envia nada fora da janela. */
-async function templateStatus(accountId: string): Promise<{ ok: boolean; body: string | null; name: string }> {
-  if (tplCache && Date.now() - tplCache.at < 10 * 60_000) return tplCache;
+async function templateStatus(accountId: string, engaged = true): Promise<{ ok: boolean; body: string | null; name: string }> {
+  if (tplCache && Date.now() - tplCache.at < 10 * 60_000 && tplCache.engaged === engaged) return tplCache;
   try {
     const { listMetaTemplates } = require('./whatsapp.service') as typeof import('./whatsapp.service');
     const todos = await listMetaTemplates(accountId);
     // prefere a versão de UTILIDADE (aprovada e que a Meta manteve como UTILITY); senão a de marketing de sempre
-    const util = todos.find((x: any) => x.name === VENDA_FUTURA_TEMPLATE_UTIL && x.status === 'APPROVED' && x.category === 'UTILITY');
+    const util = engaged ? todos.find((x: any) => x.name === VENDA_FUTURA_TEMPLATE_UTIL && x.status === 'APPROVED' && x.category === 'UTILITY') : null; // cliente que nunca falou: marketing
     const t = util || todos.find((x: any) => x.name === VENDA_FUTURA_TEMPLATE);
-    tplCache = { at: Date.now(), ok: t?.status === 'APPROVED', body: t?.components?.find((c: any) => c.type === 'BODY')?.text || null, name: t?.name || VENDA_FUTURA_TEMPLATE };
+    tplCache = { at: Date.now(), ok: t?.status === 'APPROVED', body: t?.components?.find((c: any) => c.type === 'BODY')?.text || null, name: t?.name || VENDA_FUTURA_TEMPLATE, engaged };
   } catch { tplCache = { at: Date.now(), ok: false, body: null, name: VENDA_FUTURA_TEMPLATE }; }
   return tplCache;
 }
@@ -108,7 +108,7 @@ export async function processVendaFutura(io: Io): Promise<void> {
         result = await sendOutboundWhatsApp({ accountId: l.accountId, leadId: l.id, content: previewText, io: (io || undefined) as any }) as any;
       } else {
         if (!nome) continue; // sem nome apresentável o template ({{1}}) não sai
-        const tpl = await templateStatus(l.accountId);
+        const tpl = await templateStatus(l.accountId, !!lastIn);
         if (!tpl.ok) continue; // template ainda não aprovado pela Meta
         previewText = (tpl.body || 'Template de retomada').replace(/\{\{1\}\}/g, nome) + '\n\n[Quero retomar]  [Ainda não é o momento]';
         const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
