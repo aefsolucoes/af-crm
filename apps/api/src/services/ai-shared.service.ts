@@ -87,6 +87,8 @@ export interface SharedAiContext {
   perdidoTexto: string | null;
   /** Como chamar o cliente — ou aviso de que o nome do card não é nome. */
   nomeTexto: string;
+  /** Situação REAL da análise de crédito nos bancos (aba Análise de Crédito) — '' se o card não tem análise. */
+  creditoTexto: string;
 }
 
 /**
@@ -210,6 +212,7 @@ export async function buildSharedAiContext(
     // cliente aprovado no Santander, que só aceita quitado (Cláudio, 01/10).
     bancoTexto: String(((lead.customFields as any) || {}).instituicao || '').trim() || null,
     perdidoTexto: lead.status === 'LOST' ? await lostCardContext(lead.id, lead.lostReason) : null,
+    creditoTexto: await aiCreditContext(lead.id).catch(() => ''),
     nomeTexto: (() => {
       const cf = (lead.customFields || {}) as Record<string, unknown>;
       const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name);
@@ -241,6 +244,39 @@ Se o cliente quiser seguir com o crédito/aprovação:
 - Se o motivo e as notas NÃO mostram reprovação, restrição ou crédito negado antes (ex.: sem interesse, sem retorno, taxa, desistiu, não respondeu): atenda normal, como um cliente novo (dúvidas / simulação / proposta).
 - Se mostram reprovação, restrição, crédito negado ou aprovado abaixo do que ele precisava: não prometa nada. Pergunte em 1-2 frases o que mudou desde a última análise (restrição regularizada, renda maior, outro imóvel de garantia, outro participante). Se ele trouxer um fato que pode mudar a aprovação, siga com a proposta e avise a equipe em "askTeam" com o que mudou. Se nada mudou, explique com educação que a análise anterior não aprovou e que dá pra tentar de novo quando essa situação mudar.
 - Nunca repita o motivo interno cru (ex.: "LEAD DESQUALIFICADO", "CLIENTE COM RESTRICAO") — fale com naturalidade.`;
+}
+
+/**
+ * ANÁLISE DE CRÉDITO DENTRO DO CONTEXTO DE TODAS AS IAs (Fabio 23/10: "ela precisa estar interligada com todo o CRM, inclusive com a análise de crédito do cliente").
+ * Caso Cibele: Santander e Inter já fora ("não analisa") e a IA disse "vamos aguardar o retorno dos demais bancos". Agora toda IA que conversa com o cliente (auto-resposta, sugestão, resposta da equipe,
+ * sugestão de template/e-mail) vê o veredito REAL de cada banco e se os avisos padrão (aprovação / não aprovado) já saíram. Sem valores: aprovação nunca vai em texto livre. '' se o card não tem análise.
+ */
+export async function aiCreditContext(leadId: string): Promise<string> {
+  const rows = await prisma.creditAnalysis.findMany({
+    where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
+    orderBy: { createdAt: 'desc' },
+    select: { bank: true, kind: true, status: true, detail: true, source: true, createdAt: true },
+  });
+  if (!rows.length) return '';
+  const { bankVerdict, semRuidoDeSimulacao } = require('./credit-auto.service') as typeof import('./credit-auto.service');
+  const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  const linhas = ['INTER', 'CREDITAS', 'CREDIMORAR'].map((b) => {
+    const v = bankVerdict(rows as any, b);
+    const ultima = rows.find((r) => r.bank === b && semRuidoDeSimulacao(r as any) && !(r.kind === 'CHECK' && r.status === 'CHECK'));
+    let txt: string;
+    if (v === 'POS') txt = ultima?.status === 'CONDITIONAL' ? 'APROVOU (condicionado ao envio de documentos)' : 'APROVOU';
+    else if (v === 'NEG') txt = ultima?.status === 'REJECTED' ? 'REPROVOU a proposta' : 'NÃO analisa este cliente (regra do banco/imóvel — nem chegou a analisar)';
+    else if (ultima && ['SENT', 'REQUESTED', 'RUNNING'].includes(ultima.status)) txt = 'EM ANÁLISE (proposta enviada, sem resposta ainda)';
+    else txt = 'ainda sem resultado (a análise não terminou)';
+    return `- ${nomes[b]}: ${txt}`;
+  });
+  const [aprovSent, rejSent] = await Promise.all([
+    prisma.message.count({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' }, createdAt: { gte: new Date(Date.now() - 21 * 86_400_000) } } }),
+    (require('./approval-notice.service') as typeof import('./approval-notice.service')).rejectionAlreadyInChat(leadId).catch(() => null),
+  ]);
+  return `${linhas.join('\n')}
+- Aviso padrão de APROVAÇÃO já enviado ao cliente: ${aprovSent > 0 ? 'sim' : 'não'}. Aviso padrão de NÃO APROVADO já enviado: ${rejSent ? 'sim' : 'não'}.
+REGRAS COM ESTES DADOS: (1) só diga que um banco está "em análise" ou que estamos "aguardando retorno" se estiver assim acima — nunca invente espera, e não prometa novo retorno se todos já negaram. (2) O RESULTADO do crédito (aprovado ou não) quem comunica é o aviso padrão do CRM: você não anuncia aprovação, não escreve valores e NÃO conta o motivo que o banco deu (Bacen, SCR, prejuízo, política interna, score, restrição, renda). (3) Se o cliente perguntar do resultado: com banco em análise, diga que ainda aguardamos esse banco; com todos negados e o aviso ainda não enviado, diga só que o resultado sai por aqui em instantes; com o aviso já enviado, não repita — pergunte se ficou alguma dúvida.`;
 }
 
 /** Monta os blocos de contexto no MESMO formato/ordem pras duas IAs. */
@@ -314,7 +350,10 @@ ${ctx.escopoTexto}
 
 --- ETAPA ATUAL DO CARD (funil → etapa) ---
 ${ctx.etapaTexto}
-${ctx.perdidoTexto ? `
+${ctx.creditoTexto ? `
+--- ANÁLISE DE CRÉDITO DESTE CLIENTE (situação real nos bancos — aba Análise de Crédito) ---
+${ctx.creditoTexto}
+` : ''}${ctx.perdidoTexto ? `
 --- ESTE CLIENTE ESTÁ MARCADO COMO PERDIDO (voltou a escrever) ---
 ${ctx.perdidoTexto}
 ` : ''}${ctx.bancoTexto ? `
