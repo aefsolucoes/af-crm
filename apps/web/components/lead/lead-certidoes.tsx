@@ -14,6 +14,7 @@ type Certidao = {
   id: string; matricula: string; cartorio: string; uf: string; status: string; protocolo: string | null;
   valorCents: number | null; pixSentAt: string | null; paidAt: string | null; paidVia: string | null;
   detail: string | null; driveUrl: string | null; createdAt: string;
+  files?: { name: string; driveUrl?: string | null }[] | null;
 };
 
 const STATUS: Record<string, { label: string; cls: string }> = {
@@ -139,11 +140,21 @@ export function LeadCertidoes({ leadId }: { leadId: string }) {
                     <Search className="h-3 w-3" /> Buscar certidão agora
                   </button>
                 )}
-                {c.driveUrl && (
-                  <a href={c.driveUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50">
-                    <ExternalLink className="h-3 w-3" /> Abrir no Drive
-                  </a>
+                {c.status === 'ISSUED' && c.protocolo && (
+                  <button
+                    onClick={() => collectNow(c)}
+                    disabled={busy === c.id}
+                    title="A extensão baixa de novo TODOS os arquivos do pedido no ONR (matrícula e certidão de ônus). Só o que ainda não está no Drive é salvo e mandado ao cliente."
+                    className="inline-flex items-center gap-1 rounded border border-blue-200 px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                  >
+                    <Search className="h-3 w-3" /> Baixar todos os arquivos de novo
+                  </button>
                 )}
+                {(c.files && c.files.length > 0 ? c.files.filter((f) => f.driveUrl) : c.driveUrl ? [{ name: 'Abrir no Drive', driveUrl: c.driveUrl }] : []).map((f, i) => (
+                  <a key={i} href={f.driveUrl || '#'} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50" title={f.name}>
+                    <ExternalLink className="h-3 w-3" /> {c.files && c.files.length > 1 ? `Arquivo ${i + 1} no Drive` : 'Abrir no Drive'}
+                  </a>
+                ))}
               </div>
             </div>
           );
