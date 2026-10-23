@@ -102,6 +102,12 @@ async function aguardaDocumentacao(leadId: string): Promise<boolean> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { stage: { select: { name: true } } } }).catch(() => null);
   return /aguardando document/i.test(l?.stage?.name || '');
 }
+/** Tira da resposta a pergunta que soa como cobrança quando o cliente ficou de mandar o documento ("Alguma dificuldade pra enviar?", "por que ainda não enviou?"). Pura (testável). */
+export function semCobrancaRude(reply: string): string {
+  const RUDE = /(alguma|qual(quer)?)\s+dificuldade\s+(pra|para|em|de|no)\s+(enviar|mandar|encaminhar|anexar|envio)|por\s*que\s+(voc[eê]\s+)?(ainda\s+)?n[aã]o\s+(enviou|mandou|encaminhou)|o\s+que\s+(houve|aconteceu)\s+(com|pra|para)\s+(o|a|os|as)?\s*(envio|documento)/i;
+  const partes = reply.match(/[^.?!\n]+[.?!]*\s*/g) || [reply];
+  return partes.filter((x) => !RUDE.test(x)).join('').replace(/\s+/g, ' ').trim();
+}
 const jaDisseAguardo = (t?: string | null) => /aguardo d[aeo]s? documenta/i.test(String(t || ''));
 
 /** Texto de fechamento se a mensagem for despedida/agradecimento; senão null. */
@@ -627,6 +633,11 @@ ${conversasPorTelefone}` : ''}`;
     if (!raw) return null;
 
     const result = parseReply(raw);
+    // Tom (Fabio 23/10, caso Pedro Luis): com o cliente de ficar de mandar a documentação, "Alguma dificuldade pra enviar?" é rude — o filtro tira essa pergunta (o prompt sozinho não segurava).
+    if (result.reply) {
+      const limpo = semCobrancaRude(result.reply);
+      if (limpo !== result.reply) result.reply = limpo || FICO_NO_AGUARDO;
+    }
     // Quando manda a dúvida pra equipe, a IA não fala nada pro cliente
     // (Fabio 30/09) — mas às vezes ela escreve "deixa eu confirmar com a
     // equipe, já te retorno" junto (Marcelo 08/10). Trava fixa: descarta.
