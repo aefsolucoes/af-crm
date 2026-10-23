@@ -87,7 +87,7 @@ export interface SharedAiContext {
   perdidoTexto: string | null;
   /** Como chamar o cliente — ou aviso de que o nome do card não é nome. */
   nomeTexto: string;
-  /** Situação REAL da análise de crédito nos bancos (aba Análise de Crédito) — '' se o card não tem análise. */
+  /** Estado real do card no CRM (análise de crédito, documentos, contratação, agenda) — '' se não há nada a mostrar. */
   creditoTexto: string;
 }
 
@@ -212,7 +212,7 @@ export async function buildSharedAiContext(
     // cliente aprovado no Santander, que só aceita quitado (Cláudio, 01/10).
     bancoTexto: String(((lead.customFields as any) || {}).instituicao || '').trim() || null,
     perdidoTexto: lead.status === 'LOST' ? await lostCardContext(lead.id, lead.lostReason) : null,
-    creditoTexto: await aiCreditContext(lead.id).catch(() => ''),
+    creditoTexto: await aiCardState(lead.id).catch(() => ''),
     nomeTexto: (() => {
       const cf = (lead.customFields || {}) as Record<string, unknown>;
       const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name);
@@ -277,6 +277,53 @@ export async function aiCreditContext(leadId: string): Promise<string> {
   return `${linhas.join('\n')}
 - Aviso padrão de APROVAÇÃO já enviado ao cliente: ${aprovSent > 0 ? 'sim' : 'não'}. Aviso padrão de NÃO APROVADO já enviado: ${rejSent ? 'sim' : 'não'}.
 REGRAS COM ESTES DADOS: (1) só diga que um banco está "em análise" ou que estamos "aguardando retorno" se estiver assim acima — nunca invente espera, e não prometa novo retorno se todos já negaram. (2) O RESULTADO do crédito (aprovado ou não) quem comunica é o aviso padrão do CRM: você não anuncia aprovação, não escreve valores e NÃO conta o motivo que o banco deu (Bacen, SCR, prejuízo, política interna, score, restrição, renda). (3) Se o cliente perguntar do resultado: com banco em análise, diga que ainda aguardamos esse banco; com todos negados e o aviso ainda não enviado, diga só que o resultado sai por aqui em instantes; com o aviso já enviado, não repita — pergunte se ficou alguma dúvida.`;
+}
+
+/**
+ * ESTADO DO CARD NO CRM PRA TODAS AS IAs (Fabio 23/10: "não só aquele contexto, é ligada em todo o sistema"): análise de crédito + documentos + contratação (certidão ONR, vistoria, seguir proposta,
+ * transferência do imóvel, passos manuais) + agenda (Venda Futura, tarefas). Fatos do sistema, não opinião: a IA responde por eles e nunca os contradiz. Cada chamada de IA que fala com o cliente
+ * ou decide algo no card recebe este bloco (conversa, sugestões, resposta da equipe, e-mails do processo, classificadores de aceite/desinteresse). '' se o card não tem nada a mostrar.
+ */
+export async function aiCardState(leadId: string): Promise<string> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  if (!lead) return '';
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const partes: string[] = [];
+
+  const credito = await aiCreditContext(leadId).catch(() => '');
+  if (credito) partes.push(`ANÁLISE DE CRÉDITO:\n${credito}`);
+
+  // Documentos já recebidos e conferidos pela IA
+  const revs = Object.values((cf._docReview || {}) as Record<string, any>).filter((r: any) => r && r.tipo && r.resultado !== 'NAO_DOCUMENTO' && !r.encerrada) as any[];
+  const protegidos = Object.keys((cf._docsProtegidos || {}) as Record<string, unknown>).length;
+  if (revs.length || protegidos) {
+    const ok = Array.from(new Set(revs.filter((r) => r.resultado !== 'PROBLEMA').map((r) => String(r.tipo)))).slice(0, 14);
+    const prob = Array.from(new Set(revs.filter((r) => r.resultado === 'PROBLEMA').map((r) => String(r.tipo)))).slice(0, 8);
+    partes.push(`DOCUMENTOS (conferência da IA): recebidos e OK: ${ok.join(', ') || 'nenhum'}.${prob.length ? ` Com problema: ${prob.join(', ')}.` : ''}${protegidos ? ` Arquivos protegidos por senha aguardando verificação: ${protegidos}.` : ''}${cf._rendaDispensada ? ' Renda dispensada neste card (caso específico).' : ''} Não peça de novo o que já está "recebido e OK".`);
+  }
+
+  // Contratação
+  const contr: string[] = [];
+  const certs = await prisma.certidaoRequest.findMany({ where: { leadId, status: { notIn: ['CANCELLED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 3, select: { matricula: true, status: true, paidAt: true, pixSentAt: true } }).catch(() => []);
+  const stCert: Record<string, string> = { REQUESTED: 'pedido na fila da extensão', RUNNING: 'pedido sendo feito no portal', AWAITING_PAYMENT: 'PIX enviado, aguardando pagamento', ISSUED: 'EMITIDA e salva no Drive', FAILED: 'falhou' };
+  for (const c of certs) contr.push(`certidão da matrícula ${c.matricula} (ONR): ${c.status === 'AWAITING_PAYMENT' && c.paidAt ? 'paga, aguardando a emissão' : stCert[c.status] || c.status}`);
+  const vis = cf._vistoriaAi as { banco?: string; status?: string } | undefined;
+  if (vis?.status) contr.push(`vistoria do imóvel (${vis.banco || 'banco'}): ${String(vis.status).replace(/_/g, ' ').toLowerCase()}`);
+  const seg = cf._interSeguir as { status?: string } | undefined;
+  if (seg?.status || cf._seguirStatus) contr.push(`"seguir com a proposta" do Inter: ${String(cf._seguirStatus || seg?.status).replace(/_/g, ' ').toLowerCase()}`);
+  if (cf._transferenciaPendente) contr.push('imóvel comprado e ainda NÃO registrado/transferido no nome do cliente (precisa estar registrado antes da liberação do valor)');
+  const manuais = Object.keys((cf._manualSteps || {}) as Record<string, unknown>);
+  if (manuais.length) contr.push(`passos que a equipe faz à mão (contratação em modo manual): ${manuais.slice(0, 6).join(', ')}`);
+  if (contr.length) partes.push(`CONTRATAÇÃO: ${contr.join('; ')}.`);
+
+  // Agenda
+  const agenda: string[] = [];
+  if (cf._vendaFuturaAt) agenda.push(`Venda Futura: retomar em ${String(cf._vendaFuturaAt).slice(0, 10).split('-').reverse().join('/')}`);
+  const tarefas = await prisma.task.findMany({ where: { leadId, done: false }, orderBy: { dueAt: 'asc' }, take: 3, select: { title: true, dueAt: true } }).catch(() => []);
+  for (const t of tarefas) agenda.push(`tarefa "${t.title.slice(0, 60)}" para ${t.dueAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`);
+  if (agenda.length) partes.push(`AGENDA: ${agenda.join('; ')}.`);
+
+  return partes.length ? `${partes.join('\n')}\nUse estes fatos como verdade do sistema: nunca os contradiga e não prometa nem peça algo que já está feito ou em andamento aqui.` : '';
 }
 
 /** Monta os blocos de contexto no MESMO formato/ordem pras duas IAs. */
@@ -351,7 +398,7 @@ ${ctx.escopoTexto}
 --- ETAPA ATUAL DO CARD (funil → etapa) ---
 ${ctx.etapaTexto}
 ${ctx.creditoTexto ? `
---- ANÁLISE DE CRÉDITO DESTE CLIENTE (situação real nos bancos — aba Análise de Crédito) ---
+--- ESTADO DO CARD NO CRM (fatos reais do sistema: análise de crédito, documentos, contratação, agenda) ---
 ${ctx.creditoTexto}
 ` : ''}${ctx.perdidoTexto ? `
 --- ESTE CLIENTE ESTÁ MARCADO COMO PERDIDO (voltou a escrever) ---

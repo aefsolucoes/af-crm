@@ -137,14 +137,14 @@ export async function maybeCaptureLostReason(accountId: string, leadId: string, 
 const EMAIL_NO_INTEREST_RE = /(n[ãa]o\s+(tenho|temos)\s+(mais\s+)?interesse|sem\s+interesse|n[ãa]o\s+(quero|queremos)\s+(mais|seguir|continuar|o\s+cr[eé]dito|o\s+empr[eé]stimo|o\s+financiamento)|n[ãa]o\s+(vou|vamos)\s+(mais\s+)?(seguir|continuar|prosseguir|fazer)|desisti|desist(imos|o)\b|n[ãa]o\s+preciso\s+mais|pode(m)?\s+(cancelar|encerrar|arquivar)|retire(m)?\s+(meu|o\s+meu)\s+(contato|nome|cadastro)|n[ãa]o\s+me\s+(envie|mande|procure)|pare(m)?\s+de\s+(me\s+)?(enviar|mandar|ligar|entrar))/i;
 
 /** Confirma com a IA que o cliente DESISTIU (e não só citou "sem interesse" de passagem). null = IA indisponível. */
-async function confirmEmailDecline(text: string): Promise<{ perdido: boolean; motivo: string } | null> {
+async function confirmEmailDecline(text: string, estadoCrm = ''): Promise<{ perdido: boolean; motivo: string } | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 1500, system: 'Você lê a resposta de um cliente de crédito imobiliário a um e-mail da empresa. Responda SOMENTE JSON: {"perdido": <true se o cliente diz CLARAMENTE que não tem mais interesse/desistiu/não quer seguir com o crédito; false se for dúvida, adiamento ("agora não, volto depois"), pedido de informação, ou "sem interesse" só em outro banco/produto>, "motivo": "<motivo em até 12 palavras, com as palavras do cliente, ou vazio>"}', messages: [{ role: 'user', content: text.slice(0, 1500) }] }),
+      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 1500, system: 'Você lê a resposta de um cliente de crédito imobiliário a um e-mail da empresa. Responda SOMENTE JSON: {"perdido": <true se o cliente diz CLARAMENTE que não tem mais interesse/desistiu/não quer seguir com o crédito; false se for dúvida, adiamento ("agora não, volto depois"), pedido de informação, ou "sem interesse" só em outro banco/produto>, "motivo": "<motivo em até 12 palavras, com as palavras do cliente, ou vazio>"}', messages: [{ role: 'user', content: `${estadoCrm ? `ESTADO DO CARD NO CRM (fatos do sistema — ex.: se o cliente já foi aprovado, está em contratação ou já tem certidão pedida, "sem interesse" de passagem ou só em outro banco NÃO é desistência):\n${estadoCrm}\n\n` : ''}E-MAIL DO CLIENTE:\n${text.slice(0, 1500)}` }] }),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { content: { type: string; text?: string }[] };
@@ -163,7 +163,8 @@ export async function maybeMarkLostByEmail(accountId: string, leadId: string, fr
   });
   if (!lead) return false;
   if (/contrata|conclu|perdid/i.test(lead.pipeline?.name || '')) return false; // contratação/concluído: a equipe decide
-  const verdict = await confirmEmailDecline(text);
+  const estadoCrm = await (require('./ai-shared.service') as typeof import('./ai-shared.service')).aiCardState(lead.id).catch(() => ''); // o que o CRM sabe do card (aprovado, documentos, contratação)
+  const verdict = await confirmEmailDecline(text, estadoCrm);
   if (verdict ? !verdict.perdido : text.length > 300) return false; // sem IA, só aceita mensagem curta e clara
   const motivo = verdict?.motivo || text.slice(0, 120);
   const lostReason = `Cliente informou por e-mail que não tem interesse — "${motivo}"`;

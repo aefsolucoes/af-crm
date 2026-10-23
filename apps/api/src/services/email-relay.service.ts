@@ -121,11 +121,13 @@ async function uma(accountId: string, lead: { id: string; name: string; aiAutoRe
   const recentes = await prisma.message.findMany({ where: { leadId: lead.id, channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, take: 10, select: { direction: true, content: true, createdAt: true } });
   const avisos = await prisma.note.findMany({ where: { leadId: lead.id, content: { startsWith: '📧 O banco pediu' }, createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 3, select: { content: true, createdAt: true } });
   const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const estadoCrm = await (require('./ai-shared.service') as typeof import('./ai-shared.service')).aiCardState(lead.id).catch(() => ''); // análise de crédito, documentos, contratação e agenda reais do card
   const contexto = [
     `Cliente: ${nome || '(sem nome utilizável)'} · etapa do card: ${lead.stage?.name || '?'}`,
     `--- E-MAIL RECEBIDO EM ${quandoBr(e.date)} ---\n--- CONVERSA RECENTE NO WHATSAPP (com data e hora) ---\n${recentes.length ? recentes.reverse().map((m) => `[${quandoBr(m.createdAt)}] ${m.direction === 'INBOUND' ? 'Cliente' : 'A&F'}: ${String(m.content).replace(/\s+/g, ' ').slice(0, 220)}`).join('\n') : '(sem conversa)'}`,
+    estadoCrm ? `--- ESTADO DO CARD NO CRM (fatos reais do sistema) ---\n${estadoCrm}` : '',
     `--- AVISOS ANTERIORES SOBRE E-MAILS (últimos 3 dias) ---\n${avisos.length ? avisos.map((n) => `[${quandoBr(n.createdAt)}] ${n.content.replace(/\s+/g, ' ').slice(0, 260)}`).join('\n') : '(nenhum)'}`,
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
   const d = await ask(contexto, `Assunto: ${limpo.subject}\n${limpo.body}`);
   if (!d) { falhas.set(e.id, (falhas.get(e.id) || 0) + 1); return; } // IA fora do ar / resposta inválida: tenta de novo no próximo minuto (até 5 vezes)
   if (!d.needsClient) { await marca(lead.id, e.id, `IGNORADO (não pede nada ao cliente) — ${d.resumo || 'sem resumo'}`.slice(0, 280)); return; }

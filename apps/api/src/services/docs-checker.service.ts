@@ -233,6 +233,7 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
     where: { leadId, callWaCallId: null }, orderBy: { createdAt: 'desc' }, take: 25, select: { content: true, direction: true },
   })).reverse().map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Atendente'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 200).replace(/[\ud800-\udbff]$/, '')}`).join('\n');
 
+  const estadoCrm = await (require('./ai-shared.service') as typeof import('./ai-shared.service')).aiCardState(leadId).catch(() => '');
   const prompt = `${todayContextLine()}
 Setor/produto: ${lead.pipeline.department?.name || '?'}
 Participantes:
@@ -249,6 +250,7 @@ ${bancoRecusou ? 'O banco NÃO aceitou a certidão que o cliente enviou (muito a
 ${receivedText}
 ${unread.length ? `\nArquivos que não puderam ser lidos: ${unread.length}` : ''}
 
+${estadoCrm ? `\nESTADO DO CARD NO CRM (fatos reais do sistema — análise de crédito, contratação e agenda; não contradiga):\n${estadoCrm}\n` : ''}
 CONVERSA RECENTE:
 ${history}`;
 

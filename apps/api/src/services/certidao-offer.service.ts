@@ -264,13 +264,14 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   if (!ultima || !mensagemFalaDaCertidao(ultima.content || '')) return;
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return;
+  const estadoCrm = await (require('./ai-shared.service') as typeof import('./ai-shared.service')).aiCardState(leadId).catch(() => '');
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-sonnet-5', max_tokens: 1000,
       system: 'A atendente de um correspondente bancário perguntou ao cliente se ele tem a certidão de ônus/matrícula do imóvel ou se pode emitir pelo cartório digital (ONR). Leia a RESPOSTA do cliente e classifique. Responda SÓ JSON: {"r":"SIM"|"NAO"|"TEM"|"INDEFINIDO"}. SIM = aceitou que se emita (ex.: "pode", "sim", "pode emitir", "ok", "manda o pix"). TEM = disse que TEM a certidão e vai mandar. NAO = recusou ou prefere tirar sozinho no cartório. INDEFINIDO = pergunta (inclusive sobre o custo), dúvida, assunto diferente ou resposta que não decide. A resposta só vale como SIM/NAO/TEM se for resposta à ÚLTIMA MENSAGEM DA ATENDENTE e ela estiver tratando da certidão/emissão; se a última mensagem for sobre outro assunto (vistoria, documento, andamento), um "ok", "sim", "obrigado" ou "blz" é só um agradecimento/ciência: INDEFINIDO. Na dúvida, INDEFINIDO (SIM manda cobrar um PIX do cliente).',
-      messages: [{ role: 'user', content: `OFERTA: emitir a certidão da matrícula ${of.matricula} pelo cartório digital (ONR).\nÚLTIMA MENSAGEM DA ATENDENTE (a que o cliente está respondendo): ${String(ultima.content || '').replace(/\s+/g, ' ').slice(0, 500)}\nRESPOSTA DO CLIENTE: ${clean}` }],
+      messages: [{ role: 'user', content: `${estadoCrm ? `ESTADO DO CARD NO CRM:\n${estadoCrm}\n\n` : ''}OFERTA: emitir a certidão da matrícula ${of.matricula} pelo cartório digital (ONR).\nÚLTIMA MENSAGEM DA ATENDENTE (a que o cliente está respondendo): ${String(ultima.content || '').replace(/\s+/g, ' ').slice(0, 500)}\nRESPOSTA DO CLIENTE: ${clean}` }],
     }),
   }).catch(() => null);
   if (!res?.ok) return;
