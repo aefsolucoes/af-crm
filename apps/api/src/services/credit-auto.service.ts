@@ -738,6 +738,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await earlyStatusNotices(s.accountId, io).catch((e) => console.error('[Análise automática] aviso antecipado:', e?.message));
       { const { processDocsChecks } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsChecks(s.accountId, io).catch((e: any) => console.error('[Docs]', e?.message)); }
       { const { processDocsFollowUps } = require('./docs-checker.service') as typeof import('./docs-checker.service'); await processDocsFollowUps(s.accountId, io).catch((e: any) => console.error('[Docs] cobrança:', e?.message)); }
+      { const { processCadastroDivergente } = require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service'); await processCadastroDivergente(s.accountId, io).catch((e: any) => console.error('[Cadastro divergente]', e?.message)); }
       { const { processEmailRelay } = require('./email-relay.service') as typeof import('./email-relay.service'); await processEmailRelay(s.accountId, io).catch((e: any) => console.error('[E-mail→cliente]', e?.message)); }
       { const { processVistoriaAi } = require('./vistoria-ai.service') as typeof import('./vistoria-ai.service'); await processVistoriaAi(s.accountId, io).catch((e: any) => console.error('[Vistoria IA]', e?.message)); }
       { const { processCaixaAsk } = require('./caixa-screening.service') as typeof import('./caixa-screening.service'); await processCaixaAsk(s.accountId, io).catch((e: any) => console.error('[CAIXA]', e?.message)); }

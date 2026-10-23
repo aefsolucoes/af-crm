@@ -605,6 +605,8 @@ export async function applyAiExtractedActions(
         if (patch.troco && Number(patch.troco) > 0 && String(patch.troco) !== String(((lead.customFields as any) || {}).troco ?? '')) {
           (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).aplicarTrocoCorrigido(accountId, lead.id, Number(patch.troco), io as any).catch((e: any) => console.error('[Troco] ajuste do crédito:', e?.message));
         }
+        // Cadastro divergente (Fabio 23/10): o cliente corrigiu nome/CPF/nascimento depois da pergunta → refaz a análise em TODOS os bancos com os dados certos.
+        (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).cadastroCorrigido(accountId, lead.id, Object.keys(patch), io as any).catch((e: any) => console.error('[Cadastro divergente] refazer análise:', e?.message));
         if (renomear && lead.contactId) {
           await prisma.contact.update({ where: { id: lead.contactId }, data: { name: normalizeClientName(patch.participante_1) } }).catch(() => {});
           await prisma.note.create({ data: { leadId: lead.id, type: 'DATA_EDIT', content: `🤖 Nome do card corrigido pela IA: "${lead.name}" → "${normalizeClientName(patch.participante_1)}" (o cliente informou o nome).` } }).catch(() => {});

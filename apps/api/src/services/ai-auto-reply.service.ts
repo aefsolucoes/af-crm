@@ -528,6 +528,7 @@ export async function generateAiAutoReply(
     const documentos = await aiDocsContext(leadId).catch(() => '');
     const scrCreditas = await (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => '');
     const emailsProcesso = await aiEmailsContext(leadId).catch(() => '');
+    const cadDiv = await (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).aiCadDivContext(leadId).catch(() => '');
 
     const hojeTxt = new Date(Date.now() - 3 * 3_600_000).toISOString().slice(0, 10);
     const vfLead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } }).catch(() => null);
@@ -585,7 +586,9 @@ ${scrCreditas}` : ''}${emailsProcesso ? `
 
 ${EMAIL_RELAY_RULES}
 
-${emailsProcesso}` : ''}${duvidasEquipe ? `
+${emailsProcesso}` : ''}${cadDiv ? `
+
+${cadDiv}` : ''}${duvidasEquipe ? `
 
 ${duvidasEquipe}` : ''}${ligacao ? `
 
