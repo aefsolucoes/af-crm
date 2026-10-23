@@ -206,6 +206,12 @@ async function respondeCartorio(accountId: string, leadId: string, text: string,
   }
 }
 
+/** A última mensagem que a empresa mandou (a que o cliente está respondendo) fala da certidão/emissão? "Ok, obrigado!" em resposta a "já solicitei a vistoria" NÃO aceita nada
+ *  (Fabio 23/10, Luiz Fernando: a oferta de 21/10 ainda estava aberta e um "Ok, obrigado!" virou autorização — o PIX de R$ 35,20 saiu e o cliente pagou). Pura (testável). */
+export function mensagemFalaDaCertidao(texto: string): boolean {
+  return /certid[aã]o|\bonr\b|emiss[aã]o|emitir|emitid|cart[oó]rio|matr[ií]cula|[oô]nus/i.test(String(texto || ''));
+}
+
 /** Mensagem do cliente depois da oferta: aceitou? Aceitou → autorização anotada + extensão do ONR acionada. Roda a cada texto inbound, mas só gasta IA enquanto há oferta esperando resposta. */
 export async function checkCertidaoAcceptance(accountId: string, leadId: string, text: string, io: Io): Promise<void> {
   const clean = String(text || '').trim();
@@ -218,6 +224,11 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   const of = cf._certidaoOffer as { matricula?: string; at?: string; acceptedAt?: string; declinedAt?: string } | undefined;
   if (!of?.at || of.acceptedAt || of.declinedAt || cf._autoPaused) return;
   if (Date.now() - new Date(of.at).getTime() > 7 * 86_400_000) return; // oferta velha: não gasta IA lendo toda mensagem
+  // A oferta só vale enquanto o card AINDA espera documentação (mesma regra de quando ela é feita): com a documentação recebida / em contratação não há mais o que emitir sozinho.
+  if (!/aguardando document/i.test((lead.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return;
+  // O cliente tem que estar respondendo à PERGUNTA DA CERTIDÃO: se a última mensagem da empresa (equipe ou IA) é sobre outro assunto, o "ok/sim/obrigado" dele não autoriza nada.
+  const ultima = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', deleted: false, NOT: { content: '' } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
+  if (!ultima || !mensagemFalaDaCertidao(ultima.content || '')) return;
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return;
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -225,8 +236,8 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-sonnet-5', max_tokens: 1000,
-      system: 'A atendente de um correspondente bancário perguntou ao cliente se ele tem a certidão de ônus/matrícula do imóvel ou se pode emitir pelo cartório digital (ONR). Leia a RESPOSTA do cliente e classifique. Responda SÓ JSON: {"r":"SIM"|"NAO"|"TEM"|"INDEFINIDO"}. SIM = aceitou que se emita (ex.: "pode", "sim", "pode emitir", "ok", "manda o pix"). TEM = disse que TEM a certidão e vai mandar. NAO = recusou ou prefere tirar sozinho no cartório. INDEFINIDO = pergunta (inclusive sobre o custo), dúvida, assunto diferente ou resposta que não decide.',
-      messages: [{ role: 'user', content: `OFERTA: emitir a certidão da matrícula ${of.matricula} pelo cartório digital (ONR).\nRESPOSTA DO CLIENTE: ${clean}` }],
+      system: 'A atendente de um correspondente bancário perguntou ao cliente se ele tem a certidão de ônus/matrícula do imóvel ou se pode emitir pelo cartório digital (ONR). Leia a RESPOSTA do cliente e classifique. Responda SÓ JSON: {"r":"SIM"|"NAO"|"TEM"|"INDEFINIDO"}. SIM = aceitou que se emita (ex.: "pode", "sim", "pode emitir", "ok", "manda o pix"). TEM = disse que TEM a certidão e vai mandar. NAO = recusou ou prefere tirar sozinho no cartório. INDEFINIDO = pergunta (inclusive sobre o custo), dúvida, assunto diferente ou resposta que não decide. A resposta só vale como SIM/NAO/TEM se for resposta à ÚLTIMA MENSAGEM DA ATENDENTE e ela estiver tratando da certidão/emissão; se a última mensagem for sobre outro assunto (vistoria, documento, andamento), um "ok", "sim", "obrigado" ou "blz" é só um agradecimento/ciência: INDEFINIDO. Na dúvida, INDEFINIDO (SIM manda cobrar um PIX do cliente).',
+      messages: [{ role: 'user', content: `OFERTA: emitir a certidão da matrícula ${of.matricula} pelo cartório digital (ONR).\nÚLTIMA MENSAGEM DA ATENDENTE (a que o cliente está respondendo): ${String(ultima.content || '').replace(/\s+/g, ' ').slice(0, 500)}\nRESPOSTA DO CLIENTE: ${clean}` }],
     }),
   }).catch(() => null);
   if (!res?.ok) return;
