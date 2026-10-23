@@ -216,7 +216,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
 /** Prazo máximo do Inter (meses): o simulador vai de 60 a 240. */
 export const INTER_MAX_TERM = 240;
 
-interface ApprovalOption { interCondicional?: boolean; quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean; prazoTodo?: string }
+interface ApprovalOption { condicionalSemNumeros?: boolean; docsImovelExtra?: string[]; interCondicional?: boolean; quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean; prazoTodo?: string }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -287,6 +287,18 @@ async function optionFromCard(leadId: string): Promise<ApprovalOption[] | null> 
 }
 
 export function renderApprovalText(options: ApprovalOption[], pendentes: string[] = []): string {
+  // Inter aprovou CONDICIONADO ao envio de documentos e é o único resultado positivo (sem valor/parcela até receber os documentos — Fabio 23/10, Jeane): avisa que aprovou e que as condições finais saem depois dos documentos.
+  if (options.length && options.every((o) => o.condicionalSemNumeros)) {
+    const blocos = options.map((o) => [
+      '📋 Resumo da proposta:',
+      `🏦 Instituição: ${o.instituicao}`,
+      o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
+      '✅ Situação: aprovado, condicionado ao envio de documentos',
+      'ℹ️ Assim que o banco receber os documentos, ele libera as condições finais (valor, prazo e parcela) e eu te passo por aqui.',
+    ].filter(Boolean).join('\n')).join('\n\n');
+    const notaPendC = pendentes.length ? `\n\n⏳ Ainda em análise: ${pendentes.join(' e ')}. Se sair uma condição melhor, te aviso por aqui.` : '';
+    return `✅ O ${options[0].instituicao} aprovou o seu crédito, condicionado ao envio de documentos!\n\n${blocos}${notaPendC}`;
+  }
   const block = (o: ApprovalOption) => [
     '📋 Resumo da proposta:',
     `🏦 Instituição: ${o.instituicao}`,
@@ -360,7 +372,9 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
     const p2 = String(((lead?.customFields || {}) as Record<string, any>).participante_2 || '').trim();
     if (p2) conjuge = `\n\n*Documentos pessoais do cônjuge / 2º participante (${p2}):*\n${pessoais.map((d) => `• ${d}`).join('\n')}\n_Se moram juntos, o comprovante de residência e a certidão podem ser os mesmos._`;
   }
-  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}\n\n*Comprovação de renda*\n${listaRenda}${conjuge}\n\n*Imóvel:*\n${imovel.map((d) => `• ${d}`).join('\n')}${semCertidao ? '\n_Se você não tiver a certidão de ônus/matrícula, me conta o que você tem do imóvel (escritura, matrícula, IPTU ou qualquer documento com o número da matrícula) que eu te ajudo._' : ''}`;
+  const imovelFinal = [...imovel];
+  for (const o of options) for (const d of o.docsImovelExtra || []) if (!imovelFinal.some((x) => normN(x) === normN(d))) imovelFinal.push(d); // + o que o Inter pediu do imóvel e a lista padrão não cobre (ex.: quitação do condomínio)
+  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}\n\n*Comprovação de renda*\n${listaRenda}${conjuge}\n\n*Imóvel:*\n${imovelFinal.map((d) => `• ${d}`).join('\n')}${semCertidao ? '\n_Se você não tiver a certidão de ônus/matrícula, me conta o que você tem do imóvel (escritura, matrícula, IPTU ou qualquer documento com o número da matrícula) que eu te ajudo._' : ''}`;
 }
 
 /** Texto de aprovação montado pro card (notas primeiro, aba Financiamento
@@ -423,6 +437,21 @@ async function holderBucketer(leadId: string): Promise<(holder?: string | null, 
   return (holder, holderCpf) => whichParticipant(card, holder, holderCpf);
 }
 
+/** "Documentos pendentes: Imóvel: Matrícula Imóvel, IPTU, Comprovante de Quitação Condominiais; NOME: Doc. Identificação, Registro Civil" → só o que o Inter pede do IMÓVEL e a lista padrão não cobre
+ *  (matrícula e IPTU já estão nela; os pessoais também). Pura (testável). */
+export function docsImovelDoInter(detail?: string | null): string[] {
+  const m = /Documentos pendentes:\s*(.+?)(?:\s*$|\s*\))/is.exec(String(detail || ''));
+  const seg = (m ? m[1] : '').split(';').map((t) => t.trim()).find((t) => /^im[oó]vel\s*:/i.test(t));
+  if (!seg) return [];
+  const out: string[] = [];
+  for (const raw of seg.replace(/^im[oó]vel\s*:/i, '').split(',').map((t) => t.trim()).filter(Boolean)) {
+    const n = normN(raw);
+    if (/matricula|certidao|onus|iptu|inscricao/.test(n)) continue;
+    out.push(/quita\w*\s+condomin/.test(n) ? 'Comprovante de quitação do condomínio' : raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase());
+  }
+  return out;
+}
+
 async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | null> {
   const rows = await prisma.creditAnalysis.findMany({
     where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
@@ -468,7 +497,12 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
       prazoTodo: r.bank === 'INTER' && /aprovad[oa] a menor/i.test(r.detail || '') && r.termMonths && r.termMonths < INTER_MAX_TERM ? `${INTER_MAX_TERM} meses` : undefined,
       documentos: /aprovad[oa] a menor/i.test(r.detail || '') ? parseDocumentosExigidos(r.detail) || undefined : undefined,
     }));
-  if (!options.length) return null;
+  if (!options.length) {
+    // Único resultado positivo é o Inter CONDICIONAL (sem valor até receber os documentos): o cliente é avisado do mesmo jeito (Fabio 23/10, Jeane: "o Inter também tem a mesma coisa que o Santander").
+    const cond = Array.from(ultimo.values()).filter((r) => r.bank === 'INTER' && r.status === 'CONDITIONAL' && r.approvedValue == null).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+    if (!cond) return null;
+    return [{ condicionalSemNumeros: true, instituicao: label.INTER, valor: '', docsImovelExtra: docsImovelDoInter(cond.detail) }];
+  }
   // REGRA DO FABIO (14/10): aprovado no INTER pelo valor TOTAL — no nome do titular, da esposa ou do 2º proponente — é SEMPRE o que vai ao cliente (menor taxa, valor total).
   // Aprovação parcial ("a menor") de outro banco NÃO entra no aviso quando algum banco aprovou o valor total.
   const interTotal = options.find((o) => o.instituicao === 'Banco Inter' && !o.aMenor && !o.incompleta);
@@ -630,7 +664,7 @@ async function bancosEmAnalise(leadId: string): Promise<string[]> {
 }
 
 /** O que seria enviado: texto com TODAS as opções aprovadas (cada uma com o nome em que saiu, se for o 2º participante) e como vai. */
-export async function previewApprovalNotice(leadId: string): Promise<{ text: string; docsText: string; options: number; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] } | null> {
+export async function previewApprovalNotice(leadId: string): Promise<{ text: string; docsText: string; options: number; condSozinho: boolean; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] } | null> {
   const built = await optionsFromAnalyses(leadId).catch(() => null);
   if (!built) return null;
   // "Aprovado a menor": as parcelas certas são as da NOVA simulação com os valores aprovados (a extensão refaz). Sem elas, não avisa.
@@ -676,7 +710,7 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
     whatsappWindowOpen(leadId), lead ? docsTemplate(lead.accountId) : null, docsAlreadySent(leadId), awaitingDocsMove(leadId),
   ]);
   const docsText = lead ? await buildDocsText(lead.accountId, await withHolders(leadId, built), leadId) : '';
-  return { text, docsText, options: built.length, mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
+  return { text, docsText, options: built.length, condSozinho: built.every((o) => o.condicionalSemNumeros), mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
 }
 
 /** O cliente já recebeu um resumo e agora existe uma opção aprovada de um banco que NÃO estava nele (ex.: a Creditas saiu horas depois do Santander).
@@ -841,8 +875,8 @@ export async function rejectionAlreadyInChat(leadId: string): Promise<{ at: Date
 /** Cada opção do texto de aprovação (banco + valor + em nome de quem). */
 export function approvalPairs(text: string): { inst: string; val: string; nome: string }[] {
   return flat(text).split('📋 Resumo da proposta:').slice(1).map((b) => ({
-    inst: (b.match(/🏦 Instituição: (.+?)(?= 👤| 💰| ℹ️| 📅|$)/)?.[1] || '').trim(),
-    val: (b.match(/💰 Valor (?:aprovado|líquido): (R\$ ?[\d.,]+)/)?.[1] || '').trim(),
+    inst: (b.match(/🏦 Instituição: (.+?)(?= 👤| 💰| ✅| ℹ️| 📅|$)/)?.[1] || '').trim(),
+    val: (b.match(/💰 Valor (?:aprovado|líquido): (R\$ ?[\d.,]+)/)?.[1] || (/condicionado ao envio de documentos/.test(b) ? 'condicionado ao envio' : '')).trim(),
     nome: (b.match(/👤 Aprovado no nome de: (.+?) \(/)?.[1] || '').trim(),
   })).filter((x) => x.inst && x.val);
 }

@@ -260,9 +260,13 @@ async function noticeClients(accountId: string, io: any) {
     }
     const preview = await previewApprovalNotice(l.id).catch(() => null);
     if (!preview || preview.warnings.length) continue; // nenhuma aprovada com valor, ou ainda faltam as parcelas da nova simulação
+    // Só o Inter CONDICIONAL (sem valor até receber os documentos): o aviso automático sai enquanto o card ainda está ANTES de "Aguardando Documentação" — card que a equipe já tocou/avançou não recebe aviso sozinho (Jeane, 23/10).
+    if (preview.condSozinho && !preview.move) continue;
     // Nome do titular normalizado (só o 1º nome) e sem repetição: o portal às vezes devolve "Danilo Bezerra" e outras "Danilo Bezerra cortes" — isso mudava a assinatura e reenviava o aviso (Maria Antônia, 15/10).
     const nomeCurto = (n: string | null) => { const t = String(n || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/\s+/).filter((w) => w && !['de', 'da', 'do', 'dos', 'das', 'e'].includes(w)); return t[0] || ''; };
-    const sig = Array.from(new Set(rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${nomeCurto(a.holderName)}`))).sort().join('|');
+    const sigValores = Array.from(new Set(rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${nomeCurto(a.holderName)}`))).sort().join('|');
+    // Sem nenhum valor (só Inter condicional): a assinatura é o próprio "condicional" — quando o Inter liberar os números a assinatura muda e sai o aviso atualizado.
+    const sig = sigValores || (preview.condSozinho ? `INTER:CONDICIONAL:${nomeCurto(rows.find((a) => a.bank === 'INTER' && a.status === 'CONDITIONAL')?.holderName ?? null)}` : '');
     const sigAntiga = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${a.holderName || ''}`).sort().join('|'); // formato antigo: não reenvia pra quem já tinha aviso gravado
     if (cf._autoNoticeSig === sig || cf._autoNoticeSig === sigAntiga) continue;
     // O aviso automático só sai com a IA DAQUELE card ligada (Fabio 19/10, Mara: ele estava conversando com a cliente — a IA desliga sozinha quando a equipe responde — e a aprovação saiu mesmo assim).

@@ -458,7 +458,7 @@ async function creditasVale(leadId: string, st: ScrState): Promise<{ ok: boolean
   try {
     const { buildApprovalText } = require('./approval-notice.service') as typeof import('./approval-notice.service');
     const ab = await buildApprovalText(leadId);
-    ofertas = (ab?.options || []).filter((o: any) => !/creditas/i.test(o.instituicao)).map((o: any) => `${o.instituicao}: ${o.valor}${o.prazo ? ` em ${o.prazo}` : ''}${o.primeiraParcela ? `, 1ª parcela ${o.primeiraParcela}` : ''}${o.pedido ? ` (menor que o pedido de ${o.pedido})` : ''}`);
+    ofertas = (ab?.options || []).filter((o: any) => !/creditas/i.test(o.instituicao) && !o.condicionalSemNumeros).map((o: any) => `${o.instituicao}: ${o.valor}${o.prazo ? ` em ${o.prazo}` : ''}${o.primeiraParcela ? `, 1ª parcela ${o.primeiraParcela}` : ''}${o.pedido ? ` (menor que o pedido de ${o.pedido})` : ''}`);
   } catch { /* sem recap: o pedido do SCR segue sozinho */ }
   return { ok: true, sig: 'GO', motivo: '', ofertas };
 }
