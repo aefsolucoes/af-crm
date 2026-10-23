@@ -176,8 +176,13 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
   if (!lead) return false;
 
-  // liga SÓ este e-mail ao card (aparece na conversa dele)
+  // liga SÓ este e-mail ao card e põe na CONVERSA dele (Fabio 23/10: "por que não está aparecendo aqui?" — só ligava ao e-mail do card, não entrava na Inbox)
   await prisma.emailMessage.update({ where: { id: row.id }, data: { leadId } }).catch(() => {});
+  try {
+    const full = await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { messageId: true, date: true } });
+    const { addToConversation } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+    await addToConversation({ accountId: acc.accountId, leadId, direction: 'INBOUND', subject: row.subject || null, body: fresh.slice(0, 5000), messageId: full?.messageId || null, date: row.date || full?.date || new Date(), notify: true, noPush: true, io: (io || null) as any, fromLabel: row.fromAddress || undefined });
+  } catch (e: any) { console.warn('[Inter e-mail] não entrou na conversa:', e?.message); }
   const resumo = fresh.replace(/\s+/g, ' ').slice(0, 420);
   const quem = row.fromAddress ? ` (${row.fromAddress})` : '';
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📬 E-mail do Inter — ${KIND_LABEL[kind]}${alvo.proposta ? `, proposta ${alvo.proposta}` : ''}${quem}:\n${resumo}${fresh.length > 420 ? '…' : ''}` } }).catch(() => {});

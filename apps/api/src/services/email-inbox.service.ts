@@ -349,33 +349,35 @@ async function findLeadFor(accountId: string, addresses: string[], inReplyTo: st
   return null;
 }
 
-async function addToConversation(params: {
+/** Põe o e-mail na conversa do card (aparece na Inbox como "Recebido por e-mail"). Devolve a mensagem criada (ou undefined se já estava lá). `noPush`: quem chama já avisou por push. */
+export async function addToConversation(params: {
   accountId: string; leadId: string; direction: 'INBOUND' | 'OUTBOUND'; subject: string | null; body: string;
-  messageId: string | null; date: Date; sentByUserId?: string | null; notify: boolean; io: Io; fromLabel?: string;
+  messageId: string | null; date: Date; sentByUserId?: string | null; notify: boolean; io: Io; fromLabel?: string; noPush?: boolean; markRead?: boolean;
 }) {
   const { accountId, leadId, direction, messageId, io } = params;
   if (messageId) {
     const dup = await prisma.message.findFirst({ where: { leadId, channel: 'EMAIL', externalId: messageId }, select: { id: true } });
-    if (dup) return;
+    if (dup) return undefined;
   }
   const body = params.body.slice(0, 6000);
   const message = await prisma.message.create({
     data: {
       content: `📧 ${params.subject || '(sem assunto)'}\n\n${body}`,
       direction, channel: 'EMAIL', leadId, externalId: messageId || undefined, status: 'SENT',
-      read: direction === 'OUTBOUND' || !params.notify, createdAt: params.date,
+      read: direction === 'OUTBOUND' || !params.notify || !!params.markRead, createdAt: params.date,
       sentByUserId: params.sentByUserId || undefined,
     },
     include: { sentBy: { select: { id: true, name: true } } },
   });
-  if (!params.notify || !io) return;
+  if (!params.notify || !io) return message;
   io.to(`lead:${leadId}`).emit('new_message', message);
   io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
-  if (direction === 'INBOUND') {
+  if (direction === 'INBOUND' && !params.noPush) {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
     sendPushToAccount(accountId, { title: `📧 ${lead?.name || params.fromLabel || 'E-mail'}`, body: params.subject || body.slice(0, 120), leadId }).catch(() => {});
   }
+  return message;
 }
 
 // ─── Sincronização ────────────────────────────────────────────────────────
