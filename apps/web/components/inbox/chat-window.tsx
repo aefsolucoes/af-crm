@@ -1409,7 +1409,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
 
   return (
     <div
-      className="relative flex flex-col flex-1 h-full"
+      className="relative flex flex-col flex-1 min-w-0 h-full"
       style={{ background: '#0b141a' }}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
@@ -2037,7 +2037,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
 
       {/* Templates toolbar */}
       {showTemplates && (
-        <div className="relative z-10 max-h-80 overflow-y-auto bg-[#202c33] border-t border-[#222e35] scrollbar-thin">
+        <div className="relative z-10 max-h-[45vh] min-w-0 overflow-y-auto overflow-x-hidden bg-[#202c33] border-t border-[#222e35] scrollbar-thin">
           {pendingLocalTemplate ? (
             // ── Resposta rápida com botão: mostra o preview (corpo editável) antes de enviar ──
             <div className="p-3 space-y-3">
@@ -2126,10 +2126,15 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
               </div>
 
               {windowClosedForApi && (
-                <div className="m-2 p-3 rounded-lg border border-amber-500/30 bg-[#1f2c34] space-y-2">
-                  <div className="flex items-center justify-between gap-2">
+                <div className="m-2 p-3 rounded-lg border border-amber-500/30 bg-[#1f2c34] space-y-2 min-w-0 break-words">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-[10px] uppercase tracking-wide font-semibold text-amber-400 flex items-center gap-1"><Lightbulb size={12} /> Template sugerido pra este cliente</p>
-                    <button onClick={loadTemplateSuggestion} disabled={tplSuggesting} className="text-[11px] text-[#8696a0] hover:text-[#e9edef] disabled:opacity-50">{tplSuggesting ? 'Pensando…' : 'Sugerir de novo'}</button>
+                    <div className="flex items-center gap-2">
+                      {tplSuggestion?.template && (
+                        <button onClick={useTemplateSuggestion} className="px-2.5 py-1 rounded-lg bg-[#00a884] text-[#111b21] text-xs font-medium hover:bg-[#02c093]">Usar este template</button>
+                      )}
+                      <button onClick={loadTemplateSuggestion} disabled={tplSuggesting} className="text-[11px] text-[#8696a0] hover:text-[#e9edef] disabled:opacity-50">{tplSuggesting ? 'Pensando…' : 'Sugerir de novo'}</button>
+                    </div>
                   </div>
                   {tplSuggesting && !tplSuggestion && <div className="flex items-center gap-2 text-xs text-[#8696a0]"><Loader2 size={13} className="animate-spin" /> Escolhendo pelo histórico, pela etapa e pelo que já foi enviado…</div>}
                   {tplSuggestError && <p className="text-xs text-amber-400">{tplSuggestError}</p>}
@@ -2141,7 +2146,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                             <span className="text-sm font-semibold text-[#e9edef] truncate">{tplSuggestion.template.name}</span>
                             <MetaCategoryPill category={tplSuggestion.template.category} />
                           </div>
-                          <div className="p-2 rounded-lg bg-[#111b21] text-xs text-[#d1d7db] whitespace-pre-wrap">{tplSuggestion.preview}</div>
+                          <div className="p-2 rounded-lg bg-[#111b21] text-xs text-[#d1d7db] whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{tplSuggestion.preview}</div>
                           {tplSuggestion.reason && <p className="text-xs text-[#8696a0]">{tplSuggestion.reason}</p>}
                           {tplSuggestion.warnings.map((w, i) => <p key={i} className="text-xs text-amber-400">⚠️ {w}</p>)}
                         </>
@@ -2156,9 +2161,6 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                             return <button key={a.name} disabled={!full} onClick={() => full && handleSelectMetaTemplate(full)} className="text-[11px] px-2 py-0.5 rounded-full border border-[#33434c] text-[#e9edef] hover:bg-[#2a3942] disabled:opacity-50">{a.name} · {a.categoryLabel}</button>;
                           })}
                         </div>
-                      )}
-                      {tplSuggestion.template && (
-                        <button onClick={useTemplateSuggestion} className="w-full px-3 py-1.5 rounded-lg bg-[#00a884] text-[#111b21] text-sm font-medium hover:bg-[#02c093]">Usar este template</button>
                       )}
                     </div>
                   )}
@@ -2194,7 +2196,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
               </div>
 
               <div className="border-t border-[#222e35] p-2 space-y-1">
-                <div className="flex items-center justify-between gap-2 px-1 pt-1 pb-0.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-1 pt-1 pb-0.5">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-[#8696a0]">Templates Meta (aprovados)</p>
                   <div className="flex items-center gap-1">
                     {([['ALL', 'Todos'], ['UTILITY', 'Utilidade'], ['MARKETING', 'Marketing']] as const).map(([k, label]) => (
