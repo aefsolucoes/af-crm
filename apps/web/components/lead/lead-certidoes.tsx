@@ -35,15 +35,37 @@ export function LeadCertidoes({ leadId }: { leadId: string }) {
     refetchInterval: 60_000,
   });
 
+  // Botão "Pedir certidão pelo ONR" (contratação em modo manual): só quando os documentos trazem matrícula + cidade/UF e não há pedido andando.
+  const { data: pode } = useQuery<{ possible: boolean; matricula?: string; cidade?: string; uf?: string; jaTemCertidao: boolean }>({
+    queryKey: ['certidao-from-docs', leadId],
+    queryFn: async () => (await api.get('/api/certidoes/from-docs', { params: { leadId } })).data,
+    refetchInterval: 120_000,
+  });
+
   useEffect(() => {
     const socket = getSocket();
-    const on = (e: { leadId?: string }) => { if (!e?.leadId || e.leadId === leadId) queryClient.invalidateQueries({ queryKey: key }); };
+    const on = (e: { leadId?: string }) => { if (!e?.leadId || e.leadId === leadId) { queryClient.invalidateQueries({ queryKey: key }); queryClient.invalidateQueries({ queryKey: ['certidao-from-docs', leadId] }); } };
     socket.on('certidao_updated', on);
     return () => { socket.off('certidao_updated', on); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId, queryClient]);
 
-  if (!data || data.length === 0) return null;
+  const podePedir = !!pode?.possible;
+  if ((!data || data.length === 0) && !podePedir) return null;
+
+  async function pedirPeloOnr() {
+    const txt = `Pedir a certidão da matrícula ${pode?.matricula} (${pode?.cidade}/${pode?.uf}) pelo ONR?\n\nA extensão faz o pedido no RI Digital e o PIX (em torno de R$ 40 a R$ 100) vai direto pro cliente. Só peça com o OK dele.${pode?.jaTemCertidao ? '\n\nATENÇÃO: o card já tem uma certidão de ônus/matrícula enviada pelo cliente.' : ''}`;
+    if (!window.confirm(txt)) return;
+    setBusy('pedir');
+    try {
+      await api.post('/api/certidoes/from-docs', { leadId });
+      toast('Pedido feito — a extensão pede no RI Digital e o PIX vai ao cliente', 'success');
+      queryClient.invalidateQueries({ queryKey: key });
+      queryClient.invalidateQueries({ queryKey: ['certidao-from-docs', leadId] });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir a certidão', 'error');
+    } finally { setBusy(null); }
+  }
 
   async function confirmPaid(c: Certidao) {
     if (!window.confirm(`Confirmar que o cliente PAGOU o PIX da certidão da matrícula ${c.matricula}? A extensão passa a buscar a certidão no portal.`)) return;
@@ -73,8 +95,20 @@ export function LeadCertidoes({ leadId }: { leadId: string }) {
       <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
         <ScrollText className="h-3.5 w-3.5" /> Certidões
       </div>
+      {podePedir && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 rounded-md bg-slate-50 px-2 py-1.5">
+          <span className="text-[11px] text-slate-600">Matrícula {pode?.matricula} ({pode?.cidade}/{pode?.uf}) lida nos documentos.</span>
+          <button
+            onClick={pedirPeloOnr}
+            disabled={busy === 'pedir'}
+            className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            <ScrollText className="h-3 w-3" /> Pedir certidão pelo ONR
+          </button>
+        </div>
+      )}
       <div className="space-y-2">
-        {data.map((c) => {
+        {(data || []).map((c) => {
           const st = STATUS[c.status] || { label: c.status, cls: 'bg-slate-100 text-slate-600' };
           const waitingPay = c.status === 'AWAITING_PAYMENT' && !c.paidAt;
           return (

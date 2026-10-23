@@ -37,6 +37,27 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao pedir a certidão', 400); }
 });
 
+// Botão "Pedir certidão pelo ONR" do card: confere (GET) e pede (POST) com a matrícula e a cidade/UF lidas nos documentos do cliente. Clique da equipe: vale mesmo com a contratação em modo manual.
+router.get('/from-docs', async (req: AuthRequest, res: Response) => {
+  try {
+    const { previewCertidaoDosDocs } = require('../services/certidao-offer.service') as typeof import('../services/certidao-offer.service');
+    const out = await previewCertidaoDosDocs(req.user!.accountId, String(req.query.leadId || ''));
+    if (!out) return res.status(404).json({ error: 'Card não encontrado' });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao conferir a certidão'); }
+});
+
+router.post('/from-docs', async (req: AuthRequest, res: Response) => {
+  try {
+    const { ensureCertidaoRequest } = require('../services/certidao-offer.service') as typeof import('../services/certidao-offer.service');
+    const leadId = String(req.body?.leadId || '');
+    const out = await ensureCertidaoRequest(req.user!.accountId, leadId, { manual: true, userId: req.user!.id });
+    if (!out.created) return res.status(400).json({ error: out.why || 'Não consegui pedir a certidão' });
+    io(req)?.to(`account_${req.user!.accountId}`).emit('certidao_updated', { leadId });
+    res.json({ ok: true });
+  } catch (err) { fail(res, err, 'Erro ao pedir a certidão', 400); }
+});
+
 router.get('/', async (req: AuthRequest, res: Response) => {
   try { res.json(await listCertidoes(prisma, { accountId: req.user!.accountId, leadId: typeof req.query.leadId === 'string' ? req.query.leadId : undefined })); } catch (err) { fail(res, err, 'Erro ao listar as certidões'); }
 });

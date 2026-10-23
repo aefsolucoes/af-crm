@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
  * Desligada (padrão): o CRM NÃO manda mensagem ao cliente nem e-mail ao banco por conta própria nos passos abaixo — deixa uma nota + push na equipe, com o texto pronto, e a equipe faz à mão.
  * Ligada: o comportamento automático de sempre (código todo preservado, é só ligar em Análise de Crédito).
  * Passos cobertos: solicitar a vistoria (Inter e Santander) e a pergunta "seguir com a proposta" do Inter; perguntar ao cliente as 4 informações do laudo do apartamento e preencher o laudo na fila da extensão;
- * pedir a transferência do imóvel; pedir a averbação do termo de quitação; a triagem da CAIXA depois da aprovação.
+ * pedir a transferência do imóvel; pedir a averbação do termo de quitação; a triagem da CAIXA depois da aprovação; a oferta e o pedido da certidão pelo ONR (o botão "Pedir certidão pelo ONR" do card vale sempre).
  * Não cobre: as reconferências/re-execuções das análises (cobrança do cliente e 8h), o aviso de aprovação e a conversa normal da IA com o cliente.
  */
 

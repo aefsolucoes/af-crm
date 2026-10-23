@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { createCertidaoRequest } from './certidao.service';
+import { contractingAutoOn, manualStep } from './contracting-auto.service';
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 
@@ -103,6 +104,12 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   if (oferta?.matricula === d.matricula) return false; // já ofereci (aceitou, recusou ou está esperando a resposta)
   const ativo = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
   if (ativo) return false;
+  // Chave da contratação (Fabio 23/10: "coloca um interruptor igual da vistoria"): desligada, a IA NÃO oferece a emissão — nota + push com o passo pra equipe (que combina com o cliente e usa o botão do card).
+  if (!(await contractingAutoOn(accountId))) {
+    await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-oferta-${d.matricula}`, pushTitle: '🏛️ Certidão de ônus/matrícula', pushBody: `${lead.name}: mandou a escritura sem a certidão — oferecer a emissão`,
+      note: `🏛️ O cliente mandou a escritura (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) e não a certidão de ônus/matrícula. Passo manual (automação da contratação desligada): a IA NÃO ofereceu a emissão. Se for emitir pelo cartório digital (ONR), combine com o cliente (a certidão é essencial pra solicitar a vistoria; o custo só se ele perguntar) e use o botão "Pedir certidão pelo ONR" na aba Financiamento do card.` });
+    return false;
+  }
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return false;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
@@ -125,22 +132,38 @@ async function jaTemCertidaoValida(leadId: string, cf: Record<string, any>): Pro
 }
 
 /** Cria o pedido no ONR (a extensão pega na fila): chamado quando o cliente aceitou. Uma vez por matrícula. */
-export async function ensureCertidaoRequest(accountId: string, leadId: string): Promise<{ created: boolean; why?: string }> {
+export async function ensureCertidaoRequest(accountId: string, leadId: string, opts: { manual?: boolean; userId?: string } = {}): Promise<{ created: boolean; why?: string }> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return { created: false, why: 'lead não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
-  if (await jaTemCertidaoValida(leadId, cf)) return { created: false, why: 'o cliente já enviou a certidão de ônus/matrícula e o banco não recusou' };
+  // Clique da equipe no botão do card (opts.manual) vale sempre; o caminho automático respeita a chave e a certidão que o cliente já mandou.
+  if (!opts.manual && (await jaTemCertidaoValida(leadId, cf))) return { created: false, why: 'o cliente já enviou a certidão de ônus/matrícula e o banco não recusou' };
   const d = certidaoFromDocs(cf);
   if (!d) return { created: false, why: 'não achei matrícula e cidade/UF nos documentos' };
+  if (!opts.manual && !(await contractingAutoOn(accountId))) {
+    await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-pedido-${d.matricula}`, pushTitle: '🏛️ Certidão pelo ONR', pushBody: `${lead.name}: o cliente aceitou — peça pelo botão do card`,
+      note: `🏛️ A emissão da certidão (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (automação da contratação desligada). Use o botão "Pedir certidão pelo ONR" na aba Financiamento do card — a extensão pede no RI Digital e o PIX vai ao cliente.` });
+    return { created: false, why: 'modo manual da contratação' };
+  }
   const existente = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
   if (existente) return { created: false, why: 'já existe pedido pra esta matrícula' };
   try {
-    const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: d.uf, cidade: d.cidade, cartorio: d.cartorio, matricula: d.matricula, source: 'AI' });
+    const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: d.uf, cidade: d.cidade, cartorio: d.cartorio, matricula: d.matricula, source: opts.manual ? 'USER' : 'AI', userId: opts.manual ? opts.userId : undefined });
     return { created: !out.duplicate };
   } catch (e: any) {
     await note(leadId, `⚠️ O cliente autorizou a emissão da certidão, mas não consegui criar o pedido no ONR: ${e?.message || e}. Peça pelo botão da certidão no card.`);
     return { created: false, why: String(e?.message || e) };
   }
+}
+
+/** Pro botão "Pedir certidão pelo ONR" do card: dá pra pedir? (matrícula + cidade/UF lidas nos documentos e nenhum pedido andando). */
+export async function previewCertidaoDosDocs(accountId: string, leadId: string): Promise<{ possible: boolean; matricula?: string; cidade?: string; uf?: string; jaTemCertidao: boolean; existe: boolean } | null> {
+  const lead = await carrega(leadId);
+  if (!lead || lead.accountId !== accountId) return null;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const d = certidaoFromDocs(cf);
+  const existe = !!(d && await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } }));
+  return { possible: !!d && !existe, matricula: d?.matricula, cidade: d?.cidade, uf: d?.uf, jaTemCertidao: await jaTemCertidaoValida(leadId, cf), existe };
 }
 
 /** Opções de cartório que a extensão listou ao falhar ("… (opções: 1º OFÍCIO - X | 2º OFÍCIO - X)"). Pura (testável). */
