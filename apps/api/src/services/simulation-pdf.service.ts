@@ -111,7 +111,7 @@ export async function brandPortalPdf(input: Buffer): Promise<BrandResult> {
     page.node.set(PDFName.of('Contents'), ref);
   }
 
-  return { pdf: Buffer.from(await doc.save()), recognized: true };
+  return { pdf: Buffer.from(await doc.save({ useObjectStreams: false })) /* sem object streams: com eles o pdf-lib gravava um XRef que o pdf.js recusa ("Invalid Root reference") e a Inbox ficava sem miniatura/visualização — 23/10 */, recognized: true };
 }
 
 // ── "Evolução Teórica" do portal do Inter (Chromium/Skia, A4 retrato) ───────────────────────────────
@@ -160,7 +160,7 @@ export async function brandInterTheoryPdf(input: Buffer): Promise<BrandResult> {
   const rightMargin = 45; // alinha com a borda direita da tabela
   page.drawImage(logo, { x: width - rightMargin - lw, y: height - INTER_BAND.h + (INTER_BAND.h - INTER_BAND.logoH) / 2, width: lw, height: INTER_BAND.logoH });
   doc.setKeywords([INTER_MARK]);
-  return { pdf: Buffer.from(await doc.save()), recognized: true };
+  return { pdf: Buffer.from(await doc.save({ useObjectStreams: false })) /* sem object streams: com eles o pdf-lib gravava um XRef que o pdf.js recusa ("Invalid Root reference") e a Inbox ficava sem miniatura/visualização — 23/10 */, recognized: true };
 }
 
 /** Marca qualquer simulação conhecida (Credimorar "Evolução das parcelas" ou Inter "Evolução Teórica"); outro PDF volta intacto. */

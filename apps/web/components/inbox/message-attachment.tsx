@@ -390,6 +390,23 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
     // pdfThumbFailed && sem thumb: mesmo botão genérico de baixar de baixo.
   }
 
+  // PDF que carregou mas cuja miniatura não saiu (arquivo fora do padrão que o pdf.js recusa): dá pra VISUALIZAR no visualizador do navegador (que tolera mais) e baixar
+  if (isPdf && url) {
+    return (
+      <>
+        <div className="flex items-center gap-2 max-w-full rounded-lg bg-black/5 px-2.5 py-2">
+          <button type="button" onClick={() => setPreviewOpen(true)} className="flex items-center gap-2 min-w-0 flex-1 text-left hover:opacity-80" title="Visualizar o documento">
+            <FileText size={18} className="text-red-500 flex-shrink-0" />
+            <span className="text-xs truncate flex-1 text-current">{att.fileName}</span>
+            <span className="text-[10px] font-semibold text-sky-500 flex-shrink-0">Visualizar</span>
+          </button>
+          <button type="button" onClick={download} title="Baixar" className="flex-shrink-0 p-1 rounded hover:bg-black/10"><Download size={14} className="text-slate-400" /></button>
+        </div>
+        {previewOpen && <AttachmentPreviewModal url={url} fileName={att.fileName} isPdf onClose={() => setPreviewOpen(false)} onDownload={downloadSilently} />}
+      </>
+    );
+  }
+
   // Documento (pdf sem miniatura, docx, xlsx etc.) → botão de baixar
   return (
     <button
