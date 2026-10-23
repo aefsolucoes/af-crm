@@ -61,7 +61,7 @@ export interface BoardLead {
   /** Reprovado em todos os bancos com a IA do card desligada: a negativa não sai sozinha — mostra o botão "Avisar negativa". */
   rejectionPending?: boolean;
   /** Creditas pediu a Autorização SCR Bacen assinada: PENDING/ASKED/SENDING = consulta do Creditas TRAVADA; SENT = enviada à Creditas; NOTED = só registrado. */
-  scr?: { status: 'PENDING' | 'ASKED' | 'SENDING' | 'SENT' | 'NOTED'; at: string | null; askedAt: string | null; sentAt: string | null; creditasId: string | null } | null; preAnaliseAt?: string | null; ran: boolean; lastRunAt: string | null;
+  scr?: { status: 'PENDING' | 'ASKED' | 'SENDING' | 'SENT' | 'NOTED'; at: string | null; askedAt: string | null; sentAt: string | null; creditasId: string | null; holderName?: string | null; holderCpf?: string | null } | null; preAnaliseAt?: string | null; ran: boolean; lastRunAt: string | null;
   latest: Partial<Record<Bank, Analysis>>; history: Analysis[]; verdicts?: Verdict[]; chosenId: string | null;
   /** Última análise de cada banco por participante (o 2º, rodado no nome dele, não esconde o 1º). */
   latestP1?: Partial<Record<Bank, Analysis>>; latestP2?: Partial<Record<Bank, Analysis>>;
@@ -133,7 +133,7 @@ export function jaSeguiuAprovado(l: Pick<BoardLead, 'inPre' | 'latest'>): boolea
 const falhaTecnicaAntiga = (a?: Analysis) => !!a && a.status === 'FAILED' && !isDesqualificado(a.detail);
 
 /** Célula de um participante: o selo + o motivo (por que falhou/reprovou/ficou em conferir) ou, sem análise, por que NÃO rodou. */
-export function ParticipantCell({ a, why, quieto }: { a?: Analysis; why?: string; quieto?: boolean }) {
+export function ParticipantCell({ a, why, quieto, scrLock }: { a?: Analysis; why?: string; quieto?: boolean; scrLock?: boolean }) {
   const r = reasonOf(a);
   // Desqualificado por regra do IMÓVEL/proposta (vale pros dois participantes): o 2º participante também aparece como "Desqualificado" (Fabio 17/10), em vez de "—".
   const herdado = !a && !!why && /regra que vale para os dois participantes/i.test(why);
@@ -149,15 +149,19 @@ export function ParticipantCell({ a, why, quieto }: { a?: Analysis; why?: string
   }
   return (
     <div className="space-y-0.5">
-      {herdado ? <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-500">Desqualificado</span> : <Badge a={a} />}
+      {herdado ? <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-500">Desqualificado</span> : <Badge a={a} scrLock={scrLock} />}
       {r && <div className="text-[10px] leading-snug text-slate-500 max-w-[190px]" title={String(a?.detail || '')}>{r}</div>}
       {!a && why && <div className="text-[10px] leading-snug text-amber-600 max-w-[190px]" title={why}>{why.length > 130 ? `${why.slice(0, 129)}…` : why}</div>}
     </div>
   );
 }
 
-export function Badge({ a }: { a?: Analysis }) {
+export function Badge({ a, scrLock }: { a?: Analysis; scrLock?: boolean }) {
   if (!a) return <span className="text-xs text-slate-300">—</span>;
+  // Creditas travada esperando o formulário SCR Bacen assinado (Fabio 23/10): a análise DESTE participante não está "em análise" — está esperando o formulário voltar.
+  if (scrLock && a.status !== 'REJECTED' && a.status !== 'APPROVED' && a.status !== 'CONDITIONAL') return (
+    <div className="space-y-0.5"><div className="flex items-center gap-1"><span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700">Aguardando formulário SCR</span></div></div>
+  );
   const baseStatus = STATUS[a.status] || { label: a.status, cls: 'bg-slate-100 text-slate-500' };
   // Falha por REGRA do banco/imóvel (mínimo do imóvel, terreno, saldo devedor…) aparece como "Desqualificado" (vale como reprovado), não como "Falhou" (Fabio 14/10).
   const desq = a.status === 'FAILED' && isDesqualificado(a.detail);

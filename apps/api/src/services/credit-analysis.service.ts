@@ -1073,7 +1073,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       overrides: Object.fromEntries(l.creditOverrides.map((o) => [o.bank, o.data])),
       inPre: l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || ''),
       autoPaused: !!cf._autoPaused,
-      scr: cf._scrCreditas ? { status: cf._scrCreditas.status, at: cf._scrCreditas.at || null, askedAt: cf._scrCreditas.askedAt || null, sentAt: cf._scrCreditas.sentAt || null, creditasId: cf._scrCreditas.creditasId || null } : null,
+      scr: cf._scrCreditas ? { status: cf._scrCreditas.status, at: cf._scrCreditas.at || null, askedAt: cf._scrCreditas.askedAt || null, sentAt: cf._scrCreditas.sentAt || null, creditasId: cf._scrCreditas.creditasId || null, holderName: cf._scrCreditas.holderName || null, holderCpf: cf._scrCreditas.holderCpf || null } : null,
       preAnaliseAt,
       ran: l.creditAnalyses.length > 0,
       lastRunAt: l.creditAnalyses[0]?.createdAt || null,

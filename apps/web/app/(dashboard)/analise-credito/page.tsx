@@ -459,17 +459,19 @@ export default function AnaliseCreditoPage() {
                           {BANKS.map((b) => {
                             // Resultado de cada participante lado a lado: o do 2º participante não esconde o do 1º (e vice-versa).
                             const a1 = l.latestP1?.[b.key], a2 = l.latestP2?.[b.key];
+                            // Formulário SCR da Creditas pendente: só o participante DONO da proposta travada fica "Aguardando formulário SCR" (o outro mantém o resultado dele, ex.: Reprovado).
+                            const scrDe = (x?: Analysis) => !!x && b.key === 'CREDITAS' && !!l.scr && ['PENDING', 'ASKED', 'SENDING'].includes(l.scr.status) && (!l.scr.holderName || !x.holderName || sameWho(x.holderName, l.scr.holderName));
                             return (
                               <td key={b.key} className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}>
                                 {(a1 && a2) || l.card?.name2 ? (
                                   <div className="space-y-1.5">
-                                    <div><div className="text-[10px] uppercase tracking-wide text-slate-400">1º participante</div><ParticipantCell a={a1 || (!a2 ? l.latest[b.key] : undefined)} why={l.notRun?.[b.key]?.p1} quieto={quieto} /></div>
-                                    <div><div className="text-[10px] uppercase tracking-wide text-slate-400">2º participante</div><ParticipantCell a={a2} why={l.notRun?.[b.key]?.p2} quieto={quieto} /></div>
+                                    <div><div className="text-[10px] uppercase tracking-wide text-slate-400">1º participante</div><ParticipantCell a={a1 || (!a2 ? l.latest[b.key] : undefined)} why={l.notRun?.[b.key]?.p1} quieto={quieto} scrLock={scrDe(a1 || (!a2 ? l.latest[b.key] : undefined))} /></div>
+                                    <div><div className="text-[10px] uppercase tracking-wide text-slate-400">2º participante</div><ParticipantCell a={a2} why={l.notRun?.[b.key]?.p2} quieto={quieto} scrLock={scrDe(a2)} /></div>
                                   </div>
                                 ) : (
                                   <>
                                     {a2 && !a1 && <div className="text-[10px] uppercase tracking-wide text-slate-400">2º participante</div>}
-                                    <ParticipantCell a={l.latest[b.key]} why={l.notRun?.[b.key]?.p1} quieto={quieto} />
+                                    <ParticipantCell a={l.latest[b.key]} why={l.notRun?.[b.key]?.p1} quieto={quieto} scrLock={scrDe(l.latest[b.key])} />
                                   </>
                                 )}
                               </td>
@@ -525,12 +527,12 @@ export default function AnaliseCreditoPage() {
                                     <div key={`${b.key}-${who}`} className="rounded-lg border border-af-border bg-white p-3 text-xs space-y-2">
                                       <div className="flex items-center justify-between">
                                         <span className="font-semibold text-slate-700">{b.label}{hasP2 && <span className="block font-normal text-[11px] text-slate-400">{quem}</span>}</span>
-                                        <Badge a={a} />
+                                        <Badge a={a} scrLock={b.key === 'CREDITAS' && !!l.scr && ['PENDING', 'ASKED', 'SENDING'].includes(l.scr.status) && (!l.scr.holderName || !a?.holderName || sameWho(a.holderName, l.scr.holderName))} />
                                       </div>
                                       {a ? (
                                         <>
                                           {a.holderName && l.card?.name1 && !sameWho(a.holderName, l.card.name1) && <p className="text-amber-600 font-medium">{a.status === 'APPROVED' || a.status === 'CONDITIONAL' ? 'Aprovado' : a.status === 'REJECTED' ? 'Reprovado' : 'Analisado'} no nome de {a.holderName} (2º participante)</p>}
-                                          {b.key === 'CREDITAS' && l.scr && l.scr.status !== 'NOTED' && (
+                                          {b.key === 'CREDITAS' && l.scr && l.scr.status !== 'NOTED' && (!l.scr.holderName || !a.holderName || sameWho(a.holderName, l.scr.holderName)) && (
                                             <p className={l.scr.status === 'SENT' ? 'text-emerald-700 bg-emerald-50 rounded-md px-2 py-1' : 'text-amber-700 bg-amber-50 rounded-md px-2 py-1'}>
                                               {l.scr.status === 'SENT'
                                                 ? `📤 Autorização SCR Bacen assinada enviada à Creditas${l.scr.sentAt ? ` em ${new Date(l.scr.sentAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''} — a consulta voltou a rodar; aguardando o retorno da Creditas.`
