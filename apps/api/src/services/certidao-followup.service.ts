@@ -50,7 +50,7 @@ export function certidaoVerdict(rev: DocReview | undefined, opts: { homeEquity: 
 }
 
 /** Texto ao cliente (sem emoji). Pura (testável). */
-export function certidaoClientText(nome: string, v: CertidaoVerdict): string | null {
+function certidaoClientTextBase(nome: string, v: CertidaoVerdict): string | null {
   const mat = 'matricula' in v && v.matricula ? ` (matrícula ${v.matricula})` : '';
   if (v.kind === 'OK') return `${nome}, saiu a certidão de ônus do seu imóvel${mat} e ela está no seu nome. Segue o documento em anexo.`;
   if (v.kind === 'NEUTRO') return `${nome}, saiu a certidão de ônus do imóvel${mat}. Segue o documento em anexo.`;
@@ -59,6 +59,11 @@ export function certidaoClientText(nome: string, v: CertidaoVerdict): string | n
     return `${nome}, saiu a certidão de ônus do imóvel${mat}, mas ela está no nome de ${quem}, e não no seu. Para o banco, o imóvel precisa estar no nome de quem vai contratar o crédito. Segue o documento em anexo. Me explica por favor: esse imóvel é de ${quem}? Qual é a relação de vocês?`;
   }
   return null; // ENCERRADA / ILEGIVEL: a equipe decide antes de falar com o cliente
+}
+
+export function certidaoClientText(nome: string, v: CertidaoVerdict, qtd = 1): string | null {
+  const t = certidaoClientTextBase(nome, v);
+  return t && qtd > 1 ? t.replace('Segue o documento em anexo.', 'Seguem os documentos em anexo (a matrícula e a certidão de ônus).') : t;
 }
 
 async function windowOpen(db: Db, leadId: string): Promise<boolean> {
@@ -78,13 +83,31 @@ async function pdfBytesOf(db: Db, requestId: string): Promise<{ buffer: Buffer; 
   return null;
 }
 
-async function sendTextAndPdf(db: Db, p: { accountId: string; leadId: string; requestId: string; text: string; io?: Io }): Promise<{ ok: boolean; error?: string }> {
-  const pdf = await pdfBytesOf(db, p.requestId);
-  if (!pdf) return { ok: false, error: 'não achei o PDF (nem no Drive nem de passagem no CRM)' };
+async function sendTextAndPdf(db: Db, p: { accountId: string; leadId: string; requestId: string; text: string; io?: Io; /** só estes (nomes em `files` do pedido); sem isso vai o(s) de passagem/o primeiro */ names?: string[]; /** arquivos já em memória (acabaram de baixar) */ buffers?: { buffer: Buffer; fileName: string }[] }): Promise<{ ok: boolean; error?: string }> {
+  let pdfs = p.buffers || [];
+  if (!pdfs.length) pdfs = await pdfsOf(db, p.requestId, p.names);
+  if (!pdfs.length) return { ok: false, error: 'não achei o PDF (nem no Drive nem de passagem no CRM)' };
   const a = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: p.text, io: p.io });
   if (!a.success) return { ok: false, error: a.error };
-  const b = await sendOutboundMedia({ accountId: p.accountId, leadId: p.leadId, buffer: pdf.buffer, fileName: pdf.fileName, mimeType: 'application/pdf', io: p.io });
-  return b.success ? { ok: true } : { ok: false, error: b.error };
+  for (const f of pdfs) {
+    const b = await sendOutboundMedia({ accountId: p.accountId, leadId: p.leadId, buffer: f.buffer, fileName: f.fileName, mimeType: 'application/pdf', io: p.io });
+    if (!b.success) return { ok: false, error: b.error };
+  }
+  return { ok: true };
+}
+
+/** Arquivos do pedido (todos os de `files`, ou só os `names`) baixados do Drive; sem lista, cai no PDF único de sempre. */
+async function pdfsOf(db: Db, requestId: string, names?: string[]): Promise<{ buffer: Buffer; fileName: string }[]> {
+  const r = await db.certidaoRequest.findUnique({ where: { id: requestId }, select: { accountId: true, files: true } });
+  const lista = (Array.isArray(r?.files) ? (r!.files as unknown as { name: string; driveFileId?: string }[]) : []).filter((f) => f.driveFileId && (!names || names.includes(f.name)));
+  const out: { buffer: Buffer; fileName: string }[] = [];
+  if (r && lista.length) {
+    const { downloadDriveFile } = await import('./google.service');
+    for (const f of lista) { try { out.push({ buffer: await downloadDriveFile(r.accountId, f.driveFileId!, 'application/pdf'), fileName: f.name }); } catch { /* o que não baixar fica de fora */ } }
+    if (out.length) return out;
+  }
+  const um = await pdfBytesOf(db, requestId);
+  return um ? [um] : [];
 }
 
 export type FollowupResult = { verdict: CertidaoVerdict; clientText: string | null; action: 'ENVIOU' | 'TEMPLATE_E_PENDENTE' | 'EQUIPE_DECIDE' | 'FALHOU'; dryRun: boolean; detail?: string };
@@ -93,7 +116,7 @@ export type FollowupResult = { verdict: CertidaoVerdict; clientText: string | nu
  * Lê a certidão, decide e (a menos que seja dryRun) avisa a equipe e o cliente. `pdf` = bytes do PDF recém-baixado.
  * dryRun = só mostra o veredito e o texto, sem mandar nada (teste).
  */
-export async function afterCertidaoSaved(db: Db, p: { accountId: string; requestId: string; leadId: string; matricula: string; pdf: Buffer; io?: Io; dryRun?: boolean }): Promise<FollowupResult> {
+export async function afterCertidaoSaved(db: Db, p: { accountId: string; requestId: string; leadId: string; matricula: string; pdf: Buffer; /** os outros arquivos que o ONR devolveu junto (matrícula + certidão de ônus): vão todos ao cliente */ extras?: { buffer: Buffer; name: string }[]; primaryName?: string; io?: Io; dryRun?: boolean }): Promise<FollowupResult> {
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) throw new Error('Card não encontrado');
   const cf = (lead.customFields || {}) as Record<string, any>;
@@ -102,9 +125,18 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
   const nome = firstName(cf.falando_com || cf.participante_1 || lead.name);
 
   const context = `${participantsContext(cf, lead.name, setor)}\n\nEste arquivo é a CERTIDÃO DE ÔNUS / matrícula do imóvel que a A&F pediu ao cartório. Leia o proprietário ATUAL (campo "dono"), diga se ele é um dos participantes do card (donoSituacao) e confira se a matrícula foi encerrada.`;
-  const rev = await reviewAttachment(p.accountId, { id: `certidao-${p.requestId}`, data: p.pdf, mimeType: 'application/pdf', driveFileId: null, fileName: `certidao-${p.matricula}.pdf` }, context, { learned: await learnedDocRules(p.accountId).catch(() => '') });
-  const verdict = certidaoVerdict(rev, { homeEquity });
-  const clientText = certidaoClientText(nome, verdict);
+  const learned = await learnedDocRules(p.accountId).catch(() => '');
+  let rev = await reviewAttachment(p.accountId, { id: `certidao-${p.requestId}`, data: p.pdf, mimeType: 'application/pdf', driveFileId: null, fileName: `certidao-${p.matricula}.pdf` }, context, { learned });
+  let verdict = certidaoVerdict(rev, { homeEquity });
+  // O ONR devolve mais de um arquivo: se o 1º não deu pra ler (ex.: a matrícula em imagem), o veredito vem do outro (a certidão de ônus).
+  for (const [i, ex] of (p.extras || []).entries()) {
+    if (verdict.kind !== 'ILEGIVEL') break;
+    rev = await reviewAttachment(p.accountId, { id: `certidao-${p.requestId}-${i + 2}`, data: ex.buffer, mimeType: 'application/pdf', driveFileId: null, fileName: ex.name || `certidao-${p.matricula}-${i + 2}.pdf` }, context, { learned });
+    verdict = certidaoVerdict(rev, { homeEquity });
+  }
+  // todos os arquivos novos vão ao cliente (o cliente recebe a matrícula e a certidão de ônus)
+  const enviar = [{ buffer: p.pdf, fileName: p.primaryName || `Certidao de onus - matricula ${p.matricula}.pdf` }, ...(p.extras || []).map((x) => ({ buffer: x.buffer, fileName: x.name }))];
+  const clientText = certidaoClientText(nome, verdict, enviar.length);
   const gravameTxt = 'gravame' in verdict && verdict.gravame ? ` Constam ônus vigentes: ${verdict.gravame}.` : '';
   const ressalvaTxt = rev?.ressalva ? ` Atenção: ${rev.ressalva === 'CONSULTA' ? 'é certidão "para simples consulta"' : 'a emissão tem mais de 30 dias'} — o banco pode não aceitar.` : '';
 
@@ -131,7 +163,7 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
 
   // ── cliente: janela aberta = texto + PDF; fechada = template "Olá, tudo bem?" e o resto sai quando ele responder ─────────
   if (await windowOpen(db, p.leadId)) {
-    const s = await sendTextAndPdf(db, { accountId: p.accountId, leadId: p.leadId, requestId: p.requestId, text: clientText, io: p.io });
+    const s = await sendTextAndPdf(db, { accountId: p.accountId, leadId: p.leadId, requestId: p.requestId, text: clientText, io: p.io, buffers: enviar });
     if (s.ok) { await note(db, p.leadId, '📨 Certidão de ônus encaminhada ao cliente pelo WhatsApp.'); return { verdict, clientText, action: 'ENVIOU', dryRun: false }; }
     await note(db, p.leadId, `⚠️ Não consegui encaminhar a certidão de ônus ao cliente: ${s.error}. Mande o PDF da pasta IMOVEL à mão.`);
     pushAll(p.accountId, '⚠️ Certidão não foi enviada ao cliente', `${lead.name}: ${String(s.error).slice(0, 80)}`, p.leadId);
@@ -144,7 +176,7 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
     return { verdict, clientText, action: 'FALHOU', dryRun: false, detail: t.error };
   }
   const fresh = await db.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
-  await db.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _certidaoPending: { requestId: p.requestId, text: clientText, at: new Date().toISOString() } } } });
+  await db.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _certidaoPending: { requestId: p.requestId, text: clientText, names: enviar.map((x) => x.fileName), at: new Date().toISOString() } } } });
   await note(db, p.leadId, '📨 Janela de 24 h fechada: mandei o template "Olá, tudo bem?". Quando o cliente responder, o CRM envia o aviso e a certidão de ônus.');
   return { verdict, clientText, action: 'TEMPLATE_E_PENDENTE', dryRun: false };
 }
@@ -153,11 +185,11 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
 export async function releaseCertidaoPending(db: Db, p: { accountId: string; leadId: string; io?: Io }): Promise<boolean> {
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
-  const pend = cf._certidaoPending as { requestId: string; text: string } | undefined;
+  const pend = cf._certidaoPending as { requestId: string; text: string; names?: string[] } | undefined;
   if (!pend?.requestId || !pend.text) return false;
   const { _certidaoPending, ...rest } = cf; // tira a marca ANTES de mandar: duas respostas seguidas não duplicam
   await db.lead.update({ where: { id: p.leadId }, data: { customFields: rest as any } });
-  const s = await sendTextAndPdf(db, { accountId: p.accountId, leadId: p.leadId, requestId: pend.requestId, text: pend.text, io: p.io });
+  const s = await sendTextAndPdf(db, { accountId: p.accountId, leadId: p.leadId, requestId: pend.requestId, text: pend.text, io: p.io, names: pend.names });
   if (s.ok) await note(db, p.leadId, '📨 O cliente respondeu: certidão de ônus encaminhada pelo WhatsApp.');
   else {
     await db.lead.update({ where: { id: p.leadId }, data: { customFields: { ...rest, _certidaoPending: pend } as any } }); // tenta de novo na próxima resposta

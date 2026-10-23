@@ -116,6 +116,18 @@ router.post('/:id/pdf', express.raw({ type: () => true, limit: '25mb' }), async 
   } catch (err) { fail(res, err, 'Erro ao guardar a certidão', 400); }
 });
 
+// A extensão devolve TODOS os arquivos do pedido de uma vez (o ONR dá a matrícula e a certidão de ônus): JSON { files: [{ name, b64 }] }. Arquivo repetido é ignorado.
+router.post('/:id/pdfs', express.json({ limit: '40mb' }), async (req: AuthRequest, res: Response) => {
+  try {
+    const lista = Array.isArray(req.body?.files) ? req.body.files.slice(0, 6) : [];
+    const files = lista.map((f: any) => ({ buffer: Buffer.from(String(f?.b64 || ''), 'base64'), name: typeof f?.name === 'string' ? f.name.slice(0, 160) : undefined }));
+    if (!files.length) return res.status(400).json({ error: 'sem arquivos' });
+    const { finishCertidaoFiles } = require('../services/certidao.service') as typeof import('../services/certidao.service');
+    const out = await finishCertidaoFiles(prisma, { accountId: req.user!.accountId, id: req.params.id, files, io: io(req) });
+    res.json({ ok: true, status: out.row.status, novos: out.novos });
+  } catch (err) { fail(res, err, 'Erro ao guardar a certidão', 400); }
+});
+
 router.post('/:id/cancel', async (req: AuthRequest, res: Response) => {
   try { const r = await cancelCertidao(prisma, { accountId: req.user!.accountId, id: req.params.id, userId: req.user!.id }); res.json({ ok: true, status: r.status }); } catch (err) { fail(res, err, 'Erro ao cancelar', 400); }
 });

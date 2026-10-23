@@ -130,10 +130,33 @@ async function loadCandidates(accountId: string): Promise<LeadCandidate[]> {
     FROM "Lead" l WHERE l."accountId" = ${accountId} AND l.archived = false AND l.status = 'OPEN' AND l."isGroup" = false`;
 }
 
+const ENTIDADES: Record<string, string> = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", aacute: 'á', agrave: 'à', acirc: 'â', atilde: 'ã', auml: 'ä', eacute: 'é', egrave: 'è', ecirc: 'ê', iacute: 'í', icirc: 'î', oacute: 'ó', ocirc: 'ô', otilde: 'õ', uacute: 'ú', ucirc: 'û', ccedil: 'ç', Aacute: 'Á', Agrave: 'À', Acirc: 'Â', Atilde: 'Ã', Eacute: 'É', Ecirc: 'Ê', Iacute: 'Í', Oacute: 'Ó', Ocirc: 'Ô', Otilde: 'Õ', Uacute: 'Ú', Ccedil: 'Ç' };
+
+/** Texto do HTML de um e-mail (sem estilo/script/tags, com as entidades "&aacute;" viradas em letra). Pura (testável). */
+export function htmlParaTexto(html: string | null | undefined): string {
+  return String(html || '')
+    .replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
+    .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, e: string) => {
+      if (e[0] === '#') { const n = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isFinite(n) && n > 0 ? String.fromCodePoint(n) : ' '; }
+      return ENTIDADES[e] ?? ENTIDADES[e.toLowerCase()] ?? m;
+    })
+    .replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+}
+
+/** Texto pra LER o e-mail do Inter. O "engajamento automático" vem com a parte em TEXTO PURO sem preencher ("a proposta do cliente . %%nome do closer%%") e os dados de verdade (proposta e nome) só no HTML
+ *  (Fabio 23/10, Luiz Fernando: o e-mail não ligou ao card). Texto puro com marcadores %%…%% ou muito mais curto que o HTML → usa o HTML. Pura (testável). */
+export function interEmailTexto(textBody: string | null | undefined, htmlBody: string | null | undefined): string {
+  const t = String(textBody || '');
+  const h = htmlParaTexto(htmlBody);
+  if (!t.trim()) return h;
+  if (/%%[^%]{1,60}%%/.test(t) && h) return h;
+  return t;
+}
+
 /** Chamado pelo leitor de e-mail para cada e-mail NOVO do Inter. Devolve true se ligou a um card. */
 export async function handleInterEmail(acc: { accountId: string }, row: { id: string; subject: string | null; textBody: string | null; htmlBody?: string | null; fromAddress?: string | null; date?: Date }, io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } }): Promise<boolean> {
   const subject = row.subject || '';
-  const text = row.textBody || String(row.htmlBody || '').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+  const text = interEmailTexto(row.textBody, row.htmlBody);
   const fresh = freshPart(text);
   const kind = classifyInterEmail(subject, fresh);
   if (kind === 'OUTRO' && !/\d{5,10}\s*[-–]/.test(cleanSubject(subject)) && !parseInterBody(text).proposta) return false; // alinhamento semanal, newsletter etc.

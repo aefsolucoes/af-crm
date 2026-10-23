@@ -114,7 +114,7 @@ export async function listCertidoes(db: Db, p: { accountId: string; leadId?: str
   return db.certidaoRequest.findMany({
     where: { accountId: p.accountId, ...(p.leadId ? { leadId: p.leadId } : {}) },
     orderBy: { createdAt: 'desc' }, take: Math.min(p.limit || 30, 100),
-    select: { id: true, leadId: true, uf: true, cidade: true, cartorio: true, matricula: true, status: true, source: true, sendPix: true, protocolo: true, numeroRegistral: true, valorCents: true, pixExpiresAt: true, pixSentAt: true, paidAt: true, paidVia: true, detail: true, pdfName: true, driveUrl: true, attempts: true, createdAt: true, startedAt: true, finishedAt: true },
+    select: { id: true, leadId: true, uf: true, cidade: true, cartorio: true, matricula: true, status: true, source: true, sendPix: true, protocolo: true, numeroRegistral: true, valorCents: true, pixExpiresAt: true, pixSentAt: true, paidAt: true, paidVia: true, detail: true, pdfName: true, driveUrl: true, files: true, attempts: true, createdAt: true, startedAt: true, finishedAt: true },
   });
 }
 
@@ -177,6 +177,12 @@ export async function claimCertidao(db: Db, p: { accountId: string }): Promise<C
   const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { not: null }, AND: [{ OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, { OR: [{ pixCode: { not: null }, paidAt: { not: null } }, { forceCheck: true }] }] }, orderBy: { createdAt: 'asc' }, take: 3 });
   for (const r of aguardando) {
     const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT' }, data: { forceCheck: false, nextCheckAt: new Date(now.getTime() + PAID_CHECK_EVERY_MIN * 60_000) } });
+    if (c.count) return toJob(r, 'COLLECT');
+  }
+  // Pedido JÁ EMITIDO que a equipe mandou baixar de novo (botão do card): pega os arquivos que faltavam (o ONR devolve matrícula + certidão de ônus).
+  const reabaixar = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'ISSUED', protocolo: { not: null }, forceCheck: true }, orderBy: { createdAt: 'asc' }, take: 3 });
+  for (const r of reabaixar) {
+    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'ISSUED', forceCheck: true }, data: { forceCheck: false } });
     if (c.count) return toJob(r, 'COLLECT');
   }
   return null;
@@ -271,7 +277,7 @@ const leadNameOf = async (db: Db, leadId: string) => (await db.lead.findUnique({
  * documento do imóvel vai pra IMOVEL). A pasta vem do campo "Pasta no Drive" do card; sem ele, procura pelo nome do cliente.
  * O CRM NÃO guarda o PDF (Fabio 19/10): se o Drive falhar, os bytes ficam só de passagem e são reenviados até subir (retryCertidaoDrive).
  */
-export async function saveCertidaoToDrive(db: Db, r: { accountId: string; leadId: string; matricula: string }, pdf: Buffer): Promise<{ ok: true; fileId: string; fileUrl: string; folderUrl: string; fileName: string } | { ok: false; reason: string }> {
+export async function saveCertidaoToDrive(db: Db, r: { accountId: string; leadId: string; matricula: string }, pdf: Buffer, nomeDoArquivo?: string): Promise<{ ok: true; fileId: string; fileUrl: string; folderUrl: string; fileName: string } | { ok: false; reason: string }> {
   try {
     const { createFolder, uploadFile, extractFolderId, findFolderByNameUnderRoot, folderLink } = await import('./google.service');
     const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true, customFields: true } });
@@ -281,7 +287,7 @@ export async function saveCertidaoToDrive(db: Db, r: { accountId: string; leadId
     if (!clientFolderId) clientFolderId = (await findFolderByNameUnderRoot(r.accountId, lead.name))?.folderId || '';
     if (!clientFolderId) return { ok: false, reason: 'não achei a pasta do cliente no Drive' };
     const imovel = await createFolder(r.accountId, 'IMOVEL', clientFolderId);
-    const fileName = `CERTIDAO DE ONUS - MATRICULA ${r.matricula} (inteiro teor).pdf`.replace(/[\\/:*?"<>|]/g, ' ');
+    const fileName = (nomeDoArquivo || `CERTIDAO DE ONUS - MATRICULA ${r.matricula} (inteiro teor).pdf`).replace(/[\\/:*?"<>|]/g, ' ');
     const up = await uploadFile(r.accountId, { name: fileName, mimeType: 'application/pdf', data: pdf, parentId: imovel.id });
     return { ok: true, fileId: up.id, fileUrl: up.webViewLink || folderLink(imovel.id), folderUrl: folderLink(imovel.id), fileName };
   } catch (err: any) {
@@ -289,28 +295,73 @@ export async function saveCertidaoToDrive(db: Db, r: { accountId: string; leadId
   }
 }
 
-/** A extensão achou a certidão pronta e devolve o PDF: vai pro Drive (e só pra lá); a equipe é avisada por push. */
-export async function finishCertidao(db: Db, p: { accountId: string; id: string; pdf: Buffer; pdfName?: string; io?: Io }) {
+export type CertidaoFile = { name: string; driveFileId?: string | null; driveUrl?: string | null; sha?: string; size: number; at: string };
+const shaOf = (b: Buffer | Uint8Array) => crypto.createHash('sha1').update(b).digest('hex');
+const isPdf = (b: Buffer) => b.length >= 1000 && b.subarray(0, 5).toString('latin1') === '%PDF-';
+
+/**
+ * A extensão achou a certidão pronta e devolve o(s) arquivo(s) do pedido (Fabio 23/10: o ONR devolve DOIS arquivos — matrícula e certidão de ônus — e o CRM só guardava o primeiro).
+ * Cada arquivo vai pro Drive (pasta IMOVEL); todos ficam listados em `files`. Arquivo repetido (mesmo conteúdo) é ignorado, então dá pra buscar de novo sem duplicar: só o que é NOVO
+ * é conferido pela IA e encaminhado ao cliente. A equipe é avisada por push.
+ */
+export async function finishCertidaoFiles(db: Db, p: { accountId: string; id: string; files: { buffer: Buffer; name?: string }[]; io?: Io }) {
   const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
   if (!r) throw new Error('Pedido de certidão não encontrado');
-  if (r.status === 'ISSUED') return r;
+  const entradas = p.files.filter((f) => isPdf(f.buffer));
+  if (!entradas.length) throw new Error('nenhum dos arquivos é um PDF');
   const nome = await leadNameOf(db, r.leadId);
-  const drive = await saveCertidaoToDrive(db, r, p.pdf);
+
+  // arquivos que o pedido já tem (o 1º salvo antes deste recurso entra sem sha: calcula baixando do Drive só se precisar)
+  let files: CertidaoFile[] = Array.isArray(r.files) ? [...(r.files as unknown as CertidaoFile[])] : [];
+  if (!files.length && r.driveFileId) files.push({ name: r.pdfName || 'certidao.pdf', driveFileId: r.driveFileId, driveUrl: r.driveUrl, size: 0, at: (r.finishedAt || r.updatedAt).toISOString() });
+  for (const f of files) {
+    if (f.sha || !f.driveFileId) continue;
+    try { const { downloadDriveFile } = await import('./google.service'); const buf = await downloadDriveFile(r.accountId, f.driveFileId, 'application/pdf'); f.sha = shaOf(buf); f.size = buf.length; } catch { /* sem sha: não deduplica esse */ }
+  }
+  const novos = entradas
+    .map((e) => ({ ...e, sha: shaOf(e.buffer) }))
+    .filter((e, i, arr) => arr.findIndex((x) => x.sha === e.sha) === i && !files.some((f) => f.sha === e.sha));
+  if (!novos.length) return { row: r, novos: 0 };
+
+  const totalNoPortal = files.length + novos.length;
+  const nomeDe = (orig: string | undefined, i: number) => {
+    if (totalNoPortal === 1) return undefined; // nome padrão de sempre
+    const base = (orig || '').replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]/g, ' ').trim();
+    return `CERTIDAO - MATRICULA ${r.matricula} - ${base || `arquivo ${files.length + i + 1}`}.pdf`;
+  };
+  const salvos: (CertidaoFile & { buffer: Buffer })[] = [];
+  let falha = '';
+  for (let i = 0; i < novos.length; i++) {
+    const d = await saveCertidaoToDrive(db, r, novos[i].buffer, nomeDe(novos[i].name, i));
+    if (d.ok) salvos.push({ name: d.fileName, driveFileId: d.fileId, driveUrl: d.fileUrl, sha: novos[i].sha, size: novos[i].buffer.length, at: new Date().toISOString(), buffer: novos[i].buffer });
+    else falha = d.reason;
+  }
+
   let out;
-  if (drive.ok) {
-    out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', pdf: null, pdfName: drive.fileName, driveFileId: drive.fileId, driveUrl: drive.fileUrl, finishedAt: new Date(), detail: 'Certidão emitida e salva no Drive (pasta IMOVEL).', nextCheckAt: null } });
-    await note(db, r.leadId, `📄 Certidão da matrícula ${r.matricula} EMITIDA (protocolo ${out.protocolo || '—'}) e salva no Drive, subpasta IMOVEL:\n${drive.fileUrl}`, r.requestedById);
-    pushAll(p.accountId, '📄 Certidão emitida e salva no Drive', `${nome} — matrícula ${r.matricula} (pasta IMOVEL)`, r.leadId);
+  if (salvos.length) {
+    const todos: CertidaoFile[] = [...files, ...salvos.map(({ buffer: _b, ...f }) => f)];
+    const primeiro = todos[0];
+    out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', files: todos as any, pdf: null, pdfName: primeiro.name, driveFileId: primeiro.driveFileId || null, driveUrl: primeiro.driveUrl || null, finishedAt: r.finishedAt || new Date(), detail: `Certidão emitida e salva no Drive (pasta IMOVEL) — ${todos.length} arquivo${todos.length > 1 ? 's' : ''}.`, nextCheckAt: null, forceCheck: false } });
+    await note(db, r.leadId, `📄 Certidão da matrícula ${r.matricula} EMITIDA (protocolo ${out.protocolo || '—'}) — ${salvos.length > 1 ? `${salvos.length} arquivos novos salvos` : '1 arquivo novo salvo'} no Drive, subpasta IMOVEL:\n${salvos.map((f) => `• ${f.name}: ${f.driveUrl}`).join('\n')}${falha ? `\n⚠️ Outro arquivo NÃO subiu pro Drive (${falha}) — baixe do ONR.` : ''}`, r.requestedById);
+    pushAll(p.accountId, '📄 Certidão emitida e salva no Drive', `${nome} — matrícula ${r.matricula} (${salvos.length > 1 ? `${salvos.length} arquivos, ` : ''}pasta IMOVEL)`, r.leadId);
   } else {
-    const name = (p.pdfName || `Certidao matricula ${r.matricula}.pdf`).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 120);
-    out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', pdf: p.pdf, pdfName: name, finishedAt: new Date(), detail: `Certidão emitida, mas NÃO subiu pro Drive (${drive.reason}); o CRM tenta de novo a cada 10 min.`, nextCheckAt: new Date(Date.now() + 10 * 60_000) } });
-    await note(db, r.leadId, `⚠️ Certidão da matrícula ${r.matricula} EMITIDA, mas NÃO consegui salvar no Drive (${drive.reason}). O CRM guarda o PDF só de passagem e tenta de novo a cada 10 minutos.`, r.requestedById);
-    pushAll(p.accountId, '⚠️ Certidão emitida, mas NÃO foi pro Drive', `${nome} — matrícula ${r.matricula}: ${drive.reason}. Vou tentar de novo.`, r.leadId);
+    // Drive fora do ar / pasta não achada: guarda o 1º PDF só de passagem (como sempre) e tenta de novo a cada 10 min
+    const nomeTrans = (novos[0].name || `Certidao matricula ${r.matricula}.pdf`).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 120);
+    out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', pdf: novos[0].buffer, pdfName: nomeTrans, finishedAt: new Date(), detail: `Certidão emitida, mas NÃO subiu pro Drive (${falha}); o CRM tenta de novo a cada 10 min.`, nextCheckAt: new Date(Date.now() + 10 * 60_000) } });
+    await note(db, r.leadId, `⚠️ Certidão da matrícula ${r.matricula} EMITIDA, mas NÃO consegui salvar no Drive (${falha}). O CRM guarda o PDF só de passagem e tenta de novo a cada 10 minutos.`, r.requestedById);
+    pushAll(p.accountId, '⚠️ Certidão emitida, mas NÃO foi pro Drive', `${nome} — matrícula ${r.matricula}: ${falha}. Vou tentar de novo.`, r.leadId);
   }
   emitUpdate(p.io, p.accountId, r.leadId, r.id);
-  // Em segundo plano (não segura a extensão): a IA lê a certidão, confere o dono do imóvel e avisa/encaminha ao cliente (certidao-followup.service).
-  import('./certidao-followup.service').then((m) => m.afterCertidaoSaved(db, { accountId: p.accountId, requestId: r.id, leadId: r.leadId, matricula: r.matricula, pdf: p.pdf, io: p.io })).catch((e) => console.error('[Certidão] conferência/envio ao cliente falhou:', e?.message));
-  return out;
+  // Em segundo plano (não segura a extensão): a IA lê o(s) arquivo(s) NOVO(S), confere o dono do imóvel e avisa/encaminha ao cliente (certidao-followup.service).
+  const lista = salvos.length ? salvos : novos.map((n) => ({ name: n.name || `Certidao matricula ${r.matricula}.pdf`, buffer: n.buffer }));
+  import('./certidao-followup.service').then((m) => m.afterCertidaoSaved(db, { accountId: p.accountId, requestId: r.id, leadId: r.leadId, matricula: r.matricula, pdf: lista[0].buffer, extras: lista.slice(1).map((x) => ({ buffer: x.buffer, name: x.name })), primaryName: lista[0].name, io: p.io })).catch((e) => console.error('[Certidão] conferência/envio ao cliente falhou:', e?.message));
+  return { row: out, novos: novos.length };
+}
+
+/** Compatível com a extensão antiga: um PDF só. */
+export async function finishCertidao(db: Db, p: { accountId: string; id: string; pdf: Buffer; pdfName?: string; io?: Io }) {
+  const r = await finishCertidaoFiles(db, { accountId: p.accountId, id: p.id, files: [{ buffer: p.pdf, name: p.pdfName }], io: p.io });
+  return r.row;
 }
 
 /** PDFs que não subiram pro Drive (Drive fora do ar, pasta não achada): tenta de novo (chamada a cada minuto pela fila da extensão); ao subir, zera os bytes do banco. */
@@ -329,8 +380,8 @@ export async function retryCertidaoDrive(db: Db, accountId: string): Promise<voi
 export async function requestCollectNow(db: Db, p: { accountId: string; id: string; io?: Io }): Promise<{ queuedUntilMorning: boolean }> {
   const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
   if (!r) throw new Error('Pedido de certidão não encontrado');
-  if (r.status !== 'AWAITING_PAYMENT' || !r.protocolo) throw new Error('Só dá pra buscar um pedido que já foi feito no portal e ainda não saiu');
-  await db.certidaoRequest.update({ where: { id: r.id }, data: { forceCheck: true, nextCheckAt: new Date(), detail: 'Busca imediata pedida pela equipe; a extensão vai ao portal no próximo minuto.' } });
+  if (!['AWAITING_PAYMENT', 'ISSUED'].includes(r.status) || !r.protocolo) throw new Error('Só dá pra buscar um pedido que já foi feito no portal (aguardando a emissão ou já emitido, pra baixar os arquivos de novo)');
+  await db.certidaoRequest.update({ where: { id: r.id }, data: { forceCheck: true, nextCheckAt: new Date(), detail: r.status === 'ISSUED' ? 'Busca dos arquivos pedida pela equipe; a extensão baixa de novo e só o que for novo vai pro Drive e pro cliente.' : 'Busca imediata pedida pela equipe; a extensão vai ao portal no próximo minuto.' } });
   emitUpdate(p.io, p.accountId, r.leadId, r.id);
   return { queuedUntilMorning: foraDoHorario() };
 }

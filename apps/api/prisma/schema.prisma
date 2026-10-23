@@ -1077,6 +1077,7 @@ model CertidaoRequest {
   pdfName         String?
   driveFileId     String?
   driveUrl        String?
+  files           Json? // TODOS os arquivos que o ONR devolveu pro pedido (matrícula + certidão de ônus…): [{ name, driveFileId, driveUrl, sha, size, at }]; driveFileId/driveUrl acima = o 1º
   attempts        Int       @default(0) // tentativas de pegar o PIX / conferir a emissão
   nextCheckAt     DateTime?
   createdAt       DateTime  @default(now())
