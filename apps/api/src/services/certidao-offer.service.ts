@@ -116,11 +116,20 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   return true;
 }
 
+/** O cliente JÁ mandou uma certidão de ônus/matrícula que vale (e o banco não recusou)? Então não há o que emitir/cobrar: nem a oferta nem o pedido no ONR (Fabio 23/10, Luiz Fernando: a certidão
+ *  estava no card e o 'Ok, obrigado!' dele ainda disparou o PIX). */
+async function jaTemCertidaoValida(leadId: string, cf: Record<string, any>): Promise<boolean> {
+  if (!temCertidaoEmMaos(cf)) return false;
+  const recusou = await (require('./doc-review.service') as typeof import('./doc-review.service')).bancoRecusouCertidao(leadId).catch(() => false);
+  return !recusou;
+}
+
 /** Cria o pedido no ONR (a extensão pega na fila): chamado quando o cliente aceitou. Uma vez por matrícula. */
 export async function ensureCertidaoRequest(accountId: string, leadId: string): Promise<{ created: boolean; why?: string }> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return { created: false, why: 'lead não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
+  if (await jaTemCertidaoValida(leadId, cf)) return { created: false, why: 'o cliente já enviou a certidão de ônus/matrícula e o banco não recusou' };
   const d = certidaoFromDocs(cf);
   if (!d) return { created: false, why: 'não achei matrícula e cidade/UF nos documentos' };
   const existente = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
@@ -226,6 +235,7 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   if (Date.now() - new Date(of.at).getTime() > 7 * 86_400_000) return; // oferta velha: não gasta IA lendo toda mensagem
   // A oferta só vale enquanto o card AINDA espera documentação (mesma regra de quando ela é feita): com a documentação recebida / em contratação não há mais o que emitir sozinho.
   if (!/aguardando document/i.test((lead.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return;
+  if (await jaTemCertidaoValida(leadId, cf)) return; // já mandou a certidão: a oferta perdeu o sentido, nada a autorizar
   // O cliente tem que estar respondendo à PERGUNTA DA CERTIDÃO: se a última mensagem da empresa (equipe ou IA) é sobre outro assunto, o "ok/sim/obrigado" dele não autoriza nada.
   const ultima = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', deleted: false, NOT: { content: '' } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
   if (!ultima || !mensagemFalaDaCertidao(ultima.content || '')) return;
