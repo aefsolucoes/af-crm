@@ -507,6 +507,20 @@ ${lines.join('\n')}
 Se o cliente voltar num assunto ainda sem resposta, não responda nada sobre ele ("noReply": true) — a resposta chega pelo balão; não abra outra pergunta nem invente. Se ele trouxer outro assunto, responda o outro. Respostas da equipe valem como verdade pra este cliente.`;
 }
 
+/** Veredito real de cada banco pro card (bankVerdict: negou / aprovou / ainda em análise). Vazio se o card não tem análise de crédito. */
+async function veredictosDosBancos(leadId: string): Promise<{ nome: string; v: 'NEG' | 'POS' | 'PENDING' }[]> {
+  const rows = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, select: { bank: true, kind: true, status: true, detail: true, source: true, createdAt: true } });
+  if (!rows.length) return [];
+  const { bankVerdict } = require('./credit-auto.service') as typeof import('./credit-auto.service');
+  const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  return ['INTER', 'CREDITAS', 'CREDIMORAR'].map((b) => ({ nome: nomes[b], v: bankVerdict(rows as any, b) }));
+}
+
+/** A dúvida é sobre uma NEGATIVA de banco? (ex.: "Proposta de X foi reprovada por crédito…"). Pura (testável). */
+export function ehNegativaDeBanco(texto: string): boolean {
+  return /reprovad|negativ|negad|n[aã]o\s+(?:foi\s+)?aprovad|recusad/i.test(String(texto || ''));
+}
+
 export async function composeClientReply(accountId: string, leadId: string, question: string, answer: string) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY não configurada');
@@ -515,7 +529,12 @@ export async function composeClientReply(accountId: string, leadId: string, ques
   });
   if (!ctx) throw new Error('Card não encontrado');
 
-  const system = `Você atende clientes da A&F Soluções Financeiras pelo WhatsApp. Você tinha dito ao cliente que ia verificar uma dúvida com a equipe; a equipe respondeu pelo chat interno do CRM. Agora:
+  // Situação REAL dos bancos (Cibele, 23/10: a IA disse "vamos aguardar os demais bancos" com Santander e Inter já fora e ainda contou o motivo do banco).
+  const vered = await veredictosDosBancos(leadId).catch(() => []);
+  const rotulo = { NEG: 'NÃO aprovou / não analisa este cliente', POS: 'aprovou', PENDING: 'em análise (ainda sem resposta)' } as const;
+  const bancosBloco = vered.length ? `\n\nSITUAÇÃO REAL DOS BANCOS (use só isto, não invente): ${vered.map((x) => `${x.nome}: ${rotulo[x.v]}`).join('; ')}.\n0b. NEGATIVA DE BANCO: diga só que o banco NÃO aprovou, SEM o motivo que ele deu (Bacen, SCR, prejuízo, política interna, score, restrição, renda). Só fale que estamos aguardando outros bancos se algum deles estiver "em análise" acima; se todos já negaram, diga que infelizmente nenhum aprovou neste momento, agradeça e não prometa novo retorno.` : '';
+
+  const system = `Você atende clientes da A&F Soluções Financeiras pelo WhatsApp. Você tinha dito ao cliente que ia verificar uma dúvida com a equipe; a equipe respondeu pelo chat interno do CRM. Agora:${bancosBloco}
 0. NUNCA anuncie aprovação de crédito nem escreva valores/prazos/parcelas aprovados: isso o CRM envia pelo aviso padrão (se a equipe mandou "avisar da aprovação", escreva só uma frase curta dizendo que o resumo da aprovação segue em seguida).
 1. Escreva a mensagem pro cliente passando a resposta da equipe — fiel ao que a equipe disse (não acrescente fato, valor, prazo ou promessa que não esteja na resposta), no tom da conversa, curta. Não conte que perguntou pra equipe nem cite nomes; só dê a resposta, como quem voltou com a informação. Se a resposta da equipe tiver comentário interno sobre o cliente, não repasse — só a informação que responde a dúvida.
 1b. EMISSÃO DE DOCUMENTOS (Fabio 19/10; 21/10: sem citar nome de empresa nem de pessoa): a gente emite certidões/documentos e você pode dizer isso, mas só no horário comercial (veja "HORÁRIO AGORA" no contexto). DENTRO: pode dizer que a gente vai emitir e que envia assim que sair. FORA: diga só que consegue emitir (sem citar o nome da empresa), sem "vou emitir agora", "já te envio", "te mando assim que sair" nem "só um instante". Nunca prometa horário. Se o cliente já mandou o documento que a equipe pediu, só agradeça e siga. NUNCA diga que algo que o cliente mandou "não serve"/"não é esse"/"não a guia" se a equipe não disse isso com todas as letras (no IPTU do Home Equity a guia, o carnê ou a capa já servem).
@@ -597,6 +616,19 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
     // Os números nunca vêm de texto livre da IA. Senão, segue o fluxo normal abaixo (a IA escreve a mensagem a partir da resposta da equipe).
     const viaAviso = await avisarAprovacaoPeloCrm(q, answer, userId, user?.name || null, io);
     if (viaAviso) return viaAviso;
+  }
+
+  // Negativa de banco e TODOS os bancos já negaram (Cibele, 23/10): quem avisa o cliente é o aviso padrão de "não aprovado" (motivo objetivo + card pra Perdidos/Venda Futura, pela regra da equipe) — nunca texto livre da IA,
+  // que mandou "vamos aguardar os demais bancos" dois minutos antes do aviso de que ninguém aprovou. A resposta da equipe fica registrada e o poller de reprovados cuida do resto.
+  if (ehNegativaDeBanco(q.question)) {
+    const vered = await veredictosDosBancos(q.leadId).catch(() => []);
+    if (vered.length === 3 && vered.every((x) => x.v === 'NEG')) {
+      const updated = await prisma.aiTeamQuestion.update({ where: { id: q.id }, data: { status: 'ANSWERED', answer, answeredByUserId: userId, answeredByName: user?.name || null, answeredAt: new Date(), sendError: null }, select: SELECT });
+      await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `Dúvida respondida por ${user?.name || 'alguém da equipe'}: ${answer}\n🤖 Não escrevi ao cliente em texto livre: os 3 bancos já negaram. O aviso padrão de "não aprovado" (e o card pra Perdido/Venda Futura, pela regra da equipe) sai pelo CRM.` } }).catch(() => {});
+      logActivity({ accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: 'respondeu uma dúvida da IA (negativa: aviso padrão do CRM)' });
+      emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+      return updated;
+    }
   }
 
   // Texto livre só vale dentro da janela de 24 h do WhatsApp: fora dela o envio falhava DEPOIS (a Meta recusa com 131047) e a dúvida aparecia como respondida (Maria Selmi, 19/10).
