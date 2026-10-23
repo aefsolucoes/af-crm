@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { loginUrlWithNext } from './login-redirect';
 
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || '',
@@ -35,7 +36,7 @@ api.interceptors.response.use(
       } catch {
         localStorage.removeItem('af_access_token');
         localStorage.removeItem('af_refresh_token');
-        window.location.href = '/login';
+        window.location.href = loginUrlWithNext();
       }
     }
     return Promise.reject(error);

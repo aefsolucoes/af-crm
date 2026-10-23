@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useAuthStore } from '@/store/auth.store';
 import api from '@/lib/api';
+import { postLoginTarget } from '@/lib/login-redirect';
 import { LayoutDashboard, MailCheck, ArrowLeft } from 'lucide-react';
 
 function errMsg(e: unknown, fallback: string) {
@@ -38,7 +39,7 @@ export default function LoginPage() {
         setInfo(`Enviamos um código de 6 dígitos para ${data.email || email}.`);
       } else {
         setAuth(data.user, data.accessToken, data.refreshToken);
-        router.push('/dashboard');
+        router.push(postLoginTarget());
       }
     } catch (err) {
       setError(errMsg(err, 'E-mail ou senha inválidos. Tente novamente.'));
@@ -54,7 +55,7 @@ export default function LoginPage() {
     try {
       const { data } = await api.post('/api/auth/verify-code', { email, code: code.trim() });
       setAuth(data.user, data.accessToken, data.refreshToken);
-      router.push('/dashboard');
+      router.push(postLoginTarget());
     } catch (err) {
       setError(errMsg(err, 'Código inválido.'));
     } finally {

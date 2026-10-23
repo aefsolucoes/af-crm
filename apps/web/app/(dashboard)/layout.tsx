@@ -16,6 +16,7 @@ import { useAuthStore } from '@/store/auth.store';
 import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
 import { playSoundOnce, SoundKey } from '@/lib/sounds';
+import { loginUrlWithNext } from '@/lib/login-redirect';
 
 const playNotificationSound = playSoundOnce;
 
@@ -33,7 +34,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     if (!user && typeof window !== 'undefined') {
       const token = localStorage.getItem('af_access_token');
-      if (!token) router.replace('/login');
+      if (!token) router.replace(loginUrlWithNext());
     }
   }, [user, router]);
 
