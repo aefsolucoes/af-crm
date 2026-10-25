@@ -129,7 +129,25 @@ export function latestPerBank(rows: any[]): Record<string, any> {
     const virou = ap.proposalNumber && rows.some((r) => r.bank === bank && r.proposalNumber === ap.proposalNumber && r.status === 'REJECTED' && new Date(r.createdAt).getTime() > new Date(ap.createdAt).getTime());
     if (!virou) out[bank] = ap;
   }
+  // CADASTRO DIVERGENTE (Fabio 25/10: "preciso que a análise do Santander apareça Cadastro Divergente, ao invés de Falhou"): o Santander aceita a proposta mas devolve na lista o status "Cadastro Divergente"
+  // (nome/CPF/nascimento não batem) — a extensão grava "não reconheci o status…: Cadastro Divergente" e as conferências seguintes dizem só "não achei o cliente na lista". A tela mostra o rótulo
+  // "Cadastro divergente" enquanto a ÚLTIMA rodada (RUN) do banco foi divergente e nada decisivo ou mais novo veio depois.
+  for (const bank of Object.keys(out)) {
+    const cur = out[bank];
+    if (RESULTADO_DECISIVO.has(cur.status) || cur.status === 'REQUESTED' && cur.kind === 'RUN') continue;
+    if (cadastroDivergenteDoBanco(rows, bank)) out[bank] = { ...cur, cadDiv: true };
+  }
   return out;
+}
+
+const RX_CAD_DIV = /cadastro\s+diverg/i;
+/** A rodada mais recente (RUN) deste banco acusou "Cadastro Divergente" e nada decisivo/mais novo veio depois? `rows` do mais novo pro mais antigo. Pura (testável). */
+export function cadastroDivergenteDoBanco(rows: { bank: string; kind?: string; status: string; detail?: string | null; conditions?: string | null; source?: string; createdAt: Date | string }[], bank: string): boolean {
+  const doBanco = rows.filter((r) => r.bank === bank && r.source !== 'AI_SIM');
+  const ultimaRun = doBanco.find((r) => (r.kind || 'RUN') === 'RUN');
+  if (!ultimaRun || !RX_CAD_DIV.test(`${ultimaRun.detail || ''} ${ultimaRun.conditions || ''}`)) return false;
+  const t = new Date(ultimaRun.createdAt).getTime();
+  return !doBanco.some((r) => RESULTADO_DECISIVO.has(r.status) && new Date(r.createdAt).getTime() >= t);
 }
 
 const normName = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -822,6 +840,11 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: row.accountId }, select: { paused: true } }))?.paused;
   if (row.kind === 'CHECK' && (row.status === 'SENT' || row.status === 'CHECK')) {
     if (paused) return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: `Conferência automática PAUSADA (pausa geral ligada). Use "Conferir" pra ler de novo. ${String(row.detail || '').slice(0, 300)}` } });
+    // Cadastro divergente (Santander): ler a lista de 10 em 10 min não adianta — o cliente não aparece até o cadastro ser corrigido. Para as conferências; o CRM pergunta ao cliente e refaz a análise quando ele corrige.
+    const rodada = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'RUN', dryRun: false, source: { not: 'AI_SIM' } }, orderBy: { createdAt: 'desc' }, select: { detail: true, conditions: true } });
+    if (rodada && RX_CAD_DIV.test(`${rodada.detail || ''} ${rodada.conditions || ''}`)) {
+      return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: 'Cadastro divergente: parei de conferir a lista do banco até o cadastro ser corrigido (o CRM pergunta ao cliente e refaz a análise quando ele corrigir).' } });
+    }
     const creditas = row.bank === 'CREDITAS';
     const maxTries = CHECK_MAX_TRIES + (creditas ? CREDITAS_EXTRA_TRIES : 0);
     const velho = creditas && Date.now() - row.createdAt.getTime() > CREDITAS_MAX_AGE_MS; // Creditas: o limite é o tempo (60 h), não a contagem
@@ -840,7 +863,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     }
     return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', detail: `Sem resultado depois de ${creditas ? 'mais de 60 h' : `${maxTries} conferências`}: confira no portal. ${String(row.detail || '').slice(0, 300)}` } });
   }
-  if (row.kind === 'RUN' && row.status === 'SENT' && CHECK_BANKS.includes(row.bank) && !paused) {
+  if (row.kind === 'RUN' && row.status === 'SENT' && CHECK_BANKS.includes(row.bank) && !paused && !RX_CAD_DIV.test(`${row.detail || ''} ${row.conditions || ''}`)) {
     const open = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'CHECK', status: { in: ACTIVE } }, select: { id: true } });
     if (!open) {
       await db.creditAnalysis.create({

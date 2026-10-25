@@ -84,7 +84,12 @@ async function uma(accountId: string, r: { id: string; leadId: string; bank: str
   if (cd.analysisId === r.id && (cd.status === 'ASKED' || cd.status === 'EQUIPE' || cd.status === 'CORRIGIDO')) return; // já tratado
   if (cd.status === 'CORRIGIDO' && cd.correctedAt && r.createdAt < new Date(cd.correctedAt)) return; // divergência anterior à correção
   // Já saiu uma rodada mais nova NESSE banco que não é a divergente: resolvido.
-  const maisNova = await prisma.creditAnalysis.findFirst({ where: { leadId: r.leadId, bank: r.bank, dryRun: false, createdAt: { gt: r.createdAt }, NOT: { detail: { contains: 'diverg', mode: 'insensitive' } } }, select: { id: true } });
+  // (Hélio, 25/10: as conferências "não achei o cliente na lista" também são mais novas e não dizem "diverg" — contavam como "já resolvido" e o cliente nunca era avisado.) Só vale uma RODADA nova (RUN) sem a divergência,
+  // ou um resultado decisivo (aprovou/reprovou/condicional).
+  const maisNova = await prisma.creditAnalysis.findFirst({
+    where: { leadId: r.leadId, bank: r.bank, dryRun: false, createdAt: { gt: r.createdAt }, source: { not: 'AI_SIM' }, NOT: { detail: { contains: 'diverg', mode: 'insensitive' } }, OR: [{ kind: 'RUN' }, { status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] } }] },
+    select: { id: true },
+  });
   if (maisNova) return;
   if (cf._autoPaused) return;
 
@@ -117,6 +122,7 @@ async function uma(accountId: string, r: { id: string; leadId: string; bank: str
   const env = await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: texto, io: io as any });
   if (!env.success) return; // tenta no próximo minuto
   await salva(lead.id, { analysisId: r.id, bank: r.bank, status: 'ASKED', at: new Date().toISOString(), participantes });
+  if ((cf._cadConfirm as any)?.status === 'ASKED') await salvaConfirm(lead.id, { status: 'SUPERADO', supersededAt: new Date().toISOString() }); // a pergunta da divergência substitui a confirmação (mesmos dados)
   await note(lead.id, `🔎 O ${banco} acusou "Cadastro Divergente": perguntei ao cliente se o nome, o CPF e a data de nascimento de cada participante correspondem à pessoa (pode haver erro em qualquer um dos três ou nome de um com CPF do outro). Se ele corrigir, o CRM atualiza o card e refaz a análise em todos os bancos.`);
 }
 
@@ -124,7 +130,7 @@ async function uma(accountId: string, r: { id: string; leadId: string; bank: str
 export async function aiCadDivContext(leadId: string): Promise<string> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cd = ((l?.customFields || {}) as Record<string, any>)._cadDiv as { status?: string; bank?: string } | undefined;
-  if (!cd || cd.status !== 'ASKED') return '';
+  if (!cd || cd.status !== 'ASKED') return aiCadConfirmContext((l?.customFields || {}) as Record<string, any>);
   const cf = (l?.customFields || {}) as Record<string, any>;
   const banco = BANK_LABEL[cd.bank || ''] || 'o banco';
   const lista = participantesDoCard(cf).map((p, i) => `  ${i + 1}) ${p.nome} — CPF ${p.cpf} — nascimento ${p.nascimento}`).join('\n');
@@ -141,9 +147,14 @@ const CAMPOS_IDENTIDADE = ['participante_1', 'cpf_1', 'nascimento_1', 'participa
 
 /** A IA gravou campos de identidade enquanto a pergunta estava aberta: o card foi corrigido → refaz a análise em todos os bancos. */
 export async function cadastroCorrigido(accountId: string, leadId: string, camposMudados: string[], io: Io): Promise<boolean> {
-  if (!camposMudados.some((k) => CAMPOS_IDENTIDADE.includes(k))) return false;
+  const mudouIdentidade = camposMudados.some((k) => CAMPOS_IDENTIDADE.includes(k));
+  if (!mudouIdentidade && !camposMudados.includes('cadastro_confirmado')) return false;
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, name: true } });
-  const cd = ((l?.customFields || {}) as Record<string, any>)._cadDiv as { status?: string } | undefined;
+  const cdAll = ((l?.customFields || {}) as Record<string, any>);
+  const cd = cdAll._cadDiv as { status?: string } | undefined;
+  // Confirmação do cadastro logo que a proposta chega (não é a divergência do banco): corrigiu → refaz a análise com os dados certos; confirmou → só registra.
+  if (l && (!cd || cd.status !== 'ASKED') && (cdAll._cadConfirm as any)?.status === 'ASKED') return confirmacaoRespondida(accountId, leadId, l.name, camposMudados, mudouIdentidade);
+  if (!mudouIdentidade) return false;
   if (!l || !cd || cd.status !== 'ASKED') return false;
   await salva(leadId, { status: 'CORRIGIDO', correctedAt: new Date().toISOString(), campos: camposMudados.filter((k) => CAMPOS_IDENTIDADE.includes(k)) });
   const { createRequests, BANK_KEYS } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
@@ -151,5 +162,100 @@ export async function cadastroCorrigido(accountId: string, leadId: string, campo
   await note(leadId, `🔁 O cliente corrigiu nome/CPF/nascimento (${camposMudados.filter((k) => CAMPOS_IDENTIDADE.includes(k)).join(', ')}) depois do "Cadastro Divergente": o card foi atualizado e refiz a análise em ${r.created} banco(s) (todos os bancos, com os dados certos).`);
   push(accountId, '🔁 Cadastro corrigido', `${l.name}: análise refeita nos bancos com nome/CPF corrigidos`, leadId);
   void io;
+  return true;
+}
+
+
+// ─── CONFIRMAÇÃO DO CADASTRO LOGO QUE A PROPOSTA CHEGA (Fabio 25/10) ───────────────────────────────────────────────────────────────────────────────────────────
+// "Preciso que o CRM confirme com o cliente que encaminhou a proposta o nome, a data de nascimento e o CPF e ajuste no card — isso não impede a análise de crédito."
+// A análise automática segue normalmente (não espera esta confirmação). O CRM pergunta no WhatsApp (IA do card ligada, sem STOP TOTAL, 07h–21h, janela de 24 h aberta; senão espera até 24 h e desiste sem barulho);
+// a IA da conversa grava as correções no card ("participante_1", "cpf_1", "nascimento_1"…) e o CRM refaz a análise em TODOS os bancos com os dados certos (confirmacaoRespondida).
+// Estado: customFields._cadConfirm = { status: ASKED | PENDING | CONFIRMADO | CORRIGIDO | EXPIRADO | SUPERADO, at }.
+
+export const CADCONFIRM_FROM = new Date('2026-10-25T14:00:00Z'); // só propostas cuja análise automática começou depois disto (não pergunta a quem já está no meio do processo)
+const CONFIRM_ASK_VALID_MS = 3 * 86_400_000;
+
+export function cadConfirmText(participantes: CadDivParticipante[], primeiroNome: string | null): string {
+  const lista = participantes.map((p) => `• ${p.nome} — CPF ${p.cpf} — nascimento ${p.nascimento}`).join('\n');
+  return [
+    `${primeiroNome ? `${primeiroNome}, recebi` : 'Recebi'} a sua proposta e a análise de crédito já está em andamento. Só pra garantir que tudo sai certinho, confere comigo o nome, o CPF e a data de nascimento que vieram nela:`,
+    '',
+    lista,
+    '',
+    'Está tudo correto? Se algum dado estiver errado, me manda o certo que eu ajusto aqui.',
+  ].join('\n');
+}
+
+async function salvaConfirm(leadId: string, patch: Record<string, unknown>) {
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = { ...((fresh?.customFields || {}) as Record<string, any>) };
+  cf._cadConfirm = { ...(cf._cadConfirm || {}), ...patch };
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
+}
+
+const ehPreAnalise = (stage?: string | null) => /pre\W*analise/i.test(String(stage || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+
+export async function processCadastroConfirm(accountId: string, io: Io): Promise<void> {
+  const leads = await prisma.lead.findMany({
+    where: { accountId, status: 'OPEN', archived: false, isGroup: false, stage: { name: { contains: 'an', mode: 'insensitive' } } },
+    select: { id: true, name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } },
+    orderBy: { updatedAt: 'desc' },
+    take: 120,
+  });
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Record<string, any>;
+    if (!ehPreAnalise(l.stage?.name) || cf._cadConfirm || cf._autoPaused) continue;
+    const comecou = cf._autoStartedAt ? new Date(cf._autoStartedAt) : null;
+    if (!comecou || comecou < CADCONFIRM_FROM) continue; // análise automática ainda não começou (ou é de antes deste recurso)
+    if (String(cf._cadDiv?.status || '') === 'ASKED') { await salvaConfirm(l.id, { status: 'SUPERADO', at: new Date().toISOString() }); continue; }
+    if (soDigitos(cf.cpf_1).length !== 11 || !String(cf.participante_1 || '').trim()) continue; // sem proposta preenchida não há o que conferir
+    if (!l.aiAutoReplyActive) continue; // IA desligada: a equipe está na conversa
+    try { await confirmaUma(accountId, l.id, l.name, cf, io); } catch (e: any) { console.warn('[Confirmação do cadastro]', e?.message); }
+  }
+}
+
+async function confirmaUma(accountId: string, leadId: string, leadName: string, cf: Record<string, any>, io: Io): Promise<void> {
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const inicio = new Date(cf._autoStartedAt).getTime();
+  if (!(inNoticeWindow() && (await whatsappWindowOpen(leadId)))) {
+    if (Date.now() - inicio > WAIT_MAX_MS) await salvaConfirm(leadId, { status: 'EXPIRADO', at: new Date().toISOString() }); // não deu pra perguntar em 24 h: desiste (não bloqueia nada)
+    return;
+  }
+  const participantes = participantesDoCard(cf);
+  if (!participantes.length) return;
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, leadName);
+  const env = await sendOutboundWhatsApp({ accountId, leadId, content: cadConfirmText(participantes, nome), io: io as any });
+  if (!env.success) return; // tenta no próximo minuto
+  await salvaConfirm(leadId, { status: 'ASKED', at: new Date().toISOString(), participantes });
+  await note(leadId, '🔎 Perguntei ao cliente se o nome, o CPF e a data de nascimento da proposta estão corretos (a análise de crédito segue normalmente). Se ele corrigir, o CRM atualiza o card e refaz a análise nos bancos.');
+}
+
+/** Bloco pro prompt da IA da conversa enquanto a confirmação do cadastro está em aberto (3 dias). '' se não houver. */
+export function aiCadConfirmContext(cf: Record<string, any>): string {
+  const cc = cf._cadConfirm as { status?: string; at?: string } | undefined;
+  if (!cc || cc.status !== 'ASKED' || (cc.at && Date.now() - new Date(cc.at).getTime() > CONFIRM_ASK_VALID_MS)) return '';
+  const lista = participantesDoCard(cf).map((p, i) => `  ${i + 1}) ${p.nome} — CPF ${p.cpf} — nascimento ${p.nascimento}`).join('\n');
+  return `--- CONFIRMAÇÃO DO CADASTRO DA PROPOSTA (pergunta já feita ao cliente) ---
+O CRM já perguntou se o nome, o CPF e a data de nascimento que vieram na proposta estão corretos (a análise de crédito JÁ está rodando: isto não a atrasa nem a impede). Dados do card:
+${lista}
+Quando o cliente responder:
+- Se corrigir algum NOME, CPF ou DATA DE NASCIMENTO: grave em "extractedFields" SÓ os campos que mudam, com os valores CERTOS ("participante_1", "cpf_1", "nascimento_1", "participante_2", "cpf_2", "nascimento_2"; CPF só números; nascimento DD/MM/AAAA). Se faltar parte do dado, peça só o que falta. Diga que ajustou e que a análise será refeita com os dados certos (sem prazo).
+- Se disser que está TUDO CERTO ("sim", "tudo certo", "confere"): grave "cadastro_confirmado": "Sim" e agradeça em uma frase curta; não peça mais nada por isso.
+- Se a resposta não tiver a ver com a pergunta, responda normalmente à conversa e não insista. Nunca peça documento por isso e nunca fale de resultado de crédito.`;
+}
+
+async function confirmacaoRespondida(accountId: string, leadId: string, nome: string, campos: string[], mudouIdentidade: boolean): Promise<boolean> {
+  if (!mudouIdentidade) {
+    await salvaConfirm(leadId, { status: 'CONFIRMADO', confirmedAt: new Date().toISOString() });
+    await note(leadId, '✅ O cliente confirmou que o nome, o CPF e a data de nascimento da proposta estão corretos.');
+    return true;
+  }
+  const mudados = campos.filter((k) => CAMPOS_IDENTIDADE.includes(k));
+  await salvaConfirm(leadId, { status: 'CORRIGIDO', correctedAt: new Date().toISOString(), campos: mudados });
+  const { createRequests, BANK_KEYS } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: BANK_KEYS, dryRun: false, kind: 'RUN', source: 'AI', force: true, queueIfBusy: true });
+  await note(leadId, `🔁 O cliente corrigiu dados da proposta (${mudados.join(', ')}): o card foi atualizado e refiz a análise em ${r.created} banco(s) com os dados certos.`);
+  push(accountId, '🔁 Cadastro corrigido', `${nome}: análise refeita nos bancos com os dados corrigidos`, leadId);
   return true;
 }

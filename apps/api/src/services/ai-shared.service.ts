@@ -255,16 +255,19 @@ export async function aiCreditContext(leadId: string): Promise<string> {
   const rows = await prisma.creditAnalysis.findMany({
     where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
     orderBy: { createdAt: 'desc' },
-    select: { bank: true, kind: true, status: true, detail: true, source: true, createdAt: true },
+    select: { bank: true, kind: true, status: true, detail: true, conditions: true, source: true, createdAt: true },
   });
   if (!rows.length) return '';
   const { bankVerdict, semRuidoDeSimulacao } = require('./credit-auto.service') as typeof import('./credit-auto.service');
   const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  const { latestPerBank } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const lat = latestPerBank(rows as any);
   const linhas = ['INTER', 'CREDITAS', 'CREDIMORAR'].map((b) => {
     const v = bankVerdict(rows as any, b);
     const ultima = rows.find((r) => r.bank === b && semRuidoDeSimulacao(r as any) && !(r.kind === 'CHECK' && r.status === 'CHECK'));
     let txt: string;
-    if (v === 'POS') txt = ultima?.status === 'CONDITIONAL' ? 'APROVOU (condicionado ao envio de documentos)' : 'APROVOU';
+    if (lat[b]?.cadDiv) txt = 'CADASTRO DIVERGENTE (o banco acusou que nome, CPF ou data de nascimento não batem; o CRM pede ao cliente para conferir e refaz a análise quando ele corrige) — NÃO é reprovação';
+    else if (v === 'POS') txt = ultima?.status === 'CONDITIONAL' ? 'APROVOU (condicionado ao envio de documentos)' : 'APROVOU';
     else if (v === 'NEG') txt = ultima?.status === 'REJECTED' ? 'REPROVOU a proposta' : 'NÃO analisa este cliente (regra do banco/imóvel — nem chegou a analisar)';
     else if (ultima && ['SENT', 'REQUESTED', 'RUNNING'].includes(ultima.status)) txt = 'EM ANÁLISE (proposta enviada, sem resposta ainda)';
     else txt = 'ainda sem resultado (a análise não terminou)';
@@ -292,6 +295,13 @@ export async function aiCardState(leadId: string): Promise<string> {
 
   const credito = await aiCreditContext(leadId).catch(() => '');
   if (credito) partes.push(`ANÁLISE DE CRÉDITO:\n${credito}`);
+
+  // Cadastro (nome/CPF/nascimento) — confirmação pedida ao cliente / divergência do banco
+  const cadConf = cf._cadConfirm as { status?: string } | undefined;
+  const cadDivSt = cf._cadDiv as { status?: string } | undefined;
+  const rot: Record<string, string> = { ASKED: 'perguntei ao cliente e aguardo a resposta', CONFIRMADO: 'o cliente CONFIRMOU que está tudo certo', CORRIGIDO: 'o cliente corrigiu e a análise foi refeita com os dados certos' };
+  const cadTxt = [cadDivSt?.status && rot[cadDivSt.status] ? `divergência acusada pelo banco: ${rot[cadDivSt.status]}` : '', cadConf?.status && rot[cadConf.status] ? `confirmação da proposta: ${rot[cadConf.status]}` : ''].filter(Boolean).join('; ');
+  if (cadTxt) partes.push(`CADASTRO (nome, CPF e data de nascimento): ${cadTxt}.`);
 
   // Documentos já recebidos e conferidos pela IA
   const revs = Object.values((cf._docReview || {}) as Record<string, any>).filter((r: any) => r && r.tipo && r.resultado !== 'NAO_DOCUMENTO' && !r.encerrada) as any[];
@@ -430,6 +440,7 @@ ${ctx.historicoTexto}`;
  *  em site-lead.service.ts pros campos conhecidos). */
 const BUILTIN_LEAD_FIELDS: { key: string; label: string }[] = [
   { key: 'falando_com', label: 'Nome de QUEM ESTÁ FALANDO no WhatsApp quando NÃO é o titular do crédito (ex.: a esposa que preencheu a proposta) — deixe vazio se quem fala é o próprio titular' },
+  { key: 'cadastro_confirmado', label: 'Cliente CONFIRMOU que nome, CPF e data de nascimento da proposta estão corretos — preencha "Sim" SÓ quando ele disser isso (resposta à pergunta de confirmação do cadastro)' },
   { key: 'falando_com_relacao', label: 'Relação de quem está falando com o titular (Esposa, Marido, Filho(a), Pai/Mãe, Sócio(a), Contador(a), Outro)' },
   { key: 'participante_1', label: 'Nome do participante 1' },
   { key: 'participante_2', label: 'Nome do participante 2' },

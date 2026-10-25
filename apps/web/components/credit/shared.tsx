@@ -28,6 +28,8 @@ export const MANUAL_STATUS = ['SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'CH
 
 export interface Analysis {
   id: string; bank: Bank; status: string; kind?: string; detail: string | null; dryRun: boolean; source: string; chosen: boolean;
+  /** O banco acusou "Cadastro Divergente" (nome/CPF/nascimento não batem) na última rodada e nada decisivo veio depois. */
+  cadDiv?: boolean;
   holderName?: string | null; requestedValue?: number | null; proposalNumber: string | null; approvedValue: number | null; netValue?: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
   firstInstallment: number | null; lastInstallment: number | null; conditions: string | null;
   requestedAt: string; finishedAt: string | null; updatedAt: string; createdAt: string;
@@ -161,6 +163,13 @@ export function Badge({ a, scrLock }: { a?: Analysis; scrLock?: boolean }) {
   // Creditas travada esperando o formulário SCR Bacen assinado (Fabio 23/10): a análise DESTE participante não está "em análise" — está esperando o formulário voltar.
   if (scrLock && a.status !== 'REJECTED' && a.status !== 'APPROVED' && a.status !== 'CONDITIONAL') return (
     <div className="space-y-0.5"><div className="flex items-center gap-1"><span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700">Aguardando formulário SCR</span></div></div>
+  );
+  // Santander devolveu "Cadastro Divergente" (nome/CPF/nascimento não batem): mostra isso, não "Falhou"/"Enviada" (Fabio 25/10). O CRM já pergunta ao cliente e refaz a análise quando ele corrige.
+  if (a.cadDiv && a.status !== 'APPROVED' && a.status !== 'CONDITIONAL' && a.status !== 'REJECTED') return (
+    <div className="space-y-0.5">
+      <div className="flex items-center gap-1"><span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700" title="O banco acusou divergência no cadastro (nome, CPF ou data de nascimento). Confirme os dados com o cliente e corrija o card; a análise é refeita.">Cadastro divergente</span></div>
+      <div className="text-[11px] text-slate-400">{ago(a.updatedAt)}</div>
+    </div>
   );
   const baseStatus = STATUS[a.status] || { label: a.status, cls: 'bg-slate-100 text-slate-500' };
   // Falha por REGRA do banco/imóvel (mínimo do imóvel, terreno, saldo devedor…) aparece como "Desqualificado" (vale como reprovado), não como "Falhou" (Fabio 14/10).
