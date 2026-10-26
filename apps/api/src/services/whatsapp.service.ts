@@ -1000,6 +1000,14 @@ export async function resolveContactAndLeadByPhone(
 }
 
 /** Localização que o cliente manda pelo WhatsApp (type "location"): vira texto com o nome/endereço e o link do mapa. Antes era DESCARTADA (Fabio 26/10: "não estou recebendo a localização no Inbox do CRM"). Pura (testável). */
+/** Texto que chega INTEIRO codificado como URL ("Ol%C3%A1%21%20Vim%20pelo%20Instagram…" — link de anúncio/Instagram com a mensagem pronta): decodifica pra leitura normal.
+ *  Sem isso a palavra gigante sem espaço estourava a largura da conversa no celular (Fabio 26/10, João Vito). Só mexe quando não há espaço e há %XX; se não decodificar, devolve igual. Pura (testável). */
+export function decodeIfUrlEncoded(text: string): string {
+  const t = String(text || '');
+  if (!t || /\s/.test(t) || !/%[0-9A-Fa-f]{2}/.test(t)) return t;
+  try { const d = decodeURIComponent(t.replace(/\+/g, ' ')); return d.trim() ? d : t; } catch { return t; }
+}
+
 export function formatCloudLocation(loc: { latitude?: number | string; longitude?: number | string; name?: string; address?: string; url?: string } | null | undefined): string {
   const lat = Number(loc?.latitude), lng = Number(loc?.longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return '';
@@ -1082,7 +1090,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       const from = msg.from as string; // e.g. "5561999990001"
       let text = mediaInfo
         ? `📎 ${mediaInfo.fileName}${mediaInfo.caption ? ` — ${mediaInfo.caption}` : ''}`
-        : buttonReplyTitle || locationText || (msg.text?.body as string) || '';
+        : buttonReplyTitle || locationText || decodeIfUrlEncoded((msg.text?.body as string) || '') || '';
       const externalId = msg.id as string;
       const profileName = normalizeClientName(value.contacts?.[0]?.profile?.name || `+${from}`);
 

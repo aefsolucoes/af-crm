@@ -1692,7 +1692,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                           {style.icon} {note.user.name}
                         </p>
                       )}
-                      <p className={cn('text-sm leading-relaxed whitespace-pre-wrap', style.text)}>{note.content}</p>
+                      <p className={cn('text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]', style.text)}>{note.content}</p>
                       <span className="text-xs opacity-50 mt-0.5 block text-right">{time}</span>
                     </div>
                   </div>
@@ -1938,7 +1938,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                                   <MousePointerClick size={11} /> Respondeu pelo botão
                                 </p>
                               )}
-                              {split.text && <p className="text-sm leading-relaxed whitespace-pre-wrap pr-20">{renderMessageText(split.text)}</p>}
+                              {split.text && <p className="text-sm leading-relaxed whitespace-pre-wrap pr-20 break-words [overflow-wrap:anywhere]">{renderMessageText(split.text)}</p>}
                               {split.buttons.length > 0 && (
                                 <div className="-mx-3 mt-2 mb-4 border-t border-white/10">
                                   {split.buttons.map((b) => {
