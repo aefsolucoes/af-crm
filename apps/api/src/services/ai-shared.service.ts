@@ -276,7 +276,9 @@ export async function aiCreditContext(leadId: string): Promise<string> {
     else if (v === 'POS') txt = ultima?.status === 'CONDITIONAL' ? 'APROVOU (condicionado ao envio de documentos)' : 'APROVOU';
     else if (v === 'NEG') txt = ultima?.status === 'REJECTED' ? 'REPROVOU a proposta' : 'NÃO analisa este cliente (regra do banco/imóvel — nem chegou a analisar)';
     else if (ultima && ['SENT', 'REQUESTED', 'RUNNING'].includes(ultima.status)) txt = 'EM ANÁLISE (proposta enviada, sem resposta ainda)';
-    else txt = 'ainda sem resultado (a análise não terminou)';
+    // 26/10 (Jézer): banco sem NENHUMA análise virava "ainda sem resultado" e a IA disse 3 vezes "o Santander ainda está em análise" — ele nunca rodou.
+    else if (!rows.some((r) => r.bank === b)) txt = 'NÃO RODOU — nenhuma proposta foi enviada a este banco (NÃO está em análise; não diga que aguardamos este banco)';
+    else txt = 'ainda sem resultado (a última tentativa não terminou ou falhou — não diga que está em análise neste banco)';
     return `- ${nomes[b]}: ${txt}`;
   });
   const [aprovSent, rejSent] = await Promise.all([
