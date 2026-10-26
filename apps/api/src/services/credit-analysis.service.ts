@@ -1655,12 +1655,17 @@ export async function requestProposalChangeForAi(db: Db, accountId: string, lead
   if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto' };
   if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity' };
   if ((lead.customFields as any)?._autoPaused) return { ok: false, detail: 'este cliente está PAUSADO na Análise de Crédito (botão da tela)' };
-  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 12, select: { bank: true, chosen: true, termMonths: true } });
+  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 12, select: { bank: true, chosen: true, termMonths: true, approvedValue: true, detail: true } });
   if (!aprovadas.length) return { ok: false, detail: 'o cliente não tem banco aprovado (use a análise normal)' };
   const escolhido = aprovadas.find((a) => a.chosen)?.bank;
   const candidatos = escolhido ? [escolhido] : Array.from(new Set(aprovadas.map((a) => a.bank)));
   const motivos: string[] = [];
   const bancos = candidatos.filter((b) => {
+    // Aprovou A MENOR (Fabio 26/10): pedir valor MAIOR que a aprovação não adianta — o banco já deu o máximo. Só vale prazo diferente (aprovação costuma subir com prazo maior).
+    const ap = aprovadas.find((a) => a.bank === b);
+    if (valor && ap && ap.approvedValue && /aprovad[oa] a menor/i.test(String(ap.detail || '')) && valor > Number(ap.approvedValue) && !(prazo && ap.termMonths && prazo > ap.termMonths)) {
+      motivos.push(`${BANKS[b]?.label || b} já aprovou a menor (${fmtBRL(Number(ap.approvedValue))}) e não aprova mais que isso`); return false;
+    }
     if (prazo && !valor && b === 'CREDITAS') { motivos.push('Creditas não deixa escolher o prazo'); return false; }
     if (prazo && !valor && aprovadas.find((a) => a.bank === b)?.termMonths === prazo) { motivos.push(`${BANKS[b]?.label || b} já foi analisado em ${prazo} meses`); return false; }
     return true;

@@ -179,6 +179,9 @@ export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; 
     if (rows.some(isSecond)) continue; // já foi rodado no 2º
     if (rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // ainda rodando
     const decided = [...rows].reverse().find((a) => ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(a.status));
+    // Falha que é SÓ DA PESSOA (Fabio 26/10: "quando não aprovar no Creditas pelo 1º nome, tentar pelo 2º participante"): o CPF do 1º já tem proposta ativa na Creditas e ela não aparece na lista — não rodou,
+    // mas isso não vale pro 2º participante (outro CPF). Regra do imóvel (mínimo, terreno, saldo) continua NÃO entrando: vale igual pro 2º.
+    if (!decided && rows.some((a) => a.kind === 'RUN' && a.status === 'FAILED' && CREDITAS_CPF_ATIVO.test(a.detail || '') && !isSecond(a))) { todo.push({ bank, why: 'CPF já tem proposta ativa na Creditas' }); continue; }
     if (decided) {
       if (decided.status === 'REJECTED') todo.push({ bank, why: 'reprovado' });
       else if (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || '')) todo.push({ bank, why: 'aprovado a menor' });
