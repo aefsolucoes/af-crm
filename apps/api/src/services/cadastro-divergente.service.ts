@@ -28,11 +28,18 @@ export function cpfMascarado(cpf: unknown): string {
 }
 
 export type CadDivParticipante = { nome: string; cpf: string; nascimento: string };
+/** 02113849500 → 021.138.495-00. Outro formato (CPF incompleto/digitado errado) sai como está, pro cliente enxergar o erro. */
+export function cpfCompleto(cpf: unknown): string {
+  const d = soDigitos(cpf);
+  return d.length === 11 ? `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}` : String(cpf ?? '').trim();
+}
+
 export function participantesDoCard(cf: Record<string, any>): CadDivParticipante[] {
   const out: CadDivParticipante[] = [];
   for (const i of [1, 2]) {
     const nome = String(cf[`participante_${i}`] || '').trim();
-    const cpf = cpfMascarado(cf[`cpf_${i}`]);
+    // CPF COMPLETO (Fabio 26/10: "como o CRM vai confirmar o CPF se ela não mostra o CPF completo? foi o próprio cliente que informou, não precisa tapar com *"): o cliente só consegue conferir se vir o número todo.
+    const cpf = cpfCompleto(cf[`cpf_${i}`]);
     const nascimento = String(cf[`nascimento_${i}`] || '').trim();
     if (nome || cpf) out.push({ nome: nome || '(sem nome)', cpf: cpf || '(sem CPF)', nascimento: nascimento || '(sem data)' });
   }
