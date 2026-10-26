@@ -162,6 +162,25 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
         </Link>
       </div>
 
+      {data.cardProposal && !data.latest[data.cardProposal.bank] && (
+        <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+          A proposta <b>{data.cardProposal.numero}</b> ({BANKS.find((b) => b.key === data.cardProposal!.bank)?.short || data.cardProposal.bank}) está só anotada no card — o CRM ainda não leu as condições dela.
+          <button
+            onClick={async () => {
+              setBusy(true);
+              try {
+                const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: [data.cardProposal!.bank], kind: 'CHECK' });
+                pingExtensions(data?.extensions, [data.cardProposal!.bank]);
+                toast(r.created ? 'Conferência na fila: a extensão lê a proposta no portal e as condições aparecem aqui' : 'Já tem uma leitura em andamento nesse banco', 'success');
+                refresh();
+              } catch (err: any) { toast(err?.response?.data?.error || 'Não consegui pedir a conferência', 'error'); } finally { setBusy(false); }
+            }}
+            disabled={busy}
+            className="ml-1 inline-flex items-center gap-1 rounded border border-amber-300 bg-white px-1.5 py-0.5 font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+          >Conferir no portal</button>
+        </div>
+      )}
+
       {data.participants?.name2 && (
         <div className="mb-2 text-[11px] text-slate-500 leading-snug">
           Titular: <span className="font-medium text-slate-600">{data.participants.inverted ? data.participants.name2 : data.participants.name1}</span>

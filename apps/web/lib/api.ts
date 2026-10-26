@@ -1,6 +1,28 @@
 import axios from 'axios';
 import { loginUrlWithNext } from './login-redirect';
 
+/** Renova o token de acesso com o refresh token (na API, mesmo baseURL das demais chamadas — antes ia para /api/auth/refresh relativo
+ *  ao site e dava 404, derrubando a sessão após ~1h). Uma renovação por vez: chamadas simultâneas esperam a mesma. Usado também pelo
+ *  socket, que é recusado pelo servidor quando o token venceu (Fabio 26/10: "as mensagens demoram para aparecer pra mim"). */
+let refreshing: Promise<string | null> | null = null;
+export function refreshAccessToken(): Promise<string | null> {
+  if (typeof window === 'undefined') return Promise.resolve(null);
+  if (!refreshing) {
+    refreshing = (async () => {
+      const refreshToken = localStorage.getItem('af_refresh_token');
+      if (!refreshToken) return null;
+      try {
+        const { data } = await axios.post(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/auth/refresh`, { refreshToken });
+        if (!data?.accessToken) return null;
+        localStorage.setItem('af_access_token', data.accessToken);
+        if (data.refreshToken) localStorage.setItem('af_refresh_token', data.refreshToken);
+        return data.accessToken as string;
+      } catch { return null; }
+    })().finally(() => { setTimeout(() => { refreshing = null; }, 0); });
+  }
+  return refreshing;
+}
+
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || '',
   withCredentials: false,
@@ -21,17 +43,9 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && !original._retry) {
       original._retry = true;
       try {
-        const refreshToken = localStorage.getItem('af_refresh_token');
-        if (!refreshToken) throw new Error('no refresh');
-        // Renova na API (mesmo baseURL das demais chamadas), não no domínio do site —
-        // antes ia para /api/auth/refresh relativo (o site) e sempre dava 404,
-        // derrubando a sessão após ~1h.
-        const { data } = await axios.post(
-          `${process.env.NEXT_PUBLIC_API_URL || ''}/api/auth/refresh`,
-          { refreshToken }
-        );
-        localStorage.setItem('af_access_token', data.accessToken);
-        original.headers.Authorization = `Bearer ${data.accessToken}`;
+        const token = await refreshAccessToken();
+        if (!token) throw new Error('no refresh');
+        original.headers.Authorization = `Bearer ${token}`;
         return api(original);
       } catch {
         localStorage.removeItem('af_access_token');

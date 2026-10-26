@@ -81,6 +81,8 @@ export function overrideSummary(o?: OverrideData): string {
 }
 
 export interface LeadAnalyses {
+  /** Proposta anotada SÓ no card (Instituição + Nº da proposta), sem análise no CRM: dá pra pedir uma conferência no portal. */
+  cardProposal?: { bank: Bank; numero: string } | null;
   eligible: boolean;
   rejectionPending?: boolean;
   latest: Partial<Record<Bank, Analysis>>;

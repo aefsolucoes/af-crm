@@ -98,7 +98,7 @@ function InboxPageInner() {
   const { data: conversations, isLoading: loadingConvs, isError: convsError, refetch: refetchConvs } = useQuery({
     queryKey: ['conversations'],
     queryFn: fetchConversations,
-    refetchInterval: 60000, // rede de segurança; o tempo real vem pelo socket abaixo
+    refetchInterval: () => (getSocket().connected ? 60000 : 10000), // rede de segurança; o tempo real vem pelo socket abaixo (caído: confere de 10 em 10 s)
     // Blip de rede/servidor não pode zerar a lista: tenta de novo sozinho antes
     // de desistir, e o que já tinha carregado continua na tela enquanto isso.
     retry: 3,
@@ -145,11 +145,13 @@ function InboxPageInner() {
     // Outro colaborador marcou/desmarcou um lead como importante — atualiza
     // a estrela na lista pra quem também está com a Inbox aberta.
     socket.on('lead_starred', refresh);
+    socket.on('connect', refresh); // reconectou (deploy, token renovado, celular voltou): busca o que chegou enquanto estava caído
     return () => {
       if (t) clearTimeout(t);
       socket.off('new_conversation', refresh);
       socket.off('new_notification', onNotification);
       socket.off('lead_starred', refresh);
+      socket.off('connect', refresh);
     };
   }, [queryClient]);
 
@@ -175,6 +177,7 @@ function InboxPageInner() {
     queryKey: ['messages', selectedId],
     queryFn: ({ pageParam }) => fetchMessages(selectedId!, pageParam),
     enabled: !!selectedId,
+    refetchInterval: () => (getSocket().connected ? false : 10000), // socket caído: a conversa aberta confere sozinha de 10 em 10 s
     initialPageParam: undefined as string | undefined,
     // Cada página vem em ordem cronológica (mais antiga primeiro) — se a
     // leva veio "cheia" (bateu o tamanho da página), pode ter mais antes

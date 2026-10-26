@@ -96,7 +96,17 @@ export async function claimSimulationDocs(db: Db, p: { accountId: string; extBan
     const ultima = aprovada || await db.creditAnalysis.findFirst({ where: { leadId: r.leadId, bank: bankKey, proposalNumber: { not: null }, dryRun: false }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true, detail: true, leadId: true, bank: true } });
     const { resolveHolderCpf } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
     const cpf = ultima ? await resolveHolderCpf(db, ultima) : null;
-    out.push({ id: r.id, leadId: r.leadId, leadName: lead?.name || 'Sem nome', institution: r.institution, mode: meta.mode, institutionId: meta.credimorarId ?? 0, proposalNumber: ultima?.proposalNumber || null, cpf });
+    // Sem análise nenhuma no CRM (proposta só anotada no card): usa o "Nº da proposta" e o CPF do titular do card (Pedro Francisco, 26/10).
+    let numero = ultima?.proposalNumber || null;
+    let cpfFinal = cpf;
+    if (!numero) {
+      const lc = await db.lead.findUnique({ where: { id: r.leadId }, select: { customFields: true } });
+      const cfl = (lc?.customFields || {}) as Record<string, any>;
+      const { propostaDoCard } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+      const pc = propostaDoCard(cfl);
+      if (pc && pc.bank === bankKey) { numero = pc.numero; cpfFinal = cpfFinal || String(cfl.cpf_1 || '').replace(/\D/g, '') || null; }
+    }
+    out.push({ id: r.id, leadId: r.leadId, leadName: lead?.name || 'Sem nome', institution: r.institution, mode: meta.mode, institutionId: meta.credimorarId ?? 0, proposalNumber: numero, cpf: cpfFinal });
   }
   return out;
 }

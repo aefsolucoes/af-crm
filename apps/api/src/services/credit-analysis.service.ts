@@ -345,6 +345,16 @@ async function alignHoldersWithApproval(db: Db, accountId: string, leadId: strin
   }
 }
 
+/** Proposta registrada SÓ no card (campos "Instituição" + "Nº da proposta"), sem nenhuma análise no CRM — cliente aprovado antes da aba Análise de Crédito ou tocado à mão (Fabio 26/10, Pedro Francisco).
+ *  Devolve o banco e o número pra uma CONFERÊNCIA ler a proposta no portal. Pura (testável). */
+export function propostaDoCard(cf: Record<string, any>): { bank: string; numero: string } | null {
+  const numero = String(cf?.num_proposta || '').replace(/\D/g, '');
+  const inst = String(cf?.instituicao || '');
+  if (numero.length < 5 || !inst) return null;
+  const hits = [/inter/i.test(inst) && 'INTER', /creditas/i.test(inst) && 'CREDITAS', /santander|credimorar/i.test(inst) && 'CREDIMORAR'].filter(Boolean) as string[];
+  return hits.length === 1 ? { bank: hits[0], numero } : null;
+}
+
 export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; alignApproval?: boolean; queueIfBusy?: boolean }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
@@ -400,7 +410,8 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
         }
       }
       const prev = kind === 'CHECK' ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true, requestedValue: true } }) : null;
-      const prevNumber = prev?.proposalNumber || null;
+      const doCard = kind === 'CHECK' && !prev?.proposalNumber ? propostaDoCard(cfPedido) : null; // sem análise com número: usa a proposta anotada no card
+      const prevNumber = prev?.proposalNumber || (doCard && doCard.bank === bank ? doCard.numero : null);
       await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, requestedValue: kind === 'CHECK' ? (prev?.requestedValue ?? null) : pedidoNaRodada, proposalNumber: prevNumber, holderCpf: prev?.holderCpf || null, holderName: prev?.holderName || null, dryRun: kind === 'CHECK' ? false : p.dryRun, source: p.source || 'EXTENSION', requestedById: p.userId || null } });
       created++;
     }
@@ -1262,6 +1273,7 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
     latest, ...(() => { const bp = latestByParticipant(history, cf, lead.name); return { latestP1: bp.p1, latestP2: bp.p2 }; })(), history, chosenId: history.find((a) => a.chosen)?.id || null,
     overrides: Object.fromEntries(overrides.map((o) => [o.bank, o.data])),
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
+    cardProposal: propostaDoCard(cf),
   };
 }
 
