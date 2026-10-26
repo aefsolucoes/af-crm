@@ -362,6 +362,8 @@ const CREDIT_ANALYSIS_RULES = `ANÁLISE DE CRÉDITO — quando o bloco "ANÁLISE
 RODAR A ANÁLISE ("runAnalysis": true) — só quando o cliente PEDIU pra rodar/analisar o crédito dele (ex.: "pode rodar?", "já pode analisar") e a proposta dele já está preenchida (card em Pré-Análise). Nunca por conta própria. Quando marcar true, diga que já encaminhou a análise aos bancos e que avisa quando sair, sem prazo. Nos outros casos, false.
 APRESENTAR A APROVAÇÃO ("sendApproval": true) — quando o cliente perguntar do resultado/aprovação/condições e o bloco acima trouxer banco APROVADO (ou aprovado a menor) e as condições ainda NÃO foram enviadas nesta conversa: marque true e NÃO escreva valor, prazo, taxa, parcela nem lista de documentos no "reply". O CRM manda sozinho, logo em seguida, o aviso padrão em 2 mensagens (1ª: resumo da proposta; 2ª: documentos) e a simulação em PDF. No "reply" escreva só uma frase curta (ex.: "Boa notícia! Já te mando os detalhes por aqui."). Se marcar sendApproval, NÃO marque sendSimulation (o PDF já vai junto). Se as condições já foram enviadas na conversa, responda a dúvida normalmente e deixe false.
 MANDAR A SIMULAÇÃO EM PDF ("sendSimulation": ["SANTANDER"] ou ["INTER"]) — SEMPRE UM banco só: o que o CLIENTE ESCOLHEU; se ele ainda não escolheu, o primeiro entre os aprovados do bloco na ordem fixa Inter e depois Santander. CREDITAS NÃO TEM PDF (a Creditas não tem evolução das parcelas feita por ela — Fabio 15/10): pra Creditas só vale a mensagem de aprovação com as condições; nunca marque "sendSimulation" pra ela nem prometa PDF dela (não compare taxas; a linha "Simulação em PDF" do bloco já indica qual). Marque quando, NESTA resposta, você apresentar as condições aprovadas, quando o cliente escolher um banco, ou quando pedir a simulação/parcelas/PDF. O CRM lê a simulação no portal do banco, põe a logo da A&F e envia o PDF logo em seguida, sozinho (1-2 min): no "reply" diga só que a simulação em PDF segue logo abaixo (sem prometer prazo exato). Nunca mande de vários bancos de uma vez, nem de banco reprovado ou em análise, nem repita se o PDF desse banco já foi enviado na conversa. Se o cliente escolher OUTRO banco depois, mande o desse banco. Nos outros casos, null.
+BANCO QUE AINDA NÃO RODOU ("runBanks") — Fabio 26/10 (Jézer): se o bloco ESTADO DO CARD diz que um banco "NÃO RODOU" e faz sentido pro cliente ele entrar (o cliente quer esse banco — agência física, taxa fixa, comparar condições — ou pergunta dele), você PODE dizer que esse banco está em análise / que vai colocar a proposta dele nesse banco — e AÍ marque "runBanks" com esse banco (ex.: ["SANTANDER"]): o CRM roda a análise de verdade na hora e o resultado chega ao cliente pelo aviso padrão. Nunca diga que um banco está em análise sem que ele esteja "EM ANÁLISE" no bloco ou marcado em "runBanks" nesta resposta. Não marque banco que já rodou (aprovou, reprovou, "não analisa"), nem com o cliente reprovado em todos (REPROVADO É DEFINITIVO). CAIXA não entra aqui (segue a regra do askTeam). Nos outros casos, null.
+
 NOVA PROPOSTA COM OUTRO PRAZO OU VALOR ("simulate": {"prazo": 180} ou {"valor": 80000} ou os dois) — quando o cliente, já com banco APROVADO, pedir OUTRO prazo (ex.: "e em 180x?", "um prazo intermediário", "quanto fica em 15 anos?") ou OUTRO valor de crédito (ex.: "dá pra ser 80 mil?"): você MESMA aciona, a equipe NÃO precisa ser consultada — NÃO use askTeam, NÃO invente valor nem parcela e NÃO use runAnalysis nesse caso. Marque "simulate" com o nº de MESES (60 a 240) e/ou o valor em reais (número) e, no "reply", diga só que vai rodar uma NOVA PROPOSTA com o que ele pediu e já volta com o resultado do banco (sem prazo exato; leva um tempo). O CRM roda a análise de verdade nos bancos que aprovaram e manda o resultado ao cliente sozinho: se o banco aprovar menos que o pedido, o aviso diz em qual prazo veio a menor. SANTANDER SÓ TRABALHA COM ANOS CHEIOS (múltiplos de 12 meses: 60, 72, 84, 96, 108, 120, 132, 144, 156, 168, 180… até 240): se o banco aprovado for o Santander e o cliente pedir outro prazo (ex.: 150 meses), marque "simulate" com o prazo de anos cheios MAIS PRÓXIMO PRA BAIXO (150 → 144) e diga isso a ele em uma frase ("o Santander trabalha com anos cheios, então rodo com 144 meses, que são 12 anos"). Encurtar o prazo NÃO garante taxa menor: nunca prometa que a taxa vai cair. VALOR MAIOR QUE O APROVADO A MENOR (Fabio 26/10, Jézer: o banco aprovou R$ 87 mil de R$ 100 mil e a IA prometeu "rodar uma nova proposta pedindo R$ 100 mil"): se o banco aprovou A MENOR (o bloco ESTADO DO CARD diz "aprovou A MENOR"), pedir um valor MAIOR NÃO adianta — o banco já deu o máximo pro perfil/imóvel dele. NÃO marque "simulate" com valor acima da aprovação e NÃO diga que vai rodar de novo pedindo mais. Explique em 1–2 frases que esse é o máximo que esse banco aprova pra ele (sem prometer nada) e mostre as saídas reais: aguardar o resultado dos outros bancos em análise, considerar outro banco (inclusive com agência física, se ele preferir) ou outro prazo quando o banco permite. Só prazo diferente continua valendo.
 Um pedido por vez. Se o pedido for outro (outro banco, dúvida de cálculo), siga as regras normais. Nos outros casos, null.`;
 
@@ -387,7 +389,7 @@ export function parseResumeOn(raw: unknown, now = Date.now()): string | null {
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>}`;
 
 /** "sendSimulation" vindo do JSON da IA: aceita só SANTANDER/INTER (lista ou texto); qualquer outra coisa = null. */
 /** "simulate" vindo do JSON da IA: {prazo?: meses (60 a 240), valor?: crédito em reais} (ou só o número do prazo); qualquer outra coisa = null. */
@@ -399,6 +401,12 @@ function parseSimulate(raw: unknown): { prazo?: number; valor?: number } | null 
   if (prazo >= 60 && prazo <= 240) out.prazo = prazo;
   if (valor >= 10_000 && valor <= 5_000_000) out.valor = valor;
   return out.prazo || out.valor ? out : null;
+}
+
+function parseRunBanks(raw: unknown): string[] | null {
+  const list = (Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []).map((v) => String(v || '').trim().toUpperCase());
+  const ok = Array.from(new Set(list.filter((v) => v === 'SANTANDER' || v === 'INTER' || v === 'CREDITAS')));
+  return ok.length ? ok : null;
 }
 
 function parseSendSimulation(raw: unknown): string[] | null {
@@ -436,6 +444,8 @@ export interface AiAutoReplyResult {
   extractedFields?: Record<string, string> | null;
   /** true = a IA pediu pra RODAR a análise de crédito do cliente nos bancos (extensões como ponte) — aplicar via applyAiExtractedActions. */
   runAnalysis?: boolean;
+  /** Bancos que NUNCA rodaram neste card e que a IA disse ao cliente que vai pôr em análise (SANTANDER | INTER | CREDITAS) — o CRM pede a 1ª rodada. */
+  runBanks?: string[] | null;
   /** Bancos cuja simulação em PDF a IA quer mandar (SANTANDER | INTER) — aplicar via applyAiExtractedActions. */
   sendSimulation?: string[] | null;
   /** true = a IA vai apresentar a aprovação pelo aviso padrão do CRM — aplicar via applyAiExtractedActions. */
@@ -743,6 +753,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         resumeOn: parseResumeOn(parsed.resumeOn),
         extractedFields,
         runAnalysis: parsed.runAnalysis === true,
+        runBanks: parseRunBanks(parsed.runBanks),
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
         sendApproval: parsed.sendApproval === true,
         simulate: parseSimulate(parsed.simulate),
@@ -764,6 +775,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         resumeOn: parseResumeOn(parsed.resumeOn),
         extractedFields,
         runAnalysis: parsed.runAnalysis === true,
+        runBanks: parseRunBanks(parsed.runBanks),
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
         sendApproval: parsed.sendApproval === true,
         simulate: parseSimulate(parsed.simulate),

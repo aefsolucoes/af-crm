@@ -277,7 +277,7 @@ export async function aiCreditContext(leadId: string): Promise<string> {
     else if (v === 'NEG') txt = ultima?.status === 'REJECTED' ? 'REPROVOU a proposta' : 'NÃO analisa este cliente (regra do banco/imóvel — nem chegou a analisar)';
     else if (ultima && ['SENT', 'REQUESTED', 'RUNNING'].includes(ultima.status)) txt = 'EM ANÁLISE (proposta enviada, sem resposta ainda)';
     // 26/10 (Jézer): banco sem NENHUMA análise virava "ainda sem resultado" e a IA disse 3 vezes "o Santander ainda está em análise" — ele nunca rodou.
-    else if (!rows.some((r) => r.bank === b)) txt = 'NÃO RODOU — nenhuma proposta foi enviada a este banco (NÃO está em análise; não diga que aguardamos este banco)';
+    else if (!rows.some((r) => r.bank === b)) txt = 'NÃO RODOU — nenhuma proposta foi enviada a este banco ainda (se disser ao cliente que vai pôr/está em análise nele, o CRM precisa rodar: na auto-resposta marque "runBanks")';
     else txt = 'ainda sem resultado (a última tentativa não terminou ou falhou — não diga que está em análise neste banco)';
     return `- ${nomes[b]}: ${txt}`;
   });
@@ -510,6 +510,8 @@ export interface AiExtractedAction {
   stopFollowUp?: boolean;
   /** true = a IA pediu pra rodar a análise de crédito do cliente (extensões como ponte) — valem as travas de requestRunForAi. */
   runAnalysis?: boolean;
+  /** Bancos que nunca rodaram e que a IA disse que estão/vão entrar em análise — o CRM pede a 1ª rodada (requestBankRunForAi). Inclui os que a rede de segurança achou no texto. */
+  runBanks?: string[] | null;
   /** Bancos (SANTANDER | INTER) cuja simulação em PDF a IA quer mandar ao cliente — o PDF original do portal sai com a logo A&F (simulation-doc.service.ts). */
   sendSimulation?: string[] | null;
   /** true = a IA decidiu apresentar a aprovação: o CRM manda o aviso padrão (resumo + documentos + PDF) em vez de a IA escrever as condições. */
@@ -660,6 +662,21 @@ export async function applyAiExtractedActions(
         await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? `🤖 A IA pediu a análise de crédito a pedido do cliente: ${r.detail}.` : `🤖 A IA quis rodar a análise de crédito, mas não rodou: ${r.detail}.` } }).catch(() => {});
         logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: r.ok ? 'pediu a análise de crédito nos bancos' : `não rodou a análise: ${r.detail}` });
       } catch (e: any) { console.error('[IA] rodar análise falhou:', e?.message); }
+    }
+
+    // "Está em análise no Santander" (Fabio 26/10): a IA pode dizer, desde que o banco rode de verdade — 1ª rodada só nos bancos sem nenhuma análise no card.
+    if (action.runBanks && action.runBanks.length) {
+      try {
+        const { requestBankRunForAi } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+        const r = await requestBankRunForAi(prisma as any, accountId, leadId, action.runBanks);
+        const nomes = (r.banks.length ? r.banks : action.runBanks).map((b) => ({ CREDIMORAR: 'Santander', SANTANDER: 'Santander', INTER: 'Inter', CREDITAS: 'Creditas' } as Record<string, string>)[b] || b).join(' e ');
+        if (r.ok) {
+          await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🤖 A IA disse ao cliente que o ${nomes} está em análise e esse banco nunca tinha rodado: pedi a análise de verdade (${r.detail}).` } }).catch(() => {});
+          logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `pediu a análise no ${nomes}` });
+        } else if (!/j[aá] t[eê]m an[aá]lise/.test(r.detail)) {
+          await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `⚠️ A IA falou ao cliente do ${nomes} em análise, mas o CRM não conseguiu pedir a análise: ${r.detail}. Rode à mão na Análise de Crédito.` } }).catch(() => {});
+        }
+      } catch (e: any) { console.error('[IA] rodar banco que não rodou falhou:', e?.message); }
     }
 
     // Prazo/valor DIFERENTE depois da aprovação (Fabio 19/10): a extensão roda NOVA PROPOSTA nos bancos que aprovaram e o CRM manda o resultado ao cliente (aviso padrão).

@@ -1774,6 +1774,42 @@ export function lastRunCredit(rows: { detail: string | null }[]): number | null 
 
 /** A IA da conversa pediu pra RODAR a análise do cliente (ponte: a extensão roda nos bancos). Só vale com a "Análise automática" LIGADA e sem
  *  pausa geral, com o card em Pré-Análise (proposta preenchida) do Home Equity. Banco já rodado vira só consulta (não duplica proposta). */
+/** Bancos citados como "em análise" numa resposta da IA (Fabio 26/10). Pura (testável): só a frase que liga o banco a "em análise"/"vou colocar/incluir/rodar". */
+export function bancosEmAnaliseNoTexto(texto: string): string[] {
+  const out = new Set<string>();
+  for (const frase of String(texto || '').split(/(?<=[.!?\n])\s*/)) {
+    if (!/em an[aá]lise|(colocar|coloquei|incluir|inclu[ií]|rodar|rodando|enviar|enviei|mandar|mandei)[^.!?]{0,30}(an[aá]lise|proposta)|j[aá] (pedi|solicitei|encaminhei)[^.!?]{0,30}an[aá]lise/i.test(frase)) continue;
+    if (/n[aã]o (est[aá] |ficou |entrou )?em an[aá]lise|n[aã]o (vou|vamos|d[aá] pra|consigo) (colocar|rodar|incluir|enviar|mandar)|n[aã]o (rodou|rodamos|analisa)/i.test(frase)) continue;
+    if (/\bsantander\b/i.test(frase)) out.add('CREDIMORAR');
+    if (/\binter\b/i.test(frase)) out.add('INTER');
+    if (/\bcreditas\b/i.test(frase)) out.add('CREDITAS');
+  }
+  return [...out];
+}
+
+/** A IA disse ao cliente que um banco "está em análise" e esse banco NUNCA rodou neste card (Fabio 26/10, Jézer: "não tem problema a IA falar que está em análise, desde que a outra IA rode
+ *  o crédito"). Pede a 1ª rodada SÓ nos bancos sem nenhuma análise no card — em qualquer etapa aberta do Home Equity (o cliente pode estar em Aguardando Documentação comparando bancos).
+ *  Banco que já rodou (aprovou, reprovou, "NÃO RODEI", falhou) não é tocado. */
+export async function requestBankRunForAi(db: Db, accountId: string, leadId: string, banks: string[]): Promise<{ ok: boolean; detail: string; banks: string[] }> {
+  const set = await db.creditAutoSetting.findUnique({ where: { accountId } });
+  if (!set?.enabled) return { ok: false, detail: 'a "Análise automática" do CRM está desligada', banks: [] };
+  if (set.paused) return { ok: false, detail: 'a pausa geral das execuções automáticas está ligada', banks: [] };
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto', banks: [] };
+  if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity', banks: [] };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (cf._autoPaused) return { ok: false, detail: 'este cliente está PAUSADO na Análise de Crédito', banks: [] };
+  if (String(cf.cpf_1 || '').replace(/\D/g, '').length !== 11 || !(Number(String(cf.valor_credito ?? '').replace(/[^\d.]/g, '')) > 0)) return { ok: false, detail: 'o card não tem a proposta (CPF e valor do crédito)', banks: [] };
+  const keys = Array.from(new Set(banks.map((b) => (String(b).toUpperCase() === 'SANTANDER' ? 'CREDIMORAR' : String(b).toUpperCase())))).filter((b) => BANK_KEYS.includes(b));
+  if (!keys.length) return { ok: false, detail: 'nenhum banco válido', banks: [] };
+  const jaTem = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, bank: { in: keys } }, select: { bank: true } });
+  const novos = keys.filter((b) => !jaTem.some((r) => r.bank === b));
+  if (!novos.length) return { ok: false, detail: 'esse(s) banco(s) já têm análise neste card', banks: [] };
+  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: novos, dryRun: false, kind: 'RUN', source: 'AI' });
+  if (!r.created) return { ok: false, detail: 'já havia análise em andamento nesse(s) banco(s)', banks: [] };
+  return { ok: true, detail: `1ª análise pedida em ${novos.length} banco(s)`, banks: novos };
+}
+
 export async function requestRunForAi(db: Db, accountId: string, leadId: string): Promise<{ ok: boolean; detail: string }> {
   const set = await db.creditAutoSetting.findUnique({ where: { accountId } });
   if (!set?.enabled) return { ok: false, detail: 'a "Análise automática" do CRM está desligada' };
