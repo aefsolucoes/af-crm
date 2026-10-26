@@ -189,6 +189,21 @@ async function resolveHolder(db: Db, leadId: string, bank: string, detail?: stri
 
 const brNumber = (t: string) => Number(t.replace(/\./g, '').replace(',', '.'));
 
+/** Frases "ATENÇÃO: …" idênticas repetidas pela extensão (tentativas de ajuste de valor) viram uma só, com "(×N)". Pura. */
+export function dedupeAvisos(text: string): string {
+  const t = String(text || '');
+  const vezes = new Map<string, number>();
+  for (const m of t.matchAll(/ATEN[ÇC][ÃA]O:.*?\.(?=\s|$)/g)) vezes.set(m[0], (vezes.get(m[0]) || 0) + 1);
+  const vistos = new Set<string>();
+  return t.replace(/ATEN[ÇC][ÃA]O:.*?\.(?=\s|$)\s*/g, (frase) => {
+    const k = frase.trim();
+    if (vistos.has(k)) return '';
+    vistos.add(k);
+    const n = vezes.get(k) || 1;
+    return n > 1 ? `${k} (×${n}) ` : frase;
+  });
+}
+
 /** O Credimorar devolve as condições do Santander como texto ("CONDIÇÕES — Santander: libera + R$ 150.000,00; prazo 120 Meses;
  *  1ª parcela R$ 3.735,50; última R$ 1.281,81; CET 22,96% a.a.; taxa efetiva 21,70% a.a.; …"). Aqui vira número (valor, prazo,
  *  parcelas, taxa) pra preencher a análise e, depois, o card. */
@@ -914,9 +929,14 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   if (FINAL.has(row.status) && !FINAL.has(p.status)) return row;
   // Aprovado "condicionado" (Inter pede documentos; Santander "Aprovado Condicional") é um status próprio: aprovou, mas falta algo.
   const status = p.status === 'APPROVED' && /condicion/i.test(p.detail || '') ? 'CONDITIONAL' : p.status;
-  const numbers = p.bank === 'CREDIMORAR' ? parseSantanderConditions(p.detail || '') : {};
-  const holderName = parseHolder(p.detail) || row.holderName || (FINAL.has(status) ? await resolveHolder(db, p.leadId, p.bank, null) : null);
-  const { row: updated } = await applyUpdate(db, row, { status, detail: p.detail ?? null, holderName, ...numbers, ...pickResult(p.result || {}) });
+  // 26/10 (Adiene): o aviso "não aceitou o financiamento de R$ X; rodei com R$ Y" repetiu 9 vezes, o texto foi cortado ANTES das condições e a aprovação ficou só com o valor
+  // (sem prazo, parcela e taxa). Agora: avisos repetidos viram um só, as condições também são lidas do campo `conditions`, e número nulo vindo da extensão não apaga o que o texto trouxe.
+  const detail = p.detail == null ? p.detail : dedupeAvisos(p.detail);
+  const numbers = p.bank === 'CREDIMORAR' ? parseSantanderConditions(`${detail || ''} ${(p.result && p.result.conditions) || ''}`) : {};
+  const holderName = parseHolder(detail) || row.holderName || (FINAL.has(status) ? await resolveHolder(db, p.leadId, p.bank, null) : null);
+  const vindo = pickResult(p.result || {});
+  for (const k of Object.keys(numbers) as (keyof ResultFields)[]) if (vindo[k] == null) delete vindo[k];
+  const { row: updated } = await applyUpdate(db, row, { status, detail: detail ?? null, holderName, ...numbers, ...vindo });
   return afterReport(db, updated);
 }
 
