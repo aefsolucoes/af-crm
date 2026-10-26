@@ -32,17 +32,17 @@ export interface SimulationSheet {
   bank: SheetBank;
   /** Nome mostrado ao lado do ícone (padrão: Inter / Santander / Creditas). */
   bankLabel?: string;
+  /** PADRÃO DA SIMULAÇÃO DE HOME EQUITY (Fabio 26/10) — só estes 8 campos, em 2 linhas de 4: tipo de imóvel, prazo, sistema, valor do imóvel / valor do empréstimo,
+   *  taxa mensal, taxa nominal, taxa efetiva. Saíram CET, CESH, renda e entrada (Home Equity não tem entrada). Taxas já formatadas (ver `taxasDe`). */
   summary: {
     tipoImovel: string; // Residencial | Comercial
     prazoMeses: number;
-    cet: string; // "17,00%"
-    cesh: string; // "4,08% a.a"
     sistema: string; // SAC | PRICE
     valorImovel: number;
-    taxaEfetiva: string; // "14,28% a.a"
     valorEmprestimo: number;
-    valorEntrada: number;
-    renda: number;
+    taxaMensal: string; // "1,40% a.m. + IPCA"
+    taxaNominal: string; // "16,80% a.a. + IPCA"
+    taxaEfetiva: string; // "18,16% a.a. + IPCA"
   };
   rows: SheetRow[];
 }
@@ -133,32 +133,46 @@ function drawFirstPageHeader(ctx: Ctx, page: PDFPage, s: SimulationSheet) {
   justify(page, DISCLAIMER_LINES[1], reg, 9, 158.63, 439.29, 814 - 158.63);
   page.drawText(DISCLAIMER_LINES[2], { x: 158.63, y: 427.29, size: 9, font: reg, color: NOTE });
 
-  // Caixas do resumo
+  // Caixas do resumo — padrão de 26/10: 2 linhas de 4 caixas de larguras iguais (29 → 814), nas mesmas alturas do modelo.
   const m = s.summary;
+  const W = (814 - 29) / 4;
+  const caixa = (i: number, label: string, value: string) => ({ x: 29 + W * i, w: W, label, cx: 29 + W * (i + 0.5), value });
   const row1 = [
-    { x: 29, w: 169.433, label: 'Tipo de imóvel', cx: 112.72, value: m.tipoImovel },
-    { x: 198, w: 147.69, label: 'Prazo', cx: 270.27, value: `${m.prazoMeses} meses` },
-    { x: 345, w: 132.406, label: 'CET', cx: 409.33, value: m.cet },
-    { x: 476, w: 142.583, label: 'CESH', cx: 545.83, value: m.cesh },
-    { x: 618, w: 197.887, label: 'Sistema Amortizador', cx: 716.05, value: m.sistema },
+    caixa(0, 'Tipo de imóvel', m.tipoImovel),
+    caixa(1, 'Prazo', `${m.prazoMeses} meses`),
+    caixa(2, 'Sistema de amortização', m.sistema),
+    caixa(3, 'Valor do imóvel', brl(m.valorImovel)),
   ];
-  // SEM "Valor da entrada" (Fabio 14/10): no Home Equity não existe entrada (o imóvel é só a garantia) e o cliente lia R$ 40 mil / R$ 500 mil de "entrada" como valor a pagar.
-  // Ficam 4 caixas de larguras iguais (29 → 814).
-  const W2 = (814 - 29) / 4;
   const row2 = [
-    { x: 29, w: W2, label: 'Valor do imóvel', cx: 29 + W2 / 2, value: brl(m.valorImovel) },
-    { x: 29 + W2, w: W2, label: 'Taxa Efetiva', cx: 29 + W2 * 1.5, value: m.taxaEfetiva },
-    { x: 29 + W2 * 2, w: W2, label: 'Valor empréstimo', cx: 29 + W2 * 2.5, value: brl(m.valorEmprestimo) },
-    { x: 29 + W2 * 3, w: W2, label: 'Renda', cx: 29 + W2 * 3.5, value: brl(m.renda) },
+    caixa(0, 'Valor do empréstimo', brl(m.valorEmprestimo)),
+    caixa(1, 'Taxa mensal', m.taxaMensal),
+    caixa(2, 'Taxa nominal', m.taxaNominal),
+    caixa(3, 'Taxa efetiva', m.taxaEfetiva),
   ];
   // As caixas do modelo são recortadas: 39,2 pt de altura e nunca passam de x=814.
   const BOX_H = 39.2;
   for (const b of row1) page.drawRectangle({ x: b.x, y: 374, width: Math.min(b.w, 814 - b.x), height: BOX_H, color: BOX });
   for (const b of row2) page.drawRectangle({ x: b.x, y: 330, width: Math.min(b.w, 814 - b.x), height: BOX_H, color: BOX });
-  for (const x of [197.4332, 344.123, 475.5293, 617.1127]) page.drawLine({ start: { x, y: 374 + BOX_H }, end: { x, y: 374 }, thickness: 2, color: SEP_BOX });
-  for (const x of [29 + W2, 29 + W2 * 2, 29 + W2 * 3, 814]) page.drawLine({ start: { x, y: 330 + BOX_H }, end: { x, y: 330 }, thickness: 2, color: SEP_BOX });
+  for (const x of [29 + W, 29 + W * 2, 29 + W * 3]) {
+    page.drawLine({ start: { x, y: 374 + BOX_H }, end: { x, y: 374 }, thickness: 2, color: SEP_BOX });
+    page.drawLine({ start: { x, y: 330 + BOX_H }, end: { x, y: 330 }, thickness: 2, color: SEP_BOX });
+  }
   row1.forEach((b) => { centered(page, b.label, bold, 10.5, b.cx, 397.67, rgb(0, 0, 0)); centered(page, b.value, reg, 10.5, b.cx, 383.67, rgb(0, 0, 0)); });
   row2.forEach((b) => { centered(page, b.label, bold, 10.5, b.cx, 353.67, rgb(0, 0, 0)); centered(page, b.value, reg, 10.5, b.cx, 339.67, rgb(0, 0, 0)); });
+}
+
+/** As 3 taxas do padrão a partir do que o banco informa (Fabio 26/10). Mensal = nominal ÷ 12 (a regra do Fabio, 22/10); efetiva = mensal acumulada em 12 meses.
+ *  Taxas em PERCENTUAL (1,40 = 1,40%). O que o banco informa vale; o resto é calculado. `indexador` (ex.: "IPCA") entra como " + IPCA" nas três. */
+export function taxasDe(p: { mensal?: number | null; nominalAA?: number | null; efetivaAA?: number | null; indexador?: string | null }): { taxaMensal: string; taxaNominal: string; taxaEfetiva: string } {
+  const ok = (v: number | null | undefined) => (v != null && Number.isFinite(v) && v > 0 ? v : null);
+  let mensal = ok(p.mensal), nominal = ok(p.nominalAA), efetiva = ok(p.efetivaAA);
+  if (mensal == null && nominal != null) mensal = nominal / 12;
+  if (mensal == null && efetiva != null) mensal = (Math.pow(1 + efetiva / 100, 1 / 12) - 1) * 100;
+  if (nominal == null && mensal != null) nominal = mensal * 12;
+  if (efetiva == null && mensal != null) efetiva = (Math.pow(1 + mensal / 100, 12) - 1) * 100;
+  const suf = p.indexador ? ` + ${p.indexador}` : '';
+  const f = (v: number | null, un: string) => (v == null ? '—' : `${v.toFixed(2).replace('.', ',')}% ${un}${suf}`);
+  return { taxaMensal: f(mensal, 'a.m.'), taxaNominal: f(nominal, 'a.a.'), taxaEfetiva: f(efetiva, 'a.a.') };
 }
 
 function colCenters(cols: { x0: number; w: number[] }): number[] {
@@ -184,13 +198,16 @@ function drawTableHeader(ctx: Ctx, page: PDFPage, cols: { x0: number; w: number[
   }
 }
 
-function drawRow(ctx: Ctx, page: PDFPage, cols: { x0: number; w: number[] }, top: number, g: number, r: SheetRow, highlight: boolean, juntos: boolean) {
+function drawRow(ctx: Ctx, page: PDFPage, cols: { x0: number; w: number[] }, top: number, g: number, r: SheetRow, hl1: number, juntos: boolean) {
   const gray = g % 2 === 1;
+  // Realce azul/amarelo nas DUAS PRIMEIRAS PARCELAS PAGAS (hl1 = índice da 1ª): no Santander as linhas 0 e 1 vêm zeradas (carência) e o realce caía nelas (26/10).
+  const k = g - hl1;
+  const highlight = k === 0 || k === 1;
   const vals = [String(r.n), brl(r.amort), brl(r.juros), brl(r.mip), brl(r.dfi), brl(r.tsa), brl(r.parcela), brl(r.saldo)];
   // 1º as células (fundo + linha branca de cima), 2º os textos: na célula única de seguros o texto passa por cima da coluna vizinha.
   let x = cols.x0;
   cols.w.forEach((w, i) => {
-    const hl = highlight && i === 6 ? (g === 0 ? BLUE : g === 1 ? YELLOW : null) : null;
+    const hl = highlight && i === 6 ? (k === 0 ? BLUE : YELLOW) : null;
     const fill = hl || (gray ? GRAY : null);
     if (fill) page.drawRectangle({ x, y: top - ROW_H, width: w, height: ROW_H, color: fill });
     page.drawLine({ start: { x, y: top }, end: { x: x + w, y: top }, thickness: 3.75, color: WHITE });
@@ -221,6 +238,7 @@ export async function renderSimulationSheet(s: SimulationSheet): Promise<Buffer>
   doc.setAuthor('A&F Soluções Financeiras');
 
   const total = s.rows.reduce((sum, r) => sum + r.parcela, 0);
+  const hl1 = Math.max(0, s.rows.findIndex((r) => r.parcela > 0));
   const pages: PDFPage[] = [];
   let idx = 0; // linha global
   let pageNo = 0;
@@ -243,7 +261,7 @@ export async function renderSimulationSheet(s: SimulationSheet): Promise<Buffer>
     }
     let used = 0;
     while (used < capacity && idx < s.rows.length) {
-      drawRow(ctx, page, cols, rowTop - used * PITCH, idx, s.rows[idx], first, !!s.segurosJuntos);
+      drawRow(ctx, page, cols, rowTop - used * PITCH, idx, s.rows[idx], hl1, !!s.segurosJuntos);
       used++;
       idx++;
     }

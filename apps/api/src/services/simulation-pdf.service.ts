@@ -248,3 +248,65 @@ export async function parseInterTheoryPdf(buf: Buffer): Promise<InterTheory> {
   if (financ > 0 && Math.abs(soma - financ) / financ > 0.05) throw new Error(`os valores do PDF não fecham (amortizações somam ${soma.toFixed(2)} e o financiamento é ${financ.toFixed(2)})`);
   return { header, rows };
 }
+
+// ── Leitura dos DADOS do "Evolução das parcelas" do portal Credimorar (Santander) ─────────────────────
+// Padrão da simulação de Home Equity (Fabio 26/10): o PDF do Santander deixa de ser o original do portal com a logo trocada e passa a ser desenhado pelo CRM no MESMO modelo
+// do Inter e da Creditas (8 campos, sem CET/CESH/renda/entrada). Aqui só se LÊ o PDF do portal: resumo (tipo, prazo, sistema, valores, taxa efetiva), data e a tabela inteira.
+export interface PortalSheetData {
+  when: Date | null;
+  tipoImovel: string;
+  prazoMeses: number;
+  sistema: string;
+  valorImovel: number;
+  valorEmprestimo: number;
+  efetivaAA: number | null; // percentual (22,28 = 22,28% a.a.)
+  rows: Array<{ n: number; amort: number; juros: number; mip: number; dfi: number; tsa: number; parcela: number; saldo: number }>;
+}
+
+export async function parsePortalSheetPdf(buf: Buffer): Promise<PortalSheetData> {
+  const itens: Array<{ p: number; y: number; x: number; s: string }> = [];
+  let page = 0;
+  await pdfParse(buf, {
+    pagerender: async (pageData: any) => {
+      page++;
+      const tc = await pageData.getTextContent({ normalizeWhitespace: true, disableCombineTextItems: false });
+      for (const i of tc.items) if (String(i.str).trim()) itens.push({ p: page, y: Math.round(i.transform[5]), x: i.transform[4], s: String(i.str).trim() });
+      return '';
+    },
+  });
+  const linha = (p: number, y: number) => itens.filter((i) => i.p === p && Math.abs(i.y - y) <= 1).sort((a, b) => a.x - b.x).map((i) => i.s).join(' ');
+  const yDe = (re: RegExp) => itens.find((i) => i.p === 1 && re.test(i.s))?.y;
+  // Resumo: a linha dos VALORES fica logo abaixo da linha dos rótulos (14 pt no modelo).
+  const yTipo = yDe(/^Tipo$/i) ?? yDe(/Tipo de im[oó]vel/i);
+  const yValor = itens.find((i) => i.p === 1 && /^Valor$/i.test(i.s) && i.x < 120)?.y ?? yDe(/Valor do im[oó]vel/i);
+  if (yTipo == null || yValor == null) throw new Error('resumo do PDF fora do modelo');
+  const v1 = linha(1, yTipo - 14);
+  const v2 = linha(1, yValor - 14);
+  const dinheiro = (t: string) => Array.from(t.matchAll(/R\$\s*([\d.]+,\d{2})/g)).map((m) => brNum(m[1]));
+  const valores2 = dinheiro(v2);
+  const efet = /([\d.]+,\d+)\s*%\s*a\.?\s*a/i.exec(v2);
+  const prazo = /(\d+)\s*meses/i.exec(v1);
+  const data = /(\d{2})\/(\d{2})\/(\d{4})\s*-\s*(\d{1,2})h(\d{2})/.exec(itens.filter((i) => i.p === 1 && i.y > 500).sort((a, b) => a.x - b.x).map((i) => i.s).join(' '));
+  // Tabela: cada linha tem 8 células — nº + 7 valores em R$.
+  const porLinha = new Map<string, Array<{ x: number; s: string }>>();
+  for (const i of itens) { const k = `${i.p}:${i.y}`; (porLinha.get(k) || porLinha.set(k, []).get(k)!).push({ x: i.x, s: i.s }); }
+  const rows: PortalSheetData['rows'] = [];
+  for (const k of Array.from(porLinha.keys()).sort((a, b) => { const [pa, ya] = a.split(':').map(Number); const [pb, yb] = b.split(':').map(Number); return pa - pb || yb - ya; })) {
+    const cel = porLinha.get(k)!.sort((a, b) => a.x - b.x).map((c) => c.s);
+    if (cel.length !== 8 || !/^\d+$/.test(cel[0]) || !cel.slice(1).every((c) => /^R\$\s*-?[\d.]+,\d{2}$/.test(c))) continue;
+    const [amort, juros, mip, dfi, tsa, parcela, saldo] = cel.slice(1).map((c) => brNum(c));
+    rows.push({ n: Number(cel[0]), amort, juros, mip, dfi, tsa, parcela, saldo });
+  }
+  if (!rows.length) throw new Error('tabela do PDF sem parcelas');
+  if (valores2.length < 2) throw new Error('valor do imóvel/empréstimo não encontrados');
+  return {
+    when: data ? new Date(Date.UTC(+data[3], +data[2] - 1, +data[1], +data[4] + 3, +data[5])) : null, // horário de Brasília (UTC−3)
+    tipoImovel: /comercial/i.test(v1) ? 'Comercial' : 'Residencial',
+    prazoMeses: prazo ? Number(prazo[1]) : rows.filter((r) => r.parcela > 0).length,
+    sistema: /\bPRICE\b/i.test(v1) ? 'PRICE' : 'SAC',
+    valorImovel: valores2[0],
+    valorEmprestimo: valores2[1],
+    efetivaAA: efet ? brNum(efet[1]) : null,
+    rows,
+  };
+}

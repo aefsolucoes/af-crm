@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { sendOutboundMedia } from './message.service';
-import { brandSimulationPdf, parseInterTheoryPdf, InterTheory } from './simulation-pdf.service';
-import { renderSimulationSheet, brl, SimulationSheet, SheetRow } from './simulation-sheet.service';
+import { brandSimulationPdf, parseInterTheoryPdf, InterTheory, looksLikePortalPdf, parsePortalSheetPdf } from './simulation-pdf.service';
+import { renderSimulationSheet, brl, SimulationSheet, SheetRow, taxasDe } from './simulation-sheet.service';
 
 type Db = PrismaClient;
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
@@ -190,10 +190,35 @@ export async function holdForNotice(db: Db, p: { accountId: string; leadId: stri
 }
 
 /** SANTANDER: a extensão devolveu o PDF ORIGINAL do portal do Credimorar — troca cor/logo e manda. */
+/** Taxa NOMINAL anual do Santander (o PDF do portal só traz a efetiva): vem das condições da análise aprovada com o mesmo valor (± 1%). null = calcula pela efetiva. */
+async function nominalDoSantander(db: Db, leadId: string, valor: number): Promise<number | null> {
+  const rows = await db.creditAnalysis.findMany({ where: { leadId, bank: 'CREDIMORAR', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { createdAt: 'desc' }, take: 10, select: { approvedValue: true, detail: true, conditions: true } });
+  const certa = rows.find((a) => a.approvedValue && valor && Math.abs(a.approvedValue - valor) / valor <= 0.01) || null;
+  const m = certa ? /taxa nominal\s*([\d.]+,\d{1,2})\s*%\s*a\.a/i.exec(`${certa.conditions || ''} ${certa.detail || ''}`.replace(/\s+/g, ' ')) : null;
+  return m ? Number(m[1].replace(/\./g, '').replace(',', '.')) : null;
+}
+
 export async function finishSimulationDoc(db: Db, p: { accountId: string; id: string; pdf: Buffer; io?: Io }) {
   const r = await loadOpen(db, p.accountId, p.id);
   if (r.status === 'DONE') return { ok: true as const, already: true, messageId: r.messageId };
   const fail = async (reason: string) => { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason }); return { ok: false as const, error: reason }; };
+  // PADRÃO DA SIMULAÇÃO (Fabio 26/10): o "Evolução das parcelas" do portal Credimorar (Santander) é LIDO e redesenhado no mesmo modelo do Inter e da Creditas —
+  // 8 campos (tipo, prazo, sistema, valor do imóvel, valor do empréstimo, taxa mensal/nominal/efetiva), sem CET, CESH, renda e entrada.
+  if (looksLikePortalPdf(p.pdf)) {
+    let pdf: Buffer;
+    try {
+      const d = await parsePortalSheetPdf(p.pdf);
+      const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
+      pdf = await renderSimulationSheet({
+        clientName: lead?.name || 'Cliente',
+        when: d.when || undefined,
+        bank: 'SANTANDER',
+        summary: { tipoImovel: d.tipoImovel, prazoMeses: d.prazoMeses, sistema: d.sistema, valorImovel: d.valorImovel, valorEmprestimo: d.valorEmprestimo, ...taxasDe({ nominalAA: await nominalDoSantander(db, r.leadId, d.valorEmprestimo), efetivaAA: d.efetivaAA }) },
+        rows: d.rows,
+      });
+    } catch (e: any) { return fail(`Não consegui ler a simulação do Santander pra montar o PDF no padrão A&F (${e?.message || 'erro'}). Não enviei.`); }
+    return deliver(db, r, pdf, p.io);
+  }
   let branded;
   try { branded = await brandSimulationPdf(p.pdf); } catch (e: any) { return fail(`Não consegui pôr a logo A&F no PDF (${e?.message || 'erro'}). Não enviei.`); }
   if (!branded.recognized) return fail('O PDF baixado não está no modelo conhecido do portal (ou já veio sem a logo do portal). Não enviei, pra não sair com a marca errada — avise o suporte.');
@@ -208,7 +233,6 @@ export interface InterProposalData {
 }
 
 const num = (v: unknown): number => { const n = Number(String(v ?? '').replace(',', '.')); return Number.isFinite(n) ? n : 0; };
-const pct = (v: unknown, suffix = ''): string => `${num(v).toFixed(2).replace('.', ',')}%${suffix}`;
 
 /** O "Saldo devedor" do PDF do Inter às vezes vem zerado/fora de ordem; nesse caso refaz: saldo = soma das amortizações que faltam. */
 export function repairBalances(rows: InterTheory['rows']): { saldos: number[]; refeito: boolean } {
@@ -239,14 +263,15 @@ export function sheetFromInter(p: { clientName: string; proposal: InterProposalD
     summary: {
       tipoImovel: /COMERCIAL/i.test(produto) ? 'Comercial' : 'Residencial',
       prazoMeses: num(f.prazoEmprestimo) || rows.length,
-      cet: pct(f.cet),
-      cesh: pct(f.cesh, ' a.a'),
       sistema,
       valorImovel: imovel,
-      taxaEfetiva: `${pct(f.jurosAnualEfetivo || String(p.theory.header['Taxa efetiva anual de juros'] || '').replace(/[^\d.]/g, ''))} a.a`.replace('%%', '%'),
       valorEmprestimo: emprestimo,
-      valorEntrada: f.valorEntrada != null && Math.abs(emprestimo - num(f.valorFinanciamento)) < 1 ? num(f.valorEntrada) : Math.max(imovel - emprestimo, 0), // entrada da proposta só vale se o valor aprovado = o pedido
-      renda: (p.proposal.rendas || []).reduce((s, v) => s + num(v), 0),
+      // Padrão 26/10: mensal (o "taxaJuros" do Inter, ex.: "1.40% a.m. + IPCA"), nominal (× 12) e efetiva (a do portal) — todas com + IPCA.
+      ...taxasDe({
+        mensal: /a\.?\s*m/i.test(String(f.taxaJuros || '')) ? num(String(f.taxaJuros).replace(/[^\d.,]/g, '').replace(',', '.')) || null : null,
+        efetivaAA: num(String(f.jurosAnualEfetivo || p.theory.header['Taxa efetiva anual de juros'] || '').replace(/[^\d.,]/g, '').replace(',', '.')) || null,
+        indexador: String(f.indexador || 'IPCA').toUpperCase(),
+      }),
     },
     rows,
   };
@@ -282,7 +307,6 @@ export interface CreditasData {
   installments: Array<Record<string, any>>; // GET /b2b/simulations/installments
 }
 
-const pct3 = (frac: unknown): string => `${(num(frac) * 100).toFixed(3).replace('.', ',')}%`;
 
 export function sheetFromCreditas(p: { clientName: string; data: CreditasData; when?: Date }): SimulationSheet {
   const { input, summary, installments } = p.data;
@@ -292,7 +316,6 @@ export function sheetFromCreditas(p: { clientName: string; data: CreditasData; w
     tsa: min(i.creditManagementFee), parcela: min(i.payment), saldo: min(i.outstanding),
   }));
   const taxa = summary?.interestRate?.min?.monthly;
-  const cet = summary?.cet?.min?.monthly;
   return {
     clientName: p.clientName,
     when: p.when,
@@ -300,14 +323,11 @@ export function sheetFromCreditas(p: { clientName: string; data: CreditasData; w
     summary: {
       tipoImovel: input.tipoImovel || '—',
       prazoMeses: num(summary?.term) || rows.length,
-      cet: cet != null ? `${pct3(cet)} a.m. + IPCA` : '—',
-      cesh: '—', // a Creditas não informa o CESH
       sistema: 'PRICE',
       valorImovel: num(input.valorImovel),
-      taxaEfetiva: taxa != null ? `${(num(taxa) * 100).toFixed(2).replace('.', ',')}% a.m. + IPCA` : '—',
       valorEmprestimo: num(input.valorEmprestimo),
-      valorEntrada: Math.max(num(input.valorImovel) - num(input.valorEmprestimo), 0),
-      renda: num(input.renda),
+      // Padrão 26/10: a Creditas informa a taxa MENSAL (antes saía com o rótulo "Taxa Efetiva"); nominal = × 12, efetiva = acumulada — todas com + IPCA.
+      ...taxasDe({ mensal: taxa != null ? num(taxa) * 100 : null, indexador: 'IPCA' }),
     },
     rows,
   };
