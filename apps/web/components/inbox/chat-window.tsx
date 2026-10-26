@@ -415,7 +415,23 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
   // E-mail pro cliente direto da conversa (caixa de e-mail do CRM): abre o
   // mesmo editor da página E-mail, já com o e-mail do contato. O enviado e a
   // resposta do cliente aparecem nesta conversa.
-  const [emailDraft, setEmailDraft] = useState<{ to: string; mailboxes: MailboxOption[] } | null>(null);
+  const [emailDraft, setEmailDraft] = useState<{ to: string; mailboxes: MailboxOption[]; subject?: string; replyToId?: string; mailboxId?: string } | null>(null);
+  // "Responder e-mail" no balão do e-mail (Fabio 26/10): abre o editor já como RESPOSTA daquele e-mail (mesmo fio, mesma caixa, assunto "Re: …").
+  async function replyEmailFromChat(msg: Message) {
+    if (!msg.externalId) { toast('Esse e-mail não tem a referência pra responder — use a página E-mail', 'warning'); return; }
+    setOpeningEmail(true);
+    try {
+      const [{ data: alvo }, { data: boxes }] = await Promise.all([
+        api.get('/api/email/reply-target', { params: { externalId: msg.externalId, leadId } }),
+        api.get('/api/email/accounts'),
+      ]);
+      setEmailDraft({ to: alvo.to, subject: alvo.subject, replyToId: alvo.id, mailboxId: alvo.mailboxId, mailboxes: boxes.map((b: any) => ({ ...b, signature: b.signature || b.defaultSignature })) });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui abrir a resposta do e-mail', 'error');
+    } finally {
+      setOpeningEmail(false);
+    }
+  }
   const [openingEmail, setOpeningEmail] = useState(false);
   async function openEmailComposer() {
     setOpeningEmail(true);
@@ -1817,6 +1833,17 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                                 {isOut ? 'Enviado por e-mail' : e.fromSiteForm ? 'Recebido por e-mail · formulário do site' : 'Recebido por e-mail'}
                               </p>
                               {e.subject && <p className="text-[13px] font-semibold text-[#e9edef] mt-0.5 pr-6">{e.subject.replace(/^(📋|🔔)\s*/, '')}</p>}
+                              {!e.fromSiteForm && msg.externalId && (
+                                <button
+                                  type="button"
+                                  onClick={() => replyEmailFromChat(msg)}
+                                  disabled={openingEmail}
+                                  title="Responder este e-mail daqui mesmo (mesmo assunto e mesmo fio; a resposta aparece nesta conversa)"
+                                  className="mt-1 inline-flex items-center gap-1 rounded-md bg-sky-500/15 px-2 py-0.5 text-[11px] font-medium text-sky-200 hover:bg-sky-500/25 disabled:opacity-50"
+                                >
+                                  <Reply size={11} /> Responder e-mail
+                                </button>
+                              )}
                             </div>
                           );
                         })()}
@@ -2310,7 +2337,10 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
       {emailDraft && (
         <EmailComposer
           mailboxes={emailDraft.mailboxes}
+          defaultMailboxId={emailDraft.mailboxId}
           to={emailDraft.to}
+          subject={emailDraft.subject}
+          replyToId={emailDraft.replyToId || null}
           leadId={leadId}
           onClose={() => setEmailDraft(null)}
         />

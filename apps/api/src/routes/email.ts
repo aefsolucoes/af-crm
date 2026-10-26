@@ -24,6 +24,27 @@ router.get('/accounts', async (req: AuthRequest, res: Response) => {
   res.json(await listVisibleEmailAccounts(req.user!.accountId, req.user!.id));
 });
 
+// "Responder e-mail" direto da conversa do cliente (Fabio 26/10): acha o e-mail original (pelo Message-ID que a conversa guarda) numa caixa que esta pessoa pode ver,
+// pra o editor abrir já como RESPOSTA (mesmo fio, citação do original, mesma caixa).
+router.get('/reply-target', async (req: AuthRequest, res: Response) => {
+  const externalId = String(req.query.externalId || '');
+  const leadId = String(req.query.leadId || '');
+  if (!externalId) return res.status(400).json({ error: 'sem e-mail de origem' });
+  const caixas = await listVisibleEmailAccounts(req.user!.accountId, req.user!.id);
+  const ids = (caixas as any[]).map((c) => c.id);
+  const msg = await prisma.emailMessage.findFirst({
+    where: { messageId: externalId, emailAccountId: { in: ids }, ...(leadId ? { OR: [{ leadId }, { leadId: null }] } : {}) },
+    orderBy: { date: 'desc' },
+    select: { id: true, emailAccountId: true, fromAddress: true, fromName: true, subject: true, folder: true, toList: true },
+  });
+  if (!msg) return res.status(404).json({ error: 'Não achei esse e-mail numa caixa que você vê — responda pela página E-mail.' });
+  // E-mail que NÓS mandamos (Enviados): a resposta vai pro mesmo destinatário; o que o cliente mandou: responde pro remetente.
+  const enviado = msg.folder === 'SENT';
+  const to = enviado ? ((Array.isArray(msg.toList) ? (msg.toList as any[]) : []).map((t) => t?.address).filter(Boolean).join(', ')) : (msg.fromAddress || '');
+  const subject = /^re:/i.test(String(msg.subject || '')) ? String(msg.subject) : `Re: ${msg.subject || ''}`.trim();
+  res.json({ id: msg.id, mailboxId: msg.emailAccountId, to, subject });
+});
+
 router.post('/accounts', async (req: AuthRequest, res: Response) => {
   try {
     const b = req.body || {};
