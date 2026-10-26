@@ -60,6 +60,14 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
     return false;
   }
 
+  // Aprovação A MENOR (Fabio 26/10): o banco não aprova mais, então o saldo devedor é só informativo — não peço o print nem refaço a análise; o aviso de aprovação já traz quitação e troco (valor aprovado − saldo informado).
+  const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(leadId);
+  if (am.aMenor) {
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoNoteAt: new Date().toISOString() } as any } });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `ℹ️ Aprovação A MENOR (${brl(am.valor)}): o banco não aprova mais, então o saldo devedor (${declared ? brl(declared) : 'informado na proposta'}) é só informativo — não pedi o print nem refiz a análise. O aviso de aprovação já mostra a quitação e o troco calculados (valor aprovado − saldo).` } }).catch(() => {});
+    return false;
+  }
+
   // Precisa de mensagem livre: janela de 24 h aberta (e, quando é o poller, só das 07h às 21h).
   const lastIn = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
   if (!lastIn || Date.now() - lastIn.createdAt.getTime() > 23 * 3_600_000) return false;
@@ -151,6 +159,12 @@ export async function aplicarTrocoCorrigido(accountId: string, leadId: string, n
   const st = cf._saldoDevedor as (Record<string, any> | undefined);
   const saldo = Number(st?.saldo) || Number(cf.saldo_devedor) || 0;
   const trocoAntes = Number(st?.liquido) || 0;
+  // Aprovação A MENOR: pedir mais não adianta (o banco não aprova mais) — não refaz a análise; o troco real é valor aprovado − saldo.
+  const amT = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(leadId);
+  if (amT.aMenor) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `💸 O cliente disse que precisa de ${brl(novoTroco)} de troco, mas a aprovação é A MENOR (${brl(amT.valor)}) e o banco não aprova mais: não refiz a análise.${saldo > 0 ? ` Troco possível: ${brl(amT.valor)} − saldo ${brl(saldo)} = ${brl(Math.round((amT.valor - saldo) * 100) / 100)}.` : ''} A equipe decide como seguir.` } }).catch(() => {});
+    return;
+  }
   if (!(saldo > 0)) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `💸 O cliente corrigiu o troco para ${brl(novoTroco)}, mas o card não tem o saldo devedor pra recalcular o valor do crédito. Ajuste "Valor do crédito" (saldo + troco) à mão.` } }).catch(() => {});
     return;
@@ -246,6 +260,26 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   // O cliente pode ter corrigido o TROCO na conversa depois da pergunta (Fabio 21/10: sempre confirmar o troco): lê as respostas dele em texto antes de somar.
   const corrigido = await lerTrocoCorrigido(leadId, st.askedAt, st.liquido || st.base || 0).catch(() => null);
   const base = corrigido?.novoTroco || Number(cf2.troco) || st.liquido || st.base || Number(cf2.valor_credito) || 0; // valor LÍQUIDO que o cliente precisa receber
+  // Aprovação A MENOR (Fabio 26/10): não adianta somar saldo + troco e refazer — o banco não aprova mais. O CRM só CALCULA o troco (aprovado − saldo do print) e passa ao cliente.
+  const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(leadId);
+  if (am.aMenor && am.valor > 0) {
+    const trocoReal = Math.round((am.valor - achou.saldo) * 100) / 100;
+    st.doneAt = new Date().toISOString();
+    (st as any).saldo = achou.saldo; (st as any).aMenor = true; (st as any).trocoReal = trocoReal; (st as any).attachmentId = achouAtt;
+    const docInfoAM = { ...(cf2._docInfo || {}), ...(achouAtt ? { [achouAtt]: 'SALDO DEVEDOR|' } : {}) };
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), ...(trocoReal > 0 ? { troco: String(trocoReal) } : {}), _docInfo: docInfoAM, _saldoDevedor: st } as any } });
+    if (cf2._driveOrganizedAt) { try { const { organizeLeadDocsNow } = require('./received-docs.service') as typeof import('./received-docs.service'); await organizeLeadDocsNow(leadId); } catch (e: any) { console.error('[Saldo] não reorganizei a pasta:', e?.message || e); } }
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}. Aprovação A MENOR (${brl(am.valor)}): o banco não aprova mais, então NÃO refiz a análise — só calculei o troco: ${brl(am.valor)} − ${brl(achou.saldo)} = ${brl(trocoReal)}.${trocoReal < 0 ? ' O valor aprovado NÃO cobre o saldo devedor: a equipe decide como seguir.' : ''}` } }).catch(() => {});
+    if (trocoReal < 0) {
+      try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: `⚠️ ${lead.name}`, body: 'Valor aprovado a menor não cobre o saldo devedor — decidir como seguir', leadId }).catch(() => {}); } catch { /* push opcional */ }
+      return;
+    }
+    if (lead.aiAutoReplyActive) {
+      const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
+      await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo${nome ? `, ${nome}` : ''}! 🙏 O saldo para quitação do financiamento é ${brl(achou.saldo)}. Com o valor aprovado de ${brl(am.valor)}, o troco pra você fica em ${brl(trocoReal)} (valor aproximado — o final é confirmado na formalização).`, io: io || undefined });
+    }
+    return;
+  }
   const total = roundUpToThousand(Math.round((achou.saldo + base) * 100) / 100); // saldo + troco, arredondado pra cima pro milhar inteiro
   st.doneAt = new Date().toISOString();
   (st as any).saldo = achou.saldo; (st as any).total = total; (st as any).attachmentId = achouAtt;

@@ -511,6 +511,15 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
   return totais.length ? totais : options;
 }
 
+/** A aprovação que o cliente recebe é "a menor" (nenhum banco aprovou o valor pedido)? Então NÃO há como aprovar mais (Fabio 26/10, Gabriela: Inter aprovou R$ 125 mil de R$ 145 mil e o CRM refez a análise
+ *  com saldo + troco): o saldo devedor passa a ser só informativo — o CRM calcula o troco (valor aprovado − saldo) e avisa o cliente. `valor` = a maior aprovação. */
+export async function aprovacaoAMenor(leadId: string): Promise<{ aMenor: boolean; valor: number }> {
+  const opts = await optionsFromAnalyses(leadId).catch(() => null);
+  if (!opts || !opts.length || opts.some((o) => o.condicionalSemNumeros)) return { aMenor: false, valor: 0 };
+  const { parseBrl } = require('./saldo-devedor.service') as typeof import('./saldo-devedor.service');
+  return { aMenor: opts.every((o) => o.aMenor), valor: Math.max(...opts.map((o) => parseBrl(o.valor))) };
+}
+
 /** Bancos que APROVARAM (último veredito de cada banco+participante) mas ainda sem os números gravados — o aviso espera, senão sai só a outra opção (Alexandre/Larissa, 14/10). */
 export async function aprovadasSemNumeros(leadId: string): Promise<string[]> {
   const rows = await prisma.creditAnalysis.findMany({
