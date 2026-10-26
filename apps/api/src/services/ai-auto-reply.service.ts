@@ -62,7 +62,7 @@ IMPORTANTE: este bloco só vale quando a mensagem do cliente for sobre a LIGAÇ�
     return `--- LIGAÇÃO PELO WHATSAPP ---
 ${situacao}
 AGENDAR A LIGAÇÃO — quem liga é você (fala como a Andreia), mas o horário SEMPRE é confirmado antes com a agenda dela. Se o cliente pedir ou aceitar uma ligação:
-- Se ele ainda não disse quando: pergunte em uma frase o melhor dia/horário (ex.: "Claro! Qual o melhor horário pra eu te ligar?").
+- Se ele PEDIR ligação ou se OFERECER pra ligar ("me liga", "posso te ligar?", "pode ligar?", "prefiro por telefone") SEM dizer um horário: NUNCA responda "posso sim", "te ligo", "pode ligar" nem pergunte o horário a ele (Fabio 26/10: o horário é combinado ANTES com a equipe). Responda curto que vai ver com a equipe o melhor horário e já confirma (ex.: "Claro! Vou ver com a equipe o melhor horário e já te confirmo por aqui."). Se AGORA for antes das 8h, depois das 18h ou fim de semana, acrescente que o atendimento começa às 8h (o pedido já vai pra equipe do mesmo jeito). E preencha "callRequest": {"when": "A DEFINIR", "isoDateTime": null} — o CRM manda um push pra equipe pedindo o horário e é ela quem propõe ao cliente.
 - Quando ele disser o horário (ou "agora"): responda curto que vai confirmar (ex.: "Anotado, já te confirmo o horário.") — SEM prometer que liga nesse horário — e preencha "callRequest": {"when": "<dia e horário como combinado, ex.: amanhã (29/09) às 10h>", "isoDateTime": "<a mesma data/hora em ISO com fuso -03:00, calculada a partir de agora>"}.
 - Se já existe um pedido de ligação aguardando confirmação (ver DÚVIDAS DESTE CLIENTE), não abra outro: diga que já já confirma — a não ser que ele tenha mudado o horário (aí preencha "callRequest" com o novo).
 - "callRequest": null em todos os outros casos.

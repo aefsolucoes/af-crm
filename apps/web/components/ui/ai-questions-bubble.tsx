@@ -224,8 +224,10 @@ export function AiQuestionsBubble() {
       {q.kind === 'CALL_REQUEST' ? (
         <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2">
           <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700"><Phone size={12} /> Pedido de ligação</p>
-          <p className="text-sm text-slate-800 mt-0.5">Quer receber ligação <b>{q.callWhen}</b>.</p>
-          {q.status === 'OPEN' && <p className="text-sm text-slate-600">A Andreia consegue ligar nesse horário?</p>}
+          {/^a\s+definir$/i.test(q.callWhen || '')
+            ? <p className="text-sm text-slate-800 mt-0.5">Pediu ligação e ainda <b>não tem horário</b>.</p>
+            : <p className="text-sm text-slate-800 mt-0.5">Quer receber ligação <b>{q.callWhen}</b>.</p>}
+          {q.status === 'OPEN' && <p className="text-sm text-slate-600">{/^a\s+definir$/i.test(q.callWhen || '') ? 'Qual horário a Andreia consegue ligar?' : 'A Andreia consegue ligar nesse horário?'}</p>}
         </div>
       ) : (
       <div className="flex gap-2">
@@ -271,20 +273,20 @@ export function AiQuestionsBubble() {
           {q.sendError && (
             <p className="text-xs text-red-600">Não foi pro cliente: {q.sendError}. Responda pela Inbox ou tente de novo.</p>
           )}
-          <button
+          {!/^a\s+definir$/i.test(q.callWhen || '') && <button
             onClick={() => act(q, 'confirm-call')}
             disabled={!!busy}
             className="w-full flex items-center justify-center gap-1.5 text-sm px-3 py-2 rounded-lg text-white font-medium disabled:opacity-50 bg-emerald-600 hover:bg-emerald-700"
             title="Avisa o cliente, manda o pedido de permissão de ligação (se precisar) e cria a tarefa da Andreia"
           >
             {busy === `${q.id}:confirm-call` ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Sim, confirmar {q.callWhen}
-          </button>
+          </button>}
           <div className="flex gap-1.5">
             <input
               value={drafts[q.id] || ''}
               onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); act(q, 'propose-call'); } }}
-              placeholder="Não consegue? Outro horário (ex.: amanhã às 14h)"
+              placeholder={/^a\s+definir$/i.test(q.callWhen || '') ? 'Qual horário a Andreia consegue? (ex.: hoje às 10h)' : 'Não consegue? Outro horário (ex.: amanhã às 14h)'}
               className="flex-1 min-w-0 text-sm rounded-lg border border-slate-200 px-2.5 py-1.5 focus:outline-none focus:border-[#2261a8] text-slate-800"
             />
             <button

@@ -497,7 +497,7 @@ export async function teamQuestionsContext(leadId: string): Promise<string> {
   if (!rows.length) return '';
   const lines = rows.map((r) => r.kind === 'CALL_REQUEST'
     ? (r.status === 'OPEN'
-      ? `- LIGAÇÃO: o cliente pediu ligação (${r.callWhen}) e você ainda está confirmando o horário — se ele perguntar, diga que já já confirma; não prometa o horário.`
+      ? `- LIGAÇÃO: o cliente pediu ligação${/^a\s+definir$/i.test(String(r.callWhen || '')) ? ' e a equipe ainda vai definir o horário' : ` (${r.callWhen}) e você ainda está confirmando o horário`} — se ele perguntar, diga que já já confirma; não prometa nem sugira horário.`
       : `- LIGAÇÃO: ${r.answer}`)
     : r.status === 'OPEN'
     ? `- AINDA SEM RESPOSTA: ${r.question}`
@@ -758,7 +758,8 @@ export async function createCallRequest(params: {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, pipeline: { select: { departmentId: true } } } });
   if (!lead) return null;
   const departmentId = lead.pipeline?.departmentId ?? null;
-  const question = `Quer receber ligação ${when}. A Andreia consegue ligar nesse horário?`;
+  const semHorario = /^a\s+definir$/i.test(when); // o cliente pediu/ofereceu ligação mas não deu horário: a equipe define (Fabio 26/10)
+  const question = semHorario ? 'O cliente pediu ligação e ainda não tem horário. Qual horário a Andreia consegue ligar?' : `Quer receber ligação ${when}. A Andreia consegue ligar nesse horário?`;
   const callAt = params.callAt && !isNaN(params.callAt.getTime()) ? params.callAt : null;
   const open = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, status: 'OPEN', kind: 'CALL_REQUEST' } });
   const changed = !open || open.callWhen !== when;
@@ -769,9 +770,9 @@ export async function createCallRequest(params: {
   // Horário novo/alterado reabre o popup pra todo mundo (isNew).
   emitTo(io, userIds, 'ai_team_question', { id: saved.id, leadId, leadName: lead.name, question, isNew: changed });
   if (changed) {
-    await prisma.note.create({ data: { leadId, type: 'CALL', content: `📞 Cliente pediu ligação ${when} — aguardando a Andreia confirmar o horário.` } }).catch(() => {});
+    await prisma.note.create({ data: { leadId, type: 'CALL', content: semHorario ? '📞 Cliente pediu ligação — aguardando a equipe definir o horário (o cliente ainda não foi respondido com horário).' : `📞 Cliente pediu ligação ${when} — aguardando a Andreia confirmar o horário.` } }).catch(() => {});
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-    sendPushToAccount(accountId, { title: `Pedido de ligação — ${lead.name}`, body: `Quer receber ligação ${when}. A Andreia consegue?`, leadId }, userIds).catch(() => {});
+    sendPushToAccount(accountId, { title: `Pedido de ligação — ${lead.name}`, body: semHorario ? 'Cliente pediu ligação — informe o melhor horário pra ligar' : `Quer receber ligação ${when}. A Andreia consegue?`, leadId }, userIds).catch(() => {});
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_team_question', leadId, leadName: lead.name, summary: `cliente pediu ligação ${when}` });
   }
   return saved;
@@ -787,6 +788,7 @@ export async function confirmCallRequest(params: { accountId: string; questionId
     const q = await prisma.aiTeamQuestion.findFirst({ where: { id: questionId, accountId, kind: 'CALL_REQUEST' } });
     if (!q) throw new Error('Pedido de ligação não encontrado');
     if (q.status !== 'OPEN') throw new Error('Esse pedido já foi resolvido');
+    if (/^a\s+definir$/i.test(String(q.callWhen || ''))) throw new Error('O cliente ainda não disse um horário: use "Propor" e escreva o dia e a hora que a Andreia consegue (ex.: hoje às 10h).');
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
     const lead = await prisma.lead.findFirst({ where: { id: q.leadId, accountId }, select: { name: true, contactId: true, pipeline: { select: { departmentId: true } }, contact: { select: { whatsappPhone: true, phone: true } } } });
     if (!lead) throw new Error('Card não encontrado');
@@ -853,7 +855,7 @@ export async function proposeCallTime(params: { accountId: string; questionId: s
   if (!q) throw new Error('Pedido de ligação não encontrado');
   if (q.status !== 'OPEN') throw new Error('Esse pedido já foi resolvido');
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
-  const reply = `Nesse horário não vou conseguir. Pode ser ${time}?`;
+  const reply = /^a\s+definir$/i.test(String(q.callWhen || '')) ? `Podemos te ligar ${time}? Se ficar bom pra você, é só me confirmar por aqui.` : `Nesse horário não vou conseguir. Pode ser ${time}?`;
   const sent = await sendOutboundWhatsApp({ accountId, leadId: q.leadId, content: reply, io: io || undefined });
   if (!sent.success) {
     const updated = await prisma.aiTeamQuestion.update({ where: { id: q.id }, data: { sendError: sent.error }, select: SELECT });
