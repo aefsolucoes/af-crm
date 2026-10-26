@@ -221,8 +221,10 @@ async function lerTrocoCorrigido(leadId: string, since: string, trocoAtual: numb
 }
 
 async function processOne(accountId: string, leadId: string, io: Io): Promise<void> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
   if (!lead) return;
+  // Fabio 26/10: "enquanto isso o CRM já pode finalizar cobrando os documentos" — o fim da mensagem manda o cliente ir providenciando a documentação (só enquanto o card ainda espera documentos).
+  const aindaSemDocs = /aguardando document/i.test((lead.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
   const cf = { ...((lead.customFields || {}) as Record<string, any>) };
   const st = { ...(cf._saldoDevedor || {}) } as { askedAt: string; base: number; liquido?: number; declared: number; scanned?: string[]; doneAt?: string; warnedAt?: string };
   if (!st.askedAt || st.doneAt || cf._autoPaused) return;
@@ -276,7 +278,7 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
     }
     if (lead.aiAutoReplyActive) {
       const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-      await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo${nome ? `, ${nome}` : ''}! 🙏 O saldo para quitação do financiamento é ${brl(achou.saldo)}. Com o valor aprovado de ${brl(am.valor)}, o troco pra você fica em ${brl(trocoReal)} (valor aproximado — o final é confirmado na formalização).`, io: io || undefined });
+      await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo${nome ? `, ${nome}` : ''}! 🙏 O saldo para quitação do financiamento é ${brl(achou.saldo)}. Com o valor aprovado de ${brl(am.valor)}, o troco pra você fica em ${brl(trocoReal)} (valor aproximado — o final é confirmado na formalização).${aindaSemDocs ? ' Já pode ir providenciando a documentação que te enviei, assim a gente adianta o processo. 😉' : ''}`, io: io || undefined });
     }
     return;
   }
@@ -295,6 +297,6 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}. Valor líquido que o cliente precisa ${base ? brl(base) : '—'} + saldo (${brl(achou.saldo)}) = ${brl(Math.round((achou.saldo + base) * 100) / 100)}, arredondado pra cima (milhar inteiro) = ${brl(total)}: "Valor do crédito" atualizado e ${r.created ? `análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''})` : 'análise já em andamento'}. O resultado anterior não vale pro valor novo.` } }).catch(() => {});
   if (lead.aiAutoReplyActive) {
     const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-    await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você precisa receber` : ''}, ou seja, ${brl(total)}.${corrigido?.novoTroco ? ' Usei o troco que você me passou.' : corrigido?.confirmou ? '' : ' Se o troco não for esse, me avisa que eu ajusto.'} Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.`, io: io || undefined }).catch(() => {});
+    await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você precisa receber` : ''}, ou seja, ${brl(total)}.${corrigido?.novoTroco ? ' Usei o troco que você me passou.' : corrigido?.confirmou ? '' : ' Se o troco não for esse, me avisa que eu ajusto.'} Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.${aindaSemDocs ? ' Enquanto a análise roda, já pode ir providenciando a documentação que te enviei, assim a gente adianta o processo. 😉' : ''}`, io: io || undefined }).catch(() => {});
   }
 }
