@@ -301,6 +301,10 @@ export async function aiCardState(leadId: string): Promise<string> {
 
   const credito = await aiCreditContext(leadId).catch(() => '');
   if (credito) partes.push(`ANÁLISE DE CRÉDITO:\n${credito}`);
+  // 26/10 (Fernando Felipe): a proposta nunca chegou e a IA disse "está em análise com o Inter". Sem nenhuma análise, isso precisa estar escrito.
+  else if (!(await prisma.creditAnalysis.count({ where: { leadId, dryRun: false } }).catch(() => 1))) {
+    partes.push('ANÁLISE DE CRÉDITO: AINDA NÃO COMEÇOU — nenhum banco recebeu proposta deste cliente. NÃO diga que está "em análise", com qual banco, nem que aguardamos retorno; se faltar a proposta ou algum dado pra rodar, peça o que falta.');
+  }
 
   // Cadastro (nome/CPF/nascimento) — confirmação pedida ao cliente / divergência do banco
   const cadConf = cf._cadConfirm as { status?: string } | undefined;
