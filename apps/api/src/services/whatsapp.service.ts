@@ -999,6 +999,16 @@ export async function resolveContactAndLeadByPhone(
   return { contact, leadId, formattedPhone, formAdvanced };
 }
 
+/** Localização que o cliente manda pelo WhatsApp (type "location"): vira texto com o nome/endereço e o link do mapa. Antes era DESCARTADA (Fabio 26/10: "não estou recebendo a localização no Inbox do CRM"). Pura (testável). */
+export function formatCloudLocation(loc: { latitude?: number | string; longitude?: number | string; name?: string; address?: string; url?: string } | null | undefined): string {
+  const lat = Number(loc?.latitude), lng = Number(loc?.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return '';
+  const nome = String(loc?.name || '').trim();
+  const end = String(loc?.address || '').trim();
+  const link = `https://www.google.com/maps?q=${lat},${lng}`;
+  return `📍 Localização${nome ? `: ${nome}` : ''}${end ? `${nome ? ' — ' : ': '}${end}` : ''}\n${link}`;
+}
+
 export async function processIncomingWhatsApp(body: any, accountId: string, io: any, departmentId?: string | null) {
   try {
     const config = await getWhatsAppConfig(accountId, departmentId);
@@ -1061,7 +1071,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       // loga o que for descartado por tipo desconhecido (não 'text'), pra
       // não repetir o incidente do call_permission_reply que sumia sem
       // nenhum rastro por causa de um match exato que não bateu.
-      if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo) {
+      const locationText = msg.type === 'location' ? formatCloudLocation(msg.location) : '';
+      if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo && !locationText) {
         if (msg.type && msg.type !== 'unknown') {
           console.log(`[WhatsApp] Mensagem tipo="${msg.type}" descartada (não tratada):`, JSON.stringify(msg));
         }
@@ -1071,7 +1082,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       const from = msg.from as string; // e.g. "5561999990001"
       let text = mediaInfo
         ? `📎 ${mediaInfo.fileName}${mediaInfo.caption ? ` — ${mediaInfo.caption}` : ''}`
-        : buttonReplyTitle || (msg.text?.body as string) || '';
+        : buttonReplyTitle || locationText || (msg.text?.body as string) || '';
       const externalId = msg.id as string;
       const profileName = normalizeClientName(value.contacts?.[0]?.profile?.name || `+${from}`);
 
