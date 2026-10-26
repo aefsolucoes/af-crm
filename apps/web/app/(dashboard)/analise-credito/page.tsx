@@ -1,5 +1,5 @@
 'use client';
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { Topbar } from '@/components/ui/topbar';
@@ -184,11 +184,19 @@ export default function AnaliseCreditoPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Link vindo do card (?leadId=): já abre o cliente.
+  // Link vindo do card (?leadId=): ACHA o cliente (Fabio 26/10: "botão no card para achar as avaliações daquele cliente na Análise de Crédito") — busca pelo nome (procura nas duas abas),
+  // abre a linha dele e rola até ela. Sem análise nenhuma: avisa.
+  const leadDoLink = useRef<string | null>(typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('leadId') : null);
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get('leadId');
-    if (id) setOpen(id);
-  }, []);
+    const id = leadDoLink.current;
+    if (!id || !data?.leads) return;
+    leadDoLink.current = null;
+    const l = data.leads.find((x) => x.id === id);
+    if (!l) { toast('Esse cliente ainda não tem análise de crédito nem está na Pré-Análise.', 'error'); return; }
+    setBusca(l.card?.name1 || l.name);
+    setOpen(id);
+    setTimeout(() => document.getElementById(`lead-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
+  }, [data]);
 
   const allLeads = data?.leads || [];
   const leads = useMemo(() => {
@@ -431,7 +439,7 @@ export default function AnaliseCreditoPage() {
                     const quieto = jaSeguiuAprovado(l); // já aprovado e adiante: banco que nunca rodou / falha antiga não é pendência
                     return (
                       <Fragment key={l.id}>
-                        <tr className="hover:bg-slate-50 transition-colors align-top">
+                        <tr id={`lead-${l.id}`} className="hover:bg-slate-50 transition-colors align-top">
                           <td className="pl-4 pr-2 py-3"><input type="checkbox" checked={selected.includes(l.id)} onChange={() => setSelected((p) => p.includes(l.id) ? p.filter((x) => x !== l.id) : [...p, l.id])} /></td>
                           <td className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}>
                             <div className="font-medium text-slate-800">{l.name}{l.card?.cpf1 && <span className="ml-2 text-[11px] font-normal text-slate-400">CPF {fmtCpf(l.card.cpf1)}</span>}</div>

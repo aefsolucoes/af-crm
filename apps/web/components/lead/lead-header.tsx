@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Modal } from '@/components/ui/modal';
 import { LeadRevertBar } from '@/components/lead/lead-revert-bar';
 import { formatCurrency } from '@/lib/utils';
-import { Building2, DollarSign, Trophy, XCircle, ThumbsDown, RotateCcw, X, Plus, Archive, ArchiveRestore } from 'lucide-react';
+import { Building2, DollarSign, Trophy, XCircle, ThumbsDown, RotateCcw, X, Plus, Archive, ArchiveRestore, Landmark } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useState } from 'react';
@@ -197,6 +197,13 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
         >
           {lead.status === 'WON' ? 'Ganho' : lead.status === 'LOST' ? 'Perdido' : 'Aberto'}
         </Badge>
+        <button
+          onClick={() => router.push(`/analise-credito?leadId=${lead.id}`)}
+          title="Abrir as análises de crédito deste cliente na aba Análise de Crédito"
+          className={`${btn} bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200`}
+        >
+          <Landmark size={icon} /> Análise
+        </button>
         {lead.status !== 'WON' && !lead.archived && (
           <button
             onClick={() => handleStatusChange('WON')}

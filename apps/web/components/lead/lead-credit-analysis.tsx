@@ -158,7 +158,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
           </button>
         )}
         <Link href={`/analise-credito?leadId=${leadId}`} className="flex items-center gap-1 text-[11px] text-af-mid hover:underline" title="Abrir na aba Análise de Crédito (resultado manual e histórico)">
-          Abrir aba <ExternalLink size={10} />
+          Ver na Análise de Crédito <ExternalLink size={10} />
         </Link>
       </div>
 
