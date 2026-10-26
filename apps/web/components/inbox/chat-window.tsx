@@ -15,6 +15,7 @@ import { MessageMenu } from '@/components/inbox/message-menu';
 import { useOutboundCallStore } from '@/store/outbound-call.store';
 import { useAuthStore } from '@/store/auth.store';
 import { EmojiPickerButton } from '@/components/inbox/emoji-picker';
+import { LocationCard, parseLocationMessage } from '@/components/inbox/location-card';
 import { EmailComposer, MailboxOption } from '@/components/email/email-composer';
 
 // Cor estável por remetente em grupos (estilo WhatsApp: mesma pessoa, mesma cor).
@@ -1919,6 +1920,9 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                             ? (msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '')
                             : msg.content;
                           if (!text) return null;
+                          // Localização do cliente: cartão com mapa, nome e endereço, como no WhatsApp (Fabio 26/10).
+                          const loc = msg.channel !== 'EMAIL' && !hasAtt ? parseLocationMessage(text) : null;
+                          if (loc) return <div className="pb-4"><LocationCard loc={loc} /></div>;
                           // pr-20 (não pr-12): o rodapé absoluto (estrela + hora +
                           // check de status) pode chegar a ~78px de largura numa
                           // mensagem enviada e marcada com estrela — com pr-12
