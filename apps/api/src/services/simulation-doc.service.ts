@@ -39,6 +39,8 @@ async function expireStuck(db: Db, accountId: string) {
     }
   };
   await expire({ status: 'REQUESTED', createdAt: { lt: new Date(now - REQUESTED_TTL_MIN * 60_000) } }, 'Nenhuma extensão do banco pegou o pedido (extensão fechada, desligada ou desatualizada).');
+  // PDF do assistente (só pra equipe): os bytes saem do banco depois de 3 dias (o disco do Postgres já encheu 2 vezes).
+  await db.simulationDocRequest.updateMany({ where: { accountId, status: 'PRIVATE', finishedAt: { lt: new Date(now - 3 * 86_400_000) }, NOT: { pdf: null } }, data: { pdf: null } }).catch(() => {});
   // PDF pronto esperando o aviso que não saiu em 8 min: manda sozinho (nunca fica preso).
   const esquecidos = await db.simulationDocRequest.findMany({ where: { accountId, status: 'READY', updatedAt: { lt: new Date(now - 8 * 60_000) } }, select: { id: true } });
   for (const x of esquecidos) await releaseHeld(db, x.id).catch(() => {});
@@ -56,7 +58,7 @@ export function parseInstitutions(raw: unknown): string[] {
   return out;
 }
 
-export async function requestSimulationDocs(db: Db, p: { accountId: string; leadId: string; institutions: string[]; userId?: string; source?: 'USER' | 'AI'; caption?: string; /** guarda o PDF pronto (READY) até o aviso de aprovação sair */ hold?: boolean; /** não pede de novo se o mesmo PDF já foi enviado nas últimas N horas (envio automático) */ skipIfSentWithinHours?: number }) {
+export async function requestSimulationDocs(db: Db, p: { accountId: string; leadId: string; institutions: string[]; userId?: string; source?: 'USER' | 'AI' | 'ASSISTANT'; caption?: string; /** guarda o PDF pronto (READY) até o aviso de aprovação sair */ hold?: boolean; /** não pede de novo se o mesmo PDF já foi enviado nas últimas N horas (envio automático) */ skipIfSentWithinHours?: number }) {
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
   if (!lead) throw new Error('Card não encontrado');
   await expireStuck(db, p.accountId);
@@ -124,7 +126,11 @@ function slug(text: string): string {
 }
 
 /** Envia o PDF pronto ao cliente e fecha o pedido (DONE) — ou falha com o motivo. */
-async function deliver(db: Db, r: { id: string; accountId: string; leadId: string; institution: string; caption: string | null; requestedById: string | null; hold?: boolean }, pdf: Buffer, io?: Io) {
+async function deliver(db: Db, r: { id: string; accountId: string; leadId: string; institution: string; caption: string | null; requestedById: string | null; hold?: boolean; source?: string }, pdf: Buffer, io?: Io) {
+  if ((r as any).source === 'ASSISTANT') { // pedido pelo ASSISTENTE do CRM (Fabio 26/10: "preciso da simulação do cliente X, ele me retorna com o PDF"): fica SÓ pra equipe, nunca vai ao cliente
+    await db.simulationDocRequest.update({ where: { id: r.id }, data: { status: 'PRIVATE', pdf, finishedAt: new Date(), detail: 'PDF pronto — só pra equipe (pedido pelo assistente do CRM)' } });
+    return { ok: true as const, held: true as const, messageId: undefined as string | undefined };
+  }
   if (r.hold) { // aviso de aprovação automático ainda não saiu: guarda o PDF pronto; o aviso manda texto + PDF juntos (releaseHeld)
     await db.simulationDocRequest.update({ where: { id: r.id }, data: { status: 'READY', pdf, detail: 'PDF pronto — vai junto com o aviso de aprovação' } });
     return { ok: true as const, held: true as const, messageId: undefined as string | undefined };

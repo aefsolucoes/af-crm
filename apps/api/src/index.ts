@@ -42,6 +42,7 @@ import vistoriaRoutes from './routes/vistorias';
 import automationMetricsRoutes from './routes/automation-metrics';
 import costsRoutes from './routes/costs';
 import emailRoutes from './routes/email';
+import assistantRoutes from './routes/assistant';
 import { syncAllEmailAccounts, probeMailEgress } from './services/email-inbox.service';
 import { checkInactivityAutomations, processDeferredAutomations } from './services/automation.service';
 import { organizeReceivedDocsLeads } from './services/received-docs.service';
@@ -116,6 +117,7 @@ app.use('/api/vistorias', vistoriaRoutes);
 app.use('/api/automation-metrics', automationMetricsRoutes);
 app.use('/api/costs', costsRoutes);
 app.use('/api/email', emailRoutes);
+app.use('/api/assistant', assistantRoutes);
 
 configureWebPush();
 
