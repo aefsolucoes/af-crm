@@ -479,12 +479,13 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   const canCheck = !!p.caps?.includes('check');
   // Em PAUSA GERAL só sai da fila o que uma pessoa pediu (requestedById): reconferências e pedidos automáticos ficam parados.
   await expireStuck(db, { accountId: p.accountId }); // execução parada não segura a fila: aqui (e não só ao abrir a tela) é o que a destrava
-  if (foraDoHorario()) return []; // extensões paradas fora de 07h–22h: a fila espera (inclusive o que uma pessoa pediu)
+  const liberado = !!(await liberadoAte(db, p.accountId));
+  if (foraDoHorario() && !liberado) return []; // extensões paradas fora de 07h–22h: a fila espera (inclusive o que uma pessoa pediu) — salvo liberação manual
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { paused: true } }))?.paused;
   const NOT_PAUSED_AUTO = notPausedAuto(await pausedLeadIds(db, p.accountId));
   // Fora do horário de trabalho (07h–22h, Brasília) NADA roda sozinho (Fabio 16/10: "parece que os sistemas não funcionam de madrugada"): as rodadas e conferências automáticas esperam até as 7h;
   // só o que uma PESSOA pediu na tela sai da fila. O que estiver em execução às 21h termina normalmente.
-  const noturno = foraDoHorario();
+  const noturno = foraDoHorario() && !liberado;
   const NOT_SCR_LOCKED = notScrLocked(await scrLockedLeadIds(db, p.accountId));
   // "Um cliente por vez": os pedidos de RODAR de outros clientes esperam o cliente atual terminar em todos os bancos.
   const abertos = await db.creditAnalysis.findMany({
@@ -835,6 +836,11 @@ type AnalysisRow = NonNullable<Awaited<ReturnType<Db['creditAnalysis']['findFirs
  *  Os AVISOS ao cliente continuam só das 07h às 21h (approval-notice.service.ts). */
 export const EXT_HORA_INICIO = 7;
 export const EXT_HORA_FIM = 22;
+/** Liberação manual fora do horário (Fabio 26/10: "pode liberar agora"): até `afterHoursUntil` as extensões pegam a fila também de madrugada. null = sem liberação. */
+export async function liberadoAte(db: Db, accountId: string): Promise<Date | null> {
+  const s = await db.creditAutoSetting.findUnique({ where: { accountId }, select: { afterHoursUntil: true } }).catch(() => null);
+  return s?.afterHoursUntil && s.afterHoursUntil.getTime() > Date.now() ? s.afterHoursUntil : null;
+}
 export function foraDoHorario(ms = Date.now()): boolean {
   const h = new Date(ms - BRT_MS).getUTCHours();
   return h < EXT_HORA_INICIO || h >= EXT_HORA_FIM;
