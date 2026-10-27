@@ -250,6 +250,27 @@ Se o cliente quiser seguir com o crédito/aprovação:
 - Nunca repita o motivo interno cru (ex.: "LEAD DESQUALIFICADO", "CLIENTE COM RESTRICAO") — fale com naturalidade.`;
 }
 
+/** RACIOCÍNIO INTERNO VAZADO (Fabio 26/10, Selma: "erro grotesco, isso não deve existir de forma alguma"): a IA mandou ao cliente "A cliente disse que…", "Preciso continuar a conversa…",
+ *  "Ela está conversando, então devo…", "Vou perguntar se ela…". Mensagem pro cliente fala COM ele (você), nunca DELE (ele/ela, "o cliente"), nem de si mesma planejando.
+ *  Pura (testável). true = não pode sair. */
+export function pareceRaciocinio(texto: string): boolean {
+  const t = String(texto || '');
+  const fortes = [
+    // fala DO cliente em 3ª pessoa: "A cliente disse que…", "O cliente quer…"
+    /\b(a|o) (cliente|lead)\b[^.!?\n]{0,40}\b(disse|diz|falou|est[aá]|quer|perguntou|respondeu|mencionou|informou|pediu|mandou|enviou|demonstr|parece|ainda n[aã]o)/i,
+    // a IA planejando: "Preciso continuar a conversa…", "devo continuar o diálogo…", "Vou perguntar se ela…"
+    /\b(preciso|devo|tenho que)\s+(continuar|manter|retomar)\s+(a|o)\s+(conversa|di[aá]logo|atendimento)/i,
+    /\b(preciso|devo|tenho que)\s+(perguntar se (ela|ele)|responder (a|o) cliente|evitar|empurrar)/i,
+    /\bvou perguntar se (ela|ele)\b/i,
+    /(^|[.!?\n]\s*)(ela|ele) (est[aá] conversando|ainda n[aã]o respondeu|j[aá] respondeu|respondeu|disse|parece|quer)\b/i,
+    /fase de ["“]tirar d[uú]vidas["”]/i,
+    /^\s*(racioc[ií]nio|an[aá]lise interna|pensamento|observa[cç][aã]o interna)\s*:/im,
+    // pedaço do JSON da resposta
+    /"(reply|noReply|askTeam|extractedFields|moveToStage)"\s*:/,
+  ];
+  return fortes.some((re) => re.test(t));
+}
+
 /**
  * ANÁLISE DE CRÉDITO DENTRO DO CONTEXTO DE TODAS AS IAs (Fabio 23/10: "ela precisa estar interligada com todo o CRM, inclusive com a análise de crédito do cliente").
  * Caso Cibele: Santander e Inter já fora ("não analisa") e a IA disse "vamos aguardar o retorno dos demais bancos". Agora toda IA que conversa com o cliente (auto-resposta, sugestão, resposta da equipe,

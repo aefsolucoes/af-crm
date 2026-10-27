@@ -249,6 +249,11 @@ export async function sendOutboundWhatsApp(params: {
   if (!lead) return { success: false, error: 'Lead não encontrado' };
   // STOP TOTAL do cliente (botão "Parar" na Análise de Crédito, Fabio 14/10): nada AUTOMÁTICO (sem usuário) vai pra ele — IA, avisos, lembretes, automações. A equipe segue podendo escrever.
   if (!userId && (lead.customFields as any)?._autoPaused) return { success: false, code: 'LEAD_STOPPED', error: 'Cliente PARADO (Stop total): envio automático bloqueado' };
+  // Trava final (Fabio 26/10, Selma): envio AUTOMÁTICO (sem pessoa) com cara de raciocínio interno da IA ("A cliente disse…", "Preciso continuar a conversa…") ou pedaço de JSON não sai.
+  if (!userId && (require('./ai-shared.service') as typeof import('./ai-shared.service')).pareceRaciocinio(content)) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Bloqueei uma mensagem automática que parecia raciocínio interno da IA (não foi ao cliente): "${String(content).replace(/\s+/g, ' ').slice(0, 300)}"` } }).catch(() => {});
+    return { success: false, code: 'AI_REASONING_BLOCKED', error: 'Mensagem automática bloqueada: parecia raciocínio interno da IA' };
+  }
 
   // A API Oficial exige um número de verdade — @lid (só existia por Baileys/QR) não serve.
   const cloudPhone = plainPhone(lead.contact);

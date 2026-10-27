@@ -446,6 +446,8 @@ export interface AiAutoReplyResult {
   runAnalysis?: boolean;
   /** Bancos que NUNCA rodaram neste card e que a IA disse ao cliente que vai pôr em análise (SANTANDER | INTER | CREDITAS) — o CRM pede a 1ª rodada. */
   runBanks?: string[] | null;
+  /** A resposta do modelo veio FORA do formato (sem o JSON, JSON quebrado ou com cara de raciocínio interno): NADA vai ao cliente (Selma 26/10). */
+  formatError?: boolean;
   /** Bancos cuja simulação em PDF a IA quer mandar (SANTANDER | INTER) — aplicar via applyAiExtractedActions. */
   sendSimulation?: string[] | null;
   /** true = a IA vai apresentar a aprovação pelo aviso padrão do CRM — aplicar via applyAiExtractedActions. */
@@ -616,36 +618,55 @@ ${ligacao}` : ''}${conversasPorTelefone ? `
 ${conversasPorTelefone}` : ''}`;
     const systemPrompt = `${systemFixed}\n\n${systemDynamic}`; // texto completo (só pra referência)
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-5',
-        // O modelo pensa antes de responder e o raciocínio conta nesse
-        // limite: com 1024 às vezes acabava tudo no raciocínio e a resposta
-        // vinha VAZIA (cliente ficava sem resposta, achado 2026-09-25).
-        max_tokens: 4096,
-        system: cachedSystem(systemFixed, systemDynamic),
-        messages: [{
-          role: 'user',
-          content: images.length
-            ? [
-              ...images.map((source) => ({ type: 'image', source })),
-              { type: 'text', text: `${incomingText}\n\n[O cliente mandou ${images.length > 1 ? 'as imagens acima' : 'a imagem acima'} (foto ou print de tela). Olhe com atenção e responda com base no que aparece nela — nunca diga que não consegue ver imagem.]` },
-            ]
-            : incomingText,
-        }],
-      }),
-    });
-    if (!response.ok) {
-      console.error('[AI Auto-reply] Erro Anthropic:', response.status, (await response.text()).slice(0, 300));
+    // Até 2 tentativas: resposta fora do formato (sem JSON, JSON quebrado) ou com cara de RACIOCÍNIO INTERNO nunca vai ao cliente (Fabio 26/10, Selma: "isso não deve existir de forma alguma").
+    const { pareceRaciocinio } = require('./ai-shared.service') as typeof import('./ai-shared.service');
+    let result: AiAutoReplyResult | null = null;
+    let rawFalho = '';
+    for (let tentativa = 0; tentativa < 2; tentativa++) {
+      const lembrete = tentativa ? '\n\n[ATENÇÃO: a resposta anterior veio fora do formato. Responda SOMENTE com o objeto JSON pedido — nada antes nem depois dele. O campo "reply" é a mensagem que vai ao cliente: fale COM ele, nunca descreva a conversa nem o que você pretende fazer.]' : '';
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-5',
+          // O modelo pensa antes de responder e o raciocínio conta nesse
+          // limite: com 1024 às vezes acabava tudo no raciocínio e a resposta
+          // vinha VAZIA (cliente ficava sem resposta, achado 2026-09-25).
+          max_tokens: 4096,
+          system: cachedSystem(systemFixed, systemDynamic),
+          messages: [{
+            role: 'user',
+            content: images.length
+              ? [
+                ...images.map((source) => ({ type: 'image', source })),
+                { type: 'text', text: `${incomingText}\n\n[O cliente mandou ${images.length > 1 ? 'as imagens acima' : 'a imagem acima'} (foto ou print de tela). Olhe com atenção e responda com base no que aparece nela — nunca diga que não consegue ver imagem.]${lembrete}` },
+              ]
+              : `${incomingText}${lembrete}`,
+          }],
+        }),
+      });
+      if (!response.ok) {
+        console.error('[AI Auto-reply] Erro Anthropic:', response.status, (await response.text()).slice(0, 300));
+        return null;
+      }
+      const data = await response.json() as { content: { type: string; text?: string }[] };
+      // TODOS os blocos de texto (antes só o 1º: se o modelo escrevia um texto antes do JSON, o 1º bloco era esse texto).
+      const raw = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').trim();
+      if (!raw) return null;
+      const r = parseReply(raw);
+      if (!r.formatError && !(r.reply && pareceRaciocinio(r.reply))) { result = r; break; }
+      rawFalho = raw;
+      console.warn('[AI Auto-reply] resposta fora do formato/raciocínio — tentativa', tentativa + 1, raw.slice(0, 200));
+    }
+    if (!result) {
+      // As 2 tentativas falharam: o cliente não recebe nada; a equipe é avisada pra responder à mão.
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A IA respondeu fora do formato 2 vezes (texto que não podia ir ao cliente) — não mandei nada. Responda o cliente à mão.\nO que veio: "${rawFalho.replace(/\s+/g, ' ').slice(0, 400)}"` } }).catch(() => {});
+      try {
+        const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, accountId: true } });
+        if (lead) (require('./push.service') as typeof import('./push.service')).sendPushToAccount(lead.accountId, { title: 'IA não respondeu o cliente', body: `${lead.name}: a resposta da IA saiu fora do formato e não foi enviada. Responda à mão.`, leadId }).catch(() => {});
+      } catch { /* aviso */ }
       return null;
     }
-    const data = await response.json() as { content: { type: string; text?: string }[] };
-    const raw = data.content?.find((b) => b.type === 'text')?.text?.trim() || '';
-    if (!raw) return null;
-
-    const result = parseReply(raw);
     // Tom (Fabio 23/10, caso Pedro Luis): com o cliente de ficar de mandar a documentação, "Alguma dificuldade pra enviar?" é rude — o filtro tira essa pergunta (o prompt sozinho não segurava).
     if (result.reply) {
       const limpo = semCobrancaRude(result.reply);
@@ -730,9 +751,9 @@ export function stripApprovalClaims(text: string): string {
 function parseReply(raw: string): AiAutoReplyResult {
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) {
-    // Sem chave nenhuma no texto — não é um JSON quebrado, é resposta livre
-    // mesmo (raro, mas seguro de mandar como está).
-    return { reply: raw, handoff: false };
+    // Sem JSON nenhum: NÃO é "resposta livre segura de mandar". Em 26/10 (Selma) o texto cru era o RACIOCÍNIO da IA ("A cliente disse…", "Preciso continuar a conversa…")
+    // e foi ao cliente em 4 mensagens. Fora do formato = nada vai ao cliente (generateAiAutoReply tenta de novo uma vez).
+    return { reply: '', noReply: true, handoff: false, formatError: true };
   }
 
   try {
@@ -796,5 +817,6 @@ function parseReply(raw: string): AiAutoReplyResult {
     }
   }
 
-  return { reply: 'Recebi sua mensagem! Só um instante que já te retorno.', handoff: false };
+  // JSON quebrado sem "reply" recuperável: nada vai ao cliente (antes saía "Recebi sua mensagem! Só um instante…", uma promessa vazia).
+  return { reply: '', noReply: true, handoff: false, formatError: true };
 }
