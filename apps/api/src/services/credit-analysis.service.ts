@@ -973,6 +973,74 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   return afterReport(db, updated);
 }
 
+// ─── Aba "Análise de Crédito — Financiamento Imobiliário" (Fabio 27/10) ───
+/** Os 6 bancos do Financiamento: os 4 do Credimorar (uma simulação só) + CAIXA (Caixa Aqui) e BRB (PCN), que rodam só com a documentação completa. */
+export const FH_TABLE_BANKS = ['Bradesco', 'Itaú', 'Santander', 'Inter', 'CAIXA', 'BRB'] as const;
+/** Bancos (chave da fila) da CAIXA e do BRB no Financiamento — extensões ainda não feitas. */
+export const FH_DOC_BANKS: Record<string, string> = { CAIXA_FH: 'CAIXA', BRB_FH: 'BRB' };
+
+/** "Bradesco: Em análise, proposta 5651212, 324 meses — Aguardando retorno ANAC" → { banco, status, texto }. Pura (testável). */
+export function parseBancosFinanciamento(resumo?: string | null): Record<string, { status: string; texto: string }> {
+  const out: Record<string, { status: string; texto: string }> = {};
+  for (const parte of String(resumo || '').split('|')) {
+    const m = /^\s*([^:]+):\s*(.+?)\s*$/.exec(parte);
+    if (!m) continue;
+    const banco = m[1].trim();
+    const status = m[2].split(/,| — /)[0].trim();
+    out[banco] = { status, texto: m[2].trim() };
+  }
+  return out;
+}
+
+export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds: string[] }) {
+  await expireStuck(db, { accountId: p.accountId });
+  const fhKeys = [FH_BANK, ...Object.keys(FH_DOC_BANKS)];
+  const since = new Date(Date.now() - 90 * 86_400_000);
+  const recent = await db.creditAnalysis.findMany({ where: { accountId: p.accountId, bank: { in: fhKeys }, createdAt: { gte: since } }, select: { leadId: true } });
+  const recentIds = Array.from(new Set(recent.map((r) => r.leadId)));
+  const deptScope = p.scopeDepartmentIds.length ? { OR: [{ departmentId: { in: p.scopeDepartmentIds } }, { departmentId: null }] } : {};
+  const leads = await db.lead.findMany({
+    where: {
+      accountId: p.accountId, archived: false, isGroup: false,
+      pipeline: { AND: [deptScope, { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } }] },
+      OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])],
+    },
+    select: {
+      id: true, name: true, status: true, customFields: true, stageEnteredAt: true, updatedAt: true,
+      stage: { select: { name: true } }, pipeline: { select: { name: true } },
+      creditAnalyses: { where: { bank: { in: fhKeys } }, orderBy: { createdAt: 'desc' }, take: 20 },
+    },
+    orderBy: { updatedAt: 'desc' },
+    take: 200,
+  });
+  const num = (v: unknown) => { const n = Number(String(v ?? '').replace(/[^\d.]/g, '')); return Number.isFinite(n) && n > 0 ? n : null; };
+  // Financiamento exige NOME LIMPO (Fabio 27/10): a proposta do site traz "Restrição no Serasa: Sim/Não".
+  const propostas = leads.length ? await db.message.findMany({ where: { leadId: { in: leads.map((l) => l.id) }, content: { contains: 'Serasa' } }, orderBy: { createdAt: 'desc' }, distinct: ['leadId'], select: { leadId: true, content: true } }) : [];
+  const restricao = new Map(propostas.map((m) => { const r = /Restri[cç][aã]o no Serasa:\s*\**\s*(Sim|N[aã]o)/i.exec(m.content); return [m.leadId, r ? /^sim/i.test(r[1]) : null] as const; }));
+  return leads.map((l) => {
+    const cf = (l.customFields || {}) as Record<string, any>;
+    const cred = l.creditAnalyses.filter((r) => r.bank === FH_BANK);
+    const last = cred[0] || null;
+    const lido = cred.find((r) => !['REQUESTED', 'RUNNING'].includes(r.status)) || null;
+    const bancos: Record<string, { status: string; texto: string }> = parseBancosFinanciamento(cf._fhResumo || resumoFinanciamento(lido?.detail));
+    for (const [key, nome] of Object.entries(FH_DOC_BANKS)) {
+      const r = l.creditAnalyses.find((x) => x.bank === key);
+      if (r) bancos[nome] = { status: r.status, texto: String(r.detail || '').slice(0, 240) };
+    }
+    return {
+      id: l.id, name: l.name, status: l.status, stage: l.stage?.name || '', pipeline: l.pipeline?.name || '', stageEnteredAt: l.stageEnteredAt,
+      valores: { imovel: num(cf.valor_imovel), financia: num(cf.valor_credito), entrada: num(cf.valor_entrada), renda: (num(cf.renda_1) || 0) + (num(cf.renda_2) || 0) || null },
+      participante2: cf.participante_2 ? String(cf.participante_2) : null,
+      restricaoSerasa: restricao.has(l.id) ? restricao.get(l.id) : null,
+      simulacao: cred.find((r) => r.proposalNumber)?.proposalNumber || null,
+      last: last ? { id: last.id, kind: last.kind, status: last.status, detail: last.detail, updatedAt: last.updatedAt, notBefore: last.notBefore } : null,
+      leituraEm: lido?.updatedAt || null,
+      active: l.creditAnalyses.some((r) => ['REQUESTED', 'RUNNING'].includes(r.status) && r.kind === 'RUN'),
+      bancos,
+    };
+  });
+}
+
 /** Situação de cada banco no Financiamento ("BANCOS [Bradesco: Em análise, proposta 5651212 | Itaú: não enviado | …]" no texto da extensão). */
 export function resumoFinanciamento(detail?: string | null): string | null {
   const m = /BANCOS \[([^\]]+)\]/.exec(String(detail || ''));

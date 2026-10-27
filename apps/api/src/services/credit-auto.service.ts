@@ -179,8 +179,14 @@ async function startNewFhLeads(accountId: string, enabledAt: Date) {
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
     if (cf._autoPaused || cf._fhAutoStartedAt) continue;
-    const proposta = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', content: { contains: 'Financiamento Habitacional' }, OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, select: { id: true } });
+    const proposta = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', content: { contains: 'Financiamento Habitacional' }, OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { id: true, content: true } });
     if (!proposta) continue;
+    // Financiamento exige NOME LIMPO (Fabio 27/10): com restrição no Serasa os bancos não aprovam — não gasta análise; a equipe roda à mão na aba se quiser.
+    if (/Restri[cç][aã]o no Serasa:\s*\**\s*Sim/i.test(proposta.content)) {
+      await saveCf(l.id, { _fhAutoStartedAt: new Date().toISOString() });
+      await addNote(l.id, '🚫 Análise do Financiamento NÃO rodada sozinha: na proposta o cliente marcou RESTRIÇÃO NO SERASA, e no Financiamento os bancos exigem nome limpo. Se quiser tentar assim mesmo, use "Rodar" na aba Análise de Crédito — Financiamento.');
+      continue;
+    }
     const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [FH_BANK], dryRun: false, force: false });
     await saveCf(l.id, { _fhAutoStartedAt: new Date().toISOString() });
     await addNote(l.id, `🤖 Análise do Financiamento pedida no Credimorar (Bradesco, Itaú, Santander e Inter numa simulação só). ${out.created} pedido na fila pra extensão. O resultado de cada banco vem em nota; o cliente não é avisado sozinho.`);

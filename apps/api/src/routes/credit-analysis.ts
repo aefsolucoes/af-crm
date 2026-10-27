@@ -9,7 +9,7 @@ import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.ser
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
-  BANK_KEYS, EXT_BANK_KEYS, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
+  BANK_KEYS, EXT_BANK_KEYS, FH_BANK, fhBoard, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
 } from '../services/credit-analysis.service';
 
@@ -27,6 +27,25 @@ router.get('/board', async (req: AuthRequest, res: Response) => {
     const scope = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
     res.json({ leads: await board(prisma, { accountId: req.user!.accountId, scopeDepartmentIds: scope }), extensions: extensionStatus(req.user!.accountId) });
   } catch (err) { fail(res, err, 'Erro ao carregar as análises'); }
+});
+
+// Aba "Análise de Crédito — Financiamento Imobiliário" (Fabio 27/10): cards do Financiamento Habitacional × 6 bancos.
+router.get('/fh-board', async (req: AuthRequest, res: Response) => {
+  try {
+    const scope = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
+    res.json({ leads: await fhBoard(prisma, { accountId: req.user!.accountId, scopeDepartmentIds: scope }), extension: extensionStatus(req.user!.accountId)[FH_BANK] || null });
+  } catch (err) { fail(res, err, 'Erro ao carregar o Financiamento'); }
+});
+// Rodar (simulação nova nos 4 bancos do Credimorar) ou conferir a situação de um cliente do Financiamento.
+router.post('/fh-request', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || '');
+    const kind = req.body?.kind === 'CHECK' ? 'CHECK' : 'RUN';
+    if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
+    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds: [leadId], banks: [FH_BANK], dryRun: false, kind, force: kind === 'RUN', queueIfBusy: kind === 'RUN' });
+    emit(req, { leadId });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao pedir a análise do Financiamento'); }
 });
 
 // Análises de UM card (bloco dentro do card).

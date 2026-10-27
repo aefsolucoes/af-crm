@@ -10,7 +10,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard, Kanban, MessageSquare, CheckSquare, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown, Megaphone, Landmark, Gauge, Coins,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown, Megaphone, Landmark, Gauge, Coins, Home,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -27,6 +27,7 @@ const NAV: NavItem[] = [
   // sem precisar de configuração extra de permissão.
   { href: '/meu-assistente', label: 'Meu Assistente', icon: Sparkles, perm: 'dashboard' },
   { href: '/analise-credito', label: 'Análise de Crédito', icon: Landmark, perm: 'funnel_view' },
+  { href: '/analise-financiamento', label: 'Análise Financiamento Imob.', icon: Home, perm: 'funnel_view' },
   // Item único pros 3 setores (Habitação/Consórcio/Home Equity) — antes eram
   // 3 itens de menu separados, um por setor; agora FunilView tem seu próprio
   // seletor de setor (mesmo critério de "só os próprios setores" de antes,
