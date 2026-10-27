@@ -358,7 +358,8 @@ function approvalBlock(o: ApprovalOption): string {
 const DOCS_HEADER = 'Para seguir com a contratação do crédito encaminhar os seguintes documentos:';
 const DOCS_MARK = 'encaminhar os seguintes documentos';
 const DOCS_MARK_OLD = 'o banco pede os seguintes documentos';
-const FALLBACK_PESSOAIS = ['Documento de identificação', 'Comprovante de residência', 'Comprovante de estado civil (certidão de nascimento ou casamento)'];
+// Fabio 27/10: nos bancos privados só RG/CNH e comprovante de residência (+ o imóvel); a documentação completa (estado civil, CPF, contracheque…) só na CAIXA (regra em ai-shared).
+const FALLBACK_PESSOAIS = ['Documento de identificação (RG ou CNH)', 'Comprovante de residência'];
 // Renda: em 17/10 (Luzia) ia SEMPRE na lista; em 27/10 o Fabio voltou à regra: SÓ quando o banco pede (buildDocsText). A equipe edita os itens na Resposta rápida "Documentos Home Equity" (seção "*Renda:*").
 // Sempre com o NÚMERO (Fabio 19/10: "3 últimos extratos bancários" pra autônomo e "3 últimos contracheques, quando for o caso" pra assalariado).
 const FALLBACK_RENDA = ['Comprovante de renda: 3 últimos contracheques (se for assalariado) ou 3 últimos extratos bancários (se for autônomo)', 'Declaração do Imposto de Renda (IRPF) completa, com o recibo de entrega (se declara)'];
@@ -414,7 +415,7 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
   if (leadId) {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const p2 = String(((lead?.customFields || {}) as Record<string, any>).participante_2 || '').trim();
-    if (p2) conjuge = `\n\n*Documentos pessoais do cônjuge / 2º participante (${p2}):*\n${pessoais.map((d) => `• ${d}`).join('\n')}\n_Se moram juntos, o comprovante de residência e a certidão podem ser os mesmos._`;
+    if (p2) conjuge = `\n\n*Documentos pessoais do cônjuge / 2º participante (${p2}):*\n${pessoais.map((d) => `• ${d}`).join('\n')}\n_Se moram juntos, o comprovante de residência pode ser o mesmo._`;
   }
   const imovelFinal = [...imovel];
   for (const o of options) for (const d of o.docsImovelExtra || []) if (!imovelFinal.some((x) => normN(x) === normN(d))) imovelFinal.push(d); // + o que o Inter pediu do imóvel e a lista padrão não cobre (ex.: quitação do condomínio)
