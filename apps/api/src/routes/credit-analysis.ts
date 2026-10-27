@@ -9,7 +9,7 @@ import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.ser
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
-  BANK_KEYS, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
+  BANK_KEYS, EXT_BANK_KEYS, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
 } from '../services/credit-analysis.service';
 
@@ -108,7 +108,7 @@ router.post('/lock', (req: AuthRequest, res: Response) => {
 router.post('/release', async (req: AuthRequest, res: Response) => {
   try {
     const bank = String(req.body?.bank || '').toUpperCase();
-    if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
+    if (!EXT_BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
     res.json({ ok: true, released: await releaseOrphans(prisma, { accountId: req.user!.accountId, bank }) });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
@@ -191,7 +191,7 @@ router.post('/requests', async (req: AuthRequest, res: Response) => {
 // A extensão do banco pergunta: "tem pedido pra mim?" (ela chama a cada minuto).
 router.get('/queue', async (req: AuthRequest, res: Response) => {
   const bank = String(req.query.bank || '');
-  if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
+  if (!EXT_BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
   try {
     touchExtension(req.user!.accountId, bank, typeof req.query.extId === 'string' ? req.query.extId : null, req.user!.id);
     // A extensão diz se o portal está pedindo login (sessão vencida): `login=needed` liga o aviso na tela + push; `login=ok` desliga.
@@ -214,7 +214,7 @@ router.post('/report', async (req: AuthRequest, res: Response) => {
   const raw = String(b.status || '');
   const status = EXTENSION_STATUS[raw.toLowerCase()] || raw.toUpperCase();
   const bank = String(b.bank || '').toUpperCase();
-  if (!b.leadId || !BANK_KEYS.includes(bank) || !status) return res.status(400).json({ error: 'leadId, bank e status são obrigatórios' });
+  if (!b.leadId || !EXT_BANK_KEYS.includes(bank) || !status) return res.status(400).json({ error: 'leadId, bank e status são obrigatórios' });
   try {
     touchExtension(req.user!.accountId, bank, null, req.user!.id);
     // Sessão do portal vencida: o pedido volta pra fila, a tela mostra "deslogada" e a equipe recebe push (nada de "Falhou").

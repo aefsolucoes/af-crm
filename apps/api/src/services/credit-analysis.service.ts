@@ -22,8 +22,14 @@ export const BANKS: Record<string, { label: string; instituicao: string }> = {
   INTER: { label: 'Banco Inter', instituicao: 'Inter' },
   CREDITAS: { label: 'Creditas', instituicao: 'Creditas' },
   CREDIMORAR: { label: 'Santander (Credimorar)', instituicao: 'Santander' },
+  // Financiamento Habitacional (Fabio 27/10): uma simulação do Credimorar roda Bradesco, Itaú, Santander e Inter juntos. Fica FORA de BANK_KEYS (telas, cascatas e avisos são do Home Equity).
+  CREDIMORAR_FH: { label: 'Financiamento (Credimorar)', instituicao: 'Credimorar' },
 };
-export const BANK_KEYS = Object.keys(BANKS);
+/** Bancos do Home Equity. */
+export const BANK_KEYS = ['INTER', 'CREDITAS', 'CREDIMORAR'];
+export const FH_BANK = 'CREDIMORAR_FH';
+/** O que uma extensão pode pegar/relatar na fila: Home Equity + Financiamento Habitacional. */
+export const EXT_BANK_KEYS = [...BANK_KEYS, FH_BANK];
 
 /** Status em português que as extensões já usam (recordHistory) → status do CRM. */
 export const EXTENSION_STATUS: Record<string, string> = {
@@ -34,7 +40,7 @@ const ALL_STATUS = new Set(['REQUESTED', 'RUNNING', 'SENT', 'APPROVED', 'CONDITI
 const FINAL = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
 const ACTIVE = ['REQUESTED', 'RUNNING'];
 /** Bancos cuja extensão sabe só CONFERIR uma proposta já enviada (sem criar outra). */
-export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS'];
+export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS', FH_BANK];
 const CREDITAS_MAX_AGE_MS = 60 * 3_600_000; // e desiste de conferir sozinho 60 h depois da 1ª conferência (cobre 2 noites sem leitura)
 const BRT_MS = 3 * 3_600_000; // Brasília = UTC-3 (sem horário de verão)
 const CHECK_MAX_TRIES = 18; // 18 conferências de 10 min = ~3 h; passou disso, fica pra conferir à mão
@@ -374,7 +380,7 @@ export function propostaDoCard(cf: Record<string, any>): { bank: string; numero:
 
 export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; alignApproval?: boolean; queueIfBusy?: boolean }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
-  const banks = p.banks.filter((b) => BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
+  const banks = p.banks.filter((b) => EXT_BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
   const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true } });
   let created = 0, skipped = 0, queuedBehind = 0;
   const consulted: string[] = [];
@@ -477,7 +483,7 @@ const scrLockedLeadIds = async (db: Db, accountId: string) => (await db.$queryRa
 const notScrLocked = (lockedIds: string[]) => ({ NOT: { AND: [{ bank: 'CREDITAS' }, { kind: 'CHECK' }, { requestedById: null }, { leadId: { in: lockedIds } }] } });
 
 export async function claimQueue(db: Db, p: { accountId: string; bank: string; limit?: number; caps?: string[] }) {
-  if (!BANK_KEYS.includes(p.bank)) return [];
+  if (!EXT_BANK_KEYS.includes(p.bank)) return [];
   lastPollAt.set(`${p.accountId}:${p.bank}`, Date.now());
   const canCheck = !!p.caps?.includes('check');
   // Em PAUSA GERAL só sai da fila o que uma pessoa pediu (requestedById): reconferências e pedidos automáticos ficam parados.
@@ -789,7 +795,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     if (Object.keys(patch).length) { await db.creditAnalysis.update({ where: { id: updated.id }, data: patch }).catch(() => {}); Object.assign(updated, patch); }
   }
   // Nota automática só na primeira vez que vira aprovada/reprovada (modo teste não escreve no card).
-  if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) {
+  if (becameFinal && !updated.dryRun && row.bank !== FH_BANK && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) { // Financiamento: a nota é por banco (notaFinanciamento)
     const holder = await holderIfSecond(db, row.leadId, updated.holderName);
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: analysisNote({ ...updated, status: next, holder }) } });
   }
@@ -820,7 +826,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun) await finishProposalChange(db, updated.leadId).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
   if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
-  if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL')) await reabrirSeAprovouDepoisDaNegativa(db, updated as any).catch((e: any) => console.error('[Reabrir ao aprovar]', e?.message || e));
+  if (becameFinal && !updated.dryRun && row.bank !== FH_BANK && (next === 'APPROVED' || next === 'CONDITIONAL')) await reabrirSeAprovouDepoisDaNegativa(db, updated as any).catch((e: any) => console.error('[Reabrir ao aprovar]', e?.message || e));
   await santanderManualFlow(db, updated as any).catch((e: any) => console.error('[Santander manual]', e?.message || e));
   return { row: updated, becameFinal };
 }
@@ -874,6 +880,7 @@ export function pushOutOfQuiet(ms: number): Date {
 /** Minutos de espera ANTES da n-ésima conferência depois do envio (n=1 é a primeira). Fabio 15/10: Inter e Creditas conferem 3 vezes de 3 em 3 min (o resultado às vezes sai na hora);
  *  depois o Inter segue de 10 em 10 min e o Creditas "aumenta": 10 min, 20 min e de 30 em 30 min (aprovação real do Creditas leva horas). Santander: 10 em 10. Pura (testável). */
 export function checkGapMin(bank: string, n: number): number {
+  if (bank === FH_BANK) return n <= 3 ? 10 : 30; // Financiamento: os 4 bancos levam horas/dias pra analisar
   if ((bank === 'INTER' || bank === 'CREDITAS') && n <= 3) return 3;
   if (bank === 'CREDITAS') return n === 4 ? 10 : n === 5 ? 20 : 30;
   return 10;
@@ -896,7 +903,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     if (rodada && RX_CAD_DIV.test(`${rodada.detail || ''} ${rodada.conditions || ''}`)) {
       return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: 'Cadastro divergente: parei de conferir a lista do banco até o cadastro ser corrigido (o CRM pergunta ao cliente e refaz a análise quando ele corrigir).' } });
     }
-    const creditas = row.bank === 'CREDITAS';
+    const creditas = row.bank === 'CREDITAS' || row.bank === FH_BANK; // Financiamento também leva horas: limite pelo tempo (60 h), como o Creditas
     const maxTries = CHECK_MAX_TRIES + (creditas ? CREDITAS_EXTRA_TRIES : 0);
     const velho = creditas && Date.now() - row.createdAt.getTime() > CREDITAS_MAX_AGE_MS; // Creditas: o limite é o tempo (60 h), não a contagem
     if (row.attempt < maxTries && !velho) {
@@ -927,7 +934,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
 
 /** Relato da extensão: status (já em inglês do CRM) + texto + números que ela conseguir ler. */
 export async function reportAnalysis(db: Db, p: { accountId: string; requestId?: string; leadId: string; bank: string; status: string; detail?: string; result?: Record<string, any> }) {
-  if (!BANK_KEYS.includes(p.bank)) throw new Error('banco desconhecido');
+  if (!EXT_BANK_KEYS.includes(p.bank)) throw new Error('banco desconhecido');
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, customFields: true } });
   if (!lead) throw new Error('card não encontrado');
   let row = p.requestId ? await db.creditAnalysis.findFirst({ where: { id: p.requestId, accountId: p.accountId, leadId: p.leadId } }) : null;
@@ -962,7 +969,31 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   const vindo = pickResult(p.result || {});
   for (const k of Object.keys(numbers) as (keyof ResultFields)[]) if (vindo[k] == null) delete vindo[k];
   const { row: updated } = await applyUpdate(db, row, { status, detail: detail ?? null, holderName, ...numbers, ...vindo });
+  if (p.bank === FH_BANK && !updated.dryRun) await notaFinanciamento(db, p.accountId, updated).catch((e: any) => console.error('[Financiamento] nota:', e?.message));
   return afterReport(db, updated);
+}
+
+/** Situação de cada banco no Financiamento ("BANCOS [Bradesco: Em análise, proposta 5651212 | Itaú: não enviado | …]" no texto da extensão). */
+export function resumoFinanciamento(detail?: string | null): string | null {
+  const m = /BANCOS \[([^\]]+)\]/.exec(String(detail || ''));
+  return m ? m[1].replace(/\s+/g, ' ').trim() : null;
+}
+
+/** Financiamento (Fabio 27/10): cada mudança na situação dos bancos vira nota no card + push pra equipe. O cliente ainda NÃO é avisado sozinho. */
+async function notaFinanciamento(db: Db, accountId: string, row: AnalysisRow): Promise<void> {
+  if (['REQUESTED', 'RUNNING'].includes(row.status)) return;
+  const resumo = resumoFinanciamento(row.detail);
+  if (!resumo) return;
+  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { name: true, customFields: true } });
+  const cf = { ...((lead?.customFields || {}) as Record<string, any>) };
+  if (cf._fhResumo === resumo) return;
+  cf._fhResumo = resumo;
+  await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });
+  const linhas = resumo.split('|').map((x) => `• ${x.trim()}`).join('\n');
+  await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🏠 Financiamento (Credimorar)${row.proposalNumber ? ` — simulação nº ${row.proposalNumber}` : ''}:\n${linhas}\nO cliente NÃO foi avisado: confira e avise.` } });
+  try {
+    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 Financiamento: ${lead?.name || 'cliente'}`, body: resumo.slice(0, 180), leadId: row.leadId }).catch(() => {});
+  } catch { /* push é só aviso */ }
 }
 
 /** Edição à mão (formulário "Registrar resultado" da aba): muda status e/ou os números. */
@@ -1038,7 +1069,7 @@ function orphanDetail(why: string, lastDetail?: string | null): string {
 // Teto de duração de UMA análise de rodar (Fabio 14/10: "não podemos deixar esse tanto de tempo com um cliente"): a Maria Antônia ficou 27 min no Inter repetindo
 // "preencher CPF" — a extensão seguia mandando passos, então o limite de "sem passo novo" nunca disparava. Tempos reais (5 dias): Inter p90 8 min, Creditas p50 4,5 min,
 // Santander p90 15 min / máx. 21 min (inclui esperar o navegador compartilhado). Estourou: vira falha e a retentativa automática refaz (como CONFERIR se a proposta já foi enviada).
-const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 6 }; // Santander 6 min por ordem do Fabio (14/10); 4 de 13 rodadas boas dos últimos 5 dias passaram disso
+const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 6, CREDIMORAR_FH: 20 }; // Santander 6 min por ordem do Fabio (14/10); 4 de 13 rodadas boas dos últimos 5 dias passaram disso
 
 async function expireStuck(db: Db, where: { accountId: string; leadId?: string }) {
   const rows = await db.creditAnalysis.findMany({ where: { ...where, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } }, select: { id: true, detail: true } });

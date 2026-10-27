@@ -163,6 +163,30 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
   }
 }
 
+/** 1b) Financiamento Habitacional (Fabio 27/10): card novo na Pré-Análise com a proposta do site → a extensão do Credimorar roda Bradesco, Itaú, Santander e Inter numa
+ *  simulação só. Sem a conferência da IA do Home Equity (aiReadiness é de Home Equity); a extensão recusa sozinha se faltar dado. CAIXA e BRB só com a documentação completa (depois). */
+async function startNewFhLeads(accountId: string, enabledAt: Date) {
+  const { FH_BANK } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const leads = await prisma.lead.findMany({
+    where: {
+      accountId, status: 'OPEN', archived: false, isGroup: false, stageEnteredAt: { gte: enabledAt, lte: new Date(Date.now() - MIN_AFTER_STAGE_MS) },
+      stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
+      pipeline: { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } },
+      creditAnalyses: { none: { bank: FH_BANK } },
+    },
+    select: { id: true, name: true, customFields: true }, orderBy: { stageEnteredAt: 'asc' }, take: 10,
+  });
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused || cf._fhAutoStartedAt) continue;
+    const proposta = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', content: { contains: 'Financiamento Habitacional' }, OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, select: { id: true } });
+    if (!proposta) continue;
+    const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [FH_BANK], dryRun: false, force: false });
+    await saveCf(l.id, { _fhAutoStartedAt: new Date().toISOString() });
+    await addNote(l.id, `🤖 Análise do Financiamento pedida no Credimorar (Bradesco, Itaú, Santander e Inter numa simulação só). ${out.created} pedido na fila pra extensão. O resultado de cada banco vem em nota; o cliente não é avisado sozinho.`);
+  }
+}
+
 /** Em quais bancos rodar no 2º participante: o 1º foi REPROVADO, APROVADO A MENOR ou já foi ENVIADO e o resultado está pendente (roda sem esperar), e o 2º ainda não foi tentado nem está rodando.
  *  Sem 2º participante (nome e CPF no card), nada. Pura (testável). */
 export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[]): { bank: string; why: string }[] {
@@ -733,6 +757,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
     const settings = await prisma.creditAutoSetting.findMany({ where: { enabled: true, paused: false, enabledAt: { not: null } } });
     for (const s of settings) {
       await startNewLeads(s.accountId, s.enabledAt!, io).catch((e) => console.error('[Análise automática] início:', e?.message));
+      await startNewFhLeads(s.accountId, s.enabledAt!).catch((e) => console.error('[Análise automática] Financiamento:', e?.message));
       await cascadeToSecond(s.accountId).catch((e) => console.error('[Análise automática] 2º participante:', e?.message));
       await noticeClients(s.accountId, io).catch((e) => console.error('[Análise automática] aviso:', e?.message));
       await closeRejected(s.accountId, io).catch((e) => console.error('[Análise automática] fechar reprovados:', e?.message));
