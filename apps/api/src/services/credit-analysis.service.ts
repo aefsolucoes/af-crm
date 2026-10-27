@@ -467,7 +467,8 @@ const bankAlive = (accountId: string, bank?: string) => !!bank && (Date.now() - 
 /** Card PAUSADO pelo botão da tela (Fabio 14/10, "pausar apenas aquele cliente"): customFields._autoPaused.
  *  ATENÇÃO (15/10): o filtro por caminho JSON do Prisma (`path: ['_autoPaused'], equals: true`) devolve NULL — e não "falso" — pra card que NUNCA teve essa chave, e dentro de um NOT
  *  isso tirava da fila TODO pedido automático de card não pausado (Maria, Arlan, Gabriela esperando 4 h). Por isso os ids pausados/travados vêm de SQL (null-safe) e entram como `leadId in [...]`. */
-const pausedLeadIds = async (db: Db, accountId: string) => (await db.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->>'_autoPaused' = 'true'`).map((r) => r.id);
+// 27/10: o STOP grava a DATA em _autoPaused (não `true`) — comparar com 'true' nunca achava ninguém, e as conferências/refações automáticas do cliente parado seguiam ocupando a extensão.
+const pausedLeadIds = async (db: Db, accountId: string) => (await db.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND coalesce("customFields"->>'_autoPaused', '') NOT IN ('', 'false')`).map((r) => r.id);
 /** Fora da fila: pedido AUTOMÁTICO (sem requestedById) de card pausado. O que uma PESSOA pediu na tela (Rodar/Conferir) continua valendo. */
 const notPausedAuto = (pausedIds: string[]) => ({ NOT: { AND: [{ requestedById: null }, { leadId: { in: pausedIds } }] } });
 /** TRAVA da consulta do Creditas (Fabio 15/10): a Creditas pediu a Autorização SCR Bacen assinada e o cliente ainda não devolveu/enviamos — ler o portal a cada 10 min não adianta.
