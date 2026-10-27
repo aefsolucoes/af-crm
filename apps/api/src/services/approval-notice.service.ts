@@ -932,6 +932,7 @@ export async function sendEarlyStatusNotice(p: { accountId: string; leadId: stri
 
   const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name, lead.contact?.name) || '';
   let text: string;
+  let cadPendente = false;
   if (p.variant === 'APPROVED_PARTIAL') {
     const preview = await previewApprovalNotice(p.leadId).catch(() => null);
     if (!preview || preview.warnings.length || preview.mode !== 'text') return { ok: false, skipped: 'aprovação sem números completos ainda' };
@@ -941,14 +942,19 @@ export async function sendEarlyStatusNotice(p: { accountId: string; leadId: stri
     const ja = await prisma.message.count({ where: { leadId: p.leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) }, content: { contains: EARLY_MARK_WAIT } } });
     if (ja) return { ok: false, skipped: 'aviso de andamento já enviado' };
     const saudacao = (await conversationActive(p.leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
-    text = `${saudacao}Passando pra te atualizar: a sua ${EARLY_MARK_WAIT}. Já enviamos a proposta aos bancos parceiros e estamos aguardando o retorno deles. Assim que sair o resultado, eu te aviso por aqui! Me responde essa mensagem só pra eu saber que chegou, tá? Qualquer dúvida, é só me chamar. 😊`;
+    // 26/10 (Hélio): o banco acusou CADASTRO DIVERGENTE, a pergunta foi ao cliente e ficou sem resposta — e este aviso saiu dizendo "análise em andamento". Com a conferência
+    // do cadastro pendente, o aviso antes da janela fechar vira o LEMBRETE dela (é o que destrava a análise).
+    cadPendente = (cf._cadDiv as any)?.status === 'ASKED'; // só a divergência acusada pelo BANCO (a confirmação da proposta não segura a análise)
+    text = cadPendente
+      ? `${saudacao}Passando pra lembrar: preciso que você confira o nome, o CPF e a data de nascimento que te mandei aqui na conversa. O banco acusou uma divergência no cadastro e a análise só segue depois dessa conferência. É só me dizer se está tudo certo ou o que está errado. 🙏`
+      : `${saudacao}Passando pra te atualizar: a sua ${EARLY_MARK_WAIT}. Já enviamos a proposta aos bancos parceiros e estamos aguardando o retorno deles. Assim que sair o resultado, eu te aviso por aqui! Me responde essa mensagem só pra eu saber que chegou, tá? Qualquer dúvida, é só me chamar. 😊`;
   }
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: text, io: p.io });
   if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
   const fresh = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
   await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _earlyNoticeFor: lastIn.createdAt.toISOString() } } });
-  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: p.variant === 'APPROVED_PARTIAL' ? '⏳ Aviso antecipado enviado antes da janela de 24 h fechar: já tem aprovação, aguardando os outros bancos pra tentar taxa menor.' : '⏳ Aviso antecipado enviado antes da janela de 24 h fechar: análise em andamento, aguardando o retorno dos bancos.' } }).catch(() => {});
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: p.variant === 'APPROVED_PARTIAL' ? '⏳ Aviso antecipado enviado antes da janela de 24 h fechar: já tem aprovação, aguardando os outros bancos pra tentar taxa menor.' : cadPendente ? '⏳ Antes da janela de 24 h fechar: lembrei o cliente de conferir nome, CPF e nascimento (cadastro divergente no banco, pergunta sem resposta).' : '⏳ Aviso antecipado enviado antes da janela de 24 h fechar: análise em andamento, aguardando o retorno dos bancos.' } }).catch(() => {});
   logActivity({ accountId: p.accountId, userId: null, userName: 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou o cliente (antes da janela fechar) que a análise segue em andamento' } as any);
   return { ok: true };
 }
