@@ -495,7 +495,8 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   // Ordem da fila = quando o card ENTROU na Pré-Análise (card que está nela: stageEnteredAt); fora dela (ex.: card rodado à mão em outra etapa), a data de criação.
   const ordem = (l?: { createdAt: Date; stageEnteredAt: Date | null; status: string; stage: { name: string } | null } | null) =>
     (l && l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '') && l.stageEnteredAt) || l?.createdAt || new Date(0);
-  const ativo = pickActiveLead(abertos.map((a) => ({ leadId: a.leadId, bank: a.bank, status: a.status, requestedAt: a.requestedAt, leadOrderAt: ordem(a.lead) })), Date.now(), (b) => bankAlive(p.accountId, b));
+  // "Um cliente por vez" ignora o pedido de banco que está esperando LOGIN: senão o cliente preso nele segura a fila dos outros (27/10).
+  const ativo = pickActiveLead(abertos.filter((a) => !loginNeededFor(p.accountId, a.bank)).map((a) => ({ leadId: a.leadId, bank: a.bank, status: a.status, requestedAt: a.requestedAt, leadOrderAt: ordem(a.lead) })), Date.now(), (b) => bankAlive(p.accountId, b));
   const rows = await db.creditAnalysis.findMany({
     where: {
       accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }),
@@ -1420,7 +1421,8 @@ const locks = new Map<string, { bank: string; expiresAt: number }>();
 export function acquireLock(accountId: string, bank: string): { ok: boolean; holder?: string } {
   const now = Date.now();
   const cur = locks.get(accountId);
-  if (cur && cur.expiresAt > now && cur.bank !== bank) return { ok: false, holder: cur.bank };
+  // Banco esperando LOGIN (CAPTCHA/código) não segura o navegador (Fabio 27/10, 1h: o Santander pediu login e a Creditas e o Inter ficaram parados a madrugada inteira).
+  if (cur && cur.expiresAt > now && cur.bank !== bank && !loginNeededFor(accountId, cur.bank)) return { ok: false, holder: cur.bank };
   locks.set(accountId, { bank, expiresAt: now + LOCK_TTL_MS });
   return { ok: true };
 }
