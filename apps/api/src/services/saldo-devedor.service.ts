@@ -135,6 +135,27 @@ export async function processSaldoDevedor(accountId: string, io: Io): Promise<vo
   for (const { id } of pedir) {
     try { await maybeAskSaldoDevedor(accountId, id, io, { respectHours: true }); } catch (e: any) { console.error(`[Saldo] pedido ${id}:`, e?.message || e); }
   }
+  // 1b) Print pedido NA CONVERSA (IA ou equipe), não por este fluxo (Fabio 27/10, Fernanda Karita: a IA pediu o print do saldo, a cliente mandou o do app e ninguém leu — a conferência
+  // ainda cobrou de novo). Marca o pedido a partir dessa mensagem; o leitor abaixo pega os arquivos que chegaram depois.
+  const naConversa = await prisma.$queryRaw<{ id: string; at: Date }[]>`
+    SELECT l.id, max(m."createdAt") AS at FROM "Lead" l JOIN "Stage" s ON s.id = l."stageId" JOIN "Message" m ON m."leadId" = l.id
+    WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND s.name ILIKE 'Aguardando Doc%'
+      AND (l."customFields"->>'_saldoDevedor') IS NULL AND coalesce(l."customFields"->>'_autoPaused', '') = ''
+      AND m.direction = 'OUTBOUND' AND m.content ILIKE '%saldo devedor%' AND (m.content ILIKE '%print%' OR m.content ILIKE '%tela%') AND m."createdAt" > now() - interval '3 days'
+    GROUP BY l.id LIMIT 10`;
+  for (const c of naConversa) {
+    try {
+      const chegou = await prisma.messageAttachment.count({ where: { leadId: c.id, message: { direction: 'INBOUND' }, createdAt: { gt: c.at } } });
+      if (!chegou) continue;
+      const f = await prisma.lead.findUnique({ where: { id: c.id }, select: { customFields: true } });
+      const cff = { ...((f?.customFields || {}) as Record<string, any>) };
+      if (cff._saldoDevedor) continue;
+      const prop = await proposalFinancing(c.id).catch(() => null);
+      cff._saldoDevedor = { askedAt: new Date(c.at).toISOString(), base: Number(cff.valor_credito) || Number(cff._lastRunValue) || 0, liquido: Number(cff.troco) || undefined, declared: prop?.falta || 0, viaConversa: true };
+      await prisma.lead.update({ where: { id: c.id }, data: { customFields: cff as any } });
+      await prisma.note.create({ data: { leadId: c.id, type: 'COMMENT', content: '🏦 O print do saldo devedor foi pedido na conversa e o cliente mandou arquivo depois: a IA vai ler o saldo nesses arquivos.' } }).catch(() => {});
+    } catch (e: any) { console.error(`[Saldo] pedido na conversa ${c.id}:`, e?.message || e); }
+  }
   // 2) Quem já foi pedido: lê o print que chegar.
   const rows = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->'_saldoDevedor'->>'askedAt') IS NOT NULL AND ("customFields"->'_saldoDevedor'->>'doneAt') IS NULL LIMIT 10`;
   for (const { id } of rows) {

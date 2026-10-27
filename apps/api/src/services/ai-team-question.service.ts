@@ -705,8 +705,12 @@ async function answerDocQuestion(q: { id: string; accountId: string; leadId: str
   logActivity({ accountId: q.accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: 'respondeu uma dúvida da IA sobre documento' });
   emitTo(io, await recipientsFor(q.accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
   // Retoma a conferência (se o card ainda está em "Aguardando Documentação"): sem mais dúvida, segue o fluxo normal (problema → avisa o cliente; tudo certo → avança).
-  const { checkDocsComplete } = require('./docs-checker.service') as typeof import('./docs-checker.service');
-  checkDocsComplete(q.accountId, q.leadId, io as any).catch((e) => console.error('[Docs] reconferência após a dúvida:', e?.message || e));
+  // Cliente ainda mandando arquivo (últimos 5 min): espera ele terminar, como na conferência normal (Fabio 27/10, Fernanda Karita: a resposta da equipe disparou a conferência
+  // na hora, 15 s depois de um arquivo novo, e o cliente foi cobrado do que já tinha mandado).
+  const { checkDocsComplete, scheduleDocsCheck } = require('./docs-checker.service') as typeof import('./docs-checker.service');
+  const mandando = await prisma.message.count({ where: { leadId: q.leadId, direction: 'INBOUND', attachments: { some: {} }, createdAt: { gte: new Date(Date.now() - 5 * 60_000) } } }).catch(() => 0);
+  if (mandando) scheduleDocsCheck(q.accountId, q.leadId, io as any).catch((e) => console.error('[Docs] reconferência após a dúvida:', e?.message || e));
+  else checkDocsComplete(q.accountId, q.leadId, io as any).catch((e) => console.error('[Docs] reconferência após a dúvida:', e?.message || e));
   return updated;
 }
 

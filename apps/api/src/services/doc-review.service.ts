@@ -60,6 +60,7 @@ const SYSTEM = `Você é a conferente de documentos de um correspondente bancár
 Critérios — aponte PROBLEMA só quando for real; documento legível e correto é OK, não invente defeito:
 - Legibilidade: foto desfocada, escura, com reflexo, cortada ou com dado importante ilegível → PROBLEMA ("manda uma foto mais nítida/inteira").
 - RG/CNH: NÃO dê problema por mostrar só um lado (o cliente pode mandar frente e verso em fotos separadas): só preencha "lado". CNH digital (print do app) conta como "ambos". CNH vencida → PROBLEMA.
+- QUAL É O LADO (Fabio 27/10: as duas fotos do RG saíam como "frente" e o cliente era cobrado do verso que já tinha mandado): RG modelo antigo — FRENTE = lado com a FOTO, a DIGITAL (polegar) e a assinatura do titular; VERSO = lado com os DADOS ("Válida em todo o território nacional", Registro Geral, nome, filiação, naturalidade, data de nascimento, assinatura do diretor). Carteira de Identidade Nacional (CIN, modelo novo) — FRENTE = foto + nome; VERSO = QR code e dados complementares. CNH física — FRENTE = foto e dados; VERSO = observações/local e data de emissão/QR. Documento aberto mostrando os dois lados na mesma foto = "ambos".
 - Atualização (use a data de hoje): comprovante de residência com mais de 90 dias; CND de IPTU vencida; contracheque que não seja dos últimos 3 meses → PROBLEMA, dizendo o prazo exigido. Para a A&F, certidão de ônus reais e matrícula (inteiro teor) são o MESMO tipo de documento: número da matrícula, metragens e todos os REGISTROS (R-) e AVERBAÇÕES (AV-) — um histórico completo do imóvel. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA NÃO têm prazo: a A&F aceita antiga/vencida, aceita a versão "PARA SIMPLES CONSULTA, NÃO VALE COMO CERTIDÃO" (consulta do ONR) e aceita incompleta ou com páginas faltando (Fabio 15/10). NUNCA marque PROBLEMA nem peça ao cliente pra tirar outra no cartório por causa de data, marca de consulta ou páginas: aceite, preencha "ressalva" (CONSULTA ou ANTIGA) quando for o caso — o banco decide e o cliente recebe uma observação — e anote detalhes em "observacao" (a A&F emite a certidão pelo endereço ou número da matrícula). A data que vale na matrícula/certidão é a de EMISSÃO da certidão (carimbo/linha "certidão emitida em…", em geral no topo ou no fim), NÃO as datas dos registros e averbações dentro dela (um registro de 2011 não torna a certidão antiga). Se a data de emissão/validade não aparecer mas o documento parece inteiro e legível, é OK: anote "sem data de emissão visível" na observação.
 - MATRÍCULA ENCERRADA (Fabio 16/10): se a MATRICULA/CERTIDAO DE ONUS tem averbação de "ENCERRAMENTO DE MATRÍCULA" (imóvel desmembrado/renumerado: "foram ABERTAS as matrículas nº …"), a certidão NÃO serve pro banco — marque "matriculaEncerrada": true, preencha "encerradaEm" e "matriculasNovas" e dê resultado PROBLEMA com o texto: "a matrícula nº X foi encerrada em DD/MM; o imóvel agora tem a matrícula nº Y — precisa da certidão da matrícula nova". Renumeração ("Av. … RENUMERAÇÃO", só muda o número) NÃO é encerramento.
 - Titular: compare com os participantes do card. RG/CNH/CPF/certidão/documento de renda em nome de OUTRA pessoa → PROBLEMA ("está no nome de X; o participante é Y"). Comprovante de residência em nome de parente/outra pessoa NÃO é problema por si só. DOCUMENTOS DO IMÓVEL (matrícula, ônus, IPTU, escritura): olhe o PROPRIETÁRIO ATUAL (o último registro de propriedade, não os antigos) e preencha "dono". Em Home Equity ele precisa ser um dos participantes do card OU parente de 1º grau deles (pai, mãe, filho/a; cônjuge também vale): participante → donoSituacao PARTICIPANTE (resultado OK). Outra pessoa e a "CONVERSA RECENTE" (se vier) NÃO explica quem ela é → donoSituacao OUTRO_SEM_RELACAO e resultado OK (o documento em si está certo; a conferência vai perguntar ao cliente de quem é o imóvel — não chute parentesco por sobrenome). Se a CONVERSA RECENTE traz o cliente explicando o vínculo: pai/mãe/filho/filha/cônjuge → PARENTE_1GRAU (OK); qualquer outro vínculo (irmão, tio, amigo, empresa, ex-cônjuge…) ou resposta confusa → resultado DUVIDA, com a pergunta pra equipe citando o que o cliente disse. No Financiamento Habitacional o imóvel é do VENDEDOR e isso é normal (deixe donoSituacao vazio; não é problema nem dúvida).
@@ -194,6 +195,8 @@ export interface ReviewSummary {
   donoPendente: { attachmentId: string; doc: string; dono: string }[];
   /** Documentos conferidos e OK (rótulo). */
   ok: string[];
+  /** Pedidos que a leitura de UM arquivo gerou, mas OUTRO arquivo já atende (não vão ao cliente). */
+  atendidos?: { doc: string; texto: string; por: string }[];
 }
 
 const docKey = (r: DocReview) => `${r.tipo}|${r.titular.split(' ').slice(0, 2).join(' ')}`.toUpperCase();
@@ -338,6 +341,9 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   const ordered = atts.map((a) => cache[a.id]).filter((r): r is DocReview => !!r && r.resultado !== 'NAO_DOCUMENTO' && r.resultado !== 'DUVIDA');
   const latest = new Map<string, DocReview>();
   const lados = new Map<string, Set<string>>();
+  // Quantas fotos/arquivos OK de RG/CNH chegaram de cada pessoa (27/10, Fernanda Karita: as 4 fotos do RG da Nildinete — os dois lados, mandados 2 vezes — saíram todas como "frente"
+  // e o cliente foi cobrado do verso). 2 ou mais arquivos diferentes do documento da mesma pessoa = frente e verso: não pede o outro lado.
+  const fotosId = new Map<string, number>();
   const isId = (r: DocReview) => /^(RG|CNH)\b/.test(r.tipo);
   for (const r of ordered) {
     // RG/CNH sem nome legível (ex.: foto só do verso): não vira documento à parte — o lado conta pro RG/CNH do titular que já chegou.
@@ -353,6 +359,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
       continue;
     }
     latest.set(docKey(r), r);
+    if (isId(r) && r.resultado === 'OK') fotosId.set(docKey(r), (fotosId.get(docKey(r)) || 0) + 1);
     if (/^(RG|CNH)\b/.test(r.tipo) && r.lado && r.resultado === 'OK') {
       const s = lados.get(docKey(r)) || new Set<string>();
       if (r.lado === 'ambos') { s.add('frente'); s.add('verso'); } else s.add(r.lado);
@@ -367,7 +374,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     if (iptuErrado.has(r)) texto.push(iptuErrado.get(r)!);
     if (/^(RG|CNH)\b/.test(r.tipo) && r.resultado === 'OK') {
       const s = lados.get(k) || new Set<string>();
-      if (!(s.has('frente') && s.has('verso'))) texto.push(`só chegou ${s.has('frente') ? 'a frente' : s.has('verso') ? 'o verso' : 'um lado'} — manda ${s.has('frente') ? 'também o verso' : s.has('verso') ? 'também a frente' : 'frente e verso'}`);
+      if (!(s.has('frente') && s.has('verso')) && (fotosId.get(k) || 0) < 2) texto.push(`só chegou ${s.has('frente') ? 'a frente' : s.has('verso') ? 'o verso' : 'um lado'} — manda ${s.has('frente') ? 'também o verso' : s.has('verso') ? 'também a frente' : 'frente e verso'}`);
     }
     // Documento que "não serve pro processo" (ex.: declaração de quitação do condomínio — resposta da equipe) NÃO é um problema a corrigir: não trava a documentação nem volta a ser cobrado (Fabio 21/10).
     const bloqueantes = texto.filter((t) => !/n[ãa]o serve (pro|para o|para) processo/i.test(t));
@@ -384,7 +391,49 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     vistos.add(r.dono.toUpperCase());
     donoPendente.push({ attachmentId: a.id, doc: r.tipo, dono: r.dono });
   }
-  return { novas, problemas, duvidas, donoPendente, ok };
+  // OLHA A DOCUMENTAÇÃO TODA antes de pedir (Fabio 27/10: "o CRM está vendo apenas uma imagem e já definindo resposta; precisa olhar toda a documentação antes de pedir de novo").
+  // Cada pedido nasceu da leitura de UM arquivo; aqui confere se OUTRO arquivo já atende (ex.: o extrato só com prestações pagas, mas chegou a simulação de quitação com o saldo devedor).
+  const atendidos = problemas.length ? await consolidarPedidos(ordered, problemas).catch((e) => { console.error('[DocReview] consolidação:', e?.message || e); return []; }) : [];
+  if (atendidos.length) {
+    for (const a of atendidos) {
+      const p = problemas.find((x) => x.doc === a.doc);
+      if (p) p.texto = p.texto.filter((t) => t !== a.texto);
+    }
+    for (let i = problemas.length - 1; i >= 0; i--) if (!problemas[i].texto.length) { ok.push(problemas[i].doc); problemas.splice(i, 1); }
+  }
+  return { novas, problemas, duvidas, donoPendente, ok, atendidos };
+}
+
+/** Confere os pedidos contra TODOS os documentos já recebidos: devolve os que outro arquivo já atende. Na dúvida, o pedido continua. */
+export async function consolidarPedidos(docs: DocReview[], problemas: { doc: string; texto: string[] }[]): Promise<{ doc: string; texto: string; por: string }[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || docs.length < 2) return [];
+  const pedidos = problemas.flatMap((p) => p.texto.map((t) => ({ doc: p.doc, texto: t })));
+  if (!pedidos.length) return [];
+  const lista = docs.map((r, i) => `${i + 1}. ${r.tipo}${r.titular ? ` — ${r.titular}` : ''}${r.lado ? ` — lado: ${r.lado}` : ''} — ${r.resultado}${r.problemas.length ? ` (${r.problemas.join('; ')})` : ''}${r.observacao ? ` [${r.observacao}]` : ''}`).join('\n');
+  const pedidosTxt = pedidos.map((p, i) => `${i + 1}. ${p.doc}: ${p.texto}`).join('\n');
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 3000,
+      system: `Você confere a documentação de um cliente como um TODO (crédito com garantia de imóvel / financiamento). Cada arquivo foi lido SOZINHO e a leitura gerou PEDIDOS ao cliente. Um pedido feito olhando um arquivo isolado pode JÁ ESTAR ATENDIDO por OUTRO arquivo da lista — ex.: "manda o verso do RG" quando outra foto do RG da mesma pessoa já chegou; "manda a tela do saldo devedor" quando chegou uma simulação de quitação, declaração ou boleto de quitação que mostra o saldo devedor; "foto ilegível" quando o mesmo documento chegou de novo legível. Para CADA pedido diga se ele CONTINUA ou se JÁ ESTÁ ATENDIDO, citando o número do documento que atende. Só marque atendido quando o outro documento claramente cobre o MESMO dado da MESMA pessoa/imóvel; na dúvida, CONTINUA. Responda SÓ com JSON: {"pedidos":[{"n":1,"continua":true,"atendidoPor":0}]}`,
+      messages: [{ role: 'user', content: `DOCUMENTOS RECEBIDOS:\n${lista}\n\nPEDIDOS GERADOS:\n${pedidosTxt}` }],
+    }),
+  }).catch(() => null);
+  if (!res || !res.ok) return [];
+  const data = (await res.json()) as { content: { type: string; text?: string }[] };
+  const raw = data.content?.find((b) => b.type === 'text')?.text || '';
+  let j: any = {};
+  try { j = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch { return []; }
+  const out: { doc: string; texto: string; por: string }[] = [];
+  for (const v of Array.isArray(j.pedidos) ? j.pedidos : []) {
+    const p = pedidos[Number(v?.n) - 1];
+    const por = docs[Number(v?.atendidoPor) - 1];
+    if (p && v?.continua === false && por) out.push({ doc: p.doc, texto: p.texto, por: `${por.tipo}${por.titular ? ` (${por.titular})` : ''}` });
+  }
+  return out;
 }
 
 /** Mensagem ao cliente com o que precisa ser corrigido (curta, educada, sem jargão). */

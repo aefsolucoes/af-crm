@@ -362,7 +362,8 @@ const FALLBACK_PESSOAIS = ['Documento de identificação', 'Comprovante de resid
 // Renda: em 17/10 (Luzia) ia SEMPRE na lista; em 27/10 o Fabio voltou à regra: SÓ quando o banco pede (buildDocsText). A equipe edita os itens na Resposta rápida "Documentos Home Equity" (seção "*Renda:*").
 // Sempre com o NÚMERO (Fabio 19/10: "3 últimos extratos bancários" pra autônomo e "3 últimos contracheques, quando for o caso" pra assalariado).
 const FALLBACK_RENDA = ['Comprovante de renda: 3 últimos contracheques (se for assalariado) ou 3 últimos extratos bancários (se for autônomo)', 'Declaração do Imposto de Renda (IRPF) completa, com o recibo de entrega (se declara)'];
-const FALLBACK_IMOVEL = ['Certidão de ônus reais/ Matrícula do imóvel', 'Inscrição Imobiliária/ IPTU', 'Capa do IPTU com as metragens'];
+// Fabio 27/10: inscrição e capa viram UM item (IPTU isento: manda a inscrição; sem a capa, a inscrição basta).
+const FALLBACK_IMOVEL = ['Certidão de ônus reais/ Matrícula do imóvel', 'Inscrição Imobiliária/IPTU ou Capa do IPTU com as metragens'];
 
 /** Linhas "• ..." de cada seção ("*Proponente:*" / "*Imóvel:*") da Resposta rápida "Documentos Home Equity" — a equipe edita lá. */
 function parseDocsTemplate(body: string | null | undefined): { pessoais: string[]; imovel: string[]; renda: string[] } {
