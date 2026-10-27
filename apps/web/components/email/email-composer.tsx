@@ -1,6 +1,6 @@
 'use client';
 import { useRef, useState } from 'react';
-import { Send, Loader2, Paperclip, X, Lightbulb } from 'lucide-react';
+import { Send, Loader2, Paperclip, X, Lightbulb, FolderOpen, ExternalLink } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
@@ -10,7 +10,9 @@ import { signatureLineHtml } from '@/lib/signature-links';
 const MAX_FILES = 10;
 const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
 
-interface PickedFile { name: string; type: string; size: number; dataBase64: string }
+/** Anexo do computador (dataBase64) ou da pasta do cliente no Drive (driveFileId: o servidor baixa na hora de enviar). */
+interface PickedFile { name: string; type: string; size: number; dataBase64?: string; driveFileId?: string }
+interface DriveFile { id: string; name: string; mimeType: string; path: string; size: number }
 
 function readAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -82,6 +84,30 @@ export function EmailComposer({
   }
   const fileInput = useRef<HTMLInputElement>(null);
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  // "Do Drive do cliente" (Fabio 27/10): escolher documentos da pasta do cliente no Drive pra anexar.
+  const [drive, setDrive] = useState<null | { loading: boolean; folderUrl: string | null; files: DriveFile[]; error?: string }>(null);
+  const [driveSel, setDriveSel] = useState<string[]>([]);
+  const [driveBusca, setDriveBusca] = useState('');
+  async function openDrive() {
+    if (!leadId) return;
+    if (drive) { setDrive(null); return; }
+    setDrive({ loading: true, folderUrl: null, files: [] });
+    setDriveSel([]);
+    try {
+      const { data } = await api.get('/api/email/lead-drive-files', { params: { leadId } });
+      setDrive({ loading: false, folderUrl: data.folderUrl || null, files: data.files || [] });
+    } catch (err: any) {
+      setDrive({ loading: false, folderUrl: null, files: [], error: err?.response?.data?.error || 'Não consegui abrir a pasta do cliente no Drive' });
+    }
+  }
+  function addDriveFiles() {
+    const escolhidos = (drive?.files || []).filter((f) => driveSel.includes(f.id) && !files.some((x) => x.driveFileId === f.id));
+    if (!escolhidos.length) { setDrive(null); return; }
+    if (files.length + escolhidos.length > MAX_FILES) { toast(`No máximo ${MAX_FILES} anexos por e-mail`, 'warning'); return; }
+    if (totalBytes + escolhidos.reduce((t, f) => t + (f.size || 0), 0) > MAX_TOTAL_BYTES) { toast('Os anexos passam de 15 MB — mande em mais de um e-mail ou mande o link da pasta', 'warning'); return; }
+    setFiles((prev) => [...prev, ...escolhidos.map((f) => ({ name: f.name, type: f.mimeType || 'application/octet-stream', size: f.size || 0, driveFileId: f.id }))]);
+    setDrive(null);
+  }
 
   async function addFiles(list: FileList | null) {
     if (!list?.length) return;
@@ -104,7 +130,7 @@ export function EmailComposer({
     try {
       await api.post(`/api/email/accounts/${mailboxId}/send`, {
         to: toValue, cc, subject: subjectValue, body, replyToId, leadId, draftId,
-        attachments: files.map((f) => ({ filename: f.name, contentType: f.type, dataBase64: f.dataBase64 })),
+        attachments: files.map((f) => (f.driveFileId ? { filename: f.name, contentType: f.type, driveFileId: f.driveFileId } : { filename: f.name, contentType: f.type, dataBase64: f.dataBase64 })),
       });
       toast('E-mail enviado');
       onSent?.();
@@ -189,12 +215,49 @@ export function EmailComposer({
           <div className="flex flex-wrap gap-1.5">
             {files.map((f, i) => (
               <span key={`${f.name}-${i}`} className="flex items-center gap-1.5 text-xs pl-2.5 pr-1.5 py-1 rounded-lg border border-af-border bg-slate-50 text-slate-600 max-w-[260px]">
-                <Paperclip size={11} className="flex-shrink-0" />
+                {f.driveFileId ? <FolderOpen size={11} className="flex-shrink-0 text-af-mid" /> : <Paperclip size={11} className="flex-shrink-0" />}
                 <span className="truncate">{f.name}</span>
                 <span className="text-slate-400 flex-shrink-0">{formatSize(f.size)}</span>
                 <button onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500 flex-shrink-0" title="Tirar anexo"><X size={12} /></button>
               </span>
             ))}
+          </div>
+        )}
+        {drive && (
+          <div className="rounded-lg border border-af-border bg-slate-50 p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <FolderOpen size={14} className="text-af-mid" />
+              <span className="text-xs font-semibold text-slate-700">Pasta do cliente no Drive</span>
+              {drive.folderUrl && <a href={drive.folderUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[11px] text-af-mid hover:underline">abrir no Drive <ExternalLink size={10} /></a>}
+              <button onClick={() => setDrive(null)} className="ml-auto text-slate-400 hover:text-slate-600" title="Fechar"><X size={14} /></button>
+            </div>
+            {drive.loading ? <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 size={12} className="animate-spin" /> Lendo a pasta...</div>
+              : drive.error ? <p className="text-xs text-red-600">{drive.error}</p>
+              : !drive.folderUrl ? <p className="text-xs text-slate-500">Este cliente ainda não tem pasta no Drive (o campo "link da pasta" do card está vazio e não achei pasta com o nome dele).</p>
+              : !drive.files.length ? <p className="text-xs text-slate-500">A pasta está vazia.</p>
+              : (
+                <>
+                  {drive.files.length > 8 && <input value={driveBusca} onChange={(e) => setDriveBusca(e.target.value)} placeholder="Buscar pelo nome do arquivo..." className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-md bg-white" />}
+                  <div className="max-h-56 overflow-y-auto space-y-0.5">
+                    {drive.files.filter((f) => !driveBusca.trim() || `${f.path} ${f.name}`.toLowerCase().includes(driveBusca.trim().toLowerCase())).map((f) => {
+                      const ja = files.some((x) => x.driveFileId === f.id);
+                      return (
+                        <label key={f.id} className={`flex items-center gap-2 text-xs px-1.5 py-1 rounded hover:bg-white ${ja ? 'opacity-50' : 'cursor-pointer'}`}>
+                          <input type="checkbox" disabled={ja} checked={ja || driveSel.includes(f.id)} onChange={(e) => setDriveSel((prev) => (e.target.checked ? [...prev, f.id] : prev.filter((x) => x !== f.id)))} />
+                          <span className="truncate text-slate-700">{f.name}</span>
+                          {f.path && <span className="truncate text-[10px] text-slate-400">{f.path}</span>}
+                          <span className="ml-auto flex-shrink-0 text-[10px] text-slate-400">{f.size ? formatSize(f.size) : ''}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="flex justify-end">
+                    <button onClick={addDriveFiles} disabled={!driveSel.length} className="text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#2261a8' }}>
+                      Anexar {driveSel.length ? `${driveSel.length} arquivo${driveSel.length > 1 ? 's' : ''}` : 'selecionados'}
+                    </button>
+                  </div>
+                </>
+              )}
           </div>
         )}
         {(() => {
@@ -221,6 +284,14 @@ export function EmailComposer({
           >
             <Paperclip size={14} /> Anexar
             {files.length > 0 && <span className="text-xs text-slate-400">({formatSize(totalBytes)} de 15 MB)</span>}
+          </button>
+          <button
+            onClick={openDrive}
+            disabled={sending || !leadId}
+            title={leadId ? 'Escolher documentos da pasta do cliente no Drive' : 'Vincule este e-mail a um cliente pra buscar na pasta dele no Drive'}
+            className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            <FolderOpen size={14} /> <span className="hidden sm:inline">Do Drive do cliente</span>
           </button>
           <button
             onClick={suggest}

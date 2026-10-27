@@ -207,20 +207,43 @@ router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Arquivos da pasta do cliente no Drive (Fabio 27/10: "a resposta do e-mail deve ter opção de buscar documentos dentro da pasta do cliente no Drive").
+// A pasta é a do card ("link_pasta_drive"); sem ela, procura uma pasta com o nome do cliente dentro da raiz do Drive.
+router.get('/lead-drive-files', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.query.leadId || '');
+    const lead = leadId ? await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { name: true, customFields: true } }) : null;
+    if (!lead) return res.status(404).json({ error: 'Cliente não encontrado' });
+    const { extractFolderId, listAllFilesInFolderTree, findFolderByNameUnderRoot, folderLink } = await import('../services/google.service');
+    const cf = (lead.customFields || {}) as Record<string, any>;
+    let folderId = String(cf.link_pasta_drive || '').trim() ? extractFolderId(String(cf.link_pasta_drive)) : '';
+    if (!folderId) folderId = (await findFolderByNameUnderRoot(req.user!.accountId, String(cf.participante_1 || lead.name || '')).catch(() => null))?.folderId || '';
+    if (!folderId) return res.json({ folderUrl: null, files: [] });
+    const files = (await listAllFilesInFolderTree(req.user!.accountId, folderId, 3)).filter((f) => !f.mimeType.startsWith('application/vnd.google-apps.'));
+    res.json({ folderUrl: folderLink(folderId), files: files.map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, path: f.path, size: f.size })) });
+  } catch (err) {
+    fail(res, err, 'Não consegui abrir a pasta do cliente no Drive');
+  }
+});
+
 router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: AuthRequest, res: Response) => {
   const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
   if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
   const b = req.body || {};
   const list = (v: unknown) => (Array.isArray(v) ? v : String(v || '').split(/[,;]/)).map((x) => String(x).trim()).filter(Boolean);
   try {
+    // Anexo escolhido na pasta do cliente no Drive: vem só o id; o servidor baixa.
+    const { downloadDriveFile } = await import('../services/google.service');
+    const attachments = await Promise.all((Array.isArray(b.attachments) ? b.attachments : []).map(async (a: any) => ({
+      filename: String(a?.filename || 'anexo').slice(0, 200),
+      contentType: String(a?.contentType || 'application/octet-stream'),
+      content: a?.driveFileId ? await downloadDriveFile(req.user!.accountId, String(a.driveFileId), String(a?.contentType || '')) : Buffer.from(String(a?.dataBase64 || ''), 'base64'),
+    })));
+    if (attachments.reduce((t, a) => t + a.content.length, 0) > 20 * 1024 * 1024) return res.status(400).json({ error: 'Os anexos passam de 20 MB — mande em mais de um e-mail' });
     const saved = await sendEmailFrom({
       acc, userId: req.user!.id, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''),
       replyToId: b.replyToId || null, leadId: b.leadId || null, io: io(req), draftId: b.draftId || null,
-      attachments: (Array.isArray(b.attachments) ? b.attachments : []).map((a: any) => ({
-        filename: String(a?.filename || 'anexo').slice(0, 200),
-        contentType: String(a?.contentType || 'application/octet-stream'),
-        content: Buffer.from(String(a?.dataBase64 || ''), 'base64'),
-      })),
+      attachments,
     });
     res.json(saved);
   } catch (err) {
