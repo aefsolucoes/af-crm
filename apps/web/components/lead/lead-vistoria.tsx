@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { ClipboardCheck, X } from 'lucide-react';
+import { ClipboardCheck, Copy, X } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 
@@ -134,6 +134,13 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
       {laudo && (laudo.job || laudo.faltando.length > 0) && (
         <div className="mt-3 border-t border-slate-100 pt-3">
           <div className="mb-1 text-xs font-medium text-slate-600">Laudo digital do apartamento (formulário do Inter)</div>
+          {laudo.link && (
+            <div className="mb-1 flex items-center gap-1.5 text-xs text-slate-500">
+              <span className="shrink-0">Link do engajamento:</span>
+              <a href={laudo.link} target="_blank" rel="noreferrer" className="break-all text-blue-600 hover:underline">{laudo.link}</a>
+              <button onClick={() => { navigator.clipboard.writeText(laudo.link!).then(() => toast('Link copiado', 'success')).catch(() => {}); }} title="Copiar o link" className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Copy className="h-3 w-3" /></button>
+            </div>
+          )}
           {laudo.status && <div className={`mb-1 text-xs ${laudo.status === 'FILLED' ? 'text-emerald-700' : laudo.status === 'FAILED' ? 'text-red-600' : 'text-slate-500'}`}>{stTxt[laudo.status] || laudo.status}</div>}
           {laudo.faltando.length > 0 && <div className="mb-1 text-xs text-amber-700">Faltam no card: {laudo.faltando.join(', ')}</div>}
           <div className="flex flex-wrap gap-2">

@@ -46,6 +46,11 @@ export function extractLaudoLink(text: string | null | undefined): string | null
   return null;
 }
 
+/** O e-mail do laudo digital diz que o imóvel é apartamento ("Como é um apartamento…", "vistoria DIGITAL", "laudo… 100% digital"). Pura (testável). */
+export function engajamentoDizApartamento(text: string | null | undefined): boolean {
+  return /\bapartamento\b|vistoria\s+digital|laudo\s+(?:[eé]\s+feito\s+de\s+forma\s+)?100%\s+digital/i.test(String(text || ''));
+}
+
 /** Tipo do e-mail, pelo assunto e pelo começo do texto NOVO (sem a conversa citada). Pura (testável). */
 export function classifyInterEmail(subject: string | null | undefined, freshText: string): InterEmailKind {
   const s = cleanSubject(subject);
@@ -194,9 +199,11 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   if (link) {
     const cur = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const cfAtual = (cur?.customFields || {}) as Record<string, any>;
-    if (cfAtual.link_laudo_inter !== link) {
-      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfAtual, link_laudo_inter: link } } });
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔗 Link do laudo digital recebido do Inter e guardado no card (campo "Link do laudo Inter"): ${link}` } }).catch(() => {});
+    // O engajamento do laudo digital diz que é apartamento ("Como é um apartamento, o laudo é feito de forma 100% digital") — o card fica com o tipo (Fabio 27/10, Luiz Fernando).
+    const apto = engajamentoDizApartamento(fresh) && !String(cfAtual.imovel_tipo || '').trim();
+    if (cfAtual.link_laudo_inter !== link || apto) {
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfAtual, link_laudo_inter: link, ...(apto ? { imovel_tipo: 'Apartamento' } : {}) } } });
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔗 Link do laudo digital recebido do Inter e guardado no card (campo "Link do laudo Inter"): ${link}${apto ? '\n🏢 O e-mail diz que o imóvel é apartamento: "Tipo do imóvel" do card = Apartamento.' : ''}` } }).catch(() => {});
     }
   }
   io?.to(`account_${acc.accountId}`).emit('lead_updated', { leadId });

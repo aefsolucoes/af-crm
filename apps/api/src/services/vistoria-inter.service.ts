@@ -35,7 +35,7 @@ export interface VistoriaPreview {
 
 
 /** Arquivos do imóvel na pasta do cliente no Drive (subpasta IMOVEL): PDF ou imagem de até 8 MB. */
-async function arquivosDoImovel(accountId: string, cf: Record<string, any>): Promise<{ id: string; name: string; path: string; size: number; mimeType: string }[]> {
+export async function arquivosDoImovel(accountId: string, cf: Record<string, any>): Promise<{ id: string; name: string; path: string; size: number; mimeType: string }[]> {
   const link = String(cf.link_pasta_drive || '').trim();
   if (!link) return [];
   try {
