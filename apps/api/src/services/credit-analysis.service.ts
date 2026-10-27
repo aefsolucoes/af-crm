@@ -316,9 +316,11 @@ const ageTermBlock = async (db: Db, leadId: string, bankLabel: string) => ageTer
 /** CREDITAS: o próprio portal recusa na tela "O Pagador não pode ter mais de 75 anos" e "O cônjuge não pode ter mais de 75 anos" (José Roberto 76/74 e Maria Celma, 20/10): vale para CADA pessoa da proposta
  *  (pagador + cônjuge), então um participante acima de 75 já barra a Creditas — trocar o titular não resolve. Sem nascimento = não sabe, roda. */
 export function creditasAgeBlockText(people: AgePerson[]): string | null {
-  const velhos = people.filter((x) => x.age !== null && x.age > 75);
+  // 27/10 (Ildefonso, cônjuge Odília com 75 anos e 10 meses): "75 anos" em anos inteiros passava aqui e o SERVIDOR da Creditas quebrava no "Continuar" (HTTP 500 "reading 'field'", sem aviso na tela).
+  // Vale idade + prazo mínimo (60 meses) até 80 anos para CADA pessoa — quem já fez 75 não passa.
+  const velhos = people.filter((x) => x.age !== null && (x.age > 75 || (x.max !== null && x.max < PRAZO_MINIMO_HOME_EQUITY)));
   if (!velhos.length) return null;
-  return `a Creditas não aceita participante com mais de 75 anos (pagador e cônjuge): ${velhos.map((x) => `${x.name} (${x.age} anos)`).join(', ')}.`;
+  return `a Creditas não aceita participante com 75 anos ou mais (pagador e cônjuge: idade + prazo mínimo de ${PRAZO_MINIMO_HOME_EQUITY} meses passa de 80 anos): ${velhos.map((x) => `${x.name} (${x.age} anos)`).join(', ')}.`;
 }
 const creditasAgeBlock = async (db: Db, leadId: string) => { const people = await agePeople(db, leadId); return creditasAgeBlockText(people) || ageTermBlockText('Creditas', people); };
 
