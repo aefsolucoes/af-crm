@@ -7,7 +7,7 @@ import { OBJECTIVE_FAIL, DADO_PARA_CORRIGIR, semRuidoDeSimulacao } from './credi
  * Duas regras dele:
  *  1) "SEMPRE QUE O CLIENTE COBRAR, A EXTENSÃO DEVE SER ATIVADA PARA CONFERÊNCIA OU PARA RODAR NOVAMENTE" → `onClientChase`: a mensagem da cliente ("deu certo?", "saiu o resultado?", "e aí?")
  *     aciona a extensão na hora: lê de novo o que já está no portal (conferência) ou, se a proposta NÃO aparece / ficou só em simulação / a rodada falhou, RODA DE NOVO.
- *  2) "SEMPRE ÀS 08 DA MANHÃ DEVE RODAR OS CLIENTES QUE FICARAM TRAVADOS POR ALGUM MOTIVO (aba fechada, captcha não feito…)" → `processMorningRerun`: a partir das 8h (Brasília), uma vez por dia por card.
+ *  2) "SEMPRE ÀS 08 DA MANHÃ DEVE RODAR OS CLIENTES QUE FICARAM TRAVADOS POR ALGUM MOTIVO (aba fechada, captcha não feito…)" → `processMorningRerun`: a partir das 7h (Brasília; era 8h até 26/10 — Fabio: "coloca a rodada para as 07"), uma vez por dia por card.
  * Quem decide o que fazer em cada banco é `planRecovery` (pura). Fora do escopo dela (a equipe resolve): reprovado/aprovado (já tem resposta), "NÃO RODEI" (regra do banco), "DADO PARA CORRIGIR" (o portal recusou um dado
  * do cadastro: rodar igual dá o mesmo erro), análise manual do Santander (espera por documentos), dados incompletos, banco pedindo login.
  */
@@ -165,7 +165,7 @@ export async function recoverStuckAnalyses(accountId: string, leadId: string, wh
   const feitos: RecAction[] = [];
   if (run.length) {
     // a cadeia de conferências marcada (3–10 min) é encerrada: a nova rodada recomeça a contagem
-    await prisma.creditAnalysis.updateMany({ where: { leadId, dryRun: false, bank: { in: run.map((a) => a.bank) }, kind: 'CHECK', status: 'REQUESTED' }, data: { status: 'CHECK', finishedAt: new Date(), detail: `Conferência encerrada: nova rodada pedida (${why === 'manha' ? 'retomada das 8h' : 'cliente cobrou'}).` } });
+    await prisma.creditAnalysis.updateMany({ where: { leadId, dryRun: false, bank: { in: run.map((a) => a.bank) }, kind: 'CHECK', status: 'REQUESTED' }, data: { status: 'CHECK', finishedAt: new Date(), detail: `Conferência encerrada: nova rodada pedida (${why === 'manha' ? 'retomada das 7h' : 'cliente cobrou'}).` } });
     const out = await createRequests(prisma, { accountId, leadIds: [leadId], banks: run.map((a) => a.bank), dryRun: false, force: true });
     if (out.created) feitos.push(...run);
   }
@@ -186,7 +186,7 @@ export async function recoverStuckAnalyses(accountId: string, leadId: string, wh
     else recNovo[a.bank] = { ...r, checkAt: agora };
   }
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _recover: recNovo, _autoRetries: retries } } });
-  const topo = why === 'manha' ? '🌅 8h: retomei a análise que estava travada' : '🔔 O cliente cobrou o resultado: acionei a extensão';
+  const topo = why === 'manha' ? '🌅 7h: retomei a análise que estava travada' : '🔔 O cliente cobrou o resultado: acionei a extensão';
   const linhas = feitos.map((a) => `• ${LABEL[a.bank] || a.bank}: ${a.mode === 'RUN' ? 'rodando de novo' : 'conferindo o portal'} — ${a.why}`);
   await addNote(leadId, `${topo}.\n${linhas.join('\n')}`);
   return feitos;
@@ -198,10 +198,10 @@ export async function onClientChase(accountId: string, leadId: string, text: str
   await recoverStuckAnalyses(accountId, leadId, 'cobranca');
 }
 
-/** Das 08h às 12h (Brasília) varre os cards da Pré-Análise uma vez por dia e retoma o que travou. A janela até o meio-dia cobre o servidor que estava fora às 8h; as extensões só trabalham 07h–22h. */
+/** Das 07h às 12h (Brasília) varre os cards da Pré-Análise uma vez por dia e retoma o que travou (Fabio 26/10: "coloca a rodada para as 07" — com as extensões rodando de madrugada, o que não teve resultado à noite é retomado às 7h). A janela até o meio-dia cobre o servidor que estava fora às 7h. */
 export async function processMorningRerun(accountId: string): Promise<void> {
   const h = brt().getUTCHours();
-  if (h < 8 || h >= 12) return;
+  if (h < 7 || h >= 12) return;
   const hoje = dayBrt();
   const ids = await prisma.$queryRaw<{ id: string }[]>`
     SELECT l.id FROM "Lead" l
@@ -213,7 +213,7 @@ export async function processMorningRerun(accountId: string): Promise<void> {
     ORDER BY l."stageEnteredAt" ASC
     LIMIT 40`;
   for (const { id } of ids) {
-    try { await recoverStuckAnalyses(accountId, id, 'manha'); } catch (e: any) { console.warn('[Retomar 8h]', e?.message); }
+    try { await recoverStuckAnalyses(accountId, id, 'manha'); } catch (e: any) { console.warn('[Retomar 7h]', e?.message); }
     const fresh = await prisma.lead.findUnique({ where: { id }, select: { customFields: true } });
     if (fresh) await prisma.lead.update({ where: { id }, data: { customFields: { ...((fresh.customFields || {}) as Cf), _morningRerunDay: hoje } } }).catch(() => {});
   }
