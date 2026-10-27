@@ -170,7 +170,7 @@ Como decidir:
 8a. O cliente respondeu no formulário se POSSUI certidão de ônus/matrícula (linha "Cliente informou…" abaixo): é só contexto. "Não possui"/"Não sei" NÃO tira a certidão de "faltando" (a conversa vai apurar o que ele tem); "Sim, possui" e nenhum arquivo: falta mesmo.
 8. A CAPA DO IPTU (carnê/guia do IPTU, "CAPA IPTU") traz a inscrição imobiliária E as metragens: ela sozinha atende os itens "Inscrição Imobiliária/IPTU" e "Capa do IPTU com as metragens" do Home Equity. Qualquer documento de IPTU recebido (capa, carnê, guia, CND de IPTU) conta como "Inscrição Imobiliária/IPTU".
 8e. METRAGENS (Fabio 20/10): o item "Capa do IPTU com as metragens" precisa de um documento OFICIAL DA PREFEITURA do município que mostre as metragens: a CAPA do IPTU ou a CERTIDÃO de IPTU/cadastro imobiliário com as metragens. Matrícula, escritura e outros documentos de cartório NÃO valem pra esse item. Use a linha "Documentos da PREFEITURA recebidos que MOSTRAM as metragens": se ela citar algum documento, o item está ATENDIDO; se disser "nenhum", falta (peça a capa do IPTU ou a certidão de IPTU com as metragens).
-8f. RENDA (Fabio 20/10): a linha "Comprovação de renda" diz se ela é necessária. Se disser que NÃO é necessária (a equipe dispensou a renda deste cliente), NÃO coloque nenhum item de renda em "faltando" e considere-os atendidos, mesmo que não tenham chegado.
+8f. RENDA (Fabio 20/10 e 27/10 — renda SÓ quando o banco pede): a linha "Comprovação de renda" diz se ela é necessária. Se disser que NÃO é necessária, NÃO coloque nenhum item de renda em "faltando" e considere-os atendidos, mesmo que não tenham chegado.
 8g. OPERADORA (Fabio 20/10): documento de operadora/concessionária (Claro, Vivo, TIM, Oi, energia, água, gás, internet) vale como COMPROVANTE DE RESIDÊNCIA, inclusive o protegido por senha que não pôde ser lido: conte como recebido.
 8i. PROTEGIDO (Fabio 21/10): arquivo do tipo PROTEGIDO (senha) não conta como nenhum item da lista e NÃO impede de completar se o resto chegou — a IA pergunta ao cliente o que é e a equipe confere depois (fica na pasta como "VERIFICAR").
 8h. ESCRITURA (Fabio 20/10): se só chegou a escritura (com o número da matrícula), a certidão de ônus/matrícula NÃO é pedida ao cliente: ponha em "emitir" (a A&F pede pelo ONR com o OK dele), nunca em "faltando".
@@ -240,7 +240,7 @@ Participantes:
 ${participants}
 
 BANCOS EM JOGO: ${bancosTxt}
-Comprovação de renda: ${rendaNecessaria ? 'necessária (regra normal)' : 'NÃO é necessária (a equipe dispensou a renda deste cliente)'}
+Comprovação de renda: ${rendaNecessaria ? 'necessária (o banco pediu documento de renda)' : 'NÃO é necessária (nenhum banco pediu renda — Fabio 27/10: renda só quando o banco pede — ou a equipe dispensou)'}
 Documentos da PREFEITURA recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
 
 LISTAS DE DOCUMENTOS:

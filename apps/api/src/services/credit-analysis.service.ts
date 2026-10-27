@@ -661,8 +661,16 @@ export async function bancosEmJogo(db: Db, leadId: string): Promise<{ emJogo: st
     if (/AN[ÁA]LISE MANUAL ABERTA|ENVIAR DOCUMENTOS/i.test(ult.detail || '')) { partes.push(`${nomes[b]}: pediu análise manual com documentos (fora do jogo, a menos que o cliente queira seguir por ele)`); continue; }
     if (['SENT', 'REQUESTED', 'RUNNING'].includes(ult.status)) { emJogo.push(b); partes.push(`${nomes[b]}: em análise`); } else partes.push(`${nomes[b]}: sem resultado (falha/não rodou)`);
   }
-  const rendaNecessaria = !cf._rendaDispensada; // só some com a marca explícita deste card (caso a caso)
+  // RENDA SÓ QUANDO O BANCO PEDE (Fabio 27/10: "solicitar renda apenas quando o banco solicitar, essa era regra" — Milena e Fernanda, aprovadas no Inter, receberam pedido de holerite/IR
+  // sem o banco ter pedido). Necessária só se a resposta de algum banco aprovado pediu documento de renda, ou se a equipe marcou `_rendaExigida` no card.
+  const rendaNecessaria = !cf._rendaDispensada && (!!cf._rendaExigida || bancoPediuRenda(rows.filter((r) => ['APPROVED', 'CONDITIONAL'].includes(r.status)).map((r) => r.detail || '')));
   return { emJogo, rendaNecessaria, texto: partes.join('; ') };
+}
+
+/** Algum banco pediu documento de RENDA (contracheque, extrato, IR, DECORE, pró-labore…) na resposta da análise? Pura. */
+export const RX_DOC_RENDA = /comprovante de renda|comprova[cç][aã]o de renda|contracheque|holerite|extrato[s]? banc|imposto de renda|\bIRPF\b|declara[cç][aã]o de renda|DECORE|pr[oó][- ]?labore/i;
+export function bancoPediuRenda(textos: string[]): boolean {
+  return textos.some((t) => RX_DOC_RENDA.test(String(t || '')));
 }
 
 /** O banco pediu DE NOVO / não aceitou a certidão de ônus/matrícula que o cliente já mandou (Fabio 15/10: "o próprio CRM faz essa parte: anota e lê"). Lê o resultado da análise (ex.: Inter "Documentos

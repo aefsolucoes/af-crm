@@ -330,7 +330,7 @@ const DOCS_HEADER = 'Para seguir com a contratação do crédito encaminhar os s
 const DOCS_MARK = 'encaminhar os seguintes documentos';
 const DOCS_MARK_OLD = 'o banco pede os seguintes documentos';
 const FALLBACK_PESSOAIS = ['Documento de identificação', 'Comprovante de residência', 'Comprovante de estado civil (certidão de nascimento ou casamento)'];
-// Renda SEMPRE na lista (Fabio 17/10, Luzia): complementa a lista com a renda pra abranger de uma vez a continuidade no Inter e a documentação pra seguir na Creditas. A equipe pode editar na Resposta rápida "Documentos Home Equity" (seção "*Renda:*").
+// Renda: em 17/10 (Luzia) ia SEMPRE na lista; em 27/10 o Fabio voltou à regra: SÓ quando o banco pede (buildDocsText). A equipe edita os itens na Resposta rápida "Documentos Home Equity" (seção "*Renda:*").
 // Sempre com o NÚMERO (Fabio 19/10: "3 últimos extratos bancários" pra autônomo e "3 últimos contracheques, quando for o caso" pra assalariado).
 const FALLBACK_RENDA = ['Comprovante de renda: 3 últimos contracheques (se for assalariado) ou 3 últimos extratos bancários (se for autônomo)', 'Declaração do Imposto de Renda (IRPF) completa, com o recibo de entrega (se declara)'];
 const FALLBACK_IMOVEL = ['Certidão de ônus reais/ Matrícula do imóvel', 'Inscrição Imobiliária/ IPTU', 'Capa do IPTU com as metragens'];
@@ -362,8 +362,22 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
     const l0 = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     semCertidao = /^nao/.test(String(((l0?.customFields || {}) as Record<string, any>).possui_certidao || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim());
   }
-  const renda: string[] = [...(parsed.renda.length ? parsed.renda : FALLBACK_RENDA)];
-  for (const o of options) for (const d of o.documentos?.itens || []) if (!renda.some((x) => normN(x) === normN(d))) renda.push(d); // + o que o banco pediu de renda (aprovado a menor)
+  // RENDA SÓ QUANDO O BANCO PEDE (Fabio 27/10 — revoga o "renda SEMPRE na lista" de 17/10): a seção só entra se a resposta de um banco aprovado pediu documento de renda
+  // (ou a equipe marcou `_rendaExigida` no card). Aí vão os itens que o banco pediu + a lista padrão de renda.
+  const { bancoPediuRenda } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const itensBanco = options.flatMap((o) => o.documentos?.itens || []);
+  let pediuRenda = bancoPediuRenda(itensBanco);
+  if (!pediuRenda && leadId) {
+    const l1 = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cf1 = (l1?.customFields || {}) as Record<string, any>;
+    if (cf1._rendaExigida && !cf1._rendaDispensada) pediuRenda = true;
+    else if (!cf1._rendaDispensada) {
+      const aprov = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, select: { detail: true, conditions: true } });
+      pediuRenda = bancoPediuRenda(aprov.map((a) => `${a.detail || ''} ${a.conditions || ''}`));
+    }
+  }
+  const renda: string[] = pediuRenda ? [...(parsed.renda.length ? parsed.renda : FALLBACK_RENDA)] : [];
+  if (pediuRenda) for (const d of itensBanco) if (!renda.some((x) => normN(x) === normN(d))) renda.push(d); // + o que o banco pediu de renda (aprovado a menor)
   const lista = pessoais.map((d) => `• ${d}`).join('\n');
   const listaRenda = renda.map((d) => `• ${d}`).join('\n');
   let conjuge = '';
@@ -374,7 +388,7 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
   }
   const imovelFinal = [...imovel];
   for (const o of options) for (const d of o.docsImovelExtra || []) if (!imovelFinal.some((x) => normN(x) === normN(d))) imovelFinal.push(d); // + o que o Inter pediu do imóvel e a lista padrão não cobre (ex.: quitação do condomínio)
-  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}\n\n*Comprovação de renda*\n${listaRenda}${conjuge}\n\n*Imóvel:*\n${imovelFinal.map((d) => `• ${d}`).join('\n')}${semCertidao ? '\n_Se você não tiver a certidão de ônus/matrícula, me conta o que você tem do imóvel (escritura, matrícula, IPTU ou qualquer documento com o número da matrícula) que eu te ajudo._' : ''}`;
+  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}${renda.length ? `\n\n*Comprovação de renda*\n${listaRenda}` : ''}${conjuge}\n\n*Imóvel:*\n${imovelFinal.map((d) => `• ${d}`).join('\n')}${semCertidao ? '\n_Se você não tiver a certidão de ônus/matrícula, me conta o que você tem do imóvel (escritura, matrícula, IPTU ou qualquer documento com o número da matrícula) que eu te ajudo._' : ''}`;
 }
 
 /** Texto de aprovação montado pro card (notas primeiro, aba Financiamento
