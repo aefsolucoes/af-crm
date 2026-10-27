@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { organizeReceivedDocsFolder, downloadDriveFileForVision, isStickerAttachment, isScreenshotAttachment } from './google.service';
+import { organizeReceivedDocsFolder, downloadDriveFileForVision, isStickerAttachment, isScreenshotAttachment, getDrive, extractFolderId, findFolder } from './google.service';
 export { isStickerAttachment, isScreenshotAttachment };
 import { logActivity } from './activity.service';
 
@@ -305,6 +305,35 @@ async function organizeLead(lead: {
   console.log(`[DocsRecebidos] ${lead.name} (${lead.id}): pasta organizada, ${result.named.length} documentos, ${result.ignored.length} ignorados`);
 }
 
+/** O link do card aponta pra pasta onde o auto-upload do WhatsApp jogou os
+ *  anexos do cliente, e ela ainda não tem COMPRADOR/IMOVEL/VENDEDOR? Então é a
+ *  pasta "crua" (só ganhou o link), não uma pasta montada à mão pela equipe. */
+async function linkIsRawAttachmentsFolder(accountId: string, leadId: string, link: string): Promise<boolean> {
+  const folderId = extractFolderId(link);
+  if (!folderId) return false;
+  const atts = await prisma.messageAttachment.findMany({
+    where: { leadId, driveFileId: { not: null }, message: { direction: 'INBOUND' } },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+    select: { driveFileId: true },
+  });
+  if (!atts.length) return false;
+  const drive = await getDrive(accountId);
+  let dentro = 0;
+  let lidos = 0;
+  for (const a of atts) {
+    const r = await drive.files.get({ fileId: a.driveFileId!, fields: 'parents', supportsAllDrives: true }).catch(() => null);
+    if (r) lidos++;
+    if (r?.data.parents?.includes(folderId)) dentro++;
+  }
+  if (!lidos) throw new Error('Drive não respondeu'); // não marca como "feita à mão" por falha do Drive
+  if (!dentro) return false;
+  for (const sub of ['COMPRADOR', 'COMPRADORA', 'IMOVEL', 'IMÓVEL', 'VENDEDOR', 'VENDEDORA']) {
+    if (await findFolder(accountId, sub, folderId)) return false;
+  }
+  return true;
+}
+
 export async function organizeReceivedDocsLeads(): Promise<void> {
   if (running) return;
   running = true;
@@ -337,15 +366,26 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
       const cf = (lead.customFields || {}) as Record<string, string>;
       if ((cf as any)._autoPaused) continue; // Stop total do cliente
       if (cf.link_pasta_drive || cf._driveOrganizedAt) {
-        // Link colocado à mão: não mexe. Pasta montada antes (ex.: sob demanda,
-        // com documentação ainda incompleta): reorganiza só se chegou
-        // documento novo depois — senão os que faltavam ficavam fora da pasta.
-        if (!cf._driveOrganizedAt) continue;
-        const novo = await prisma.messageAttachment.findFirst({
-          where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(cf._driveOrganizedAt) } },
-          select: { id: true },
-        });
-        if (!novo) continue;
+        // Link colocado à mão: não mexe — exceto quando o link é a própria pasta
+        // dos anexos do WhatsApp, ainda sem subpastas (Eduardo, Fabio 27/10: "não
+        // tem subpasta COMPRADOR igual no Home Equity, precisa ser igual"). Pasta
+        // montada antes (ex.: sob demanda, com documentação ainda incompleta):
+        // reorganiza só se chegou documento novo depois.
+        if (!cf._driveOrganizedAt) {
+          if ((cf as any)._driveLinkManual === cf.link_pasta_drive) continue;
+          const bruta = await linkIsRawAttachmentsFolder(lead.accountId, lead.id, cf.link_pasta_drive).catch(() => null);
+          if (bruta === null) continue; // Drive fora do ar: tenta no próximo ciclo
+          if (!bruta) {
+            await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, _driveLinkManual: cf.link_pasta_drive } as any } }).catch(() => {});
+            continue;
+          }
+        } else {
+          const novo = await prisma.messageAttachment.findFirst({
+            where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(cf._driveOrganizedAt) } },
+            select: { id: true },
+          });
+          if (!novo) continue;
+        }
       }
       if (cf._driveOrganizeFailedAt && Date.now() - new Date(cf._driveOrganizeFailedAt).getTime() < RETRY_AFTER_FAILURE_MS) continue;
 
