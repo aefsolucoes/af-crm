@@ -496,7 +496,14 @@ export async function claimQueue(db: Db, p: { accountId: string; bank: string; l
   const ordem = (l?: { createdAt: Date; stageEnteredAt: Date | null; status: string; stage: { name: string } | null } | null) =>
     (l && l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '') && l.stageEnteredAt) || l?.createdAt || new Date(0);
   // "Um cliente por vez" ignora o pedido de banco que está esperando LOGIN: senão o cliente preso nele segura a fila dos outros (27/10).
-  const ativo = pickActiveLead(abertos.filter((a) => !loginNeededFor(p.accountId, a.bank)).map((a) => ({ leadId: a.leadId, bank: a.bank, status: a.status, requestedAt: a.requestedAt, leadOrderAt: ordem(a.lead) })), Date.now(), (b) => bankAlive(p.accountId, b));
+  const paraPick = (lista: typeof abertos) => lista.filter((a) => !loginNeededFor(p.accountId, a.bank)).map((a) => ({ leadId: a.leadId, bank: a.bank, status: a.status, requestedAt: a.requestedAt, leadOrderAt: ordem(a.lead) }));
+  let ativo = pickActiveLead(paraPick(abertos), Date.now(), (b) => bankAlive(p.accountId, b));
+  // 27/10 (madrugada parada): o cliente da vez (Welma, só com pedido no Inter) segurava a Creditas, que não tinha nada dele pra fazer — e o Inter não pegava. Se o cliente da vez NÃO tem
+  // pedido de rodar neste banco, o banco atende o próximo da fila que tem (a trava do navegador continua garantindo uma extensão por vez). Fabio: "não pode travar a fila por conta de um".
+  if (ativo && !abertos.some((a) => a.leadId === ativo && a.bank === p.bank && a.status === 'REQUESTED')) {
+    const doBanco = pickActiveLead(paraPick(abertos.filter((a) => a.bank === p.bank)), Date.now(), (b) => bankAlive(p.accountId, b));
+    if (doBanco) ativo = doBanco;
+  }
   const rows = await db.creditAnalysis.findMany({
     where: {
       accountId: p.accountId, bank: p.bank, status: 'REQUESTED', ...(canCheck ? {} : { kind: 'RUN' }),
