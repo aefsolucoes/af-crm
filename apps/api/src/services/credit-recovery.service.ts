@@ -71,6 +71,12 @@ export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?:
       out.push({ bank, mode: jaEnviada ? 'CHECK' : 'RUN', why: 'falha técnica na rodada (aba fechada, captcha, janela do banco…)' });
       continue;
     }
+    // Rodada que terminou como "verificar" (RUN com status CHECK — ex.: Creditas mostrou "Ops! Algo deu errado" depois de criar a proposta, Ricardo 26/10): ninguém
+    // reconferia e ficava parada pra sempre. Agora vira CONFERÊNCIA (a extensão lê o resultado na lista do portal).
+    if (efetiva.kind === 'RUN' && efetiva.status === 'CHECK') {
+      if (!conferenciaNaFila) out.push({ bank, mode: 'CHECK', why: 'a rodada terminou sem ler o resultado (tela de erro do portal): conferir na lista' });
+      continue;
+    }
     if (efetiva.status !== 'SENT') continue; // INCOMPLETE e afins: o dado precisa de gente
 
     const leituras = desde.filter((r) => r.kind === 'CHECK' || r.status === 'SENT');
