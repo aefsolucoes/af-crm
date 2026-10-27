@@ -127,21 +127,28 @@ self.addEventListener('push', (event) => {
   );
 });
 
-// Clique na notificação: foca uma aba já aberta do CRM (navegando pra
-// conversa) ou abre uma nova quando não há nenhuma.
+// Clique na notificação: foca uma aba já aberta do CRM e troca pra conversa, ou abre uma nova quando não há nenhuma.
+// 27/10 (Andreia "Bom dia Rosana" foi pro Reginaldo; Fabio "Tá ok!" foi pro Hélio): no iPhone o navigate() nem sempre trocava — o app vinha pra
+// frente com a conversa ANTERIOR na tela e a mensagem digitada ia pro cliente errado. Agora o SW pede pra própria tela trocar (postMessage, com
+// confirmação); só se ela não confirmar a tempo é que navega/abre do jeito antigo.
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const targetUrl = event.notification.data?.url || '/inbox';
 
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientsList) => {
-      for (const client of clientsList) {
-        const clientUrl = new URL(client.url);
-        if (clientUrl.origin === self.location.origin && 'focus' in client) {
-          client.focus();
-          if ('navigate' in client) client.navigate(targetUrl);
-          return;
-        }
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (clientsList) => {
+      const client = clientsList.find((c) => new URL(c.url).origin === self.location.origin && 'focus' in c);
+      if (!client) { if (self.clients.openWindow) return self.clients.openWindow(targetUrl); return; }
+      try { await client.focus(); } catch (e) { /* segue: o importante é trocar a conversa */ }
+      const trocou = await new Promise((resolve) => {
+        const canal = new MessageChannel();
+        const t = setTimeout(() => resolve(false), 1500);
+        canal.port1.onmessage = () => { clearTimeout(t); resolve(true); };
+        try { client.postMessage({ type: 'open-url', url: targetUrl }, [canal.port2]); } catch (e) { clearTimeout(t); resolve(false); }
+      });
+      if (trocou) return;
+      if ('navigate' in client) {
+        try { return await client.navigate(targetUrl); } catch (e) { /* cai no openWindow */ }
       }
       if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
     })

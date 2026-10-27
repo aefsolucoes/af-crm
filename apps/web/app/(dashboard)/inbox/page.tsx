@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback, useEffect, useMemo, useRef, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { useQuery, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { Topbar } from '@/components/ui/topbar';
 import { ConversationList } from '@/components/inbox/conversation-list';
@@ -94,6 +94,33 @@ function InboxPageInner() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadIdParam]);
+
+  // O endereço ACOMPANHA a conversa aberta (27/10: Andreia mandou "Bom dia Rosana" e foi pro Reginaldo; Fabio mandou "Tá ok!" pra Rosana e foi pro Hélio).
+  // Escolher pela lista não mudava o ?leadId= — quando o app recarregava (o iPhone recarrega ao voltar de outro app) ou uma notificação apontava
+  // pro mesmo endereço, voltava a conversa ANTERIOR na tela, sem ninguém perceber.
+  const router = useRouter();
+  const pathname = usePathname();
+  useEffect(() => {
+    if ((selectedId || null) === (leadIdParam || null)) return;
+    const params = new URLSearchParams(searchParams.toString());
+    if (selectedId) params.set('leadId', selectedId); else params.delete('leadId');
+    const qs = params.toString();
+    router.replace(`${pathname}${qs ? `?${qs}` : ''}`, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  // Notificação tocada com a Inbox aberta (aviso do service worker, ver layout): troca de conversa na hora.
+  useEffect(() => {
+    const onOpenLead = (ev: Event) => {
+      const id = (ev as CustomEvent<string>).detail;
+      if (!id) return;
+      if (selectedIdRef.current !== id) setLocalMessages([]);
+      setSelectedId(id);
+      setShowMobileInfo(false);
+    };
+    window.addEventListener('af:open-lead', onOpenLead);
+    return () => window.removeEventListener('af:open-lead', onOpenLead);
+  }, []);
 
   const { data: conversations, isLoading: loadingConvs, isError: convsError, refetch: refetchConvs } = useQuery({
     queryKey: ['conversations'],
@@ -258,6 +285,7 @@ function InboxPageInner() {
         {showChatArea && (selectedId && lead ? (
           <>
             <ChatWindow
+              key={selectedId /* conversa nova = caixa de texto nova: o que foi digitado numa conversa nunca vai junto pra outra */}
               leadId={selectedId}
               leadName={selectedConv?.contact?.name || selectedConv?.name || displayName}
               greetingName={speaker?.first}

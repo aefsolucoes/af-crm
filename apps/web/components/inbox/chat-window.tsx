@@ -258,6 +258,18 @@ function StagedFileChip({ file, onRemove, disabled }: { file: File; onRemove: ()
   );
 }
 
+const semAcento = (t: string) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const NAO_E_NOME = new Set(['tudo', 'td', 'dona', 'senhor', 'senhora', 'sr', 'sra', 'dr', 'dra', 'doutor', 'doutora', 'pessoal', 'amigo', 'amiga', 'querido', 'querida', 'prezado', 'prezada', 'cliente', 'como', 'segue', 'obrigado', 'obrigada', 'tudo', 'sim', 'beleza', 'bem', 'novamente', 'desculpa', 'desculpe']);
+/** "Bom dia Rosana…" numa conversa que não é da Rosana: devolve o nome cumprimentado quando ele não aparece em nenhum nome desta conversa (senão null). */
+export function nomeDeOutraPessoa(texto: string, nomesDaConversa: (string | undefined | null)[]): string | null {
+  const m = /^\s*(?:[Bb]om dia|[Bb]oa tarde|[Bb]oa noite|[Oo]i|[Oo]l[áa]|[Ee] a[íi])[\s,!.]+([A-ZÀ-Ý][a-zà-ÿ]{2,})/.exec(texto);
+  if (!m) return null;
+  const cand = semAcento(m[1]);
+  if (NAO_E_NOME.has(cand)) return null;
+  const conhecidos = new Set(nomesDaConversa.flatMap((n) => semAcento(n || '').split(/[^a-z]+/)).filter(Boolean));
+  return conhecidos.has(cand) ? null : m[1];
+}
+
 export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId, hasOlderMessages, loadingOlderMessages, onLoadOlderMessages }: ChatWindowProps) {
   const router = useRouter();
   // O listener de socket que atualiza o card de ligação (mais abaixo) roda
@@ -270,6 +282,8 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   const queryClient = useQueryClient();
   const [content, setContent] = useState('');
+  // Primeiro nome de quem recebe — fica escrito na caixa de texto ("Mensagem para Rosana"), pra ninguém escrever na conversa errada (27/10).
+  const destinoNome = (() => { const w = String(greetingName || leadName || '').trim().split(/\s+/)[0] || ''; return w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ''; })();
   const [channel, setChannel] = useState<Channel>('WHATSAPP');
   const [sending, setSending] = useState(false);
 
@@ -963,6 +977,9 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     if (stagedFiles.length) { await sendStagedFiles(); return; }
     const text = content.trim();
     if (!text || sending) return;   // trava contra envio duplo
+    // Cumprimento com o nome de OUTRA pessoa (27/10: "Bom dia Rosana" saiu na conversa do Reginaldo): confirma antes de mandar.
+    const outroNome = nomeDeOutraPessoa(text, [leadName, greetingName, speakerLabel]);
+    if (outroNome && !window.confirm(`A mensagem cumprimenta "${outroNome}", mas esta conversa é de ${leadName}. Enviar mesmo assim?`)) return;
     if (windowClosedForApi) {
       toast('Janela de 24h fechada — use um template aprovado para reabrir a conversa.', 'error');
       setShowTemplates(true);
@@ -2515,7 +2532,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                 onChange={(e) => setContent(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={(e) => { const fs = Array.from(e.clipboardData?.files || []); if (fs.length) { e.preventDefault(); stageFiles(fs); } }}
-                placeholder={windowClosedForApi ? 'Janela fechada — use um template acima' : 'Digite uma mensagem'}
+                placeholder={windowClosedForApi ? 'Janela fechada — use um template acima' : destinoNome ? `Mensagem para ${destinoNome}` : 'Digite uma mensagem'}
                 rows={1}
                 spellCheck
                 lang="pt-BR"

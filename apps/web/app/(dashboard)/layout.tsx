@@ -39,6 +39,23 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [user, router]);
 
+  // Toque numa notificação com o CRM já aberto: o service worker pede pra abrir a conversa (public/sw.js) e a tela troca NA HORA — no iPhone o
+  // navigate() do SW nem sempre trocava e a mensagem digitada ia pro cliente da conversa anterior (27/10, Andreia/Reginaldo e Fabio/Hélio).
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    const onSwMessage = (ev: MessageEvent) => {
+      if (ev.data?.type !== 'open-url' || typeof ev.data.url !== 'string') return;
+      const url = new URL(ev.data.url, window.location.origin);
+      if (url.origin !== window.location.origin) return;
+      ev.ports?.[0]?.postMessage('ok');
+      const leadId = url.pathname.startsWith('/inbox') ? url.searchParams.get('leadId') : null;
+      if (leadId) window.dispatchEvent(new CustomEvent('af:open-lead', { detail: leadId }));
+      router.push(url.pathname + url.search);
+    };
+    navigator.serviceWorker.addEventListener('message', onSwMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', onSwMessage);
+  }, [router]);
+
   // Barra o acesso direto por URL a áreas sem permissão: manda para a primeira
   // área que o usuário pode acessar.
   useEffect(() => {
