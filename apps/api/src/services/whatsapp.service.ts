@@ -1273,11 +1273,13 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         const noInterest = require('./no-interest.service') as typeof import('./no-interest.service');
         if (msg.type !== 'button') await noInterest.maybeCaptureLostReason(accountId, leadId, text, io).catch((e) => console.error('[Sem interesse] captura do motivo falhou:', e?.message));
         const approvalNotice = require('./approval-notice.service') as typeof import('./approval-notice.service');
-        const interestHandled = msg.type === 'button' && (
+        const interestHandled = (msg.type === 'button' && (
           await approvalNotice.maybeSendApprovalOnYes(accountId, leadId, text, io).catch((e) => { console.error('[Aprovação] falhou:', e?.message); return false; }) ||
           await maybeSendProposalLinkOnInterest(accountId, leadId, text, io) ||
           await noInterest.handleNoInterestButton(accountId, leadId, text, io).catch((e) => { console.error('[Sem interesse] falhou:', e?.message); return false; })
-        );
+        )) ||
+          // "Seguir com esta" numa proposta do aviso de aprovação (Fabio 27/10): marca a proposta escolhida e confirma ao cliente.
+          (msg.type === 'interactive' && await approvalNotice.maybeHandleChooseButton(accountId, leadId, text, msg.context?.id, io).catch((e) => { console.error('[Aprovação] botão Seguir com esta:', e?.message); return false; }));
         // Proposta do site que chega pelo WhatsApp DEPOIS do e-mail da mesma
         // proposta: o e-mail já levou o card pra Pré-Análise e a automação
         // já mandou o "Recebi sua proposta" — a IA respondia de novo

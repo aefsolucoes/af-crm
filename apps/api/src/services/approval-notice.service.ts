@@ -22,7 +22,7 @@ import { callableFirstName } from '../lib/text';
  *    mandar à mão (a conversa já está aberta nessa hora).
  */
 
-import { parseDocumentosExigidos, whichParticipant } from './credit-analysis.service';
+import { parseDocumentosExigidos, whichParticipant, chooseAnalysis } from './credit-analysis.service';
 
 
 // ─── Horário dos avisos ao cliente (Fabio 14/10): só das 07:00 às 21:00, horário de Brasília (UTC-3, sem horário de verão) ───
@@ -216,7 +216,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
 /** Prazo máximo do Inter (meses): o simulador vai de 60 a 240. */
 export const INTER_MAX_TERM = 240;
 
-interface ApprovalOption { condicionalSemNumeros?: boolean; docsImovelExtra?: string[]; interCondicional?: boolean; quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean; prazoTodo?: string }
+interface ApprovalOption { /** análise de crédito de onde a opção veio (botão "Seguir com esta") */ analysisId?: string; condicionalSemNumeros?: boolean; docsImovelExtra?: string[]; interCondicional?: boolean; quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean; prazoTodo?: string }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -299,7 +299,43 @@ export function renderApprovalText(options: ApprovalOption[], pendentes: string[
     const notaPendC = pendentes.length ? `\n\n⏳ Ainda em análise: ${pendentes.join(' e ')}. Se sair uma condição melhor, te aviso por aqui.` : '';
     return `✅ O ${options[0].instituicao} aprovou o seu crédito, condicionado ao envio de documentos!\n\n${blocos}${notaPendC}`;
   }
-  const block = (o: ApprovalOption) => [
+  const head = options.length > 1 ? `✅ Consegui ${options.length} opções de aprovação pra você escolher!` : '✅ Crédito aprovado!';
+  const tail = options.length > 1 ? '\n\n👉 Qual dessas opções você prefere? É só me responder por aqui que eu sigo com a que você escolher.' : ''; // opção única: a mensagem acaba no resumo (Fabio 14/10)
+  const { notaInter, notaPend } = approvalNotes(options, pendentes);
+  return `${head}\n\n${options.map(approvalBlock).join('\n\n')}${notaInter}${notaPend}${tail}`;
+}
+
+/** Notas do fim do aviso: Inter condicional (Fabio 17/10, Luzia) e bancos que ainda estão analisando (Fabio 20/10). */
+function approvalNotes(options: ApprovalOption[], pendentes: string[]): { notaInter: string; notaPend: string } {
+  // Inter aprovou CONDICIONADO ao envio de documentos (sem números ainda): o aviso não espera por ele — informa a(s) aprovação(ões) que já saiu(ram) e diz que, com os documentos que o Inter pede, dá pra conseguir condição melhor lá (Fabio 17/10, Luzia).
+  const notaInter = options.some((o) => o.interCondicional) ? '\n\nℹ️ O Inter também aprovou o seu crédito, condicionado ao envio de documentos. Depois que você enviar os documentos que ele pede, podemos conseguir uma condição ainda melhor lá.' : '';
+  // Bancos que ainda estão analisando (Fabio 20/10: "dizer que está em análise na Creditas"): o cliente sabe que pode vir outra opção.
+  const notaPend = pendentes.length ? `\n\n⏳ Ainda em análise: ${pendentes.join(' e ')}. Se sair uma condição melhor, te aviso por aqui.` : '';
+  return { notaInter, notaPend };
+}
+
+/** Botão de cada proposta do aviso (Fabio 27/10: "separar as propostas com um botão: seguir com esta"). Título ≤ 20 caracteres (limite da Meta). */
+export const CHOOSE_BUTTON = 'Seguir com esta';
+
+/** O aviso com o botão "Seguir com esta" em cada proposta (Fabio 27/10, print da Fernanda: "separar as propostas com um botão: seguir com esta").
+ *  1 opção: uma mensagem só (abertura + resumo + notas) com o botão. 2+ opções: a abertura, UMA mensagem por proposta com o botão e as notas do fim.
+ *  Só com opções vindas das análises de crédito (cada uma sabe de qual análise veio) e dentro do limite da Meta pro texto com botão; senão null e vai o texto único de sempre. */
+export function renderApprovalParts(options: ApprovalOption[], pendentes: string[] = [], prefixo = ''): { intro: string; blocks: { text: string; analysisId: string }[]; outro: string } | null {
+  if (!options.length || options.some((o) => o.condicionalSemNumeros || !o.analysisId)) return null;
+  const { notaInter, notaPend } = approvalNotes(options, pendentes);
+  const parts = options.length === 1
+    ? { intro: '', blocks: [{ text: `${prefixo}✅ Crédito aprovado!\n\n${approvalBlock(options[0])}${notaInter}${notaPend}`, analysisId: options[0].analysisId as string }], outro: '' }
+    : {
+      intro: `${prefixo}✅ Consegui ${options.length} opções de aprovação pra você escolher! Seguem abaixo, uma em cada mensagem — toque em *${CHOOSE_BUTTON}* na que você preferir.`,
+      blocks: options.map((o) => ({ text: approvalBlock(o), analysisId: o.analysisId as string })),
+      outro: `${notaInter}${notaPend}`.trim(),
+    };
+  return parts.blocks.every((b) => b.text.length <= INTERACTIVE_BODY_MAX) ? parts : null;
+}
+const INTERACTIVE_BODY_MAX = 1024; // limite da Meta pro texto de mensagem com botões
+
+function approvalBlock(o: ApprovalOption): string {
+  return [
     '📋 Resumo da proposta:',
     `🏦 Instituição: ${o.instituicao}`,
     o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
@@ -316,13 +352,6 @@ export function renderApprovalText(options: ApprovalOption[], pendentes: string[
     // Inter aprovado a menor: as parcelas exatas só saem depois do aceite no portal.
     o.aMenor && !o.primeiraParcela && `🧾 As parcelas exatas são confirmadas na formalização, conforme o valor e o prazo aprovados.`,
   ].filter(Boolean).join('\n');
-  const head = options.length > 1 ? `✅ Consegui ${options.length} opções de aprovação pra você escolher!` : '✅ Crédito aprovado!';
-  const tail = options.length > 1 ? '\n\n👉 Qual dessas opções você prefere? É só me responder por aqui que eu sigo com a que você escolher.' : ''; // opção única: a mensagem acaba no resumo (Fabio 14/10)
-  // Inter aprovou CONDICIONADO ao envio de documentos (sem números ainda): o aviso não espera por ele — informa a(s) aprovação(ões) que já saiu(ram) e diz que, com os documentos que o Inter pede, dá pra conseguir condição melhor lá (Fabio 17/10, Luzia).
-  const notaInter = options.some((o) => o.interCondicional) ? '\n\nℹ️ O Inter também aprovou o seu crédito, condicionado ao envio de documentos. Depois que você enviar os documentos que ele pede, podemos conseguir uma condição ainda melhor lá.' : '';
-  // Bancos que ainda estão analisando (Fabio 20/10: "dizer que está em análise na Creditas"): o cliente sabe que pode vir outra opção.
-  const notaPend = pendentes.length ? `\n\n⏳ Ainda em análise: ${pendentes.join(' e ')}. Se sair uma condição melhor, te aviso por aqui.` : '';
-  return `${head}\n\n${options.map(block).join('\n\n')}${notaInter}${notaPend}${tail}`;
 }
 
 // Texto da mensagem 2 (Fabio 14/10): cabeçalho único, "Documentos pessoais" + Imóvel, e os documentos do cônjuge/2º participante quando houver.
@@ -493,6 +522,7 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
   const options = Array.from(byBank.values())
     .sort((a, b) => (b.netValue || b.approvedValue || 0) - (a.netValue || a.approvedValue || 0))
     .map((r): ApprovalOption => ({
+      analysisId: r.id,
       interCondicional,
       aMenor: /aprovad[oa] a menor/i.test(r.detail || ''),
       instituicao: label[r.bank] || r.bank,
@@ -607,6 +637,33 @@ export async function requestSimulationsAfterApproval(p: { accountId: string; le
   }
 }
 
+/** Manda o resumo da aprovação com o botão "Seguir com esta" em cada proposta (Fabio 27/10, Fernanda: "separar as propostas com um botão: seguir com esta"):
+ *  2+ propostas = a abertura, UMA mensagem por proposta com o botão e, por fim, as notas (Inter condicional / bancos ainda em análise); 1 proposta = uma mensagem com o botão.
+ *  Sem as partes (opção lida das notas/do card, Inter condicional sem números): o texto único de sempre.
+ *  Se a 1ª proposta não sair com botão (ex.: falha da Meta), cai no texto único — o cliente nunca fica com o aviso pela metade. */
+async function sendApprovalSummary(p: { accountId: string; leadId: string; userId?: string; io?: any }, text: string, parts: ReturnType<typeof renderApprovalParts>): Promise<{ success: boolean; error?: string }> {
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const base = { accountId: p.accountId, leadId: p.leadId, userId: p.userId, io: p.io };
+  if (!parts) return sendOutboundWhatsApp({ ...base, content: text });
+  const pausa = () => new Promise((resolve) => setTimeout(resolve, 1200)); // na ordem certa no WhatsApp do cliente
+  if (parts.intro) {
+    const abertura = await sendOutboundWhatsApp({ ...base, content: parts.intro });
+    if (!abertura.success) return abertura;
+  }
+  for (let i = 0; i < parts.blocks.length; i++) {
+    if (i || parts.intro) await pausa();
+    const r = await sendOutboundWhatsApp({ ...base, content: parts.blocks[i].text, buttons: [CHOOSE_BUTTON] });
+    if (!r.success) {
+      console.error(`[Aprovação] proposta ${i + 1} com botão não saiu (${r.error}) — mando ${i === 0 ? 'o texto único' : 'o resto em texto'}`);
+      const resto = parts.blocks.slice(i).map((b) => b.text).join('\n\n');
+      const t = await sendOutboundWhatsApp({ ...base, content: i === 0 ? text : `${resto}${parts.outro ? `\n\n${parts.outro}` : ''}\n\n👉 É só me responder por aqui qual opção você prefere.` });
+      return t.success ? { success: true } : t;
+    }
+  }
+  if (parts.outro) { await pausa(); await sendOutboundWhatsApp({ ...base, content: parts.outro }); }
+  return { success: true };
+}
+
 /** Cliente tocou em "Sim, quero saber" no template de aprovação. true = tratou. */
 export async function maybeSendApprovalOnYes(accountId: string, leadId: string, text: string, io: any): Promise<boolean> {
   if (!YES_RE.test(text.trim())) return false;
@@ -620,9 +677,8 @@ export async function maybeSendApprovalOnYes(accountId: string, leadId: string, 
     io?.to(lead.userId ? `user_${lead.userId}` : `account_${accountId}`).emit('ai_handoff', { leadId, leadName: lead.name, reason: 'Cliente quer saber as condições da aprovação — mande à mão (não achei as condições no card).' });
     return true;
   }
-  const content = built.text;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-  const sent = await sendOutboundWhatsApp({ accountId, leadId, content, io });
+  const sent = await sendApprovalSummary({ accountId, leadId, io }, built.text, built.source === 'analises' ? renderApprovalParts(built.options) : null);
   if (sent.success) {
     await prisma.lead.update({ where: { id: leadId }, data: { aiAutoReplyActive: true } }).catch(() => {});
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, leadName: lead.name, summary: `mandou as condições de aprovação (dados ${built.source === 'analises' ? 'das análises de crédito' : built.source === 'notas' ? 'das notas' : 'do card'}) — cliente tocou em "Sim, quero saber"` });
@@ -635,6 +691,52 @@ export async function maybeSendApprovalOnYes(accountId: string, leadId: string, 
     }
     requestSimulationsAfterApproval({ accountId, leadId }).catch(() => {});
   }
+  return true;
+}
+
+/** Cliente tocou em "Seguir com esta" numa proposta do aviso (Fabio 27/10). A Meta manda o wamid da mensagem da proposta (context.id): o CRM acha a proposta,
+ *  marca como ESCOLHIDA (⭐ + aba Financiamento, o mesmo que o botão da equipe), avisa a equipe e confirma ao cliente. true = tratou (a IA não responde por cima). */
+export async function maybeHandleChooseButton(accountId: string, leadId: string, text: string, repliedWamid: string | undefined, io: any): Promise<boolean> {
+  if (norm(text) !== norm(CHOOSE_BUTTON)) return false;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, userId: true, aiAutoReplyActive: true } });
+  if (!lead) return false;
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const msg = repliedWamid ? await prisma.message.findFirst({ where: { externalId: repliedWamid, leadId, direction: 'OUTBOUND' }, select: { content: true } }) : null;
+  const par = msg ? approvalPairs(msg.content || '')[0] : undefined;
+  if (!par) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ O cliente tocou em "Seguir com esta", mas não achei de qual proposta era o botão. Confirme com ele qual opção quer seguir.' } }).catch(() => {});
+    sendPushToAccount(accountId, { title: `${lead.name}: escolheu uma proposta`, body: 'Tocou em "Seguir com esta", mas não achei qual — confirme com o cliente.', leadId }).catch(() => {});
+    return true;
+  }
+  // A proposta ainda vale? (o último veredito de cada banco: se o banco negou depois do aviso, ela some das opções)
+  const opts = await withHolders(leadId, (await optionsFromAnalyses(leadId).catch(() => null)) || []);
+  const mesmoNome = (o: ApprovalOption) => (o.nome || '') === par.nome;
+  const alvo = opts.find((o) => o.instituicao === par.inst && o.valor === par.val && mesmoNome(o)) || opts.find((o) => o.instituicao === par.inst && mesmoNome(o));
+  const qual = `${/creditas/i.test(par.inst) ? 'da' : 'do'} ${par.inst}${par.nome ? ` (no nome de ${par.nome})` : ''}`;
+  let escolhida = false;
+  let jaEra = false;
+  if (alvo?.analysisId) {
+    jaEra = !!(await prisma.creditAnalysis.findUnique({ where: { id: alvo.analysisId }, select: { chosen: true } }))?.chosen;
+    try { await chooseAnalysis(prisma, { accountId, id: alvo.analysisId, userName: 'cliente, no botão "Seguir com esta"' }); escolhida = true; }
+    catch (e: any) { console.warn('[Aprovação] escolha pelo botão falhou:', e?.message); }
+  }
+  // Tocou de novo no mesmo botão: já está escolhida e já confirmamos há pouco — não repete a confirmação.
+  if (escolhida && jaEra && (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', content: { contains: `seguir com a proposta ${qual}` }, createdAt: { gte: new Date(Date.now() - 6 * 3_600_000) } } }))) return true;
+  if (!escolhida) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ O cliente tocou em "Seguir com esta" na proposta ${qual} (${par.val}), mas ela não está mais entre as opções aprovadas (o banco mudou o resultado depois do aviso?). Confira e fale com ele.` } }).catch(() => {});
+  sendPushToAccount(accountId, { title: `${lead.name}: escolheu a proposta ${qual}`, body: escolhida ? `Tocou em "Seguir com esta" (${par.val}) — marcada como escolhida no card.` : `Tocou em "Seguir com esta" (${par.val}), mas essa proposta não está mais aprovada — confira.`, leadId }).catch(() => {});
+  io?.to(`lead:${leadId}`).emit('lead_updated', { leadId });
+  logActivity({ accountId, userId: null, userName: 'Cliente', action: 'lead_updated', leadId, leadName: lead.name, summary: `escolheu a proposta ${qual} (${par.val}) no botão "Seguir com esta"` });
+  // IA do card desligada: quem está conduzindo é a equipe — o CRM só registra e avisa (Fabio 19/10: sem IA, nada sai sozinho).
+  if (!lead.aiAutoReplyActive) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '💬 A IA deste card está desligada: responda ao cliente sobre a proposta que ele escolheu.' } }).catch(() => {});
+    return true;
+  }
+  const docsJa = await docsAlreadySent(leadId);
+  const resposta = escolhida
+    ? `Perfeito! ✅ Vamos seguir com a proposta ${qual}.${docsJa ? '\n\nAgora é só me enviar os documentos da lista que te passei, que eu já dou andamento. 😊' : '\n\nJá te passo os próximos passos.'}`
+    : `Anotado! Vou confirmar com a equipe a proposta ${qual} e já te retorno por aqui.`;
+  await sendOutboundWhatsApp({ accountId, leadId, content: resposta, io });
   return true;
 }
 
@@ -687,14 +789,14 @@ async function bancosEmAnalise(leadId: string): Promise<string[]> {
 }
 
 /** O que seria enviado: texto com TODAS as opções aprovadas (cada uma com o nome em que saiu, se for o 2º participante) e como vai. */
-export async function previewApprovalNotice(leadId: string): Promise<{ text: string; docsText: string; options: number; condSozinho: boolean; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] } | null> {
+export async function previewApprovalNotice(leadId: string): Promise<{ text: string; /** o mesmo aviso em mensagens separadas, com o botão "Seguir com esta" em cada proposta (2+ opções) */ parts: ReturnType<typeof renderApprovalParts>; docsText: string; options: number; condSozinho: boolean; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] } | null> {
   const built = await optionsFromAnalyses(leadId).catch(() => null);
   if (!built) return null;
   // "Aprovado a menor": as parcelas certas são as da NOVA simulação com os valores aprovados (a extensão refaz). Sem elas, não avisa.
   const warnings = (built.filter((o) => o.incompleta).map((o) => `${o.instituicao}: aprovado a menor — faltam a 1ª e a última parcela (a extensão ainda não refez a simulação com os valores aprovados). Clique em "Conferir" nesse banco e tente de novo.`));
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true } });
   // Já mandamos um resumo antes (ex.: sem as parcelas certas)? Então este é uma ATUALIZAÇÃO, e o texto diz isso.
-  const anterior = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const anterior = await ultimoResumo(leadId);
   const pendentes = await bancosEmAnalise(leadId).catch(() => [] as string[]);
   const optsComNomes = await withPayoff(leadId, await withHolders(leadId, built));
   const corpoNovo = renderApprovalText(optsComNomes, pendentes);
@@ -722,24 +824,24 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
     : bancoNovo ? '🆕 Saiu o resultado de mais um banco para o seu pedido. Seguem as opções aprovadas:\n\n'
     : mudou ? '🔄 Atualizei os valores da sua proposta, agora com os números certos:\n\n' : '';
   const text = `${prefixo}${corpoNovo}`;
+  const parts = renderApprovalParts(optsComNomes, pendentes, prefixo);
   // O MESMO aviso (mesmas opções, mesmos números) já foi enviado? Não manda de novo igual — só se algo mudou.
-  const lastSummary = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
-  const body = corpoBase;
-  const semPend = (t: string) => t.replace(/\n\n⏳ Ainda em análise:[^\n]*/, '').trim();
-  if (lastSummary && semPend(lastSummary.content.replace(/^(🔄|🆕)[^\n]*\n\n/, '')) === body.trim()) {
+  const lastSummary = await ultimoResumo(leadId, new Date(Date.now() - 24 * 3_600_000));
+  // Compara as PROPOSTAS (cada bloco "Resumo da proposta"), não o texto inteiro: desde 27/10 o aviso com 2+ opções sai em mensagens separadas.
+  if (lastSummary && assinaturaResumo(lastSummary.content) === assinaturaResumo(corpoBase)) {
     warnings.push(`Esse mesmo aviso (mesmos valores) já foi enviado às ${lastSummary.createdAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })} — não vou mandar igual de novo. Se os números mudarem, o aviso novo sai como atualização.`);
   }
   const [mode, tpl, already, move] = await Promise.all([
     whatsappWindowOpen(leadId), lead ? docsTemplate(lead.accountId) : null, docsAlreadySent(leadId), awaitingDocsMove(leadId),
   ]);
   const docsText = lead ? await buildDocsText(lead.accountId, await withHolders(leadId, built), leadId) : '';
-  return { text, docsText, options: built.length, condSozinho: built.every((o) => o.condicionalSemNumeros), mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
+  return { text, parts, docsText, options: built.length, condSozinho: built.every((o) => o.condicionalSemNumeros), mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
 }
 
 /** O cliente já recebeu um resumo e agora existe uma opção aprovada de um banco que NÃO estava nele (ex.: a Creditas saiu horas depois do Santander).
  *  Usado pela análise automática pra mandar a opção nova sozinha — a IA prometeu "vamos aguardar o resultado" e alguém precisa cumprir (Juan, 14/10). */
 export async function novoBancoPendente(leadId: string): Promise<boolean> {
-  const anterior = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const anterior = await ultimoResumo(leadId);
   if (!anterior) return false;
   const built = await optionsFromAnalyses(leadId).catch(() => null);
   if (!built || built.some((o) => o.incompleta)) return false;
@@ -824,7 +926,7 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   }
   if (preview.mode === 'text') {
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-    const r = soComplemento ? { success: true } : await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: preview.text, userId: p.userId, io: p.io });
+    const r = soComplemento ? { success: true } : await sendApprovalSummary({ accountId: p.accountId, leadId: p.leadId, userId: p.userId, io: p.io }, preview.text, preview.parts);
     if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
     // Lista de documentos (a mesma Resposta rápida da equipe), logo depois do aviso — uma vez só.
     if (sendDocs) { await new Promise((resolve) => setTimeout(resolve, 2500)); docsSent = await sendDocsList(p, preview.docsText); }
@@ -893,6 +995,23 @@ export async function rejectionAlreadyInChat(leadId: string): Promise<{ at: Date
   const msgs = await prisma.message.findMany({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 14 * 86_400_000) }, NOT: { content: '' } }, orderBy: { createdAt: 'desc' }, take: 150, select: { content: true, createdAt: true } });
   const hit = msgs.find((m) => isRejectionText(m.content || ''));
   return hit ? { at: hit.createdAt } : null;
+}
+
+/** Último aviso de aprovação enviado ao cliente. Desde 27/10 o aviso com 2+ opções sai em mensagens separadas (uma por proposta, com o botão "Seguir com esta"):
+ *  junta as mensagens do MESMO aviso (enviadas em sequência, poucos minutos entre a primeira e a última) num texto só, sem o registro do botão. */
+async function ultimoResumo(leadId: string, since?: Date): Promise<{ content: string; createdAt: Date } | null> {
+  const msgs = await prisma.message.findMany({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' }, ...(since ? { createdAt: { gte: since } } : {}) }, orderBy: { createdAt: 'desc' }, take: 8, select: { content: true, createdAt: true } });
+  if (!msgs.length) return null;
+  const ult = msgs[0].createdAt.getTime();
+  const lote = msgs.filter((m) => ult - m.createdAt.getTime() < 3 * 60_000).reverse();
+  return { content: lote.map((m) => (m.content || '').replace(/\n*\[Seguir com esta\]\s*$/, '')).join('\n\n'), createdAt: msgs[0].createdAt };
+}
+
+/** As propostas de um aviso (cada bloco "Resumo da proposta", sem abertura e sem as notas do fim), em ordem fixa — pra saber se o aviso novo é igual ao já enviado. */
+function assinaturaResumo(text: string): string {
+  return flat(text).split('📋 Resumo da proposta:').slice(1)
+    .map((b) => b.split(/ (?:⏳ Ainda em análise|👉|ℹ️ O Inter também aprovou)/)[0].replace(/\[Seguir com esta\]/g, '').trim())
+    .sort().join(' | ');
 }
 
 /** Cada opção do texto de aprovação (banco + valor + em nome de quem). */
