@@ -1,6 +1,7 @@
 'use client';
-import { useRef, useState } from 'react';
-import { Send, Loader2, Paperclip, X, Lightbulb, FolderOpen, ExternalLink } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Send, Loader2, Paperclip, X, Lightbulb, FolderOpen, ExternalLink, FileText, Eye } from 'lucide-react';
+import { AttachmentPreviewModal } from '@/components/inbox/message-attachment';
 import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
@@ -25,6 +26,25 @@ function readAsBase64(file: File): Promise<string> {
 
 function formatSize(bytes: number) {
   return bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+/** Miniatura de um arquivo do Drive (gerada pelo próprio Drive; sem miniatura, o ícone). Clicar abre o arquivo inteiro. */
+function DriveThumb({ file, onOpen }: { file: DriveFile; onOpen: () => void }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let url: string | null = null;
+    let vivo = true;
+    api.get(`/api/email/drive-thumb/${file.id}`, { responseType: 'blob' })
+      .then((r) => { if (!vivo) return; url = URL.createObjectURL(r.data); setSrc(url); })
+      .catch(() => {});
+    return () => { vivo = false; if (url) URL.revokeObjectURL(url); };
+  }, [file.id]);
+  return (
+    <button type="button" onClick={(e) => { e.preventDefault(); onOpen(); }} title="Ver o arquivo" className="relative w-12 h-12 flex-shrink-0 rounded border border-af-border bg-white overflow-hidden flex items-center justify-center group">
+      {src ? <img src={src} alt="" className="w-full h-full object-cover" /> : <FileText size={18} className="text-slate-300" />}
+      <span className="absolute inset-0 hidden group-hover:flex items-center justify-center bg-black/40"><Eye size={14} className="text-white" /></span>
+    </button>
+  );
 }
 
 export interface MailboxOption {
@@ -88,6 +108,18 @@ export function EmailComposer({
   const [drive, setDrive] = useState<null | { loading: boolean; folderUrl: string | null; files: DriveFile[]; error?: string }>(null);
   const [driveSel, setDriveSel] = useState<string[]>([]);
   const [driveBusca, setDriveBusca] = useState('');
+  const [preview, setPreview] = useState<null | { url: string; name: string; isPdf: boolean }>(null);
+  const [abrindo, setAbrindo] = useState<string | null>(null);
+  async function verArquivo(f: DriveFile) {
+    setAbrindo(f.id);
+    try {
+      const r = await api.get(`/api/email/drive-file/${f.id}`, { responseType: 'blob' });
+      setPreview({ url: URL.createObjectURL(r.data), name: f.name, isPdf: f.mimeType === 'application/pdf' });
+    } catch (err: any) {
+      toast('Não consegui abrir o arquivo — use "abrir no Drive"', 'error');
+    } finally { setAbrindo(null); }
+  }
+  function fecharPreview() { if (preview) URL.revokeObjectURL(preview.url); setPreview(null); }
   async function openDrive() {
     if (!leadId) return;
     if (drive) { setDrive(null); return; }
@@ -238,15 +270,19 @@ export function EmailComposer({
               : (
                 <>
                   {drive.files.length > 8 && <input value={driveBusca} onChange={(e) => setDriveBusca(e.target.value)} placeholder="Buscar pelo nome do arquivo..." className="w-full text-xs px-2.5 py-1.5 border border-af-border rounded-md bg-white" />}
-                  <div className="max-h-56 overflow-y-auto space-y-0.5">
+                  <p className="text-[10px] text-slate-400">Clique na miniatura pra ver o arquivo inteiro.</p>
+                  <div className="max-h-72 overflow-y-auto space-y-0.5">
                     {drive.files.filter((f) => !driveBusca.trim() || `${f.path} ${f.name}`.toLowerCase().includes(driveBusca.trim().toLowerCase())).map((f) => {
                       const ja = files.some((x) => x.driveFileId === f.id);
                       return (
                         <label key={f.id} className={`flex items-center gap-2 text-xs px-1.5 py-1 rounded hover:bg-white ${ja ? 'opacity-50' : 'cursor-pointer'}`}>
                           <input type="checkbox" disabled={ja} checked={ja || driveSel.includes(f.id)} onChange={(e) => setDriveSel((prev) => (e.target.checked ? [...prev, f.id] : prev.filter((x) => x !== f.id)))} />
-                          <span className="truncate text-slate-700">{f.name}</span>
-                          {f.path && <span className="truncate text-[10px] text-slate-400">{f.path}</span>}
-                          <span className="ml-auto flex-shrink-0 text-[10px] text-slate-400">{f.size ? formatSize(f.size) : ''}</span>
+                          <DriveThumb file={f} onOpen={() => verArquivo(f)} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-slate-700">{f.name}</span>
+                            {f.path && <span className="block truncate text-[10px] text-slate-400">{f.path}</span>}
+                          </span>
+                          {abrindo === f.id ? <Loader2 size={12} className="animate-spin text-slate-400 flex-shrink-0" /> : <span className="flex-shrink-0 text-[10px] text-slate-400">{f.size ? formatSize(f.size) : ''}</span>}
                         </label>
                       );
                     })}
@@ -318,6 +354,15 @@ export function EmailComposer({
           </button>
         </div>
       </div>
+      {preview && (
+        <AttachmentPreviewModal
+          url={preview.url}
+          fileName={preview.name}
+          isPdf={preview.isPdf}
+          onClose={fecharPreview}
+          onDownload={() => { const a = document.createElement('a'); a.href = preview.url; a.download = preview.name; a.click(); }}
+        />
+      )}
     </Modal>
   );
 }

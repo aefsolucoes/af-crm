@@ -226,6 +226,40 @@ router.get('/lead-drive-files', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Miniatura (gerada pelo Drive) e o arquivo inteiro, pra VER o documento antes de anexar (Fabio 27/10: "preciso visualizar o arquivo, nem que seja pequeno").
+router.get('/drive-thumb/:fileId', async (req: AuthRequest, res: Response) => {
+  try {
+    const { getDrive } = await import('../services/google.service');
+    const drive = await getDrive(req.user!.accountId);
+    const meta = await drive.files.get({ fileId: req.params.fileId, fields: 'thumbnailLink', supportsAllDrives: true });
+    const link = meta.data.thumbnailLink;
+    if (!link) return res.status(404).end();
+    const { token } = await ((drive as any).context._options.auth).getAccessToken();
+    const r = await fetch(link.replace(/=s\d+$/, '=s240'), { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) return res.status(404).end();
+    res.setHeader('Content-Type', r.headers.get('content-type') || 'image/png');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(Buffer.from(await r.arrayBuffer()));
+  } catch {
+    res.status(404).end();
+  }
+});
+router.get('/drive-file/:fileId', async (req: AuthRequest, res: Response) => {
+  try {
+    const { getDrive, downloadDriveFile } = await import('../services/google.service');
+    const drive = await getDrive(req.user!.accountId);
+    const meta = await drive.files.get({ fileId: req.params.fileId, fields: 'name, mimeType, size', supportsAllDrives: true });
+    if (Number(meta.data.size || 0) > 25 * 1024 * 1024) return res.status(413).json({ error: 'Arquivo grande demais pra visualizar aqui (mais de 25 MB) — abra no Drive' });
+    const buf = await downloadDriveFile(req.user!.accountId, req.params.fileId, meta.data.mimeType || '');
+    res.setHeader('Content-Type', meta.data.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(meta.data.name || 'arquivo')}"`);
+    res.setHeader('Cache-Control', 'private, max-age=600');
+    res.send(buf);
+  } catch (err) {
+    fail(res, err, 'Não consegui abrir o arquivo do Drive');
+  }
+});
+
 router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: AuthRequest, res: Response) => {
   const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
   if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
