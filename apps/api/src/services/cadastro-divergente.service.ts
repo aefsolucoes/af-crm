@@ -81,6 +81,42 @@ export async function processCadastroDivergente(accountId: string, io: Io): Prom
     vistos.add(r.leadId);
     try { await uma(accountId, r, io); } catch (e: any) { console.warn('[Cadastro divergente]', e?.message); }
   }
+  try { await reabrirConversas(accountId, io); } catch (e: any) { console.warn('[Cadastro divergente] reabrir', e?.message); }
+}
+
+// ─── REABRIR A CONVERSA (Fabio 26/10, Hélio: "precisa reabrir a conversa e o CRM conversar com ele sobre isso pra tentar ajustar, senão vai ficar lá pra sempre") ───
+// Divergência pendente (pergunta feita sem resposta, ou esperando a janela) e a janela de 24 h FECHADA: manda o template de UTILIDADE "atualizacao_processo_credito"
+// ("Temos uma atualização sobre o seu processo… Responda esta mensagem…"). Quando o cliente responde, a janela abre: a pergunta sai (PENDING) ou a IA retoma o assunto (ASKED).
+// Até 3 vezes, de 48 em 48 h, só 07h–21h e com a IA do card ligada.
+const REABRIR_TEMPLATE = 'atualizacao_processo_credito';
+const REABRIR_GAP_MS = 48 * 3600_000;
+const REABRIR_MAX = 3;
+async function reabrirConversas(accountId: string, io: Io): Promise<void> {
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow()) return;
+  const ids = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND "isGroup" = false AND "aiAutoReplyActive" = true
+      AND "customFields"->'_cadDiv'->>'status' IN ('ASKED', 'PENDING', 'EQUIPE') AND COALESCE("customFields"->>'_autoPaused', '') = ''`;
+  for (const { id } of ids) {
+    const lead = await prisma.lead.findUnique({ where: { id }, select: { id: true, name: true, customFields: true } });
+    if (!lead) continue;
+    const cf = (lead.customFields || {}) as Record<string, any>;
+    const cd = (cf._cadDiv || {}) as { status?: string; at?: string; bank?: string; reopenAt?: string; reopenN?: number };
+    if ((cd.reopenN || 0) >= REABRIR_MAX) continue;
+    if (cd.reopenAt && Date.now() - new Date(cd.reopenAt).getTime() < REABRIR_GAP_MS) continue;
+    if (cd.at && Date.now() - new Date(cd.at).getTime() < 3600_000) continue; // acabou de perguntar/registrar
+    if (await whatsappWindowOpen(lead.id)) continue; // janela aberta: a pergunta/IA cuidam
+    const respondeu = cd.at ? await prisma.message.count({ where: { leadId: lead.id, direction: 'INBOUND', createdAt: { gt: new Date(cd.at) } } }) : 0;
+    if (respondeu && cd.status === 'ASKED') continue; // ele respondeu depois da pergunta: a conversa está com a IA/equipe
+    const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+    const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || String(lead.name || '').trim().split(/\s+/)[0] || 'cliente';
+    const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+    const t = await sendOutboundWhatsAppTemplate({ accountId, leadId: lead.id, templateName: REABRIR_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText: `Oi ${nome}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io: io as any });
+    if (!t.success) { await note(lead.id, `🔎 Cadastro divergente: tentei reabrir a conversa (template de atualização) e não saiu: ${t.error}.`); await salva(lead.id, { reopenAt: new Date().toISOString(), reopenN: (cd.reopenN || 0) + 1 }); continue; }
+    // EQUIPE (desistiu depois de 24 h) volta pra PENDING: assim que ele responder, a pergunta da divergência sai sozinha.
+    await salva(lead.id, { reopenAt: new Date().toISOString(), reopenN: (cd.reopenN || 0) + 1, ...(cd.status === 'EQUIPE' ? { status: 'PENDING', at: new Date().toISOString() } : {}) });
+    await note(lead.id, `🔎 Cadastro divergente sem resposta e janela do WhatsApp fechada: mandei o template de atualização pra reabrir a conversa (${(cd.reopenN || 0) + 1}ª vez). Quando o cliente responder, ${cd.status === 'ASKED' ? 'a IA retoma a conferência de nome, CPF e nascimento' : 'o CRM manda a pergunta da divergência'}.`);
+  }
 }
 
 async function uma(accountId: string, r: { id: string; leadId: string; bank: string; createdAt: Date }, io: Io): Promise<void> {
@@ -147,7 +183,8 @@ ${lista}
 Quando o cliente responder:
 - Se disser que algum NOME, CPF ou DATA DE NASCIMENTO está trocado/errado (ex.: o nome de um participante com o CPF do outro): grave em "extractedFields" SÓ os campos que mudam, com os valores CERTOS que ele informou ("participante_1", "cpf_1", "nascimento_1", "participante_2", "cpf_2", "nascimento_2"; CPF só com os números; nascimento no formato DD/MM/AAAA). Se ele não passar o dado certo completo, peça o que falta (um de cada vez). Ao gravar, diga que corrigiu e que a equipe já refaz a análise nos bancos (sem prazo). O CRM refaz sozinho a análise em TODOS os bancos.
 - Se disser que está TUDO CERTO: não invente; use "askTeam": "Cliente confirma que nome, CPF e data de nascimento batem, mas o banco acusou cadastro divergente — conferir na Receita Federal." (sem falar disso ao cliente além de "vou conferir aqui").
-- Se a resposta for confusa, pergunte de novo de forma simples (nome completo, CPF e data de nascimento de cada pessoa). Nunca peça documento por isso e nunca diga que foi reprovado.`;
+- Se a resposta for confusa, pergunte de novo de forma simples (nome completo, CPF e data de nascimento de cada pessoa). Nunca peça documento por isso e nunca diga que foi reprovado.
+- Se o cliente só RESPONDEU À MENSAGEM DE ATUALIZAÇÃO (template "Temos uma atualização sobre o seu processo…"), cumprimentou ou perguntou "qual atualização?": explique em 1 frase que o banco acusou uma divergência no cadastro e refaça a pergunta com a lista acima (nome, CPF completo e nascimento de cada pessoa), pedindo pra ele dizer se está tudo certo ou o que está errado.`;
 }
 
 const CAMPOS_IDENTIDADE = ['participante_1', 'cpf_1', 'nascimento_1', 'participante_2', 'cpf_2', 'nascimento_2'];
