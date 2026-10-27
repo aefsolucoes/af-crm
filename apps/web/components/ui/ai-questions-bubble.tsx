@@ -9,6 +9,7 @@ import { playSoundOnce, SoundKey } from '@/lib/sounds';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
 import { cn } from '@/lib/utils';
+import { AttachmentPreviewModal } from '@/components/inbox/message-attachment';
 
 /**
  * Balão "Dúvidas da IA" — um chat entre a IA que atende os clientes sozinha
@@ -53,30 +54,52 @@ function DocPreview({ att }: { att: { id: string; fileName: string; mimeType: st
       .catch(() => { /* sem miniatura: o botão abrir tenta de novo */ });
     return () => { cancelled = true; if (obj) URL.revokeObjectURL(obj); };
   }, [att.id, isImage]);
+  // Abre NUM VISUALIZADOR DENTRO DO CRM (Fabio 27/10, iPhone: "quando clico em abrir, não abre") — antes baixava o arquivo e só depois tentava abrir
+  // uma aba nova; o iPhone (ainda mais no app da tela inicial) bloqueia a aba que não abre no próprio toque.
+  const [aberto, setAberto] = useState<string | null>(null);
+  const [abrindo, setAbrindo] = useState(false);
+  const isPdf = att.mimeType === 'application/pdf' || /\.pdf$/i.test(att.fileName);
+  async function baixarBlob(): Promise<Blob> {
+    const r = await api.get(`/api/messages/attachment/${att.id}`, { responseType: 'blob' });
+    return r.data as Blob;
+  }
   async function abrir() {
+    if (thumb) { setAberto(thumb); return; }
+    setAbrindo(true);
     try {
-      const r = await api.get(`/api/messages/attachment/${att.id}`, { responseType: 'blob' });
-      const url = URL.createObjectURL(r.data);
-      window.open(url, '_blank');
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setAberto(URL.createObjectURL(await baixarBlob()));
     } catch (err: any) {
       const driveId = err?.response?.data?.driveFileId;
-      if (driveId) window.open(`https://drive.google.com/file/d/${driveId}/view`, '_blank');
+      if (driveId) window.location.href = `https://drive.google.com/file/d/${driveId}/view`;
       else toast('Não deu pra abrir o arquivo agora.', 'error');
+    } finally {
+      setAbrindo(false);
     }
+  }
+  function fechar() {
+    if (aberto && aberto !== thumb) URL.revokeObjectURL(aberto);
+    setAberto(null);
+  }
+  async function baixar() {
+    const url = URL.createObjectURL(await baixarBlob());
+    const a = document.createElement('a');
+    a.href = url; a.download = att.fileName;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
   }
   return (
     <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2 flex items-center gap-2.5">
       {thumb
-        ? <img src={thumb} alt={att.fileName} className="w-14 h-14 object-cover rounded-md border border-slate-200 flex-shrink-0" />
+        ? <button type="button" onClick={abrir} className="flex-shrink-0"><img src={thumb} alt={att.fileName} className="w-14 h-14 object-cover rounded-md border border-slate-200" /></button>
         : <div className="w-14 h-14 rounded-md bg-slate-100 text-slate-400 flex items-center justify-center flex-shrink-0"><FileText size={22} /></div>}
       <div className="min-w-0 flex-1">
         <p className="text-xs font-medium text-slate-700 truncate" title={att.fileName}>{att.fileName}</p>
         <p className="text-[11px] text-slate-400">Documento em dúvida</p>
       </div>
-      <button onClick={abrir} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-[#2261a8] text-[#2261a8] hover:bg-[#2261a8]/10 flex-shrink-0">
-        <ExternalLink size={12} /> Abrir
+      <button onClick={abrir} disabled={abrindo} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-[#2261a8] text-[#2261a8] hover:bg-[#2261a8]/10 flex-shrink-0 disabled:opacity-60">
+        {abrindo ? <Loader2 size={12} className="animate-spin" /> : <ExternalLink size={12} />} Abrir
       </button>
+      {aberto && <AttachmentPreviewModal url={aberto} fileName={att.fileName} isPdf={isPdf} onClose={fechar} onDownload={() => { baixar().catch(() => toast('Não deu pra baixar o arquivo agora.', 'error')); }} />}
     </div>
   );
 }

@@ -10,7 +10,7 @@ import { FileText, Download, Loader2, ImageOff, Cloud, Play, Pause, X } from 'lu
  *  verdade faz (a imagem/documento abre num visualizador por cima da
  *  conversa, sem sair do app). Renderizado via portal pra escapar do
  *  overflow/scroll da bolha e do timeline de mensagens. */
-function AttachmentPreviewModal({
+export function AttachmentPreviewModal({
   url, fileName, isPdf, onClose, onDownload,
 }: { url: string; fileName: string; isPdf: boolean; onClose: () => void; onDownload: () => void }) {
   useEffect(() => {
