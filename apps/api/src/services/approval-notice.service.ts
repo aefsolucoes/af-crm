@@ -862,7 +862,7 @@ async function sendDocsList(p: { accountId: string; leadId: string; userId?: str
 }
 
 /** Move pra Aguardando Documentação (mesmo caminho do botão de mover estágio: nota, atividade e automações da etapa). */
-async function moveToAwaitingDocs(p: { accountId: string; leadId: string; userId?: string; io?: any }): Promise<string | null> {
+export async function moveToAwaitingDocs(p: { accountId: string; leadId: string; userId?: string; io?: any }): Promise<string | null> {
   const mv = await awaitingDocsMove(p.leadId);
   if (!mv) return null;
   const lead = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { name: true } });

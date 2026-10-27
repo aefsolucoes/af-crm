@@ -4,7 +4,7 @@ import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
 import { applyAiExtractedActions } from './ai-shared.service';
 import { logActivity } from './activity.service';
-import { normalizeClientName, splitAiReply } from '../lib/text';
+import { normalizeClientName, splitAiReply, isCallableName } from '../lib/text';
 // runAutomations/maybeMessageReceivedAutomations: require()
 // tardio (dentro da função, não aqui em cima) — automation.service.ts
 // importa de volta este arquivo (pra mandar
@@ -901,11 +901,17 @@ export async function resolveContactAndLeadByPhone(
     const { parseProposalForm } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
     const form = parseProposalForm(textForCampaignDetection);
     if (form) {
-      const fresh = await prisma.lead.findUnique({ where: { id: existingLead.id }, select: { customFields: true, name: true } });
+      const fresh = await prisma.lead.findUnique({ where: { id: existingLead.id }, select: { customFields: true, name: true, contactId: true } });
+      // Card que nasceu só com o telefone (ex.: criado pela equipe pelo número) ganha o nome da proposta — card e contato (Fabio 27/10, Luciano ficou "(62) 98207-9591").
+      const renomear = !!form.fields.participante_1 && isCallableName(form.fields.participante_1) && !isCallableName(fresh?.name);
       await prisma.lead.update({
         where: { id: existingLead.id },
-        data: { customFields: { ...((fresh?.customFields as any) || {}), ...form.fields } as any },
+        data: { customFields: { ...((fresh?.customFields as any) || {}), ...form.fields } as any, ...(renomear ? { name: normalizeClientName(form.fields.participante_1) } : {}) },
       });
+      if (renomear) {
+        if (fresh?.contactId) await prisma.contact.update({ where: { id: fresh.contactId }, data: { name: normalizeClientName(form.fields.participante_1) } }).catch(() => {});
+        await prisma.note.create({ data: { leadId: existingLead.id, type: 'DATA_EDIT', content: `📝 Nome do card corrigido pela proposta do site: "${fresh?.name}" → "${normalizeClientName(form.fields.participante_1)}".` } }).catch(() => {});
+      }
       logActivity({
         accountId, userId: null, userName: 'Formulário do site', action: 'lead_edited', leadId: existingLead.id, leadName: fresh?.name,
         summary: `preencheu o card com o formulário do site (${Object.keys(form.fields).join(', ')})`,
@@ -1278,6 +1284,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
           await maybeSendProposalLinkOnInterest(accountId, leadId, text, io) ||
           await noInterest.handleNoInterestButton(accountId, leadId, text, io).catch((e) => { console.error('[Sem interesse] falhou:', e?.message); return false; })
         )) ||
+          // Financiamento Habitacional (Fabio 27/10): "Seguir com esta" numa proposta do Financiamento e a resposta à pergunta da CAIXA/BRB (botão ou "sim"/"não").
+          (await (require('./fh-approval.service') as typeof import('./fh-approval.service')).maybeHandleFhReply(accountId, leadId, text, msg.context?.id, io).catch((e: any) => { console.error('[Financiamento] resposta do cliente:', e?.message); return false; })) ||
           // "Seguir com esta" numa proposta do aviso de aprovação (Fabio 27/10): marca a proposta escolhida e confirma ao cliente.
           (msg.type === 'interactive' && await approvalNotice.maybeHandleChooseButton(accountId, leadId, text, msg.context?.id, io).catch((e) => { console.error('[Aprovação] botão Seguir com esta:', e?.message); return false; }));
         // Proposta do site que chega pelo WhatsApp DEPOIS do e-mail da mesma

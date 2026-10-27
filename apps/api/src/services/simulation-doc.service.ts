@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { sendOutboundMedia } from './message.service';
-import { brandSimulationPdf, parseInterTheoryPdf, InterTheory, looksLikePortalPdf, parsePortalSheetPdf } from './simulation-pdf.service';
+import { brandSimulationPdf, brandPortalPdf, parseInterTheoryPdf, InterTheory, looksLikePortalPdf, parsePortalSheetPdf } from './simulation-pdf.service';
 import { renderSimulationSheet, brl, SimulationSheet, SheetRow, taxasDe } from './simulation-sheet.service';
 
 type Db = PrismaClient;
@@ -14,10 +14,15 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
  * (sendOutboundMedia, grátis dentro da janela de 24h). Nunca vai PDF cru de portal: se não der pra montar, o pedido falha com o motivo.
  */
 
-export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMORAR' | 'INTER' | 'CREDITAS'; mode: 'pdf' | 'data'; credimorarId?: number }> = {
+export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMORAR' | 'INTER' | 'CREDITAS' | 'CREDIMORAR_FH'; mode: 'pdf' | 'data'; credimorarId?: number }> = {
   SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR', mode: 'pdf', credimorarId: 2 }, // coluna Santander do Credimorar
   INTER: { label: 'Inter', extBank: 'INTER', mode: 'data' },
   CREDITAS: { label: 'Creditas', extBank: 'CREDITAS', mode: 'data' },
+  // Financiamento Habitacional (Fabio 27/10): "Evolução das parcelas" do Crédito imobiliário do Credimorar (/Simulacao/ImprimirSimulacao), id do banco no portal.
+  FH_BRADESCO: { label: 'Bradesco', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 1 },
+  FH_SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 2 },
+  FH_ITAU: { label: 'Itaú', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 3 },
+  FH_INTER: { label: 'Inter', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 6 },
 };
 
 const REQUESTED_TTL_MIN = 15; // ninguém pegou o pedido (extensão fechada/desatualizada)
@@ -202,6 +207,13 @@ export async function finishSimulationDoc(db: Db, p: { accountId: string; id: st
   const r = await loadOpen(db, p.accountId, p.id);
   if (r.status === 'DONE') return { ok: true as const, already: true, messageId: r.messageId };
   const fail = async (reason: string) => { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason }); return { ok: false as const, error: reason }; };
+  // Financiamento Habitacional: o PDF original do Credimorar só troca a logo pela da A&F (o redesenho de 8 campos é do Home Equity).
+  if (r.institution.startsWith('FH_')) {
+    let b;
+    try { b = await brandPortalPdf(p.pdf); } catch (e: any) { return fail(`Não consegui pôr a logo A&F no PDF do Financiamento (${e?.message || 'erro'}). Não enviei.`); }
+    if (!b.recognized) return fail('O PDF do Financiamento baixado não está no modelo conhecido do Credimorar. Não enviei, pra não sair com a marca errada — mande à mão.');
+    return deliver(db, r, b.pdf, p.io);
+  }
   // PADRÃO DA SIMULAÇÃO (Fabio 26/10): o "Evolução das parcelas" do portal Credimorar (Santander) é LIDO e redesenhado no mesmo modelo do Inter e da Creditas —
   // 8 campos (tipo, prazo, sistema, valor do imóvel, valor do empréstimo, taxa mensal/nominal/efetiva), sem CET, CESH, renda e entrada.
   if (looksLikePortalPdf(p.pdf)) {
