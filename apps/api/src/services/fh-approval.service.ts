@@ -5,12 +5,12 @@ import { logActivity } from './activity.service';
  * Financiamento Habitacional — aviso de aprovação e próximos passos (Fabio 27/10).
  * 1) Os bancos do Credimorar (Bradesco, Itaú, Santander, Inter) aprovam → o cliente recebe as propostas aprovadas, uma mensagem por banco com o botão
  *    "Seguir com esta" (SEM a simulação: ela só vai depois da escolha).
- * 2) O cliente escolhe → o CRM manda a simulação (PDF "Evolução das parcelas" do Credimorar, baixado pela extensão) daquele banco e pergunta se ele quer
- *    aprovar também na CAIXA e no BRB.
- * 3) Sim → documentação COMPLETA (lista do perfil: setor privado, servidor, empresário, aposentado) + imóvel + vendedor; Não → segue com o banco escolhido:
- *    aprovado no automático e o banco não pediu renda = só RG/CNH e comprovante de residência + imóvel + vendedor. Nos dois casos vão as TAXAS do
- *    financiamento e o card vai pra Aguardando Documentação.
- * O estado fica no card: `_fhNotice` (aviso enviado), `_fhChosen` (banco escolhido), `_fhCaixaAsk` / `_fhCaixaAnswer` (pergunta da CAIXA/BRB).
+ * 2) O cliente escolhe → na hora vão a simulação (PDF "Evolução das parcelas" do Credimorar, baixado pela extensão) daquele banco, a LISTA DE DOCUMENTOS
+ *    (aprovado no automático e sem pedido de renda = só RG/CNH e comprovante de residência + imóvel + vendedor; senão também a renda), os PRÓXIMOS PASSOS e
+ *    as TAXAS do financiamento, e o card vai pra Aguardando Documentação (Fabio 27/10: "assim que aprovar e o cliente escolher a proposta").
+ * 3) Por último pergunta se ele quer aprovar também na CAIXA e no BRB: Sim → documentação completa do perfil do comprador (setor privado, servidor,
+ *    empresário, aposentado), que é com o que esses dois bancos analisam; Não → segue só com o escolhido.
+ * O estado fica no card: `_fhNotice` (aviso enviado), `_fhChosen` (banco escolhido), `_fhDocsAt` (documentos enviados), `_fhCaixaAsk` / `_fhCaixaAnswer` (pergunta da CAIXA/BRB).
  */
 
 type Cf = Record<string, any>;
@@ -156,16 +156,18 @@ export async function maybeHandleFhReply(accountId: string, leadId: string, text
 
 async function chooseFhBank(accountId: string, lead: { id: string; name: string; aiAutoReplyActive: boolean }, cf: Cf, banco: string, io?: any): Promise<boolean> {
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const { moveToAwaitingDocs } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const jaEra = cf._fhChosen?.bank === banco;
   await saveCf(lead.id, { _fhChosen: { bank: banco, at: new Date().toISOString() } });
   if (!jaEra) {
     await note(lead.id, `⭐ Financiamento: o cliente escolheu o ${banco} (botão "Seguir com esta").`);
-    push(accountId, `🏠 ${lead.name}: escolheu o ${banco}`, 'Financiamento — o CRM manda a simulação e pergunta da CAIXA/BRB', lead.id);
+    push(accountId, `🏠 ${lead.name}: escolheu o ${banco}`, 'Financiamento — o CRM manda simulação, documentos, próximos passos e taxas', lead.id);
     logActivity({ accountId, userId: null, userName: 'Cliente', action: 'lead_updated', leadId: lead.id, leadName: lead.name, summary: `escolheu o ${banco} no Financiamento ("Seguir com esta")` });
   }
   io?.to(`lead:${lead.id}`).emit('lead_updated', { leadId: lead.id });
-  if (!lead.aiAutoReplyActive) { await note(lead.id, '💬 A IA deste card está desligada: mande a simulação do banco escolhido e pergunte se ele quer aprovar também na CAIXA e no BRB.'); return true; }
-  if (jaEra && cf._fhCaixaAsk?.at) return true; // tocou de novo no mesmo botão: não repete
+  if (!lead.aiAutoReplyActive) { await note(lead.id, '💬 A IA deste card está desligada: mande a simulação do banco escolhido, a lista de documentos, os próximos passos e as taxas, e pergunte se ele quer aprovar também na CAIXA e no BRB.'); return true; }
+  if (jaEra && cf._fhDocsAt) return true; // tocou de novo no mesmo botão: não repete
+  const pausa = () => new Promise((r) => setTimeout(r, 1200));
   // Simulação do banco escolhido: a extensão do Credimorar baixa o "Evolução das parcelas" e o CRM manda com a logo A&F.
   const inst = PDF_INST[banco];
   if (inst) {
@@ -174,13 +176,39 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
       await requestSimulationDocs(prisma as any, { accountId, leadId: lead.id, institutions: [inst], source: 'AI', caption: `Segue a simulação do financiamento no ${banco} em PDF 📄` });
     } catch (e: any) { await note(lead.id, `⚠️ Não consegui pedir a simulação do ${banco} em PDF (${e?.message}). Mande à mão.`); }
   }
-  await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Vamos seguir com o *${banco}*. Já te mando a simulação em PDF.` });
-  await new Promise((r) => setTimeout(r, 1200));
-  const pergunta = `Você quer ${CAIXA_ASK_MARK} também? Nesses dois bancos a análise é feita com a documentação completa.`;
+  // Na escolha já vão a LISTA DE DOCUMENTOS, os PRÓXIMOS PASSOS e as TAXAS, e o card vai pra Aguardando Documentação (Fabio 27/10).
+  const { texto, comRenda } = await docsBancoEscolhido(accountId, cf, banco);
+  await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Vamos seguir com o *${banco}*. Já te mando a simulação em PDF.\n\n${texto}` });
+  const passos = await template(accountId, 'Proximos passos financiamento');
+  if (passos) { await pausa(); await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: passos }); }
+  const taxas = await template(accountId, 'Taxas Financiamento Habitacional');
+  if (taxas) { await pausa(); await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: taxas }); }
+  await saveCf(lead.id, { _fhDocsAt: new Date().toISOString() });
+  const movido = await moveToAwaitingDocs({ accountId, leadId: lead.id, io }).catch((e: any) => { console.error('[Financiamento] mover pra Aguardando Documentação:', e?.message); return null; });
+  // Por último: quer aprovar também na CAIXA e no BRB? (eles analisam com a documentação completa)
+  await pausa();
+  const pergunta = `Você quer ${CAIXA_ASK_MARK} também? Nesses dois bancos a análise é feita com a documentação completa (inclusive a de renda).`;
   const r = await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: pergunta, buttons: [CAIXA_SIM, CAIXA_NAO] });
   if (!r.success) await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `${pergunta}\n\nÉ só me responder *sim* ou *não*.` });
   await saveCf(lead.id, { _fhCaixaAsk: { at: new Date().toISOString(), banco } });
+  await note(lead.id, `🏠 Financiamento (${banco}): mandei a simulação em PDF, a lista de documentos (RG/CNH + comprovante de residência${comRenda ? ' + RENDA' : ''} + imóvel + vendedor)${passos ? ', os próximos passos' : ''}${taxas ? ' e as taxas' : ''}, e perguntei se ele quer aprovar também na CAIXA e no BRB.${movido ? ` Card movido pra "${movido}".` : ''}`);
   return true;
+}
+
+/** Documentos pra seguir com o banco escolhido: aprovado no automático e sem pedido de renda = só RG/CNH e comprovante de residência + imóvel + vendedor (Fabio 27/10). */
+async function docsBancoEscolhido(accountId: string, cf: Cf, banco: string): Promise<{ texto: string; comRenda: boolean }> {
+  const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const status = parseBancosFinanciamento(cf._fhResumo)[banco];
+  const pediuRenda = !status || !/^aprovad[oa]$/i.test(status.status.trim()) || /renda|holerite|contracheque|extrato|imposto de renda|documenta[cç][aã]o/i.test(status.texto.replace(/^[^—]*—/, ''));
+  const perfil = pediuRenda ? (await template(accountId, perfilTemplate(cf))) : null;
+  const renda = perfil ? (perfil.split('\n').find((l) => /renda/i.test(l)) || '').replace(/^\W*renda\s*:?\s*/i, '').trim() : '';
+  return { texto: `Para continuar, preciso dos documentos abaixo:\n\n*Comprador:*\n• Documento de identificação (RG ou CNH)\n• Comprovante de residência${renda ? `\n• Renda: ${renda}` : ''}\n\n${await blocoImovelVendedor(accountId)}`, comRenda: !!renda };
+}
+
+async function blocoImovelVendedor(accountId: string): Promise<string> {
+  const imovel = itens((await template(accountId, 'Documentos imóvel para vistoria')) || '• Certidão de ônus\n• CND de IPTU');
+  const vendedor = itens((await template(accountId, 'Documentos vendedor do imóvel')) || '• Documento de identificação\n• Comprovante de residência\n• Estado civil\n• Conta para crédito');
+  return `*Imóvel:*\n${imovel.map((x) => `• ${x}`).join('\n')}\n\n*Vendedor:*\n${vendedor.map((x) => `• ${x}`).join('\n')}\n• E-mail e telefone`;
 }
 
 /** Lista de documentos do comprador pelo PERFIL (Respostas rápidas "Documentos comprador …" — a equipe edita lá). */
@@ -201,35 +229,18 @@ async function template(accountId: string, nome: string): Promise<string | null>
 
 async function answerCaixaBrb(accountId: string, lead: { id: string; name: string; aiAutoReplyActive: boolean }, cf: Cf, resposta: 'SIM' | 'NAO', io?: any): Promise<boolean> {
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-  const { moveToAwaitingDocs } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-  const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   await saveCf(lead.id, { _fhCaixaAnswer: { resposta, at: new Date().toISOString() } });
-  const banco = cf._fhChosen?.bank || cf._fhCaixaAsk?.banco || '';
-  const imovel = itens((await template(accountId, 'Documentos imóvel para vistoria')) || '• Certidão de ônus\n• CND de IPTU');
-  const vendedor = itens((await template(accountId, 'Documentos vendedor do imóvel')) || '• Documento de identificação\n• Comprovante de residência\n• Estado civil\n• Conta para crédito');
-  const blocoImovel = `*Imóvel:*\n${imovel.map((x) => `• ${x}`).join('\n')}\n\n*Vendedor:*\n${vendedor.map((x) => `• ${x}`).join('\n')}\n• E-mail e telefone`;
-  let docs: string;
-  let resumoNota: string;
+  const banco = cf._fhChosen?.bank || cf._fhCaixaAsk?.banco || 'banco escolhido';
   if (resposta === 'SIM') {
-    // Documentação COMPLETA (a CAIXA e o BRB analisam com ela): lista do perfil do comprador + imóvel + vendedor.
+    // A CAIXA e o BRB analisam com a documentação COMPLETA: a lista do perfil do comprador (pessoais + renda). Imóvel e vendedor já foram na escolha.
     const nomeTpl = perfilTemplate(cf);
     const perfil = (await template(accountId, nomeTpl)) || 'Para dar andamento à aprovação do financiamento, precisamos dos documentos abaixo:\n\n📑 Pessoais: RG e CPF (ou CNH), certidão (nasc./cas.), comprovante de residência\n💼 Renda: 3 últimos contracheques, IR + recibo (se houver), 3 últimos extratos bancários e FGTS (se usar)';
-    docs = `Combinado! Vamos aprovar também na CAIXA e no BRB. 😊\n\n${perfil}\n\n${blocoImovel}`;
-    resumoNota = `quer aprovar também na CAIXA e no BRB → mandei a documentação COMPLETA ("${nomeTpl}" + imóvel + vendedor)`;
+    await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Combinado! Vamos aprovar também na CAIXA e no BRB. 😊 Para esses dois bancos, além dos documentos que te passei, preciso da documentação completa do comprador:\n\n${perfil}` });
+    await note(lead.id, `🏠 Financiamento: o cliente QUER aprovar também na CAIXA e no BRB → mandei a documentação completa ("${nomeTpl}"). CAIXA e BRB rodam com a documentação completa.`);
+    push(accountId, `🏠 ${lead.name}: quer CAIXA/BRB também`, 'Documentação completa pedida', lead.id);
   } else {
-    // Segue só com o banco escolhido. Aprovado no automático e sem pedido de renda do banco: só RG/CNH e comprovante de residência + imóvel + vendedor (Fabio 27/10).
-    const status = parseBancosFinanciamento(cf._fhResumo)[banco];
-    const pediuRenda = !status || !/^aprovad[oa]$/i.test(status.status.trim()) || /renda|holerite|contracheque|extrato|imposto de renda|documenta[cç][aã]o/i.test(status.texto.replace(/^[^—]*—/, ''));
-    const perfil = pediuRenda ? (await template(accountId, perfilTemplate(cf))) : null;
-    const renda = perfil ? (perfil.split('\n').find((l) => /renda/i.test(l)) || '').replace(/^\W*renda\s*:?\s*/i, '').trim() : '';
-    docs = `Combinado! Vamos seguir com o ${banco || 'banco escolhido'}. Para continuar, preciso dos documentos abaixo:\n\n*Comprador:*\n• Documento de identificação (RG ou CNH)\n• Comprovante de residência${renda ? `\n• Renda: ${renda}` : ''}\n\n${blocoImovel}`;
-    resumoNota = `segue só com o ${banco || 'banco escolhido'} → mandei RG/CNH + comprovante de residência${renda ? ' + RENDA (o banco não aprovou no automático ou pediu renda)' : ''} + imóvel + vendedor`;
+    await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Combinado, seguimos com o ${banco}. Fico no aguardo dos documentos. 😊` });
+    await note(lead.id, `🏠 Financiamento: o cliente NÃO quer CAIXA/BRB — segue só com o ${banco}.`);
   }
-  await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: docs });
-  const taxas = await template(accountId, 'Taxas Financiamento Habitacional');
-  if (taxas) { await new Promise((r) => setTimeout(r, 1200)); await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: taxas }); }
-  const movido = await moveToAwaitingDocs({ accountId, leadId: lead.id, io }).catch((e: any) => { console.error('[Financiamento] mover pra Aguardando Documentação:', e?.message); return null; });
-  await note(lead.id, `🏠 Financiamento: o cliente ${resumoNota}${taxas ? ' e as taxas do financiamento' : ''}.${movido ? ` Card movido pra "${movido}".` : ''}`);
-  push(accountId, `🏠 ${lead.name}: ${resposta === 'SIM' ? 'quer CAIXA/BRB também' : `segue com o ${banco || 'banco escolhido'}`}`, 'Lista de documentos e taxas enviadas', lead.id);
   return true;
 }
