@@ -1216,6 +1216,34 @@ model CommissionSuggestion {
   @@index([accountId, status])
 }
 
+// Provisão de comissão por processo (Fabio 28/10: "provisão de pagamento de processo"), lançada À MÃO no Financeiro.
+// É a previsão do que a A&F vai receber de um cliente em contratação: NÃO entra no saldo. Quando o dinheiro cai,
+// "Recebido" cria a Receita (Transaction) e a provisão fica RECEIVED. Taxa padrão pelo setor do funil:
+// Financiamento Habitacional 1%, Home Equity 5% (editável). Snapshot de leadName/product, sem @relation (padrão leve).
+model CommissionProvision {
+  id             String    @id @default(cuid())
+  accountId      String
+  leadId         String
+  leadName       String
+  product        String? // nome do setor quando foi lançada (Home Equity, Financiamento Habitacional…)
+  payer          String? // quem paga a comissão (Inter, Creditas, Credimorar…)
+  baseAmount     Float // valor do crédito
+  ratePct        Float // % aplicado sobre o crédito
+  amount         Float // valor previsto
+  expectedDate   DateTime? // previsão de pagamento
+  status         String    @default("OPEN") // OPEN | RECEIVED
+  receivedAmount Float?
+  receivedAt     DateTime?
+  transactionId  String? // Receita criada ao marcar "Recebido"
+  note           String?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([accountId, status])
+  @@index([leadId])
+}
+
 // Histórico do chat do Assistente AF CRM, por colaborador. messages guarda o
 // array de { role, content } da conversa. Cada colaborador tem as suas.
 model AssistantConversation {

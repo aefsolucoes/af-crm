@@ -144,6 +144,37 @@ export interface CommissionSuggestion {
   createdAt: string;
 }
 
+/** Provisão de comissão de um processo — lançada à mão no Financeiro; não entra no saldo até virar Receita. */
+export interface CommissionProvision {
+  id: string;
+  leadId: string;
+  leadName: string;
+  /** funil · etapa atual do card */
+  leadStage: string;
+  product?: string | null;
+  payer?: string | null;
+  baseAmount: number;
+  ratePct: number;
+  amount: number;
+  expectedDate?: string | null;
+  status: 'OPEN' | 'RECEIVED';
+  receivedAmount?: number | null;
+  receivedAt?: string | null;
+  note?: string | null;
+  createdAt: string;
+}
+
+export interface ProvisionCandidate {
+  id: string;
+  name: string;
+  stage: string;
+  product: string | null;
+  baseAmount: number;
+  ratePct: number;
+  payer: string | null;
+  hasProvision: boolean;
+}
+
 export interface Note {
   id: string;
   content: string;

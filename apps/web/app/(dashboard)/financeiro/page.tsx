@@ -5,6 +5,7 @@ import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import { Skeleton } from '@/components/ui/skeleton';
 import api from '@/lib/api';
+import { CommissionProvisions } from '@/components/finance/commission-provisions';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
 import { Transaction, TransactionType, CommissionSuggestion } from '@/types';
 import { Plus, TrendingUp, TrendingDown, Wallet, Trash2, X, PiggyBank, Pencil, Percent, Check, Repeat } from 'lucide-react';
@@ -82,7 +83,7 @@ function CommissionSuggestionRow({ s, onResolved }: { s: CommissionSuggestion; o
     <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200">
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-slate-800 truncate">{s.leadName}</p>
-        <p className="text-xs text-slate-500">1% de {formatCurrency(s.baseAmount)} (valor de crédito)</p>
+        <p className="text-xs text-slate-500">{s.baseAmount ? `${Math.round((s.suggestedAmount / s.baseAmount) * 1000) / 10}`.replace('.', ',') : '—'}% de {formatCurrency(s.baseAmount)} (valor de crédito)</p>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         <div className="relative">
@@ -320,7 +321,10 @@ export default function FinanceiroPage() {
           )}
         </div>
 
-        {/* Comissões sugeridas — geradas ao marcar um lead como Ganho (1% do valor de crédito) */}
+        {/* Provisão de comissões — lançada à mão por processo; não entra no saldo até virar Receita */}
+        <CommissionProvisions from={from} to={to} />
+
+        {/* Comissões sugeridas — geradas ao marcar um lead como Ganho (FH 1%, Home Equity 5% do valor de crédito) */}
         {!!suggestions?.length && (
           <div className="bg-white rounded-2xl border border-af-border shadow-sm p-5">
             <h3 className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">

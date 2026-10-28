@@ -13,6 +13,7 @@ import { runAutomations } from '../services/automation.service';
 import { logActivity } from '../services/activity.service';
 import { trackLeadChanges, listLeadChanges, revertLeadChange } from '../services/lead-change.service';
 import { MONTH_NAMES_PT, currentMonthNamePT, getOrCreateNamedPipeline, moveLeadToPerdidos } from '../services/named-pipeline.service';
+import { commissionRatePct, commissionAmount } from '../services/commission.service';
 
 /** Formata um telefone BR (com DDI 55) pra exibição. */
 function formatPhoneDisplay(e164Digits: string): string {
@@ -400,7 +401,7 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
       include: {
         user: { select: { name: true } },
         stage: true,
-        pipeline: { select: { departmentId: true } },
+        pipeline: { select: { departmentId: true, department: { select: { name: true } } } },
       },
     });
 
@@ -453,24 +454,27 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
             console.log(`[Auto-migração] Lead "${movedLead.name}" marcado como Ganho → funil Concluído (${targetStage.name})`);
           }
 
-          // ── Sugestão de comissão: 1% do valor de crédito, para revisar no Financeiro ──
+          // ── Sugestão de comissão: % do valor de crédito pelo produto (FH 1%, Home Equity 5%), para revisar no Financeiro ──
+          // Quem já tem provisão lançada no Financeiro não ganha sugestão (seria a mesma comissão contada duas vezes).
           try {
             const cf = (before?.customFields as Record<string, unknown>) || {};
             const baseAmount = parseFieldNumber(cf.valor_credito);
             if (baseAmount > 0) {
-              const already = await prisma.commissionSuggestion.findFirst({
-                where: { leadId: req.params.id, status: { in: ['PENDING', 'CONFIRMED'] } },
-              });
-              if (!already) {
+              const [already, provisioned] = await Promise.all([
+                prisma.commissionSuggestion.findFirst({ where: { leadId: req.params.id, status: { in: ['PENDING', 'CONFIRMED'] } } }),
+                prisma.commissionProvision.findFirst({ where: { leadId: req.params.id }, select: { id: true } }),
+              ]);
+              if (!already && !provisioned) {
+                const ratePct = commissionRatePct(before?.pipeline?.department?.name);
                 await prisma.commissionSuggestion.create({
                   data: {
                     accountId: req.user!.accountId,
                     leadId: req.params.id,
                     baseAmount,
-                    suggestedAmount: Math.round(baseAmount * 0.01 * 100) / 100,
+                    suggestedAmount: commissionAmount(baseAmount, ratePct),
                   },
                 });
-                console.log(`[Comissão] Sugestão criada para lead ${req.params.id}: 1% de ${baseAmount}`);
+                console.log(`[Comissão] Sugestão criada para lead ${req.params.id}: ${ratePct}% de ${baseAmount}`);
               }
             }
           } catch (err) {

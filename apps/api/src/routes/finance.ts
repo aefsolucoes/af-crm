@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { validate } from '../middleware/validate';
+import { commissionRatePct, parseCreditValue } from '../services/commission.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -248,6 +249,200 @@ router.post('/commission-suggestions/:id/dismiss', async (req: AuthRequest, res:
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: 'Erro ao descartar sugestão' });
+  }
+});
+
+// ── Provisão de comissão por processo ────────────────────────────────────────
+// Lançada À MÃO (Fabio 28/10): previsão do que vai entrar de cada cliente em contratação. Não mexe no saldo;
+// "Recebido" cria a Receita de verdade. Taxa padrão pelo setor do funil (FH 1%, Home Equity 5%) — ver commission.service.
+
+const PAYER_LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Credimorar' };
+
+const provisionSchema = z.object({
+  leadId: z.string().min(1),
+  baseAmount: z.number().positive(),
+  ratePct: z.number().positive().max(100),
+  amount: z.number().positive(),
+  expectedDate: z.string().nullable().optional(),
+  payer: z.string().nullable().optional(),
+  note: z.string().nullable().optional(),
+});
+
+const toDate = (d?: string | null) => (d ? new Date(`${d.slice(0, 10)}T12:00:00`) : null);
+
+// GET /api/finance/provisions — todas as provisões, com o funil/etapa atual do card
+router.get('/provisions', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const provisions = await prisma.commissionProvision.findMany({
+      where: { accountId },
+      orderBy: [{ status: 'asc' }, { expectedDate: 'asc' }, { createdAt: 'desc' }],
+    });
+    const leads = await prisma.lead.findMany({
+      where: { id: { in: [...new Set(provisions.map((p) => p.leadId))] } },
+      select: { id: true, pipeline: { select: { name: true } }, stage: { select: { name: true } } },
+    });
+    const where = new Map(leads.map((l) => [l.id, `${l.pipeline.name} · ${l.stage.name}`]));
+    res.json(provisions.map((p) => ({ ...p, leadStage: where.get(p.leadId) || 'Card removido' })));
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar provisões' });
+  }
+});
+
+// GET /api/finance/provisions/candidates?q= — clientes pra provisionar. Sem busca: quem está nos funis "Em contratação"
+// e ainda não tem provisão. Já vem com o crédito, a taxa pelo produto e quem paga (banco da proposta escolhida/aprovada).
+router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const q = String(req.query.q || '').trim();
+    const provisioned = new Set(
+      (await prisma.commissionProvision.findMany({ where: { accountId }, select: { leadId: true } })).map((p) => p.leadId),
+    );
+    const leads = await prisma.lead.findMany({
+      where: q.length >= 2
+        ? { accountId, name: { contains: q, mode: 'insensitive' } }
+        : { accountId, pipeline: { name: { startsWith: 'Em contratação', mode: 'insensitive' } } },
+      select: {
+        id: true, name: true, value: true, customFields: true,
+        pipeline: { select: { name: true, department: { select: { name: true } } } },
+        stage: { select: { name: true } },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: q.length >= 2 ? 15 : 80,
+    });
+    const list = q.length >= 2 ? leads : leads.filter((l) => !provisioned.has(l.id));
+    const analyses = await prisma.creditAnalysis.findMany({
+      where: { leadId: { in: list.map((l) => l.id) }, OR: [{ chosen: true }, { status: 'APPROVED' }] },
+      select: { leadId: true, bank: true, approvedValue: true, chosen: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(list.map((l) => {
+      const mine = analyses.filter((a) => a.leadId === l.id);
+      const chosen = mine.find((a) => a.chosen);
+      const pick = chosen || mine[0];
+      const cf = (l.customFields as Record<string, unknown>) || {};
+      // Base: proposta escolhida > "Valor da venda" do card > crédito pedido > última aprovação.
+      const base = chosen?.approvedValue || l.value || parseCreditValue(cf.valor_credito) || pick?.approvedValue || 0;
+      const product = l.pipeline.department?.name || null;
+      return {
+        id: l.id,
+        name: l.name,
+        stage: `${l.pipeline.name} · ${l.stage.name}`,
+        product,
+        baseAmount: base,
+        ratePct: commissionRatePct(product),
+        payer: pick ? PAYER_LABEL[pick.bank] || pick.bank : null,
+        hasProvision: provisioned.has(l.id),
+      };
+    }));
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar clientes' });
+  }
+});
+
+// POST /api/finance/provisions — lança a provisão de um cliente
+router.post('/provisions', validate(provisionSchema), async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const body = req.body as z.infer<typeof provisionSchema>;
+    const lead = await prisma.lead.findFirst({
+      where: { id: body.leadId, accountId },
+      select: { id: true, name: true, pipeline: { select: { department: { select: { name: true } } } } },
+    });
+    if (!lead) return res.status(404).json({ error: 'Cliente não encontrado' });
+    const open = await prisma.commissionProvision.findFirst({ where: { leadId: lead.id, status: 'OPEN' } });
+    if (open) return res.status(409).json({ error: 'Esse cliente já tem uma provisão em aberto' });
+    const provision = await prisma.commissionProvision.create({
+      data: {
+        accountId,
+        leadId: lead.id,
+        leadName: lead.name,
+        product: lead.pipeline.department?.name || null,
+        payer: body.payer?.trim() || null,
+        baseAmount: body.baseAmount,
+        ratePct: body.ratePct,
+        amount: body.amount,
+        expectedDate: toDate(body.expectedDate),
+        note: body.note?.trim() || null,
+        createdById: req.user!.id,
+      },
+    });
+    res.status(201).json(provision);
+  } catch {
+    res.status(500).json({ error: 'Erro ao lançar provisão' });
+  }
+});
+
+// PATCH /api/finance/provisions/:id — edita uma provisão em aberto
+router.patch('/provisions/:id', validate(provisionSchema.omit({ leadId: true }).partial()), async (req: AuthRequest, res: Response) => {
+  try {
+    const existing = await prisma.commissionProvision.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
+    if (!existing) return res.status(404).json({ error: 'Provisão não encontrada' });
+    if (existing.status !== 'OPEN') return res.status(400).json({ error: 'Provisão já recebida' });
+    const b = req.body as Partial<z.infer<typeof provisionSchema>>;
+    const provision = await prisma.commissionProvision.update({
+      where: { id: existing.id },
+      data: {
+        ...(b.baseAmount !== undefined && { baseAmount: b.baseAmount }),
+        ...(b.ratePct !== undefined && { ratePct: b.ratePct }),
+        ...(b.amount !== undefined && { amount: b.amount }),
+        ...(b.expectedDate !== undefined && { expectedDate: toDate(b.expectedDate) }),
+        ...(b.payer !== undefined && { payer: b.payer?.trim() || null }),
+        ...(b.note !== undefined && { note: b.note?.trim() || null }),
+      },
+    });
+    res.json(provision);
+  } catch {
+    res.status(500).json({ error: 'Erro ao atualizar provisão' });
+  }
+});
+
+// POST /api/finance/provisions/:id/receive — o dinheiro caiu: vira Receita (com o valor e a data reais)
+router.post('/provisions/:id/receive', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const provision = await prisma.commissionProvision.findFirst({ where: { id: req.params.id, accountId, status: 'OPEN' } });
+    if (!provision) return res.status(404).json({ error: 'Provisão não encontrada (ou já recebida)' });
+    const { amount, date } = req.body as { amount?: number; date?: string };
+    const finalAmount = typeof amount === 'number' && amount > 0 ? amount : provision.amount;
+    const when = toDate(date) || new Date();
+
+    const transaction = await prisma.transaction.create({
+      data: {
+        description: `Comissão — ${provision.leadName}${provision.payer ? ` (${provision.payer})` : ''}`,
+        amount: finalAmount,
+        type: 'INCOME',
+        date: when,
+        accountId,
+        userId: req.user!.id,
+      },
+      include: { user: { select: { id: true, name: true } } },
+    });
+    await prisma.commissionProvision.update({
+      where: { id: provision.id },
+      data: { status: 'RECEIVED', receivedAmount: finalAmount, receivedAt: when, transactionId: transaction.id },
+    });
+    // A sugestão automática do "Ganho" do mesmo cliente é a mesma comissão — resolve junto pra não lançar duas vezes.
+    await prisma.commissionSuggestion.updateMany({
+      where: { accountId, leadId: provision.leadId, status: 'PENDING' },
+      data: { status: 'CONFIRMED', transactionId: transaction.id, resolvedAt: new Date() },
+    });
+    res.status(201).json(transaction);
+  } catch {
+    res.status(500).json({ error: 'Erro ao registrar recebimento' });
+  }
+});
+
+// DELETE /api/finance/provisions/:id — tira uma provisão em aberto (ex.: o processo caiu)
+router.delete('/provisions/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const existing = await prisma.commissionProvision.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId } });
+    if (!existing) return res.status(404).json({ error: 'Provisão não encontrada' });
+    if (existing.status !== 'OPEN') return res.status(400).json({ error: 'Provisão já recebida — exclua a Receita no extrato se precisar' });
+    await prisma.commissionProvision.delete({ where: { id: existing.id } });
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ error: 'Erro ao excluir provisão' });
   }
 });
 
