@@ -549,6 +549,8 @@ export interface AiExtractedAction {
   sendApproval?: boolean;
   /** Prazo (meses) a simular sozinha no Inter (modo teste) e mandar ao cliente — requestSimulationForAi. */
   simulate?: { prazo?: number; valor?: number } | null;
+  /** Banco APROVADO que o cliente disse que vai seguir (INTER | SANTANDER | CREDITAS): marca a ⭐ da proposta (chooseAnalysis), que preenche o Valor da venda e a aba Financiamento. */
+  chooseBank?: string | null;
 }
 
 /** Tag usada pra excluir o lead de lembretes automáticos recorrentes
@@ -731,6 +733,23 @@ export async function applyAiExtractedActions(
         await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? (r.scheduled ? '🤖 A IA quis apresentar a aprovação: o aviso padrão (resumo + documentos + PDF) ficou agendado pro próximo horário de aviso (07h–21h).' : '🤖 A IA apresentou a aprovação ao cliente (aviso padrão: resumo + documentos + simulação em PDF).') : `🤖 A IA quis apresentar a aprovação, mas ${r.already ? 'o aviso não foi reenviado' : 'o aviso não saiu'}: ${r.error}` } }).catch(() => {});
         if (r.ok) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: 'apresentou a aprovação ao cliente (aviso padrão)' });
       } catch (e: any) { console.error('[IA] aviso de aprovação falhou:', e?.message); }
+    }
+
+    // Cliente disse com qual banco vai seguir (Fabio 28/10: "a proposta que o cliente for seguir deve preencher o valor da venda"): mesma ação do botão "Seguir com esta" —
+    // ⭐ na proposta aprovada mais recente desse banco, Valor da venda e aba Financiamento. Já escolhida: não mexe.
+    if (action.chooseBank) {
+      try {
+        const bank = action.chooseBank === 'SANTANDER' ? 'CREDIMORAR' : action.chooseBank;
+        const alvo = await prisma.creditAnalysis.findFirst({
+          where: { leadId, bank, dryRun: false, source: { not: 'AI_SIM' }, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } },
+          orderBy: { createdAt: 'desc' }, select: { id: true, chosen: true },
+        });
+        if (alvo && !alvo.chosen) {
+          const { chooseAnalysis } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+          await chooseAnalysis(prisma as any, { accountId, id: alvo.id, userName: 'IA — o cliente disse na conversa que vai seguir com ela' });
+          logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `marcou a proposta escolhida pelo cliente (${action.chooseBank})` });
+        }
+      } catch (e: any) { console.error('[IA] marcar proposta escolhida falhou:', e?.message); }
     }
 
     // Mandar a simulação em PDF (a IA decidiu, a pedido do cliente): a extensão do Credimorar baixa o original e o CRM envia com a logo A&F.

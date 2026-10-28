@@ -9,7 +9,7 @@ import { CommissionProvision, ProvisionCandidate } from '@/types';
 import { CalendarClock, Check, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 
 /* Provisão de comissão por processo (Fabio 28/10: "provisão de pagamento de processo", lançada à mão). Previsão do que vai entrar
- * de cada cliente em contratação — NÃO entra no saldo; "Recebido" vira Receita no extrato. Taxa padrão: FH 1%, Home Equity 5%. */
+ * de cada cliente em contratação — NÃO entra no saldo; "Recebido" vira Receita no extrato. Taxa padrão pelo banco da proposta seguida: Inter e Creditas 5%, Santander 2,5%; sem banco: FH 1%, Home Equity 5%. */
 
 const inputCls = 'w-full text-sm px-3 py-2 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent';
 const PAYERS = ['Inter', 'Creditas', 'Credimorar', 'Santander', 'CAIXA', 'BRB', 'Itaú', 'Bradesco'];
@@ -139,7 +139,7 @@ function ProvisionForm({ editing, onClose, onSaved }: { editing: CommissionProvi
             <div>
               <label className="text-xs font-medium text-slate-500 mb-1 block">Comissão (%)</label>
               <input value={rate} onChange={(e) => setRate(e.target.value)} placeholder="1 ou 5" className={inputCls} />
-              <p className="text-[10px] text-slate-400 mt-0.5">Financiamento 1% · Home Equity 5%</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Inter e Creditas 5% · Santander 2,5% · Financiamento 1%</p>
             </div>
             <div>
               <label className="text-xs font-medium text-slate-500 mb-1 block">Valor previsto (R$)</label>

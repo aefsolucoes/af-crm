@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { commissionRatePct, parseCreditValue } from '../services/commission.service';
+import { commissionRatePct, parseCreditValue, propostaSeguida } from '../services/commission.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -312,17 +312,17 @@ router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => 
     });
     const list = q.length >= 2 ? leads : leads.filter((l) => !provisioned.has(l.id));
     const analyses = await prisma.creditAnalysis.findMany({
-      where: { leadId: { in: list.map((l) => l.id) }, OR: [{ chosen: true }, { status: 'APPROVED' }] },
+      where: { leadId: { in: list.map((l) => l.id) }, dryRun: false, source: { not: 'AI_SIM' }, OR: [{ chosen: true }, { status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }] },
       select: { leadId: true, bank: true, approvedValue: true, chosen: true },
       orderBy: { createdAt: 'desc' },
     });
     res.json(list.map((l) => {
       const mine = analyses.filter((a) => a.leadId === l.id);
-      const chosen = mine.find((a) => a.chosen);
-      const pick = chosen || mine[0];
+      const seguida = propostaSeguida(mine);
+      const pick = seguida || mine[0];
       const cf = (l.customFields as Record<string, unknown>) || {};
-      // Base: proposta escolhida > "Valor da venda" do card > crédito pedido > última aprovação.
-      const base = chosen?.approvedValue || l.value || parseCreditValue(cf.valor_credito) || pick?.approvedValue || 0;
+      // Base: proposta que o cliente segue (escolhida ⭐ ou a do único banco que aprovou) > "Valor da venda" do card > crédito pedido > última aprovação.
+      const base = seguida?.approvedValue || l.value || parseCreditValue(cf.valor_credito) || pick?.approvedValue || 0;
       const product = l.pipeline.department?.name || null;
       return {
         id: l.id,
@@ -330,7 +330,7 @@ router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => 
         stage: `${l.pipeline.name} · ${l.stage.name}`,
         product,
         baseAmount: base,
-        ratePct: commissionRatePct(product),
+        ratePct: commissionRatePct(product, seguida?.bank),
         payer: pick ? PAYER_LABEL[pick.bank] || pick.bank : null,
         hasProvision: provisioned.has(l.id),
       };

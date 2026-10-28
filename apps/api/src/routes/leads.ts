@@ -13,7 +13,7 @@ import { runAutomations } from '../services/automation.service';
 import { logActivity } from '../services/activity.service';
 import { trackLeadChanges, listLeadChanges, revertLeadChange } from '../services/lead-change.service';
 import { MONTH_NAMES_PT, currentMonthNamePT, getOrCreateNamedPipeline, moveLeadToPerdidos } from '../services/named-pipeline.service';
-import { commissionRatePct, commissionAmount } from '../services/commission.service';
+import { commissionRatePct, commissionAmount, propostaSeguida } from '../services/commission.service';
 
 /** Formata um telefone BR (com DDI 55) pra exibição. */
 function formatPhoneDisplay(e164Digits: string): string {
@@ -454,18 +454,22 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
             console.log(`[Auto-migração] Lead "${movedLead.name}" marcado como Ganho → funil Concluído (${targetStage.name})`);
           }
 
-          // ── Sugestão de comissão: % do valor de crédito pelo produto (FH 1%, Home Equity 5%), para revisar no Financeiro ──
+          // ── Sugestão de comissão: % do valor da proposta que o cliente seguiu (Inter/Creditas 5%, Santander 2,5%; sem banco: FH 1%, Home Equity 5%), para revisar no Financeiro ──
           // Quem já tem provisão lançada no Financeiro não ganha sugestão (seria a mesma comissão contada duas vezes).
           try {
             const cf = (before?.customFields as Record<string, unknown>) || {};
-            const baseAmount = parseFieldNumber(cf.valor_credito);
+            const seguida = propostaSeguida(await prisma.creditAnalysis.findMany({
+              where: { leadId: req.params.id, dryRun: false, source: { not: 'AI_SIM' }, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } },
+              orderBy: { createdAt: 'desc' }, take: 12, select: { bank: true, chosen: true, approvedValue: true },
+            }));
+            const baseAmount = Number(seguida?.approvedValue) || parseFieldNumber(cf.valor_credito);
             if (baseAmount > 0) {
               const [already, provisioned] = await Promise.all([
                 prisma.commissionSuggestion.findFirst({ where: { leadId: req.params.id, status: { in: ['PENDING', 'CONFIRMED'] } } }),
                 prisma.commissionProvision.findFirst({ where: { leadId: req.params.id }, select: { id: true } }),
               ]);
               if (!already && !provisioned) {
-                const ratePct = commissionRatePct(before?.pipeline?.department?.name);
+                const ratePct = commissionRatePct(before?.pipeline?.department?.name, seguida?.bank);
                 await prisma.commissionSuggestion.create({
                   data: {
                     accountId: req.user!.accountId,
