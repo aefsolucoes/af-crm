@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Modal } from '@/components/ui/modal';
 import { LeadRevertBar } from '@/components/lead/lead-revert-bar';
 import { formatCurrency } from '@/lib/utils';
-import { Building2, DollarSign, Trophy, XCircle, ThumbsDown, RotateCcw, X, Plus, Archive, ArchiveRestore, Landmark } from 'lucide-react';
+import { Building2, DollarSign, Trophy, XCircle, ThumbsDown, RotateCcw, X, Plus, Archive, ArchiveRestore, Landmark, FileCheck2 } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { useState } from 'react';
@@ -82,6 +82,19 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectReasonInput, setRejectReasonInput] = useState('');
   const [savingReject, setSavingReject] = useState(false);
+  // "Conferir documentos" (Fabio 28/10): a conferência roda no servidor, em qualquer etapa, sem mensagem ao cliente e sem mover o card — o resultado vira anotação.
+  const [checkingDocs, setCheckingDocs] = useState(false);
+  async function handleDocsCheck() {
+    setCheckingDocs(true);
+    try {
+      const { data } = await api.post(`/api/leads/${lead.id}/docs-check`);
+      toast(data?.jaRodando ? 'A conferência deste card já está rodando' : 'Conferindo os documentos — o resultado aparece nas anotações do card em alguns minutos');
+    } catch {
+      toast('Erro ao conferir os documentos', 'error');
+    } finally {
+      setCheckingDocs(false);
+    }
+  }
 
   async function handleArchive(archive: boolean) {
     if (archive && !confirm('Arquivar este lead? Ele não aparecerá mais no funil, mas pode ser restaurado depois.')) return;
@@ -203,6 +216,14 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
           className={`${btn} bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200`}
         >
           <Landmark size={icon} /> Análise
+        </button>
+        <button
+          onClick={handleDocsCheck}
+          disabled={checkingDocs}
+          title="Ler os arquivos que o cliente mandou e conferir com a lista do banco. Não manda mensagem ao cliente nem move o card: o resultado vira anotação."
+          className={`${btn} bg-sky-50 text-sky-700 hover:bg-sky-100 border-sky-200 disabled:opacity-60`}
+        >
+          <FileCheck2 size={icon} /> {compact ? 'Docs' : 'Conferir documentos'}
         </button>
         {lead.status !== 'WON' && !lead.archived && (
           <button

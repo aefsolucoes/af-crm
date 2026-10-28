@@ -481,3 +481,54 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   return true;
 }
 
+
+// ─── "Conferir documentos" (botão do card, Fabio 28/10) ───────────────────────────────────────────────────────────────────────────────────
+// A conferência automática só roda em "Aguardando Documentação" e só quando chega arquivo novo: o Alexandre mandou 12 arquivos em 14/10 que nunca foram lidos, e o
+// Wagner foi movido pra contratação com a lista velha do que faltava. O botão roda a MESMA leitura e conferência no servidor, em QUALQUER etapa, SEM mensagem ao cliente
+// e SEM mover o card: o resultado vira anotação no card (e atualiza o "o que falta" que a IA da conversa usa). Roda em segundo plano (12 PDFs levam minutos).
+const conferindoAgora = new Set<string>();
+export const conferenciaEmAndamento = (leadId: string) => conferindoAgora.has(leadId);
+
+export async function conferirDocumentosAgora(accountId: string, leadId: string, userName: string, io?: Io): Promise<{ completo: boolean; faltando: string[] } | null> {
+  if (conferindoAgora.has(leadId)) return null;
+  conferindoAgora.add(leadId);
+  try {
+    const review = await reviewReceivedDocs(accountId, leadId).catch((e) => { console.error(`[Docs] botão — leitura falhou (${leadId}):`, e?.message || e); return null; });
+    const verdict = await evaluateDocs(accountId, leadId).catch((e) => { console.error(`[Docs] botão — conferência falhou (${leadId}):`, e?.message || e); return null; });
+    // Arquivos que continuam sem leitura (protegido, grande demais, erro): ficam listados pra alguém olhar.
+    const atts = (await prisma.messageAttachment.findMany({ where: { leadId, message: { direction: 'INBOUND' } }, select: { id: true, fileName: true, mimeType: true, driveFileId: true, data: true } }))
+      .filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && !isScreenshotAttachment(a));
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cf = { ...((fresh?.customFields || {}) as Record<string, any>) };
+    const naoLidos = atts.filter((a) => !(cf._docInfo || {})[a.id]).map((a) => a.fileName || a.id);
+    const quem = userName ? `, por ${userName}` : '';
+    if (!verdict) {
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📄 Conferência de documentos (botão${quem}): ${atts.length ? 'não consegui conferir — nenhum arquivo foi lido ou não há lista "Documentos …" pro setor do card.' : 'o cliente não mandou nenhum arquivo.'}${naoLidos.length ? `\nSem leitura: ${naoLidos.join('; ')}` : ''}` } }).catch(() => {});
+      return null;
+    }
+    if (verdict.complete) delete cf._docsFaltando;
+    else if (verdict.faltando.length) cf._docsFaltando = verdict.faltando.join('; ');
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
+    const problemas = (review?.problemas || []).map((p) => `${p.doc} — ${p.texto.join('; ')}`);
+    const duvidas = (review?.duvidas || []).map((d) => `${d.doc} (${d.arquivo})`);
+    await prisma.note.create({
+      data: {
+        leadId, type: 'COMMENT',
+        content: [
+          `📄 Conferência de documentos (botão${quem}) — lista "${verdict.listaUsada || '?'}": ${verdict.complete && !problemas.length ? 'COMPLETA ✅' : verdict.complete ? 'chegou tudo, mas tem documento com problema ⚠️' : 'INCOMPLETA'}`,
+          `Recebido:\n${verdict.receivedText}`,
+          ...(verdict.faltando.length ? [`Falta:\n- ${verdict.faltando.join('\n- ')}`] : []),
+          ...(problemas.length ? [`Com problema:\n- ${problemas.join('\n- ')}`] : []),
+          ...(duvidas.length ? [`Em dúvida (balão Dúvidas da IA): ${duvidas.join('; ')}`] : []),
+          ...(verdict.emitir.length ? [`A&F precisa emitir: ${verdict.emitir.join('; ')}`] : []),
+          ...(naoLidos.length ? [`Sem leitura (confira à mão): ${naoLidos.join('; ')}`] : []),
+          'Nenhuma mensagem foi enviada ao cliente e o card não foi movido.',
+        ].join('\n\n'),
+      },
+    }).catch(() => {});
+    if (io) io.to(`lead:${leadId}`).emit('lead_updated', { leadId });
+    return { completo: verdict.complete, faltando: verdict.faltando };
+  } finally {
+    conferindoAgora.delete(leadId);
+  }
+}
