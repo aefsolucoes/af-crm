@@ -3,8 +3,10 @@ import { useState, useEffect, useRef } from 'react';
 import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2, Globe, KeyRound, Sparkles, PhoneCall } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2, Globe, KeyRound, Sparkles, PhoneCall, MapPin } from 'lucide-react';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
+import { SendLocationReport } from '@/components/settings/send-location-report';
+import { useAuthStore } from '@/store/auth.store';
 import { usePushSubscription } from '@/hooks/use-push-subscription';
 import { SoundKey, SOUND_OPTIONS, playSoundOnce } from '@/lib/sounds';
 
@@ -71,7 +73,7 @@ function PushNotificationCard() {
   );
 }
 
-type Tab = 'api' | 'sons' | 'ia' | 'aparencia' | 'agente' | 'drive' | 'setores' | 'site';
+type Tab = 'api' | 'sons' | 'ia' | 'aparencia' | 'agente' | 'drive' | 'setores' | 'site' | 'localizacao';
 
 interface WAConfig {
   phoneNumberId: string;
@@ -162,6 +164,7 @@ function SoundPickerCard({
 
 export default function ConfiguracoesPage() {
   const [tab, setTab] = useState<Tab>('api');
+  const isAdmin = useAuthStore((s) => s.user?.role === 'ADMIN');
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -197,7 +200,15 @@ export default function ConfiguracoesPage() {
             <button onClick={() => setTab('site')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${tab === 'site' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700 hover:bg-white/60'}`}>
               <Globe size={16} /> Site
             </button>
+            {isAdmin && (
+              <button onClick={() => setTab('localizacao')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${tab === 'localizacao' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700 hover:bg-white/60'}`}>
+                <MapPin size={16} /> Localização
+              </button>
+            )}
           </div>
+
+          {/* Localização dos envios — só admin */}
+          {tab === 'localizacao' && isAdmin && <SendLocationReport />}
 
           {/* Departamentos Tab */}
           {tab === 'setores' && <DepartmentsTab />}

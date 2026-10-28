@@ -1414,3 +1414,27 @@ model CreditAutoSetting {
   updatedById String?
   updatedAt   DateTime  @updatedAt
 }
+
+// Localização do aparelho em cada envio da equipe pela Inbox (Fabio 27/10). O navegador só lê o GPS se o aparelho JÁ permitiu — o CRM nunca abre
+// o pop-up pedindo; sem permissão fica NAO_AUTORIZOU. Relatório em Configurações → Localização (só admin).
+model MessageSendLocation {
+  id        String   @id @default(cuid())
+  accountId String
+  messageId String   @unique // não é FK — a mensagem pode ser apagada e o registro fica
+  userId    String
+  userName  String // snapshot
+  leadId    String
+  leadName  String? // snapshot
+  status    String   @default("PENDENTE") // PENDENTE (aparelho ainda não respondeu) | OK | NAO_AUTORIZOU | INDISPONIVEL | ERRO
+  latitude  Float?
+  longitude Float?
+  accuracy  Float? // metros
+  detail    String?
+  userAgent String?
+  ip        String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([accountId, createdAt])
+  @@index([userId, createdAt])
+}

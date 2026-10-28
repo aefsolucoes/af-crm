@@ -11,6 +11,7 @@ import { logActivity } from '../services/activity.service';
 import { sendGenericEmail } from '../services/email.service';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { recordSendOrigin, saveSendLocation, listSendLocations } from '../services/send-location.service';
 
 
 /** Registro silencioso: "Fulano respondeu <cliente>". Fire-and-forget.
@@ -315,6 +316,7 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
       accountId: req.user!.accountId, leadId, buffer, fileName: finalFileName, mimeType: finalMimeType, caption, userId: req.user!.id, io,
     });
     if (!result.success) return res.status(400).json({ error: result.error });
+    await recordSendOrigin(req, (result.message as any)?.id, leadId);
     res.status(201).json(result.message);
     logClientReply(req, leadId);
   } catch {
@@ -340,6 +342,7 @@ router.post('/send-template', async (req: AuthRequest, res: Response) => {
       bodyParams: Array.isArray(bodyParams) ? bodyParams.map(String) : [], previewText, userId: req.user!.id, io,
     });
     if (!result.success) return res.status(400).json({ error: result.error, code: (result as any).code });
+    await recordSendOrigin(req, (result.message as any)?.id, leadId);
     res.status(201).json(result.message);
     logClientReply(req, leadId);
   } catch {
@@ -359,6 +362,7 @@ router.post('/:id/retry-template', async (req: AuthRequest, res: Response) => {
       accountId: req.user!.accountId, messageId: req.params.id, userId: req.user!.id, io,
     });
     if (!result.success) return res.status(400).json({ error: result.error, code: (result as any).code });
+    if ((result.message as any)?.leadId) await recordSendOrigin(req, (result.message as any).id, (result.message as any).leadId);
     res.status(201).json(result.message);
   } catch {
     res.status(500).json({ error: 'Erro ao reenviar o template' });
@@ -378,9 +382,30 @@ router.post('/:id/forward', async (req: AuthRequest, res: Response) => {
       accountId: req.user!.accountId, messageId: req.params.id, toLeadId, userId: req.user!.id, io,
     });
     if (!result.success) return res.status(400).json({ error: result.error });
+    await recordSendOrigin(req, (result.message as any)?.id, toLeadId);
     res.status(201).json(result.message);
   } catch {
     res.status(500).json({ error: 'Erro ao encaminhar a mensagem' });
+  }
+});
+
+// Localização do aparelho no envio (o navegador manda logo depois da mensagem sair; só lê o GPS se o aparelho já permitiu).
+router.post('/:id/send-location', async (req: AuthRequest, res: Response) => {
+  try {
+    res.json({ ok: await saveSendLocation(req, req.params.id, req.body || {}) });
+  } catch {
+    res.status(500).json({ error: 'Erro ao gravar a localização' });
+  }
+});
+
+// Relatório de localização dos envios (Configurações → Localização) — só admin.
+router.get('/send-locations', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores veem a localização dos envios' });
+  try {
+    const d = (v: unknown) => { const t = v ? new Date(String(v)) : null; return t && !isNaN(t.getTime()) ? t : undefined; };
+    res.json(await listSendLocations(req.user!.accountId, { from: d(req.query.from), to: d(req.query.to), userId: req.query.userId ? String(req.query.userId) : undefined }));
+  } catch {
+    res.status(500).json({ error: 'Erro ao carregar o relatório' });
   }
 });
 
@@ -499,6 +524,7 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
       if (!result.success) {
         return res.status(400).json({ error: result.error, code: (result as any).code });
       }
+      await recordSendOrigin(req, (result.message as any)?.id, req.body.leadId);
       res.status(201).json(result.message);
       logClientReply(req, req.body.leadId);
       return;

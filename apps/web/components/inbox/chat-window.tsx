@@ -6,6 +6,7 @@ import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
 import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed, Bot, Mail } from 'lucide-react';
 import api from '@/lib/api';
+import { startSendLocation } from '@/lib/send-location';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { Avatar } from '@/components/ui/avatar';
@@ -657,9 +658,11 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     setForwardBusy(true);
     try {
       const targets = Array.from(forwardSelected);
+      const loc = startSendLocation();
       const results = await Promise.allSettled(
         targets.map((toLeadId) => api.post(`/api/messages/${forwardingMessage.id}/forward`, { toLeadId }))
       );
+      loc(results.map((r) => (r.status === 'fulfilled' ? r.value.data?.id : null)));
       const ok = results.filter((r) => r.status === 'fulfilled').length;
       const failed = results.length - ok;
       if (ok > 0) toast(ok === 1 ? 'Mensagem encaminhada!' : `Mensagem encaminhada para ${ok} conversas!`);
@@ -989,6 +992,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     setSending(true);
     setContent('');                 // feedback imediato: o campo esvazia na hora
     setReplyingTo(null);
+    const loc = startSendLocation();
     try {
       const { data } = await api.post('/api/messages', {
         content: text,
@@ -1005,6 +1009,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
           : {}),
       });
       onNewMessage(data);
+      loc([data?.id]);
     } catch (err: any) {
       setContent(text);             // falhou: devolve o texto para tentar de novo
       setReplyingTo(quotedMsg);      // e a citação também
@@ -1021,6 +1026,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
   async function uploadFile(file: File, opts?: { transcodeAudio?: boolean; caption?: string }): Promise<boolean> {
     if (file.size > 25 * 1024 * 1024) { toast('Arquivo muito grande (máx. 25 MB)', 'error'); return false; }
     setUploadingFile(true);
+    const loc = startSendLocation();
     try {
       const dataBase64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -1037,6 +1043,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
         ...(opts?.caption ? { caption: opts.caption } : {}),
       });
       onNewMessage(data);
+      loc([data?.id]);
       return true;
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao enviar o arquivo', 'error');
@@ -1261,6 +1268,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     const text = localTemplateBody.trim();
     if (!text) return;
     setSendingTemplate(true);
+    const loc = startSendLocation();
     try {
       const { data } = await api.post('/api/messages', {
         content: text,
@@ -1272,6 +1280,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
           : { ctaButton: { text: pendingLocalTemplate.ctaUrlText, url: pendingLocalTemplate.ctaUrl } }),
       });
       onNewMessage(data);
+      loc([data?.id]);
       setPendingLocalTemplate(null);
       setShowTemplates(false);
       toast('Enviado!');
@@ -1305,6 +1314,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
       .map((b: { text?: string }) => b.text).filter(Boolean) as string[];
     const previewText = fillMetaTemplate(body, metaTemplateVars) + (buttonTexts.length ? `\n\n${buttonTexts.map((t) => `[${t}]`).join('  ')}` : '');
     setSendingTemplate(true);
+    const loc = startSendLocation();
     try {
       const { data } = await api.post('/api/messages/send-template', {
         leadId,
@@ -1314,6 +1324,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
         previewText,
       });
       onNewMessage(data);
+      loc([data?.id]);
       setPendingMetaTemplate(null);
       setShowTemplates(false);
       toast('Template enviado!');
@@ -1330,9 +1341,11 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
   // preencher tudo de novo.
   async function handleRetryTemplate(messageId: string) {
     setRetryingTemplateId(messageId);
+    const loc = startSendLocation();
     try {
       const { data } = await api.post(`/api/messages/${messageId}/retry-template`);
       onNewMessage(data);
+      loc([data?.id]);
       toast('Template reenviado!');
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao reenviar o template', 'error');
