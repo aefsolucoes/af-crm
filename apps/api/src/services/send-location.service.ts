@@ -80,3 +80,45 @@ export async function setSendLocationSetting(accountId: string, patch: { promptE
   await prisma.sendLocationSetting.upsert({ where: { accountId }, create: { accountId, ...data }, update: data });
   return getSendLocationSetting(accountId);
 }
+
+/* Localizador da equipe (Fabio 28/10): um ponto quando a pessoa ABRE o CRM e de 10 em 10 min enquanto ficar aberto. Só grava se o aparelho já
+ * permite a localização — nenhum pop-up. Para quando o app fecha (iPhone não roda site de fundo). */
+export async function recordLocationPing(req: AuthRequest, body: Record<string, unknown>): Promise<void> {
+  if (!req.user) return;
+  const status = String(body.status || 'OK');
+  if (!STATUS.has(status)) return;
+  const num = (v: unknown, min: number, max: number) => (typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max ? v : null);
+  const latitude = num(body.latitude, -90, 90), longitude = num(body.longitude, -180, 180), accuracy = num(body.accuracy, 0, 1_000_000);
+  const ok = status === 'OK' && latitude !== null && longitude !== null;
+  const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: { name: true } });
+  await prisma.userLocationPing.create({
+    data: {
+      accountId: req.user.accountId, userId: req.user.id, userName: user?.name || '?',
+      status: status === 'OK' && !ok ? 'ERRO' : status,
+      latitude: ok ? latitude : null, longitude: ok ? longitude : null, accuracy: ok ? accuracy : null,
+      detail: String(body.detail || '').slice(0, 120) || null,
+      userAgent: String(req.headers['user-agent'] || '').slice(0, 300) || null, ip: clientIp(req),
+    },
+  });
+}
+
+export interface LocationEvent {
+  id: string; kind: 'open' | 'send'; userId: string; userName: string; leadId: string | null; leadName: string | null;
+  status: string; latitude: number | null; longitude: number | null; accuracy: number | null; detail: string | null;
+  userAgent: string | null; ip: string | null; createdAt: Date;
+}
+
+/** Trajeto: abre o CRM (UserLocationPing) + envia mensagem (MessageSendLocation), juntos, mais novos primeiro. Admin. */
+export async function listLocationEvents(accountId: string, opts: { from?: Date; to?: Date; userId?: string }): Promise<LocationEvent[]> {
+  const when = { createdAt: { ...(opts.from ? { gte: opts.from } : {}), ...(opts.to ? { lte: opts.to } : {}) } };
+  const who = opts.userId ? { userId: opts.userId } : {};
+  const [pings, sends] = await Promise.all([
+    prisma.userLocationPing.findMany({ where: { accountId, ...who, ...when }, orderBy: { createdAt: 'desc' }, take: 1000 }),
+    prisma.messageSendLocation.findMany({ where: { accountId, ...who, ...when }, orderBy: { createdAt: 'desc' }, take: 1000 }),
+  ]);
+  const events: LocationEvent[] = [
+    ...pings.map((p): LocationEvent => ({ id: p.id, kind: 'open', userId: p.userId, userName: p.userName, leadId: null, leadName: null, status: p.status, latitude: p.latitude, longitude: p.longitude, accuracy: p.accuracy, detail: p.detail, userAgent: p.userAgent, ip: p.ip, createdAt: p.createdAt })),
+    ...sends.map((m): LocationEvent => ({ id: m.id, kind: 'send', userId: m.userId, userName: m.userName, leadId: m.leadId, leadName: m.leadName, status: m.status, latitude: m.latitude, longitude: m.longitude, accuracy: m.accuracy, detail: m.detail, userAgent: m.userAgent, ip: m.ip, createdAt: m.createdAt })),
+  ];
+  return events.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 1000);
+}

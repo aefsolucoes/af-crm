@@ -15,6 +15,7 @@ import { AiQuestionsBubble } from '@/components/ui/ai-questions-bubble';
 import { CrmAssistant } from '@/components/ui/crm-assistant';
 import { SendLocationNotice } from '@/components/ui/send-location-notice';
 import { useAuthStore } from '@/store/auth.store';
+import { useLocationPing } from '@/hooks/use-location-ping';
 import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
 import { playSoundOnce, SoundKey } from '@/lib/sounds';
@@ -24,6 +25,7 @@ const playNotificationSound = playSoundOnce;
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, init } = useAuthStore();
+  useLocationPing(!!user);
   const router = useRouter();
   const pathname = usePathname();
   const queryClient = useQueryClient();

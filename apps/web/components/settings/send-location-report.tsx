@@ -9,7 +9,7 @@ import { toast } from '@/components/ui/toast';
  * tinha permitido; sem permissão = "Não autorizou". Com a chave ligada (Fabio 28/10) o CRM pede a permissão; "Não Permitir" = "Negou". */
 
 interface Row {
-  id: string; messageId: string; userId: string; userName: string; leadId: string; leadName: string | null;
+  id: string; kind: 'open' | 'send'; userId: string; userName: string; leadId: string | null; leadName: string | null;
   status: 'PENDENTE' | 'OK' | 'NAO_AUTORIZOU' | 'NEGOU' | 'INDISPONIVEL' | 'ERRO';
   latitude: number | null; longitude: number | null; accuracy: number | null; detail: string | null;
   userAgent: string | null; ip: string | null; createdAt: string;
@@ -115,8 +115,8 @@ export function SendLocationReport() {
   const [to, setTo] = useState(hoje());
   const [userId, setUserId] = useState('');
   const { data, isLoading, isError, refetch, isFetching } = useQuery<Row[]>({
-    queryKey: ['send-locations', from, to],
-    queryFn: async () => (await api.get('/api/messages/send-locations', { params: { from: `${from}T00:00:00-03:00`, to: `${to}T23:59:59-03:00` } })).data,
+    queryKey: ['location-events', from, to],
+    queryFn: async () => (await api.get('/api/messages/location-events', { params: { from: `${from}T00:00:00-03:00`, to: `${to}T23:59:59-03:00` } })).data,
   });
   const pessoas = useMemo(() => Array.from(new Map((data || []).map((r) => [r.userId, r.userName])).entries()).sort((a, b) => a[1].localeCompare(b[1])), [data]);
   const rows = (data || []).filter((r) => !userId || r.userId === userId);
@@ -127,8 +127,8 @@ export function SendLocationReport() {
       <div className="flex items-center gap-3 px-6 py-4 border-b border-af-border bg-gradient-to-r from-af-blue to-af-mid">
         <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center"><MapPin size={22} className="text-white" /></div>
         <div>
-          <h2 className="text-white font-bold text-base">Localização dos envios</h2>
-          <p className="text-white/70 text-xs">De onde cada pessoa da equipe mandou mensagem pela Inbox</p>
+          <h2 className="text-white font-bold text-base">Localização da equipe</h2>
+          <p className="text-white/70 text-xs">Onde cada pessoa estava ao abrir o CRM (de 10 em 10 min) e ao mandar mensagem</p>
         </div>
       </div>
 
@@ -136,7 +136,8 @@ export function SendLocationReport() {
         <PromptSettings />
 
         <p className="text-xs text-slate-500">
-          Com o pedido desligado, a localização só aparece quando o aparelho já permite localização pro CRM. No iPhone: Ajustes → Apps → Safari → Localização → <strong>Permitir</strong>, e
+          O CRM marca a localização quando a pessoa <strong>abre o app</strong> e, enquanto fica aberto, <strong>de 10 em 10 minutos</strong>. Para quando o app é fechado (o celular não roda o site de fundo).
+          A localização só aparece quando o aparelho já permite localização pro CRM. No iPhone: Ajustes → Apps → Safari → Localização → <strong>Permitir</strong>, e
           Privacidade e Segurança → Serviços de Localização → Sites do Safari → <strong>Durante o Uso do App</strong> com <strong>Localização Precisa</strong> ligada.
         </p>
 
@@ -159,17 +160,17 @@ export function SendLocationReport() {
         ) : isError ? (
           <p className="text-sm text-rose-500">Não consegui carregar o relatório.</p>
         ) : !rows.length ? (
-          <p className="text-sm text-slate-400">Nenhum envio pela Inbox nesse período.</p>
+          <p className="text-sm text-slate-400">Nenhuma localização da equipe nesse período.</p>
         ) : (
           <>
-            <p className="text-xs text-slate-500">{rows.length} envio{rows.length > 1 ? 's' : ''} · {comLocal} com localização</p>
+            <p className="text-xs text-slate-500">{rows.length} ponto{rows.length > 1 ? 's' : ''} · {comLocal} com localização</p>
             <div className="overflow-x-auto -mx-6">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-left text-slate-400 border-b border-af-border">
                     <th className="px-6 py-2 font-medium">Quando</th>
                     <th className="px-2 py-2 font-medium">Quem</th>
-                    <th className="px-2 py-2 font-medium">Cliente</th>
+                    <th className="px-2 py-2 font-medium">O quê</th>
                     <th className="px-2 py-2 font-medium">Aparelho</th>
                     <th className="px-2 py-2 pr-6 font-medium">Localização</th>
                   </tr>
@@ -181,7 +182,11 @@ export function SendLocationReport() {
                       <tr key={r.id} className="border-b border-af-border/60 last:border-0 text-slate-700">
                         <td className="px-6 py-2 whitespace-nowrap">{quando(r.createdAt)}</td>
                         <td className="px-2 py-2 whitespace-nowrap">{r.userName}</td>
-                        <td className="px-2 py-2"><a href={`/inbox?leadId=${r.leadId}`} className="hover:underline">{r.leadName || '—'}</a></td>
+                        <td className="px-2 py-2">
+                          {r.kind === 'send'
+                            ? <a href={`/inbox?leadId=${r.leadId}`} className="hover:underline">Mensagem{r.leadName ? ` · ${r.leadName}` : ''}</a>
+                            : <span className="text-slate-400">Abriu o CRM</span>}
+                        </td>
                         <td className="px-2 py-2 whitespace-nowrap" title={r.ip ? `IP ${r.ip}` : undefined}>
                           <span className="inline-flex items-center gap-1">{ap.mobile ? <Smartphone size={12} /> : <Monitor size={12} />}{ap.label}</span>
                         </td>

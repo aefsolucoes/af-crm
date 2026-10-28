@@ -11,7 +11,7 @@ import { logActivity } from '../services/activity.service';
 import { sendGenericEmail } from '../services/email.service';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { recordSendOrigin, saveSendLocation, listSendLocations, getSendLocationSetting, promptAllowedFor, setSendLocationSetting } from '../services/send-location.service';
+import { recordSendOrigin, saveSendLocation, listSendLocations, getSendLocationSetting, promptAllowedFor, setSendLocationSetting, recordLocationPing, listLocationEvents } from '../services/send-location.service';
 
 
 /** Registro silencioso: "Fulano respondeu <cliente>". Fire-and-forget.
@@ -427,6 +427,27 @@ router.put('/send-location-settings', async (req: AuthRequest, res: Response) =>
     res.json(await setSendLocationSetting(req.user!.accountId, req.body || {}, req.user!.id));
   } catch {
     res.status(500).json({ error: 'Erro ao salvar as chaves' });
+  }
+});
+
+// Localizador da equipe: um ponto ao abrir o CRM e de 10 em 10 min com o app aberto. O navegador manda; só grava se o aparelho já permite.
+router.post('/location-ping', async (req: AuthRequest, res: Response) => {
+  try {
+    await recordLocationPing(req, req.body || {});
+    res.json({ ok: true });
+  } catch {
+    res.json({ ok: false });
+  }
+});
+
+// Trajeto (abrir o CRM + enviar mensagem) — só admin.
+router.get('/location-events', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores veem o trajeto da equipe' });
+  try {
+    const d = (v: unknown) => { const t = v ? new Date(String(v)) : null; return t && !isNaN(t.getTime()) ? t : undefined; };
+    res.json(await listLocationEvents(req.user!.accountId, { from: d(req.query.from), to: d(req.query.to), userId: req.query.userId ? String(req.query.userId) : undefined }));
+  } catch {
+    res.status(500).json({ error: 'Erro ao carregar o trajeto' });
   }
 });
 
