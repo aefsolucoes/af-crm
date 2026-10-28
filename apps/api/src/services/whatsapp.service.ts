@@ -1231,6 +1231,9 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       if (text) { const { marcarTransferenciaPendente } = require('./certidao-offer.service') as typeof import('./certidao-offer.service'); marcarTransferenciaPendente(accountId, leadId, text).catch((e: any) => console.warn('[Dono] transferência pendente:', e?.message)); }
       // Cliente só com a escritura e sem a certidão de ônus (essencial pra solicitar a vistoria — Fabio 21/10, Luiz Fernando): a IA se oferece pra emitir pelo ONR. Espera 30 s pra a resposta da IA sair antes (não duplica mensagem).
       if (text) setTimeout(() => { (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).maybeOfferCertidao(accountId, leadId, io).catch((e: any) => console.warn('[Certidão] oferta:', e?.message)); }, 30_000);
+      // Dados que o cliente manda (CPF, renda, e-mail, imóvel…) vão pro card MESMO com a IA do card desligada (Fabio 28/10). Com ela ligada, quem preenche é a
+      // própria resposta da IA (extractedFields) — card-fill.service confere isso na hora e só lê a rajada inteira, 20 s depois da última mensagem.
+      { const { scheduleCardFill } = require('./card-fill.service') as typeof import('./card-fill.service'); scheduleCardFill(accountId, leadId, io); }
       // Card em "Aguardando Documentação": o cliente mandou um DOCUMENTO
       // (foto ou arquivo) → agenda a conferência (espera ele terminar de
       // mandar). Só com documento — texto/áudio não gastam crédito de IA

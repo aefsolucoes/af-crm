@@ -512,6 +512,15 @@ export async function buildFillableFieldsText(accountId: string): Promise<string
   return [builtinText, customText].filter(Boolean).join('\n');
 }
 
+/** Chave → nome curto dos campos que a IA pode preencher no card (os mesmos do buildFillableFieldsText). */
+export async function fillableFieldLabels(accountId: string): Promise<Map<string, string>> {
+  const defs = await prisma.fieldDefinition.findMany({ where: { accountId }, select: { key: true, name: true } });
+  return new Map([
+    ...BUILTIN_LEAD_FIELDS.map((f) => [f.key, f.label.split(/ \(| — /)[0]] as [string, string]),
+    ...defs.map((d) => [d.key, d.name] as [string, string]),
+  ]);
+}
+
 function normalize(s: string): string {
   return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 }
