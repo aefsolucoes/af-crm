@@ -61,6 +61,8 @@ export async function handleNoInterestButton(accountId: string, leadId: string, 
   await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io);
   await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io });
   logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: cliente tocou em "${button}"` });
+  // Aprovado que desistiu (Fabio 28/10, template "Ainda deseja prosseguir com o crédito?"): Perdido com a etiqueta "Aprovado sem andamento".
+  await (require('./prosseguir.service') as typeof import('./prosseguir.service')).tagAprovadoSemAndamento(lead.id, lead.stage?.name || '', (lead.customFields || {}) as Record<string, any>).catch((e: any) => console.error('[Sem interesse] etiqueta:', e?.message));
 
   const nome = firstName(lead);
   const pergunta = `Tudo bem${nome ? `, ${nome}` : ''}, obrigado pelo retorno. Só pra gente melhorar: o motivo do seu desinteresse foi algo específico? O produto não era o que você procurava, as taxas não ficaram boas ou ficou faltando alguma opção de banco?`;
