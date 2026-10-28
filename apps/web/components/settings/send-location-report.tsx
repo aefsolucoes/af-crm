@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { MapPin, Loader2, Smartphone, Monitor, ExternalLink, RefreshCw, Check } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
+import { LocationMap, type MapPoint } from '@/components/settings/location-map';
 
 /* Relatório "de onde a equipe mandou cada mensagem" (Fabio 27/10). Só admin. Sem a chave do pedido, a localização só existe quando o aparelho já
  * tinha permitido; sem permissão = "Não autorizou". Com a chave ligada (Fabio 28/10) o CRM pede a permissão; "Não Permitir" = "Negou". */
@@ -121,6 +122,10 @@ export function SendLocationReport() {
   const pessoas = useMemo(() => Array.from(new Map((data || []).map((r) => [r.userId, r.userName])).entries()).sort((a, b) => a[1].localeCompare(b[1])), [data]);
   const rows = (data || []).filter((r) => !userId || r.userId === userId);
   const comLocal = rows.filter((r) => r.status === 'OK').length;
+  // Mapa: só os pontos com localização. Liga os pontos (rota) quando está filtrado por uma pessoa.
+  const pontos = useMemo<MapPoint[]>(() => rows
+    .filter((r) => r.status === 'OK' && r.latitude !== null && r.longitude !== null)
+    .map((r) => ({ id: r.id, lat: r.latitude as number, lng: r.longitude as number, label: r.userName, sub: `${quando(r.createdAt)} · ${r.kind === 'send' ? `Mensagem${r.leadName ? ` · ${r.leadName}` : ''}` : 'Abriu o CRM'}`, order: new Date(r.createdAt).getTime(), href: `https://www.google.com/maps?q=${r.latitude},${r.longitude}` })), [rows]);
 
   return (
     <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
@@ -128,7 +133,7 @@ export function SendLocationReport() {
         <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center"><MapPin size={22} className="text-white" /></div>
         <div>
           <h2 className="text-white font-bold text-base">Localização da equipe</h2>
-          <p className="text-white/70 text-xs">Onde cada pessoa estava ao abrir o CRM (de 10 em 10 min) e ao mandar mensagem</p>
+          <p className="text-white/70 text-xs">Onde cada pessoa estava ao abrir o CRM (de 1 em 1 min) e ao mandar mensagem</p>
         </div>
       </div>
 
@@ -136,7 +141,7 @@ export function SendLocationReport() {
         <PromptSettings />
 
         <p className="text-xs text-slate-500">
-          O CRM marca a localização quando a pessoa <strong>abre o app</strong> e, enquanto fica aberto, <strong>de 10 em 10 minutos</strong>. Para quando o app é fechado (o celular não roda o site de fundo).
+          O CRM marca a localização quando a pessoa <strong>abre o app</strong> e, enquanto fica aberto, <strong>de 1 em 1 minuto</strong>. Para quando o app é fechado (o celular não roda o site de fundo).
           A localização só aparece quando o aparelho já permite localização pro CRM. No iPhone: Ajustes → Apps → Safari → Localização → <strong>Permitir</strong>, e
           Privacidade e Segurança → Serviços de Localização → Sites do Safari → <strong>Durante o Uso do App</strong> com <strong>Localização Precisa</strong> ligada.
         </p>
@@ -164,6 +169,12 @@ export function SendLocationReport() {
         ) : (
           <>
             <p className="text-xs text-slate-500">{rows.length} ponto{rows.length > 1 ? 's' : ''} · {comLocal} com localização</p>
+            {pontos.length > 0 && (
+              <div className="space-y-1">
+                <LocationMap points={pontos} route={!!userId} />
+                <p className="text-[11px] text-slate-400">{userId ? 'A linha liga os pontos na ordem do dia; o ponto verde é o mais recente. Clique num ponto para ver a hora.' : 'Escolha uma pessoa no filtro acima para ver a rota (os pontos ligados na ordem do dia).'}</p>
+              </div>
+            )}
             <div className="overflow-x-auto -mx-6">
               <table className="w-full text-xs">
                 <thead>

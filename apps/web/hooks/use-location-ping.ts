@@ -3,12 +3,12 @@ import { useEffect } from 'react';
 import api from '@/lib/api';
 
 /* Localizador da equipe (Fabio 28/10: "saber se está fazendo as rotas de visitar clientes"). Marca um ponto quando a pessoa ABRE o CRM e, enquanto
- * ficar com o CRM aberto, de 10 em 10 minutos. NUNCA abre pop-up: só lê o GPS se o aparelho já está em "Permitir". Quem não está aparece como "sem
+ * ficar com o CRM aberto, de 1 em 1 minuto. NUNCA abre pop-up: só lê o GPS se o aparelho já está em "Permitir". Quem não está aparece como "sem
  * localização" no relatório (registrado espaçado, pra não encher). Para quando o app fecha — iPhone não roda site de fundo. */
 
 const LAST_OK = 'afcrm.locPing.ok'; // última marcação com GPS (ms)
 const LAST_SKIP = 'afcrm.locPing.skip'; // último registro "sem permissão" (ms)
-const GAP_OK = 9.5 * 60_000; // ~10 min entre pontos
+const GAP_OK = 55_000; // ~1 min entre pontos
 const GAP_SKIP = 60 * 60_000; // 1 h entre os "sem localização"
 
 const getN = (k: string) => { try { return Number(localStorage.getItem(k)) || 0; } catch { return 0; } };
@@ -54,7 +54,7 @@ export function useLocationPing(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     maybePing();
-    const iv = setInterval(maybePing, 2 * 60_000); // confere a cada 2 min; a marcação real respeita o intervalo de 10 min
+    const iv = setInterval(maybePing, 30_000); // confere a cada 30 s; a marcação real respeita o intervalo de 1 min
     const onVis = () => { if (!document.hidden) maybePing(); };
     document.addEventListener('visibilitychange', onVis);
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };

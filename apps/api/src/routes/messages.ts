@@ -430,7 +430,7 @@ router.put('/send-location-settings', async (req: AuthRequest, res: Response) =>
   }
 });
 
-// Localizador da equipe: um ponto ao abrir o CRM e de 10 em 10 min com o app aberto. O navegador manda; só grava se o aparelho já permite.
+// Localizador da equipe: um ponto ao abrir o CRM e de 1 em 1 min com o app aberto. O navegador manda; só grava se o aparelho já permite.
 router.post('/location-ping', async (req: AuthRequest, res: Response) => {
   try {
     await recordLocationPing(req, req.body || {});

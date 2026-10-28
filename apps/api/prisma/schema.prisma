@@ -1450,7 +1450,7 @@ model SendLocationSetting {
   updatedAt       DateTime @updatedAt
 }
 
-// Localizador da equipe (Fabio 28/10: "saber se está fazendo as rotas de visitar clientes"). Pega UM ponto quando a pessoa ABRE o CRM e de 10 em 10 min com o app aberto (não
+// Localizador da equipe (Fabio 28/10: "saber se está fazendo as rotas de visitar clientes"). Pega UM ponto quando a pessoa ABRE o CRM e de 1 em 1 min com o app aberto (não
 // fica rastreando de fundo; bateria baixa). Só grava se o aparelho já permite a localização (nenhum pop-up). Junto com MessageSendLocation (ponto a
 // cada mensagem enviada) forma o trajeto do dia. Não é FK: userName é snapshot.
 model UserLocationPing {

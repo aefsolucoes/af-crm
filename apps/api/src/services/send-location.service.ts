@@ -81,7 +81,7 @@ export async function setSendLocationSetting(accountId: string, patch: { promptE
   return getSendLocationSetting(accountId);
 }
 
-/* Localizador da equipe (Fabio 28/10): um ponto quando a pessoa ABRE o CRM e de 10 em 10 min enquanto ficar aberto. Só grava se o aparelho já
+/* Localizador da equipe (Fabio 28/10): um ponto quando a pessoa ABRE o CRM e de 1 em 1 min enquanto ficar aberto. Só grava se o aparelho já
  * permite a localização — nenhum pop-up. Para quando o app fecha (iPhone não roda site de fundo). */
 export async function recordLocationPing(req: AuthRequest, body: Record<string, unknown>): Promise<void> {
   if (!req.user) return;
