@@ -347,11 +347,18 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     const ja = new Set<string>(((cfd._donoAskedFor as string[]) || []).map((x) => String(x).toUpperCase()));
     const novos = review.donoPendente.filter((d) => !ja.has(d.dono.toUpperCase()));
     if (novos.length) {
-      const nomes = novos.map((d) => `*${d.dono}*`).join(' e ');
-      const texto = `Vi na matrícula que o imóvel está no nome de ${nomes}. Quem é essa pessoa pra você (pai, mãe, cônjuge, filho…)? Preciso saber pra seguir com a documentação. 🙏`;
+      // Empresa (loteadora/construtora, matrícula-mãe) ≠ pessoa (Fabio 27/10, Diego: a IA perguntou se a "JARDIM DO MARQUES EMPREENDIMENTOS LTDA" era pai/mãe dele).
+      const pessoas = novos.filter((d) => !d.empresa), empresas = novos.filter((d) => d.empresa);
+      const docNome = (tipo: string) => /^IPTU|IPTU$|CADASTRO/.test(tipo) ? 'esse IPTU' : /^ESCRITURA/.test(tipo) ? 'essa escritura' : 'essa matrícula';
+      const partes = [
+        pessoas.length && `Vi na matrícula que o imóvel está no nome de ${pessoas.map((d) => `*${d.dono}*`).join(' e ')}. Quem é essa pessoa pra você (pai, mãe, cônjuge, filho…)? Preciso saber pra seguir com a documentação. 🙏`,
+        empresas.length && `Vi que ${docNome(empresas[0].doc)} ainda está no nome da empresa ${empresas.map((d) => `*${d.dono}*`).join(' e ')}, e não no seu. Você tem a matrícula individual do seu imóvel, já no seu nome? 🙏`,
+      ].filter(Boolean) as string[];
+      const texto = partes.join('\n\n');
       const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
       await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfd, _donoAskedFor: [...ja, ...novos.map((d) => d.dono.toUpperCase())], _donoAskedAt: new Date().toISOString(), _donoResolvedAt: null } as any } });
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏠 O imóvel está em nome de ${novos.map((d) => d.dono).join(' e ')}, que não é participante. ${sent.success ? 'Perguntei ao cliente quem é essa pessoa pra ele (precisa ser parente de 1º grau ou participante); o card espera a resposta.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte de quem é o imóvel.' : 'IA desligada: pergunte ao cliente de quem é o imóvel (precisa ser parente de 1º grau ou participante).'}` } }).catch(() => {});
+      if (pessoas.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏠 O imóvel está em nome de ${pessoas.map((d) => d.dono).join(' e ')}, que não é participante. ${sent.success ? 'Perguntei ao cliente quem é essa pessoa pra ele (precisa ser parente de 1º grau ou participante); o card espera a resposta.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte de quem é o imóvel.' : 'IA desligada: pergunte ao cliente de quem é o imóvel (precisa ser parente de 1º grau ou participante).'}` } }).catch(() => {});
+      if (empresas.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏢 O documento do imóvel está no nome da EMPRESA ${empresas.map((d) => d.dono).join(' e ')} (pessoa jurídica — em geral a loteadora/construtora, venda ainda não registrada, ou a matrícula-mãe do empreendimento). ${sent.success ? 'Perguntei ao cliente se ele tem a matrícula individual já no nome dele; o card espera. Se ele disser que o imóvel ainda não está no nome dele ou que a empresa é dele, a pergunta vai pro balão Dúvidas da IA.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte se ele tem a matrícula individual no nome dele.' : 'IA desligada: pergunte ao cliente se ele tem a matrícula individual no nome dele.'}` } }).catch(() => {});
     }
     return true; // card espera o dono do imóvel ser esclarecido (a pergunta ao cliente já foi feita)
   }

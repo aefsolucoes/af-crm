@@ -23,9 +23,10 @@ export interface DocReview {
   observacao: string;
   /** Só AUTORIZACAO SCR BACEN: GOVBR = assinatura eletrônica do gov.br (não precisa de identidade); PUNHO = assinada à mão (precisa do documento com foto). */
   assinatura?: 'GOVBR' | 'PUNHO';
-  /** Documento do imóvel: nome do proprietário ATUAL e como ele se relaciona com os participantes (Home Equity). OUTRO_SEM_RELACAO = dono é outra pessoa e a conversa ainda não explica o vínculo → a conferência pergunta ao cliente. */
+  /** Documento do imóvel: nome do proprietário ATUAL e como ele se relaciona com os participantes (Home Equity). OUTRO_SEM_RELACAO = dono é outra pessoa e a conversa ainda não explica o vínculo → a conferência pergunta ao cliente.
+   *  EMPRESA = dono é pessoa jurídica (loteadora, construtora, empresa…): nunca vira pergunta de parentesco — a conferência pergunta se ele tem a matrícula individual no nome dele (Fabio 27/10, Diego). */
   dono?: string;
-  donoSituacao?: 'PARTICIPANTE' | 'OUTRO_SEM_RELACAO' | 'PARENTE_1GRAU';
+  donoSituacao?: 'PARTICIPANTE' | 'OUTRO_SEM_RELACAO' | 'PARENTE_1GRAU' | 'EMPRESA';
   /** Só MATRICULA/CERTIDAO DE ONUS aceita COM RESSALVA: CONSULTA (marca "para simples consulta", não é certidão oficial) ou ANTIGA (emissão há mais de 30 dias) — o banco pode não aceitar; o cliente recebe uma observação. */
   ressalva?: 'CONSULTA' | 'ANTIGA';
   /** Documento do imóvel: número da matrícula e cartório de registro como aparecem (vão pro card — servem pra emitir a certidão). */
@@ -51,7 +52,7 @@ export interface DocReview {
 const SYSTEM = `Você é a conferente de documentos de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional). Olhe o ARQUIVO que o cliente mandou pelo WhatsApp e diga se ele está CORRETO para seguir ao banco. Responda SOMENTE com JSON:
 {"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS (SÓ a do CARTÓRIO de Registro de Imóveis), CERTIDAO DE CADASTRO IMOBILIARIO (da PREFEITURA), MATRICULA, CND IPTU (SÓ a certidão negativa), GUIA IPTU (guia/carnê de pagamento), CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","ressalva":"<SÓ MATRICULA ou CERTIDAO DE ONUS aceita mesmo assim: CONSULTA (tem a marca \"para simples consulta\"/não vale como certidão) ou ANTIGA (emissão há mais de 30 dias); senão vazio>",
 "matricula":"<SÓ documento do imóvel: número da matrícula como aparece (ex.: 36.267); senão vazio>","matriculasAnteriores":"<SÓ MATRICULA: se houver averbação de RENUMERAÇÃO, o(s) número(s) anterior(es) da matrícula separados por ponto e vírgula (ex.: 159); senão vazio>","matriculaEncerrada":<true SÓ se MATRICULA/CERTIDAO DE ONUS traz averbação de ENCERRAMENTO DA MATRÍCULA (sem reabertura); senão false>","encerradaEm":"<data do encerramento DD/MM/AAAA, ou vazio>","matriculasNovas":"<se encerrada: as matrículas NOVAS que a averbação diz que foram abertas, separadas por ponto e vírgula, com a descrição, ex.: 438.308 (Apartamento 203); 438.309 (Vaga de garagem); senão vazio>","cartorio":"<SÓ documento do imóvel: cartório de registro de imóveis (nome/cidade); senão vazio>",
-"dono":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, escritura): nome do proprietário ATUAL; senão vazio>","donoSituacao":"<SÓ documento do imóvel em Home Equity: PARTICIPANTE | OUTRO_SEM_RELACAO | PARENTE_1GRAU; senão vazio>",
+"dono":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, escritura): nome do proprietário ATUAL; senão vazio>","donoSituacao":"<SÓ documento do imóvel em Home Equity: PARTICIPANTE | OUTRO_SEM_RELACAO | PARENTE_1GRAU | EMPRESA; senão vazio>",
 "enderecoImovel":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, cadastro imobiliário, escritura): endereço do imóvel como está escrito (logradouro, número, complemento/apto, bairro); senão vazio>","inscricao":"<SÓ IPTU/guia/carnê/cadastro imobiliário: inscrição imobiliária exatamente como aparece; senão vazio>",
 "metragens":<true SÓ se o documento é OFICIAL DA PREFEITURA do município (capa/guia/carnê de IPTU, certidão de IPTU, cadastro imobiliário/BCI) E MOSTRA a área do terreno e/ou a área construída; matrícula, escritura e qualquer documento de cartório NÃO contam; senão false>,
 "gravame":"<SÓ MATRICULA ou CERTIDAO DE ONUS: se constar alienação fiduciária, hipoteca ou penhora ainda VIGENTE (sem averbação de cancelamento/baixa), escreva curto: TIPO - CREDOR - valor original (data), ex.: ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024); senão vazio>",
@@ -64,6 +65,7 @@ Critérios — aponte PROBLEMA só quando for real; documento legível e correto
 - Atualização (use a data de hoje): comprovante de residência com mais de 90 dias; CND de IPTU vencida; contracheque que não seja dos últimos 3 meses → PROBLEMA, dizendo o prazo exigido. Para a A&F, certidão de ônus reais e matrícula (inteiro teor) são o MESMO tipo de documento: número da matrícula, metragens e todos os REGISTROS (R-) e AVERBAÇÕES (AV-) — um histórico completo do imóvel. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA NÃO têm prazo: a A&F aceita antiga/vencida, aceita a versão "PARA SIMPLES CONSULTA, NÃO VALE COMO CERTIDÃO" (consulta do ONR) e aceita incompleta ou com páginas faltando (Fabio 15/10). NUNCA marque PROBLEMA nem peça ao cliente pra tirar outra no cartório por causa de data, marca de consulta ou páginas: aceite, preencha "ressalva" (CONSULTA ou ANTIGA) quando for o caso — o banco decide e o cliente recebe uma observação — e anote detalhes em "observacao" (a A&F emite a certidão pelo endereço ou número da matrícula). A data que vale na matrícula/certidão é a de EMISSÃO da certidão (carimbo/linha "certidão emitida em…", em geral no topo ou no fim), NÃO as datas dos registros e averbações dentro dela (um registro de 2011 não torna a certidão antiga). Se a data de emissão/validade não aparecer mas o documento parece inteiro e legível, é OK: anote "sem data de emissão visível" na observação.
 - MATRÍCULA ENCERRADA (Fabio 16/10): se a MATRICULA/CERTIDAO DE ONUS tem averbação de "ENCERRAMENTO DE MATRÍCULA" (imóvel desmembrado/renumerado: "foram ABERTAS as matrículas nº …"), a certidão NÃO serve pro banco — marque "matriculaEncerrada": true, preencha "encerradaEm" e "matriculasNovas" e dê resultado PROBLEMA com o texto: "a matrícula nº X foi encerrada em DD/MM; o imóvel agora tem a matrícula nº Y — precisa da certidão da matrícula nova". Renumeração ("Av. … RENUMERAÇÃO", só muda o número) NÃO é encerramento.
 - Titular: compare com os participantes do card. RG/CNH/CPF/certidão/documento de renda em nome de OUTRA pessoa → PROBLEMA ("está no nome de X; o participante é Y"). Comprovante de residência em nome de parente/outra pessoa NÃO é problema por si só. DOCUMENTOS DO IMÓVEL (matrícula, ônus, IPTU, escritura): olhe o PROPRIETÁRIO ATUAL (o último registro de propriedade, não os antigos) e preencha "dono". Em Home Equity ele precisa ser um dos participantes do card OU parente de 1º grau deles (pai, mãe, filho/a; cônjuge também vale): participante → donoSituacao PARTICIPANTE (resultado OK). Outra pessoa e a "CONVERSA RECENTE" (se vier) NÃO explica quem ela é → donoSituacao OUTRO_SEM_RELACAO e resultado OK (o documento em si está certo; a conferência vai perguntar ao cliente de quem é o imóvel — não chute parentesco por sobrenome). Se a CONVERSA RECENTE traz o cliente explicando o vínculo: pai/mãe/filho/filha/cônjuge → PARENTE_1GRAU (OK); qualquer outro vínculo (irmão, tio, amigo, empresa, ex-cônjuge…) ou resposta confusa → resultado DUVIDA, com a pergunta pra equipe citando o que o cliente disse. No Financiamento Habitacional o imóvel é do VENDEDOR e isso é normal (deixe donoSituacao vazio; não é problema nem dúvida).
+- PROPRIETÁRIO EMPRESA (Fabio 27/10: a IA perguntou "quem é essa pessoa pra você (pai, mãe…)?" sobre uma loteadora LTDA): se o proprietário atual é PESSOA JURÍDICA (LTDA, S/A, EIRELI, ME, EPP, SPE, Empreendimentos, Incorporadora, Construtora, Loteadora, Urbanismo, Imobiliária, Participações, Holding, Banco, Cooperativa, Condomínio, Prefeitura, CNPJ…) → donoSituacao EMPRESA e resultado OK — NUNCA OUTRO_SEM_RELACAO nem PARENTE_1GRAU (empresa não é parente). Quase sempre é a matrícula ainda no nome da loteadora/construtora (a venda não foi registrada) ou a matrícula-mãe do empreendimento: diga isso em "observacao". Se a CONVERSA RECENTE traz a resposta do cliente: mandou/vai mandar a matrícula individual no nome dele → EMPRESA (OK); disse que o imóvel ainda não está no nome dele, que só tem contrato/escritura sem registro, ou que a empresa é DELE → resultado DUVIDA, com a pergunta pra equipe citando o que ele disse.
 - CERTIDÃO DE CADASTRO IMOBILIÁRIO (Fabio 19/10): documento da PREFEITURA/município (ex.: "Certidão de Cadastro de Imóvel", Departamento de Tributos) com inscrição imobiliária, proprietários e endereço. NÃO é certidão de ônus nem matrícula (essas são do CARTÓRIO de Registro de Imóveis) e NUNCA entra como "CERTIDAO DE ONUS REAIS": use o tipo CERTIDAO DE CADASTRO IMOBILIARIO. Ela traz a inscrição imobiliária, mas não substitui a matrícula/ônus.
 - GUIA/CARNÊ DE PAGAMENTO do IPTU (parcelas com vencimento e código de barras) NÃO é CND: use o tipo GUIA IPTU, sem regra de validade de CND (não dê PROBLEMA por "vencida"). Só é CND IPTU o documento escrito "Certidão" negativa de débitos.
 - CAPA IPTU (Home Equity: capa do IPTU/carnê com as metragens e a inscrição imobiliária): precisa mostrar as METRAGENS (área do terreno/construída) e a inscrição; se a capa NÃO mostrar as metragens, NÃO dê PROBLEMA (Fabio 20/10: as metragens podem estar em OUTRO documento OFICIAL DA PREFEITURA — certidão de IPTU ou cadastro imobiliário): só marque "metragens": false (a conferência aceita as metragens de outro documento OFICIAL DA PREFEITURA: certidão de IPTU ou cadastro imobiliário; matrícula e escritura não servem pra esse item). Não exija CND de IPTU no Home Equity (a lista agora pede a capa e a inscrição; a A&F emite a CND).
@@ -82,6 +84,15 @@ function cleanText(v: unknown, max: number): string {
   const cut = t.slice(0, max);
   const frase = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
   return frase > max * 0.5 ? cut.slice(0, frase + 1) : cut.slice(0, cut.lastIndexOf(' ') > 0 ? cut.lastIndexOf(' ') : max).replace(/[,;:\s]+$/, '') + '…';
+}
+
+/** Nome de PESSOA JURÍDICA (proprietário do imóvel): LTDA, S/A, ME, construtora, loteadora, banco, CNPJ… "Sá" (sobrenome) não conta. Pura (testável). */
+export function ehPessoaJuridica(nome: string | null | undefined): boolean {
+  const t = String(nome || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+  if (!t) return false;
+  if (/\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}/.test(t)) return true; // CNPJ
+  if (/\bS\/A\b|\bS\.\s?A\b|[\s-](ME|MEI|EPP|SPE|SS)\.?$/.test(t)) return true;
+  return /\b(LTDA|EIRELI|EMPREENDIMENTOS?|INCORPORA(DORA|DORES|COES|CAO)|CONSTRUTORA|CONSTRUCOES|ENGENHARIA|LOTEADORA|LOTEAMENTOS?|URBANISMO|URBANIZADORA|IMOBILIARIA|IMOBILIARIOS?|PARTICIPACOES|HOLDING|COMERCIO|INDUSTRIA|SERVICOS|COOPERATIVA|ASSOCIACAO|FUNDACAO|BANCO|CAIXA ECONOMICA|COMPANHIA|CIA|CONDOMINIO|PREFEITURA|MUNICIPIO|UNIAO FEDERAL|COHAB|CDHU|TERRACAP|INVESTIMENTOS|ADMINISTRADORA|PATRIMONIAL|EMPRESA)\b/.test(t);
 }
 
 /** Lê UM arquivo. undefined = não deu pra ler (tipo, tamanho, erro de rede/API) — tenta de novo na próxima conferência. */
@@ -131,8 +142,10 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     const assinatura = j.assinatura === 'GOVBR' || j.assinatura === 'PUNHO' ? j.assinatura : undefined;
     const matricula = cleanText(j.matricula, 40), cartorio = cleanText(j.cartorio, 80);
     const ressalva = j.ressalva === 'CONSULTA' || j.ressalva === 'ANTIGA' ? j.ressalva : undefined;
-    const donoSituacao = j.donoSituacao === 'PARTICIPANTE' || j.donoSituacao === 'OUTRO_SEM_RELACAO' || j.donoSituacao === 'PARENTE_1GRAU' ? j.donoSituacao : undefined;
     const dono = cleanText(j.dono, 80);
+    const sitLida = j.donoSituacao === 'PARTICIPANTE' || j.donoSituacao === 'OUTRO_SEM_RELACAO' || j.donoSituacao === 'PARENTE_1GRAU' || j.donoSituacao === 'EMPRESA' ? j.donoSituacao : undefined;
+    // Nome de empresa nunca é "outra pessoa"/parente, mesmo que o modelo escorregue.
+    const donoSituacao = (sitLida === 'OUTRO_SEM_RELACAO' || sitLida === 'PARENTE_1GRAU') && ehPessoaJuridica(dono) ? 'EMPRESA' : sitLida;
     const endereco = cleanText(j.enderecoImovel, 140), inscricao = cleanText(j.inscricao, 40);
     const ehMat = /^(MATRICULA|CERTIDAO DE ONUS)/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
     const novas = ehMat && j.matriculaEncerrada === true ? String(j.matriculasNovas || '').split(/\s*;\s*/).map((x) => cleanText(x, 80)).filter(Boolean).slice(0, 6) : [];
@@ -191,8 +204,8 @@ export interface ReviewSummary {
   problemas: { doc: string; texto: string[] }[];
   /** Documentos em DÚVIDA (a IA levou a pergunta pra equipe, no balão): seguram o card até a equipe responder. */
   duvidas: { attachmentId: string; arquivo: string; doc: string; pergunta: string }[];
-  /** Documento do imóvel em nome de OUTRA pessoa sem vínculo explicado: a conferência pergunta ao cliente de quem é. */
-  donoPendente: { attachmentId: string; doc: string; dono: string }[];
+  /** Documento do imóvel em nome de OUTRA pessoa sem vínculo explicado: a conferência pergunta ao cliente de quem é. empresa = dono é pessoa jurídica (pergunta a matrícula individual, não o parentesco). */
+  donoPendente: { attachmentId: string; doc: string; dono: string; empresa?: boolean }[];
   /** Documentos conferidos e OK (rótulo). */
   ok: string[];
   /** Pedidos que a leitura de UM arquivo gerou, mas OUTRO arquivo já atende (não vão ao cliente). */
@@ -275,7 +288,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   // (capa de IPTU lida como "comprovante de residência" em nome de empresa — Maria Antônia, 15/10) passa a valer pelo que o leitor disse.
   const infoFix: Record<string, string> = {};
   for (const a of atts) {
-    const reler = releDono && cache[a.id]?.donoSituacao === 'OUTRO_SEM_RELACAO';
+    const reler = releDono && (cache[a.id]?.donoSituacao === 'OUTRO_SEM_RELACAO' || cache[a.id]?.donoSituacao === 'EMPRESA');
     // Leitura antiga de documento da PREFEITURA (IPTU/cadastro) sem o campo "metragens": relê uma vez pra saber se ele mostra as metragens (Fabio 20/10).
     const semMetragens = !!cache[a.id] && /IPTU|CADASTRO IMOBILIARIO/.test(String(cache[a.id].tipo || '')) && cache[a.id].metragens === undefined;
     if ((cache[a.id] && !reler && !semMetragens) || info[a.id] === null || info[a.id] === undefined) continue;
@@ -385,11 +398,16 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   // Dono do imóvel em nome de OUTRA pessoa sem vínculo explicado (a leitura mais recente de cada documento).
   const donoPendente: ReviewSummary['donoPendente'] = [];
   const vistos = new Set<string>();
+  // Matrícula/escritura já no nome do cliente (ou de parente) chegou: a da empresa (loteadora/construtora, matrícula-mãe) fica pra trás — não pergunta mais.
+  const temNoNomeDele = atts.some((a) => { const r = cache[a.id]; return !!r && (r.donoSituacao === 'PARTICIPANTE' || r.donoSituacao === 'PARENTE_1GRAU') && /^(MATRICULA|CERTIDAO DE ONUS|ESCRITURA)/.test(r.tipo.normalize('NFD').replace(/[\u0300-\u036f]/g, '')); });
   for (const a of (cf0._transferenciaPendente ? [] : [...atts].reverse())) { // cliente já disse que não transferiu a escritura: não pergunta de quem é o imóvel
     const r = cache[a.id];
-    if (!r || r.donoSituacao !== 'OUTRO_SEM_RELACAO' || !r.dono || vistos.has(r.dono.toUpperCase())) continue;
+    if (!r || !r.dono || vistos.has(r.dono.toUpperCase())) continue;
+    const empresa = r.donoSituacao === 'EMPRESA' || (r.donoSituacao === 'OUTRO_SEM_RELACAO' && ehPessoaJuridica(r.dono)); // leituras antigas (antes de 27/10) vieram como OUTRO_SEM_RELACAO
+    if (r.donoSituacao !== 'OUTRO_SEM_RELACAO' && !empresa) continue;
+    if (empresa && temNoNomeDele) continue;
     vistos.add(r.dono.toUpperCase());
-    donoPendente.push({ attachmentId: a.id, doc: r.tipo, dono: r.dono });
+    donoPendente.push({ attachmentId: a.id, doc: r.tipo, dono: r.dono, ...(empresa ? { empresa: true } : {}) });
   }
   // OLHA A DOCUMENTAÇÃO TODA antes de pedir (Fabio 27/10: "o CRM está vendo apenas uma imagem e já definindo resposta; precisa olhar toda a documentação antes de pedir de novo").
   // Cada pedido nasceu da leitura de UM arquivo; aqui confere se OUTRO arquivo já atende (ex.: o extrato só com prestações pagas, mas chegou a simulação de quitação com o saldo devedor).

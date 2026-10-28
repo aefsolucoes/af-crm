@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { reviewAttachment, participantsContext, learnedDocRules, type DocReview } from './doc-review.service';
+import { reviewAttachment, participantsContext, learnedDocRules, ehPessoaJuridica, type DocReview } from './doc-review.service';
 import { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate, sendOutboundMedia } from './message.service';
 
 type Db = PrismaClient;
@@ -20,7 +20,7 @@ const WINDOW_MS = 23 * 3_600_000; // janela de 24 h do WhatsApp, com folga
 
 export type CertidaoVerdict =
   | { kind: 'OK'; dono: string; matricula: string; gravame: string }
-  | { kind: 'OUTRO_NOME'; dono: string; matricula: string; gravame: string; parente: boolean }
+  | { kind: 'OUTRO_NOME'; dono: string; matricula: string; gravame: string; parente: boolean; empresa?: boolean }
   | { kind: 'NEUTRO'; dono: string; matricula: string; gravame: string } // setor sem regra de dono (ex.: o imóvel é do vendedor)
   | { kind: 'ENCERRADA'; matricula: string; detalhe: string }
   | { kind: 'ILEGIVEL' };
@@ -46,7 +46,8 @@ export function certidaoVerdict(rev: DocReview | undefined, opts: { homeEquity: 
   if (!opts.homeEquity) return { kind: 'NEUTRO', dono, matricula, gravame };
   if (!dono || !rev.donoSituacao) return { kind: 'ILEGIVEL' };
   if (rev.donoSituacao === 'PARTICIPANTE') return { kind: 'OK', dono, matricula, gravame };
-  return { kind: 'OUTRO_NOME', dono, matricula, gravame, parente: rev.donoSituacao === 'PARENTE_1GRAU' };
+  const empresa = rev.donoSituacao === 'EMPRESA' || ehPessoaJuridica(dono);
+  return { kind: 'OUTRO_NOME', dono, matricula, gravame, parente: !empresa && rev.donoSituacao === 'PARENTE_1GRAU', ...(empresa ? { empresa: true } : {}) };
 }
 
 /** Texto ao cliente (sem emoji). Pura (testável). */
@@ -56,6 +57,8 @@ function certidaoClientTextBase(nome: string, v: CertidaoVerdict): string | null
   if (v.kind === 'NEUTRO') return `${nome}, saiu a certidão de ônus do imóvel${mat}. Segue o documento em anexo.`;
   if (v.kind === 'OUTRO_NOME') {
     const quem = v.dono ? titleCase(v.dono) : 'outra pessoa';
+    // Empresa (loteadora/construtora) não é "relação" com o cliente (Fabio 27/10): pergunta se o imóvel já foi passado pro nome dele.
+    if (v.empresa) return `${nome}, saiu a certidão de ônus do imóvel${mat}, mas ela ainda está no nome da empresa ${quem}, e não no seu. Para o banco, o imóvel precisa estar no nome de quem vai contratar o crédito. Segue o documento em anexo. O imóvel já foi passado pro seu nome em outra matrícula, ou ainda está no nome da empresa?`;
     return `${nome}, saiu a certidão de ônus do imóvel${mat}, mas ela está no nome de ${quem}, e não no seu. Para o banco, o imóvel precisa estar no nome de quem vai contratar o crédito. Segue o documento em anexo. Me explica por favor: esse imóvel é de ${quem}? Qual é a relação de vocês?`;
   }
   return null; // ENCERRADA / ILEGIVEL: a equipe decide antes de falar com o cliente
@@ -155,7 +158,7 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
   // ── nota + push pra equipe ────────────────────────────────────────────────────────────────────
   const quem = 'dono' in verdict && verdict.dono ? verdict.dono : 'não identificado';
   if (verdict.kind === 'OUTRO_NOME') {
-    await note(db, p.leadId, `⚠️ ATENÇÃO: a certidão de ônus da matrícula ${p.matricula} está no nome de ${quem}${verdict.parente ? ' (parente de 1º grau?)' : ''}, e NÃO no de um participante do card. O cliente será avisado.${gravameTxt}${ressalvaTxt}`);
+    await note(db, p.leadId, `⚠️ ATENÇÃO: a certidão de ônus da matrícula ${p.matricula} está no nome de ${verdict.empresa ? 'uma EMPRESA, ' : ''}${quem}${verdict.parente ? ' (parente de 1º grau?)' : ''}, e NÃO no de um participante do card. O cliente será avisado.${gravameTxt}${ressalvaTxt}`);
     pushAll(p.accountId, '⚠️ Certidão de ônus em outro nome', `${lead.name} — imóvel no nome de ${titleCase(quem)}`, p.leadId);
   } else {
     await note(db, p.leadId, `✅ Certidão de ônus da matrícula ${p.matricula} conferida pela IA: proprietário ${quem}${verdict.kind === 'OK' ? ' (participante do card)' : ''}.${gravameTxt}${ressalvaTxt}`);
