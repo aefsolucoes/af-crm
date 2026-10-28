@@ -30,7 +30,7 @@ const RODADAS_SEM_APARECER = 2;
 const SEM_APARECER_DIAS = 7;
 const CHECK_GAP_MS = 10 * 60_000;
 
-export type RecRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; updatedAt: Date; source: string; proposalNumber?: string | null };
+export type RecRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; updatedAt: Date; source: string; proposalNumber?: string | null; notBefore?: Date | null };
 export type RecAction = { bank: string; mode: 'RUN' | 'CHECK' | 'STOP'; why: string };
 
 /** Cobrança do cliente: mensagem curta perguntando do resultado/andamento (não vale proposta preenchida nem texto longo). Pura (testável). */
@@ -44,12 +44,15 @@ export function isChase(text: string): boolean {
 export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?: (bank: string) => boolean } = {}): RecAction[] {
   const now = opts.now ?? Date.now();
   const out: RecAction[] = [];
+  // Pedido vivo: mexido nos últimos 25 min OU conferência marcada (notBefore) que ainda vai rodar / acabou de vencer. Antes só valia o updatedAt e a conferência da Creditas
+  // marcada de 30 em 30 min (ou pras 7h do dia seguinte) parecia parada — a retomada das 7h abria uma 2ª cadeia em paralelo (Alziro 28/10: 48ª e 19ª conferências ao mesmo tempo).
+  const vivo = (r: RecRow) => (r.status === 'REQUESTED' || r.status === 'RUNNING') && (now - r.updatedAt.getTime() < 25 * 60_000 || (r.status === 'REQUESTED' && !!r.notBefore && now - new Date(r.notBefore).getTime() < 25 * 60_000));
   for (const bank of BANKS) {
     const mine = rows.filter((r) => r.bank === bank && semRuidoDeSimulacao(r)).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     if (!mine.length) continue;
     // rodada (ou leitura) EM EXECUÇÃO nesse banco agora: espera. Só conferência na fila (as de 3–10 min, até 18 vezes) não segura uma nova rodada — senão uma proposta que nunca aparece
     // ficaria 3 h sendo reconferida sem ninguém rodar de novo (Melissa 21/10).
-    const abertas = mine.filter((r) => (r.status === 'REQUESTED' || r.status === 'RUNNING') && now - r.updatedAt.getTime() < 25 * 60_000);
+    const abertas = mine.filter(vivo);
     if (abertas.some((r) => r.status === 'RUNNING' || r.kind === 'RUN')) continue;
     const conferenciaNaFila = abertas.length > 0;
     const efetivas = mine.filter((r) => !(r.kind === 'CHECK' && ['CHECK', 'REQUESTED', 'RUNNING'].includes(r.status)));
@@ -96,7 +99,7 @@ export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?:
     }
   }
   // conferência já na fila e o plano era só conferir: nada a criar
-  return out.filter((a) => !(a.mode === 'CHECK' && rows.some((r) => r.bank === a.bank && r.kind === 'CHECK' && r.status === 'REQUESTED' && now - r.updatedAt.getTime() < 25 * 60_000)));
+  return out.filter((a) => !(a.mode === 'CHECK' && rows.some((r) => r.bank === a.bank && r.kind === 'CHECK' && r.status === 'REQUESTED' && vivo(r))));
 }
 
 const brt = (ms = Date.now()) => new Date(ms - 3 * 3600_000);
@@ -114,7 +117,7 @@ export async function recoverStuckAnalyses(accountId: string, leadId: string, wh
       stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
       pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
     },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true } } },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true, notBefore: true } } },
   });
   if (!lead) return [];
   const cf = (lead.customFields || {}) as Cf;
