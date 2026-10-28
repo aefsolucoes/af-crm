@@ -21,6 +21,8 @@ export interface DocReview {
   lado: 'frente' | 'verso' | 'ambos' | '';
   emissao: string;
   observacao: string;
+  /** OUTROS documentos que vieram no MESMO arquivo além do principal ("ESCRITURA", "RG - Fulano"): Wagner 28/10 — escritura + matrícula num PDF só e o CRM pediu a matrícula que já tinha chegado. */
+  outros?: string[];
   /** Só AUTORIZACAO SCR BACEN: GOVBR = assinatura eletrônica do gov.br (não precisa de identidade); PUNHO = assinada à mão (precisa do documento com foto). */
   assinatura?: 'GOVBR' | 'PUNHO';
   /** Documento do imóvel: nome do proprietário ATUAL e como ele se relaciona com os participantes (Home Equity). OUTRO_SEM_RELACAO = dono é outra pessoa e a conversa ainda não explica o vínculo → a conferência pergunta ao cliente.
@@ -50,7 +52,7 @@ export interface DocReview {
 }
 
 const SYSTEM = `Você é a conferente de documentos de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional). Olhe o ARQUIVO que o cliente mandou pelo WhatsApp e diga se ele está CORRETO para seguir ao banco. Responda SOMENTE com JSON:
-{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS (SÓ a do CARTÓRIO de Registro de Imóveis), CERTIDAO DE CADASTRO IMOBILIARIO (da PREFEITURA), MATRICULA, CND IPTU (SÓ a certidão negativa), GUIA IPTU (guia/carnê de pagamento), CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento, ou vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","ressalva":"<SÓ MATRICULA ou CERTIDAO DE ONUS aceita mesmo assim: CONSULTA (tem a marca \"para simples consulta\"/não vale como certidão) ou ANTIGA (emissão há mais de 30 dias); senão vazio>",
+{"tipo":"<nome curto: RG, CNH, CPF, CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, AUTORIZACAO SCR BACEN, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, CERTIDAO DE ONUS REAIS (SÓ a do CARTÓRIO de Registro de Imóveis), CERTIDAO DE CADASTRO IMOBILIARIO (da PREFEITURA), MATRICULA, CND IPTU (SÓ a certidão negativa), GUIA IPTU (guia/carnê de pagamento), CAPA IPTU, ESCRITURA ou outro nome curto>","titular":"<nome completo como está no documento; se o arquivo traz documentos de MAIS DE UMA pessoa (ex.: RG do casal no mesmo PDF), TODOS os nomes separados por ponto e vírgula; ou vazio>","outros":"<SÓ se o MESMO arquivo traz OUTRO documento além do principal (ex.: escritura + matrícula juntas, RG + comprovante de residência): os tipos, com o titular quando for documento pessoal, separados por ponto e vírgula (ex.: ESCRITURA; COMPROVANTE DE RESIDENCIA - Fulano); senão vazio>","resultado":"OK|PROBLEMA|NAO_DOCUMENTO|DUVIDA","problemas":["<frase dirigida AO CLIENTE (você), educada e curta, dizendo o que está errado e o que fazer — ex.: \"Manda uma foto mais nítida, a data não dá pra ler.\" Nunca escreva \"peça ao cliente\">"],"lado":"<só RG/CNH: frente, verso ou ambos (o que aparece nesta imagem); senão vazio>","emissao":"<AAAA-MM-DD da emissão/competência se aparecer, senão vazio>","assinatura":"<só AUTORIZACAO SCR BACEN assinada: GOVBR (assinatura eletrônica/carimbo do gov.br) ou PUNHO (assinatura à mão); senão vazio>","ressalva":"<SÓ MATRICULA ou CERTIDAO DE ONUS aceita mesmo assim: CONSULTA (tem a marca \"para simples consulta\"/não vale como certidão) ou ANTIGA (emissão há mais de 30 dias); senão vazio>",
 "matricula":"<SÓ documento do imóvel: número da matrícula como aparece (ex.: 36.267); senão vazio>","matriculasAnteriores":"<SÓ MATRICULA: se houver averbação de RENUMERAÇÃO, o(s) número(s) anterior(es) da matrícula separados por ponto e vírgula (ex.: 159); senão vazio>","matriculaEncerrada":<true SÓ se MATRICULA/CERTIDAO DE ONUS traz averbação de ENCERRAMENTO DA MATRÍCULA (sem reabertura); senão false>","encerradaEm":"<data do encerramento DD/MM/AAAA, ou vazio>","matriculasNovas":"<se encerrada: as matrículas NOVAS que a averbação diz que foram abertas, separadas por ponto e vírgula, com a descrição, ex.: 438.308 (Apartamento 203); 438.309 (Vaga de garagem); senão vazio>","cartorio":"<SÓ documento do imóvel: cartório de registro de imóveis (nome/cidade); senão vazio>",
 "dono":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, escritura): nome do proprietário ATUAL; senão vazio>","donoSituacao":"<SÓ documento do imóvel em Home Equity: PARTICIPANTE | OUTRO_SEM_RELACAO | PARENTE_1GRAU | EMPRESA; senão vazio>",
 "enderecoImovel":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, cadastro imobiliário, escritura): endereço do imóvel como está escrito (logradouro, número, complemento/apto, bairro); senão vazio>","inscricao":"<SÓ IPTU/guia/carnê/cadastro imobiliário: inscrição imobiliária exatamente como aparece; senão vazio>",
@@ -70,6 +72,7 @@ Critérios — aponte PROBLEMA só quando for real; documento legível e correto
 - GUIA/CARNÊ DE PAGAMENTO do IPTU (parcelas com vencimento e código de barras) NÃO é CND: use o tipo GUIA IPTU, sem regra de validade de CND (não dê PROBLEMA por "vencida"). Só é CND IPTU o documento escrito "Certidão" negativa de débitos.
 - CAPA IPTU (Home Equity: capa do IPTU/carnê com as metragens e a inscrição imobiliária): precisa mostrar as METRAGENS (área do terreno/construída) e a inscrição; se a capa NÃO mostrar as metragens, NÃO dê PROBLEMA (Fabio 20/10: as metragens podem estar em OUTRO documento OFICIAL DA PREFEITURA — certidão de IPTU ou cadastro imobiliário): só marque "metragens": false (a conferência aceita as metragens de outro documento OFICIAL DA PREFEITURA: certidão de IPTU ou cadastro imobiliário; matrícula e escritura não servem pra esse item). Não exija CND de IPTU no Home Equity (a lista agora pede a capa e a inscrição; a A&F emite a CND).
 - ESCRITURA PÚBLICA de compra e venda (Home Equity): é válida como documento do imóvel — resultado OK; leia nela o número da matrícula e o cartório ("matricula"/"cartorio") e o proprietário. CONTRATO DE COMPRA E VENDA particular ("de gaveta", sem registro em cartório) ou documento do imóvel que você não sabe se serve: resultado DUVIDA, pergunta pra equipe analisar. Nenhum dos dois substitui a certidão de ônus/matrícula; só ajudam a emiti-la.
+- ARQUIVO COM VÁRIOS DOCUMENTOS (Fabio 28/10: o PDF trazia os RGs do casal, e a escritura vinha com a matrícula, e o cliente foi cobrado do que já tinha mandado): leia TODAS as páginas. Mais de uma pessoa → todos os nomes em "titular"; mais de um tipo de documento → o principal em "tipo" e os demais em "outros".
 - Documento de várias páginas (matrícula, ônus, escritura, IR) que parece parcial: NÃO marque PROBLEMA; escreva em "observacao" que parece parcial.
 - Se não for documento (selfie, figurinha, print de conversa, foto qualquer): resultado NAO_DOCUMENTO.
 - AUTORIZACAO SCR BACEN (formulário "Autorização SCR Bacen" que a Creditas pede): só vale ASSINADA. Assinada = carimbo/assinatura eletrônica do gov.br ("Assinado digitalmente/de forma digital por NOME … gov.br", com CPF) ou assinatura de próprio punho no campo de assinatura; "titular" = a PESSOA QUE ASSINOU/preencheu (nome do participante). Preencha "assinatura" com GOVBR ou PUNHO. Formulário em branco ou sem assinatura → PROBLEMA (diga ao cliente: "assine pelo gov.br e me devolva o PDF assinado"; se for assinar à mão, "assine igual ao seu documento de identidade e mande o formulário junto com a foto do documento"). O CRM já manda o formulário preenchido (local, data de hoje, nome e CPF no campo do proponente); o cliente só assina. Sem o nome do participante ou sem data → PROBLEMA ("esse formulário veio sem data/nome; assine o que eu te mandei, já preenchido"). Assinatura legível e nome batendo com o participante → OK.
@@ -147,6 +150,7 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     // Nome de empresa nunca é "outra pessoa"/parente, mesmo que o modelo escorregue.
     const donoSituacao = (sitLida === 'OUTRO_SEM_RELACAO' || sitLida === 'PARENTE_1GRAU') && ehPessoaJuridica(dono) ? 'EMPRESA' : sitLida;
     const endereco = cleanText(j.enderecoImovel, 140), inscricao = cleanText(j.inscricao, 40);
+    const outros = (Array.isArray(j.outros) ? j.outros : String(j.outros || '').split(/\s*;\s*/)).map((x: unknown) => cleanText(x, 80)).filter(Boolean).slice(0, 4);
     const ehMat = /^(MATRICULA|CERTIDAO DE ONUS)/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
     const novas = ehMat && j.matriculaEncerrada === true ? String(j.matriculasNovas || '').split(/\s*;\s*/).map((x) => cleanText(x, 80)).filter(Boolean).slice(0, 6) : [];
     const anteriores = ehMat ? String(j.matriculasAnteriores || '').split(/\s*;\s*/).map((x) => cleanText(x, 40)).filter(Boolean).slice(0, 4) : [];
@@ -156,7 +160,7 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     const problemasFinal = encerrada
       ? [`a matrícula${matricula ? ` nº ${matricula}` : ''} foi ENCERRADA${encerrada.quando ? ` em ${encerrada.quando}` : ''}${novas.length ? `; o imóvel agora tem ${novas.length > 1 ? 'as matrículas' : 'a matrícula'} ${novas.join(' e ')}` : ''} — precisa da certidão da matrícula nova`, ...problemas.filter((p: string) => !/encerr/i.test(p))].slice(0, 4)
       : problemas;
-    return { ...(endereco ? { endereco } : {}), ...(inscricao ? { inscricao } : {}), metragens: j.metragens === true && /IPTU|CADASTRO IMOBILIARIO/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')), tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 80), resultado: resultadoFinal, ...(encerrada ? { encerrada } : {}), ...(anteriores.length ? { anteriores } : {}), problemas: resultadoFinal === 'PROBLEMA' ? problemasFinal : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(matricula ? { matricula } : {}), ...(cartorio ? { cartorio } : {}), ...(ressalva ? { ressalva } : {}), ...(donoSituacao ? { donoSituacao, ...(dono ? { dono } : {}) } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
+    return { ...(endereco ? { endereco } : {}), ...(inscricao ? { inscricao } : {}), metragens: j.metragens === true && /IPTU|CADASTRO IMOBILIARIO/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')), tipo: cleanText(j.tipo, 50).toUpperCase(), titular: cleanText(j.titular, 160), ...(outros.length ? { outros } : {}), resultado: resultadoFinal, ...(encerrada ? { encerrada } : {}), ...(anteriores.length ? { anteriores } : {}), problemas: resultadoFinal === 'PROBLEMA' ? problemasFinal : [], lado, emissao: cleanText(j.emissao, 10), observacao: cleanText(j.observacao, 400), ...(assinatura ? { assinatura } : {}), ...(gravame ? { gravame } : {}), ...(matricula ? { matricula } : {}), ...(cartorio ? { cartorio } : {}), ...(ressalva ? { ressalva } : {}), ...(donoSituacao ? { donoSituacao, ...(dono ? { dono } : {}) } : {}), ...(resultado === 'DUVIDA' ? { duvida } : {}), ...(opts.teamAnswer && cleanText(j.regra, 300) ? { regra: cleanText(j.regra, 300) } : {}) };
   } catch { return undefined; }
 }
 
@@ -212,6 +216,12 @@ export interface ReviewSummary {
   atendidos?: { doc: string; texto: string; por: string }[];
 }
 
+/** Arquivo com documento de MAIS DE UMA pessoa (RG do casal no mesmo PDF — Wagner 28/10): a leitura devolve "A; B" no titular; cada pessoa conta como um documento dela. Pura (testável). */
+export function porTitular(r: DocReview): DocReview[] {
+  const nomes = String(r.titular || '').split(/\s*;\s*/).filter(Boolean);
+  return nomes.length > 1 ? nomes.map((titular) => ({ ...r, titular })) : [r];
+}
+
 const docKey = (r: DocReview) => `${r.tipo}|${r.titular.split(' ').slice(0, 2).join(' ')}`.toUpperCase();
 const docLabel = (r: DocReview) => (r.titular ? `${r.tipo} (${r.titular.split(' ').slice(0, 2).join(' ')})` : r.tipo);
 
@@ -223,7 +233,9 @@ const STOP_END = new Set(['R', 'RUA', 'AV', 'AVENIDA', 'TRAV', 'TRAVESSA', 'DA',
 export function sameProperty(a: { endereco?: string; inscricao?: string }, b: { endereco?: string; inscricao?: string }): boolean | null {
   const ia = soDigitos(a.inscricao), ib = soDigitos(b.inscricao);
   // O boletim cadastral da prefeitura traz a inscrição com sufixo ("01.02.040.0484.005 / 9560"): um número que COMEÇA com o outro é o mesmo imóvel (Luiz 21/10: o cadastro virou "IPTU de outro imóvel" por causa do "/ 9560").
-  if (ia.length >= 8 && ib.length >= 8) return ia === ib || ia.startsWith(ib) || ib.startsWith(ia);
+  if (ia.length >= 8 && ib.length >= 8 && (ia.length === ib.length || ia.startsWith(ib) || ib.startsWith(ia))) return ia === ib || ia.startsWith(ib) || ib.startsWith(ia);
+  // 28/10 (Wagner): a capa do IPTU de Praia Grande traz a inscrição da prefeitura (170.171.007) e a matrícula, a do cadastro (2.03.07.002.006.0035-4) — numerações diferentes
+  // do MESMO apto, e o cliente ouviu "esse IPTU é de outro imóvel". Inscrições de tamanhos diferentes não se comparam: decide pelo endereço.
   if (!a.endereco || !b.endereco) return null;
   const ta = normEnd(a.endereco).split(' '), tb = normEnd(b.endereco).split(' ');
   const rua = (t: string[]) => t.filter((w) => !STOP_END.has(w) && !/^\d+$/.test(w));
@@ -351,7 +363,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   }
 
   // Situação atual: a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some); RG/CNH somam os lados.
-  const ordered = atts.map((a) => cache[a.id]).filter((r): r is DocReview => !!r && r.resultado !== 'NAO_DOCUMENTO' && r.resultado !== 'DUVIDA');
+  const ordered = atts.map((a) => cache[a.id]).filter((r): r is DocReview => !!r && r.resultado !== 'NAO_DOCUMENTO' && r.resultado !== 'DUVIDA').flatMap(porTitular);
   const latest = new Map<string, DocReview>();
   const lados = new Map<string, Set<string>>();
   // Quantas fotos/arquivos OK de RG/CNH chegaram de cada pessoa (27/10, Fernanda Karita: as 4 fotos do RG da Nildinete — os dois lados, mandados 2 vezes — saíram todas como "frente"
@@ -477,11 +489,13 @@ export async function aiDocsContext(leadId: string): Promise<string> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
   const rev = (cf._docReview || {}) as Record<string, DocReview>;
-  const items = Object.values(rev).filter((r) => r.resultado !== 'NAO_DOCUMENTO');
+  const items = Object.values(rev).filter((r) => r.resultado !== 'NAO_DOCUMENTO').flatMap(porTitular);
   if (!items.length) return '';
   const latest = new Map<string, DocReview>();
   for (const r of items) latest.set(docKey(r), r);
   const linhas = [...latest.values()].map((r) => `- ${docLabel(r)}: ${r.resultado === 'OK' ? 'OK' : r.resultado === 'DUVIDA' ? 'EM ANÁLISE PELA EQUIPE (não diga que está certo nem errado; diga que a equipe está conferindo e retorna)' : `PROBLEMA — ${r.problemas.join('; ')}`}${r.emissao ? ` (emissão ${r.emissao})` : ''}${r.lado ? ` [${r.lado}]` : ''}`);
+  const juntos = [...new Set(Object.values(rev).flatMap((r) => (r.resultado !== 'NAO_DOCUMENTO' && r.outros) || []))];
+  if (juntos.length) linhas.push(`- Também vieram junto, no mesmo arquivo de outro documento: ${juntos.join('; ')}`);
   const falta = cf._docsFaltando ? `\nAinda falta (lista do banco): ${cf._docsFaltando}` : '';
   const recusada = (await bancoRecusouCertidao(leadId).catch(() => false)) ? '\nO BANCO NÃO ACEITOU a certidão de ônus/matrícula que o cliente enviou (muito antiga ou só consulta): avise o cliente e ofereça emitir uma nova pelo ONR (custo de R$ 40 a R$ 100, só com o OK dele).' : '';
   const me = cf._matriculaEncerrada as { antiga?: string; quando?: string; novas?: string[] } | undefined;

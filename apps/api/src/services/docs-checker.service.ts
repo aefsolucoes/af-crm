@@ -196,10 +196,24 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const info = await getDocInfo(accountId, leadId, atts);
   const received = atts.map((a) => info[a.id]).filter((d): d is NonNullable<typeof d> => !!d);
   if (!received.length) return null;
+  // 28/10 (Wagner): um PDF com os RGs do casal e outro com escritura + matrícula — a classificação rápida guarda UM tipo e UM titular por arquivo ("RG|MARIA CRISTINA",
+  // "ESCRITURA") e o cliente foi cobrado do RG dele e da matrícula que já tinham chegado. Soma o que a leitura completa (_docReview) achou no mesmo arquivo: cada titular e os "outros".
+  const revAll = ((((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any)._docReview || {}) as Record<string, { tipo?: string; titular?: string; outros?: string[]; resultado?: string }>;
   const counts: Record<string, number> = {};
-  for (const d of received) {
-    const k = d.holder ? `${d.type} — de ${d.holder}` : d.type;
-    counts[k] = (counts[k] || 0) + 1;
+  for (const a of atts) {
+    const d = info[a.id];
+    if (!d) continue;
+    const doArquivo = new Map<string, string>(); // chave normalizada → como aparece
+    const add = (tipo: string, quem?: string) => { const t = quem ? `${tipo} — de ${quem}` : tipo; doArquivo.set(t.toUpperCase(), doArquivo.get(t.toUpperCase()) || t); };
+    const nomes = (x?: string) => String(x || '').split(/\s*;\s*/).filter(Boolean);
+    if (nomes(d.holder).length) nomes(d.holder).forEach((h) => add(d.type, h)); else add(d.type);
+    const r = revAll[a.id];
+    if (r && r.tipo && r.resultado !== 'NAO_DOCUMENTO') {
+      nomes(r.titular).forEach((h) => add(r.tipo!, h));
+      if (!nomes(r.titular).length && r.tipo.toUpperCase() !== d.type.toUpperCase()) add(r.tipo);
+      (r.outros || []).forEach((o) => add(o));
+    }
+    for (const k of doArquivo.values()) counts[k] = (counts[k] || 0) + 1;
   }
   const receivedText = Object.entries(counts).map(([t, n]) => (n > 1 ? `${t} (${n} arquivos)` : t)).join('\n');
   const unread = atts.filter((a) => info[a.id] === undefined).map((a) => a.fileName);
