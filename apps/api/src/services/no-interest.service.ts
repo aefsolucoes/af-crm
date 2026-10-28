@@ -37,7 +37,7 @@ export async function handleNoInterestButton(accountId: string, leadId: string, 
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
     select: {
-      id: true, name: true, status: true, customFields: true, stageId: true, stage: { select: { name: true } },
+      id: true, name: true, status: true, customFields: true, stageId: true, pipelineId: true, stage: { select: { name: true } },
       pipeline: { select: { name: true, departmentId: true, department: { select: { id: true, name: true } } } },
     },
   });
@@ -55,20 +55,25 @@ export async function handleNoInterestButton(accountId: string, leadId: string, 
   if (/contrata|conclu/i.test(lead.pipeline?.name || '')) return false;
 
   const button = text.trim();
-  const lostReason = `Cliente tocou em "${button}"`;
-  const { updateLead } = require('./lead.service') as typeof import('./lead.service');
-  const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
-  await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io);
-  await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io });
-  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: cliente tocou em "${button}"` });
-  // Aprovado que desistiu (Fabio 28/10, template "Ainda deseja prosseguir com o crédito?"): Perdido com a etiqueta "Aprovado sem andamento".
-  await (require('./prosseguir.service') as typeof import('./prosseguir.service')).tagAprovadoSemAndamento(lead.id, lead.stage?.name || '', (lead.customFields || {}) as Record<string, any>).catch((e: any) => console.error('[Sem interesse] etiqueta:', e?.message));
+  // Aprovado que desistiu (Fabio 28/10, template "Ainda deseja prosseguir com o crédito?"): vai pro estágio Remarketing do funil, não pra Perdido ("manda para
+  // remarketing, pra não precisar criar outro estágio"), com a etiqueta "Aprovado sem andamento". Sem estágio Remarketing no funil: Perdido de sempre.
+  const prosseguir = require('./prosseguir.service') as typeof import('./prosseguir.service');
+  const foiProRemarketing = await prosseguir.moveNaoParaRemarketing(accountId, lead, button, io).catch((e: any) => { console.error('[Sem interesse] Remarketing:', e?.message); return false; });
+  if (!foiProRemarketing) {
+    const lostReason = `Cliente tocou em "${button}"`;
+    const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+    const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+    await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io);
+    await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io });
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: cliente tocou em "${button}"` });
+    await prosseguir.tagAprovadoSemAndamento(lead.id, lead.stage?.name || '', (lead.customFields || {}) as Record<string, any>).catch((e: any) => console.error('[Sem interesse] etiqueta:', e?.message));
+  }
 
   const nome = firstName(lead);
   const pergunta = `Tudo bem${nome ? `, ${nome}` : ''}, obrigado pelo retorno. Só pra gente melhorar: o motivo do seu desinteresse foi algo específico? O produto não era o que você procurava, as taxas não ficaram boas ou ficou faltando alguma opção de banco?`;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const sent = await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: pergunta, io });
-  console.log(`[Sem interesse] ${lead.name}: Perdido + pergunta do motivo ${sent.success ? 'enviada' : 'FALHOU'}`);
+  console.log(`[Sem interesse] ${lead.name}: ${foiProRemarketing ? 'Remarketing' : 'Perdido'} + pergunta do motivo ${sent.success ? 'enviada' : 'FALHOU'}`);
   return true;
 }
 
