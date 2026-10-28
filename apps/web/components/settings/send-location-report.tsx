@@ -87,7 +87,7 @@ function PromptSettings() {
           <p className="text-sm font-semibold text-slate-800">Pedir a localização (pop-up) <span className={`text-[11px] font-medium ${ligada ? 'text-emerald-600' : 'text-slate-400'}`}>{ligada ? 'ligado' : 'desligado'}</span></p>
           <p className="text-xs text-slate-500 mt-0.5">
             {ligada
-              ? 'Quem ainda não permitiu vê, no primeiro envio, um aviso do CRM (só na 1ª vez no aparelho) e o pedido do próprio aparelho. No computador o pedido vem uma vez só; no iPhone pode voltar quando o app é reaberto. Quem tocar em “Não Permitir” aparece como “Negou”.'
+              ? 'Quem ainda não permitiu vê, no primeiro envio, um aviso do CRM (só na 1ª vez no aparelho) e o pedido do próprio aparelho. No computador o pedido vem uma vez só; no iPhone com Localização em “Permitir” nem aparece pedido. Quem tocar em “Não Permitir” aparece como “Negou”.'
               : 'Ninguém vê pedido. Quem não permitiu a localização no aparelho sai como “Não autorizou”.'}
           </p>
         </div>
