@@ -1425,7 +1425,7 @@ model MessageSendLocation {
   userName  String // snapshot
   leadId    String
   leadName  String? // snapshot
-  status    String   @default("PENDENTE") // PENDENTE (aparelho ainda não respondeu) | OK | NAO_AUTORIZOU | INDISPONIVEL | ERRO
+  status    String   @default("PENDENTE") // PENDENTE (aparelho ainda não respondeu) | OK | NAO_AUTORIZOU | NEGOU (tocou em "Não Permitir" no pedido) | INDISPONIVEL | ERRO
   latitude  Float?
   longitude Float?
   accuracy  Float? // metros
@@ -1437,4 +1437,15 @@ model MessageSendLocation {
 
   @@index([accountId, createdAt])
   @@index([userId, createdAt])
+}
+
+// Pedido de permissão da localização (Fabio 28/10). promptEnabled = chave geral do pop-up (desligada até o Fabio liberar: "só não manda o pop up
+// ainda"); com ela ligada, quem ainda não permitiu vê o aviso do CRM e o pedido do aparelho. disabledUserIds = quem fica de fora (o resto, incluindo
+// usuário novo, entra ligado).
+model SendLocationSetting {
+  accountId       String   @id
+  promptEnabled   Boolean  @default(false)
+  disabledUserIds String[] @default([])
+  updatedById     String?
+  updatedAt       DateTime @updatedAt
 }

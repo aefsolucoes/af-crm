@@ -11,7 +11,7 @@ import { logActivity } from '../services/activity.service';
 import { sendGenericEmail } from '../services/email.service';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { recordSendOrigin, saveSendLocation, listSendLocations } from '../services/send-location.service';
+import { recordSendOrigin, saveSendLocation, listSendLocations, getSendLocationSetting, promptAllowedFor, setSendLocationSetting } from '../services/send-location.service';
 
 
 /** Registro silencioso: "Fulano respondeu <cliente>". Fire-and-forget.
@@ -395,6 +395,38 @@ router.post('/:id/send-location', async (req: AuthRequest, res: Response) => {
     res.json({ ok: await saveSendLocation(req, req.params.id, req.body || {}) });
   } catch {
     res.status(500).json({ error: 'Erro ao gravar a localização' });
+  }
+});
+
+// O navegador pergunta se pode pedir a permissão da localização a esta pessoa (chave geral + lista de quem fica de fora).
+router.get('/send-location-config', async (req: AuthRequest, res: Response) => {
+  try {
+    res.json({ prompt: await promptAllowedFor(req.user!.accountId, req.user!.id) });
+  } catch {
+    res.json({ prompt: false });
+  }
+});
+
+// Chaves do pedido de permissão (Configurações → Localização) — só admin.
+router.get('/send-location-settings', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores mexem no pedido de localização' });
+  try {
+    const [setting, users] = await Promise.all([
+      getSendLocationSetting(req.user!.accountId),
+      prisma.user.findMany({ where: { accountId: req.user!.accountId }, select: { id: true, name: true, role: true }, orderBy: { name: 'asc' } }),
+    ]);
+    res.json({ ...setting, users });
+  } catch {
+    res.status(500).json({ error: 'Erro ao carregar as chaves' });
+  }
+});
+
+router.put('/send-location-settings', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores mexem no pedido de localização' });
+  try {
+    res.json(await setSendLocationSetting(req.user!.accountId, req.body || {}, req.user!.id));
+  } catch {
+    res.status(500).json({ error: 'Erro ao salvar as chaves' });
   }
 });
 

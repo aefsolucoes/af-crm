@@ -1,15 +1,16 @@
 'use client';
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { MapPin, Loader2, Smartphone, Monitor, ExternalLink, RefreshCw } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { MapPin, Loader2, Smartphone, Monitor, ExternalLink, RefreshCw, Check } from 'lucide-react';
 import api from '@/lib/api';
+import { toast } from '@/components/ui/toast';
 
-/* Relatório "de onde a equipe mandou cada mensagem" (Fabio 27/10). Só admin. A localização só existe quando o aparelho já tinha permitido
- * (o CRM nunca pede); sem permissão = "Não autorizou". */
+/* Relatório "de onde a equipe mandou cada mensagem" (Fabio 27/10). Só admin. Sem a chave do pedido, a localização só existe quando o aparelho já
+ * tinha permitido; sem permissão = "Não autorizou". Com a chave ligada (Fabio 28/10) o CRM pede a permissão; "Não Permitir" = "Negou". */
 
 interface Row {
   id: string; messageId: string; userId: string; userName: string; leadId: string; leadName: string | null;
-  status: 'PENDENTE' | 'OK' | 'NAO_AUTORIZOU' | 'INDISPONIVEL' | 'ERRO';
+  status: 'PENDENTE' | 'OK' | 'NAO_AUTORIZOU' | 'NEGOU' | 'INDISPONIVEL' | 'ERRO';
   latitude: number | null; longitude: number | null; accuracy: number | null; detail: string | null;
   userAgent: string | null; ip: string | null; createdAt: string;
 }
@@ -39,9 +40,74 @@ function StatusCell({ r }: { r: Row }) {
   }
   // PENDENTE com mais de 3 min = o aparelho nunca respondeu (app fechado logo depois ou versão antiga do app).
   const semResposta = r.status === 'PENDENTE' && Date.now() - new Date(r.createdAt).getTime() > 3 * 60_000;
+  if (r.status === 'NEGOU') return <span className="text-rose-600 font-semibold" title={r.detail || undefined}>Negou{r.detail ? <span className="text-slate-400 font-normal"> · {r.detail}</span> : null}</span>;
   const txt = r.status === 'NAO_AUTORIZOU' ? 'Não autorizou' : r.status === 'INDISPONIVEL' ? 'Aparelho não informa' : r.status === 'ERRO' ? 'GPS falhou' : semResposta ? 'Sem resposta do aparelho' : 'Aguardando…';
   const cor = r.status === 'NAO_AUTORIZOU' ? 'text-amber-600' : r.status === 'PENDENTE' && !semResposta ? 'text-slate-400' : 'text-rose-500';
   return <span className={cor} title={r.detail || undefined}>{txt}{r.detail ? <span className="text-slate-400"> · {r.detail}</span> : null}</span>;
+}
+
+interface PromptCfg { promptEnabled: boolean; disabledUserIds: string[]; users: { id: string; name: string; role: string }[] }
+
+/** Chave do pedido de permissão (pop-up) + por pessoa. Chave geral desligada = ninguém vê pedido (Fabio 28/10: "só não manda o pop up ainda"). */
+function PromptSettings() {
+  const qc = useQueryClient();
+  const { data } = useQuery<PromptCfg>({ queryKey: ['send-location-settings'], queryFn: async () => (await api.get('/api/messages/send-location-settings')).data });
+  const [saving, setSaving] = useState(false);
+  if (!data) return null;
+
+  const save = async (patch: Partial<Pick<PromptCfg, 'promptEnabled' | 'disabledUserIds'>>) => {
+    setSaving(true);
+    try {
+      const r = await api.put('/api/messages/send-location-settings', patch);
+      qc.setQueryData<PromptCfg>(['send-location-settings'], { ...data, ...r.data });
+    } catch {
+      toast('Não consegui salvar', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+  const toggleGeral = () => {
+    if (!data.promptEnabled && !confirm('Ligar o pedido de localização? Quem ainda não permitiu vai ver o aviso do CRM e o pedido do aparelho no próximo envio.')) return;
+    save({ promptEnabled: !data.promptEnabled });
+  };
+  const toggleUser = (id: string) => save({ disabledUserIds: data.disabledUserIds.includes(id) ? data.disabledUserIds.filter((x) => x !== id) : [...data.disabledUserIds, id] });
+  const ligada = data.promptEnabled;
+
+  return (
+    <div className="rounded-xl border border-af-border p-4 space-y-3">
+      <div className="flex items-start gap-3">
+        <button
+          type="button" role="switch" aria-checked={ligada} onClick={toggleGeral} disabled={saving}
+          className={`relative flex-shrink-0 mt-0.5 h-6 w-11 rounded-full transition-colors disabled:opacity-60 ${ligada ? 'bg-emerald-500' : 'bg-slate-300'}`}
+          title={ligada ? 'Ligado — clique pra desligar' : 'Desligado — clique pra ligar'}
+        >
+          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${ligada ? 'left-[22px]' : 'left-0.5'}`} />
+        </button>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-800">Pedir a localização (pop-up) <span className={`text-[11px] font-medium ${ligada ? 'text-emerald-600' : 'text-slate-400'}`}>{ligada ? 'ligado' : 'desligado'}</span></p>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {ligada
+              ? 'Quem ainda não permitiu vê, no primeiro envio, um aviso do CRM (só na 1ª vez no aparelho) e o pedido do próprio aparelho. No computador o pedido vem uma vez só; no iPhone pode voltar quando o app é reaberto. Quem tocar em “Não Permitir” aparece como “Negou”.'
+              : 'Ninguém vê pedido. Quem não permitiu a localização no aparelho sai como “Não autorizou”.'}
+          </p>
+        </div>
+      </div>
+      <div>
+        <p className="text-xs text-slate-500 mb-1.5">Pedir pra estas pessoas{ligada ? ':' : ' (vale quando o pedido estiver ligado):'}</p>
+        <div className={`flex flex-wrap gap-1.5 ${ligada ? '' : 'opacity-60'}`}>
+          {data.users.map((u) => {
+            const on = !data.disabledUserIds.includes(u.id);
+            return (
+              <button key={u.id} type="button" onClick={() => toggleUser(u.id)} disabled={saving}
+                className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border transition-colors ${on ? 'bg-af-mid text-white border-af-mid' : 'border-af-border text-slate-500 hover:bg-slate-50'}`}>
+                {on && <Check size={11} />}{u.name}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function SendLocationReport() {
@@ -67,8 +133,10 @@ export function SendLocationReport() {
       </div>
 
       <div className="px-6 py-5 space-y-4">
+        <PromptSettings />
+
         <p className="text-xs text-slate-500">
-          A localização só aparece quando o aparelho já permite localização pro CRM (o CRM não pede). No iPhone: Ajustes → Apps → Safari → Localização → <strong>Permitir</strong>, e
+          Com o pedido desligado, a localização só aparece quando o aparelho já permite localização pro CRM. No iPhone: Ajustes → Apps → Safari → Localização → <strong>Permitir</strong>, e
           Privacidade e Segurança → Serviços de Localização → Sites do Safari → <strong>Durante o Uso do App</strong> com <strong>Localização Precisa</strong> ligada.
         </p>
 

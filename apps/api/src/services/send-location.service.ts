@@ -3,9 +3,10 @@ import type { AuthRequest } from '../middleware/auth';
 
 /* De onde a equipe mandou cada mensagem (Fabio 27/10, Andreia/Diego: "a Andreia encaminhou pelo celular ou pelo computador?").
  * O servidor grava na hora do envio quem mandou, aparelho (user-agent) e IP (status PENDENTE); o navegador manda a localização logo depois
- * (POST /api/messages/:id/send-location). O navegador só lê o GPS se o aparelho JÁ permitiu — o CRM nunca abre o pop-up pedindo; sem permissão = NAO_AUTORIZOU. */
+ * (POST /api/messages/:id/send-location). Sem a chave do pop-up (SendLocationSetting), o navegador só lê o GPS se o aparelho JÁ permitiu; sem
+ * permissão = NAO_AUTORIZOU. Com a chave ligada pra pessoa, ela vê o aviso do CRM e o pedido do aparelho; "Não Permitir" = NEGOU. */
 
-const STATUS = new Set(['OK', 'NAO_AUTORIZOU', 'INDISPONIVEL', 'ERRO']);
+const STATUS = new Set(['OK', 'NAO_AUTORIZOU', 'NEGOU', 'INDISPONIVEL', 'ERRO']);
 
 function clientIp(req: AuthRequest): string | null {
   const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
@@ -56,4 +57,26 @@ export async function listSendLocations(accountId: string, opts: { from?: Date; 
     orderBy: { createdAt: 'desc' },
     take: 1000,
   });
+}
+
+/* Pedido de permissão (Fabio 28/10): chave geral do pop-up + quem fica de fora. Sem linha = pop-up desligado e todo mundo ligado. */
+export async function getSendLocationSetting(accountId: string) {
+  const s = await prisma.sendLocationSetting.findUnique({ where: { accountId } });
+  return { promptEnabled: !!s?.promptEnabled, disabledUserIds: s?.disabledUserIds || [] };
+}
+
+/** Esta pessoa pode ver o pedido de permissão agora? (chave geral ligada e ela não está na lista de fora) */
+export async function promptAllowedFor(accountId: string, userId: string): Promise<boolean> {
+  const s = await getSendLocationSetting(accountId);
+  return s.promptEnabled && !s.disabledUserIds.includes(userId);
+}
+
+export async function setSendLocationSetting(accountId: string, patch: { promptEnabled?: boolean; disabledUserIds?: string[] }, userId: string) {
+  const data = {
+    ...(typeof patch.promptEnabled === 'boolean' ? { promptEnabled: patch.promptEnabled } : {}),
+    ...(Array.isArray(patch.disabledUserIds) ? { disabledUserIds: patch.disabledUserIds.map(String).slice(0, 500) } : {}),
+    updatedById: userId,
+  };
+  await prisma.sendLocationSetting.upsert({ where: { accountId }, create: { accountId, ...data }, update: data });
+  return getSendLocationSetting(accountId);
 }
