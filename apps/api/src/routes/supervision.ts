@@ -17,7 +17,7 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
   try { res.json(await buildWeeklySupervision(req.user!.accountId, { force: true, notify: false })); } catch (err) { fail(res, err, 'Erro ao gerar', 500); }
 });
 router.post('/:id/:acao', async (req: AuthRequest, res: Response) => {
-  const mapa: Record<string, 'SEND' | 'SKIP' | 'DONE' | 'REOPEN'> = { send: 'SEND', skip: 'SKIP', done: 'DONE', reopen: 'REOPEN' };
+  const mapa: Record<string, 'SEND' | 'TEMPLATE' | 'SKIP' | 'DONE' | 'REOPEN'> = { send: 'SEND', template: 'TEMPLATE', skip: 'SKIP', done: 'DONE', reopen: 'REOPEN' };
   const acao = mapa[req.params.acao];
   if (!acao) return res.status(404).json({ error: 'Ação inválida' });
   try { res.json(await actOnSupervision(req.user!.accountId, req.user!.id, req.params.id, acao, req.body?.text, (req as any).app.get('io'))); } catch (err) { fail(res, err, 'Erro'); }

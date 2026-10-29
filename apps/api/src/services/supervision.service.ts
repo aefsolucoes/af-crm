@@ -152,9 +152,32 @@ export async function listSupervision(accountId: string, weekKey = weekKeyFor())
   };
 }
 
-export async function actOnSupervision(accountId: string, userId: string, id: string, acao: 'SEND' | 'SKIP' | 'DONE' | 'REOPEN', text?: string, io?: Io) {
+// Janela de 24 h fechada: template de "atualização do processo" da área (os dois já aprovados na Meta) + a mensagem fica guardada e sai sozinha quando o cliente responder (reply-pending).
+const TEMPLATE_POR_AREA: { re: RegExp; nome: string; corpo: string }[] = [
+  { re: /habita/i, nome: 'atualizacao_processo_habitacional', corpo: 'Oi {{1}}, tudo bem? Temos uma atualização sobre o seu processo de financiamento habitacional. Responda esta mensagem para que a gente possa te passar os detalhes.' },
+  { re: /./, nome: 'atualizacao_processo_credito', corpo: 'Oi {{1}}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.' },
+];
+
+export async function actOnSupervision(accountId: string, userId: string, id: string, acao: 'SEND' | 'TEMPLATE' | 'SKIP' | 'DONE' | 'REOPEN', text?: string, io?: Io) {
   const it = await prisma.supervisionItem.findFirst({ where: { id, accountId } });
   if (!it) throw new Error('Item não encontrado');
+  if (acao === 'TEMPLATE') {
+    const t = String(text || '').trim();
+    if (!t) throw new Error('Escreva a mensagem que vai sair quando o cliente responder');
+    const lead = await prisma.lead.findFirst({ where: { id: it.leadId, accountId }, select: { name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+    if (!lead) throw new Error('Card não encontrado');
+    const area = lead.pipeline?.department?.name || '';
+    const tpl = TEMPLATE_POR_AREA.find((x) => x.re.test(area))!;
+    const cf = (lead.customFields || {}) as Record<string, any>;
+    const w = String(cf.falando_com || cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
+    const nome = w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : 'tudo bem';
+    const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+    const r: any = await sendOutboundWhatsAppTemplate({ accountId, leadId: it.leadId, templateName: tpl.nome, language: 'pt_BR', bodyParams: [nome], previewText: tpl.corpo.replace('{{1}}', nome), userId, io: io as any });
+    if (!r.success) throw new Error(r.error || 'Falha ao enviar o template');
+    const { queueOnReply } = require('./reply-pending.service') as typeof import('./reply-pending.service');
+    await queueOnReply(prisma as any, { leadId: it.leadId, label: `supervisão ${it.weekKey}`, text: t, noteText: '⏳ Supervisão de sexta: template de atualização enviado; a mensagem revisada sai sozinha quando o cliente responder.' });
+    return prisma.supervisionItem.update({ where: { id }, data: { status: 'SENT', sentText: `[template ${tpl.nome}; sai quando ele responder] ${t}`, handledAt: new Date() } });
+  }
   if (acao === 'SEND') {
     const t = String(text || '').trim();
     if (!t) throw new Error('Escreva a mensagem');

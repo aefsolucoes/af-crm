@@ -6,7 +6,7 @@ import { Topbar } from '@/components/ui/topbar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
-import { ChevronLeft, ChevronRight, ClipboardList, ExternalLink, Send, SkipForward, Check, RotateCcw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ClipboardList, ExternalLink, Send, SkipForward, Check, RotateCcw, Volume2, Mic, Square } from 'lucide-react';
 import api from '@/lib/api';
 
 /* Supervisão de sexta — ver apps/api/src/services/supervision.service.ts.
@@ -33,6 +33,8 @@ export default function SupervisaoPage() {
   const [texto, setTexto] = useState('');
   const [busy, setBusy] = useState(false);
   const [gerando, setGerando] = useState(false);
+  const [falando, setFalando] = useState(false);
+  const [ouvindo, setOuvindo] = useState(false);
 
   const items = data?.items || [];
   const pendentes = useMemo(() => items.filter((i) => i.status === 'PENDING').length, [items]);
@@ -45,18 +47,51 @@ export default function SupervisaoPage() {
     setIdx((cur) => (cur < items.length ? (items[cur].status === 'PENDING' ? cur : p >= 0 ? p : cur) : Math.max(0, p)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
-  useEffect(() => { setTexto(item?.sentText || item?.sugestao || ''); }, [item?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setTexto(item?.sentText || item?.sugestao || ''); if (typeof window !== 'undefined' && 'speechSynthesis' in window) { window.speechSynthesis.cancel(); setFalando(false); } }, [item?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const recarregar = () => qc.invalidateQueries({ queryKey: ['supervision'] });
   const proximo = () => { const n = items.findIndex((i, k) => k > idx && i.status === 'PENDING'); setIdx(n >= 0 ? n : Math.min(idx + 1, items.length - 1)); };
 
-  async function agir(acao: 'send' | 'skip' | 'done' | 'reopen') {
+  // ── Voz (só ao clicar): o CRM lê o card em voz alta; você responde falando e vira o texto da mensagem ──
+  function ouvir() {
+    if (!item || typeof window === 'undefined' || !('speechSynthesis' in window)) { toast('Este navegador não fala em voz alta', 'error'); return; }
+    if (falando) { window.speechSynthesis.cancel(); setFalando(false); return; }
+    const partes = [`${item.leadName}.`, item.resumo, item.situacao ? `Onde está: ${item.situacao}.` : '', item.pendencias ? `Pendências: ${item.pendencias}.` : '', item.acao ? `Sugestão pra equipe: ${item.acao}.` : '', texto.trim() ? `Mensagem sugerida pro cliente: ${texto}` : 'A sugestão é não falar com o cliente agora.'];
+    const u = new SpeechSynthesisUtterance(partes.filter(Boolean).join(' '));
+    u.lang = 'pt-BR'; u.rate = 1.05;
+    const voz = window.speechSynthesis.getVoices().find((v) => v.lang?.toLowerCase().startsWith('pt'));
+    if (voz) u.voice = voz;
+    u.onend = () => setFalando(false); u.onerror = () => setFalando(false);
+    window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); setFalando(true);
+  }
+  function responderFalando() {
+    const SR: any = typeof window !== 'undefined' && ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    if (!SR) { toast('Este navegador não reconhece fala (use o Chrome ou o Safari)', 'error'); return; }
+    if (falando) { window.speechSynthesis.cancel(); setFalando(false); }
+    const rec = new SR();
+    rec.lang = 'pt-BR'; rec.interimResults = false; rec.maxAlternatives = 1;
+    rec.onresult = (e: any) => {
+      const dito = String(e.results?.[0]?.[0]?.transcript || '').trim();
+      if (!dito) return;
+      const cmd = dito.toLowerCase().replace(/[.!?]/g, '').trim();
+      if (/^(pular|pula|próximo|proximo)$/.test(cmd)) { agir('skip'); return; }
+      if (/^(feito|resolvido|já fiz|ja fiz)$/.test(cmd)) { agir('done'); return; }
+      setTexto(dito.charAt(0).toUpperCase() + dito.slice(1));
+      toast('Texto ditado. Confira e clique em Enviar', 'success');
+    };
+    rec.onerror = () => { setOuvindo(false); toast('Não consegui ouvir. Tente de novo', 'error'); };
+    rec.onend = () => setOuvindo(false);
+    rec.start(); setOuvindo(true);
+  }
+
+  async function agir(acao: 'send' | 'template' | 'skip' | 'done' | 'reopen') {
     if (!item) return;
     if (acao === 'send' && !window.confirm(`Enviar esta mensagem pro ${item.leadName} pelo WhatsApp?`)) return;
+    if (acao === 'template' && !window.confirm(`A janela do ${item.leadName} está fechada. Enviar o template de atualização do processo agora? A mensagem abaixo fica guardada e sai sozinha quando ele responder.`)) return;
     setBusy(true);
     try {
-      await api.post(`/api/supervision/${item.id}/${acao}`, acao === 'send' ? { text: texto } : {});
-      toast(acao === 'send' ? 'Mensagem enviada' : acao === 'skip' ? 'Pulado — fica na lista' : acao === 'done' ? 'Marcado como feito' : 'Voltou pra pendente', 'success');
+      await api.post(`/api/supervision/${item.id}/${acao}`, acao === 'send' || acao === 'template' ? { text: texto } : {});
+      toast(acao === 'template' ? 'Template enviado; a mensagem sai quando ele responder' : acao === 'send' ? 'Mensagem enviada' : acao === 'skip' ? 'Pulado — fica na lista' : acao === 'done' ? 'Marcado como feito' : 'Voltou pra pendente', 'success');
       await recarregar();
       if (acao !== 'reopen') proximo();
     } catch (err: any) { toast(err?.response?.data?.error || 'Erro', 'error'); }
@@ -125,7 +160,7 @@ export default function SupervisaoPage() {
               <section className="mt-4">
                 <div className="mb-1 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400">
                   <span>Mensagem pro cliente</span>
-                  {!item.janelaAberta && <span className="normal-case text-amber-700">janela de 24 h fechada: use um template no card</span>}
+                  {!item.janelaAberta && <span className="normal-case text-amber-700">janela de 24 h fechada: vai o template e a mensagem sai quando ele responder</span>}
                 </div>
                 {item.status === 'SENT' ? (
                   <p className="whitespace-pre-wrap rounded-md bg-emerald-50 p-2 text-sm text-emerald-800">{item.sentText}</p>
@@ -135,9 +170,13 @@ export default function SupervisaoPage() {
               </section>
 
               <div className="mt-3 flex flex-wrap gap-2">
-                {item.status !== 'SENT' && (
-                  <Button onClick={() => agir('send')} disabled={busy || !texto.trim() || !item.janelaAberta}><Send className="mr-1 h-4 w-4" /> Enviar ao cliente</Button>
-                )}
+                {item.status !== 'SENT' && (item.janelaAberta ? (
+                  <Button onClick={() => agir('send')} disabled={busy || !texto.trim()}><Send className="mr-1 h-4 w-4" /> Enviar ao cliente</Button>
+                ) : (
+                  <Button onClick={() => agir('template')} disabled={busy || !texto.trim()}><Send className="mr-1 h-4 w-4" /> Enviar template e guardar a mensagem</Button>
+                ))}
+                <button onClick={ouvir} className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">{falando ? <><Square className="h-4 w-4" /> Parar</> : <><Volume2 className="h-4 w-4" /> Ouvir</>}</button>
+                {item.status !== 'SENT' && <button onClick={responderFalando} disabled={ouvindo} className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-slate-50 ${ouvindo ? 'border-red-300 text-red-600' : 'border-slate-300 text-slate-700'}`}><Mic className="h-4 w-4" /> {ouvindo ? 'Ouvindo…' : 'Responder falando'}</button>}
                 {item.status === 'PENDING' ? (
                   <>
                     <button onClick={() => agir('done')} disabled={busy} className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"><Check className="h-4 w-4" /> Feito (resolvi de outro jeito)</button>
