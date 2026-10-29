@@ -191,3 +191,49 @@ export async function actOnSupervision(accountId: string, userId: string, id: st
   const status = acao === 'SKIP' ? 'SKIPPED' : acao === 'DONE' ? 'DONE' : 'PENDING';
   return prisma.supervisionItem.update({ where: { id }, data: { status, handledAt: acao === 'REOPEN' ? null : new Date() } });
 }
+
+// ─── Conversa por voz sobre o card (Fabio 28/10: "eu me comunico com o CRM por falas, ele faz o card e me dá sugestão e eu converso com ele como se fosse a IA") ───
+// A voz é do navegador (fala → texto → aqui → texto → fala). A IA conversa com o Fabio sobre ESTE cliente: explica, ajusta a mensagem sugerida, responde dúvidas
+// com base na conversa e no estado do card. NUNCA envia nada ao cliente: no máximo devolve uma mensagem nova pro rascunho; o envio continua no botão.
+const VOICE_SYSTEM = `Você é a IA do CRM da A&F Soluções Financeiras conversando POR VOZ com o Fabio, dono da empresa, durante a supervisão semanal dos clientes em contratação.
+Você conhece este cliente pela conversa de WhatsApp inteira e pelo estado do card (abaixo). Fale como numa conversa falada: frases curtas, no máximo 4 frases, sem listas, sem markdown, sem emoji, sem ler links ou números longos.
+Nunca invente fatos. Se não souber, diga que não está na conversa. Você NÃO envia nada ao cliente: se o Fabio pedir pra mudar a mensagem, devolva o texto novo em "mensagem"; pra mandar, ele clica em Enviar.
+Responda SOMENTE com JSON, sem markdown: {"fala":"o que você responde em voz","mensagem":"novo texto da mensagem pro cliente, só se o Fabio pediu pra mudar/criar — senão vazio","comando":"PULAR | FEITO | PROXIMO | PARAR | vazio"}
+Use comando quando o Fabio mandar pular, marcar como feito/resolvido, ir pro próximo ou parar a conversa.`;
+
+const ctxCache = new Map<string, { at: number; texto: string }>();
+
+export async function chatOnSupervision(accountId: string, id: string, history: { de: 'fabio' | 'ia'; texto: string }[], fala: string, rascunho: string) {
+  const it = await prisma.supervisionItem.findFirst({ where: { id, accountId } });
+  if (!it) throw new Error('Item não encontrado');
+  let cache = ctxCache.get(id);
+  if (!cache || Date.now() - cache.at > 30 * 60_000) {
+    const ctx = await buildSharedAiContext(accountId, it.leadId, '', { fullHistory: true, historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' } });
+    if (!ctx) throw new Error('Card não encontrado');
+    cache = { at: Date.now(), texto: [`Etapa: ${ctx.etapaTexto}. Banco: ${ctx.bancoTexto || '?'}.`, ctx.nomeTexto ? `Como chamar: ${ctx.nomeTexto}` : '', ctx.creditoTexto ? `--- ESTADO DO CARD ---\n${ctx.creditoTexto}` : '', `--- CONVERSA DO CLIENTE ---\n${ctx.historicoTexto}`].filter(Boolean).join('\n\n') };
+    ctxCache.set(id, cache);
+  }
+  const cartao = `--- O QUE A SUPERVISÃO MOSTROU ---\nResumo: ${it.resumo}\nOnde está: ${it.situacao || '-'}\nPendências: ${it.pendencias || '-'}\nSugestão pra equipe: ${it.acao || '-'}\nMensagem no rascunho agora: ${rascunho || '(vazia)'}`;
+  const msgs = [
+    { role: 'user', content: `${cartao}\n\n${cache.texto}\n\n(As próximas mensagens são a conversa por voz com o Fabio.)` },
+    { role: 'assistant', content: '{"fala":"Entendido, pode perguntar.","mensagem":"","comando":""}' },
+    ...history.slice(-12).map((h) => ({ role: h.de === 'fabio' ? 'user' : 'assistant', content: h.de === 'fabio' ? h.texto : JSON.stringify({ fala: h.texto, mensagem: '', comando: '' }) })),
+    { role: 'user', content: String(fala || '').slice(0, 2000) },
+  ];
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('IA indisponível');
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({ model: MODEL, max_tokens: 2048, system: VOICE_SYSTEM, messages: msgs }),
+  });
+  if (!r.ok) throw new Error(`IA respondeu ${r.status}`);
+  const data = await r.json() as { content: { type: string; text?: string }[] };
+  const raw = data.content?.find((b) => b.type === 'text')?.text || '';
+  const m = /\{[\s\S]*\}/.exec(raw);
+  try {
+    const j = JSON.parse(m ? m[0] : raw);
+    const cmd = String(j.comando || '').toUpperCase();
+    return { fala: String(j.fala || '').slice(0, 1200) || 'Não entendi, pode repetir?', mensagem: String(j.mensagem || '').trim().slice(0, 1500), comando: ['PULAR', 'FEITO', 'PROXIMO', 'PARAR'].includes(cmd) ? cmd : '' };
+  } catch { return { fala: raw.replace(/[{}"]/g, '').slice(0, 600) || 'Não entendi, pode repetir?', mensagem: '', comando: '' }; }
+}

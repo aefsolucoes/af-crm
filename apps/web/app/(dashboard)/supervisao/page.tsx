@@ -1,12 +1,12 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { Topbar } from '@/components/ui/topbar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
-import { ChevronLeft, ChevronRight, ClipboardList, ExternalLink, Send, SkipForward, Check, RotateCcw, Volume2, Mic, Square } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ClipboardList, ExternalLink, Send, SkipForward, Check, RotateCcw, Volume2, Mic, Square, MessagesSquare } from 'lucide-react';
 import api from '@/lib/api';
 
 /* Supervisão de sexta — ver apps/api/src/services/supervision.service.ts.
@@ -35,6 +35,14 @@ export default function SupervisaoPage() {
   const [gerando, setGerando] = useState(false);
   const [falando, setFalando] = useState(false);
   const [ouvindo, setOuvindo] = useState(false);
+  // modo conversa por voz (só quando clica em "Conversar"): fala → texto → IA → fala, em loop até "parar"
+  const [conversa, setConversa] = useState(false);
+  const [falas, setFalas] = useState<{ de: 'fabio' | 'ia'; texto: string }[]>([]);
+  const [pensando, setPensando] = useState(false);
+  const conversaRef = useRef(false);
+  const falasRef = useRef<{ de: 'fabio' | 'ia'; texto: string }[]>([]);
+  const textoRef = useRef('');
+  useEffect(() => { textoRef.current = texto; }, [texto]);
 
   const items = data?.items || [];
   const pendentes = useMemo(() => items.filter((i) => i.status === 'PENDING').length, [items]);
@@ -83,6 +91,69 @@ export default function SupervisaoPage() {
     rec.onend = () => setOuvindo(false);
     rec.start(); setOuvindo(true);
   }
+
+  function falar(frase: string): Promise<void> {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) return resolve();
+      const u = new SpeechSynthesisUtterance(frase);
+      u.lang = 'pt-BR'; u.rate = 1.05;
+      const voz = window.speechSynthesis.getVoices().find((v) => v.lang?.toLowerCase().startsWith('pt'));
+      if (voz) u.voice = voz;
+      u.onend = () => resolve(); u.onerror = () => resolve();
+      window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
+    });
+  }
+  function escutar(): Promise<string> {
+    return new Promise((resolve) => {
+      const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SR) { resolve(''); return; }
+      const rec = new SR(); rec.lang = 'pt-BR'; rec.interimResults = false; rec.maxAlternatives = 1;
+      let dito = '';
+      rec.onresult = (e: any) => { dito = String(e.results?.[0]?.[0]?.transcript || '').trim(); };
+      rec.onend = () => { setOuvindo(false); resolve(dito); };
+      rec.onerror = () => { setOuvindo(false); resolve(''); };
+      setOuvindo(true); rec.start();
+    });
+  }
+  function pararConversa() {
+    conversaRef.current = false; setConversa(false); setOuvindo(false); setPensando(false);
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+  }
+  async function conversar() {
+    if (conversa) { pararConversa(); return; }
+    const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR || !('speechSynthesis' in window)) { toast('Este navegador não conversa por voz (use o Chrome ou o Safari)', 'error'); return; }
+    if (!item) return;
+    conversaRef.current = true; setConversa(true); falasRef.current = []; setFalas([]);
+    const abertura = [`${item.leadName}.`, item.resumo, item.situacao ? `Onde está: ${item.situacao}.` : '', textoRef.current.trim() ? `Minha sugestão de mensagem é: ${textoRef.current}` : 'Minha sugestão é não falar com o cliente agora.', 'O que você acha?'].filter(Boolean).join(' ');
+    falasRef.current = [{ de: 'ia', texto: abertura }]; setFalas(falasRef.current);
+    await falar(abertura);
+    let silencios = 0;
+    while (conversaRef.current) {
+      const dito = await escutar();
+      if (!conversaRef.current) break;
+      if (!dito) { if (++silencios >= 2) { await falar('Vou parar por aqui. É só clicar em Conversar de novo.'); break; } continue; }
+      silencios = 0;
+      falasRef.current = [...falasRef.current, { de: 'fabio', texto: dito }]; setFalas(falasRef.current);
+      if (/^(parar|para|chega|encerrar|tchau)[.!]?$/i.test(dito.trim())) break;
+      setPensando(true);
+      let resp: { fala: string; mensagem: string; comando: string };
+      try { resp = (await api.post(`/api/supervision/${item.id}/chat`, { history: falasRef.current.slice(0, -1), fala: dito, rascunho: textoRef.current })).data; }
+      catch (err: any) { resp = { fala: 'Tive um problema pra responder. Pode repetir?', mensagem: '', comando: '' }; }
+      setPensando(false);
+      if (!conversaRef.current) break;
+      if (resp.mensagem) setTexto(resp.mensagem);
+      falasRef.current = [...falasRef.current, { de: 'ia', texto: resp.fala }]; setFalas(falasRef.current);
+      await falar(resp.fala);
+      if (resp.comando === 'PARAR') break;
+      if (resp.comando === 'PULAR') { pararConversa(); await agir('skip'); return; }
+      if (resp.comando === 'FEITO') { pararConversa(); await agir('done'); return; }
+      if (resp.comando === 'PROXIMO') { pararConversa(); proximo(); return; }
+    }
+    pararConversa();
+  }
+  useEffect(() => () => { conversaRef.current = false; }, []);
+  useEffect(() => { if (conversaRef.current) pararConversa(); setFalas([]); }, [item?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function agir(acao: 'send' | 'template' | 'skip' | 'done' | 'reopen') {
     if (!item) return;
@@ -169,12 +240,18 @@ export default function SupervisaoPage() {
                 )}
               </section>
 
+              {falas.length > 0 && (
+                <div className="mt-3 max-h-56 space-y-1 overflow-y-auto rounded-md bg-slate-50 p-2 text-sm">
+                  {falas.map((f, k) => <div key={k} className={f.de === 'fabio' ? 'text-right text-slate-800' : 'text-indigo-800'}><span className="text-xs text-slate-400">{f.de === 'fabio' ? 'Você' : 'CRM'}: </span>{f.texto}</div>)}
+                </div>
+              )}
               <div className="mt-3 flex flex-wrap gap-2">
                 {item.status !== 'SENT' && (item.janelaAberta ? (
                   <Button onClick={() => agir('send')} disabled={busy || !texto.trim()}><Send className="mr-1 h-4 w-4" /> Enviar ao cliente</Button>
                 ) : (
                   <Button onClick={() => agir('template')} disabled={busy || !texto.trim()}><Send className="mr-1 h-4 w-4" /> Enviar template e guardar a mensagem</Button>
                 ))}
+                <button onClick={conversar} className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-medium ${conversa ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}><MessagesSquare className="h-4 w-4" /> {conversa ? (pensando ? 'Pensando… (parar)' : ouvindo ? 'Ouvindo… (parar)' : 'Falando… (parar)') : 'Conversar sobre este card'}</button>
                 <button onClick={ouvir} className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">{falando ? <><Square className="h-4 w-4" /> Parar</> : <><Volume2 className="h-4 w-4" /> Ouvir</>}</button>
                 {item.status !== 'SENT' && <button onClick={responderFalando} disabled={ouvindo} className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-slate-50 ${ouvindo ? 'border-red-300 text-red-600' : 'border-slate-300 text-slate-700'}`}><Mic className="h-4 w-4" /> {ouvindo ? 'Ouvindo…' : 'Responder falando'}</button>}
                 {item.status === 'PENDING' ? (

@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { listSupervision, actOnSupervision, buildWeeklySupervision } from '../services/supervision.service';
+import { listSupervision, actOnSupervision, buildWeeklySupervision, chatOnSupervision } from '../services/supervision.service';
 
 /** Supervisão de sexta — ver supervision.service.ts. Só administrador. */
 const router = Router();
@@ -15,6 +15,11 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 // Gera a lista desta semana agora (sem esperar a sexta) — completa só os cards que ainda não têm item.
 router.post('/generate', async (req: AuthRequest, res: Response) => {
   try { res.json(await buildWeeklySupervision(req.user!.accountId, { force: true, notify: false })); } catch (err) { fail(res, err, 'Erro ao gerar', 500); }
+});
+// Conversa por voz sobre o card (a fala vira texto no navegador). Não envia nada ao cliente.
+router.post('/:id/chat', async (req: AuthRequest, res: Response) => {
+  const b = req.body || {};
+  try { res.json(await chatOnSupervision(req.user!.accountId, req.params.id, Array.isArray(b.history) ? b.history : [], String(b.fala || ''), String(b.rascunho || ''))); } catch (err) { fail(res, err, 'Erro na conversa'); }
 });
 router.post('/:id/:acao', async (req: AuthRequest, res: Response) => {
   const mapa: Record<string, 'SEND' | 'TEMPLATE' | 'SKIP' | 'DONE' | 'REOPEN'> = { send: 'SEND', template: 'TEMPLATE', skip: 'SKIP', done: 'DONE', reopen: 'REOPEN' };
