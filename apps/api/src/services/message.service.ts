@@ -389,9 +389,11 @@ export async function sendOutboundEmail(params: {
   leadId: string;
   subject: string;
   body: string;
+  /** HTML pronto (ex.: e-mail dos lembretes de documentação); sem ele, o layout simples a partir do texto. */
+  html?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string; code?: string }> {
-  const { accountId, leadId, subject, body, io } = params;
+  const { accountId, leadId, subject, body, html, io } = params;
 
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, include: { contact: true } });
   if (!lead) return { success: false, error: 'Lead não encontrado' };
@@ -400,7 +402,7 @@ export async function sendOutboundEmail(params: {
   if (!to) return { success: false, code: 'NO_EMAIL', error: 'Este contato não tem e-mail cadastrado — cadastre no card do cliente.' };
 
   try {
-    await sendGenericEmail(to, subject, body);
+    await sendGenericEmail(to, subject, body, html);
   } catch (err) {
     return { success: false, error: (err as Error)?.message || 'Falha ao enviar o e-mail' };
   }

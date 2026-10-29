@@ -62,7 +62,7 @@ export async function processDocsChecks(accountId: string, io: Io): Promise<void
 
 const WINDOW_MS = 23 * 3_600_000;
 const BRT = -3 * 3_600_000; // Brasília = UTC−3 (sem horário de verão)
-const TIME_RX = /(amanh[ãa]|mais tarde|\bdepois\b|hoje (à|a) noite|[àa] noite|daqui (a )?(pouco|uns?|\d+)|logo mais|\bsegunda\b|\bter[çc]a\b|\bquarta\b|\bquinta\b|\bsexta\b|s[áa]bado|domingo|semana que vem|fim de semana|quando (chegar|sair|puder|conseguir|tiver)|assim que (puder|conseguir|chegar|sair|tiver)|estou no trabalho|n[ãa]o (tenho como|consigo|posso) (enviar|mandar|encaminhar)( agora)?|agora n[ãa]o|depois do (trabalho|expediente)|quando eu (chegar|sair|puder))/i;
+const TIME_RX = /(\bdia \d{1,2}\b|\b\d{1,2}\/\d{1,2}\b|fim d[oa] m[êe]s|final d[oa] m[êe]s|amanh[ãa]|mais tarde|\bdepois\b|hoje (à|a) noite|[àa] noite|daqui (a )?(pouco|uns?|\d+)|logo mais|\bsegunda\b|\bter[çc]a\b|\bquarta\b|\bquinta\b|\bsexta\b|s[áa]bado|domingo|semana que vem|fim de semana|quando (chegar|sair|puder|conseguir|tiver)|assim que (puder|conseguir|chegar|sair|tiver)|estou no trabalho|n[ãa]o (tenho como|consigo|posso) (enviar|mandar|encaminhar)( agora)?|agora n[ãa]o|depois do (trabalho|expediente)|quando eu (chegar|sair|puder))/i;
 const SEND_RX = /(mand|envi|encaminh|pass(o|ar)|trag|junt|separ|entreg|forne|te dou|consigo|tir(o|ar)|escane|fotograf)/i;
 const NEGATIVE_RX = /(n[ãa]o (tenho|quero|vou) (mais )?(interesse|seguir|continuar)|desist|cancel)/i;
 
@@ -72,6 +72,12 @@ export function promisedAt(text: string, now: Date): Date {
   const local = new Date(now.getTime() + BRT); // "relógio de parede" de Brasília lido com getUTC*
   const at = (days: number, hour: number) => { const d = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + days, hour, 0, 0)); return new Date(d.getTime() - BRT); };
   const wd = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'].findIndex((w) => new RegExp(`\\b${w}\\b`).test(t));
+  // Data dita pelo cliente (Fabio 28/10: o CRM pergunta o prazo e espera até essa data): "dia 5", "05/11", "fim do mês".
+  const dm = /\b(\d{1,2})\/(\d{1,2})\b/.exec(t);
+  if (dm) { const d = new Date(Date.UTC(local.getUTCFullYear(), Number(dm[2]) - 1, Number(dm[1]), 11) - BRT); return d.getTime() > now.getTime() ? d : new Date(Date.UTC(local.getUTCFullYear() + 1, Number(dm[2]) - 1, Number(dm[1]), 11) - BRT); }
+  const dia = /\bdia (\d{1,2})\b/.exec(t);
+  if (dia) { const n = Number(dia[1]); const mes = n > local.getUTCDate() ? local.getUTCMonth() : local.getUTCMonth() + 1; return new Date(Date.UTC(local.getUTCFullYear(), mes, n, 11) - BRT); }
+  if (/(fim|final) d[oa] mes/.test(t)) return new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth() + 1, 0, 11) - BRT);
   if (/depois de amanha/.test(t)) return at(2, 11);
   if (/amanha/.test(t)) return at(1, 11);
   if (wd >= 0) { const diff = ((wd - local.getUTCDay()) + 7) % 7 || 7; return at(diff, 11); }
@@ -113,7 +119,8 @@ export async function maybeScheduleDocsFollowUp(accountId: string, leadId: strin
     due = next8 <= windowEnd - 90 * 60_000 ? next8 : Math.max(now.getTime() + 30 * 60_000, Date.UTC(dl.getUTCFullYear(), dl.getUTCMonth(), dl.getUTCDate() + (hh >= 21 ? 0 : -1), 20, 30, 0) - BRT);
   }
   const beyond = promised.getTime() > due + 60 * 60_000; // prometeu algo além do que a janela permite
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docsLater: { at: new Date(due).toISOString(), said: t.slice(0, 120), setAt: now.toISOString(), beyond } } as any } });
+  // _docsPrazo: a data que o cliente deu — o loop de lembretes (docs-loop.service) espera até ela.
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docsLater: { at: new Date(due).toISOString(), said: t.slice(0, 120), setAt: now.toISOString(), beyond }, _docsPrazo: promised.toISOString() } as any } });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⏰ Cliente avisou que manda os documentos depois ("${t.slice(0, 120)}"). O card fica em Aguardando Documentação; a IA cobra ${new Date(due).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })} — antes da janela de 24 h do WhatsApp fechar.` } }).catch(() => {});
 }
 

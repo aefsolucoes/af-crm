@@ -669,6 +669,8 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
       // Lembrete de documentação (etapa "Aguardando Documentação"): espera o cliente
       // RESPONDER ao template de aprovação (Fabio 13/10) — ver isWaitingApprovalReply.
       const docReminder = stageNamePattern.includes('aguardando document');
+      // Loop novo de lembretes (docs-loop.service) no ar: as regras antigas de lembrete de Aguardando Documentação param sozinhas.
+      if (docReminder && await (require('./docs-loop.service') as typeof import('./docs-loop.service')).docLoopAtivo(rule.accountId)) continue;
       const proprios = ((rule.actions as any[]) || []).flatMap((a) => [a?.config?.templateName, a?.config?.utilityTemplateName]).filter((x): x is string => typeof x === 'string' && !!x);
       const { isWaitingApprovalReply } = require('./approval-notice.service') as typeof import('./approval-notice.service');
 

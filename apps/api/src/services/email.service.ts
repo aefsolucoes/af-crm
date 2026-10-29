@@ -76,7 +76,7 @@ export function companySignatureText(): string {
 
 /** E-mail com corpo livre (automações de follow-up) — cada linha em branco
  *  vira um parágrafo, igual quem escreveu enxerga no campo de texto. */
-export async function sendGenericEmail(to: string, subject: string, bodyText: string): Promise<void> {
+export async function sendGenericEmail(to: string, subject: string, bodyText: string, htmlPronto?: string): Promise<void> {
   const transporter = getTransporter();
   if (!transporter) throw new Error('E-mail não configurado');
 
@@ -91,7 +91,7 @@ export async function sendGenericEmail(to: string, subject: string, bodyText: st
     to,
     subject,
     text: `${bodyText}\n\n--\nA & F Soluções Financeiras\nTelefone: ${COMPANY_PHONE}\nSite: ${COMPANY_SITE}\nEndereço: ${COMPANY_ADDRESS}`,
-    html: `
+    html: htmlPronto || `
 <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#1e293b">
   <div style="margin-bottom:24px">
     <div style="display:inline-block;background:#0d2545;color:#fff;font-weight:800;padding:10px 16px;border-radius:10px;font-size:18px">A&amp;F</div>
@@ -100,6 +100,32 @@ export async function sendGenericEmail(to: string, subject: string, bodyText: st
   ${COMPANY_SIGNATURE_HTML}
 </div>`,
   });
+}
+
+/** E-mail dos lembretes de documentação (Fabio 28/10: "refaz novos e-mails mais chamativos") — faixa azul da A&F, título grande, caixa de destaque e botão
+ *  pro WhatsApp da API Oficial (61 8172-1313). Usado pelo loop de Aguardando Documentação (docs-loop.service). */
+export function emailLembreteDocs(p: { nome: string; titulo: string; paragrafos: string[]; destaque: string }): string {
+  const wa = 'https://wa.me/556181721313';
+  return `
+<div style="background:#eef2f7;padding:24px 12px;font-family:-apple-system,Segoe UI,Roboto,sans-serif">
+  <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 18px rgba(13,37,69,.10)">
+    <div style="background:linear-gradient(135deg,#0d2545,#1d4f91);padding:22px 28px">
+      <span style="display:inline-block;background:#ffffff;color:#0d2545;font-weight:800;padding:6px 12px;border-radius:8px;font-size:16px">A&amp;F</span>
+      <span style="color:#cfe0ff;font-size:13px;margin-left:10px">Soluções Financeiras</span>
+    </div>
+    <div style="padding:28px">
+      <p style="margin:0 0 6px;color:#64748b;font-size:14px">Olá, ${escapeHtml(p.nome)}!</p>
+      <h1 style="margin:0 0 18px;color:#0d2545;font-size:22px;line-height:1.3">${escapeHtml(p.titulo)}</h1>
+      ${p.paragrafos.map((t) => `<p style="margin:0 0 14px;color:#334155;font-size:15px;line-height:1.6">${escapeHtml(t)}</p>`).join('')}
+      <div style="margin:20px 0;padding:14px 16px;background:#fff7e6;border-left:4px solid #f59e0b;border-radius:8px;color:#7c4a03;font-size:14px;line-height:1.5">📌 ${escapeHtml(p.destaque)}</div>
+      <div style="text-align:center;margin:26px 0 8px">
+        <a href="${wa}" style="display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px">📲 Enviar documentos pelo WhatsApp</a>
+      </div>
+      <p style="margin:12px 0 0;text-align:center;color:#94a3b8;font-size:12px">ou responda este e-mail com os arquivos</p>
+    </div>
+    <div style="padding:0 28px 24px">${COMPANY_SIGNATURE_HTML}</div>
+  </div>
+</div>`;
 }
 
 export async function sendLoginCodeEmail(to: string, name: string, code: string): Promise<void> {

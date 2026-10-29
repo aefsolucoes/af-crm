@@ -709,6 +709,9 @@ const DOCS_PROMISE_LATER_RX = /(\bvou\b|\bvamos\b|\birei\b|\bte (mand|envi|encam
 const DOCS_PROMISE_PAST_RX = /\b(mandei|enviei|encaminhei|passei|j[aá] (mandou|enviou)|enviado|mandado)\b/i;
 const DOCS_PROMISE_NEG_RX = /(n[ãa]o (tenho|quero|vou) (mais )?(interesse|seguir|continuar)|desist|cancel)/i;
 const DOUBT_Q = 'Ficou com alguma dúvida?';
+const PRAZO_Q = 'Até quando você consegue me mandar?';
+// Data/prazo no texto do cliente (aí não precisa perguntar): dia da semana, amanhã, "dia 5", "05/11", "semana que vem", "fim do mês"…
+const DOCS_PRAZO_RX = /(amanh[ãa]|hoje|\bdia \d{1,2}\b|\b\d{1,2}\/\d{1,2}\b|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|semana que vem|pr[óo]xima semana|fim d[oa] m[êe]s|final d[oa] m[êe]s|fim de semana|mais tarde|[àa] noite|daqui)/i;
 const BUDGET_Q = 'A parcela coube no seu orçamento?';
 
 export function promisesDocsSoon(text: string): boolean {
@@ -721,6 +724,12 @@ async function addDocsDoubtQuestions(leadId: string, incomingText: string, etapa
     if (result.handoff || result.askTeam || result.markLost) return;
     if (!/aguardando document/i.test((etapaTexto.split('→').pop() || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return;
     if (!promisesDocsSoon(incomingText)) return;
+    // Prometeu mandar sem dizer quando (ex.: botão "Vou enviar" do lembrete): pergunta o prazo (Fabio 28/10) — a data que ele der segura o loop de lembretes.
+    const prazoPerguntado = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: PRAZO_Q }, createdAt: { gte: new Date(Date.now() - 2 * 86_400_000) } }, select: { id: true } });
+    if (!prazoPerguntado && !DOCS_PRAZO_RX.test(incomingText) && !/at[ée] quando|qual (o )?prazo|quando (voc[êe] )?consegue/i.test(result.reply || '')) {
+      if ((result.reply || '').trim()) result.reply = `${(result.reply || '').trim()}\n\n${PRAZO_Q}`;
+      else if (result.noReply) { result.reply = PRAZO_Q; result.noReply = false; }
+    }
     const jaPerguntou = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: 'coube no seu orçamento', mode: 'insensitive' } }, select: { id: true } });
     if (jaPerguntou) return;
     const reply = (result.reply || '').trim();

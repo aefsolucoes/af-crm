@@ -5,7 +5,7 @@ import { logActivity } from './activity.service';
 /* "Ainda deseja prosseguir com o crédito?" (template ainda_deseja_prosseguir, Utilidade, botões "Sim, tenho interesse" / "Não tenho interesse") — Fabio 28/10.
  *  - Disparo: clientes de Home Equity que JÁ estavam em "Aguardando Documentação" em 28/10 ("quando criar, pode encaminhar aos clientes que estão em aguardando
  *    documentação"). Só sai depois que a Meta aprova o template, das 07h às 21h, e espera quem falou com a gente nos últimos 2 dias ou acabou de entrar na etapa.
- *  - "Não tenho interesse": vai pro estágio Remarketing do funil (não Perdido) com a etiqueta "Aprovado sem andamento" e a pergunta do motivo de sempre (no-interest.service).
+ *  - "Não tenho interesse": Perdido com a etiqueta "Aprovado sem andamento" e a pergunta do motivo de sempre (no-interest.service). Antes (28/10 tarde) ia pro Remarketing.
  *  - "Sim, tenho interesse": liga a IA do card e confere a documentação — o cliente recebe o que falta (ou "recebi tudo"); sem nenhum arquivo, a IA responde.
  *    Se ele continuar sem completar, o lembrete de documentos de sempre (automação de 3 em 3 dias, template follow_up_doc) roda mais 3 vezes e então este template
  *    sai de novo (processProsseguir). */
@@ -54,24 +54,7 @@ function esperandoResposta(p: ProsseguirState | undefined): boolean {
   return !p.simAt || Date.parse(p.simAt) < Date.parse(p.enviadoAt);
 }
 
-/** "Não tenho interesse" ao template (Fabio 28/10: "manda para remarketing, pra não precisar criar outro estágio"): o card vai pro estágio Remarketing do MESMO funil
- *  (continua aberto) com a etiqueta "Aprovado sem andamento". false = não era resposta a este template ou o funil não tem Remarketing (quem chama faz o Perdido de sempre). */
-export async function moveNaoParaRemarketing(accountId: string, lead: { id: string; name: string; pipelineId: string; stage: { name: string } | null; customFields: unknown }, button: string, io?: Io): Promise<boolean> {
-  const cf = (lead.customFields || {}) as Record<string, any>;
-  if (!norm(lead.stage?.name || '').includes('aguardando documentacao') && !esperandoResposta(cf._prosseguir)) return false;
-  const alvo = await prisma.stage.findFirst({ where: { pipelineId: lead.pipelineId, name: { equals: 'Remarketing', mode: 'insensitive' } }, select: { id: true, name: true } });
-  if (!alvo) return false;
-  const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
-  await updateLeadStage(lead.id, accountId, alvo.id);
-  const l = await prisma.lead.findUnique({ where: { id: lead.id }, select: { tags: true } });
-  if (l && !l.tags.includes(TAG_APROVADO_SEM_ANDAMENTO)) await prisma.lead.update({ where: { id: lead.id }, data: { tags: [...l.tags, TAG_APROVADO_SEM_ANDAMENTO] } });
-  await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `↪️ Cliente tocou em "${button}" no "${PROSSEGUIR_TEXT}": o card foi de "${lead.stage?.name || '?'}" pro estágio ${alvo.name}, com a etiqueta "${TAG_APROVADO_SEM_ANDAMENTO}". Perguntei o motivo.` } }).catch(() => {});
-  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: `moveu pra "${alvo.name}": cliente tocou em "${button}"` });
-  if (io) io.to(`lead:${lead.id}`).emit('lead_updated', { leadId: lead.id });
-  return true;
-}
-
-/** "Não tenho interesse" ao template quando o funil não tem estágio Remarketing (o no-interest.service fez o Perdido de sempre): etiqueta "Aprovado sem andamento". */
+/** "Não tenho interesse" / pediu pra parar em Aguardando Documentação (o card vai pra Perdido): etiqueta "Aprovado sem andamento". */
 export async function tagAprovadoSemAndamento(leadId: string, estavaEm: string, cf: Record<string, any>): Promise<void> {
   if (!norm(estavaEm).includes('aguardando documentacao') && !esperandoResposta(cf._prosseguir)) return;
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { tags: true } });
@@ -129,6 +112,8 @@ export async function processProsseguir(accountId: string, io?: Io): Promise<voi
       .then((r) => { if (r.count) console.log(`[Prosseguir] ${r.count} mensagem(ns) completada(s) com os botões`); })
       .catch((e) => { botoesAcertados = false; console.error('[Prosseguir] completar botões:', e?.message); });
   }
+  // Loop novo de lembretes no ar: o "Ainda deseja prosseguir?" sai pelo loop (3 dias seguidos), não pela campanha nem pelo reenvio daqui.
+  if (await (require('./docs-loop.service') as typeof import('./docs-loop.service')).docLoopAtivo(accountId)) return;
   if (!emHorario() || !(await templateAprovado(accountId))) return;
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, isGroup: false, stage: { name: { contains: 'aguardando document', mode: 'insensitive' } }, pipeline: { department: { name: { contains: 'home equity', mode: 'insensitive' } } } },
