@@ -27,7 +27,7 @@ const PROTO_SRC = '[A-Z]{1,3}\\d{6,16}[A-Z]{0,3}';
 const PROTO_OK = new RegExp(`^${PROTO_SRC}$`);
 const PROTO_IN_TEXT = () => new RegExp(`\\b${PROTO_SRC}\\b`, 'g');
 const PAID_CHECK_EVERY_MIN = 240; // 29/10: 4 em 4 h — antes: depois do pagamento confirmado, confere a emissão de 5 em 5 h (Fabio 19/10); o e-mail do cartório adianta
-const ACTIVE = ['REQUESTED', 'RUNNING', 'AWAITING_PAYMENT'];
+const ACTIVE = ['FIND', 'FINDING', 'REQUESTED', 'RUNNING', 'AWAITING_PAYMENT']; // FIND/FINDING = achando o cartório no Mapa do ONR antes do pedido (Fabio 29/10)
 
 export const onlyDigits = (v: unknown) => String(v ?? '').replace(/\D/g, '');
 const brl = (cents: number | null | undefined) => `R$ ${((cents || 0) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -125,8 +125,14 @@ export async function createCertidaoRequest(db: Db, p: { accountId: string; lead
       if (ap) { cartorio = ap.cartorio; ajuste += ` Cartório escolhido pelo que o CRM já aprendeu da região (${ap.por}): ${ap.cartorio}.`; }
     } catch { /* segue AUTO */ }
   }
+  // Fabio 29/10: 1º ACHA o cartório (Mapa do ONR pelo endereço, grava no card), DEPOIS pede a certidão. Só quando é por endereço, sem cartório e a cidade tem vários no portal.
+  let precisaAchar = false;
+  if (porEndereco && /^auto$/i.test(cartorio)) {
+    try { const c = (require('./ri-cartorios.service') as typeof import('./ri-cartorios.service')).consultarCartorios(uf, cidade) as any; precisaAchar = Array.isArray(c?.naCidade) && c.naCidade.length > 1; } catch { /* sem mapa: segue */ }
+    if (precisaAchar) ajuste += ' Antes do pedido, a extensão acha o cartório no Mapa do ONR pelo endereço e grava no card.';
+  }
   const request = await db.certidaoRequest.create({
-    data: { accountId: p.accountId, leadId: p.leadId, uf, cidade, cartorio, matricula, pedidoPor: porEndereco ? 'ENDERECO' : 'MATRICULA', endereco: (endereco as any) ?? undefined, source: p.source || 'USER', requestedById: p.userId, sendPix: p.sendPix !== false, clientIntro: p.clientIntro?.trim() || null },
+    data: { ...(precisaAchar ? { status: 'FIND' } : {}), accountId: p.accountId, leadId: p.leadId, uf, cidade, cartorio, matricula, pedidoPor: porEndereco ? 'ENDERECO' : 'MATRICULA', endereco: (endereco as any) ?? undefined, source: p.source || 'USER', requestedById: p.userId, sendPix: p.sendPix !== false, clientIntro: p.clientIntro?.trim() || null },
   });
   const oQue = porEndereco ? `pelo ENDEREÇO do imóvel (${enderecoTexto(endereco)}, ${cidade}/${uf} — o cliente não sabe a matrícula)` : `de matrícula nº ${matricula} (${cartorio === 'AUTO' ? cidade : cartorio}/${uf})`;
   await note(db, p.leadId, `🏛️ Certidão ${oQue} pedida pelo CRM — a extensão "Certidão ONR" faz o pedido no RI Digital e o PIX ${request.sendPix ? 'vai direto ao cliente' : 'fica guardado aqui'}.${ajuste}`, p.userId);
@@ -144,6 +150,8 @@ export async function listCertidoes(db: Db, p: { accountId: string; leadId?: str
 /** Pedidos que ficaram sem dono: o que já tem protocolo vira "aguardando pagamento" (a fase PIX acha o código); o que não tem NÃO é refeito sozinho (pode já existir no portal e cobrar de novo). */
 async function expireStuck(db: Db, accountId: string) {
   const agora = Date.now();
+  // Achando o cartório há mais de 10 min (extensão fechada/travou): falha com motivo — dá pra pedir de novo.
+  await db.certidaoRequest.updateMany({ where: { accountId, status: 'FINDING', startedAt: { lt: new Date(agora - 10 * 60_000) } }, data: { status: 'FAILED', finishedAt: new Date(), detail: 'A extensão não respondeu ao procurar o cartório no Mapa do ONR (10 min). Peça de novo.' } }).catch(() => {});
   const rodando = await db.certidaoRequest.findMany({ where: { accountId, status: 'RUNNING', startedAt: { lt: new Date(agora - RUNNING_TTL_MIN * 60_000) } }, select: { id: true, leadId: true, protocolo: true, matricula: true } });
   for (const r of rodando) {
     if (r.protocolo) await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'RUNNING' }, data: { status: 'AWAITING_PAYMENT', nextCheckAt: null, detail: 'A extensão parou antes de pegar o PIX; vai tentar de novo pelo protocolo.' } });
@@ -173,7 +181,7 @@ async function expireStuck(db: Db, accountId: string) {
 
 /** Endereço do imóvel pro pedido por endereço (campos da tela "Pesquisa Por Endereço" do RI Digital). */
 export type EnderecoCertidao = { cep: string; tipoLogradouro?: string; logradouro?: string; numero?: string; complemento?: string; bloco?: string; bairro?: string; loteamento?: string; quadra?: string; lote?: string; contribuinte?: string; observacao?: string };
-export type CertidaoJob = { id: string; phase: 'ORDER' | 'PIX' | 'COLLECT'; leadId: string; leadName: string; uf: string; cidade: string; cartorio: string; matricula: string; protocolo: string | null; numeroRegistral: string | null; pedidoPor: 'MATRICULA' | 'ENDERECO'; endereco: EnderecoCertidao | null };
+export type CertidaoJob = { id: string; phase: 'FIND' | 'ORDER' | 'PIX' | 'COLLECT'; leadId: string; leadName: string; uf: string; cidade: string; cartorio: string; matricula: string; protocolo: string | null; numeroRegistral: string | null; pedidoPor: 'MATRICULA' | 'ENDERECO'; endereco: EnderecoCertidao | null };
 /** "da matrícula 123" ou "do imóvel na Rua X, 50" — pras notas. */
 export const qualCertidao = (r: { matricula: string; pedidoPor?: string | null; endereco?: unknown }) => (r.pedidoPor === 'ENDERECO' ? `do imóvel (${enderecoTexto(r.endereco as EnderecoCertidao)})` : `da matrícula ${r.matricula}`);
 /** "Rua X, 50 — CEP 11449-140" (pra notas e mensagens). */
@@ -206,6 +214,12 @@ export async function claimCertidao(db: Db, p: { accountId: string }): Promise<C
     const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
     return { id: r.id, phase, leadId: r.leadId, leadName: lead?.name || 'Sem nome', uf: r.uf, cidade: r.cidade, cartorio: r.cartorio, matricula: r.matricula, protocolo: r.protocolo, numeroRegistral: r.numeroRegistral, pedidoPor: r.pedidoPor === 'ENDERECO' ? 'ENDERECO' : 'MATRICULA', endereco: (r.endereco as EnderecoCertidao | null) || null };
   };
+  // 0) achar o cartório no Mapa do ONR (antes do pedido)
+  const achar = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'FIND' }, orderBy: { createdAt: 'asc' }, take: 3 });
+  for (const r of achar) {
+    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'FIND' }, data: { status: 'FINDING', startedAt: now, detail: 'A extensão está procurando o cartório no Mapa do ONR pelo endereço.' } });
+    if (c.count) return toJob(r, 'FIND');
+  }
   // 1) pedido novo
   const novos = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'REQUESTED' }, orderBy: { createdAt: 'asc' }, take: 3 });
   for (const r of novos) {
@@ -272,7 +286,8 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
     // O cartório da escritura não fica na cidade dela no portal (DF: cada Ofício numa região): a extensão achou em outra cidade do estado e memorizou.
     const cidade = String(d.cidade || '').trim().slice(0, 80), cartorio = String(d.cartorio || '').trim().slice(0, 120);
     if (!cidade || !cartorio) throw new Error('cidade/cartório vazios');
-    out = await db.certidaoRequest.update({ where: { id: r.id }, data: { cidade, cartorio, detail: `Cartório achado no portal: ${cartorio} (${cidade}).` } });
+    const achando = r.status === 'FINDING' || r.status === 'FIND';
+    out = await db.certidaoRequest.update({ where: { id: r.id }, data: { cidade, cartorio, ...(achando ? { status: 'REQUESTED', startedAt: null } : {}), detail: achando ? `Cartório achado no Mapa do ONR: ${cartorio}. Agora a extensão faz o pedido no RI Digital.` : `Cartório achado no portal: ${cartorio} (${cidade}).` } });
     const doMapa = /^Mapa do ONR/i.test(String(d.origem || ''));
     if (doMapa) {
       // Achado pelo Mapa do ONR (endereço → cartório): o CRM grava NA HORA a região (CEP + bairro → cartório), sem esperar a certidão sair (Fabio 29/10: "esse conhecimento deve ir pro CRM também").
