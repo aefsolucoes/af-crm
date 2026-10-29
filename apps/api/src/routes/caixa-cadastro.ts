@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
-import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro } from '../services/caixa-cadastro.service';
+import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro } from '../services/caixa-cadastro.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -26,6 +26,16 @@ router.post('/:leadId/pedir', async (req: AuthRequest, res: Response) => {
   const erro = await pedirCadastroCaixa(req.user!.accountId, req.params.leadId, quem).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
+});
+
+router.post('/:leadId/conferir', async (req: AuthRequest, res: Response) => {
+  const { ordem, campos } = req.body as { ordem?: number; campos?: { rotulo: string; valor: string }[] };
+  if (!ordem || !Array.isArray(campos)) return res.status(400).json({ error: 'ordem e campos obrigatórios' });
+  try {
+    const r = await conferirCadastro(req.user!.accountId, req.params.leadId, Number(ordem), campos);
+    if (!r) return res.status(502).json({ error: 'Não consegui conferir agora' });
+    res.json(r);
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
 export default router;
