@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { commissionRatePct, parseCreditValue, propostaSeguida, pagadorComissao, producaoPorPagador, chaveProducao } from '../services/commission.service';
+import { commissionRatePct, commissionAmount, parseCreditValue, propostaSeguida, pagadorComissao, producaoPorPagador, chaveProducao, bancoDoPagador } from '../services/commission.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -287,8 +287,8 @@ router.get('/provisions', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// GET /api/finance/provisions/candidates?q= — clientes pra provisionar. Sem busca: quem está nos funis "Em contratação"
-// e ainda não tem provisão. Já vem com o crédito, a taxa pelo produto e quem paga (banco da proposta escolhida/aprovada).
+// GET /api/finance/provisions/candidates?q= — clientes pra provisionar. Sem busca: quem está na etapa VISTORIA (Fabio 28/10: "as provisões são
+// os clientes que estão em vistoria, pois está mais perto de finalizar") e ainda não tem provisão. Já vem com o crédito, a taxa e quem paga.
 router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
@@ -299,7 +299,7 @@ router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => 
     const leads = await prisma.lead.findMany({
       where: q.length >= 2
         ? { accountId, name: { contains: q, mode: 'insensitive' } }
-        : { accountId, pipeline: { name: { startsWith: 'Em contratação', mode: 'insensitive' } } },
+        : { accountId, status: 'OPEN', archived: false, stage: { name: { contains: 'vistoria', mode: 'insensitive' } } },
       select: {
         id: true, name: true, value: true, customFields: true,
         pipeline: { select: { name: true, department: { select: { name: true } } } },
@@ -338,6 +338,59 @@ router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => 
     }));
   } catch {
     res.status(500).json({ error: 'Erro ao buscar clientes' });
+  }
+});
+
+// POST /api/finance/provisions/recalculate — refaz a taxa das provisões EM ABERTO e das sugestões pendentes do "Ganho" pela tabela atual
+// (Fabio 28/10: contrato do Inter + tabela do Credimorar; as antigas estavam com Inter 5% e Financiamento 1%). Recebidas não mudam.
+router.post('/provisions/recalculate', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const abertas = await prisma.commissionProvision.findMany({ where: { accountId, status: 'OPEN' } });
+    const leads = new Map((await prisma.lead.findMany({
+      where: { id: { in: abertas.map((p) => p.leadId) } }, select: { id: true, customFields: true },
+    })).map((l) => [l.id, (l.customFields || {}) as Record<string, unknown>]));
+    // 1) Pagador no formato novo (Financiamento: "Credimorar (Banco)"), pra produção de cada banco sair separada.
+    for (const p of abertas) {
+      const { bank, instituicao } = bancoDoPagador(p.product, p.payer, leads.get(p.leadId)?.instituicao);
+      const novo = pagadorComissao(p.product, bank, instituicao) || p.payer;
+      if (novo !== p.payer) { await prisma.commissionProvision.update({ where: { id: p.id }, data: { payer: novo } }); p.payer = novo; }
+    }
+    // 2) Taxa pela faixa do mês de cada provisão.
+    const porMes = new Map<string, Map<string, number>>();
+    const mudancas: string[] = [];
+    for (const p of abertas) {
+      const ref = p.expectedDate || p.createdAt;
+      const mes = ref.toISOString().slice(0, 7);
+      if (!porMes.has(mes)) porMes.set(mes, await producaoPorPagador(accountId, ref));
+      const { bank, instituicao } = bancoDoPagador(p.product, p.payer, leads.get(p.leadId)?.instituicao);
+      const ratePct = commissionRatePct(p.product, bank, { instituicao, producaoMes: porMes.get(mes)!.get(chaveProducao(p.product, p.payer)) || p.baseAmount });
+      if (ratePct === p.ratePct) continue;
+      const amount = commissionAmount(p.baseAmount, ratePct);
+      await prisma.commissionProvision.update({ where: { id: p.id }, data: { ratePct, amount } });
+      mudancas.push(`Provisão ${p.leadName} (${p.payer || 'sem pagador'}): ${p.ratePct}% → ${ratePct}% (R$ ${p.amount.toFixed(2)} → R$ ${amount.toFixed(2)})`);
+    }
+    // 3) Sugestões pendentes do "Ganho".
+    const sugestoes = await prisma.commissionSuggestion.findMany({ where: { accountId, status: 'PENDING' } });
+    const producaoAgora = await producaoPorPagador(accountId);
+    for (const sg of sugestoes) {
+      const lead = await prisma.lead.findUnique({ where: { id: sg.leadId }, select: { name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+      if (!lead) continue;
+      const cf = (lead.customFields || {}) as Record<string, unknown>;
+      const produto = lead.pipeline?.department?.name || null;
+      const seguida = propostaSeguida(await prisma.creditAnalysis.findMany({
+        where: { leadId: sg.leadId, dryRun: false, source: { not: 'AI_SIM' }, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } },
+        orderBy: { createdAt: 'desc' }, take: 12, select: { bank: true, chosen: true },
+      }));
+      const ratePct = commissionRatePct(produto, seguida?.bank, { instituicao: cf.instituicao, producaoMes: (producaoAgora.get(chaveProducao(produto, pagadorComissao(produto, seguida?.bank, cf.instituicao))) || 0) + sg.baseAmount });
+      const suggestedAmount = commissionAmount(sg.baseAmount, ratePct);
+      if (Math.abs(suggestedAmount - sg.suggestedAmount) < 0.01) continue;
+      await prisma.commissionSuggestion.update({ where: { id: sg.id }, data: { suggestedAmount } });
+      mudancas.push(`Sugestão ${lead.name}: R$ ${sg.suggestedAmount.toFixed(2)} → R$ ${suggestedAmount.toFixed(2)} (${ratePct}%)`);
+    }
+    res.json({ provisoes: abertas.length, sugestoes: sugestoes.length, mudancas });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao recalcular' });
   }
 });
 

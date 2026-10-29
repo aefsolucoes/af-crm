@@ -9,7 +9,7 @@ import { CommissionProvision, ProvisionCandidate } from '@/types';
 import { CalendarClock, Check, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 
 /* Provisão de comissão por processo (Fabio 28/10: "provisão de pagamento de processo", lançada à mão). Previsão do que vai entrar
- * de cada cliente em contratação — NÃO entra no saldo; "Recebido" vira Receita no extrato. Taxa padrão pelo banco e produto (ver commission.service na API): Home Equity — Inter 3/4/5% pela produção do mês, Creditas 5%, Santander 2,5%; Financiamento — Bradesco 0,9/1%, Inter e Itaú 0,8%, Santander 0,8/0,9%. */
+ * de cada cliente em Vistoria (mais perto de finalizar — Fabio 28/10) — NÃO entra no saldo; "Recebido" vira Receita no extrato. Taxa padrão pelo banco e produto (ver commission.service na API): Home Equity — Inter 3/4/5% pela produção do mês, Creditas 5%, Santander 2,5%; Financiamento — Bradesco 0,9/1%, Inter e Itaú 0,8%, Santander 0,8/0,9%. */
 
 const inputCls = 'w-full text-sm px-3 py-2 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent';
 const PAYERS = ['Inter', 'Creditas', 'Credimorar', 'Santander', 'CAIXA', 'BRB', 'Itaú', 'Bradesco'];
@@ -99,7 +99,7 @@ function ProvisionForm({ editing, onClose, onSaved }: { editing: CommissionProvi
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar cliente pelo nome…" className={cn(inputCls, 'pl-8')} autoFocus />
           </div>
           <p className="text-[11px] text-slate-400 mb-2">
-            {debouncedQ.length >= 2 ? 'Resultado da busca' : 'Clientes em contratação ainda sem provisão'}
+            {debouncedQ.length >= 2 ? 'Resultado da busca' : 'Clientes em Vistoria ainda sem provisão'}
           </p>
           <div className="max-h-64 overflow-y-auto divide-y divide-af-border rounded-lg border border-af-border bg-white scrollbar-thin">
             {isLoading ? (

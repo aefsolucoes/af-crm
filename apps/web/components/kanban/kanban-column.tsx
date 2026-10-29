@@ -29,8 +29,8 @@ interface KanbanColumnProps {
   onToggleSelect?: (leadId: string) => void;
   /** Marca/desmarca de uma vez todos os cards DESTA etapa. */
   onToggleStageSelection?: (stageLeadIds: string[]) => void;
-  /** Crédito aprovado por banco de cada card (leadId → banco → valor), pro total por banco do estágio. */
-  approvedByLead?: Record<string, Record<string, number>>;
+  /** Crédito aprovado por banco de cada card (leadId → banco → valor) e o banco escolhido — total por banco do estágio e selo no card. */
+  approvedByLead?: Record<string, { banks: Record<string, number>; chosen?: string }>;
 }
 
 const BANK_SHORT: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar' };
@@ -85,7 +85,7 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLead
   // Total de crédito aprovado por banco nos cards deste estágio (Fabio 28/10). Um card aprovado em 2 bancos conta nos 2.
   const porBanco = new Map<string, { total: number; cards: number }>();
   for (const l of leads) {
-    for (const [bank, v] of Object.entries(approvedByLead?.[l.id] || {})) {
+    for (const [bank, v] of Object.entries(approvedByLead?.[l.id]?.banks || {})) {
       const cur = porBanco.get(bank) || { total: 0, cards: 0 };
       porBanco.set(bank, { total: cur.total + v, cards: cur.cards + 1 });
     }
@@ -258,6 +258,7 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLead
               selected={selectedLeadIds?.has(lead.id)}
               selectionActive={!!selectedLeadIds && selectedLeadIds.size > 0}
               onToggleSelect={onToggleSelect}
+              banks={approvedByLead?.[lead.id]}
             />
           ))}
 

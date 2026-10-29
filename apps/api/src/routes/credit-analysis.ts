@@ -29,9 +29,9 @@ router.get('/board', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao carregar as análises'); }
 });
 
-// Total de crédito por banco em cada estágio do Kanban (Fabio 28/10: "em cada estágio mostre o total de crédito feito por cada banco"). Devolve, por card do
-// funil, o valor aprovado de cada banco (a aprovação mais recente; a escolhida ⭐ do banco, se houver) — a coluna soma os cards que está mostrando, então
-// segue a busca e os filtros da tela.
+// Total de crédito por banco em cada estágio do Kanban (Fabio 28/10: "em cada estágio mostre o total de crédito feito por cada banco") e o selo do banco
+// no card ("o símbolo do banco no card que está fazendo naquele banco"). Devolve, por card do funil, o valor aprovado de cada banco (a aprovação mais
+// recente; a escolhida ⭐ do banco, se houver) e o banco escolhido — a coluna soma os cards que está mostrando, então segue a busca e os filtros da tela.
 router.get('/approved-by-lead', async (req: AuthRequest, res: Response) => {
   try {
     const pipelineId = String(req.query.pipelineId || '');
@@ -41,13 +41,13 @@ router.get('/approved-by-lead', async (req: AuthRequest, res: Response) => {
       orderBy: { createdAt: 'desc' },
       select: { leadId: true, bank: true, approvedValue: true, chosen: true },
     });
-    const out: Record<string, Record<string, number>> = {};
+    const out: Record<string, { banks: Record<string, number>; chosen?: string }> = {};
     const escolhida = new Set<string>();
     for (const r of rows) {
       const k = `${r.leadId}:${r.bank}`;
-      const porBanco = (out[r.leadId] ||= {});
-      if (r.chosen && !escolhida.has(k)) { porBanco[r.bank] = r.approvedValue!; escolhida.add(k); continue; }
-      if (!(r.bank in porBanco)) porBanco[r.bank] = r.approvedValue!;
+      const card = (out[r.leadId] ||= { banks: {} });
+      if (r.chosen && !escolhida.has(k)) { card.banks[r.bank] = r.approvedValue!; escolhida.add(k); card.chosen ||= r.bank; continue; }
+      if (!(r.bank in card.banks)) card.banks[r.bank] = r.approvedValue!;
     }
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao somar o crédito por banco'); }

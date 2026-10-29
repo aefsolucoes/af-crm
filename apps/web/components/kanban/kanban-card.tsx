@@ -22,9 +22,42 @@ interface KanbanCardProps {
   selected?: boolean;
   selectionActive?: boolean;
   onToggleSelect?: (leadId: string) => void;
+  /** Bancos que aprovaram este card (e o escolhido ⭐) — selo redondo no canto de cima. */
+  banks?: { banks: Record<string, number>; chosen?: string };
 }
 
-export function KanbanCard({ lead, labelColor, onOpen, selected = false, selectionActive = false, onToggleSelect }: KanbanCardProps) {
+/** Selo do banco (Fabio 28/10: "o símbolo do banco no card que está fazendo naquele banco, algo redondo e pequeno no canto superior direito"). */
+const BANK_BADGE: Record<string, { label: string; text: string; bg: string; fg?: string }> = {
+  INTER: { label: 'Inter', text: 'I', bg: '#FF7A00' },
+  CREDITAS: { label: 'Creditas', text: 'C', bg: '#00A868' },
+  SANTANDER: { label: 'Santander', text: 'S', bg: '#EC0000' },
+  BRADESCO: { label: 'Bradesco', text: 'B', bg: '#CC092F' },
+  ITAU: { label: 'Itaú', text: 'it', bg: '#EC7000', fg: '#003399' },
+  CAIXA: { label: 'Caixa', text: 'X', bg: '#005CA9', fg: '#F39200' },
+  CREDIMORAR: { label: 'Credimorar', text: 'Cm', bg: '#1E3A8A' },
+};
+/** Banco escrito no card ("instituicao") → chave do selo. */
+function bancoDoTexto(t: unknown): string | null {
+  const s = String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (/bradesco/.test(s)) return 'BRADESCO';
+  if (/itau/.test(s)) return 'ITAU';
+  if (/santander/.test(s)) return 'SANTANDER';
+  if (/caixa|cef\b/.test(s)) return 'CAIXA';
+  if (/creditas/.test(s)) return 'CREDITAS';
+  if (/inter\b/.test(s)) return 'INTER';
+  return null;
+}
+/** Selos do card: o banco escolhido (⭐); sem escolha, os que aprovaram; sem aprovação, o banco escrito no card. */
+function selosDoCard(banks: KanbanCardProps['banks'], instituicao: unknown): { key: string; chosen: boolean }[] {
+  const daAnalise = (b: string) => (b === 'CREDIMORAR' ? 'SANTANDER' : b === 'CREDIMORAR_FH' ? bancoDoTexto(instituicao) || 'CREDIMORAR' : b);
+  if (banks?.chosen) return [{ key: daAnalise(banks.chosen), chosen: true }];
+  const aprovados = Array.from(new Set(Object.keys(banks?.banks || {}).map(daAnalise)));
+  if (aprovados.length) return aprovados.slice(0, 3).map((key) => ({ key, chosen: aprovados.length === 1 }));
+  const escrito = bancoDoTexto(instituicao);
+  return escrito ? [{ key: escrito, chosen: false }] : [];
+}
+
+export function KanbanCard({ lead, labelColor, onOpen, selected = false, selectionActive = false, onToggleSelect, banks }: KanbanCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [showMerge, setShowMerge] = useState(false);
@@ -149,6 +182,29 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
       >
         <Star size={13} className={starred ? 'text-amber-400 fill-amber-400' : 'text-slate-400'} />
       </button>
+      {/* Selo do banco — à esquerda da estrela */}
+      {(() => {
+        const selos = selosDoCard(banks, cf.instituicao);
+        if (!selos.length) return null;
+        return (
+          <div className="absolute -top-1.5 right-4 z-10 flex -space-x-1">
+            {selos.map(({ key, chosen }) => {
+              const b = BANK_BADGE[key];
+              if (!b) return null;
+              return (
+                <span
+                  key={key}
+                  title={chosen ? `Seguindo pelo ${b.label}` : `Aprovado no ${b.label}`}
+                  className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-extrabold leading-none border-2 border-white shadow-sm"
+                  style={{ backgroundColor: b.bg, color: b.fg || '#fff' }}
+                >
+                  {b.text}
+                </span>
+              );
+            })}
+          </div>
+        );
+      })()}
       <div
         className={cn(
           'app-column-surface rounded-xl border shadow-sm hover:shadow-md transition-all cursor-pointer select-none overflow-hidden',

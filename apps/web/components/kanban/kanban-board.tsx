@@ -31,8 +31,8 @@ interface KanbanBoardProps {
 
 export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSearching }: KanbanBoardProps) {
   const { moveLeadOptimistic } = usePipelineStore();
-  // Crédito aprovado por banco de cada card do funil — cada coluna soma os seus (total por banco no topo do estágio).
-  const { data: approvedByLead } = useQuery<Record<string, Record<string, number>>>({
+  // Crédito aprovado por banco de cada card do funil — cada coluna soma os seus (total por banco no topo do estágio) e o card mostra o selo do banco.
+  const { data: approvedByLead } = useQuery<Record<string, { banks: Record<string, number>; chosen?: string }>>({
     queryKey: ['approved-by-lead', pipeline.id],
     queryFn: async () => (await api.get('/api/credit-analysis/approved-by-lead', { params: { pipelineId: pipeline.id } })).data,
     staleTime: 60_000,

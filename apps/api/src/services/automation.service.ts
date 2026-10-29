@@ -676,12 +676,35 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
         countStage++;
         if (departmentId && lead.pipeline?.departmentId !== departmentId) continue;
         countDept++;
-        const lastMsgAt = lead.messages[0]?.createdAt;
+        let lastMsgAt = lead.messages[0]?.createdAt;
         if (!lastMsgAt) continue;
-        const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;
-        if (!eligible) continue;
         if (minDaysInStage > 0 && (!lead.stageEnteredAt || lead.stageEnteredAt > stageThreshold)) continue;
-        if (docReminder && await isWaitingApprovalReply(lead.id)) { countHeld++; continue; }
+        if (docReminder) {
+          // Lembrete de documentação (Fabio 28/10: "veja se essa conversa foi produtiva; se fica inativo por 2 dias, retorna o lembrete"):
+          // só conta conversa de verdade — mensagem do CLIENTE no WhatsApp ou de alguém da EQUIPE escrevendo à mão. Template nosso,
+          // resposta automática sem o cliente ter falado e e-mail do banco não seguravam mais o lembrete por 3 dias. Parado 2 dias
+          // (cfg.idleDays) → lembrete; repete a cada `days`. E não empilha: template nosso nos últimos 2 dias (ex.: "Ainda deseja
+          // prosseguir?") segura até completar 2 dias.
+          const idleDays = Number(cfg.idleDays || 2);
+          const [conversa, ultimoTemplate] = await Promise.all([
+            prisma.message.findFirst({
+              where: { leadId: lead.id, channel: { not: 'EMAIL' }, OR: [{ direction: 'INBOUND' }, { direction: 'OUTBOUND', sentByUserId: { not: null } }] },
+              orderBy: { createdAt: 'desc' }, select: { createdAt: true },
+            }),
+            prisma.message.findFirst({
+              where: { leadId: lead.id, direction: 'OUTBOUND', templateName: { not: null }, status: { not: 'FAILED' } },
+              orderBy: { createdAt: 'desc' }, select: { createdAt: true },
+            }),
+          ]);
+          lastMsgAt = conversa?.createdAt || lead.stageEnteredAt || lastMsgAt;
+          const parado = hasWindow ? calendarDaysSince(lastMsgAt) >= idleDays : lastMsgAt <= new Date(Date.now() - idleDays * 86_400_000);
+          const semTemplateRecente = !ultimoTemplate || (hasWindow ? calendarDaysSince(ultimoTemplate.createdAt) >= idleDays : ultimoTemplate.createdAt <= new Date(Date.now() - idleDays * 86_400_000));
+          if (!parado || !semTemplateRecente) continue;
+          if (await isWaitingApprovalReply(lead.id)) { countHeld++; continue; }
+        } else {
+          const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;
+          if (!eligible) continue;
+        }
         countEligible++;
         const already = await prisma.automationLog.findFirst({
           where: repeatEveryDays

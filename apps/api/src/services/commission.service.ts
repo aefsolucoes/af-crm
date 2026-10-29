@@ -101,3 +101,18 @@ export function parseCreditValue(raw: unknown): number {
   if (s.includes(',')) return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0;
   return parseFloat(s) || 0;
 }
+
+/** Banco (no formato da análise) a partir do que ficou gravado na provisão: "Inter", "Creditas", "Credimorar", "Credimorar (Bradesco)", "CREDIMORAR_FH". */
+export function bancoDoPagador(product: string | null | undefined, payer: string | null | undefined, instituicao?: unknown): { bank: string | null; instituicao: unknown } {
+  const p = String(payer || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const entre = /\(([^)]+)\)/.exec(String(payer || ''))?.[1];
+  if (ehFinanciamento(product)) {
+    if (/^inter\b/.test(p)) return { bank: 'INTER', instituicao };
+    return { bank: 'CREDIMORAR_FH', instituicao: entre || instituicao };
+  }
+  if (/^inter\b/.test(p)) return { bank: 'INTER', instituicao };
+  if (/creditas/.test(p)) return { bank: 'CREDITAS', instituicao };
+  if (/credimorar|santander/.test(p)) return { bank: 'CREDIMORAR', instituicao };
+  return { bank: null, instituicao };
+}
+
