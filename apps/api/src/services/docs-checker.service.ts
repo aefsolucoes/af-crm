@@ -234,10 +234,17 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
     },
     select: { name: true, body: true },
   });
-  if (!lists.length) return null;
-
   const cf = (lead.customFields || {}) as Record<string, string>;
   const cfAll = cf as Record<string, any>;
+  // Financiamento Habitacional tem fluxo de documentos PRÓPRIO (Fabio 29/10, Taynara: a conferência cobrou matrícula/ônus e IPTU, que são do Home Equity).
+  // Sem banco privado escolhido (ou optou pela CAIXA/BRB): a documentação do comprador — RG, CPF, comprovante de endereço, último contracheque e certidão de estado civil.
+  const ehFh = /habitacional/i.test(lead.pipeline.department?.name || '');
+  const fhSoComprador = ehFh && (!!cfAll._optouCaixa?.banco || !cfAll._fhChosen);
+  const listas = ehFh ? lists.filter((l) => !/home equity/i.test(l.name)) : lists;
+  if (!listas.length && !fhSoComprador) return null;
+  const blocoFh = !ehFh ? '' : fhSoComprador
+    ? `FINANCIAMENTO HABITACIONAL — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10): de cada comprador: RG, CPF (a CNH vale pelos dois), comprovante de endereço, último contracheque e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge. NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "Financiamento Habitacional — comprador".\n\n`
+    : `FINANCIAMENTO HABITACIONAL (banco ${cfAll._fhChosen?.bank || 'escolhido'}): a referência é a lista que o CRM mandou na conversa depois da escolha do banco. NUNCA use a lista "Documentos Home Equity".\n\n`;
   // Autorização da emissão da certidão: SEM campo (Fabio 15/10) — fica registrada numa ANOTAÇÃO do card (marcador abaixo) e o CRM mesmo lê.
   const jaAutorizou = !!(await prisma.note.findFirst({ where: { leadId, content: { startsWith: AUTORIZOU_EMISSAO } }, select: { id: true } }));
   const bancoRecusou = await (require('./doc-review.service') as typeof import('./doc-review.service')).bancoRecusouCertidao(leadId).catch(() => false); // anotação da equipe no card
@@ -245,7 +252,7 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const { bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   const jogo = await bancosEmJogo(prisma, leadId).catch(() => ({ emJogo: [] as string[], rendaNecessaria: true, texto: 'sem leitura' }));
   const bancosTxt = jogo.texto || 'sem leitura';
-  const rendaNecessaria = jogo.rendaNecessaria;
+  const rendaNecessaria = fhSoComprador || jogo.rendaNecessaria; // FH: o último contracheque faz parte da lista do comprador
   const comMetragens = Array.from(new Set(Object.values((cfAll._docReview || {}) as Record<string, any>).filter((r: any) => r && r.metragens === true).map((r: any) => String(r.tipo)))) as string[];
   const participants = [
     cf.participante_1 && `1) ${cf.participante_1}${cf.vinculo_1 ? ` — ${cf.vinculo_1}` : ''}`,
@@ -265,8 +272,8 @@ BANCOS EM JOGO: ${bancosTxt}
 Comprovação de renda: ${rendaNecessaria ? 'necessária (o banco pediu documento de renda)' : 'NÃO é necessária (nenhum banco pediu renda — Fabio 27/10: renda só quando o banco pede — ou a equipe dispensou)'}
 Documentos da PREFEITURA recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
 
-LISTAS DE DOCUMENTOS:
-${lists.map((l) => `--- ${l.name} ---\n${l.body}`).join('\n\n')}
+${blocoFh}LISTAS DE DOCUMENTOS:
+${listas.map((l) => `--- ${l.name} ---\n${l.body}`).join('\n\n')}
 
 ${bancoRecusou ? 'O banco NÃO aceitou a certidão que o cliente enviou (muito antiga ou só consulta): Sim\n\n' : ''}${matriculaEncerrada ? `A matrícula da certidão que o cliente enviou foi ENCERRADA (matrícula nova: ${matriculaEncerrada}): Sim\n\n` : ''}${jaAutorizou ? 'Cliente autorizou a A&F a emitir a certidão de ônus/matrícula (custo de R$ 40 a R$ 100 pro cliente): Sim\n\n' : ''}${String(cfAll.possui_certidao || '').trim() ? `Cliente informou no formulário que possui certidão de ônus/matrícula: ${String(cfAll.possui_certidao).trim()}\n\n` : ''}DOCUMENTOS RECEBIDOS (lidos dos arquivos que o cliente mandou; "de FULANO" = titular do documento):
 ${receivedText}
@@ -294,7 +301,8 @@ ${history}`;
     autorizou = true;
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `${AUTORIZOU_EMISSAO} — o cliente aceitou na conversa que a A&F emita a certidão de ônus/matrícula pelo ONR (custo de R$ 40 a R$ 100 pra ele).` } }).catch(() => {});
   }
-  const emitirBruto = Array.isArray(verdict.emitir) ? verdict.emitir.map((x) => String(x).slice(0, 120)) : [];
+  const emitirBruto = fhSoComprador ? [] : Array.isArray(verdict.emitir) ? verdict.emitir.map((x) => String(x).slice(0, 120)) : [];
+  if (fhSoComprador) verdict.faltando = (verdict.faltando || []).filter((f) => !/[ôo]nus|matr[ií]cula|escritura|iptu|inscri[cç][aã]o imobili|vendedor/i.test(String(f)));
   // Sem a permissão do cliente a A&F NÃO emite (custo de R$ 40 a R$ 100 pra ele): o que o modelo pôs em "emitir" volta pra "faltando" e a certidão trava a conclusão.
   // Escritura com a matrícula identificada (Fabio 20/10): a certidão NÃO é cobrada do cliente — a IA se OFERECE pra emitir pelo ONR (certidao-offer.service) e só emite quando ele aceita.
   const { certidaoFromDocs } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
@@ -331,8 +339,10 @@ async function perguntarProtegidos(accountId: string, leadId: string, io: Io): P
 }
 
 export async function checkDocsComplete(accountId: string, leadId: string, io: Io, opts: { force?: boolean } = {}): Promise<boolean> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return false;
+  const cfLead = (lead.customFields || {}) as Record<string, any>;
+  const fhSoComprador = /habitacional/i.test(lead.pipeline?.department?.name || '') && (!!cfLead._optouCaixa?.banco || !cfLead._fhChosen);
   if ((lead.customFields as any)?._autoPaused) return false; // Stop total do cliente: não confere, não move, não avisa
 
   // Conferência de CONTEÚDO (Fabio 14/10): a IA LÊ cada arquivo e vê se está legível, atualizado e no nome certo (RG/CNH com frente e verso). Documento com
@@ -342,7 +352,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   if (review) {
     const { bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
     const jogo = await bancosEmJogo(prisma, leadId).catch(() => null);
-    if (jogo && !jogo.rendaNecessaria) {
+    if (jogo && !jogo.rendaNecessaria && !fhSoComprador) {
       const RENDA_RX = /EXTRATO BANCARIO|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA|PRO.?LABORE|DECORE/;
       review.problemas = review.problemas.filter((p) => !RENDA_RX.test(String(p.doc).toUpperCase()));
       review.duvidas = review.duvidas.filter((d) => !RENDA_RX.test(String(d.doc).toUpperCase()));
@@ -445,6 +455,19 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     return falouFalta;
   }
 
+  // Financiamento Habitacional só com a documentação do COMPRADOR (CAIXA/BRB ou sem banco escolhido): ainda não é contratação — é a vez da análise da CAIXA/BRB.
+  // O card fica onde está; o cliente é avisado e a equipe roda a análise (Fabio 29/10, Taynara).
+  if (fhSoComprador) {
+    if (cfLead._fhDocsCompradorAt) return false;
+    const banco = cfLead._optouCaixa?.banco || 'CAIXA';
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfLead, _fhDocsCompradorAt: new Date().toISOString() } as any } });
+    const sentFh = lead.aiAutoReplyActive
+      ? await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi toda a documentação, obrigada! Já vou dar entrada na análise da ${banco} e te aviso por aqui assim que sair o resultado.`, io: io || undefined })
+      : { success: false };
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Documentação do comprador COMPLETA (Financiamento Habitacional — ${banco}):\n${verdict.receivedText}\n\n👉 Rodar a análise na ${banco} com esses documentos.${sentFh.success ? ' Cliente avisado.' : ' Cliente NÃO avisado (IA desligada).'}` } }).catch(() => {});
+    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: documentação completa`, body: `Rodar a análise na ${banco}`, leadId }).catch(() => {});
+    return true;
+  }
   const moved = await moveLeadToContracting(accountId, leadId, io, 'a IA conferiu que a documentação chegou completa');
   if (!moved) {
     console.warn(`[Docs] ${lead.name} (${leadId}): documentação completa, mas o funil de contratação do setor não foi encontrado`);
