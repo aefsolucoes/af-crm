@@ -45,7 +45,7 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
     const lastClientMsg = recent.find((m) => m.direction === 'INBOUND')?.content || '';
 
     const ctx = await buildSharedAiContext(accountId, leadId, lastClientMsg, {
-      historyTake: 12,
+      fullHistory: true,
       historyRoleLabels: { inbound: 'Cliente', outbound: 'Vendedor' },
     });
     if (!ctx) return null;
@@ -149,7 +149,7 @@ export async function generateTemplateSuggestion(accountId: string, leadId: stri
     const candidates = all.filter((t: any) => t.status === 'APPROVED' && (t.category === 'UTILITY' || t.category === 'MARKETING') && !/^permissao_ligar/.test(t.name));
     if (!candidates.length) return { template: null, categoryLabel: null, vars: {}, preview: '', reason: '', alternatives: [], warnings: [], noneFits: true, missing: 'Nenhum template aprovado de Utilidade ou Marketing.', candidates: 0 };
 
-    const ctx = await buildSharedAiContext(accountId, leadId, '', { historyTake: 14, historyRoleLabels: { inbound: 'Cliente', outbound: 'Vendedor' } });
+    const ctx = await buildSharedAiContext(accountId, leadId, '', { fullHistory: true, historyRoleLabels: { inbound: 'Cliente', outbound: 'Vendedor' } });
     if (!ctx) return null;
     const since30 = new Date(Date.now() - 30 * 86_400_000);
     const sentTpl = await prisma.message.findMany({ where: { leadId, direction: 'OUTBOUND', templateName: { not: null }, createdAt: { gte: since30 } }, orderBy: { createdAt: 'desc' }, take: 15, select: { templateName: true, createdAt: true, status: true, statusError: true } });

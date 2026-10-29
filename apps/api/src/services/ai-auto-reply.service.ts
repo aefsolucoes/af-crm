@@ -537,7 +537,7 @@ export async function generateAiAutoReply(
     }
 
     const ctx = await buildSharedAiContext(accountId, leadId, incomingText, {
-      historyTake: 12,
+      fullHistory: true,
       historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' },
     });
     if (!ctx) return null;

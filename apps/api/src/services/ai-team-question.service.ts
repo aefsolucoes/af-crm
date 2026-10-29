@@ -525,7 +525,7 @@ export async function composeClientReply(accountId: string, leadId: string, ques
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY não configurada');
   const ctx = await buildSharedAiContext(accountId, leadId, `${question}\n${answer}`, {
-    historyTake: 12, historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' },
+    fullHistory: true, historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' },
   });
   if (!ctx) throw new Error('Card não encontrado');
 

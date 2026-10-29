@@ -108,7 +108,7 @@ export async function buildSharedAiContext(
   accountId: string,
   leadId: string,
   focusText: string,
-  opts: { historyTake?: number; historyRoleLabels?: { inbound: string; outbound: string } } = {}
+  opts: { historyTake?: number; fullHistory?: boolean; historyRoleLabels?: { inbound: string; outbound: string } } = {}
 ): Promise<SharedAiContext | null> {
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -122,15 +122,37 @@ export async function buildSharedAiContext(
 
   // Só a conversa (WhatsApp etc.) — e-mails ficam de fora do que a IA lê
   // (Fabio 27/09: "a IA não precisa levar em consideração os e-mails").
+  // fullHistory (Fabio 28/10: "a IA precisa ler a conversa todinha antes de responder o cliente" — a Luciana foi enrolada porque a constatação do imóvel
+  // de cessão de direitos estava 4 dias e 12+ mensagens antes): a conversa inteira, do começo, com o dia de cada trecho e quem da EQUIPE escreveu.
+  // Mensagem muito longa (proposta do site colada, texto de e-mail) entra cortada; num caso extremo, acima do teto, ficam as mais recentes.
   const recent = await prisma.message.findMany({
     where: { leadId, channel: { not: 'EMAIL' } },
     orderBy: { createdAt: 'desc' },
-    take: historyTake,
+    take: opts.fullHistory ? 1500 : historyTake,
+    ...(opts.fullHistory ? { include: { sentBy: { select: { name: true } } } } : {}),
   });
   const ordered = recent.reverse();
-  const historicoTexto = ordered.length
-    ? ordered.map((m) => `${m.direction === 'INBOUND' ? inboundLabel : outboundLabel}: ${voiceNoteForAi(m.content)}`).join('\n')
-    : '(sem histórico anterior)';
+  let historicoTexto = '(sem histórico anterior)';
+  if (ordered.length && opts.fullHistory) {
+    const TETO = 90_000;
+    const linhas: string[] = [];
+    let dia = '';
+    for (const m of ordered as Array<(typeof ordered)[number] & { sentBy?: { name: string } | null }>) {
+      const d = m.createdAt.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+      if (d !== dia) { dia = d; linhas.push(`— ${d} —`); }
+      const hora = m.createdAt.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+      let texto = voiceNoteForAi(m.content);
+      if (texto.length > 1800) texto = `${texto.slice(0, 1500)} …[mensagem longa, cortada]`;
+      const quem = m.direction === 'INBOUND' ? inboundLabel : m.sentBy?.name ? `${outboundLabel} (equipe: ${m.sentBy.name})` : outboundLabel;
+      linhas.push(`[${hora}] ${quem}: ${texto}`);
+    }
+    let total = 0;
+    let corte = linhas.length;
+    for (let i = linhas.length - 1; i >= 0; i--) { total += linhas[i].length + 1; if (total > TETO) break; corte = i; }
+    historicoTexto = `${corte > 0 ? `(conversa muito longa: as mensagens mais antigas ficaram de fora; abaixo, do dia ${(linhas.slice(corte).find((l) => l.startsWith('— ')) || '').replace(/— /g, '').trim() || 'mais antigo que coube'} em diante)\n` : `(conversa COMPLETA, do começo — ${ordered.length} mensagens; leia tudo antes de responder: o que a equipe já disse e o que o cliente já respondeu valem)\n`}${linhas.slice(corte).join('\n')}`;
+  } else if (ordered.length) {
+    historicoTexto = ordered.map((m) => `${m.direction === 'INBOUND' ? inboundLabel : outboundLabel}: ${voiceNoteForAi(m.content)}`).join('\n');
+  }
 
   // Escopo de produtos deste setor — trata o setor do CARD como o produto
   // correto do cliente, mesmo com palavreado ambíguo (ex.: "crédito com
@@ -462,7 +484,7 @@ ${ctx.contextoTexto}
 --- RESPOSTAS RÁPIDAS (modelos prontos da equipe — use o conteúdo fielmente quando bater) ---
 ${ctx.respostasRapidasTexto}
 
---- HISTÓRICO RECENTE DESTA CONVERSA ---
+--- HISTÓRICO DESTA CONVERSA ---
 ${ctx.historicoTexto}`;
 }
 
