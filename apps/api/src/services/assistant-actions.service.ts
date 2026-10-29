@@ -42,6 +42,11 @@ export const ACTION_TOOLS = [
   { name: 'mover_pasta', description: 'PREPARA mover a pasta do cliente no Drive (confirmação antes). destino: ATIVOS (LEADS ATIVOS), FRIOS (LEADS FRIOS) ou CONCLUIDOS (CONCLUÍDOS/ano/mês de hoje). Fica na mesma área (Home Equity ou Habitação) onde a pasta já está.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, destino: { type: 'string', enum: ['ATIVOS', 'FRIOS', 'CONCLUIDOS'] } }, required: ['leadId', 'destino'] } },
   { name: 'enviar_email', description: 'PREPARA um e-mail pela caixa comercial do CRM (confirmação antes). Se tiver leadId e já houver e-mail desse destinatário no cliente, responde no MESMO fio. anexos = nomes (ou parte do nome) de arquivos da pasta do cliente no Drive (use ver_pasta antes). Escreva como a A&F escreve: cordial, objetivo, com saudação e "Atenciosamente".', input_schema: { type: 'object', properties: { para: { type: 'string' }, cc: { type: 'string' }, assunto: { type: 'string' }, texto: { type: 'string' }, leadId: { type: 'string' }, anexos: { type: 'array', items: { type: 'string' } } }, required: ['para', 'assunto', 'texto'] } },
   { name: 'alterar_regra_ia', description: 'PREPARA uma mudança nas REGRAS da IA (Base de Conhecimento) — é assim que se muda o comportamento da IA do CRM sem mexer no código (confirmação antes). acao: CRIAR (titulo+conteudo), EDITAR (id+conteudo, titulo opcional), APAGAR (id). setor: "Home Equity", "Habitação" ou "todos" (padrão: o da regra, ou todos). Use ver_regras_ia antes pra não duplicar; prefira EDITAR a regra que já existe.', input_schema: { type: 'object', properties: { acao: { type: 'string', enum: ['CRIAR', 'EDITAR', 'APAGAR'] }, id: { type: 'string' }, titulo: { type: 'string' }, conteudo: { type: 'string' }, setor: { type: 'string' } }, required: ['acao'] } },
+  { name: 'ver_formulario', description: 'Mostra o FORMULÁRIO (cadastro) do card do cliente: todos os campos por aba, com o nome que aparece na tela, a chave, o tipo, as opções (se for lista) e o valor atual. Use antes de preencher.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, aba: { type: 'string', description: 'filtrar por aba (opcional)' } }, required: ['leadId'] } },
+  { name: 'preencher_formulario', description: 'PREPARA o preenchimento de campos do formulário/cadastro do card (confirmação antes; mostra antes → depois). campos = objeto { "nome do campo como na tela" ou chave: valor }. Valor vazio "" apaga o campo. Use ver_formulario antes; em campo de lista use exatamente uma das opções. Datas dd/mm/aaaa; dinheiro só número (ex.: 250000).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, campos: { type: 'object' } }, required: ['leadId', 'campos'] } },
+  { name: 'iniciar_supervisao', description: 'Inicia/atualiza a SUPERVISÃO DE SEXTA agora (só administrador): a IA resume cada card dos funis "Em contratação" que ainda não tem item nesta semana. Roda em segundo plano (pode levar alguns minutos) e abre a tela da Supervisão. Nada vai pro cliente.', input_schema: { type: 'object', properties: {} } },
+  { name: 'ver_supervisao', description: 'Lista a supervisão desta semana: cada card com id do item, cliente, etapa, status (PENDING/SENT/SKIPPED/DONE), resumo, situação, pendências, mensagem sugerida, ação pra equipe e se a janela de 24 h está aberta. Use pra conduzir a supervisão card por card (comece pelos PENDING).', input_schema: { type: 'object', properties: { soPendentes: { type: 'boolean' } } } },
+  { name: 'agir_supervisao', description: 'Age num item da supervisão. PULAR e FEITO são diretos. ENVIAR (janela aberta) e TEMPLATE (janela fechada: template de atualização + mensagem guardada pra quando responder) mandam a mensagem ao cliente e por isso PREPARAM com confirmação. texto = mensagem final (a sugerida ou a ajustada pela pessoa).', input_schema: { type: 'object', properties: { itemId: { type: 'string' }, acao: { type: 'string', enum: ['ENVIAR', 'TEMPLATE', 'PULAR', 'FEITO'] }, texto: { type: 'string' } }, required: ['itemId', 'acao'] } },
   { name: 'enviar_mensagem', description: 'PREPARA uma mensagem de WhatsApp pro cliente (só sai depois que a pessoa confirmar). Se a janela de 24 h estiver fechada, o envio vira o template de atualização do processo + a mensagem guardada pra sair quando o cliente responder.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, texto: { type: 'string' } }, required: ['leadId', 'texto'] } },
   { name: 'mover_card', description: 'PREPARA a mudança de etapa do card (confirmação antes). etapa = nome da etapa; funil opcional (se a etapa for de outro funil).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, etapa: { type: 'string' }, funil: { type: 'string' } }, required: ['leadId', 'etapa'] } },
   { name: 'marcar_status', description: 'PREPARA marcar o card como GANHO, PERDIDO, REPROVADO (perdido por reprovação do banco) ou REABRIR (confirmação antes). motivo é obrigatório pra PERDIDO/REPROVADO.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, status: { type: 'string', enum: ['GANHO', 'PERDIDO', 'REPROVADO', 'REABRIR'] }, motivo: { type: 'string' } }, required: ['leadId', 'status'] } },
@@ -224,6 +229,58 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       return { erro: 'acao: CRIAR, EDITAR ou APAGAR' };
     }
     // ── com confirmação ──
+    case 'ver_formulario': {
+      const l = await leadOf(accountId, input?.leadId);
+      const cf = (l.customFields || {}) as Record<string, any>;
+      const aba = norm(input?.aba || '');
+      const defs = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }], select: { tab: true, name: true, key: true, type: true, options: true } });
+      return { cliente: l.name, campos: defs.filter((d) => !aba || norm(d.tab).includes(aba)).map((d) => ({ aba: d.tab, campo: d.name, chave: d.key, tipo: d.type, ...(d.options?.length ? { opcoes: d.options } : {}), valor: cf[d.key] ?? '' })) };
+    }
+    case 'preencher_formulario': {
+      const l = await leadOf(accountId, input?.leadId);
+      const cf = (l.customFields || {}) as Record<string, any>;
+      const pedidos = input?.campos && typeof input.campos === 'object' ? Object.entries(input.campos as Record<string, unknown>) : [];
+      if (!pedidos.length) return { erro: 'nenhum campo pra preencher' };
+      const defs = await prisma.fieldDefinition.findMany({ where: { accountId }, select: { name: true, key: true, type: true, options: true } });
+      const mudar: Record<string, string> = {}; const linhas: string[] = []; const erros: string[] = [];
+      for (const [k, v] of pedidos) {
+        const d = defs.find((x) => x.key === k) || defs.find((x) => norm(x.name) === norm(k)) || defs.find((x) => norm(x.name).includes(norm(k)) || norm(k).includes(norm(x.name)));
+        if (!d) { erros.push(`campo "${k}" não existe no formulário`); continue; }
+        let val = v === null || v === undefined ? '' : String(v).trim();
+        if (val && d.options?.length) { const op = d.options.find((o) => norm(o) === norm(val)); if (!op) { erros.push(`"${d.name}" aceita só: ${d.options.join(', ')}`); continue; } val = op; }
+        if (String(cf[d.key] ?? '') === val) continue;
+        mudar[d.key] = val;
+        linhas.push(`• ${d.name}: ${String(cf[d.key] ?? '').trim() || '(vazio)'} → ${val || '(apagar)'}`);
+      }
+      if (erros.length && !linhas.length) return { erro: erros.join('; ') };
+      if (!linhas.length) return { ok: true, aviso: 'os campos já estão com esses valores' };
+      return { ...pendente({ accountId, userId, tipo: 'preencher_formulario', params: { leadId: l.id, mudar }, descricao: `Preencher o formulário do ${l.name}:\n${linhas.join('\n')}` }, p.fila), ...(erros.length ? { naoEntraram: erros } : {}) };
+    }
+    case 'iniciar_supervisao': {
+      const u = await prisma.user.findFirst({ where: { id: userId, accountId }, select: { role: true } });
+      if (u?.role !== 'ADMIN') return { erro: 'a supervisão de sexta é só pra administrador' };
+      callApi(p.token, 'POST', '/supervision/generate').catch((e) => console.warn('[Assistente] supervisão:', e?.message));
+      p.nav.push({ path: '/supervisao', label: 'Supervisão de sexta' });
+      return { ok: true, aviso: 'Gerando em segundo plano: os cards aparecem na tela da Supervisão conforme ficam prontos (botão Atualizar lista). Os que já existiam continuam.' };
+    }
+    case 'ver_supervisao': {
+      const r = await callApi(p.token, 'GET', '/supervision');
+      const itens = (r?.items || []).filter((i: any) => !input?.soPendentes || i.status === 'PENDING');
+      return { semana: r?.weekKey, total: r?.items?.length || 0, pendentes: (r?.items || []).filter((i: any) => i.status === 'PENDING').length, itens: itens.slice(0, 40).map((i: any) => ({ itemId: i.id, leadId: i.leadId, cliente: i.leadName, etapa: i.etapa, banco: i.banco, status: i.status, resumo: i.resumo, situacao: i.situacao, pendencias: i.pendencias, mensagemSugerida: i.sugestao || '(não falar com o cliente agora)', acaoEquipe: i.acao, janelaAberta: i.janelaAberta })) };
+    }
+    case 'agir_supervisao': {
+      const acao = String(input?.acao || '').toUpperCase();
+      const it = await prisma.supervisionItem.findFirst({ where: { id: String(input?.itemId || ''), accountId }, select: { id: true, leadId: true, sugestao: true } });
+      if (!it) return { erro: 'item da supervisão não encontrado (use ver_supervisao)' };
+      const l = await leadOf(accountId, it.leadId);
+      if (acao === 'PULAR' || acao === 'FEITO') { await callApi(p.token, 'POST', `/supervision/${it.id}/${acao === 'PULAR' ? 'skip' : 'done'}`); return { ok: true, feito: `${l.name}: ${acao === 'PULAR' ? 'pulado' : 'marcado como feito'}` }; }
+      const texto = String(input?.texto || it.sugestao || '').trim();
+      if (!texto) return { erro: 'sem mensagem pra enviar' };
+      if (acao !== 'ENVIAR' && acao !== 'TEMPLATE') return { erro: 'acao: ENVIAR, TEMPLATE, PULAR ou FEITO' };
+      const aberta = await janelaAberta(it.leadId);
+      const modo = aberta ? 'send' : 'template';
+      return pendente({ accountId, userId, tipo: 'agir_supervisao', params: { itemId: it.id, modo, texto }, descricao: aberta ? `Supervisão — mandar pro ${l.name}: "${texto}"` : `Supervisão — janela do ${l.name} fechada: mandar o template de atualização agora; a mensagem "${texto}" sai quando ele responder.` }, p.fila);
+    }
     case 'enviar_mensagem': {
       const l = await leadOf(accountId, input?.leadId);
       const texto = String(input?.texto || '').trim();
@@ -292,6 +349,18 @@ export async function confirmPendingAction(p: { accountId: string; userId: strin
       await x.g.moveDriveItem(a.accountId, x.pasta, destino);
       await callApi(p.token, 'POST', '/notes', { leadId: x.l.id, content: `📁 Pasta movida pelo assistente para ${caminho} (${x.area.nome}). ${x.g.folderLink(x.pasta)}` }).catch(() => {});
       return { ok: true, resultado: `Pasta movida pra ${caminho}.` };
+    }
+    case 'agir_supervisao': {
+      await callApi(p.token, 'POST', `/supervision/${x0.itemId}/${x0.modo}`, { text: x0.texto });
+      return { ok: true, resultado: x0.modo === 'send' ? 'Mensagem enviada e o item saiu da lista.' : 'Template enviado; a mensagem sai quando o cliente responder.' };
+    }
+    case 'preencher_formulario': {
+      const atual = await prisma.lead.findFirst({ where: { id: x0.leadId, accountId: a.accountId }, select: { customFields: true } });
+      if (!atual) throw new Error('card não encontrado');
+      const cf: Record<string, any> = { ...((atual.customFields || {}) as Record<string, any>) };
+      for (const [k, v] of Object.entries(x0.mudar as Record<string, string>)) { if (v === '') delete cf[k]; else cf[k] = v; }
+      await callApi(p.token, 'PUT', `/leads/${x0.leadId}`, { customFields: cf });
+      return { ok: true, resultado: `Formulário preenchido (${Object.keys(x0.mudar).length} campo(s)).` };
     }
     case 'enviar_email': {
       await callApi(p.token, 'POST', `/email/accounts/${x0.caixaId}/send`, { to: x0.to, cc: x0.cc, subject: x0.subject, body: x0.body, replyToId: x0.replyToId, leadId: x0.leadId, attachments: x0.attachments });
