@@ -160,7 +160,7 @@ async function deliver(db: Db, r: { id: string; accountId: string; leadId: strin
   }
   const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
   const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
-  const fileName = `AeF_${r.institution}_${slug(lead?.name || 'Cliente') || 'Cliente'}.pdf`;
+  const fileName = `AeF_${r.institution.replace(/_CM$/, "")}_${slug(lead?.name || 'Cliente') || 'Cliente'}.pdf`;
   const caption = r.caption || `Segue a simulação do ${label} em PDF 📄`;
   const sent = await sendOutboundMedia({ accountId: r.accountId, leadId: r.leadId, buffer: pdf, fileName, mimeType: 'application/pdf', caption, userId: r.requestedById || undefined, io });
   if (!sent.success) {
