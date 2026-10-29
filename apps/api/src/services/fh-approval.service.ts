@@ -37,7 +37,7 @@ const push = (accountId: string, title: string, body: string, leadId: string) =>
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* push é só aviso */ }
 };
 
-interface FhOption { banco: string; valor: string; prazo: string; taxa: string; cet: string }
+interface FhOption { banco: string; valor: string; prazo: string; taxa: string; cet: string; parcela?: string; condicao?: string; pedido?: string }
 
 /** Propostas aprovadas e bancos ainda em análise, pela situação gravada (_fhResumo) + condições da rodada ("CONDIÇÕES — Bradesco: financia …; prazo …; taxa efetiva …; CET …"). Pura. */
 export function fhOptions(resumo: Record<string, { status: string; texto: string }>, condicoes: string): { aprovadas: FhOption[]; emAnalise: string[] } {
@@ -49,20 +49,51 @@ export function fhOptions(resumo: Record<string, { status: string; texto: string
       const c = new RegExp(`${banco}:\\s*financia\\s*([\\d.,]+);\\s*prazo\\s*(\\d+)\\s*meses;\\s*taxa efetiva\\s*([\\d.,]+)%\\s*a\\.a\\.;\\s*CET\\s*([\\d.,]+)%`, 'i').exec(condicoes) || [];
       const valor = (/R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})/.exec(b.texto) || [])[1] || c[1] || '';
       const prazo = (/(\d+)\s*meses/.exec(b.texto) || [])[1] || c[2] || '';
-      aprovadas.push({ banco, valor: valor ? `R$ ${valor}` : '', prazo, taxa: c[3] || '', cet: c[4] || '' });
+      // Taxa/CET/parcela também do texto do banco (o Inter do nosso portal traz "juros 9,99% a.a. + IPCA; CET 11,15% a.a.") — Fabio 29/10: "no mesmo padrão do Home Equity".
+      const juros = (/juros\s*([\d.,]+%\s*a\.\s*[am]\.(?:\s*\+\s*[A-Z]+)?)/i.exec(b.texto) || [])[1] || '';
+      const taxa = c[3] ? `${c[3]}% a.a.` : juros || ((/taxa efetiva\s*([\d.,]+)%/i.exec(b.texto) || [])[1] ? `${(/taxa efetiva\s*([\d.,]+)%/i.exec(b.texto) || [])[1]}% a.a.` : '');
+      const cet = c[4] || (/CET\s*([\d.,]+)%/i.exec(b.texto) || [])[1] || '';
+      const parcela = (/1[ªa]\s*parcela\s*R\$\s*([\d.,]+)/i.exec(b.texto) || [])[1] || '';
+      const condicao = /condicion/i.test(`${b.status} ${b.texto}`) ? ((/condicionad[oa]\s*(?:a|à|ao)\s*([^.;|]{4,80})/i.exec(b.texto) || [])[1] || 'envio de documentos pedidos pelo banco') : '';
+      aprovadas.push({ banco, valor: valor ? `R$ ${valor}` : '', prazo, taxa, cet, parcela: parcela ? `R$ ${parcela}` : '', condicao });
     } else if (/em an[aá]lise|aguard|pendente|processando/i.test(b.status)) emAnalise.push(banco);
   }
   return { aprovadas, emAnalise };
 }
 
+/** Mesmo padrão do aviso do Home Equity (approvalBlock): resumo da proposta, linha por informação. A 1ª linha (FH_NOTICE_MARK + banco) é a que o "Seguir com esta" reconhece. */
 export function fhOptionText(o: FhOption): string {
   return [
     `${FH_NOTICE_MARK} *${o.banco}*`,
+    '📋 Resumo da proposta:',
+    `🏦 Instituição: ${o.banco}`,
     o.valor && `💰 Valor financiado: ${o.valor}`,
+    o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
     o.prazo && `📅 Prazo: ${o.prazo} meses`,
-    o.taxa && `📈 Taxa efetiva: ${o.taxa}% a.a.`,
+    o.taxa && `📈 Taxa de juros: ${o.taxa}`,
     o.cet && `📊 CET: ${o.cet}% a.a.`,
+    o.parcela && `💵 1ª parcela: ${o.parcela}`,
+    !o.parcela && `🧾 As parcelas exatas são confirmadas na formalização, conforme o valor e o prazo aprovados.`,
+    o.condicao && `📌 Aprovação condicionada: ${o.condicao}`,
   ].filter(Boolean).join('\n');
+}
+
+/** Completa a opção com o que a análise do banco tem por inteiro (o resumo do card corta o texto): taxa/CET do Inter do nosso portal e o valor pedido. */
+async function enriquecer(leadId: string, cf: Cf, ops: FhOption[]): Promise<FhOption[]> {
+  const brl = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const num = (t: string) => Number(String(t || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+  const pedido = Number(String(cf.valor_credito || '').replace(/[^\d.]/g, '')) || 0;
+  const inter = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
+  return ops.map((o) => {
+    const x = { ...o };
+    if (o.banco === 'Inter' && inter?.detail) {
+      const d = inter.detail;
+      if (!x.taxa) x.taxa = (/juros\s*([\d.,]+%\s*a\.\s*[am]\.(?:\s*\+\s*[A-Z]+)?)/i.exec(d) || [])[1] || '';
+      if (!x.cet) x.cet = (/CET\s*([\d.,]+)%/i.exec(d) || [])[1] || '';
+    }
+    if (pedido && num(x.valor) && num(x.valor) + 1 < pedido) x.pedido = brl(pedido);
+    return x;
+  });
 }
 
 /** Roda no ciclo da análise automática: manda o aviso de aprovação do Financiamento quando dá. */
@@ -80,10 +111,36 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
-    if (cf._autoPaused || cf._fhNotice?.sentAt || !cf._fhResumo) continue;
+    if (cf._autoPaused || !cf._fhResumo) continue;
     const run = await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, bank: FH_BANK, kind: 'RUN', dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
-    const { aprovadas, emAnalise } = fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`);
+    const op = fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`);
+    const emAnalise = op.emAnalise;
+    const aprovadas = await enriquecer(l.id, cf, op.aprovadas);
     if (!aprovadas.length) continue;
+    // Já avisado: banco que aprovou DEPOIS (Fabio 29/10, Taynara: só foi o Inter e o Santander aprovou em seguida) — manda essa proposta também, enquanto ele não escolheu.
+    if (cf._fhNotice?.sentAt) {
+      const ja = new Set<string>(Array.isArray(cf._fhNotice.bancos) ? cf._fhNotice.bancos : []);
+      const novas = aprovadas.filter((o) => !ja.has(o.banco));
+      if (!novas.length) continue;
+      if (cf._fhChosen) {
+        await saveCf(l.id, { _fhNotice: { ...cf._fhNotice, bancos: [...ja, ...novas.map((o) => o.banco)] } });
+        await note(l.id, `🏠 Financiamento também APROVADO no ${novas.map((o) => o.banco).join(', ')} — o cliente já escolheu o ${cf._fhChosen.bank || 'outro banco'}, não mandei. Veja se vale oferecer.`);
+        push(accountId, `🏠 ${l.name}: outro banco aprovou`, `${novas.map((o) => o.banco).join(', ')} — o cliente já escolheu outro`, l.id);
+        continue;
+      }
+      if (!inNoticeWindow() || !l.aiAutoReplyActive || !(await whatsappWindowOpen(l.id))) continue;
+      const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+      await saveCf(l.id, { _fhNotice: { ...cf._fhNotice, bancos: [...ja, ...novas.map((o) => o.banco)] } });
+      const nome = firstName(cf.falando_com || cf.participante_1 || l.name);
+      await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `✅ ${nome ? `${nome}, ` : ''}seu financiamento também foi aprovado ${novas.length > 1 ? `em mais ${novas.length} bancos` : `no *${novas[0].banco}*`}! Veja abaixo e toque em *${CHOOSE}* na proposta que preferir.` });
+      for (const o of novas) {
+        await new Promise((r) => setTimeout(r, 1200));
+        const r = await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: fhOptionText(o), buttons: [CHOOSE] });
+        if (!r.success) await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `${fhOptionText(o)}\n\n👉 Para seguir com esta, é só me responder "${o.banco}".` });
+      }
+      await note(l.id, `📣 Cliente avisado de mais um banco aprovado no Financiamento: ${novas.map((o) => o.banco).join(', ')}.`);
+      continue;
+    }
     const primeira = cf._fhFirstApprovalAt ? new Date(cf._fhFirstApprovalAt).getTime() : 0;
     if (!primeira) { await saveCf(l.id, { _fhFirstApprovalAt: new Date().toISOString() }); if (emAnalise.length) continue; }
     if (emAnalise.length && Date.now() - (primeira || Date.now()) < MAX_WAIT_OTHERS_MS) continue; // os outros ainda analisam: espera um pouco (no máximo 12 h)
