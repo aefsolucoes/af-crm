@@ -164,6 +164,7 @@ function systemFixed(userName: string, voz: boolean): string {
 - Mensagem ao cliente: escreva como a equipe da A&F escreve no WhatsApp (curta, educada, sem emoji em excesso, sem prometer prazo ou aprovação). Mostre o texto antes.
 - Formulário do card ("preenche o card do Pedro com…", "completa o cadastro com os dados da matrícula"): ver_formulario → preencher_formulario com os campos certos. Pode tirar os dados do que o cliente mandou (ver_cliente) — nunca invente CPF, data ou valor; o que não tiver, pergunte. Formulário de portal de banco é com as extensões (rodar_analise, vistoria, certidão).
 - Certidão ("pede a certidão de ônus/matrícula do Pedro"): buscar_clientes → pedir_certidao só com o leadId. NÃO abra formulário, documentos nem pasta antes: a ferramenta já procura a matrícula e o endereço. Se faltar dado, ela diz o que perguntar. Se a pessoa quiser o PIX com ela ("deixa o PIX no chat", "eu mando pro cliente") → pixNoChat true. "Cadê o PIX / como está a certidão do Pedro" → ver_certidao (o código aparece no balão com Copiar; nunca leia o código).
+- VOZ DO ASSISTENTE: "muda/troca/escolhe a voz", "que vozes tem?" → escolher_voz (abre a lista no balão). NUNCA mande a pessoa pras Configurações pra isso.
 - RAPIDEZ: cada volta demora; use o MENOR número de ferramentas. Quando precisar de várias leituras independentes, peça todas na mesma volta.
 - Documentos: "quem mandou documento e precisa de andamento?" → docs_para_andamento; sugira o próximo passo de cada um (PRONTO → seguir o processo: Fechado/Em contratação, vistoria, certidão; PROBLEMA/FALTA → o que pedir ao cliente; DÚVIDA → responder no balão Dúvidas da IA). Pra analisar um cliente: documentos_do_cliente; se houver arquivo não lido, conferir_documentos; pra uma pergunta específica sobre o conteúdo, ler_documento. Dê sua avaliação como um analista de crédito: serve pro banco? está no nome certo? atual? falta frente/verso?
 - Áudio: "quero mandar um áudio pro Pedro" → gravar_audio (abre o gravador; quem grava é a pessoa; o envio é no botão dela).
@@ -175,11 +176,11 @@ function systemFixed(userName: string, voz: boolean): string {
 - MODO VOZ: a sua resposta será FALADA em voz alta. Seja curto (1 a 3 frases), natural, como numa conversa; sem listas, sem markdown, sem emoji, sem ler IDs ou links. Números por extenso só quando ajudar. Se houver muitos itens, diga os 3 principais e pergunte se quer o resto.` : ''}`;
 }
 
-type ToolCtx = { accountId: string; userId: string; token: string; anexos: ChatAttachment[]; fila: PendingAction[]; nav: ScreenNav[]; audio: AudioReq[]; copiar: CopyReq[] };
+type ToolCtx = { accountId: string; userId: string; token: string; anexos: ChatAttachment[]; fila: PendingAction[]; nav: ScreenNav[]; audio: AudioReq[]; copiar: CopyReq[]; ui: string[] };
 async function runTool(c: ToolCtx, name: string, input: any): Promise<unknown> {
   const { accountId, userId, anexos } = c;
   try {
-    if (ACTION_TOOL_NAMES.has(name)) return await runActionTool({ accountId, userId, token: c.token, name, input, fila: c.fila, nav: c.nav, audio: c.audio, copiar: c.copiar });
+    if (ACTION_TOOL_NAMES.has(name)) return await runActionTool({ accountId, userId, token: c.token, name, input, fila: c.fila, nav: c.nav, audio: c.audio, copiar: c.copiar, ui: c.ui });
     switch (name) {
       case 'buscar_clientes': return await buscarClientes(accountId, input?.termo);
       case 'ver_cliente': return await verCliente(accountId, String(input?.leadId || ''), input?.mensagens);
@@ -194,7 +195,7 @@ async function runTool(c: ToolCtx, name: string, input: any): Promise<unknown> {
   }
 }
 
-export type AssistantReply = { reply: string; attachments: ChatAttachment[]; pending: { id: string; descricao: string }[]; navigate: ScreenNav | null; audio: AudioReq | null; copiar: CopyReq[] };
+export type AssistantReply = { reply: string; attachments: ChatAttachment[]; pending: { id: string; descricao: string }[]; navigate: ScreenNav | null; audio: AudioReq | null; copiar: CopyReq[]; escolherVoz: boolean };
 export async function assistantChat(p: { accountId: string; userId: string; userName: string; token: string; voice?: boolean; messages: ChatMsg[] }): Promise<AssistantReply> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('IA indisponível (sem chave da Anthropic)');
@@ -203,8 +204,8 @@ export async function assistantChat(p: { accountId: string; userId: string; user
   if (!history.length) throw new Error('mensagem vazia');
   const msgs: any[] = [...history];
   const anexos: ChatAttachment[] = [];
-  const ctx: ToolCtx = { accountId: p.accountId, userId: p.userId, token: p.token, anexos, fila: [], nav: [], audio: [], copiar: [] };
-  const fim = (reply: string): AssistantReply => ({ reply, attachments: dedupe(anexos), pending: ctx.fila.map((a) => ({ id: a.id, descricao: a.descricao })), navigate: ctx.nav[ctx.nav.length - 1] || null, audio: ctx.audio[ctx.audio.length - 1] || null, copiar: ctx.copiar });
+  const ctx: ToolCtx = { accountId: p.accountId, userId: p.userId, token: p.token, anexos, fila: [], nav: [], audio: [], copiar: [], ui: [] };
+  const fim = (reply: string): AssistantReply => ({ reply, attachments: dedupe(anexos), pending: ctx.fila.map((a) => ({ id: a.id, descricao: a.descricao })), navigate: ctx.nav[ctx.nav.length - 1] || null, audio: ctx.audio[ctx.audio.length - 1] || null, copiar: ctx.copiar, escolherVoz: ctx.ui.includes('escolherVoz') });
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',

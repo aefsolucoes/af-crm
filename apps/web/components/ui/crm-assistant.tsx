@@ -240,6 +240,7 @@ export function CrmAssistant() {
   // Mouse em cima da bolinha ou do balão: ela PARA onde está pra pessoa olhar (Fabio 29/10); ao sair, volta a passear.
   const [mouseEm, setMouseEm] = useState(false);
   const orbRef = useRef<HTMLButtonElement | null>(null);
+  const pressRef = useRef<{ t: ReturnType<typeof setTimeout> | null; abriu: boolean }>({ t: null, abriu: false });
   const segura = () => { const r = orbRef.current?.getBoundingClientRect(); if (r) setPos({ x: r.left, y: r.top }); setMouseEm(true); };
   const solta = () => setMouseEm(false);
   useEffect(() => {
@@ -331,7 +332,7 @@ export function CrmAssistant() {
       const { data } = await api.post('/api/assistant/chat', { voice: true, messages: msgsRef.current }).finally(() => clearTimeout(demora));
       const fala = String(data.reply || '').trim() || 'Não consegui responder agora.';
       lembra({ role: 'assistant', content: fala });
-      const c: Cartao = { disse: content, fala, pending: data.pending?.length ? data.pending.map((p: Pending) => ({ ...p, estado: 'PENDENTE' })) : undefined, attachments: data.attachments?.length ? data.attachments : undefined, nav: data.navigate || null, audio: data.audio || null, copiar: data.copiar?.length ? data.copiar : undefined };
+      const c: Cartao = { disse: content, fala, pending: data.pending?.length ? data.pending.map((p: Pending) => ({ ...p, estado: 'PENDENTE' })) : undefined, attachments: data.attachments?.length ? data.attachments : undefined, nav: data.navigate || null, audio: data.audio || null, copiar: data.copiar?.length ? data.copiar : undefined, escolherVoz: data.escolherVoz === true || undefined };
       setCard(c);
       if (c.nav?.path) router.push(c.nav.path);
       return c;
@@ -422,6 +423,7 @@ export function CrmAssistant() {
       const c = await perguntar(dito);
       if (!vozRef.current) break;
       if (c.audio) { await falar(c.fala || 'Pode gravar.'); break; } // gravador aberto: solta o microfone pra gravação
+      if (c.escolherVoz) { await falar(c.fala || 'Escolha a voz aqui no balão.'); break; } // lista de vozes aberta: solta o microfone pra pessoa ouvir as amostras
       if (c.fala) await falar(c.fala);
     }
     parar();
@@ -496,13 +498,17 @@ export function CrmAssistant() {
 
       <button
         ref={orbRef}
-        onClick={conversar}
+        onClick={() => { if (pressRef.current.abriu) { pressRef.current.abriu = false; return; } void conversar(); }}
+        onTouchStart={() => { pressRef.current.abriu = false; pressRef.current.t = setTimeout(() => { pressRef.current.abriu = true; if (vozRef.current) parar(); setCard({ escolherVoz: true }); }, 650); }}
+        onTouchEnd={() => { if (pressRef.current.t) clearTimeout(pressRef.current.t); }}
         onMouseEnter={segura}
         onMouseLeave={solta}
+        // Botão direito (ou segurar o dedo no celular) abre a lista de vozes (Fabio 29/10: "colocar a opção de escolher vozes").
+        onContextMenu={(e) => { e.preventDefault(); if (vozRef.current) parar(); setCard({ escolherVoz: true }); }}
         className={cn('fixed z-50 rounded-full focus:outline-none', escondeCelular && 'hidden md:block')}
         style={{ left: pos.x, top: pos.y, width: ORB, height: ORB, transition: anda }}
         aria-label="Assistente do CRM"
-        title={conversando ? 'Conversando — toque pra parar' : 'Assistente do CRM — toque e fale'}
+        title={conversando ? 'Conversando — toque pra parar' : 'Assistente do CRM — toque e fale (botão direito ou segurar: escolher a voz)'}
       >
         <Orb3D voz={voz} />
       </button>
