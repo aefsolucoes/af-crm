@@ -52,6 +52,15 @@ router.post('/:leadId/cadastro', async (req: AuthRequest, res: Response) => {
   try { await gravarCadastro(req.user!.accountId, req.params.leadId, Number(ordem), { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
+// Mapa do formulário de cadastro da CAIXA (nomes, rótulos, opções e botões — sem valores), pra acertar o preenchimento.
+router.post('/:leadId/mapa', async (req: AuthRequest, res: Response) => {
+  const l = await prisma.lead.findFirst({ where: { id: req.params.leadId, accountId: req.user!.accountId }, select: { customFields: true } });
+  if (!l) return res.status(404).json({ error: 'Lead não encontrado' });
+  const mapa = { at: new Date().toISOString(), pagina: String((req.body as any)?.pagina || '').slice(0, 200), campos: Array.isArray((req.body as any)?.campos) ? (req.body as any).campos.slice(0, 150) : [], botoes: Array.isArray((req.body as any)?.botoes) ? (req.body as any).botoes.slice(0, 40) : [] };
+  await prisma.lead.update({ where: { id: req.params.leadId }, data: { customFields: { ...((l.customFields || {}) as Record<string, unknown>), _caixaFormMapa: mapa } as any } });
+  res.json({ ok: true });
+});
+
 // Histórico da extensão nos logs do servidor (diagnóstico sem precisar abrir o Chrome do Fabio).
 router.post('/log', async (req: AuthRequest, res: Response) => {
   console.log('[CAIXA ext]', String((req.body as any)?.texto || '').replace(/\d{11}/g, '[CPF]').slice(0, 500));
