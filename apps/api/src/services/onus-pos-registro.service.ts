@@ -41,7 +41,7 @@ export async function enviarOnusPosRegistroInter(p: { accountId: string; leadId:
   // E-mail do Inter deste processo: os ligados ao card; vale o do consultor (pessoa), não o no-reply.
   const emails = await prisma.emailMessage.findMany({
     where: { leadId: p.leadId, OR: [{ fromAddress: { endsWith: 'inter.co', mode: 'insensitive' } }, { fromAddress: { endsWith: 'bancointer.com.br', mode: 'insensitive' } }] },
-    orderBy: { date: 'desc' }, take: 20, select: { id: true, fromAddress: true, fromName: true, subject: true, date: true },
+    orderBy: { date: 'desc' }, take: 20, select: { id: true, fromAddress: true, fromName: true, subject: true, date: true, emailAccountId: true },
   });
   const pessoa = emails.find((e) => e.fromAddress && INTER_FROM.test(e.fromAddress) && !NO_REPLY.test(e.fromAddress));
   if (!pessoa) {
@@ -59,8 +59,9 @@ export async function enviarOnusPosRegistroInter(p: { accountId: string; leadId:
     return { ok: false, motivo: 'sem certidão de ônus na pasta IMOVEL' };
   }
 
-  const acc = await prisma.emailAccount.findFirst({ where: { accountId: p.accountId, userId: null }, orderBy: { createdAt: 'asc' } });
-  if (!acc) return { ok: false, motivo: 'caixa comercial não configurada' };
+  // Responde pela MESMA caixa que recebeu o e-mail do Inter (ex.: a da Andreia, quando o consultor fala com ela) — senão o consultor recebe de outro remetente; sem ela, a comercial.
+  const acc = (await prisma.emailAccount.findFirst({ where: { id: pessoa.emailAccountId, accountId: p.accountId } })) || (await prisma.emailAccount.findFirst({ where: { accountId: p.accountId, userId: null }, orderBy: { createdAt: 'asc' } }));
+  if (!acc) return { ok: false, motivo: 'caixa de e-mail não configurada' };
   const { downloadDriveFile } = await import('./google.service');
   const content = await downloadDriveFile(p.accountId, arquivo.id, arquivo.mimeType);
   const consultor = pessoa.fromName ? firstName(pessoa.fromName) : '';
