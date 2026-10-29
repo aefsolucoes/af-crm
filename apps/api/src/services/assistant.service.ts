@@ -49,7 +49,9 @@ const READ_TOOLS = [
     input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] },
   },
 ];
-const TOOLS = [...READ_TOOLS, ...ACTION_TOOLS];
+const TOOLS_ALL = [...READ_TOOLS, ...ACTION_TOOLS];
+// Cache de prompt (as ~35 ferramentas + as regras fixas são reenviadas a cada volta): marca o fim das ferramentas pra o reenvio custar ~10%.
+const TOOLS = TOOLS_ALL.map((t, i) => (i === TOOLS_ALL.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t));
 
 const corta = (t: unknown, n: number) => { const s = String(t ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? `${s.slice(0, n)}…` : s; };
 const quando = (d: Date | null | undefined) => (d ? d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
@@ -147,10 +149,12 @@ async function verSimulacoes(accountId: string, leadId: string, anexos: ChatAtta
   return rows.map((r) => ({ banco: r.institution, status: r.status === 'PRIVATE' ? 'PRONTO (só pra equipe — botão Abrir PDF no chat)' : r.status === 'DONE' ? 'ENVIADO AO CLIENTE pelo WhatsApp' : r.status, pedidoPor: r.source, quando: quando(r.createdAt), detalhe: corta(r.detail, 200) }));
 }
 
-function systemPrompt(userName: string, voz: boolean): string {
+function systemPrompt(userName: string, voz: boolean): any[] {
   const agora = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date());
+  return [{ type: 'text', text: systemFixed(userName, voz), cache_control: { type: 'ephemeral' } }, { type: 'text', text: `Agora: ${agora} (Brasília).` }];
+}
+function systemFixed(userName: string, voz: boolean): string {
   return `Você é o assistente do CRM da A&F Soluções Financeiras (correspondente bancário: crédito com garantia de imóvel/Home Equity, financiamento habitacional e consórcio) — um copiloto no estilo do Jarvis: entende o pedido, raciocina, usa as ferramentas e resolve. Quem fala com você é ${userName}, da EQUIPE — nunca um cliente.
-Agora: ${agora} (Brasília).
 - Responda em português, com os dados reais do CRM: SEMPRE use as ferramentas antes de afirmar algo sobre um cliente; nunca invente número, data ou status.
 - Pra achar o cliente use buscar_clientes; se vier mais de um com o nome, liste (nome, etapa, CPF) e pergunte qual — a menos que só um faça sentido.
 - Pense como um gerente experiente: ao resumir um cliente, diga onde está, o que falta e qual o próximo passo que você recomenda.
