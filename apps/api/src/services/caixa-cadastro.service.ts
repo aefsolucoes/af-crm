@@ -170,6 +170,21 @@ export async function pedirCadastroParticipantes(accountId: string, leadId: stri
   return null;
 }
 
+/** Ficha refeita com documento novo da pasta (Fabio 29/10 — Bianca sem RG/CNH): o cadastro que não saiu porque faltava a identidade e agora a ficha tem → volta pra fila. */
+export async function reenfileirarComFichaNova(leadId: string, antes: any[]): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (l?.customFields || {}) as Cf;
+  const cads = (cf._caixaCadastro?.cadastros || {}) as Record<string, any>;
+  const temId = (p: any) => !!String(p?.identidade?.numero || '').trim();
+  const ps = participantesDa(cf);
+  const voltar = Object.entries(cads)
+    .filter(([o, v]) => v && !['GRAVADO', 'FILA', 'RODANDO'].includes(String(v.status)) && !temId(antes.find((p: any, i: number) => (Number(p.ordem) || i + 1) === Number(o))) && temId(ps.find((p) => p.ordem === Number(o))))
+    .map(([o]) => Number(o));
+  if (!voltar.length) return;
+  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of voltar) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por: 'CRM (documento novo)' }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Chegou o documento de identidade de ${voltar.map((o) => ps.find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')} — a ficha foi refeita e o cadastro na CAIXA voltou pra fila da extensão.` } }).catch(() => {});
+}
+
 /** Resultado do cadastro vindo da extensão (preenchido + conferência; salvo ou parado antes de salvar). */
 export async function gravarCadastro(accountId: string, leadId: string, ordem: number, r: { status: string; texto: string }): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });

@@ -276,8 +276,14 @@ export async function processFichasCadastrais(accountId: string, io?: Io): Promi
   const ids = await prisma.$queryRaw<{ id: string }[]>`
     SELECT l.id FROM "Lead" l JOIN "Stage" s ON s.id = l."stageId" JOIN "Pipeline" p ON p.id = l."pipelineId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
-      AND s.name ILIKE '%Documentação Recebida%' AND p.name ILIKE 'Em contratação%'
-      AND COALESCE(l."customFields"->>'link_pasta_drive', '') LIKE 'http%' AND l."customFields"->'_fichaCadastral' IS NULL
+      AND p.name ILIKE 'Em contratação%'
+      AND COALESCE(l."customFields"->>'link_pasta_drive', '') LIKE 'http%'
+      AND ((s.name ILIKE '%Documentação Recebida%' AND l."customFields"->'_fichaCadastral' IS NULL)
+        -- Ficha com dado faltando + documento novo organizado na pasta depois dela → lê de novo, em qualquer etapa da contratação (Fabio 29/10: RG/CNH da Bianca chegando depois).
+        OR (l."customFields"->>'_driveOrganizedAt' > l."customFields"->'_fichaCadastral'->>'at'
+          AND jsonb_typeof(l."customFields"->'_fichaCadastral'->'participantes') = 'array'
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements(l."customFields"->'_fichaCadastral'->'participantes') fp
+            WHERE jsonb_typeof(fp->'faltando') = 'array' AND jsonb_array_length(fp->'faltando') > 0)))
       AND COALESCE(l."customFields"->>'_fichaCadastralErro', '') < ${new Date(Date.now() - 6 * 3600_000).toISOString()}
     ORDER BY l."stageEnteredAt" ASC NULLS LAST LIMIT 1`;
   if (!ids[0] || emAndamento.has(ids[0].id)) return;
@@ -286,8 +292,16 @@ export async function processFichasCadastrais(accountId: string, io?: Io): Promi
 }
 
 async function rodar(accountId: string, leadId: string, io: Io): Promise<void> {
+  const antes = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const psAntes = ((antes?.customFields || {}) as Record<string, any>)._fichaCadastral?.participantes;
   const erro = await gerarFichaCadastral(accountId, leadId, { io }).catch((e: any) => e?.message || 'erro');
-  if (!erro) return;
+  if (!erro) {
+    if (Array.isArray(psAntes)) {
+      const { reenfileirarComFichaNova } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+      await reenfileirarComFichaNova(leadId, psAntes).catch((e) => console.error('[Ficha cadastral] fila da CAIXA:', e?.message));
+    }
+    return;
+  }
   // Sem pasta/sem documento: tenta de novo em 6 h (não fica lendo o Drive a cada minuto).
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as Record<string, unknown>), _fichaCadastralErro: new Date().toISOString() } as any } }).catch(() => {});
