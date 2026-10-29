@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { createCertidaoRequest } from './certidao.service';
+import { createCertidaoRequest, enderecoTexto, type EnderecoCertidao } from './certidao.service';
 import { contractingAutoOn, manualStep } from './contracting-auto.service';
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
@@ -72,6 +72,33 @@ export function certidaoFromDocs(cf: Record<string, any>): { matricula: string; 
   return null;
 }
 
+const TIPOS_LOGRADOURO: [RegExp, string][] = [[/^(av|av\.|avenida)\b/i, 'Avenida'], [/^(r|r\.|rua)\b/i, 'Rua'], [/^(tv|trav|travessa)\b/i, 'Travessa'], [/^(al|alameda)\b/i, 'Alameda'], [/^(est|estr|estrada)\b/i, 'Estrada'], [/^(rod|rodovia)\b/i, 'Rodovia'], [/^(pc|pç|praca|praça)\b/i, 'Praça'], [/^(lgo|largo)\b/i, 'Largo'], [/^(vl|vila)\b/i, 'Vila'], [/^(bc|beco)\b/i, 'Beco']];
+
+/** Endereço do imóvel pro pedido da certidão POR ENDEREÇO (Fabio 29/10: cliente que não sabe a matrícula): proposta do site ("Endereço do imóvel", "CEP do imóvel",
+ *  "Imóvel em garantia: Cidade/UF") + campos do card. Proprietário provável (participante + CPF) vai nas Observações. null = falta CEP, rua/número ou cidade/UF. */
+export async function enderecoDoImovel(leadId: string, cf: Record<string, any>): Promise<{ endereco: EnderecoCertidao; cidade: string; uf: string } | null> {
+  const prop = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Endereço do imóvel' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const t = prop?.content || '';
+  const linha = (re: RegExp) => (re.exec(t)?.[1] || '').trim();
+  const endTxt = linha(/Endere[cç]o do im[oó]vel:\s*([^\n]+)/i);
+  const [ruaParte, bairro] = endTxt.split(/\s+[—–]\s+/);
+  const cep = digits(linha(/CEP do im[oó]vel:\s*([\d.-]+)/i) || cf.imovel_cep);
+  const cu = cidadeUfDe(linha(/Im[oó]vel em garantia:\s*([^\n]+)/i)) || cidadeUfDe(`${cf.cidade_imovel || cf.cidade || ''}/${cf.uf || ''}`);
+  const m = /^(.*?),\s*(\d{1,6}[A-Za-z]?)\b\s*(.*)$/.exec(String(ruaParte || '').trim());
+  let rua = (m ? m[1] : String(ruaParte || '')).trim();
+  const numero = (m ? m[2] : String(cf.imovel_numero || '')).trim();
+  const complemento = (m ? m[3].replace(/^[\s,;-]+/, '') : String(cf.imovel_complemento || '')).trim();
+  let tipoLogradouro = 'Rua';
+  for (const [re, nome] of TIPOS_LOGRADOURO) if (re.test(rua)) { tipoLogradouro = nome; rua = rua.replace(re, '').replace(/^[\s.]+/, '').trim(); break; }
+  if (cep.length !== 8 || !rua || !numero || !cu) return null;
+  const dono = String(cf.participante_1 || '').trim();
+  const cpf = digits(cf.cpf_1);
+  return {
+    cidade: cu.cidade, uf: cu.uf,
+    endereco: { cep, tipoLogradouro, logradouro: rua, numero, complemento: complemento.slice(0, 30) || undefined, bairro: bairro?.trim() || undefined, observacao: dono ? `Proprietário: ${dono}${cpf.length === 11 ? ` (CPF ${cpf.slice(0, 3)}.${cpf.slice(3, 6)}.${cpf.slice(6, 9)}-${cpf.slice(9)})` : ''}` : undefined },
+  };
+}
+
 export function certidaoOfferText(nome: string | null, saudar: boolean, matricula: string): string {
   // Texto do Fabio (21/10): SEM nome de empresa nem de pessoa, SEM custo (se o cliente perguntar: varia de região pra região, em torno de R$ 40 a R$ 100), diz que a certidão é essencial pra SOLICITAR A VISTORIA
   // e pergunta primeiro se o cliente TEM a certidão, ou se pode emitir pelo cartório digital.
@@ -139,7 +166,24 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
   // Clique da equipe no botão do card (opts.manual) vale sempre; o caminho automático respeita a chave e a certidão que o cliente já mandou.
   if (!opts.manual && (await jaTemCertidaoValida(leadId, cf))) return { created: false, why: 'o cliente já enviou a certidão de ônus/matrícula e o banco não recusou' };
   const d = certidaoFromDocs(cf);
-  if (!d) return { created: false, why: 'não achei matrícula e cidade/UF nos documentos' };
+  if (!d) {
+    // Sem matrícula nos documentos (o cliente não sabe): pede POR ENDEREÇO (Fabio 29/10). Cartório 'AUTO': cidade com um só, a extensão escolhe; com mais de um,
+    // o CRM pergunta ao cliente qual é; se ele não souber, a equipe confere no mapa do registro de imóveis.
+    const e = await enderecoDoImovel(leadId, cf);
+    if (!e) return { created: false, why: 'não achei a matrícula nos documentos nem o endereço completo do imóvel (CEP, rua, número, cidade/UF)' };
+    if (!opts.manual && !(await contractingAutoOn(accountId))) {
+      await manualStep({ accountId, leadId, leadName: lead.name, step: 'certidao-pedido-endereco', pushTitle: '🏛️ Certidão pelo ONR', pushBody: `${lead.name}: o cliente aceitou — peça pelo botão do card`,
+        note: `🏛️ A emissão da certidão pelo ENDEREÇO do imóvel (${enderecoTexto(e.endereco)}, ${e.cidade}/${e.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (automação da contratação desligada). Use o botão "Pedir certidão pelo ONR" do card.` });
+      return { created: false, why: 'modo manual da contratação' };
+    }
+    try {
+      const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: e.uf, cidade: e.cidade, cartorio: 'AUTO', pedidoPor: 'ENDERECO', endereco: e.endereco, source: opts.manual ? 'USER' : 'AI', userId: opts.manual ? opts.userId : undefined });
+      return { created: !out.duplicate };
+    } catch (err: any) {
+      await note(leadId, `⚠️ Não consegui criar o pedido da certidão pelo endereço: ${err?.message || err}. Peça pelo card.`);
+      return { created: false, why: String(err?.message || err) };
+    }
+  }
   if (!opts.manual && !(await contractingAutoOn(accountId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-pedido-${d.matricula}`, pushTitle: '🏛️ Certidão pelo ONR', pushBody: `${lead.name}: o cliente aceitou — peça pelo botão do card`,
       note: `🏛️ A emissão da certidão (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (automação da contratação desligada). Use o botão "Pedir certidão pelo ONR" na aba Financiamento do card — a extensão pede no RI Digital e o PIX vai ao cliente.` });
@@ -162,8 +206,9 @@ export async function previewCertidaoDosDocs(accountId: string, leadId: string):
   if (!lead || lead.accountId !== accountId) return null;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const d = certidaoFromDocs(cf);
-  const existe = !!(d && await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } }));
-  return { possible: !!d && !existe, matricula: d?.matricula, cidade: d?.cidade, uf: d?.uf, jaTemCertidao: await jaTemCertidaoValida(leadId, cf), existe };
+  const e = d ? null : await enderecoDoImovel(leadId, cf); // sem matrícula: pelo endereço do imóvel
+  const existe = !!(await prisma.certidaoRequest.findFirst({ where: { leadId, ...(d ? { matricula: d.matricula } : { pedidoPor: 'ENDERECO' }), status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } }));
+  return { possible: !!(d || e) && !existe, matricula: d?.matricula || (e ? `pelo endereço: ${enderecoTexto(e.endereco)}` : undefined), cidade: d?.cidade || e?.cidade, uf: d?.uf || e?.uf, jaTemCertidao: await jaTemCertidaoValida(leadId, cf), existe };
 }
 
 /** Opções de cartório que a extensão listou ao falhar ("… (opções: 1º OFÍCIO - X | 2º OFÍCIO - X)"). Pura (testável). */
@@ -174,7 +219,7 @@ export function opcoesDeCartorio(reason: string): string[] {
 }
 
 /** A extensão não soube qual cartório pedir (a escritura não diz e a cidade tem mais de um): CONFIRMA COM O CLIENTE (Fabio 20/10: "pode confirmar com o cliente também se não souber"). Uma vez por matrícula. */
-export async function askClientCartorio(accountId: string, req: { id: string; leadId: string; matricula: string; cidade: string; uf: string }, reason: string, io: Io): Promise<boolean> {
+export async function askClientCartorio(accountId: string, req: { id: string; leadId: string; matricula: string; cidade: string; uf: string; endereco?: string }, reason: string, io: Io): Promise<boolean> {
   const opcoes = opcoesDeCartorio(reason);
   if (opcoes.length < 2 || opcoes.length > 12) return false;
   const lead = await carrega(req.leadId);
@@ -188,19 +233,20 @@ export async function askClientCartorio(accountId: string, req: { id: string; le
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
   const saud = (await conversationActive(req.leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
-  const texto = `${saud}Pra pedir a certidão da matrícula ${req.matricula} preciso saber o cartório de registro de imóveis. Em ${req.cidade} o portal tem estas opções:\n${opcoes.map((o) => `• ${o}`).join('\n')}\n\nNa sua escritura ou matrícula aparece qual deles? Se não souber, sem problema, é só me avisar.`;
+  const texto = `${saud}Pra pedir a certidão ${req.endereco ? 'do seu imóvel' : `da matrícula ${req.matricula}`} preciso saber o cartório de registro de imóveis. Em ${req.cidade} o portal tem estas opções:\n${opcoes.map((o) => `• ${o}`).join('\n')}\n\n${req.endereco ? 'Você sabe qual deles atende o seu bairro (aparece no contrato, escritura ou carnê do IPTU)?' : 'Na sua escritura ou matrícula aparece qual deles?'} Se não souber, sem problema, é só me avisar.`;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId, leadId: req.leadId, content: texto, io: (io || undefined) as any });
   if (!r.success) return false;
   const fresh = await prisma.lead.findUnique({ where: { id: req.leadId }, select: { customFields: true } });
-  const c2 = { ...((fresh?.customFields || {}) as Record<string, any>), _certidaoCartorio: { requestId: req.id, matricula: req.matricula, cidade: req.cidade, uf: req.uf, opcoes, askedAt: new Date().toISOString() } };
+  const c2: Record<string, any> = { ...((fresh?.customFields || {}) as Record<string, any>), _certidaoCartorio: { requestId: req.id, matricula: req.matricula, cidade: req.cidade, uf: req.uf, opcoes, askedAt: new Date().toISOString() } as Record<string, any> };
+  if (req.endereco) { const orig = await prisma.certidaoRequest.findUnique({ where: { id: req.id }, select: { endereco: true } }); c2._certidaoCartorio.endereco = orig?.endereco || null; }
   await prisma.lead.update({ where: { id: req.leadId }, data: { customFields: c2 as any } });
   await note(req.leadId, `🏛️ A escritura não diz qual é o cartório de ${req.cidade} (o portal tem ${opcoes.length}). Perguntei ao cliente qual aparece na escritura/matrícula; com a resposta o pedido é refeito sozinho.`);
   return true;
 }
 
 /** Resposta do cliente à pergunta do cartório: escolheu uma opção → refaz o pedido no ONR com ela; "não sei" → avisa a equipe. */
-async function respondeCartorio(accountId: string, leadId: string, text: string, pend: { requestId?: string; matricula: string; cidade: string; uf: string; opcoes: string[] }, io: Io): Promise<void> {
+async function respondeCartorio(accountId: string, leadId: string, text: string, pend: { requestId?: string; matricula: string; cidade: string; uf: string; opcoes: string[]; endereco?: EnderecoCertidao | null }, io: Io): Promise<void> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return;
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -227,13 +273,13 @@ async function respondeCartorio(accountId: string, leadId: string, text: string,
     const escolhido = pend.opcoes[idx - 1];
     await salva({ answeredAt: new Date().toISOString(), escolhido });
     try {
-      const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: pend.uf, cidade: pend.cidade, cartorio: escolhido, matricula: pend.matricula, source: 'AI' });
+      const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: pend.uf, cidade: pend.cidade, cartorio: escolhido, ...(pend.endereco ? { pedidoPor: 'ENDERECO' as const, endereco: pend.endereco } : { matricula: pend.matricula }), source: 'AI' });
       await note(leadId, `🏛️ O cliente confirmou o cartório: ${escolhido}. Pedido refeito no ONR${out.duplicate ? ' (já havia um andando)' : ''}.`);
       io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
     } catch (e: any) { await note(leadId, `⚠️ O cliente confirmou o cartório (${escolhido}), mas não consegui refazer o pedido: ${e?.message || e}.`); }
   } else if (j.naoSei === true) {
     await salva({ answeredAt: new Date().toISOString(), naoSei: true });
-    await note(leadId, `⚠️ O cliente NÃO sabe qual é o cartório (${pend.cidade}/${pend.uf}). Confira na escritura/matrícula (nome do cartório de registro) e peça a certidão pelo card.`);
+    await note(leadId, `⚠️ O cliente NÃO sabe qual é o cartório (${pend.cidade}/${pend.uf}).${pend.endereco ? ` Descubra pelo CEP ${pend.endereco.cep} no mapa do registro de imóveis (https://www.registrodeimoveis.org.br/servicos/mapa — digite o endereço ou o CEP e veja o Ofício responsável)` : ' Confira na escritura/matrícula (nome do cartório de registro)'} e peça a certidão pelo card.`);
     try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏛️ Cartório da certidão', body: 'O cliente não sabe qual é o cartório — confira na escritura', leadId }).catch(() => {}); } catch { /* push é só aviso */ }
   }
 }

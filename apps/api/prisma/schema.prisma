@@ -1057,7 +1057,11 @@ model CertidaoRequest {
   uf              String // "PA"
   cidade          String // "Belém"
   cartorio        String // "02º - BELÉM" (como aparece na lista do portal)
-  matricula       String // só dígitos
+  matricula       String // só dígitos ('' no pedido por endereço)
+  /// MATRICULA (nº de matrícula/CNM) | ENDERECO (cliente não sabe a matrícula — Fabio 29/10: "pode fazer por endereço também")
+  pedidoPor       String    @default("MATRICULA")
+  /// Pedido por endereço: { cep, tipoLogradouro, logradouro, numero, complemento, bloco, bairro, loteamento, quadra, lote, contribuinte, observacao }
+  endereco        Json?
   status          String    @default("REQUESTED")
   source          String    @default("USER") // USER | AI
   requestedById   String?
