@@ -173,7 +173,7 @@ export async function buildSharedAiContext(
   const banco = String(((lead.customFields as any) || {}).instituicao || '').trim();
   if (banco) {
     const doBanco = await prisma.knowledgeEntry.findMany({
-      where: { accountId, title: { contains: banco, mode: 'insensitive' }, ...(department?.id ? { OR: [{ departmentId: department.id }, { departmentId: null }] } : {}) },
+      where: { accountId, fixedKey: null, title: { contains: banco, mode: "insensitive" }, ...(department?.id ? { OR: [{ departmentId: department.id }, { departmentId: null }] } : {}) },
       select: { title: true, content: true },
       take: 5,
     }).catch(() => []);

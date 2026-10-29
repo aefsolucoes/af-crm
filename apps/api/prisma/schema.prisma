@@ -900,11 +900,15 @@ model KnowledgeEntry {
   title        String // pergunta/tópico, ex.: "Horário de atendimento"
   content      String      @db.Text // a resposta/fato correto
   embedding    Float[] // vetor da Voyage sobre title+content — recalculado a cada edição
+  // Regra FIXA do prompt da IA (Fabio 29/10: fonte única): preenchido = não entra na busca comum; vai SEMPRE inteira no prompt, na posição da chave (ex.: CORE_RULES). Semeada do código na 1ª vez; depois vale o texto daqui.
+  fixedKey     String?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
   @@index([accountId])
   @@index([departmentId])
+
+  @@unique([accountId, fixedKey])
 }
 
 // flow guarda { trigger: { keywords: string[] }, steps: BotStep[] } — ver

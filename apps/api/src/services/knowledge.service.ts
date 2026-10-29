@@ -274,6 +274,7 @@ const entryCache = new Map<string, CachedEntry[]>();
 export function invalidateKnowledgeCache(accountId: string): void {
   chunkCache.delete(accountId);
   entryCache.delete(accountId);
+  try { (require('./fixed-rules.service') as typeof import('./fixed-rules.service')).invalidateFixedRules(accountId); } catch { /* */ }
 }
 
 async function loadChunks(accountId: string): Promise<CachedChunk[]> {
@@ -298,7 +299,7 @@ async function loadEntries(accountId: string): Promise<CachedEntry[]> {
   const cached = entryCache.get(accountId);
   if (cached && Date.now() - (entryCacheAt.get(accountId) || 0) < ENTRY_CACHE_TTL_MS) return cached;
   const rows = await prisma.knowledgeEntry.findMany({
-    where: { accountId },
+    where: { accountId, fixedKey: null }, // regras FIXAS vão inteiras no prompt (fixed-rules.service), não pela busca
     select: { title: true, content: true, embedding: true, departmentId: true, createdAt: true },
   });
   const entries = rows.map((r) => ({ content: `${r.title}: ${r.content}`, fileName: r.title, embedding: r.embedding, departmentId: r.departmentId, createdAt: r.createdAt.getTime() }));

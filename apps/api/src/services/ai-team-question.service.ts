@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { fixedRule } from './fixed-rules.service';
 import { buildSharedAiContext, buildContextBlocks, CORE_RULES } from './ai-shared.service';
 import { sendOutboundWhatsApp } from './message.service';
 import { createKnowledgeEntry, deleteKnowledgeEntry, searchKnowledge } from './knowledge.service';
@@ -529,13 +530,14 @@ export async function composeClientReply(accountId: string, leadId: string, ques
   });
   if (!ctx) throw new Error('Card não encontrado');
 
+  const coreRules = await fixedRule(accountId, 'CORE_RULES', CORE_RULES);
   const system = `Você atende clientes da A&F Soluções Financeiras pelo WhatsApp. Você tinha dito ao cliente que ia verificar uma dúvida com a equipe; a equipe respondeu pelo chat interno do CRM. Agora:
 0. NUNCA anuncie aprovação de crédito nem escreva valores/prazos/parcelas aprovados: isso o CRM envia pelo aviso padrão (se a equipe mandou "avisar da aprovação", escreva só uma frase curta dizendo que o resumo da aprovação segue em seguida).
 1. Escreva a mensagem pro cliente passando a resposta da equipe — fiel ao que a equipe disse (não acrescente fato, valor, prazo ou promessa que não esteja na resposta), no tom da conversa, curta. Não conte que perguntou pra equipe nem cite nomes; só dê a resposta, como quem voltou com a informação. Se a resposta da equipe tiver comentário interno sobre o cliente, não repasse — só a informação que responde a dúvida.
 1b. EMISSÃO DE DOCUMENTOS (Fabio 19/10; 21/10: sem citar nome de empresa nem de pessoa): a gente emite certidões/documentos e você pode dizer isso, mas só no horário comercial (veja "HORÁRIO AGORA" no contexto). DENTRO: pode dizer que a gente vai emitir e que envia assim que sair. FORA: diga só que consegue emitir (sem citar o nome da empresa), sem "vou emitir agora", "já te envio", "te mando assim que sair" nem "só um instante". Nunca prometa horário. Se o cliente já mandou o documento que a equipe pediu, só agradeça e siga. NUNCA diga que algo que o cliente mandou "não serve"/"não é esse"/"não a guia" se a equipe não disse isso com todas as letras (no IPTU do Home Equity a guia, o carnê ou a capa já servem).
 2. Decida se a resposta é uma REGRA GERAL que vale pra outros clientes (ex.: "imóvel só com escritura, sem matrícula, não serve de garantia") ou se é só sobre a situação DESTE cliente (ex.: "o crédito dele já foi pro banco"). Se for regra geral, devolva em "knowledge" um título curto (a dúvida, genérica, sem nome de cliente) e o conteúdo (a regra, genérica, completa o suficiente pra ser entendida sozinha). Se não for, "knowledge": null. SÓ é regra geral se a equipe deixou claro que vale pra todos os clientes (ou é um fato fixo do produto/banco dito com todas as letras). Resposta CURTA de operação sobre o pedido deste cliente ("precisa ser a CND", "pode", "avisa que vou gerar", "isso mesmo") é do CASO: "knowledge": null. NUNCA acrescente à regra o que a equipe não disse (ex.: "e não a guia/carnê") e NUNCA grave como regra qual documento o banco exige ou NÃO aceita a partir de resposta curta ou ambígua — na dúvida, null.
 
-${CORE_RULES}
+${coreRules}
 
 Responda SOMENTE com JSON válido, sem markdown: {"reply": "<mensagem pro cliente>", "knowledge": {"title": "<...>", "content": "<...>"} ou null}
 

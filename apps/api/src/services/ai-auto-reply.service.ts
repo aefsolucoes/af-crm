@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { fixedRule } from './fixed-rules.service';
 import { cachedSystem } from '../lib/anthropic-usage';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, aiEmailsContext, EMAIL_RELAY_RULES, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 import { aiCreditContext, refreshAnalysesForAi } from './credit-analysis.service';
@@ -570,9 +571,10 @@ export async function generateAiAutoReply(
     const naVendaFutura = /venda futura/i.test(vfLead?.stage?.name || '');
     // Parte FIXA (igual pra todos os clientes: vai pro CACHE de prompt — nas chamadas seguintes, em até 5 min, as ~14 mil tokens de regras custam ~10%) e parte que muda por cliente/momento.
     // As regras condicionais (venda futura, documentos chegando/lidos, campos do card) e o formato de saída ficam na parte que muda, logo antes do contexto.
+    const coreRules = await fixedRule(accountId, 'CORE_RULES', CORE_RULES);
     const systemFixed = `${ROLE_FRAMING}
 
-${CORE_RULES}
+${coreRules}
 ${SAFETY_RULES}
 ${HANDOFF_RULES}
 

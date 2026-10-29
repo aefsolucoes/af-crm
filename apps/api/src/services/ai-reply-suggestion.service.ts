@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { fixedRule } from './fixed-rules.service';
 import { buildSharedAiContext, buildContextBlocks, aiEmailsContext, EMAIL_RELAY_RULES, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 
 
@@ -51,9 +52,10 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
     if (!ctx) return null;
 
     const emailsProcesso = await aiEmailsContext(leadId).catch(() => '');
+    const coreRules = await fixedRule(accountId, 'CORE_RULES', CORE_RULES);
     const systemPrompt = `${ROLE_FRAMING}
 
-${CORE_RULES}
+${coreRules}
 ${emailsProcesso ? `\n${EMAIL_RELAY_RULES}\n` : ''}${OUTPUT_FORMAT}
 
 ${buildContextBlocks(ctx)}${emailsProcesso ? `\n\n${emailsProcesso}` : ''}`;
