@@ -102,6 +102,39 @@ function DocumentCard({ a }: { a: Extract<Attachment, { type: 'document' }> }) {
   );
 }
 
+/** "zero quatro sete sete sete zero dois zero" → "04777020"; "4 7 7 7" → "4777". Só junta sequências de 3+ dígitos falados (palavra ou número solto), pra não trocar "um cliente". Pura. */
+const DIGITO: Record<string, string> = { zero: '0', um: '1', uma: '1', dois: '2', duas: '2', tres: '3', quatro: '4', cinco: '5', seis: '6', meia: '6', sete: '7', oito: '8', nove: '9' };
+/** Soletrado (Fabio 29/10: "ela não sabe soletrar"): "f e r n a n d a" / "efe erre a" → "fernanda" (3+ letras seguidas); "arroba" → "@" e "ponto" → "." dentro de e-mail. Pura. */
+const LETRA: Record<string, string> = { a: 'a', be: 'b', ce: 'c', de: 'd', e: 'e', efe: 'f', ge: 'g', ga: 'h', aga: 'h', aga_: 'h', i: 'i', jota: 'j', ka: 'k', ca: 'k', ele: 'l', eme: 'm', ene: 'n', o: 'o', pe: 'p', que: 'q', erre: 'r', esse: 's', te: 't', u: 'u', ve: 'v', dablio: 'w', xis: 'x', ipsilon: 'y', ze: 'z' };
+export function soletrado(texto: string): string {
+  const nrm = (w: string) => w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[.,;:!?]+$/, '');
+  const letra = (w: string) => { const raw = w.replace(/[.,;:!?]+$/, ''); if (/^[a-zA-Z]$/.test(raw)) return raw.toLowerCase(); const n = nrm(w); return raw.length > 1 && LETRA[n] ? LETRA[n] : null; }; // "é" (verbo) não é letra
+  const toks = String(texto || '').split(/\s+/);
+  const out: string[] = [];
+  for (let i = 0; i < toks.length;) {
+    let j = i; const ls: string[] = [];
+    while (j < toks.length) { const l = letra(toks[j]); if (l === null) break; ls.push(l); j++; }
+    if (ls.length >= 3) { out.push(ls.join('')); i = j; } else { out.push(toks[i]); i++; }
+  }
+  let t = out.join(' ');
+  t = t.replace(/\s*\barroba\b\s*/gi, '@');
+  for (let k = 0; k < 4; k++) t = t.replace(/(\S*@\S*?)\s+ponto\s+(\S+)/gi, '$1.$2');
+  return t;
+}
+export function numerosFalados(texto: string): string {
+  texto = soletrado(texto);
+  const toks = String(texto || '').split(/\s+/);
+  const dig = (w: string) => { const n = w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[.,;:!?]+$/, ''); return DIGITO[n] ?? (/^\d{1,4}$/.test(n) ? n : null); };
+  const out: string[] = [];
+  for (let i = 0; i < toks.length;) {
+    let j = i; const ds: string[] = [];
+    while (j < toks.length) { const d = dig(toks[j]); if (d === null) break; ds.push(d); j++; }
+    if (ds.length >= 3) { out.push(ds.join('') + (/[.,;:!?]$/.test(toks[j - 1]) ? toks[j - 1].slice(-1) : '')); i = j; }
+    else { out.push(toks[i]); i++; }
+  }
+  return out.join(' ');
+}
+
 function SimulationCard({ a }: { a: Extract<Attachment, { type: 'simulation' }> }) {
   const [st, setSt] = useState<{ status: string; detail?: string | null; hasPdf?: boolean } | null>(null);
   const [opening, setOpening] = useState(false);
@@ -372,20 +405,29 @@ export function CrmAssistant() {
     try { audioRef.current?.pause(); } catch { /* */ }
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
   }
+  /** Fabio 29/10: "não entende o número que eu falo". 1) Fala de número costuma ter pausa (CEP, CPF, telefone): o reconhecimento agora espera 1,8 s de silêncio DEPOIS de você falar
+   *  (antes cortava na 1ª pausa e mandava metade do número). 2) Dígito falado vira número: "zero quatro sete sete sete" → "04777" (só em sequência de 3+, pra não mexer em "um cliente"). */
   function escutar(): Promise<string> {
     return new Promise((resolve) => {
       const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (!SR) { resolve(''); return; }
-      const rec = new SR(); rec.lang = 'pt-BR'; rec.interimResults = false; rec.maxAlternatives = 1;
+      const rec = new SR(); rec.lang = 'pt-BR'; rec.interimResults = true; rec.continuous = true; rec.maxAlternatives = 1;
       recRef.current = rec;
-      let dito = '';
-      rec.onresult = (e: any) => { dito = String(e.results?.[0]?.[0]?.transcript || '').trim(); };
-      let falhou = false;
-      rec.onend = () => resolve(falhou ? FALHA_MIC : dito);
+      let finais = '', parcial = '', falhou = false, acabou = false;
+      let calado: ReturnType<typeof setTimeout> | null = null;
+      const encerra = () => { if (acabou) return; acabou = true; if (calado) clearTimeout(calado); try { rec.stop(); } catch { /* */ } };
+      const semFala = setTimeout(() => { if (!finais && !parcial) encerra(); }, 8000); // ninguém falou: conta como silêncio
+      rec.onresult = (e: any) => {
+        finais = ''; parcial = '';
+        for (let i = 0; i < e.results.length; i++) { const t = String(e.results[i][0]?.transcript || ''); if (e.results[i].isFinal) finais += ` ${t}`; else parcial += ` ${t}`; }
+        if (calado) clearTimeout(calado);
+        calado = setTimeout(encerra, 1800);
+      };
+      rec.onend = () => { clearTimeout(semFala); if (calado) clearTimeout(calado); resolve(falhou ? FALHA_MIC : numerosFalados(`${finais} ${parcial}`.replace(/\s+/g, ' ').trim())); };
       // 'no-speech' = silêncio de verdade; outro erro ('aborted', microfone ainda preso pelo vigia da interrupção) NÃO conta como silêncio — o loop tenta de novo (Fabio 29/10: "parava sem eu falar nada").
-      rec.onerror = (ev: any) => { if (ev?.error !== 'no-speech') falhou = true; };
+      rec.onerror = (ev: any) => { if (ev?.error !== 'no-speech' && ev?.error !== 'aborted') falhou = true; };
       setVoz('ouvindo');
-      try { rec.start(); } catch { resolve(FALHA_MIC); }
+      try { rec.start(); } catch { clearTimeout(semFala); resolve(FALHA_MIC); }
     });
   }
 
