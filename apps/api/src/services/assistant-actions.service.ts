@@ -11,6 +11,7 @@ import { prisma } from '../lib/prisma';
 
 export type PendingAction = { id: string; accountId: string; userId: string; tipo: string; descricao: string; params: Record<string, any>; at: number };
 export type ScreenNav = { path: string; label: string };
+export type AudioReq = { leadId: string; leadName: string };
 
 const pendentes = new Map<string, PendingAction>();
 const TTL = 30 * 60_000;
@@ -53,6 +54,7 @@ export const ACTION_TOOLS = [
   { name: 'ler_documento', description: 'Abre UM documento do cliente e responde uma pergunta sobre ele lendo o arquivo de verdade (ex.: "a matrícula tem alienação vigente?", "qual a área do imóvel no IPTU?", "o comprovante está no nome de quem?"). arquivo = nome (ou parte) do arquivo ou o tipo (ex.: "matricula", "IPTU", "CNH").', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, arquivo: { type: 'string' }, pergunta: { type: 'string' } }, required: ['leadId', 'arquivo', 'pergunta'] } },
   { name: 'ligar_para_cliente', description: 'PREPARA uma LIGAÇÃO pelo WhatsApp pro cliente (confirmação antes). Por enquanto quem FALA é o colaborador: o assistente só disca no navegador dele (o microfone dele é usado), abre a conversa do cliente e para de ouvir. Só funciona se o cliente já autorizou ligação; se não autorizou, diga isso e ofereça pedir_permissao_ligacao.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'pedir_permissao_ligacao', description: 'PREPARA o pedido de permissão de ligação pelo WhatsApp pro cliente (a Meta manda pro cliente o botão "Permitir"; confirmação antes). Limite da Meta: 1 por dia, 2 por semana.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'gravar_audio', description: 'Abre o GRAVADOR no balão pra pessoa gravar um áudio de voz pro cliente pelo WhatsApp (ela grava com a própria voz, ouve e só sai quando ela clicar em Enviar — você não fala nada no áudio). Use quando pedirem "quero mandar um áudio pro Pedro". Só com a janela de 24 h aberta.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'enviar_mensagem', description: 'PREPARA uma mensagem de WhatsApp pro cliente (só sai depois que a pessoa confirmar). Se a janela de 24 h estiver fechada, o envio vira o template de atualização do processo + a mensagem guardada pra sair quando o cliente responder.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, texto: { type: 'string' } }, required: ['leadId', 'texto'] } },
   { name: 'mover_card', description: 'PREPARA a mudança de etapa do card (confirmação antes). etapa = nome da etapa; funil opcional (se a etapa for de outro funil).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, etapa: { type: 'string' }, funil: { type: 'string' } }, required: ['leadId', 'etapa'] } },
   { name: 'marcar_status', description: 'PREPARA marcar o card como GANHO, PERDIDO, REPROVADO (perdido por reprovação do banco) ou REABRIR (confirmação antes). motivo é obrigatório pra PERDIDO/REPROVADO.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, status: { type: 'string', enum: ['GANHO', 'PERDIDO', 'REPROVADO', 'REABRIR'] }, motivo: { type: 'string' } }, required: ['leadId', 'status'] } },
@@ -112,7 +114,7 @@ const bancosValidos = (b: unknown): string[] => (Array.isArray(b) ? b : [b]).map
 const NOME_BANCO: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
 
 /** Roda (ou prepara) uma ferramenta de ação. token = Authorization de quem está falando (pras ações diretas que passam pelas rotas). */
-export async function runActionTool(p: { accountId: string; userId: string; token: string; name: string; input: any; fila: PendingAction[]; nav: ScreenNav[] }): Promise<unknown> {
+export async function runActionTool(p: { accountId: string; userId: string; token: string; name: string; input: any; fila: PendingAction[]; nav: ScreenNav[]; audio?: AudioReq[] }): Promise<unknown> {
   const { accountId, userId, input } = p;
   switch (p.name) {
     case 'abrir_na_tela': {
@@ -382,6 +384,12 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       if (st?.permitted) return { ok: true, aviso: `o ${l.name} já autorizou ligação — dá pra ligar (ligar_para_cliente)` };
       if (st?.canRequest === false) return { erro: 'o pedido de permissão já foi enviado recentemente — aguardando o cliente (limite da Meta: 1/dia, 2/semana)' };
       return pendente({ accountId, userId, tipo: 'pedir_permissao_ligacao', params: { leadId: l.id }, descricao: `Mandar pro ${l.name} o pedido de permissão de ligação do WhatsApp (ele recebe o botão "Permitir").` }, p.fila);
+    }
+    case 'gravar_audio': {
+      const l = await leadOf(accountId, input?.leadId);
+      if (!(await janelaAberta(l.id))) return { erro: `a janela de 24 h do ${l.name} está fechada: o WhatsApp não deixa mandar áudio agora. Dá pra mandar uma mensagem (vai o template de atualização e a mensagem sai quando ele responder) e mandar o áudio depois.` };
+      p.audio?.push({ leadId: l.id, leadName: l.name });
+      return { ok: true, aviso: `Gravador aberto no balão pro ${l.name}: a pessoa grava, ouve e clica em Enviar. Diga isso em 1 frase.` };
     }
     case 'enviar_mensagem': {
       const l = await leadOf(accountId, input?.leadId);

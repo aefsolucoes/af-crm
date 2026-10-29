@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { ACTION_TOOLS, ACTION_TOOL_NAMES, runActionTool, PendingAction, ScreenNav } from './assistant-actions.service';
+import { ACTION_TOOLS, ACTION_TOOL_NAMES, runActionTool, PendingAction, ScreenNav, AudioReq } from './assistant-actions.service';
 
 /**
  * ASSISTENTE DO CRM (Fabio 26/10: "preciso que abra o chat para que eu possa pedir qualquer coisa sobre qualquer cliente a ele, inclusive simulação —
@@ -164,6 +164,7 @@ function systemFixed(userName: string, voz: boolean): string {
 - Mensagem ao cliente: escreva como a equipe da A&F escreve no WhatsApp (curta, educada, sem emoji em excesso, sem prometer prazo ou aprovação). Mostre o texto antes.
 - Formulário do card ("preenche o card do Pedro com…", "completa o cadastro com os dados da matrícula"): ver_formulario → preencher_formulario com os campos certos. Pode tirar os dados do que o cliente mandou (ver_cliente) — nunca invente CPF, data ou valor; o que não tiver, pergunte. Formulário de portal de banco é com as extensões (rodar_analise, vistoria, certidão).
 - Documentos: "quem mandou documento e precisa de andamento?" → docs_para_andamento; sugira o próximo passo de cada um (PRONTO → seguir o processo: Fechado/Em contratação, vistoria, certidão; PROBLEMA/FALTA → o que pedir ao cliente; DÚVIDA → responder no balão Dúvidas da IA). Pra analisar um cliente: documentos_do_cliente; se houver arquivo não lido, conferir_documentos; pra uma pergunta específica sobre o conteúdo, ler_documento. Dê sua avaliação como um analista de crédito: serve pro banco? está no nome certo? atual? falta frente/verso?
+- Áudio: "quero mandar um áudio pro Pedro" → gravar_audio (abre o gravador; quem grava é a pessoa; o envio é no botão dela).
 - Ligação: "liga pro Pedro" → ligar_para_cliente. Por enquanto quem fala com o cliente é o colaborador; você só disca. Nunca diga que você vai conversar com o cliente.
 - Supervisão de sexta ("começa a supervisão", "vamos fazer a supervisão"): se ainda não há itens nesta semana, iniciar_supervisao; depois conduza card por card com ver_supervisao (pendentes): diga o cliente, onde está e a sugestão, e pergunte o que fazer (enviar a sugestão, ajustar o texto, pular, feito). Um card por vez.
 - "Mudar o prompt/comportamento da IA": as regras que a IA do CRM segue (conversa com cliente, sugestão de resposta, conferência de documentos) ficam na Base de Conhecimento — use ver_regras_ia e depois alterar_regra_ia (prefira editar a regra existente). Se o pedido exigir mudar o código do CRM (fluxo, gatilho, tela), diga que isso precisa ser feito pelo Claude Code e resuma o pedido em 1 frase pra ele copiar.
@@ -172,11 +173,11 @@ function systemFixed(userName: string, voz: boolean): string {
 - MODO VOZ: a sua resposta será FALADA em voz alta. Seja curto (1 a 3 frases), natural, como numa conversa; sem listas, sem markdown, sem emoji, sem ler IDs ou links. Números por extenso só quando ajudar. Se houver muitos itens, diga os 3 principais e pergunte se quer o resto.` : ''}`;
 }
 
-type ToolCtx = { accountId: string; userId: string; token: string; anexos: ChatAttachment[]; fila: PendingAction[]; nav: ScreenNav[] };
+type ToolCtx = { accountId: string; userId: string; token: string; anexos: ChatAttachment[]; fila: PendingAction[]; nav: ScreenNav[]; audio: AudioReq[] };
 async function runTool(c: ToolCtx, name: string, input: any): Promise<unknown> {
   const { accountId, userId, anexos } = c;
   try {
-    if (ACTION_TOOL_NAMES.has(name)) return await runActionTool({ accountId, userId, token: c.token, name, input, fila: c.fila, nav: c.nav });
+    if (ACTION_TOOL_NAMES.has(name)) return await runActionTool({ accountId, userId, token: c.token, name, input, fila: c.fila, nav: c.nav, audio: c.audio });
     switch (name) {
       case 'buscar_clientes': return await buscarClientes(accountId, input?.termo);
       case 'ver_cliente': return await verCliente(accountId, String(input?.leadId || ''), input?.mensagens);
@@ -191,7 +192,7 @@ async function runTool(c: ToolCtx, name: string, input: any): Promise<unknown> {
   }
 }
 
-export type AssistantReply = { reply: string; attachments: ChatAttachment[]; pending: { id: string; descricao: string }[]; navigate: ScreenNav | null };
+export type AssistantReply = { reply: string; attachments: ChatAttachment[]; pending: { id: string; descricao: string }[]; navigate: ScreenNav | null; audio: AudioReq | null };
 export async function assistantChat(p: { accountId: string; userId: string; userName: string; token: string; voice?: boolean; messages: ChatMsg[] }): Promise<AssistantReply> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('IA indisponível (sem chave da Anthropic)');
@@ -200,8 +201,8 @@ export async function assistantChat(p: { accountId: string; userId: string; user
   if (!history.length) throw new Error('mensagem vazia');
   const msgs: any[] = [...history];
   const anexos: ChatAttachment[] = [];
-  const ctx: ToolCtx = { accountId: p.accountId, userId: p.userId, token: p.token, anexos, fila: [], nav: [] };
-  const fim = (reply: string): AssistantReply => ({ reply, attachments: dedupe(anexos), pending: ctx.fila.map((a) => ({ id: a.id, descricao: a.descricao })), navigate: ctx.nav[ctx.nav.length - 1] || null });
+  const ctx: ToolCtx = { accountId: p.accountId, userId: p.userId, token: p.token, anexos, fila: [], nav: [], audio: [] };
+  const fim = (reply: string): AssistantReply => ({ reply, attachments: dedupe(anexos), pending: ctx.fila.map((a) => ({ id: a.id, descricao: a.descricao })), navigate: ctx.nav[ctx.nav.length - 1] || null, audio: ctx.audio[ctx.audio.length - 1] || null });
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
