@@ -45,6 +45,7 @@ Responda SOMENTE com JSON:
 "conflitos":["<divergência entre documentos ou entre documento e card, em 1 frase>"],"observacao":"<1 frase>"}
 rendaBrutaMensal/rendaLiquidaMensal = do mês mais recente (se a pessoa tem DOIS empregos com contracheque do mesmo mês, some os dois). "faltando" considera: identidade (número, órgão, UF, emissão), naturalidade, filiação, estado civil, endereço com CEP, PIS, empregador/cargo/admissão e renda. Datas dd/mm/aaaa; valores número puro; CPF/CEP só dígitos.`;
 
+const hoje = () => new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 const norm = (s: string) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 const brl = (v: unknown) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : null; };
 const cpfFmt = (v: unknown) => { const d = String(v ?? '').replace(/\D/g, ''); return d.length === 11 ? d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') : (d || null); };
@@ -74,7 +75,7 @@ function arquivosPessoais(todos: Arquivo[]): Arquivo[] {
     .filter((f) => /pdf|^image\//.test(f.mimeType))
     .filter((f) => !/imovel|vendedor|minuta|contrato|vistoria|laudo/.test(norm(f.path)))
     .filter((f) => !temComprador || !f.path || /comprador/.test(norm(f.path)))
-    .filter((f) => !/matricula|iptu|escritura|onus|habite|simulac|minuta|boleto/.test(norm(f.name)))
+    .filter((f) => !/matricula|iptu|escritura|onus|habite|simulac|minuta|boleto|evolucao|parcelas|proposta|^aef_/.test(norm(f.name)))
     .slice(0, MAX_ARQUIVOS);
 }
 
@@ -97,7 +98,7 @@ async function lerArquivo(accountId: string, f: Arquivo): Promise<any | null> {
       }
     }
   } catch (e: any) { console.error('[Ficha cadastral] download', f.name, e?.message); return null; }
-  content.push({ type: 'text', text: `Arquivo: ${f.path ? `${f.path} > ` : ''}${f.name}` });
+  content.push({ type: 'text', text: `Hoje é ${hoje()}.\nArquivo: ${f.path ? `${f.path} > ` : ''}${f.name}` });
   return chamarIA(SYSTEM_DOC, content, 8192);
 }
 
@@ -166,7 +167,7 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
 
     // 2) Junta por participante.
     const participantesCard = [1, 2, 3].map((n) => ({ ordem: n, nome: cf[`participante_${n}`] || null, cpf: String(cf[`cpf_${n}`] || '').replace(/\D/g, '') || null })).filter((p) => p.nome || p.cpf);
-    const ficha = await chamarIA(SYSTEM_JUNTA, [{ type: 'text', text: `PARTICIPANTES DO CARD:\n${JSON.stringify(participantesCard)}\n\nLEITURAS DOS DOCUMENTOS:\n${JSON.stringify(pessoais).slice(0, 180_000)}` }], 16000);
+    const ficha = await chamarIA(SYSTEM_JUNTA, [{ type: 'text', text: `Hoje é ${hoje()} (documento de 2026 não é "data futura").\n\nPARTICIPANTES DO CARD:\n${JSON.stringify(participantesCard)}\n\nLEITURAS DOS DOCUMENTOS:\n${JSON.stringify(pessoais).slice(0, 180_000)}` }], 16000);
     if (!ficha || !Array.isArray(ficha.participantes) || !ficha.participantes.length) return 'Não consegui montar a ficha com as leituras';
 
     const agora = new Date();
@@ -181,7 +182,11 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     });
     const conflitos = registro.conflitos.length ? `\n\n⚠️ Divergências:\n${registro.conflitos.map((c: string) => `• ${c}`).join('\n')}` : '';
     const lidos = `\n\n📁 Lidos (${pessoais.length}): ${pessoais.map((x) => `${x.arquivo} (${x.leitura.tipo})`).join('; ')}${naoLidos.length ? `\n⛔ Não consegui ler: ${naoLidos.join('; ')}` : ''}`;
-    await prisma.note.create({ data: { leadId, userId: opts.userId || null, type: 'COMMENT', content: `📋 FICHA DE CADASTRO — lida dos documentos da pasta do Drive em ${quando}. É daqui que sai o cadastro na CAIXA e no BRB.\n\n${blocos.join('\n\n')}${conflitos}${lidos}` } });
+    const texto = `📋 FICHA DE CADASTRO — lida dos documentos da pasta do Drive em ${quando}. É daqui que sai o cadastro na CAIXA e no BRB.\n\n${blocos.join('\n\n')}${conflitos}${lidos}`;
+    // Uma anotação só por card: gerar de novo (documento novo na pasta) atualiza a mesma.
+    const anterior = await prisma.note.findFirst({ where: { leadId, content: { startsWith: '📋 FICHA DE CADASTRO' } }, orderBy: { createdAt: 'desc' }, select: { id: true } });
+    if (anterior) await prisma.note.update({ where: { id: anterior.id }, data: { content: texto } });
+    else await prisma.note.create({ data: { leadId, userId: opts.userId || null, type: 'COMMENT', content: texto } });
     opts.io?.to(`lead:${leadId}`).emit('lead_updated', { leadId });
     logActivity({ accountId, userId: opts.userId || null, userName: opts.userId ? undefined : 'Assistente IA', action: 'lead_note_added', leadId, leadName: lead.name, summary: 'gravou a ficha de cadastro lida dos documentos do Drive' });
     console.log(`[Ficha cadastral] ${lead.name}: ${ficha.participantes.length} participante(s), ${pessoais.length} arquivo(s)`);
