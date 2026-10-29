@@ -288,7 +288,8 @@ export function avisoCedo(rows: VRow[] & { approvedValue?: number | null; firstI
 /** 3) Quando as respostas assentam, avisa o cliente de todas as opções aprovadas (até 3) pra ele escolher. A IA do CRM dá o apoio. */
 async function noticeClients(accountId: string, io: any) {
   const leads = await prisma.lead.findMany({
-    where: { accountId, status: 'OPEN', archived: false, creditAnalyses: { some: { status: { in: ['APPROVED', 'CONDITIONAL'] }, dryRun: false } } },
+    // Só Home Equity: o Financiamento tem o aviso dele (fh-approval). Sem isso o card do FH recebeu o aviso do HE com "Instituição: INTER_FH" e a lista de documentos do HE (Pedro Paulo, 29/10).
+    where: { accountId, status: 'OPEN', archived: false, NOT: { pipeline: { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } } }, creditAnalyses: { some: { status: { in: ['APPROVED', 'CONDITIONAL'] }, dryRun: false } } },
     select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { dryRun: false }, orderBy: { updatedAt: 'desc' }, select: { kind: true, status: true, updatedAt: true, createdAt: true, bank: true, approvedValue: true, firstInstallment: true, holderName: true, detail: true, source: true } } },
     take: 80,
   });

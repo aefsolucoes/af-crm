@@ -500,7 +500,8 @@ export function docsImovelDoInter(detail?: string | null): string[] {
 
 async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | null> {
   const rows = await prisma.creditAnalysis.findMany({
-    where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
+    // Só os bancos do Home Equity: as linhas do Financiamento (CREDIMORAR_FH, INTER_FH…) têm o aviso próprio (fh-approval) — Pedro Paulo, 29/10.
+    where: { leadId, dryRun: false, bank: { in: ['INTER', 'CREDITAS', 'CREDIMORAR'] }, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
     orderBy: { createdAt: 'asc' },
   });
   const bucket = await holderBucketer(leadId);
