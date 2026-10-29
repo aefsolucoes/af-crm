@@ -7,7 +7,7 @@ import { logActivity } from './activity.service';
  *    Drive no card (`link_pasta_drive`): procura arquivo dentro de uma pasta "MINUTA" (ou com "minuta" no nome), até 3 níveis.
  *  - Lê com a IA (PDF direto; Word/Google Docs pelo texto) e corrige no card: crédito (valor_credito + Valor da venda) e, no Financiamento, compra e venda
  *    (valor_imovel) e entrada (compra e venda − financiado). Valor de avaliação, quando vier. Provisão de comissão em aberto: a base passa a ser o crédito da minuta.
- *  - Cada arquivo é lido uma vez (`_minuta.lidos`); minuta nova (outra versão) é lida de novo. Nota no card com "era X" + push.
+ *  - Cada arquivo é lido uma vez (`_minuta.lidos`); minuta nova (outra versão) é lida de novo. Nota no card com "era X" + push. Só age quando há alteração (abaixo).
  *  - Padrão da pasta (Fabio 29/10: "se não tiver a pasta MINUTA, renomeia para MINUTA, esse será o padrão"): dentro da pasta do cliente fica uma subpasta
  *    "MINUTA" — se existir uma com "minuta" no nome (ex.: "Minuta do contrato"), vira "MINUTA"; se não existir nenhuma, o CRM cria (pra equipe soltar o arquivo). */
 
@@ -65,31 +65,77 @@ async function etapasDaMinuta(accountId: string): Promise<string[]> {
   });
 }
 
-let ultimaRodada = 0;
-/** Poller (a cada 10 min): uma minuta nova por rodada (cada leitura é um PDF inteiro). */
+/* Só age quando há alteração (Fabio 29/10: "não precisa ser de 10 em 10 min, só quando houver alteração"):
+ *  - card que ENTROU nas etapas da minuta e ainda não tem a pasta MINUTA conferida → cria/renomeia (a checagem é no banco; o Drive só é chamado pro card novo);
+ *  - ARQUIVO NOVO no Drive: o CRM lê o registro de mudanças do Google Drive (changes.list — só o que mudou desde a última leitura) e, se o arquivo caiu numa pasta
+ *    MINUTA de um desses cards, lê a minuta. Depois de reiniciar o servidor, uma única varredura das pastas MINUTA pega o que chegou nesse meio-tempo. */
+let tokenMudancas: string | null = null;
+let varreduraFeita = false;
+let ultimaMudanca = 0;
 export async function processMinutas(accountId: string, io?: Io): Promise<void> {
-  if (Date.now() - ultimaRodada < 10 * 60_000 || !process.env.ANTHROPIC_API_KEY) return;
-  ultimaRodada = Date.now();
+  if (!process.env.ANTHROPIC_API_KEY) return;
   const etapas = await etapasDaMinuta(accountId);
   if (!etapas.length) return;
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, stageId: { in: etapas } },
     select: { id: true, name: true, value: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } },
   });
+  const comPasta = leads.filter((l) => String(((l.customFields || {}) as any).link_pasta_drive || '').trim());
+  if (!comPasta.length) return;
   const google = await import('./google.service');
-  for (const l of leads) {
+  // 1) Card novo na etapa: pasta MINUTA (uma vez por card).
+  for (const l of comPasta) {
     const cf = (l.customFields || {}) as Record<string, any>;
-    const link = String(cf.link_pasta_drive || '').trim();
-    if (!link) continue;
-    await garantirPastaMinuta(accountId, l.id, google.extractFolderId(link), cf).catch((e) => console.error('[Minuta] pasta:', e?.message));
-    let arquivos: { id: string; name: string; mimeType: string; path: string; size: number }[] = [];
-    try { arquivos = await google.listAllFilesInFolderTree(accountId, google.extractFolderId(link), 3); } catch { continue; }
-    const lidos = new Set<string>(Array.isArray(cf._minuta?.lidos) ? cf._minuta.lidos : []);
-    const minuta = arquivos.find((f) => (/minuta/i.test(f.path) || /minuta/i.test(f.name)) && !lidos.has(f.id) && /pdf|document|word|officedocument|image/.test(f.mimeType));
-    if (!minuta) continue;
+    if (cf._minuta?.pasta) continue;
+    await garantirPastaMinuta(accountId, l.id, google.extractFolderId(String(cf.link_pasta_drive)), cf).catch((e) => console.error('[Minuta] pasta:', e?.message));
+  }
+  // 2) Arquivos: varredura única depois de reiniciar; depois só pelo registro de mudanças do Drive (a cada 2 min, uma chamada leve).
+  if (!varreduraFeita) {
+    varreduraFeita = true;
+    try { const drive = await google.getDrive(accountId); tokenMudancas = (await drive.changes.getStartPageToken({ supportsAllDrives: true })).data.startPageToken || null; } catch (e: any) { console.error('[Minuta] token de mudanças:', e?.message); }
+    for (const l of comPasta) await conferirPasta(accountId, l, io).catch((e) => console.error('[Minuta] varredura:', e?.message));
+    return;
+  }
+  if (!tokenMudancas || Date.now() - ultimaMudanca < 2 * 60_000) return;
+  ultimaMudanca = Date.now();
+  const pastasMinuta = new Map<string, (typeof comPasta)[number]>(); // pasta MINUTA → card
+  const pastasCliente = new Map<string, (typeof comPasta)[number]>(); // pasta do cliente → card (arquivo com "minuta" no nome solto lá)
+  for (const l of comPasta) {
+    const cf = (l.customFields || {}) as any;
+    if (cf._minuta?.pasta) pastasMinuta.set(cf._minuta.pasta, l);
+    pastasCliente.set(google.extractFolderId(String(cf.link_pasta_drive)), l);
+  }
+  const tocados = new Set<string>();
+  try {
+    const drive = await google.getDrive(accountId);
+    let token: string | null | undefined = tokenMudancas;
+    while (token) {
+      const r: any = await drive.changes.list({ pageToken: token, fields: 'nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,parents,trashed))', pageSize: 200, supportsAllDrives: true, includeItemsFromAllDrives: true });
+      for (const c of r.data.changes || []) {
+        if (c.removed || c.file?.trashed) continue;
+        for (const pai of c.file?.parents || []) {
+          const l = pastasMinuta.get(pai) || (/minuta/i.test(c.file?.name || '') ? pastasCliente.get(pai) : undefined);
+          if (l) tocados.add(l.id);
+        }
+      }
+      if (r.data.newStartPageToken) tokenMudancas = r.data.newStartPageToken;
+      token = r.data.nextPageToken;
+    }
+  } catch (e: any) { console.error('[Minuta] mudanças do Drive:', e?.message); return; }
+  for (const l of comPasta.filter((x) => tocados.has(x.id))) await conferirPasta(accountId, l, io).catch((e) => console.error('[Minuta] leitura:', e?.message));
+}
+
+/** Lê a minuta ainda não lida da pasta do cliente (arquivo dentro da MINUTA ou com "minuta" no nome). */
+async function conferirPasta(accountId: string, l: { id: string; name: string; value: number | null; customFields: unknown; pipeline: { department: { name: string } | null } | null }, io: Io): Promise<void> {
+  const google = await import('./google.service');
+  const cf = (l.customFields || {}) as Record<string, any>;
+  const arquivos = await google.listAllFilesInFolderTree(accountId, google.extractFolderId(String(cf.link_pasta_drive)), 3);
+  const fresh = await prisma.lead.findUnique({ where: { id: l.id }, select: { customFields: true } });
+  const lidos = new Set<string>(Array.isArray((fresh?.customFields as any)?._minuta?.lidos) ? (fresh?.customFields as any)._minuta.lidos : []);
+  const minutas = arquivos.filter((f) => (/minuta/i.test(f.path) || /minuta/i.test(f.name)) && !lidos.has(f.id) && /pdf|document|word|officedocument|image/.test(f.mimeType));
+  for (const minuta of minutas) {
     const leitura = await lerMinuta(accountId, minuta).catch((e) => { console.error('[Minuta] leitura:', e?.message); return null; });
     await aplicarMinuta(accountId, l, minuta, leitura, io);
-    return; // uma por rodada
   }
 }
 
