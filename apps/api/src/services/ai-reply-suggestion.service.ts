@@ -53,10 +53,12 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
 
     const emailsProcesso = await aiEmailsContext(leadId).catch(() => '');
     const coreRules = await fixedRule(accountId, 'CORE_RULES', CORE_RULES);
-    const systemPrompt = `${ROLE_FRAMING}
+    const roleFraming = await fixedRule(accountId, 'SUGGESTION_ROLE_FRAMING', ROLE_FRAMING);
+    const relayRules = emailsProcesso ? await fixedRule(accountId, 'EMAIL_RELAY_RULES', EMAIL_RELAY_RULES) : '';
+    const systemPrompt = `${roleFraming}
 
 ${coreRules}
-${emailsProcesso ? `\n${EMAIL_RELAY_RULES}\n` : ''}${OUTPUT_FORMAT}
+${emailsProcesso ? `\n${relayRules}\n` : ''}${OUTPUT_FORMAT}
 
 ${buildContextBlocks(ctx)}${emailsProcesso ? `\n\n${emailsProcesso}` : ''}`;
 
@@ -169,7 +171,8 @@ export async function generateTemplateSuggestion(accountId: string, leadId: stri
       return `- ${t.name} [${categoryLabel(t.category).toUpperCase()}] (${nv} variável(is)): ${body.slice(0, 420)}`;
     }).join('\n');
 
-    const system = `${TEMPLATE_ROLE}
+    const templateRole = await fixedRule(accountId, 'TEMPLATE_ROLE', TEMPLATE_ROLE);
+    const system = `${templateRole}
 
 --- ${todayLine()} ---
 

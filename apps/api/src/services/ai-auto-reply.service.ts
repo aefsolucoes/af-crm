@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { fixedRule } from './fixed-rules.service';
+import { fixedRule, fixedRules } from './fixed-rules.service';
 import { cachedSystem } from '../lib/anthropic-usage';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, aiEmailsContext, EMAIL_RELAY_RULES, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 import { aiCreditContext, refreshAnalysesForAi } from './credit-analysis.service';
@@ -572,42 +572,44 @@ export async function generateAiAutoReply(
     // Parte FIXA (igual pra todos os clientes: vai pro CACHE de prompt — nas chamadas seguintes, em até 5 min, as ~14 mil tokens de regras custam ~10%) e parte que muda por cliente/momento.
     // As regras condicionais (venda futura, documentos chegando/lidos, campos do card) e o formato de saída ficam na parte que muda, logo antes do contexto.
     const coreRules = await fixedRule(accountId, 'CORE_RULES', CORE_RULES);
-    const systemFixed = `${ROLE_FRAMING}
+    // Regras de negócio vivem na Base de Conhecimento (fonte única, Fabio 29/10); o texto do código abaixo é só a semente/plano B. OUTPUT_FORMAT e SAFETY_RULES ficam no código (estrutura/segurança).
+    const R = await fixedRules(accountId, { ROLE_FRAMING, HANDOFF_RULES, ASK_TEAM_RULES, MOVE_STAGE_RULES, NEW_VALUE_RULES, PROPERTY_DOCS_RULES, RETENTION_RULES, OUTRO_CANAL_RULES, APARTMENT_APPRAISAL_RULES, MARK_LOST_RULES, STOP_FOLLOWUP_RULES, FORM_FIRST_RULES, CONVERSE_BEFORE_LINK_RULES, PROPOSAL_REVIEW_RULES, CREDIT_ANALYSIS_RULES, NO_RECEIPT_LIST_RULES, NO_REPLY_RULES, DOCS_ARRIVING_RULES, EMAIL_RELAY_RULES });
+    const systemFixed = `${R.ROLE_FRAMING}
 
 ${coreRules}
 ${SAFETY_RULES}
-${HANDOFF_RULES}
+${R.HANDOFF_RULES}
 
-${ASK_TEAM_RULES}
+${R.ASK_TEAM_RULES}
 
-${MOVE_STAGE_RULES}
+${R.MOVE_STAGE_RULES}
 
-${NEW_VALUE_RULES}
-${PROPERTY_DOCS_RULES}
-${RETENTION_RULES}
+${R.NEW_VALUE_RULES}
+${R.PROPERTY_DOCS_RULES}
+${R.RETENTION_RULES}
 
-${OUTRO_CANAL_RULES}
+${R.OUTRO_CANAL_RULES}
 
-${APARTMENT_APPRAISAL_RULES}
+${R.APARTMENT_APPRAISAL_RULES}
 
-${MARK_LOST_RULES}
+${R.MARK_LOST_RULES}
 
-${STOP_FOLLOWUP_RULES}
+${R.STOP_FOLLOWUP_RULES}
 
-${FORM_FIRST_RULES}
+${R.FORM_FIRST_RULES}
 
-${CONVERSE_BEFORE_LINK_RULES}
+${R.CONVERSE_BEFORE_LINK_RULES}
 
-${PROPOSAL_REVIEW_RULES}
+${R.PROPOSAL_REVIEW_RULES}
 
-${CREDIT_ANALYSIS_RULES}
+${R.CREDIT_ANALYSIS_RULES}
 
-${NO_RECEIPT_LIST_RULES}
+${R.NO_RECEIPT_LIST_RULES}
 
-${NO_REPLY_RULES}`;
+${R.NO_REPLY_RULES}`;
     const systemDynamic = `${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura)}
 
-${chegando ? DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildFillFieldsRules(camposTexto)}
+${chegando ? R.DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildFillFieldsRules(camposTexto)}
 
 ${OUTPUT_FORMAT}
 
@@ -625,7 +627,7 @@ ${documentos}` : ''}${scrCreditas ? `
 
 ${scrCreditas}` : ''}${emailsProcesso ? `
 
-${EMAIL_RELAY_RULES}
+${R.EMAIL_RELAY_RULES}
 
 ${emailsProcesso}` : ''}${cadDiv ? `
 

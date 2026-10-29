@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { fixedRule } from './fixed-rules.service';
 import { buildSharedAiContext, buildContextBlocks, stripOpeningInterjection } from './ai-shared.service';
 import { searchKnowledge } from './knowledge.service';
 import { htmlToText } from './email-inbox.service';
@@ -64,7 +65,8 @@ Para: ${params.to || '(não informado)'}
 Assunto: ${params.subject || '(sem assunto)'}
 (Não é resposta: sugira um e-mail adequado pro momento do cliente, com base no card e na conversa.)`;
 
-  const system = `${EMAIL_RULES}
+  const emailRules = await fixedRule(accountId, 'EMAIL_SUGGESTION_RULES', EMAIL_RULES);
+  const system = `${emailRules}
 
 ${contextBlocks}
 
