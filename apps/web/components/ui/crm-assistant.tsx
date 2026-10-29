@@ -198,6 +198,11 @@ export function CrmAssistant() {
   const canto = () => ({ x: window.innerWidth - ORB - 20, y: window.innerHeight - ORB - 84 });
   const precisaClique = !!(cartao?.pending?.some((p) => p.estado === 'PENDENTE') || cartao?.audio || cartao?.attachments?.length || cartao?.copiar?.length);
   const conversando = voz !== 'off';
+  // Mouse em cima da bolinha ou do balão: ela PARA onde está pra pessoa olhar (Fabio 29/10); ao sair, volta a passear.
+  const [mouseEm, setMouseEm] = useState(false);
+  const orbRef = useRef<HTMLButtonElement | null>(null);
+  const segura = () => { const r = orbRef.current?.getBoundingClientRect(); if (r) setPos({ x: r.left, y: r.top }); setMouseEm(true); };
+  const solta = () => setMouseEm(false);
   useEffect(() => {
     setPos(canto());
     const onR = () => { if (!vozRef.current) setPos(canto()); };
@@ -206,15 +211,15 @@ export function CrmAssistant() {
   }, []);
   useEffect(() => {
     if (!conversando) { if (!precisaClique) setPos(canto()); return; }
-    if (precisaClique) return;
+    if (precisaClique || mouseEm) return;
     const passeia = () => {
       const w = window.innerWidth, h = window.innerHeight;
       setPos({ x: 260 + Math.random() * Math.max(40, w - 260 - ORB - 40), y: 90 + Math.random() * Math.max(40, h - 90 - ORB - 120) });
     };
-    passeia();
-    const t = setInterval(passeia, MOVE_MS);
-    return () => clearInterval(t);
-  }, [conversando, precisaClique]);
+    let t: ReturnType<typeof setInterval> | undefined;
+    const primeiro = setTimeout(() => { passeia(); t = setInterval(passeia, MOVE_MS); }, 1200);
+    return () => { clearTimeout(primeiro); if (t) clearInterval(t); };
+  }, [conversando, precisaClique, mouseEm]);
 
   // ── voz ──
   function vozNavegador(frase: string): Promise<void> {
@@ -222,7 +227,8 @@ export function CrmAssistant() {
       if (typeof window === 'undefined' || !('speechSynthesis' in window)) return resolve();
       const u = new SpeechSynthesisUtterance(frase);
       u.lang = 'pt-BR'; u.rate = 1.05;
-      const v = window.speechSynthesis.getVoices().find((x) => x.lang?.toLowerCase().startsWith('pt'));
+      const vs = window.speechSynthesis.getVoices();
+      const v = vs.find((x) => x.lang?.toLowerCase().replace('_', '-') === 'pt-br') || vs.find((x) => /brasil|brazil|luciana|felipe/i.test(x.name)); // nunca pt-PT (Fabio 29/10: português do Brasil)
       if (v) u.voice = v;
       u.onend = () => resolve(); u.onerror = () => resolve();
       window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
@@ -402,7 +408,7 @@ export function CrmAssistant() {
   const W = 300;
   const bx = Math.min(Math.max(pos.x + ORB / 2 - W / 2, 8), window.innerWidth - W - 8);
   const acima = pos.y > 300;
-  const anda = `left ${MOVE_MS}ms ease-in-out, top ${MOVE_MS}ms ease-in-out, bottom ${MOVE_MS}ms ease-in-out`;
+  const anda = mouseEm ? 'none' : `left ${MOVE_MS}ms ease-in-out, top ${MOVE_MS}ms ease-in-out, bottom ${MOVE_MS}ms ease-in-out`;
 
   return (
     <>
@@ -410,6 +416,8 @@ export function CrmAssistant() {
         <div
           className="fixed z-50 w-[300px] max-w-[calc(100vw-1rem)] rounded-2xl border border-slate-200 bg-white/95 backdrop-blur shadow-xl p-3 text-sm text-slate-800"
           style={{ left: bx, ...(acima ? { bottom: window.innerHeight - pos.y + 12 } : { top: pos.y + ORB + 12 }), transition: anda }}
+          onMouseEnter={segura}
+          onMouseLeave={solta}
         >
           <button onClick={() => setCard(null)} className="absolute right-2 top-2 text-slate-400 hover:text-slate-600" title="Fechar"><X size={14} /></button>
           {cartao?.disse && <p className="pr-5 text-xs italic text-slate-500">“{cartao.disse}”</p>}
@@ -436,7 +444,10 @@ export function CrmAssistant() {
       )}
 
       <button
+        ref={orbRef}
         onClick={conversar}
+        onMouseEnter={segura}
+        onMouseLeave={solta}
         className={cn('fixed z-50 rounded-full focus:outline-none', escondeCelular && 'hidden md:block')}
         style={{ left: pos.x, top: pos.y, width: ORB, height: ORB, transition: anda }}
         aria-label="Assistente do CRM"

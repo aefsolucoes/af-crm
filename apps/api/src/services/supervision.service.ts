@@ -242,6 +242,8 @@ export async function chatOnSupervision(accountId: string, id: string, history: 
 // ─── Voz natural (ElevenLabs) pra conversa da supervisão (Fabio 29/10: "ficou muito ruim essa fala… queria algo mais natural") ───
 // Modelo multilíngue rápido (eleven_flash_v2_5, fala português). Sem chave/crédito → 503 e a tela cai na voz do navegador.
 export const SUPERVISION_VOICE_ID = process.env.SUPERVISION_VOICE_ID || 'XrExE9yKIg1WjnnlVkGX'; // "Matilda" (amostra 2, escolhida pelo Fabio 29/10)
+// Modelo da voz (Fabio 29/10: sotaque do Brasil) — trocável sem deploy pela variável SUPERVISION_TTS_MODEL.
+const TTS_MODEL = process.env.SUPERVISION_TTS_MODEL || 'eleven_flash_v2_5';
 export async function supervisionTts(text: string): Promise<Buffer> {
   const key = process.env.ELEVENLABS_API_KEY;
   if (!key) throw Object.assign(new Error('Sem voz natural configurada'), { status: 503 });
@@ -250,7 +252,7 @@ export async function supervisionTts(text: string): Promise<Buffer> {
   const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${SUPERVISION_VOICE_ID}?output_format=mp3_44100_64`, {
     method: 'POST',
     headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
-    body: JSON.stringify({ text: t, model_id: 'eleven_flash_v2_5', language_code: 'pt', voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true } }),
+    body: JSON.stringify({ text: t, model_id: TTS_MODEL, ...(TTS_MODEL === 'eleven_multilingual_v2' ? {} : { language_code: 'pt' }), voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true } }),
   });
   if (!r.ok) throw Object.assign(new Error(`Voz natural indisponível (${r.status}): ${(await r.text()).slice(0, 120)}`), { status: 503 });
   return Buffer.from(await r.arrayBuffer());
