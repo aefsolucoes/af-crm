@@ -104,6 +104,24 @@ function DocumentCard({ a }: { a: Extract<Attachment, { type: 'document' }> }) {
 
 /** "zero quatro sete sete sete zero dois zero" → "04777020"; "4 7 7 7" → "4777". Só junta sequências de 3+ dígitos falados (palavra ou número solto), pra não trocar "um cliente". Pura. */
 const DIGITO: Record<string, string> = { zero: '0', um: '1', uma: '1', dois: '2', duas: '2', tres: '3', quatro: '4', cinco: '5', seis: '6', meia: '6', sete: '7', oito: '8', nove: '9' };
+/** Texto → fala (Fabio 29/10: "em vez de dizer avenida ela diz AVE" e "fala embolado os números"): abreviações por extenso, ordinal por extenso e CEP/CPF/telefone dígito a dígito, em grupos. Pura. */
+const ORDINAL = ['', 'primeiro', 'segundo', 'terceiro', 'quarto', 'quinto', 'sexto', 'sétimo', 'oitavo', 'nono', 'décimo', 'décimo primeiro', 'décimo segundo', 'décimo terceiro', 'décimo quarto', 'décimo quinto', 'décimo sexto', 'décimo sétimo', 'décimo oitavo', 'décimo nono', 'vigésimo'];
+const DIG_FALA = ['zero', 'um', 'dois', 'três', 'quatro', 'cinco', 'seis', 'sete', 'oito', 'nove'];
+const digitos = (d: string) => d.split('').map((c) => DIG_FALA[Number(c)]).join(' ');
+export function paraFala(texto: string): string {
+  let t = String(texto || '');
+  t = t.replace(/\bAv\.?(?=\s)/gi, 'Avenida').replace(/\bR\.(?=\s+[A-ZÀ-Ú0-9])/g, 'Rua').replace(/\bTv\.?(?=\s)/gi, 'Travessa').replace(/\bAl\.(?=\s)/g, 'Alameda').replace(/\bEstr\.(?=\s)/gi, 'Estrada')
+    .replace(/\bApto\.?|\bAp\.(?=\s*\d)/gi, 'apartamento').replace(/\bn[º°o]\.?\s*(?=\d)/gi, 'número ').replace(/\bBl\.(?=\s)/g, 'bloco').replace(/\bJd\.(?=\s)/gi, 'Jardim').replace(/\bVl\.(?=\s)/gi, 'Vila')
+    .replace(/\bSta\.(?=\s)/g, 'Santa').replace(/\bSto\.(?=\s)/g, 'Santo').replace(/\bDr\.(?=\s)/g, 'Doutor').replace(/\bDra\.(?=\s)/g, 'Doutora').replace(/\ba\.m\./gi, 'ao mês').replace(/\ba\.a\./gi, 'ao ano');
+  t = t.replace(/\b(\d{1,2})\s*[º°]/g, (_m, n) => ORDINAL[Number(n)] || `${n}º`).replace(/\b(\d{1,2})\s*ª/g, (_m, n) => (ORDINAL[Number(n)] || n).replace(/o\b/g, 'a'));
+  // CEP (00000-000 ou 8 dígitos depois de "CEP"), CPF e telefone: dígito a dígito, com pausa entre os grupos
+  t = t.replace(/\b(\d{5})-?(\d{3})\b/g, (_m, a, b) => `${digitos(a)}, ${digitos(b)}`)
+    .replace(/\b(\d{3})\.(\d{3})\.(\d{3})-(\d{2})\b/g, (_m, a, b, c, d) => `${digitos(a)}, ${digitos(b)}, ${digitos(c)}, ${digitos(d)}`)
+    .replace(/\(?\b(\d{2})\)?\s*(9?\d{4})-?(\d{4})\b/g, (_m, a, b, c) => `${digitos(a)}, ${digitos(b)}, ${digitos(c)}`)
+    .replace(/\b\d{9,}\b/g, (d) => d.match(/.{1,3}/g)!.map(digitos).join(', '));
+  return t;
+}
+
 /** Soletrado (Fabio 29/10: "ela não sabe soletrar"): "f e r n a n d a" / "efe erre a" → "fernanda" (3+ letras seguidas); "arroba" → "@" e "ponto" → "." dentro de e-mail. Pura. */
 const LETRA: Record<string, string> = { a: 'a', be: 'b', ce: 'c', de: 'd', e: 'e', efe: 'f', ge: 'g', ga: 'h', aga: 'h', aga_: 'h', i: 'i', jota: 'j', ka: 'k', ca: 'k', ele: 'l', eme: 'm', ene: 'n', o: 'o', pe: 'p', que: 'q', erre: 'r', esse: 's', te: 't', u: 'u', ve: 'v', dablio: 'w', xis: 'x', ipsilon: 'y', ze: 'z' };
 export function soletrado(texto: string): string {
@@ -349,7 +367,7 @@ export function CrmAssistant() {
     });
   }
   async function falar(frase: string): Promise<void> {
-    const t = frase.replace(/[*_#`>⏰]/g, '').replace(/https?:\S+/g, '').trim();
+    const t = paraFala(frase.replace(/[*_#`>⏰]/g, '').replace(/https?:\S+/g, '').trim());
     if (!t) return;
     setVoz('falando');
     try { audioRef.current?.pause(); } catch { /* */ }
