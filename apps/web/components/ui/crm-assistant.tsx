@@ -411,7 +411,9 @@ export function CrmAssistant() {
         const pediuParar = ws.some((w) => pararCom.includes(w));
         const novas = ws.filter((w) => w.length > 2 && !dele.has(w));
         const frase = (final || ws.length >= 4) && novas.length >= 3 && novas.length / ws.length >= 0.6;
-        if (pediuParar || frase) { ativo = false; interrompidoRef.current = txt.trim(); try { rec.abort(); } catch { /* */ } calar(); }
+        // "Confirma"/"sim" falado enquanto ela ainda lê a ação: vale na hora (Fabio 29/10: "tive que confirmar 2x").
+        const confirmou = (final || ws.length <= 3) && (cartaoRef.current?.pending || []).some((p) => p.estado === 'PENDENTE') && SIM.test(txt.trim());
+        if (pediuParar || frase || confirmou) { ativo = false; interrompidoRef.current = txt.trim(); try { rec.abort(); } catch { /* */ } calar(); }
       };
       rec.onend = () => { if (ativo) { try { rec.start(); } catch { /* */ } } };
       rec.onerror = () => { /* sem microfone livre: segue sem interromper */ };
