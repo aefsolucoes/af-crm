@@ -29,6 +29,11 @@ const READ_TOOLS = [
     input_schema: { type: 'object', properties: { leadId: { type: 'string' }, mensagens: { type: 'number', description: 'quantas mensagens recentes trazer (padrão 15, máx. 40)' } }, required: ['leadId'] },
   },
   {
+    name: 'ler_conversa',
+    description: 'Lê a conversa INTEIRA do cliente (WhatsApp e e-mails do card, da mais antiga à mais nova, com data e quem escreveu). termo = filtra só as mensagens que têm alguma dessas palavras (ex.: "rua avenida cep endereço"); vazio = tudo. Use quando o que precisa não estiver nas últimas mensagens do ver_cliente (endereço que o cliente digitou, valor que ele falou, combinado antigo).',
+    input_schema: { type: 'object', properties: { leadId: { type: 'string' }, termo: { type: 'string' } }, required: ['leadId'] },
+  },
+  {
     name: 'analises_credito',
     description: 'Histórico das análises de crédito do cliente nos bancos (Inter, Creditas, Santander/Credimorar): status, valor aprovado, líquido, prazo, taxa, 1ª/última parcela, nº da proposta, em nome de quem.',
     input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] },
@@ -168,7 +173,7 @@ function systemFixed(userName: string, voz: boolean): string {
 - Mensagem ao cliente: escreva como a equipe da A&F escreve no WhatsApp (curta, educada, sem emoji em excesso, sem prometer prazo ou aprovação). Mostre o texto antes.
 - Formulário do card ("preenche o card do Pedro com…", "completa o cadastro com os dados da matrícula"): ver_formulario → preencher_formulario com os campos certos. Pode tirar os dados do que o cliente mandou (ver_cliente) — nunca invente CPF, data ou valor; o que não tiver, pergunte. Formulário de portal de banco é com as extensões (rodar_analise, vistoria, certidão).
 - DOCUMENTOS DO CLIENTE (conversa + pasta do Drive): "abre/mostra o IPTU da Maria" → mostrar_documento (aparece AQUI no balão; nunca abra tela nem aba pra isso). ler_documento lê de verdade e também mostra no balão. Leu dado que cabe no card (endereço, CEP, metragens, matrícula, inscrição…)? Ofereça preencher o card com preencher_formulario (confirmação antes).
-- Certidão pelo endereço: se pedir_certidao disser que não achou o endereço, leia o documento do imóvel (ler_documento: IPTU, matrícula, escritura — da conversa ou do Drive) pedindo CEP, rua, número, complemento, bairro, cidade e UF, e chame pedir_certidao de novo com cep/logradouro/numero/cidade/uf.
+- Certidão pelo endereço: se pedir_certidao disser que não achou o endereço, procure você mesmo: ler_conversa com termo "rua avenida cep endereço apto" (o cliente pode ter digitado) e os documentos do imóvel; achou, chame pedir_certidao com cep/logradouro/numero/cidade/uf. Antes disso, leia o documento do imóvel (ler_documento: IPTU, matrícula, escritura — da conversa ou do Drive) pedindo CEP, rua, número, complemento, bairro, cidade e UF, e chame pedir_certidao de novo com cep/logradouro/numero/cidade/uf.
 - Certidão ("pede a certidão de ônus/matrícula do Pedro"): buscar_clientes → pedir_certidao só com o leadId. NUNCA invente o cartório (ex.: "3º Ofício"): só passe cartorio se a pessoa disser. "Pelo endereço" (ou cliente sem matrícula): pedir_certidao com porEndereco true — o CRM lê o endereço nos documentos do imóvel da conversa. NÃO abra formulário, documentos nem pasta antes: a ferramenta já procura a matrícula e o endereço. Se faltar dado, ela diz o que perguntar. Se a pessoa quiser o PIX com ela ("deixa o PIX no chat", "eu mando pro cliente") → pixNoChat true. "Cadê o PIX / como está a certidão do Pedro" → ver_certidao (o código aparece no balão com Copiar; nunca leia o código).
 - EXTENSÕES: você comanda todas — análise Home Equity (rodar_analise/conferir_analise), Financiamento (rodar_financiamento/conferir_financiamento), certidão ONR (pedir_certidao/ver_certidao/buscar_certidao/marcar_pix_pago), vistoria Inter (solicitar_vistoria), simulação em PDF (pedir_simulacao_pdf). "As extensões estão funcionando?"/"por que não andou?" → ver_extensoes.
 - VOZ DO ASSISTENTE: "muda/troca/escolhe a voz", "que vozes tem?" → escolher_voz (abre a lista no balão). NUNCA mande a pessoa pras Configurações pra isso.
@@ -184,14 +189,40 @@ function systemFixed(userName: string, voz: boolean): string {
 - MODO VOZ: a sua resposta será FALADA em voz alta. Seja curto (1 a 3 frases), natural, como numa conversa; sem listas, sem markdown, sem emoji, sem ler IDs ou links. Números por extenso só quando ajudar. Lista: NO MÁXIMO 3 itens por vez, mesmo que peçam tudo, e termine com "quer que eu continue?" — nunca leia lista longa (a pessoa pode interromper falando, mas não dependa disso).` : ''}`;
 }
 
+/** Conversa inteira do card pro Jarvis (Fabio 29/10: "ele pode olhar a conversa toda do cliente"). Teto de ~60 mil caracteres: com termo, só as mensagens que batem. */
+async function lerConversa(accountId: string, leadId: string, termo: string) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true } });
+  if (!lead) return { erro: 'cliente não encontrado' };
+  const n = (x: string) => x.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const palavras = n(termo).split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+  const msgs = await prisma.message.findMany({ where: { leadId, deleted: false }, orderBy: { createdAt: 'asc' }, take: 3000, select: { createdAt: true, direction: true, channel: true, content: true } });
+  const linhas: string[] = [];
+  let total = 0;
+  const sel = palavras.length ? msgs.filter((m) => palavras.some((w) => n(m.content || '').includes(w))) : msgs;
+  for (const m of sel.slice(-600)) {
+    const l = `${quando(m.createdAt)} ${m.direction === 'INBOUND' ? 'Cliente' : 'Equipe'}${m.channel === 'EMAIL' ? ' (e-mail)' : ''}: ${String(m.content || '').replace(/\s+/g, ' ').slice(0, 600)}`;
+    if (total + l.length > 60_000) break;
+    linhas.push(l); total += l.length;
+  }
+  return { cliente: lead.name, totalNaConversa: msgs.length, mostradas: linhas.length, ...(palavras.length ? { filtro: palavras.join(' ') } : {}), mensagens: linhas };
+}
+
 type ToolCtx = { accountId: string; userId: string; token: string; anexos: ChatAttachment[]; fila: PendingAction[]; nav: ScreenNav[]; audio: AudioReq[]; copiar: CopyReq[]; ui: string[] };
 async function runTool(c: ToolCtx, name: string, input: any): Promise<unknown> {
+  const { accountId, userId, anexos } = c;
+  const t0 = Date.now();
+  const r = await runToolInner(c, name, input);
+  try { const err = (r as any)?.erro || (r as any)?.naoDaPraPedir; console.log(`[Assistente] ferramenta ${name} ${JSON.stringify(input || {}).slice(0, 160)} → ${err ? `ERRO: ${String(err).slice(0, 160)}` : 'ok'} (${Date.now() - t0} ms)`); } catch { /* */ }
+  return r;
+}
+async function runToolInner(c: ToolCtx, name: string, input: any): Promise<unknown> {
   const { accountId, userId, anexos } = c;
   try {
     if (ACTION_TOOL_NAMES.has(name)) return await runActionTool({ accountId, userId, token: c.token, name, input, fila: c.fila, nav: c.nav, audio: c.audio, copiar: c.copiar, ui: c.ui, docs: c.anexos as any });
     switch (name) {
       case 'buscar_clientes': return await buscarClientes(accountId, input?.termo);
       case 'ver_cliente': return await verCliente(accountId, String(input?.leadId || ''), input?.mensagens);
+      case 'ler_conversa': return await lerConversa(accountId, String(input?.leadId || ''), String(input?.termo || ''));
       case 'analises_credito': return await analisesCredito(accountId, String(input?.leadId || ''));
       case 'listar_clientes': return await listarClientes(accountId, input || {});
       case 'pedir_simulacao_pdf': return await pedirSimulacao(accountId, userId, String(input?.leadId || ''), String(input?.banco || ''), anexos);
