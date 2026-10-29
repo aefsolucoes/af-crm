@@ -1046,6 +1046,10 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
     }
     return {
       id: l.id, name: l.name, status: l.status, stage: l.stage?.name || '', pipeline: l.pipeline?.name || '', stageEnteredAt: l.stageEnteredAt,
+      // Tela do Financiamento igual à do Home Equity (Fabio 29/10): CPF/nomes do card, se está na Pré-Análise e o número de cada proposta.
+      card: { name1: cf.participante_1 ? String(cf.participante_1) : null, cpf1: cf.cpf_1 ? String(cf.cpf_1) : null, name2: cf.participante_2 ? String(cf.participante_2) : null, cpf2: cf.cpf_2 ? String(cf.cpf_2) : null },
+      inPre: l.status === 'OPEN' && /^pr[ée]-an/i.test(l.stage?.name || ''),
+      history: l.creditAnalyses.slice(0, 12).map((r) => ({ id: r.id, bank: r.bank, kind: r.kind, status: r.status, detail: r.detail ? String(r.detail).slice(0, 300) : null, createdAt: r.createdAt, proposalNumber: r.proposalNumber, dryRun: r.dryRun })),
       valores: { imovel: num(cf.valor_imovel), financia: num(cf.valor_credito), entrada: num(cf.valor_entrada), renda: (num(cf.renda_1) || 0) + (num(cf.renda_2) || 0) || null },
       participante2: cf.participante_2 ? String(cf.participante_2) : null,
       restricaoSerasa: restricao.has(l.id) ? restricao.get(l.id) : null,
