@@ -179,3 +179,34 @@ export async function processPediuParar(accountId: string, io?: Io): Promise<voi
   }
 }
 
+/** Cliente APROVADO achou caro e a IA perguntou "Você deseja seguir com o crédito aprovado?" (Fabio 29/10, Iranildes): sem resposta em 1 dia →
+ *  Perdido, funil Perdidos, etiqueta "Aprovado sem andamento" (a mesma regra do "vamos pensar", 28/10). Respondeu ou a equipe assumiu: a conversa decide. */
+export async function processSeguirAprovado(accountId: string, io?: Io): Promise<void> {
+  const { SEGUIR_APROVADO_Q } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
+  const leads = await prisma.lead.findMany({
+    where: { accountId, status: 'OPEN', archived: false, isGroup: false, customFields: { path: ['_seguirAprovadoAt'], string_starts_with: '20' } },
+    select: { id: true, name: true, tags: true, customFields: true, pipeline: { select: { departmentId: true } } },
+  });
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Record<string, any>;
+    if (cf._autoPaused) continue; // STOP TOTAL: a equipe cuida
+    // A pergunta que valeu é a que SAIU (a IA pode ter falhado no envio).
+    const pergunta = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'OUTBOUND', deleted: false, content: { contains: SEGUIR_APROVADO_Q }, createdAt: { gte: new Date(Date.parse(cf._seguirAprovadoAt) - 60_000) } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    const limpar = async () => { const { _seguirAprovadoAt, ...resto } = cf; await prisma.lead.update({ where: { id: l.id }, data: { customFields: resto } }); };
+    if (!pergunta) { if (Date.now() - Date.parse(cf._seguirAprovadoAt) > DIA) await limpar(); continue; }
+    if (Date.now() - pergunta.createdAt.getTime() < DIA) continue;
+    const depois = await prisma.message.findFirst({ where: { leadId: l.id, channel: { not: 'EMAIL' }, createdAt: { gt: pergunta.createdAt }, OR: [{ direction: 'INBOUND' }, { direction: 'OUTBOUND', sentByUserId: { not: null } }] }, select: { id: true } });
+    if (depois) { await limpar(); continue; } // respondeu, ou alguém da equipe escreveu
+    const lostReason = 'Achou caro e não respondeu se quer seguir com o crédito aprovado';
+    const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+    const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+    await limpar();
+    await updateLead(l.id, accountId, { status: 'LOST', lostReason }, io as any);
+    await moveLeadToPerdidos({ accountId, leadId: l.id, departmentId: l.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io: io as any });
+    if (!l.tags.includes(TAG_APROVADO_SEM_ANDAMENTO)) await prisma.lead.update({ where: { id: l.id }, data: { tags: [...l.tags, TAG_APROVADO_SEM_ANDAMENTO] } }).catch(() => {});
+    await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `↪️ Achou caro; perguntei "${SEGUIR_APROVADO_Q}" em ${pergunta.createdAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }).slice(0, 16)} e não respondeu em 1 dia: card foi pra Perdidos com a etiqueta "${TAG_APROVADO_SEM_ANDAMENTO}".` } }).catch(() => {});
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: l.id, leadName: l.name, summary: 'marcou o card como Perdido: aprovado, achou caro e não respondeu se quer seguir' });
+    console.log(`[Seguir com o aprovado] ${l.name}: Perdidos + "${TAG_APROVADO_SEM_ANDAMENTO}"`);
+  }
+}
+

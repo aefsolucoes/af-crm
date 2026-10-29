@@ -254,6 +254,7 @@ const RETENTION_RULES = `CLIENTE APROVADO QUE RECUSA O BANCO / QUER DESISTIR (Fa
 1) NÃO dispense nem marque Perdido de primeira. Primeiro ENTENDA, com UMA pergunta curta (o que pesou: taxa, o banco, valor, a dívida?) ou, se ele já disse o banco que prefere, ofereça tentar por ele ("Quer que a gente tente pela Caixa?").
 2) Faça UMA proposta de solução concreta (outro banco que ele citou, ajustar valor/prazo, esclarecer a dúvida que travou).
 3) Se ele recusar de novo, aceite com gentileza e deixe a porta aberta, sem insistir uma 3ª vez. Aí sim, "markLost" com o motivo real (inclusive se não conseguir reverter).
+4) ACHOU CARO E NÃO DISSE QUE DESISTE (Fabio 29/10, Iranildes: "Muito caro ainda" → a IA fechou com "fico à disposição se quiser retomar depois" e o card ficou parado): se as soluções já foram tentadas (CAIXA oferecida/recusada, valor/prazo já explicados) e ele só reclama do preço, NÃO encerre com "fico à disposição"/"retomar depois" — pergunte direto, em 1 frase: "Você deseja seguir com o crédito aprovado?" (pode citar o banco e o valor). Sim → siga com ele (condições ainda não enviadas: "sendApproval"; já enviadas: "moveToStage": "Aguardando Documentação" e a lista de documentos). Não → "markLost" com o motivo real. Achar caro NÃO é pedir pra parar: "stopFollowUp" fica false. Rodar de novo no mesmo banco NÃO baixa a taxa (ela é do perfil do cliente) — não ofereça isso.
 SALDO DEVEDOR: se o imóvel ainda tem financiamento, o crédito PRIMEIRO quita o saldo — só sobra dinheiro pro cliente se o valor aprovado for MAIOR que o saldo. Cliente pediu R$ 50 mil com saldo de R$ 110 mil: não sobra nada; o certo seria um crédito de R$ 160 mil (110 mil pra quitar + 50 mil pra ele). Explique isso com a conta, em uma frase, em vez de repetir que "quita o saldo".`;
 
 const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um motivo curto (1 frase, baseado no que o cliente disse) quando ele recusar EXPLICITAMENTE: disser que não quer mais, não tem mais interesse, desistiu, ou pedir pra não ser mais contatado. Também quando o lead for desqualificado (ex.: imóvel de garantia sem registro/irregular e sem alternativa) — aí o motivo começa com "Lead desqualificado — ". Deixe null/vazio em todos os outros casos — isso é diferente de só ficar em silêncio (isso é "Lead Sem Retorno", acima), e é definitivo, então só use quando a recusa for clara.
@@ -696,6 +697,7 @@ ${conversasPorTelefone}` : ''}`;
     if (!aprovado && result.reply) result.reply = stripApprovalClaims(result.reply);
     await addDocsDoubtQuestions(leadId, incomingText, ctx.etapaTexto, result);
     await addFollowPrazoQuestion(leadId, incomingText, ctx.etapaTexto, result);
+    await addSeguirAprovadoQuestion(leadId, incomingText, ctx.etapaTexto, result);
     return result;
   } catch (err) {
     console.error('[AI Auto-reply] Erro ao gerar resposta:', err);
@@ -738,6 +740,37 @@ async function addFollowPrazoQuestion(leadId: string, incomingText: string, etap
     else if (result.noReply) { result.reply = FOLLOW_PRAZO_Q; result.noReply = false; }
   } catch (err) {
     console.error('[AI Auto-reply] Pergunta do prazo (Follow Up) não adicionada:', err);
+  }
+}
+
+// Fabio 29/10 (Iranildes: aprovada no Santander, "Muito caro ainda" → a IA fechou com "fico à disposição se quiser retomar depois" e o card ficou parado):
+// cliente APROVADO que reclama do preço não recebe despedida — a IA pergunta se ele quer seguir com o aprovado. Sem resposta em 1 dia → Perdidos
+// com "Aprovado sem andamento" (prosseguir.processSeguirAprovado). Uma vez a cada 2 dias.
+export const SEGUIR_APROVADO_Q = 'Você deseja seguir com o crédito aprovado?';
+const HESITA_RX = /(car[oa]s?\b|taxa|juros|parcela|alt[oa]s?\b|pesad|n[ãa]o (cabe|coube|compensa|d[aá] pra)|or[çc]amento|vou pensar|deixa (pra|para) l[aá]|n[ãa]o sei se)/i;
+const DESPEDIDA_RX = /(fico [àa] disposi|estou [àa] disposi|qualquer (coisa|d[uú]vida),? (é só|me) (chamar|falar)|se (quiser|mudar de ideia|precisar)|retomar (depois|mais tarde|futuramente)|quando quiser|porta (fica )?aberta)/i;
+async function addSeguirAprovadoQuestion(leadId: string, incomingText: string, etapaTexto: string, result: AiAutoReplyResult): Promise<void> {
+  try {
+    if (result.handoff || result.askTeam || result.markLost || result.resumeOn || result.sendApproval || result.chooseBank || result.moveToStage || result.simulate) return;
+    const reply = (result.reply || '').trim();
+    if (!reply || reply.includes('?') || !DESPEDIDA_RX.test(reply)) return;
+    const t = (incomingText || '').trim();
+    if (!t || t.length > 300 || !HESITA_RX.test(t) || promisesDocsSoon(t)) return;
+    const etapa = (etapaTexto.split('→').pop() || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const aprovado = /aguardando document/.test(etapa)
+      || !!(await prisma.creditAnalysis.findFirst({ where: { leadId, dryRun: false, status: 'APPROVED', approvedValue: { gt: 0 } }, select: { id: true } }));
+    if (!aprovado) return;
+    const ja = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: SEGUIR_APROVADO_Q }, createdAt: { gte: new Date(Date.now() - 2 * 86_400_000) } }, select: { id: true } });
+    if (ja) return;
+    // Tira a frase de despedida e pergunta no lugar dela.
+    const resto = reply.split(/(?<=[.!…])\s+/).filter((f) => !DESPEDIDA_RX.test(f)).join(' ').trim();
+    result.reply = resto ? `${resto}\n\n${SEGUIR_APROVADO_Q}` : SEGUIR_APROVADO_Q;
+    result.noReply = false;
+    result.stopFollowUp = false;
+    const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((l?.customFields || {}) as Record<string, unknown>), _seguirAprovadoAt: new Date().toISOString() } as any } });
+  } catch (err) {
+    console.error('[AI Auto-reply] Pergunta "seguir com o aprovado" não adicionada:', err);
   }
 }
 

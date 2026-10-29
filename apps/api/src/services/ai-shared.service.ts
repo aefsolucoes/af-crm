@@ -632,6 +632,15 @@ export async function applyAiExtractedActions(
       const pipe = await prisma.pipeline.findUnique({ where: { id: lead.pipelineId }, select: { departmentId: true } });
       const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
       await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: pipe?.departmentId, byName: 'Assistente IA', userId: null, motivo: action.markLost.trim(), io });
+      // Respondeu "não" ao "Você deseja seguir com o crédito aprovado?" (Fabio 29/10): aprovado que não andou leva a etiqueta.
+      const { SEGUIR_APROVADO_Q } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
+      const perguntou = await prisma.message.findFirst({ where: { leadId: lead.id, direction: 'OUTBOUND', deleted: false, content: { contains: SEGUIR_APROVADO_Q }, createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) } }, select: { id: true } });
+      if (perguntou) {
+        const { TAG_APROVADO_SEM_ANDAMENTO } = require('./prosseguir.service') as typeof import('./prosseguir.service');
+        const atual = await prisma.lead.findUnique({ where: { id: lead.id }, select: { tags: true, customFields: true } });
+        const { _seguirAprovadoAt, ...cfResto } = (atual?.customFields || {}) as Record<string, any>;
+        await prisma.lead.update({ where: { id: lead.id }, data: { tags: Array.from(new Set([...(atual?.tags || []), TAG_APROVADO_SEM_ANDAMENTO])), customFields: cfResto } }).catch(() => {});
+      }
       logActivity({
         accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed',
         leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: "${action.markLost.trim()}"`,
