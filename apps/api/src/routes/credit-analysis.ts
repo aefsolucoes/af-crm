@@ -60,6 +60,13 @@ router.get('/fh-board', async (req: AuthRequest, res: Response) => {
     res.json({ leads: await fhBoard(prisma, { accountId: req.user!.accountId, scopeDepartmentIds: scope }), extension: extensionStatus(req.user!.accountId)[FH_BANK] || null });
   } catch (err) { fail(res, err, 'Erro ao carregar o Financiamento'); }
 });
+// Financiamento de UM card (bloco do card, aba Financiamento — Fabio 29/10: o card do Jaime mostrava os bancos do Home Equity com "—").
+router.get('/fh-lead/:leadId', async (req: AuthRequest, res: Response) => {
+  try {
+    const rows = await fhBoard(prisma, { accountId: req.user!.accountId, scopeDepartmentIds: [], leadId: req.params.leadId });
+    res.json({ lead: rows[0] || null, extensions: extensionStatus(req.user!.accountId) });
+  } catch (err) { fail(res, err, 'Erro ao carregar o Financiamento do card'); }
+});
 // Rodar (simulação nova nos 4 bancos do Credimorar) ou conferir a situação de um cliente do Financiamento.
 router.post('/fh-request', async (req: AuthRequest, res: Response) => {
   try {

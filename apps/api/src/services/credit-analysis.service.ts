@@ -998,7 +998,7 @@ export function parseBancosFinanciamento(resumo?: string | null): Record<string,
   return out;
 }
 
-export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds: string[] }) {
+export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds: string[]; leadId?: string }) {
   await expireStuck(db, { accountId: p.accountId });
   const fhKeys = [...FH_RUN_BANKS, ...Object.keys(FH_DOC_BANKS)];
   const since = new Date(Date.now() - 90 * 86_400_000);
@@ -1009,7 +1009,7 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
     where: {
       accountId: p.accountId, archived: false, isGroup: false,
       pipeline: { AND: [deptScope, { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } }] },
-      OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])],
+      ...(p.leadId ? { id: p.leadId } : { OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])] }),
     },
     select: {
       id: true, name: true, status: true, customFields: true, stageEnteredAt: true, updatedAt: true,
