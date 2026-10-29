@@ -225,6 +225,41 @@ async function sendFhNotice(accountId: string, leadId: string, leadName: string,
   return true;
 }
 
+/** Nenhum banco do Financiamento aprovou → aviso padrão de "não aprovado" e o card vai pra Perdidos como Reprovado — igual ao Home Equity (closeRejected).
+ *  Só com todos os bancos que rodaram já respondidos (nada em análise/rodando), IA do card ligada e o cliente sem opção pela CAIXA/BRB (essas analisam depois, com a documentação). */
+export async function processFhRejections(accountId: string, io?: any): Promise<void> {
+  const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const { sendRejectionNoticeNow, markRejectedAndMove } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const leads = await prisma.lead.findMany({
+    where: {
+      accountId, status: 'OPEN', archived: false, isGroup: false, stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
+      pipeline: { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } },
+      creditAnalyses: { some: { bank: { in: [FH_BANK, 'INTER_FH'] }, dryRun: false, updatedAt: { gte: new Date(Date.now() - 20 * 86_400_000) } } },
+    },
+    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { bank: { in: [FH_BANK, 'INTER_FH'] }, dryRun: false }, orderBy: { updatedAt: 'desc' }, take: 20, select: { status: true, kind: true, updatedAt: true } } },
+    take: 50,
+  });
+  const NEG = /reprov|rejeit|recus|negad|n[aã]o aprovad/i;
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused || cf._optouCaixa?.banco || cf._noticeAt || !cf._fhResumo) continue;
+    if (cf._fhRejTriedAt && Date.now() - new Date(cf._fhRejTriedAt).getTime() < 6 * 3_600_000) continue;
+    if (l.creditAnalyses.some((r) => ['REQUESTED', 'RUNNING'].includes(r.status))) continue; // ainda rodando/conferindo
+    if (l.creditAnalyses[0] && Date.now() - l.creditAnalyses[0].updatedAt.getTime() < 10 * 60_000) continue; // folga pras conferências
+    const bancos = Object.entries(parseBancosFinanciamento(cf._fhResumo)).filter(([b, x]) => !/^(CAIXA|BRB)$/.test(b) && !/n[aã]o enviad/i.test(x.status));
+    if (!bancos.length || !bancos.every(([, x]) => NEG.test(x.status))) continue;
+    if (!l.aiAutoReplyActive) {
+      if (!cf._rejHeldAt) { await saveCf(l.id, { _rejHeldAt: new Date().toISOString() }); await note(l.id, '✋ Nenhum banco do Financiamento aprovou, mas o aviso de negativa NÃO saiu sozinho: a IA deste card está desligada. Use o botão "Avisar negativa" quando quiser.'); }
+      continue;
+    }
+    const out = await sendRejectionNoticeNow({ accountId, leadId: l.id, io });
+    if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: true }); continue; } // fora das 07h–21h: sai às 07:00 e o poller dos agendados fecha o card
+    if (!out.ok && !out.already) { await saveCf(l.id, { _fhRejTriedAt: new Date().toISOString() }); continue; }
+    await markRejectedAndMove({ accountId, leadId: l.id, io, motivo: `Financiamento reprovado nos bancos (${bancos.map(([b]) => b).join(', ')})` }).catch((e: any) => console.error('[Financiamento] mover reprovado:', e?.message));
+    push(accountId, `🏠 ${l.name}: financiamento não aprovado`, `${bancos.map(([b]) => b).join(', ')} — cliente avisado, card em Perdidos`, l.id);
+  }
+}
+
 /** O cliente disse ESCREVENDO com qual banco do Financiamento vai seguir (a IA marcou "chooseBank") — mesmo efeito do botão "Seguir com esta". */
 export async function chooseFhBankByAi(accountId: string, leadId: string, bankKey: string, io?: any): Promise<boolean> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, pipeline: { select: { department: { select: { name: true } } } } } });
