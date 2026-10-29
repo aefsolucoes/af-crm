@@ -54,9 +54,13 @@ export async function maybeSendMensagemNaResposta(accountId: string, leadId: str
   const cf = (lead?.customFields || {}) as Record<string, any>;
   const m = cf._msgNaResposta;
   if (!m?.texto || !m?.desde) return false;
-  const { _msgNaResposta, ...resto } = cf;
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: resto as any } }); // antes de enviar: nunca manda duas vezes
+  // Pega o recado numa operação só no banco (tira a chave e só segue quem tirou): outra gravação do card ao mesmo tempo não traz o recado de volta
+  // nem deixa sair duas vezes (Jézer 29/10: saiu às 17h21 e de novo às 17h33 — a fila da CAIXA regravou o card com o recado ainda dentro).
+  const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_msgNaResposta' WHERE id = ${leadId} AND jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_msgNaResposta')`;
+  if (!pegou) return false;
   if (Date.now() - Date.parse(m.desde) > 7 * 86_400_000) return false; // recado velho: descarta
+  const jaFoi = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: String(m.texto), createdAt: { gte: new Date(m.desde) } }, select: { id: true } });
+  if (jaFoi) return false; // o mesmo recado já saiu depois de guardado
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: String(m.texto), userId: m.userId || undefined, io });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: r.success ? `✉️ Recado guardado enviado quando o cliente respondeu: "${String(m.texto).slice(0, 300)}"` : `⚠️ O cliente respondeu, mas o recado guardado não saiu (${(r as any).error}). Mande à mão: "${String(m.texto).slice(0, 300)}"` } }).catch(() => {});

@@ -13,11 +13,10 @@ const LEASE_MS = 10 * 60_000; // participante "em consulta" há mais que isso = 
 
 async function salvar(leadId: string, mut: (c: Cf) => void): Promise<Cf> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-  const cf = { ...((l?.customFields || {}) as Cf) };
-  const c: Cf = { ...(cf._caixaCadastro || {}) };
+  const c: Cf = { ...(((l?.customFields || {}) as Cf)._caixaCadastro || {}) };
   mut(c);
-  cf._caixaCadastro = c;
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
+  // Grava SÓ a chave _caixaCadastro (jsonb_set): regravar o card inteiro trazia de volta chaves que outro processo tinha acabado de tirar (Jézer 29/10).
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaCadastro}', ${JSON.stringify(c)}::jsonb, true) WHERE id = ${leadId}`;
   return c;
 }
 
