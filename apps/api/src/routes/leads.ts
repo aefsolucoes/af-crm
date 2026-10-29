@@ -600,6 +600,11 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
           `Estágio: "${before?.stage?.name || '—'}" → "${newStage?.name || '—'}" — por ${userName}`,
           'STAGE_CHANGE');
         runAutomations({ accountId: req.user!.accountId, trigger: 'STAGE_CHANGE', leadId: req.params.id, io: (req as any).app.get('io'), context: { newStageId: req.body.stageId } }).catch(() => {});
+        // Pagamento ao vendedor (Inter): manda a certidão de ônus pós-registro ao consultor do Inter na conversa do processo (Fabio 29/10).
+        if (/pagamento ao vendedor/i.test(newStage?.name || '')) {
+          const { enviarOnusPosRegistroInter } = require('../services/onus-pos-registro.service') as typeof import('../services/onus-pos-registro.service');
+          enviarOnusPosRegistroInter({ accountId: req.user!.accountId, leadId: req.params.id, userId: req.user!.id, io: (req as any).app.get('io') }).catch((e: any) => console.error('[Ônus pós-registro]', e?.message || e));
+        }
         logActivity({
           accountId: req.user!.accountId, userId: req.user!.id, userName,
           action: 'lead_stage_changed', leadId: req.params.id, leadName: lead.name,

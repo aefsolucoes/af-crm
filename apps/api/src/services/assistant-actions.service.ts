@@ -67,6 +67,7 @@ export const ACTION_TOOLS = [
   { name: 'rodar_financiamento', description: 'PREPARA a análise do FINANCIAMENTO HABITACIONAL (cria proposta nova; confirmação antes): Credimorar (Bradesco, Itaú e Santander) e/ou o NOSSO portal do Inter. bancos: lista com CREDIMORAR e/ou INTER (padrão: os dois). Usa os valores do card.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId'] } },
   { name: 'conferir_financiamento', description: 'Manda as extensões CONFERIREM (só ler) a situação do Financiamento do cliente nos bancos (Credimorar e Inter). Não cria proposta.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'marcar_pix_pago', description: 'PREPARA marcar o PIX da certidão do cliente como PAGO (confirmação antes) — use quando a pessoa disser que o cliente pagou. Depois disso a extensão do ONR passa a buscar a certidão emitida sozinha.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'enviar_onus_pos_registro', description: 'PREPARA o envio da CERTIDÃO DE ÔNUS PÓS-REGISTRO (a da pasta IMOVEL do Drive) ao consultor do INTER, respondendo a conversa do processo, pra pagamento ao vendedor (confirmação antes). Acontece sozinho quando o card vai pra "Pagamento ao Vendedor"; use pra mandar de novo ou quando faltou algo.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'escolher_voz', description: 'Abre no balão a lista de VOZES do assistente (todas brasileiras) pra pessoa ouvir e escolher. Use quando pedirem pra mudar/trocar/escolher a voz, perguntarem que vozes existem ou reclamarem da voz.', input_schema: { type: 'object', properties: {} } },
   { name: 'consultar_cartorio', description: 'Mapa dos cartórios de Registro de Imóveis do RI Digital (todos os estados): quais cartórios ficam numa cidade, o número do Ofício, a abrangência (bairros/municípios atendidos) e se tem Certidão Digital. Use pra saber qual cartório atende um imóvel ou onde um "Nº Ofício" fica no portal (ex.: no DF o 3º fica em Águas Claras).', input_schema: { type: 'object', properties: { uf: { type: 'string' }, cidade: { type: 'string', description: 'omita pra listar as cidades do estado' } }, required: ['uf'] } },
   { name: 'ver_certidao', description: 'Situação dos pedidos de certidão do cliente (pedido, protocolo, valor, PIX, paga, emitida). Se o PIX já foi gerado, o código aparece no balão com botão Copiar pra pessoa encaminhar — NÃO leia o código em voz alta. O PIX demora alguns minutos depois do pedido (a extensão faz o pedido no portal).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
@@ -487,6 +488,10 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       const out = await callApi(p.token, 'POST', `/certidoes/${r.id}/collect-now`, {});
       return { ok: true, protocolo: r.protocolo, fora_do_horario: !!(out as any)?.queuedUntilMorning, obs: `A extensão vai ao portal agora (protocolo ${r.protocolo}); se a certidão já saiu, ela baixa e guarda na pasta IMOVEL do Drive e anota no card. Se ainda não saiu, o pedido segue aguardando.${r.paidAt ? '' : ' O PIX não está marcado como pago no CRM.'}` };
     }
+    case 'enviar_onus_pos_registro': {
+      const l = await leadOf(accountId, input?.leadId);
+      return pendente({ accountId, userId, tipo: 'enviar_onus_pos_registro', params: { leadId: l.id }, descricao: `Enviar ao consultor do Inter (respondendo a conversa do processo) a certidão de ônus pós-registro do ${l.name}, pra pagamento ao vendedor.` }, p.fila);
+    }
     case 'escolher_voz': p.ui?.push('escolherVoz'); return { ok: true, instrucao: 'A lista de vozes abriu no balão: diga em 1 frase que é só tocar no ▶ pra ouvir e em Escolher.' };
     case 'consultar_cartorio': return (require('./ri-cartorios.service') as typeof import('./ri-cartorios.service')).consultarCartorios(String(input?.uf || ''), input?.cidade ? String(input.cidade) : undefined);
     case 'ver_certidao': {
@@ -585,6 +590,12 @@ export async function confirmPendingAction(p: { accountId: string; userId: strin
     case 'marcar_status': await callApi(p.token, 'PUT', `/leads/${x.leadId}`, x.body); return { ok: true, resultado: 'Status alterado.' };
     case 'rodar_analise': { const r = await callApi(p.token, 'POST', '/credit-analysis/requests', { leadIds: [x.leadId], banks: x.banks, kind: 'RUN' }); return { ok: true, resultado: `Análise pedida${r?.created ? ` (${r.created} na fila)` : ''}; a extensão roda com o Chrome aberto.` }; }
     case 'solicitar_vistoria': { const v = x.prev; await callApi(p.token, 'POST', '/vistorias/request', { leadId: x.leadId, to: v.to, cc: v.cc, subject: v.subject, body: v.body, replyToId: v.replyToId, attachDriveFileIds: v.ids }); return { ok: true, resultado: 'Pedido de vistoria enviado ao Inter.' }; }
+    case 'enviar_onus_pos_registro': {
+      const { enviarOnusPosRegistroInter } = require('./onus-pos-registro.service') as typeof import('./onus-pos-registro.service');
+      const r = await enviarOnusPosRegistroInter({ accountId: a.accountId, leadId: x0.leadId, userId: a.userId, manual: true });
+      if (!r.ok) throw new Error(`não enviei: ${r.motivo}`);
+      return { ok: true, resultado: `Certidão (${r.anexo}) enviada a ${r.to}.` };
+    }
     case 'rodar_financiamento': await callApi(p.token, 'POST', '/credit-analysis/fh-request', { leadId: x0.leadId, kind: 'RUN', banks: x0.banks }); return { ok: true, resultado: 'Financiamento pedido; as extensões rodam em seguida e o resultado entra no card.' };
     case 'marcar_pix_pago': await callApi(p.token, 'POST', `/certidoes/${x0.id}/paid`, {}); return { ok: true, resultado: 'PIX marcado como pago; a extensão do ONR vai buscar a certidão.' };
     case 'pedir_certidao_docs': await callApi(p.token, 'POST', '/certidoes/from-docs', { leadId: x0.leadId, sendPix: x0.sendPix !== false }); return { ok: true, resultado: x0.sendPix === false ? 'Certidão pedida; quando o PIX sair (alguns minutos) você recebe um aviso — é só me pedir o PIX que eu mostro pra copiar.' : 'Certidão pedida; a extensão do ONR faz o pedido e o PIX vai pro cliente.' };
