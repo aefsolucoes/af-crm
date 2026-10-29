@@ -897,6 +897,7 @@ export function nextCheckAt(bank: string, n: number, from = Date.now()): Date {
 
 /** Depois de cada relato: (1) conferência que ainda não achou resultado volta pra fila — de 10 em 10 min (18 vezes, ~3 h; Creditas segue por mais 24 h) — pra termos certeza do resultado real; (2) rodada que terminou "enviada" (resultado ainda
  *  não saiu) agenda essa conferência sozinha. Passou do limite, fica "conferir" pra olhar à mão. */
+const RX_FALHA_PASSAGEIRA = /recarregou ou a janela fechou|Frame with ID \d+ was removed|No tab with id|sem retorno da p[aá]gina|Cannot access contents of url|The tab was closed|Receiving end does not exist/i;
 async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
   if (row.dryRun) return row;
   if (row.kind === 'CHECK' && row.source === 'AI') return row; // leitura pontual pedida pela IA da conversa: não vira laço de reconferência
@@ -925,6 +926,16 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
       });
     }
     return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', detail: `Sem resultado depois de ${creditas ? 'mais de 60 h' : `${maxTries} conferências`}: confira no portal. ${String(row.detail || '').slice(0, 300)}` } });
+  }
+  // Erro PASSAGEIRO da extensão (Fabio 29/10: 7 Creditas de 26/10 ficaram em "a página recarregou ou a janela fechou" e ninguém rodou de novo):
+  // a rodada volta pra fila UMA vez, 10 min depois. Se falhar de novo, fica como está (aí é coisa pra olhar).
+  if (row.kind === 'RUN' && row.status === 'FAILED' && !paused && RX_FALHA_PASSAGEIRA.test(row.detail || '')) {
+    const desde = new Date(Date.now() - 24 * 3_600_000);
+    const jaRetentou = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'RUN', createdAt: { gte: desde }, id: { not: row.id }, detail: { contains: 'nova tentativa automática' } }, select: { id: true } });
+    const aberta = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, status: { in: ACTIVE } }, select: { id: true } });
+    if (!jaRetentou && !aberta) {
+      await db.creditAnalysis.create({ data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'RUN', notBefore: pushOutOfQuiet(Date.now() + 10 * 60_000), dryRun: false, source: 'EXTENSION', detail: `Na fila — nova tentativa automática (a anterior caiu por erro passageiro da extensão: ${String(row.detail || '').replace(/Titular na análise:[^.]*\.\s*/, '').slice(0, 140)})` } });
+    }
   }
   if (row.kind === 'RUN' && row.status === 'SENT' && CHECK_BANKS.includes(row.bank) && !paused && !RX_CAD_DIV.test(`${row.detail || ''} ${row.conditions || ''}`)) {
     const open = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'CHECK', status: { in: ACTIVE } }, select: { id: true } });
