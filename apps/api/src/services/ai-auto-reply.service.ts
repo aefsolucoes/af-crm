@@ -550,6 +550,7 @@ export async function generateAiAutoReply(
     await refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText }).catch(() => null);
     const analiseCredito = await aiCreditContext(prisma, leadId).catch(() => '');
     const reentrada = await (require('./reentry.service') as typeof import('./reentry.service')).aiReentryContext(leadId).catch(() => '');
+    const cessao = await (require('./reentry.service') as typeof import('./reentry.service')).aiCessaoContext(leadId).catch(() => '');
     const documentos = await aiDocsContext(leadId).catch(() => '');
     const scrCreditas = await (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => '');
     const emailsProcesso = await aiEmailsContext(leadId).catch(() => '');
@@ -601,7 +602,9 @@ ${OUTPUT_FORMAT}
 
 ${buildContextBlocks(ctx)}${reentrada ? `
 
-${reentrada}` : ''}${analiseCredito ? `
+${reentrada}` : ''}${cessao ? `
+
+${cessao}` : ''}${analiseCredito ? `
 
 ${analiseCredito}` : ''}${documentos ? `
 

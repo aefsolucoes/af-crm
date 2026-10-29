@@ -184,7 +184,7 @@ NADA está em análise agora: nenhum banco está rodando e ninguém está "revis
 O que fazer: explique com educação e de forma direta POR QUE a proposta nova não muda o resultado, usando o motivo de verdade acima (ex.: imóvel de cessão de direitos/sem matrícula registrada não serve de garantia em nenhum banco — trocar valor, prazo ou banco não resolve), e diga o que mudaria, só o que fizer sentido pro motivo (ex.: certidão de matrícula do imóvel registrada em cartório, outro imóvel com matrícula, crédito menor, mais um participante com renda). Se ele citar um banco, diga que a mesma regra vale pra esse banco quando o motivo é o imóvel. Se no histórico ainda não foi dito, pode dizer UMA vez que a equipe foi avisada da proposta nova; não repita. Se ele contar algo que mudou de verdade, registre e passe pra equipe (handoff). NÃO prometa pré-análise, NÃO diga "recebi sua proposta, vou analisar", NÃO peça a lista de documentos (fora o caminho da CAIXA abaixo). Não ofereça "outras possibilidades".
 CAIXA É O CAMINHO QUE SOBRA (Fabio 28/10: "foi reprovada e desqualificada nos bancos; precisa checar se tem nome limpo, se o imóvel tem Habite-se e se tem a documentação pra conseguirmos aprovar lá na CAIXA"): a CAIXA não passa pela análise automática, então a reprovação nos outros bancos NÃO vale pra ela — a não ser que o motivo ou a equipe digam que a própria CAIXA já recusou. Se o cliente falar da CAIXA (ou disser que quer seguir/tentar de novo), siga esta sequência, UMA pergunta curta por vez, sem dizer que algo está em análise:
  (1) pergunte se o NOME está limpo (sem restrição) e se o imóvel tem HABITE-SE — pergunte de novo mesmo que ele tenha respondido antes da reprovação;
- (2) se os dois forem sim: pergunte se ele TEM a documentação que a CAIXA pede ANTES da análise — RG, CPF, comprovante de endereço, último contracheque, certidão de estado civil (e RG/CPF do cônjuge, se tiver) e a certidão de matrícula do imóvel registrada em cartório${equipe ? ' (se a equipe apontou problema no imóvel — ex.: cessão de direitos, sem matrícula —, deixe claro que sem a matrícula registrada a CAIXA também não aceita)' : ''};
+ (2) se os dois forem sim: pergunte se ele TEM a documentação que a CAIXA pede ANTES da análise — RG, CPF, comprovante de endereço, último contracheque, certidão de estado civil (e RG/CPF do cônjuge, se tiver) e a certidão de matrícula do imóvel registrada em cartório. Se o imóvel é de CESSÃO DE DIREITOS (sem matrícula), a CAIXA também não aceita — não siga por aqui: pergunte se ele tem OUTRO imóvel com matrícula (regra IMÓVEL DE CESSÃO DE DIREITOS);
  (3) se ele tem tudo: peça pra ir mandando por aqui e marque "moveToStage": "Aguardando Documentação" com "moveReason": "Reprovado nos outros bancos; segue pela CAIXA (nome limpo, com Habite-se e com a documentação)" — o CRM reabre o card e confere os documentos;
  (4) nome com restrição, imóvel sem Habite-se ou sem a documentação (ex.: sem matrícula): explique, sem prometer, que na CAIXA essas são as regras e que, como os outros bancos não aprovaram, agora não tem como seguir — e diga o que precisaria mudar.`;
 }
@@ -209,3 +209,22 @@ export async function reopenForCaixa(accountId: string, leadId: string, reason: 
   console.log(`[Reentrada] ${lead.name}: reaberto pela CAIXA em ${sales.name}/${alvo.name}`);
   return true;
 }
+
+/** Imóvel de CESSÃO DE DIREITOS já identificado (Fabio 28/10: "a gente não faz de jeito nenhum" — se já apareceu na conversa, perguntar por OUTRO imóvel com
+ *  matrícula). A IA lê só as últimas 12 mensagens; na Luciana a constatação do Fabio era de 4 dias antes. Procura no card (e no card reprovado de antes, se houver)
+ *  mensagens que falam em cessão de direitos e leituras de documento do tipo CESSAO DE DIREITOS. Vazio se não achou. */
+export async function aiCessaoContext(leadId: string): Promise<string> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (l?.customFields || {}) as Cf;
+  const ids = [...new Set([leadId, String((cf._reentryCheck as { priorLeadId?: string } | undefined)?.priorLeadId || leadId)])];
+  const msg = await prisma.message.findFirst({
+    where: { leadId: { in: ids }, OR: [{ content: { contains: 'cessão de direito', mode: 'insensitive' } }, { content: { contains: 'cessao de direito', mode: 'insensitive' } }] },
+    orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true, direction: true, sentByUserId: true },
+  });
+  const doc = Object.values((cf._docReview || {}) as Record<string, { tipo?: string }>).some((r) => /cess[aã]o/i.test(String(r?.tipo || '')));
+  if (!msg && !doc) return '';
+  const quem = !msg ? 'a leitura de um documento do imóvel' : msg.direction === 'INBOUND' ? 'o cliente' : msg.sentByUserId ? 'a equipe' : 'a conversa';
+  const trecho = msg ? ` (${dia(msg.createdAt)}: "${String(msg.content || '').replace(/\s+/g, ' ').trim().slice(0, 200)}")` : '';
+  return `IMÓVEL DE CESSÃO DE DIREITOS JÁ IDENTIFICADO: ${quem} apontou que o imóvel em garantia é de cessão de direitos${trecho}. Regra do Fabio (28/10): com esse imóvel a gente NÃO faz de jeito nenhum, em nenhum banco, nem na CAIXA. Siga a regra IMÓVEL DE CESSÃO DE DIREITOS: não peça documentos desse imóvel nem prometa análise; pergunte se o cliente tem OUTRO imóvel com certidão de matrícula registrada em cartório pra colocar em garantia. Se DEPOIS disso o cliente já informou outro imóvel com matrícula (outro endereço), siga com esse outro.`;
+}
+
