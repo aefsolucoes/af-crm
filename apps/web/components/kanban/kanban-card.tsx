@@ -27,13 +27,14 @@ interface KanbanCardProps {
 }
 
 /** Selo do banco (Fabio 28/10: "o símbolo do banco no card que está fazendo naquele banco, algo redondo e pequeno no canto superior direito"). */
-const BANK_BADGE: Record<string, { label: string; text: string; bg: string; fg?: string }> = {
-  INTER: { label: 'Inter', text: 'I', bg: '#FF7A00' },
-  CREDITAS: { label: 'Creditas', text: 'C', bg: '#00A868' },
-  SANTANDER: { label: 'Santander', text: 'S', bg: '#EC0000' },
-  BRADESCO: { label: 'Bradesco', text: 'B', bg: '#CC092F' },
-  ITAU: { label: 'Itaú', text: 'it', bg: '#EC7000', fg: '#003399' },
-  CAIXA: { label: 'Caixa', text: 'X', bg: '#005CA9', fg: '#F39200' },
+// Os MESMOS logos do site da A&F (assets/images/bancos e parceiro-creditas.svg) — Fabio 28/10: "as logos têm que ser as mesmas do site".
+const BANK_BADGE: Record<string, { label: string; img?: string; text: string; bg: string; fit?: 'cover' | 'contain' }> = {
+  INTER: { label: 'Inter', img: '/banks/inter.png', text: 'I', bg: '#FF7A00', fit: 'cover' },
+  CREDITAS: { label: 'Creditas', img: '/banks/creditas.svg', text: 'C', bg: '#FFFFFF', fit: 'contain' },
+  SANTANDER: { label: 'Santander', img: '/banks/santander.png', text: 'S', bg: '#FFFFFF', fit: 'contain' },
+  BRADESCO: { label: 'Bradesco', img: '/banks/bradesco.png', text: 'B', bg: '#CC092F', fit: 'cover' },
+  ITAU: { label: 'Itaú', img: '/banks/itau.png', text: 'it', bg: '#EC7000', fit: 'cover' },
+  CAIXA: { label: 'Caixa', img: '/banks/caixa.png', text: 'X', bg: '#005CA9', fit: 'cover' },
   CREDIMORAR: { label: 'Credimorar', text: 'Cm', bg: '#1E3A8A' },
 };
 /** Banco escrito no card ("instituicao") → chave do selo. */
@@ -194,10 +195,13 @@ export function KanbanCard({ lead, labelColor, onOpen, selected = false, selecti
                 <span
                   key={key}
                   title={chosen ? `Seguindo pelo ${b.label}` : `Aprovado no ${b.label}`}
-                  className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-extrabold leading-none border-2 border-white shadow-sm"
-                  style={{ backgroundColor: b.bg, color: b.fg || '#fff' }}
+                  className="w-5 h-5 rounded-full flex items-center justify-center overflow-hidden text-[9px] font-extrabold leading-none text-white border-2 border-white shadow-sm"
+                  style={{ backgroundColor: b.bg }}
                 >
-                  {b.text}
+                  {b.img
+                    // eslint-disable-next-line @next/next/no-img-element
+                    ? <img src={b.img} alt={b.label} className={cn('w-full h-full', b.fit === 'contain' ? 'object-contain p-px' : 'object-cover')} />
+                    : b.text}
                 </span>
               );
             })}

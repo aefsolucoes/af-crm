@@ -160,3 +160,37 @@ export async function processProsseguir(accountId: string, io?: Io): Promise<voi
   }
   if (enviados) console.log(`[Prosseguir] ${enviados} template(s) "${PROSSEGUIR_TEXT}" enviado(s)`);
 }
+
+/** Pediu pra parar os lembretes em Aguardando Documentação (Fabio 28/10: "pediu para parar, move para Perdidos, coloca a tag de aprovado"; e no caso
+ *  "vamos pensar mais um pouco", com a IA perguntando uma data: "se ele demorar 1 dia para responder, move para Perdido"). Espera 1 dia depois do pedido
+ *  (tag da IA, `_pediuPararAt`; tags antigas: a última mensagem de conversa) — se o cliente voltou a falar nesse meio-tempo, não mexe (a IA/equipe
+ *  segue; com data combinada a IA já leva pra Venda Futura). Senão: Perdido, funil Perdidos, etiqueta "Aprovado sem andamento". */
+const TAG_PAROU = 'Pediu pra parar lembretes';
+export async function processPediuParar(accountId: string, io?: Io): Promise<void> {
+  const leads = await prisma.lead.findMany({
+    where: { accountId, status: 'OPEN', archived: false, isGroup: false, tags: { has: TAG_PAROU }, stage: { name: { contains: 'aguardando document', mode: 'insensitive' } } },
+    select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { departmentId: true } } },
+  });
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Record<string, any>;
+    let pedidoEm = cf._pediuPararAt ? new Date(cf._pediuPararAt) : null;
+    if (!pedidoEm) {
+      // Tag antiga (sem a data): conta da última mensagem de CONVERSA (cliente ou nossa, sem template) — o próprio "não, obrigada" do cliente costuma ser a última.
+      const ultConversa = await prisma.message.findFirst({ where: { leadId: l.id, channel: { not: 'EMAIL' }, templateName: null }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+      pedidoEm = ultConversa?.createdAt || new Date(0);
+    }
+    if (Date.now() - pedidoEm.getTime() < DIA) continue; // ainda dentro do dia de espera
+    const voltou = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: { not: 'EMAIL' }, createdAt: { gt: pedidoEm } }, select: { id: true } });
+    if (voltou) continue; // cliente voltou a falar depois do pedido: a conversa decide
+    const lostReason = 'Pediu pra parar os lembretes de documentação (aprovado, sem andamento)';
+    const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+    const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+    await updateLead(l.id, accountId, { status: 'LOST', lostReason }, io as any);
+    await moveLeadToPerdidos({ accountId, leadId: l.id, departmentId: l.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io: io as any });
+    await tagAprovadoSemAndamento(l.id, l.stage?.name || '', cf).catch(() => {});
+    await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `↪️ Pediu pra parar os lembretes${cf._pediuPararAt ? ` em ${new Date(cf._pediuPararAt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }).slice(0, 16)}` : ''} e não voltou a falar em 1 dia: card foi pra Perdidos com a etiqueta "${TAG_APROVADO_SEM_ANDAMENTO}".` } }).catch(() => {});
+    logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: l.id, leadName: l.name, summary: 'marcou o card como Perdido: pediu pra parar os lembretes de documentação' });
+    console.log(`[Pediu pra parar] ${l.name}: Perdidos + "${TAG_APROVADO_SEM_ANDAMENTO}"`);
+  }
+}
+

@@ -669,6 +669,7 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
       // Lembrete de documentação (etapa "Aguardando Documentação"): espera o cliente
       // RESPONDER ao template de aprovação (Fabio 13/10) — ver isWaitingApprovalReply.
       const docReminder = stageNamePattern.includes('aguardando document');
+      const proprios = ((rule.actions as any[]) || []).flatMap((a) => [a?.config?.templateName, a?.config?.utilityTemplateName]).filter((x): x is string => typeof x === 'string' && !!x);
       const { isWaitingApprovalReply } = require('./approval-notice.service') as typeof import('./approval-notice.service');
 
       for (const lead of leads) {
@@ -691,8 +692,9 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
               where: { leadId: lead.id, channel: { not: 'EMAIL' }, OR: [{ direction: 'INBOUND' }, { direction: 'OUTBOUND', sentByUserId: { not: null } }] },
               orderBy: { createdAt: 'desc' }, select: { createdAt: true },
             }),
+            // Template de OUTRO fluxo (o lembrete da própria regra repete todo dia — Fabio 28/10: "depois ele repete a cada 1 dia").
             prisma.message.findFirst({
-              where: { leadId: lead.id, direction: 'OUTBOUND', templateName: { not: null }, status: { not: 'FAILED' } },
+              where: { leadId: lead.id, direction: 'OUTBOUND', templateName: { not: null, notIn: proprios }, status: { not: 'FAILED' } },
               orderBy: { createdAt: 'desc' }, select: { createdAt: true },
             }),
           ]);

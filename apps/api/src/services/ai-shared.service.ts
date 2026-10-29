@@ -606,7 +606,9 @@ export async function applyAiExtractedActions(
     // (excludeTag) já sabem respeitar, e deixa registrado pra um humano ver.
     if (action.stopFollowUp) {
       const tags = Array.from(new Set([...(lead.tags || []), STOP_FOLLOWUP_TAG]));
-      await prisma.lead.update({ where: { id: lead.id }, data: { tags } });
+      // Quando pediu (Fabio 28/10): em Aguardando Documentação, 1 dia sem o cliente voltar a falar → Perdidos (prosseguir.processPediuParar).
+      const cfStop = { ...(((await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } }))?.customFields || {}) as Record<string, unknown>), _pediuPararAt: new Date().toISOString() };
+      await prisma.lead.update({ where: { id: lead.id }, data: { tags, customFields: cfStop as any } });
       await prisma.note.create({
         data: { leadId: lead.id, content: 'A IA identificou que o cliente pediu pra parar de receber os lembretes automáticos — os envios recorrentes foram pausados pra esse lead. O negócio continua ativo, só não insiste mais sozinho.', type: 'COMMENT' },
       }).catch(() => {});

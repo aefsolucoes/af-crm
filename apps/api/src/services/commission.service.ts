@@ -116,3 +116,68 @@ export function bancoDoPagador(product: string | null | undefined, payer: string
   return { bank: null, instituicao };
 }
 
+/** Clientes da provisão (Fabio 28/10: "as provisões são os clientes que estão em vistoria, pois está mais perto de finalizar" + "vistoria e os estágios à frente
+ *  dele"): nos funis "Em contratação", da etapa de Vistoria em diante (Vistoria do Imóvel, Análise Jurídica, Registro em Cartório, Pagamento ao Vendedor). */
+export async function etapasDaVistoriaEmDiante(accountId: string): Promise<string[]> {
+  const funis = await prisma.pipeline.findMany({
+    where: { accountId, name: { startsWith: 'Em contratação', mode: 'insensitive' } },
+    select: { stages: { select: { id: true, name: true, order: true } } },
+  });
+  return funis.flatMap((f) => {
+    const vistoria = f.stages.find((st) => /vistoria/i.test(st.name));
+    return vistoria ? f.stages.filter((st) => st.order >= vistoria.order).map((st) => st.id) : [];
+  });
+}
+
+export interface ProvisaoSugerida { id: string; name: string; stage: string; product: string | null; baseAmount: number; ratePct: number; payer: string | null }
+
+/** Crédito, taxa e quem paga de cada cliente — base: proposta que o cliente segue (escolhida ⭐ ou a do único banco que aprovou) > "Valor da venda" > crédito
+ *  pedido > última aprovação; taxa pela faixa da produção do mês (o que já foi provisionado no mês + este cliente). */
+export async function montarProvisoes(accountId: string, leadIds: string[]): Promise<ProvisaoSugerida[]> {
+  if (!leadIds.length) return [];
+  const leads = await prisma.lead.findMany({
+    where: { accountId, id: { in: leadIds } },
+    select: { id: true, name: true, value: true, customFields: true, pipeline: { select: { name: true, department: { select: { name: true } } } }, stage: { select: { name: true } } },
+  });
+  const analyses = await prisma.creditAnalysis.findMany({
+    where: { leadId: { in: leadIds }, dryRun: false, source: { not: 'AI_SIM' }, OR: [{ chosen: true }, { status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }] },
+    select: { leadId: true, bank: true, approvedValue: true, chosen: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  const producao = await producaoPorPagador(accountId);
+  const porId = new Map(leads.map((l) => [l.id, l]));
+  return leadIds.map((id) => porId.get(id)).filter((l): l is NonNullable<typeof l> => !!l).map((l) => {
+    const mine = analyses.filter((a) => a.leadId === l.id);
+    const seguida = propostaSeguida(mine);
+    const pick = seguida || mine[0];
+    const cf = (l.customFields as Record<string, unknown>) || {};
+    const base = seguida?.approvedValue || l.value || parseCreditValue(cf.valor_credito) || pick?.approvedValue || 0;
+    const product = l.pipeline.department?.name || null;
+    const payer = pagadorComissao(product, pick?.bank, cf.instituicao);
+    return {
+      id: l.id, name: l.name, stage: `${l.pipeline.name} · ${l.stage.name}`, product, baseAmount: base, payer,
+      ratePct: commissionRatePct(product, seguida?.bank, { instituicao: cf.instituicao, producaoMes: (producao.get(chaveProducao(product, payer)) || 0) + base }),
+    };
+  });
+}
+
+/** Lança sozinha a provisão de quem chegou na Vistoria (ou além) e ainda não tem (Fabio 28/10). Um por vez, pra faixa da produção do mês já contar os anteriores. */
+let ultimaRodadaProvisoes = 0;
+export async function autoProvisoes(accountId: string): Promise<void> {
+  if (Date.now() - ultimaRodadaProvisoes < 10 * 60_000) return;
+  ultimaRodadaProvisoes = Date.now();
+  const etapas = await etapasDaVistoriaEmDiante(accountId);
+  if (!etapas.length) return;
+  const jaTem = new Set((await prisma.commissionProvision.findMany({ where: { accountId }, select: { leadId: true } })).map((p) => p.leadId));
+  const ids = (await prisma.lead.findMany({ where: { accountId, status: 'OPEN', archived: false, stageId: { in: etapas } }, select: { id: true } })).map((l) => l.id).filter((id) => !jaTem.has(id));
+  for (const id of ids) {
+    const [p] = await montarProvisoes(accountId, [id]);
+    if (!p || !(p.baseAmount > 0)) continue; // sem valor nenhum no card: fica na lista pra lançar à mão
+    await prisma.commissionProvision.create({
+      data: { accountId, leadId: p.id, leadName: p.name, product: p.product, payer: p.payer, baseAmount: p.baseAmount, ratePct: p.ratePct, amount: commissionAmount(p.baseAmount, p.ratePct), note: `Lançada sozinha: cliente em ${p.stage}` },
+    });
+    await prisma.note.create({ data: { leadId: p.id, type: 'COMMENT', content: `💰 Provisão de comissão lançada sozinha no Financeiro (cliente em ${p.stage}): ${p.ratePct}% de R$ ${p.baseAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}${p.payer ? ` — paga: ${p.payer}` : ''}.` } }).catch(() => {});
+    console.log(`[Provisão] ${p.name}: ${p.ratePct}% de ${p.baseAmount} (${p.payer || 'sem pagador'})`);
+  }
+}
+

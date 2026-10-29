@@ -452,8 +452,12 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     ? `\n\nSobre a matrícula/certidão do imóvel que você enviou: ela veio ${ressalvas.includes('CONSULTA') ? 'como "consulta" (não é a certidão oficial)' : 'com mais de 30 dias'}. A gente aceita, mas quem decide é o banco: se ele não aceitar essa versão, a gente emite uma nova pra você pelo cartório digital. Se isso acontecer, eu te aviso. 🙂`
     : '';
   if (obsCertidao) await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfR, _ressalvaCertidaoAt: new Date().toISOString() } as any } });
-  const sent = pediuSaldo
-    ? { success: true } // a mensagem do saldo devedor já disse que a documentação chegou
+  // Mais de um banco aprovado e nenhuma proposta escolhida: o "recebi tudo" vai junto da pergunta de com qual proposta seguir (Fabio 28/10).
+  const perguntouEscolha = !pediuSaldo && lead.aiAutoReplyActive
+    ? await (require('./approval-notice.service') as typeof import('./approval-notice.service')).askProposalChoice(accountId, leadId, io, `Recebi toda a documentação, obrigada!${obsCertidao ? obsCertidao.replace(/^\n\n/, ' ') : ''}`).catch((e: any) => { console.error('[Docs] escolha da proposta:', e?.message); return false; })
+    : false;
+  const sent = pediuSaldo || perguntouEscolha
+    ? { success: true } // a mensagem do saldo devedor (ou a da escolha da proposta) já disse que a documentação chegou
     : lead.aiAutoReplyActive
     ? await sendOutboundWhatsApp({ accountId, leadId, content: `${DOCS_COMPLETE_MESSAGE}${obsCertidao}`, io: io || undefined })
     : { success: false, error: 'IA desligada no card (a equipe avisa o cliente)' };

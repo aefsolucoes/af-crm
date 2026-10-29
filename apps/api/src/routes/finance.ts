@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { commissionRatePct, commissionAmount, parseCreditValue, propostaSeguida, pagadorComissao, producaoPorPagador, chaveProducao, bancoDoPagador } from '../services/commission.service';
+import { commissionRatePct, commissionAmount, propostaSeguida, pagadorComissao, producaoPorPagador, chaveProducao, bancoDoPagador, etapasDaVistoriaEmDiante, montarProvisoes } from '../services/commission.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -287,8 +287,9 @@ router.get('/provisions', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// GET /api/finance/provisions/candidates?q= — clientes pra provisionar. Sem busca: quem está na etapa VISTORIA (Fabio 28/10: "as provisões são
-// os clientes que estão em vistoria, pois está mais perto de finalizar") e ainda não tem provisão. Já vem com o crédito, a taxa e quem paga.
+// GET /api/finance/provisions/candidates?q= — clientes pra provisionar. Sem busca: quem está da VISTORIA em diante (Fabio 28/10: "as provisões são
+// os clientes que estão em vistoria, pois está mais perto de finalizar" / "vistoria e os estágios à frente dele") e ainda não tem provisão — normalmente
+// a provisão já é lançada sozinha (autoProvisoes); sobra aqui quem está sem valor no card. Já vem com o crédito, a taxa e quem paga.
 router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
@@ -296,46 +297,12 @@ router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => 
     const provisioned = new Set(
       (await prisma.commissionProvision.findMany({ where: { accountId }, select: { leadId: true } })).map((p) => p.leadId),
     );
-    const leads = await prisma.lead.findMany({
-      where: q.length >= 2
-        ? { accountId, name: { contains: q, mode: 'insensitive' } }
-        : { accountId, status: 'OPEN', archived: false, stage: { name: { contains: 'vistoria', mode: 'insensitive' } } },
-      select: {
-        id: true, name: true, value: true, customFields: true,
-        pipeline: { select: { name: true, department: { select: { name: true } } } },
-        stage: { select: { name: true } },
-      },
-      orderBy: { updatedAt: 'desc' },
-      take: q.length >= 2 ? 15 : 80,
-    });
-    const list = q.length >= 2 ? leads : leads.filter((l) => !provisioned.has(l.id));
-    const analyses = await prisma.creditAnalysis.findMany({
-      where: { leadId: { in: list.map((l) => l.id) }, dryRun: false, source: { not: 'AI_SIM' }, OR: [{ chosen: true }, { status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }] },
-      select: { leadId: true, bank: true, approvedValue: true, chosen: true },
-      orderBy: { createdAt: 'desc' },
-    });
-    // Faixa por produção do mês (Inter Home Equity, Bradesco e Santander no Financiamento): o que já foi provisionado no mês + este cliente.
-    const producao = await producaoPorPagador(accountId);
-    res.json(list.map((l) => {
-      const mine = analyses.filter((a) => a.leadId === l.id);
-      const seguida = propostaSeguida(mine);
-      const pick = seguida || mine[0];
-      const cf = (l.customFields as Record<string, unknown>) || {};
-      // Base: proposta que o cliente segue (escolhida ⭐ ou a do único banco que aprovou) > "Valor da venda" do card > crédito pedido > última aprovação.
-      const base = seguida?.approvedValue || l.value || parseCreditValue(cf.valor_credito) || pick?.approvedValue || 0;
-      const product = l.pipeline.department?.name || null;
-      const pagador = pagadorComissao(product, pick?.bank, cf.instituicao);
-      return {
-        id: l.id,
-        name: l.name,
-        stage: `${l.pipeline.name} · ${l.stage.name}`,
-        product,
-        baseAmount: base,
-        ratePct: commissionRatePct(product, seguida?.bank, { instituicao: cf.instituicao, producaoMes: (producao.get(chaveProducao(product, pagador)) || 0) + base }),
-        payer: pagador,
-        hasProvision: provisioned.has(l.id),
-      };
-    }));
+    // Sem busca: quem está da Vistoria em diante nos funis "Em contratação" (Fabio 28/10) e ainda não tem provisão.
+    const ids = q.length >= 2
+      ? (await prisma.lead.findMany({ where: { accountId, name: { contains: q, mode: 'insensitive' } }, orderBy: { updatedAt: 'desc' }, take: 15, select: { id: true } })).map((l) => l.id)
+      : (await prisma.lead.findMany({ where: { accountId, status: 'OPEN', archived: false, stageId: { in: await etapasDaVistoriaEmDiante(accountId) } }, orderBy: { updatedAt: 'desc' }, take: 80, select: { id: true } }))
+        .map((l) => l.id).filter((id) => !provisioned.has(id));
+    res.json((await montarProvisoes(accountId, ids)).map((p) => ({ ...p, hasProvision: provisioned.has(p.id) })));
   } catch {
     res.status(500).json({ error: 'Erro ao buscar clientes' });
   }

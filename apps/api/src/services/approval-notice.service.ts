@@ -666,6 +666,39 @@ async function sendApprovalSummary(p: { accountId: string; leadId: string; userI
   return { success: true };
 }
 
+/** Documentação completa e o cliente ainda não escolheu a proposta (Fabio 28/10: "o cliente precisa escolher uma proposta após encaminhar toda a documentação,
+ *  então a IA deve verificar com ele sobre qual proposta ele deverá seguir"). Com 2+ bancos aprovados e nenhuma ⭐: manda as propostas de novo, uma por mensagem,
+ *  com o botão "Seguir com esta" (o clique marca a escolhida, como no aviso de aprovação). Uma vez por card (`_escolhaPedidaAt`). true = perguntou. */
+export async function askProposalChoice(accountId: string, leadId: string, io?: any, abertura = 'Recebi toda a documentação, obrigada!'): Promise<boolean> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
+  if (!lead?.aiAutoReplyActive) return false;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (cf._escolhaPedidaAt || cf._autoPaused) return false;
+  if (await prisma.creditAnalysis.findFirst({ where: { leadId, chosen: true }, select: { id: true } })) return false;
+  const built = await buildApprovalText(leadId);
+  if (!built || built.source !== 'analises' || new Set(built.options.map((o) => o.instituicao)).size < 2) return false;
+  const parts = renderApprovalParts(built.options);
+  const intro = `${abertura} Antes de eu seguir com o banco, me diz com qual proposta você quer continuar:`;
+  const sent = await sendApprovalSummary({ accountId, leadId, io }, `${intro}\n\n${built.text}\n\n👉 É só me responder por aqui qual opção você prefere.`, parts ? { ...parts, intro } : null);
+  if (!sent.success) return false;
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _escolhaPedidaAt: new Date().toISOString() } as any } });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🗳️ Documentação completa e nenhuma proposta escolhida: mandei as ${built.options.length} propostas aprovadas (${built.options.map((o) => o.instituicao).join(', ')}) com o botão "${CHOOSE_BUTTON}" pro cliente escolher com qual banco seguir.` } }).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, leadName: lead.name, summary: 'documentação completa: perguntou com qual proposta o cliente quer seguir' });
+  return true;
+}
+
+/** Bloco pra IA da conversa: card já em contratação (documentação completa), 2+ bancos aprovados e nenhuma proposta escolhida — confirmar com o cliente. */
+export async function aiEscolhaPendenteContext(leadId: string): Promise<string> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { name: true } } } });
+  if (!l || !/contrata/i.test(l.pipeline?.name || '')) return '';
+  if (await prisma.creditAnalysis.findFirst({ where: { leadId, chosen: true }, select: { id: true } })) return '';
+  const nome: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  const bancos = Array.from(new Set((await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: 'APPROVED', approvedValue: { gt: 0 } }, select: { bank: true } })).map((a) => nome[a.bank] || a.bank)));
+  if (bancos.length < 2) return '';
+  return `ESCOLHA DA PROPOSTA PENDENTE (Fabio 28/10: "o cliente precisa escolher uma proposta após encaminhar toda a documentação"): a documentação já está completa, mas o cliente ainda não disse com qual proposta vai seguir (aprovados: ${bancos.join(', ')}). Antes de falar de qualquer passo da contratação (vistoria, laudo, contrato), confirme com ele qual proposta quer seguir — se ele tiver dúvida, compare as condições do bloco de análise. Quando ele disser, marque "chooseBank". Nunca escolha por ele.`;
+}
+
 /** Cliente tocou em "Sim, quero saber" no template de aprovação. true = tratou. */
 export async function maybeSendApprovalOnYes(accountId: string, leadId: string, text: string, io: any): Promise<boolean> {
   if (!YES_RE.test(text.trim())) return false;
