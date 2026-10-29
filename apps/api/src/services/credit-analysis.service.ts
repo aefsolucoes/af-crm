@@ -1075,11 +1075,19 @@ async function notaFinanciamentoInter(db: Db, accountId: string, row: AnalysisRo
   const texto = [st, row.proposalNumber ? `proposta ${row.proposalNumber}` : '', row.approvedValue ? brl(Number(row.approvedValue)) : '', row.termMonths ? `${row.termMonths} meses` : ''].filter(Boolean).join(', ') + (motivo ? ` — ${motivo}` : '');
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { name: true, customFields: true } });
   const cf = { ...((lead?.customFields || {}) as Record<string, any>) };
-  const resumo = juntarInterNoResumo(cf._fhResumo || '', texto.replace(/\|/g, '/'));
-  if (cf._fhResumo === resumo) return;
+  // "Sempre seguir com a proposta MAIOR" (Fabio 29/10): se o resumo já tem um Inter APROVADO maior (ex.: aprovado pelo Credimorar), ele continua valendo.
+  const valorDe = (t: string) => { const m = /R\$\s*([\d.]+,\d{2})/.exec(t || ''); return m ? Number(m[1].replace(/\./g, '').replace(',', '.')) : 0; };
+  const atual = parseBancosFinanciamento(cf._fhResumo).Inter?.texto || '';
+  const atualAprovado = /aprovad/i.test(atual) && !/n[aã]o aprovad/i.test(atual);
+  const novoAprovado = ['APPROVED', 'CONDITIONAL'].includes(row.status);
+  const mantem = atualAprovado && (!novoAprovado || valorDe(atual) > (Number(row.approvedValue) || valorDe(texto)));
+  const resumo = mantem ? cf._fhResumo : juntarInterNoResumo(cf._fhResumo || '', texto.replace(/\|/g, '/'));
+  if (cf._fhResumo === resumo && !mantem) return;
+  const jaAnotado = await db.note.findFirst({ where: { leadId: row.leadId, content: { contains: `Inter: ${texto.slice(0, 60)}` } }, select: { id: true } });
+  if (mantem && jaAnotado) return;
   cf._fhResumo = resumo;
   await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });
-  await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🏠 Financiamento — Inter (nosso portal)${row.proposalNumber ? ` — proposta nº ${row.proposalNumber}` : ''}:\n• Inter: ${texto}\nO cliente NÃO foi avisado por esta nota.` } });
+  await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🏠 Financiamento — Inter (nosso portal)${row.proposalNumber ? ` — proposta nº ${row.proposalNumber}` : ''}:\n• Inter: ${texto}${mantem ? `\nContinua valendo a proposta MAIOR do Inter: ${atual}` : ''}\nO cliente NÃO foi avisado por esta nota.` } });
   try {
     (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 Financiamento Inter: ${lead?.name || 'cliente'}`, body: `Inter: ${texto}`.slice(0, 180), leadId: row.leadId }).catch(() => {});
   } catch { /* push é só aviso */ }

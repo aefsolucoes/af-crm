@@ -22,7 +22,9 @@ export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMO
   FH_BRADESCO: { label: 'Bradesco', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 1 },
   FH_SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 2 },
   FH_ITAU: { label: 'Itaú', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 3 },
-  FH_INTER: { label: 'Inter', extBank: 'INTER_FH', mode: 'data' }, // 29/10: Inter do Financiamento é no nosso portal → a extensão do Inter lê a proposta e o Evolução Teórica
+  FH_INTER: { label: 'Inter', extBank: 'INTER_FH', mode: 'data' },
+  // Inter aprovado PELO CREDIMORAR (antes de 29/10) com valor MAIOR que o do nosso portal: o PDF sai do Credimorar (Evolução Teórica do Inter, id 6).
+  FH_INTER_CM: { label: 'Inter', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 6 }, // 29/10: Inter do Financiamento é no nosso portal → a extensão do Inter lê a proposta e o Evolução Teórica
 };
 
 const REQUESTED_TTL_MIN = 15; // ninguém pegou o pedido (extensão fechada/desatualizada)
@@ -63,13 +65,27 @@ export function parseInstitutions(raw: unknown): string[] {
   return out;
 }
 
+/** Inter do Financiamento: valor aprovado no nosso portal (INTER_FH) x o aprovado pelo Credimorar (trecho "Inter:" da rodada CREDIMORAR_FH). Maior vence (Fabio 29/10). */
+async function interFhMaiorNoCredimorar(db: Db, leadId: string): Promise<boolean> {
+  const nosso = await db.creditAnalysis.findMany({ where: { leadId, bank: 'INTER_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, select: { approvedValue: true } });
+  const nossoMax = Math.max(0, ...nosso.map((x) => Number(x.approvedValue) || 0));
+  const cm = await db.creditAnalysis.findMany({ where: { leadId, bank: 'CREDIMORAR_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'CHECK', 'SENT'] } }, orderBy: { createdAt: 'desc' }, take: 10, select: { detail: true } });
+  let cmMax = 0;
+  for (const r of cm) {
+    const m = /Inter:\s*(?:Pr[ée]-)?Aprovad[oa][^|\]]*?R\$\s*([\d.]+,\d{2})/i.exec(String(r.detail || ''));
+    if (m) cmMax = Math.max(cmMax, Number(m[1].replace(/\./g, '').replace(',', '.')));
+  }
+  return cmMax > nossoMax;
+}
+
 export async function requestSimulationDocs(db: Db, p: { accountId: string; leadId: string; institutions: string[]; userId?: string; source?: 'USER' | 'AI' | 'ASSISTANT'; caption?: string; /** guarda o PDF pronto (READY) até o aviso de aprovação sair */ hold?: boolean; /** não pede de novo se o mesmo PDF já foi enviado nas últimas N horas (envio automático) */ skipIfSentWithinHours?: number }) {
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
   if (!lead) throw new Error('Card não encontrado');
   await expireStuck(db, p.accountId);
   const created: Array<{ id: string; institution: string }> = [];
   const skipped: string[] = [];
-  for (const inst of parseInstitutions(p.institutions)) {
+  for (let inst of parseInstitutions(p.institutions)) {
+    if (inst === 'FH_INTER' && (await interFhMaiorNoCredimorar(db, p.leadId))) inst = 'FH_INTER_CM'; // proposta MAIOR é a do Inter via Credimorar
     // PDF do CREDITAS DESATIVADO (Fabio 15/10, João Henrique): ele era montado pela API do SIMULADOR do portal (faixa "a partir de": taxa 1,09% a.m., CET 1,271%) e NÃO tem nada a ver com a
     // proposta aprovada do cliente (juros 1,50% a.m., CET 1,64%, 1ª parcela R$ 4.798,15). Até sair do que a proposta aprovada traz, não gera.
     if (inst === 'CREDITAS') { skipped.push(inst); continue; }
@@ -99,7 +115,9 @@ export async function claimSimulationDocs(db: Db, p: { accountId: string; extBan
     const meta = SIM_INSTITUTIONS[r.institution];
     const bankKey = meta.extBank;
     // A proposta APROVADA do banco e o CPF de quem foi aprovado (Fabio 14/10): a extensão acha o cliente por eles, sem adivinhar nem depender da lista.
-    const aprovada = await db.creditAnalysis.findFirst({ where: { leadId: r.leadId, bank: bankKey, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: [{ chosen: 'desc' }, { createdAt: 'desc' }], select: { proposalNumber: true, holderCpf: true, holderName: true, detail: true, leadId: true, bank: true } });
+    // Fabio 29/10: "sempre seguir com a proposta MAIOR" — a escolhida (⭐) primeiro; entre as outras aprovadas, a de maior valor.
+    const aprovadas = await db.creditAnalysis.findMany({ where: { leadId: r.leadId, bank: bankKey, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: [{ chosen: 'desc' }, { createdAt: 'desc' }], take: 20, select: { proposalNumber: true, holderCpf: true, holderName: true, detail: true, leadId: true, bank: true, chosen: true, approvedValue: true } });
+    const aprovada = [...aprovadas].sort((a, b) => Number(!!b.chosen) - Number(!!a.chosen) || (Number(b.approvedValue) || 0) - (Number(a.approvedValue) || 0))[0] || null;
     const ultima = aprovada || await db.creditAnalysis.findFirst({ where: { leadId: r.leadId, bank: bankKey, proposalNumber: { not: null }, dryRun: false }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true, detail: true, leadId: true, bank: true } });
     const { resolveHolderCpf } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
     const cpf = ultima ? await resolveHolderCpf(db, ultima) : null;
@@ -276,7 +294,8 @@ export function sheetFromInter(p: { clientName: string; proposal: InterProposalD
     segurosJuntos: true, // o Inter só informa o total dos seguros (MIP + DFI)
     summary: {
       tipoImovel: /COMERCIAL/i.test(produto) ? 'Comercial' : 'Residencial',
-      prazoMeses: num(f.prazoEmprestimo) || rows.length,
+      // O prazo do cabeçalho é o da TABELA (Evolução Teórica / aprovado), não o pedido: Leandro 29/10 pediu 180, o Inter aprovou e desenhou 240 e o PDF saiu com 180 no topo e 240 parcelas.
+      prazoMeses: rows.length || num(f.prazoAprovado) || num(f.prazoEmprestimo),
       sistema,
       valorImovel: imovel,
       valorEmprestimo: emprestimo,
