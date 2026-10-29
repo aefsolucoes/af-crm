@@ -12,6 +12,8 @@ import { logActivity } from './activity.service';
 
 export const PROSSEGUIR_TEMPLATE = 'ainda_deseja_prosseguir';
 const PROSSEGUIR_TEXT = 'Ainda deseja prosseguir com o crédito?';
+// Os botões vão no texto gravado ("…\n\n[A]  [B]") pra conversa do CRM desenhá-los como no WhatsApp e marcar o que o cliente tocou.
+const PROSSEGUIR_PREVIEW = `${PROSSEGUIR_TEXT}\n\n[Sim, tenho interesse]  [Não tenho interesse]`;
 export const TAG_APROVADO_SEM_ANDAMENTO = 'Aprovado sem andamento';
 const DOC_REMINDER_TEMPLATE = 'follow_up_doc';
 const LEMBRETES_ANTES_DE_REPETIR = 3;
@@ -30,7 +32,7 @@ const emHorario = (ms = Date.now()) => { const h = new Date(ms + BRT).getUTCHour
 
 /** Manda o template e guarda no card (`_prosseguir`). */
 export async function sendProsseguir(accountId: string, leadId: string, motivo: string, io?: Io): Promise<boolean> {
-  const r = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: PROSSEGUIR_TEMPLATE, language: 'pt_BR', bodyParams: [], previewText: PROSSEGUIR_TEXT, io: io || undefined });
+  const r = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: PROSSEGUIR_TEMPLATE, language: 'pt_BR', bodyParams: [], previewText: PROSSEGUIR_PREVIEW, io: io || undefined });
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = { ...((fresh?.customFields || {}) as Record<string, any>) };
   const p = (cf._prosseguir || {}) as ProsseguirState;
@@ -118,7 +120,15 @@ async function templateAprovado(accountId: string): Promise<boolean> {
 }
 
 /** Poller (1 min): a campanha de 28/10 e o reenvio depois de 3 lembretes de documentação sem resposta. */
+let botoesAcertados = false;
 export async function processProsseguir(accountId: string, io?: Io): Promise<void> {
+  // Os primeiros envios (28/10) ficaram gravados sem os botões — completa uma vez.
+  if (!botoesAcertados) {
+    botoesAcertados = true;
+    await prisma.message.updateMany({ where: { templateName: PROSSEGUIR_TEMPLATE, content: PROSSEGUIR_TEXT }, data: { content: PROSSEGUIR_PREVIEW } })
+      .then((r) => { if (r.count) console.log(`[Prosseguir] ${r.count} mensagem(ns) completada(s) com os botões`); })
+      .catch((e) => { botoesAcertados = false; console.error('[Prosseguir] completar botões:', e?.message); });
+  }
   if (!emHorario() || !(await templateAprovado(accountId))) return;
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, isGroup: false, stage: { name: { contains: 'aguardando document', mode: 'insensitive' } }, pipeline: { department: { name: { contains: 'home equity', mode: 'insensitive' } } } },
