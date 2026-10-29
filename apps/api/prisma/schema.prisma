@@ -1498,3 +1498,24 @@ model UserLocationPing {
   @@index([accountId, createdAt])
   @@index([userId, createdAt])
 }
+
+// Supervisão de sexta (Fabio 28/10): toda sexta 08h o CRM resume cada card "Em contratação" e sugere a próxima resposta; o Fabio passa card por card (/supervisao).
+model SupervisionItem {
+  id         String    @id @default(cuid())
+  accountId  String
+  leadId     String
+  weekKey    String // data (BRT) da sexta da lista, AAAA-MM-DD
+  status     String    @default("PENDING") // PENDING | SENT | SKIPPED | DONE
+  resumo     String    @db.Text
+  situacao   String?   @db.Text
+  pendencias String?   @db.Text
+  sugestao   String?   @db.Text // mensagem sugerida pro cliente ('' = não precisa falar com ele agora)
+  acao       String?   @db.Text // o que a equipe deveria fazer (fora mandar mensagem)
+  sentText   String?   @db.Text
+  handledAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([weekKey, leadId])
+  @@index([accountId, weekKey, status])
+}

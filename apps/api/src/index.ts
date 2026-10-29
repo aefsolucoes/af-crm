@@ -39,6 +39,9 @@ import remarketingRoutes from './routes/remarketing';
 import creditAnalysisRoutes from './routes/credit-analysis';
 import certidaoRoutes from './routes/certidoes';
 import vistoriaRoutes from './routes/vistorias';
+import supervisionRoutes from './routes/supervision';
+import { processWeeklySupervision } from './services/supervision.service';
+import { processDriveLifecycle } from './services/drive-lifecycle.service';
 import automationMetricsRoutes from './routes/automation-metrics';
 import costsRoutes from './routes/costs';
 import emailRoutes from './routes/email';
@@ -114,6 +117,7 @@ app.use('/api/remarketing', remarketingRoutes);
 app.use('/api/credit-analysis', creditAnalysisRoutes);
 app.use('/api/certidoes', certidaoRoutes);
 app.use('/api/vistorias', vistoriaRoutes);
+app.use('/api/supervision', supervisionRoutes);
 app.use('/api/automation-metrics', automationMetricsRoutes);
 app.use('/api/costs', costsRoutes);
 app.use('/api/email', emailRoutes);
@@ -307,6 +311,9 @@ httpServer.listen(PORT, () => {
 
   // Push das tarefas na hora do vencimento (Fabio 22/10: "tarefas ou agendamentos em push") — só pro dono da tarefa.
   setTimeout(() => {
+    // Supervisão de sexta (08h lista + push pro Fabio; 14h lembrete) e pasta do cliente acompanhando o status do card (Ganho → Concluídos/ano/mês, Perdido → Leads frios, reaberto → Leads ativos).
+    setInterval(() => { processWeeklySupervision().catch((err) => console.error('[Supervisão] Poll:', err?.message)); }, 60 * 1000);
+    setInterval(() => { processDriveLifecycle().catch((err) => console.error('[Pasta do card] Poll:', err?.message)); }, 5 * 60 * 1000);
     setInterval(() => { processTaskReminders().catch((err) => console.error('[Tarefas] Lembretes:', err?.message)); }, 60 * 1000);
   }, 90 * 1000);
 
