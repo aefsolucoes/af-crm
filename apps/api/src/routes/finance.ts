@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { commissionRatePct, parseCreditValue, propostaSeguida } from '../services/commission.service';
+import { commissionRatePct, parseCreditValue, propostaSeguida, pagadorComissao, producaoPorPagador, chaveProducao } from '../services/commission.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -256,8 +256,6 @@ router.post('/commission-suggestions/:id/dismiss', async (req: AuthRequest, res:
 // Lançada À MÃO (Fabio 28/10): previsão do que vai entrar de cada cliente em contratação. Não mexe no saldo;
 // "Recebido" cria a Receita de verdade. Taxa padrão pelo setor do funil (FH 1%, Home Equity 5%) — ver commission.service.
 
-const PAYER_LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Credimorar' };
-
 const provisionSchema = z.object({
   leadId: z.string().min(1),
   baseAmount: z.number().positive(),
@@ -316,6 +314,8 @@ router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => 
       select: { leadId: true, bank: true, approvedValue: true, chosen: true },
       orderBy: { createdAt: 'desc' },
     });
+    // Faixa por produção do mês (Inter Home Equity, Bradesco e Santander no Financiamento): o que já foi provisionado no mês + este cliente.
+    const producao = await producaoPorPagador(accountId);
     res.json(list.map((l) => {
       const mine = analyses.filter((a) => a.leadId === l.id);
       const seguida = propostaSeguida(mine);
@@ -324,14 +324,15 @@ router.get('/provisions/candidates', async (req: AuthRequest, res: Response) => 
       // Base: proposta que o cliente segue (escolhida ⭐ ou a do único banco que aprovou) > "Valor da venda" do card > crédito pedido > última aprovação.
       const base = seguida?.approvedValue || l.value || parseCreditValue(cf.valor_credito) || pick?.approvedValue || 0;
       const product = l.pipeline.department?.name || null;
+      const pagador = pagadorComissao(product, pick?.bank, cf.instituicao);
       return {
         id: l.id,
         name: l.name,
         stage: `${l.pipeline.name} · ${l.stage.name}`,
         product,
         baseAmount: base,
-        ratePct: commissionRatePct(product, seguida?.bank),
-        payer: pick ? PAYER_LABEL[pick.bank] || pick.bank : null,
+        ratePct: commissionRatePct(product, seguida?.bank, { instituicao: cf.instituicao, producaoMes: (producao.get(chaveProducao(product, pagador)) || 0) + base }),
+        payer: pagador,
         hasProvision: provisioned.has(l.id),
       };
     }));
