@@ -14,7 +14,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
  * (sendOutboundMedia, grátis dentro da janela de 24h). Nunca vai PDF cru de portal: se não der pra montar, o pedido falha com o motivo.
  */
 
-export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMORAR' | 'INTER' | 'CREDITAS' | 'CREDIMORAR_FH'; mode: 'pdf' | 'data'; credimorarId?: number }> = {
+export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMORAR' | 'INTER' | 'CREDITAS' | 'CREDIMORAR_FH' | 'INTER_FH'; mode: 'pdf' | 'data'; credimorarId?: number }> = {
   SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR', mode: 'pdf', credimorarId: 2 }, // coluna Santander do Credimorar
   INTER: { label: 'Inter', extBank: 'INTER', mode: 'data' },
   CREDITAS: { label: 'Creditas', extBank: 'CREDITAS', mode: 'data' },
@@ -22,7 +22,7 @@ export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMO
   FH_BRADESCO: { label: 'Bradesco', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 1 },
   FH_SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 2 },
   FH_ITAU: { label: 'Itaú', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 3 },
-  FH_INTER: { label: 'Inter', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 6 },
+  FH_INTER: { label: 'Inter', extBank: 'INTER_FH', mode: 'data' }, // 29/10: Inter do Financiamento é no nosso portal → a extensão do Inter lê a proposta e o Evolução Teórica
 };
 
 const REQUESTED_TTL_MIN = 15; // ninguém pegou o pedido (extensão fechada/desatualizada)

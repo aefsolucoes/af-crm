@@ -24,12 +24,17 @@ export const BANKS: Record<string, { label: string; instituicao: string }> = {
   CREDIMORAR: { label: 'Santander (Credimorar)', instituicao: 'Santander' },
   // Financiamento Habitacional (Fabio 27/10): uma simulação do Credimorar roda Bradesco, Itaú, Santander e Inter juntos. Fica FORA de BANK_KEYS (telas, cascatas e avisos são do Home Equity).
   CREDIMORAR_FH: { label: 'Financiamento (Credimorar)', instituicao: 'Credimorar' },
+  // Fabio 29/10: o Inter do Financiamento roda no NOSSO portal do Inter (extensão do Inter, simulador "Financiamento Imobiliário"), não pelo Credimorar.
+  INTER_FH: { label: 'Financiamento (Inter)', instituicao: 'Inter' },
 };
 /** Bancos do Home Equity. */
 export const BANK_KEYS = ['INTER', 'CREDITAS', 'CREDIMORAR'];
 export const FH_BANK = 'CREDIMORAR_FH';
+export const FH_INTER_BANK = 'INTER_FH';
+/** Bancos do Financiamento Habitacional rodados pelas extensões (Credimorar: Bradesco/Itaú/Santander; nosso portal do Inter). */
+export const FH_RUN_BANKS = [FH_BANK, FH_INTER_BANK];
 /** O que uma extensão pode pegar/relatar na fila: Home Equity + Financiamento Habitacional. */
-export const EXT_BANK_KEYS = [...BANK_KEYS, FH_BANK];
+export const EXT_BANK_KEYS = [...BANK_KEYS, ...FH_RUN_BANKS];
 
 /** Status em português que as extensões já usam (recordHistory) → status do CRM. */
 export const EXTENSION_STATUS: Record<string, string> = {
@@ -40,7 +45,7 @@ const ALL_STATUS = new Set(['REQUESTED', 'RUNNING', 'SENT', 'APPROVED', 'CONDITI
 const FINAL = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
 const ACTIVE = ['REQUESTED', 'RUNNING'];
 /** Bancos cuja extensão sabe só CONFERIR uma proposta já enviada (sem criar outra). */
-export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS', FH_BANK];
+export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS', FH_BANK, 'INTER_FH'];
 const CREDITAS_MAX_AGE_MS = 60 * 3_600_000; // e desiste de conferir sozinho 60 h depois da 1ª conferência (cobre 2 noites sem leitura)
 const BRT_MS = 3 * 3_600_000; // Brasília = UTC-3 (sem horário de verão)
 const CHECK_MAX_TRIES = 18; // 18 conferências de 10 min = ~3 h; passou disso, fica pra conferir à mão
@@ -795,7 +800,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     if (Object.keys(patch).length) { await db.creditAnalysis.update({ where: { id: updated.id }, data: patch }).catch(() => {}); Object.assign(updated, patch); }
   }
   // Nota automática só na primeira vez que vira aprovada/reprovada (modo teste não escreve no card).
-  if (becameFinal && !updated.dryRun && row.bank !== FH_BANK && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) { // Financiamento: a nota é por banco (notaFinanciamento)
+  if (becameFinal && !updated.dryRun && !FH_RUN_BANKS.includes(row.bank) && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) { // Financiamento: a nota é por banco (notaFinanciamento)
     const holder = await holderIfSecond(db, row.leadId, updated.holderName);
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: analysisNote({ ...updated, status: next, holder }) } });
   }
@@ -826,7 +831,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun) await finishProposalChange(db, updated.leadId).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
   if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
-  if (becameFinal && !updated.dryRun && row.bank !== FH_BANK && (next === 'APPROVED' || next === 'CONDITIONAL')) await reabrirSeAprovouDepoisDaNegativa(db, updated as any).catch((e: any) => console.error('[Reabrir ao aprovar]', e?.message || e));
+  if (becameFinal && !updated.dryRun && !FH_RUN_BANKS.includes(row.bank) && (next === 'APPROVED' || next === 'CONDITIONAL')) await reabrirSeAprovouDepoisDaNegativa(db, updated as any).catch((e: any) => console.error('[Reabrir ao aprovar]', e?.message || e));
   await santanderManualFlow(db, updated as any).catch((e: any) => console.error('[Santander manual]', e?.message || e));
   return { row: updated, becameFinal };
 }
@@ -881,7 +886,7 @@ export function pushOutOfQuiet(ms: number): Date {
  *  depois o Inter segue de 10 em 10 min e o Creditas "aumenta": 10 min, 20 min e de 30 em 30 min (aprovação real do Creditas leva horas). Santander: 10 em 10. Pura (testável). */
 export function checkGapMin(bank: string, n: number): number {
   if (bank === FH_BANK) return n <= 3 ? 10 : 30; // Financiamento: os 4 bancos levam horas/dias pra analisar
-  if ((bank === 'INTER' || bank === 'CREDITAS') && n <= 3) return 3;
+  if ((bank === 'INTER' || bank === 'INTER_FH' || bank === 'CREDITAS') && n <= 3) return 3;
   if (bank === 'CREDITAS') return n === 4 ? 10 : n === 5 ? 20 : 30;
   return 10;
 }
@@ -970,6 +975,7 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   for (const k of Object.keys(numbers) as (keyof ResultFields)[]) if (vindo[k] == null) delete vindo[k];
   const { row: updated } = await applyUpdate(db, row, { status, detail: detail ?? null, holderName, ...numbers, ...vindo });
   if (p.bank === FH_BANK && !updated.dryRun) await notaFinanciamento(db, p.accountId, updated).catch((e: any) => console.error('[Financiamento] nota:', e?.message));
+  if (p.bank === FH_INTER_BANK && !updated.dryRun) await notaFinanciamentoInter(db, p.accountId, updated).catch((e: any) => console.error('[Financiamento Inter] nota:', e?.message));
   return afterReport(db, updated);
 }
 
@@ -994,7 +1000,7 @@ export function parseBancosFinanciamento(resumo?: string | null): Record<string,
 
 export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds: string[] }) {
   await expireStuck(db, { accountId: p.accountId });
-  const fhKeys = [FH_BANK, ...Object.keys(FH_DOC_BANKS)];
+  const fhKeys = [...FH_RUN_BANKS, ...Object.keys(FH_DOC_BANKS)];
   const since = new Date(Date.now() - 90 * 86_400_000);
   const recent = await db.creditAnalysis.findMany({ where: { accountId: p.accountId, bank: { in: fhKeys }, createdAt: { gte: since } }, select: { leadId: true } });
   const recentIds = Array.from(new Set(recent.map((r) => r.leadId)));
@@ -1047,13 +1053,47 @@ export function resumoFinanciamento(detail?: string | null): string | null {
   return m ? m[1].replace(/\s+/g, ' ').trim() : null;
 }
 
+/** Troca (ou põe) o trecho "Inter: …" do resumo do Financiamento. `interTexto` null = mantém o que o Credimorar trouxe. Pura. */
+export function juntarInterNoResumo(resumo: string, interTexto: string | null): string {
+  const partes = String(resumo || '').split('|').map((x) => x.trim()).filter(Boolean);
+  const semInter = partes.filter((x) => !/^Inter\s*:/i.test(x));
+  const doCredimorar = partes.find((x) => /^Inter\s*:/i.test(x));
+  if (!interTexto) return partes.join(' | ');
+  // Só o Inter do Credimorar com resultado de verdade (não "não enviado") ganha do nosso, e ainda assim o nosso portal vale mais.
+  void doCredimorar;
+  return [...semInter, `Inter: ${interTexto}`].join(' | ');
+}
+
+/** Resultado do Inter (nosso portal) → trecho "Inter: Aprovado, proposta N, R$ X, M meses — …" no resumo do Financiamento + nota/push quando muda. */
+async function notaFinanciamentoInter(db: Db, accountId: string, row: AnalysisRow): Promise<void> {
+  if (['REQUESTED', 'RUNNING'].includes(row.status)) return;
+  const label: Record<string, string> = { APPROVED: 'Aprovado', CONDITIONAL: 'Aprovado condicional', REJECTED: 'Rejeitado', SENT: 'Em análise', CHECK: 'Em análise', FAILED: 'Falhou', INCOMPLETE: 'Incompleto' };
+  const st = label[row.status];
+  if (!st) return;
+  const brl = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const motivo = String(row.detail || '').replace(/Titular na an[aá]lise:[^.]*\.\s*/i, '').replace(/^RESULTADO:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 160);
+  const texto = [st, row.proposalNumber ? `proposta ${row.proposalNumber}` : '', row.approvedValue ? brl(Number(row.approvedValue)) : '', row.termMonths ? `${row.termMonths} meses` : ''].filter(Boolean).join(', ') + (motivo ? ` — ${motivo}` : '');
+  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { name: true, customFields: true } });
+  const cf = { ...((lead?.customFields || {}) as Record<string, any>) };
+  const resumo = juntarInterNoResumo(cf._fhResumo || '', texto.replace(/\|/g, '/'));
+  if (cf._fhResumo === resumo) return;
+  cf._fhResumo = resumo;
+  await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });
+  await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🏠 Financiamento — Inter (nosso portal)${row.proposalNumber ? ` — proposta nº ${row.proposalNumber}` : ''}:\n• Inter: ${texto}\nO cliente NÃO foi avisado por esta nota.` } });
+  try {
+    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 Financiamento Inter: ${lead?.name || 'cliente'}`, body: `Inter: ${texto}`.slice(0, 180), leadId: row.leadId }).catch(() => {});
+  } catch { /* push é só aviso */ }
+}
+
 /** Financiamento (Fabio 27/10): cada mudança na situação dos bancos vira nota no card + push pra equipe. O cliente ainda NÃO é avisado sozinho. */
 async function notaFinanciamento(db: Db, accountId: string, row: AnalysisRow): Promise<void> {
   if (['REQUESTED', 'RUNNING'].includes(row.status)) return;
-  const resumo = resumoFinanciamento(row.detail);
+  let resumo = resumoFinanciamento(row.detail);
   if (!resumo) return;
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { name: true, customFields: true } });
   const cf = { ...((lead?.customFields || {}) as Record<string, any>) };
+  // O Inter agora roda no nosso portal (INTER_FH): o "Inter: não enviado" do Credimorar não apaga a situação que veio de lá.
+  resumo = juntarInterNoResumo(resumo, parseBancosFinanciamento(cf._fhResumo).Inter?.texto || null);
   if (cf._fhResumo === resumo) return;
   cf._fhResumo = resumo;
   await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });
@@ -1137,7 +1177,7 @@ function orphanDetail(why: string, lastDetail?: string | null): string {
 // Teto de duração de UMA análise de rodar (Fabio 14/10: "não podemos deixar esse tanto de tempo com um cliente"): a Maria Antônia ficou 27 min no Inter repetindo
 // "preencher CPF" — a extensão seguia mandando passos, então o limite de "sem passo novo" nunca disparava. Tempos reais (5 dias): Inter p90 8 min, Creditas p50 4,5 min,
 // Santander p90 15 min / máx. 21 min (inclui esperar o navegador compartilhado). Estourou: vira falha e a retentativa automática refaz (como CONFERIR se a proposta já foi enviada).
-const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 6, CREDIMORAR_FH: 20 }; // Santander 6 min por ordem do Fabio (14/10); 4 de 13 rodadas boas dos últimos 5 dias passaram disso
+const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 6, CREDIMORAR_FH: 20, INTER_FH: 15 }; // Santander 6 min por ordem do Fabio (14/10); 4 de 13 rodadas boas dos últimos 5 dias passaram disso
 
 async function expireStuck(db: Db, where: { accountId: string; leadId?: string }) {
   const rows = await db.creditAnalysis.findMany({ where: { ...where, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } }, select: { id: true, detail: true } });
