@@ -58,6 +58,17 @@ router.post('/from-docs', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao pedir a certidão', 400); }
 });
 
+// Jarvis: confirma o endereço com o cliente e pede a certidão quando ele disser SIM.
+router.post('/confirmar-endereco', async (req: AuthRequest, res: Response) => {
+  try {
+    const b = req.body || {};
+    const { askEnderecoCertidao } = require('../services/certidao-offer.service') as typeof import('../services/certidao-offer.service');
+    const out = await askEnderecoCertidao(req.user!.accountId, String(b.leadId || ''), { endereco: b.endereco, cidade: b.cidade, uf: b.uf, cartorio: b.cartorio, sendPix: b.sendPix !== false, userId: req.user!.id }, io(req));
+    if (!out.ok) return res.status(400).json({ error: out.erro });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao confirmar o endereço', 400); }
+});
+
 router.get('/', async (req: AuthRequest, res: Response) => {
   try { res.json(await listCertidoes(prisma, { accountId: req.user!.accountId, leadId: typeof req.query.leadId === 'string' ? req.query.leadId : undefined })); } catch (err) { fail(res, err, 'Erro ao listar as certidões'); }
 });
