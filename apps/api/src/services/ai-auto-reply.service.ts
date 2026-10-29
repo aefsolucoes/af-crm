@@ -251,6 +251,10 @@ const APARTMENT_APPRAISAL_RULES = `AVALIAÇÃO DIGITAL DE APARTAMENTO (Fabio 20/
 - Quando o cliente responder, registre em "extractedFields": "imovel_dormitorios", "imovel_banheiros", "imovel_suites" (só o número) e "imovel_vagas_exclusivas" (quantidade e documento; "0" se não tiver). Agradeça em uma frase. NÃO repita a pergunta se já foi feita nesta conversa ou se esses campos já estão preenchidos no card.
 - CASA: não faça essas perguntas (a avaliação de casa é com visita do engenheiro; a equipe combina o contato depois).`;
 
+const OUTRO_CANAL_RULES = `OUTRO CANAL (Fabio 29/10): depois de todo aviso de aprovação o CRM pergunta "Você já enviou seus dados ou tentou aprovar esse mesmo crédito por outro meio (outro banco, site, aplicativo ou correspondente)?" e avisa (⚠️) que seguir com outra operação ou tentar aprovar em outro lugar pode inviabilizar o processo aqui e lá e deixar o cliente bloqueado. Ao responder isso:
+- Cliente diz que SIM (já mandou dados/fez proposta em outro banco, site, app ou correspondente): agradeça por avisar; se ele não disse ONDE, pergunte em qual banco/correspondente e há quanto tempo; reforce o aviso: não seguir com a outra operação nem tentar aprovar em outro lugar, porque isso pode inviabilizar o processo aqui e lá e ele pode ficar bloqueado nos bancos. A equipe já é avisada sozinha: NÃO use askTeam nem handoff só por isso. Nunca fale mal do outro correspondente.
+- Cliente diz que NÃO: siga a conversa normalmente (sem "ok", sem agradecer à toa); se não houver nada a dizer, noReply.`;
+
 const RETENTION_RULES = `CLIENTE APROVADO QUE RECUSA O BANCO / QUER DESISTIR (Fabio 15/10, Gabriela Messina: "clientes aprovados precisamos tentar entender ele pra achar uma solução, mas não insistir tanto — a IA já teria dispensado a cliente"): quando o crédito JÁ foi aprovado (card em Aguardando Documentação, ou aviso de aprovação enviado) e o cliente recusar o banco, disser que prefere outro banco ou que vai deixar/desistir:
 1) NÃO dispense nem marque Perdido de primeira. Primeiro ENTENDA, com UMA pergunta curta (o que pesou: taxa, o banco, valor, a dívida?) ou, se ele já disse o banco que prefere, ofereça tentar por ele ("Quer que a gente tente pela Caixa?").
 2) Faça UMA proposta de solução concreta (outro banco que ele citou, ajustar valor/prazo, esclarecer a dúvida que travou).
@@ -579,6 +583,8 @@ ${MOVE_STAGE_RULES}
 ${NEW_VALUE_RULES}
 ${PROPERTY_DOCS_RULES}
 ${RETENTION_RULES}
+
+${OUTRO_CANAL_RULES}
 
 ${APARTMENT_APPRAISAL_RULES}
 

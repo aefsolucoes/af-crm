@@ -724,6 +724,7 @@ export async function maybeSendApprovalOnYes(accountId: string, leadId: string, 
       const docsText = await buildDocsText(accountId, built.options, leadId);
       await sendOutboundWhatsApp({ accountId, leadId, content: docsText, io });
     }
+    await sendOutroCanalAviso({ accountId, leadId, io }); // Fabio 29/10
     requestSimulationsAfterApproval({ accountId, leadId }).catch(() => {});
   }
   return true;
@@ -777,6 +778,45 @@ export async function maybeHandleChooseButton(accountId: string, leadId: string,
 
 // ─── Aviso de aprovação sob demanda (botão "Avisar cliente" da aba Análise de Crédito) ───
 const WINDOW_MS = 23 * 3_600_000; // janela de 24 h do WhatsApp, com folga
+
+// Fabio 29/10: "sempre que fizermos uma aprovação perguntar se ele já encaminhou dados ou tentou aprovar o mesmo crédito por outro meio, e informar para ele não tentar em
+// outro canal ou outro correspondente pois pode travar nossa operação de contratação" (ex.: a Creditas recusa CPF com proposta ativa em outro parceiro). Mensagem própria no
+// fim de todo aviso de aprovação (Home Equity, "Sim, quero saber", aviso antecipado e Financiamento); uma vez a cada 30 dias por card. "Sim" → nota + push (checkOutroCanalAnswer).
+export const OUTRO_CANAL_Q = 'Você já enviou seus dados ou tentou aprovar esse mesmo crédito por outro meio';
+// Fabio 29/10: "coloca isso como um AVISO, com sinal de alerta: caso ele siga com outra operação ou tente aprovar em outro, pode acabar inviabilizando o processo aqui e lá, e o cliente ficar bloqueado".
+const OUTRO_CANAL_TEXTO = `⚠️ *AVISO IMPORTANTE* ⚠️\n\n${OUTRO_CANAL_Q} (outro banco, site, aplicativo ou correspondente)? Se sim, me conta por aqui onde foi.\n\n🚫 A partir de agora, não siga com outra operação nem tente aprovar esse crédito em outro lugar: isso pode acabar inviabilizando o processo aqui e lá, e você pode ficar *bloqueado* nos bancos.`;
+export async function sendOutroCanalAviso(p: { accountId: string; leadId: string; userId?: string; io?: any }): Promise<boolean> {
+  try {
+    if (!(await whatsappWindowOpen(p.leadId))) return false;
+    const ja = await prisma.message.findFirst({ where: { leadId: p.leadId, direction: 'OUTBOUND', deleted: false, content: { contains: OUTRO_CANAL_Q }, createdAt: { gte: new Date(Date.now() - 30 * 86_400_000) } }, select: { id: true } });
+    if (ja) return false;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: OUTRO_CANAL_TEXTO, userId: p.userId, io: p.io });
+    return !!r.success;
+  } catch (e: any) { console.error('[Aprovação] pergunta de outro canal:', e?.message); return false; }
+}
+
+const OUTRO_CANAL_SIM = /^(sim|ja|fiz|tentei|mandei|enviei|passei)\b|outro (banco|correspondente)|correspondente|pelo (site|app|aplicativo)|(fiz|tentei|mandei|enviei|passei)( (os|meus|a|uma))? (dados|proposta|documentos|simulacao)|tenho (uma )?proposta/;
+const OUTRO_CANAL_NAO = /^(nao|nunca|nenhum|so (com )?voces|so aqui|apenas (com )?voces)\b/;
+/** Resposta do cliente à pergunta do outro canal: "sim/já/fiz no banco X" → nota + push pra equipe conferir antes de seguir. Não responde nada (a IA responde ao cliente). */
+export async function checkOutroCanalAnswer(accountId: string, leadId: string, text: string): Promise<void> {
+  const t = norm(text);
+  if (!t || t.length > 400 || OUTRO_CANAL_NAO.test(t) || !OUTRO_CANAL_SIM.test(t)) return;
+  const q = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: OUTRO_CANAL_Q }, createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  if (!q) return;
+  // "sim"/"já" soltos só valem se a pergunta foi a ÚLTIMA mensagem nossa; citando banco/correspondente/site vale qualquer resposta nos 3 dias. Um alerta por pergunta.
+  const ultimaNossa = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, channel: { not: 'EMAIL' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  if (/^(sim|ja|fiz|tentei|mandei|enviei|passei)\b/.test(t) && !/outro|correspondente|site|app|banco/.test(t) && !String(ultimaNossa?.content || '').includes(OUTRO_CANAL_Q)) return;
+  const jaAvisou = await prisma.note.findFirst({ where: { leadId, content: { startsWith: '⚠️ Outro canal' }, createdAt: { gt: q.createdAt } }, select: { id: true } });
+  if (jaAvisou) return;
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
+  const trecho = String(text).replace(/\s+/g, ' ').trim().slice(0, 300);
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Outro canal: o cliente respondeu que JÁ enviou dados ou tentou esse crédito por outro meio: "${trecho}". Confira antes de seguir com a contratação (outra operação em paralelo pode inviabilizar o processo aqui e lá e bloquear o cliente).` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `⚠️ ${lead?.name || 'Cliente'}: já tentou por outro canal`, body: trecho, leadId }).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_note_added', leadId, leadName: lead?.name || '', summary: 'cliente disse que já tentou o mesmo crédito por outro canal' });
+}
 
 export async function whatsappWindowOpen(leadId: string): Promise<boolean> {
   const last = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
@@ -972,6 +1012,7 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
     } else {
       requestSimulationsAfterApproval({ accountId: p.accountId, leadId: p.leadId, userId: p.userId }).catch(() => {});
     }
+    await sendOutroCanalAviso(p); // por último: já mandou dados/tentou por outro meio? + não tentar em outro canal (Fabio 29/10)
   } else {
     const tpl = await approvalTemplate(p.accountId);
     if (!tpl.approved) return { ok: false, error: 'A janela de 24 h do WhatsApp fechou e o template de aprovação ainda não foi aprovado pela Meta.' };
@@ -1120,6 +1161,7 @@ export async function sendEarlyStatusNotice(p: { accountId: string; leadId: stri
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: text, io: p.io });
   if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar' };
+  if (p.variant === 'APPROVED_PARTIAL') await sendOutroCanalAviso(p); // Fabio 29/10
   const fresh = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
   await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _earlyNoticeFor: lastIn.createdAt.toISOString() } } });
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: p.variant === 'APPROVED_PARTIAL' ? '⏳ Aviso antecipado enviado antes da janela de 24 h fechar: já tem aprovação, aguardando os outros bancos pra tentar taxa menor.' : cadPendente ? '⏳ Antes da janela de 24 h fechar: lembrei o cliente de conferir nome, CPF e nascimento (cadastro divergente no banco, pergunta sem resposta).' : '⏳ Aviso antecipado enviado antes da janela de 24 h fechar: análise em andamento, aguardando o retorno dos bancos.' } }).catch(() => {});

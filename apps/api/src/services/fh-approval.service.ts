@@ -124,6 +124,7 @@ async function sendFhNotice(accountId: string, leadId: string, leadName: string,
     if (!r.success) await sendOutboundWhatsApp({ ...base, content: `${fhOptionText(o)}\n\n👉 Para seguir com esta, é só me responder "${o.banco}".` });
   }
   if (emAnalise.length) { await pausa(); await sendOutboundWhatsApp({ ...base, content: `⏳ Ainda em análise: ${emAnalise.join(', ')}. Se aprovar, te aviso por aqui.` }); }
+  await (require('./approval-notice.service') as typeof import('./approval-notice.service')).sendOutroCanalAviso(base); // já tentou por outro meio? + não tentar em outro canal (Fabio 29/10)
   return true;
 }
 
