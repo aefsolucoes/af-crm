@@ -565,6 +565,12 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
         const durationSec = existing.connectedAt ? Math.max(0, Math.round((updated.endedAt!.getTime() - existing.connectedAt.getTime()) / 1000)) : 0;
         await finalizeCallMessage(waCallId, updated.status, durationSec, io, accountId, existing.leadId);
         handleAiCallEnded(waCallId);
+        // Cliente ligou e ninguém atendeu: avisa que retornamos em 20 min + alerta pra Andreia (Fabio 29/10). Conversou: tira o alerta do card.
+        try {
+          const mc = require('./missed-call.service') as typeof import('./missed-call.service');
+          if (!wasConnected && existing.direction === 'INBOUND' && existing.leadId) mc.scheduleMissedCallFollowUp(accountId, existing.leadId, io);
+          else if (wasConnected) mc.clearMissedCallAlert(existing.leadId).catch(() => {});
+        } catch (e) { console.error('[Ligação perdida]', e); }
         continue;
       }
 
