@@ -6,6 +6,7 @@ import api from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
+import { useOutboundCallStore } from '@/store/outbound-call.store';
 
 /* Assistente do CRM (Fabio 26/10): chat da EQUIPE pra perguntar qualquer coisa sobre qualquer cliente — inclusive "preciso da simulação do cliente X",
  * que volta aqui como PDF (só pra equipe, nunca vai ao cliente). O servidor (routes/assistant.ts) usa o Claude com ferramentas que leem o CRM.
@@ -220,12 +221,22 @@ export function CrmAssistant() {
     try {
       const { data } = await api.post(`/api/assistant/confirm/${id}`);
       atualizaPendente(id, { estado: 'FEITO', resultado: data.resultado || 'Feito.' });
+      if (data.call?.leadId) await discar(data.call.leadId, data.call.leadName);
       return data.resultado || 'Feito.';
     } catch (err: any) {
       const e = err?.response?.data?.error || 'Não consegui fazer.';
       atualizaPendente(id, { estado: 'ERRO', resultado: e });
       return `Não deu: ${e}`;
     }
+  }
+  // Ligação confirmada: o colaborador fala; o assistente só disca (mesmo fluxo do botão Ligar da conversa) — para de ouvir pra não disputar o microfone.
+  async function discar(leadId: string, leadName: string) {
+    pararVoz();
+    router.push(`/inbox?leadId=${leadId}`);
+    const call = useOutboundCallStore.getState();
+    if (call.stage !== 'idle') { toast('Já tem uma ligação em andamento', 'warning'); return; }
+    await call.checkAndCall(leadId, leadName);
+    if (useOutboundCallStore.getState().stage === 'confirm') await useOutboundCallStore.getState().confirmCall();
   }
   async function cancelar(id: string) {
     atualizaPendente(id, { estado: 'CANCELADO', resultado: 'Cancelado.' });
@@ -313,7 +324,7 @@ export function CrmAssistant() {
       {open && (
         <div className="fixed z-50 bottom-20 right-4 md:right-5 w-[420px] max-w-[calc(100vw-2rem)] h-[620px] max-h-[calc(100vh-7rem)] flex flex-col rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden">
           <div className="flex items-center gap-2 px-4 py-3 text-white" style={{ backgroundColor: '#1e1b4b' }}>
-            <Bot size={18} />
+            {voz !== 'off' ? <span className="block w-[22px] h-[22px] shrink-0"><Orb voz={voz} /></span> : <Bot size={18} />}
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold leading-tight">Assistente do CRM</p>
               <p className="text-[11px] text-white/70 leading-tight">{statusVoz || 'Pergunte, peça ou converse por voz'}</p>
@@ -368,6 +379,12 @@ export function CrmAssistant() {
             <div ref={endRef} />
           </div>
 
+          {voz !== 'off' && (
+            <div className="border-t border-slate-200 bg-gradient-to-b from-slate-50 to-white py-4 flex flex-col items-center gap-2">
+              <button onClick={pararVoz} title="Parar a conversa por voz" className="block w-[84px] h-[84px] rounded-full shadow-[0_0_32px_rgba(56,189,248,.45)]"><Orb voz={voz} /></button>
+              <p className="text-xs font-medium text-slate-500">{statusVoz || 'Conversando…'} <span className="text-slate-400">· toque na bola pra parar</span></p>
+            </div>
+          )}
           <div className="border-t border-slate-200 p-2 flex gap-2 bg-white">
             <textarea
               value={input}

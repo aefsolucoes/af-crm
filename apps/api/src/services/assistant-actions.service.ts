@@ -51,6 +51,8 @@ export const ACTION_TOOLS = [
   { name: 'documentos_do_cliente', description: 'Os documentos que o cliente mandou e o que a IA leu em cada um: tipo, titular, OK/PROBLEMA/DÚVIDA, problemas, emissão, dono do imóvel, matrícula/cartório, gravame (alienação/hipoteca), ressalvas; e o que ainda falta.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'conferir_documentos', description: 'Roda a conferência de documentos AGORA (lê com a IA os arquivos ainda não lidos e atualiza o card). Não manda nada ao cliente. Depois use documentos_do_cliente.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'ler_documento', description: 'Abre UM documento do cliente e responde uma pergunta sobre ele lendo o arquivo de verdade (ex.: "a matrícula tem alienação vigente?", "qual a área do imóvel no IPTU?", "o comprovante está no nome de quem?"). arquivo = nome (ou parte) do arquivo ou o tipo (ex.: "matricula", "IPTU", "CNH").', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, arquivo: { type: 'string' }, pergunta: { type: 'string' } }, required: ['leadId', 'arquivo', 'pergunta'] } },
+  { name: 'ligar_para_cliente', description: 'PREPARA uma LIGAÇÃO pelo WhatsApp pro cliente (confirmação antes). Por enquanto quem FALA é o colaborador: o assistente só disca no navegador dele (o microfone dele é usado), abre a conversa do cliente e para de ouvir. Só funciona se o cliente já autorizou ligação; se não autorizou, diga isso e ofereça pedir_permissao_ligacao.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'pedir_permissao_ligacao', description: 'PREPARA o pedido de permissão de ligação pelo WhatsApp pro cliente (a Meta manda pro cliente o botão "Permitir"; confirmação antes). Limite da Meta: 1 por dia, 2 por semana.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'enviar_mensagem', description: 'PREPARA uma mensagem de WhatsApp pro cliente (só sai depois que a pessoa confirmar). Se a janela de 24 h estiver fechada, o envio vira o template de atualização do processo + a mensagem guardada pra sair quando o cliente responder.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, texto: { type: 'string' } }, required: ['leadId', 'texto'] } },
   { name: 'mover_card', description: 'PREPARA a mudança de etapa do card (confirmação antes). etapa = nome da etapa; funil opcional (se a etapa for de outro funil).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, etapa: { type: 'string' }, funil: { type: 'string' } }, required: ['leadId', 'etapa'] } },
   { name: 'marcar_status', description: 'PREPARA marcar o card como GANHO, PERDIDO, REPROVADO (perdido por reprovação do banco) ou REABRIR (confirmação antes). motivo é obrigatório pra PERDIDO/REPROVADO.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, status: { type: 'string', enum: ['GANHO', 'PERDIDO', 'REPROVADO', 'REABRIR'] }, motivo: { type: 'string' } }, required: ['leadId', 'status'] } },
@@ -365,6 +367,22 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       const j = (await res.json()) as { content: any[] };
       return { arquivo: att.fileName, resposta: (j.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim() || '(sem resposta)' };
     }
+    case 'ligar_para_cliente': {
+      const l = await leadOf(accountId, input?.leadId);
+      const st = await callApi(p.token, 'GET', `/calls/permission-state?leadId=${l.id}`);
+      if (!st?.permitted) return st?.canRequest === false
+        ? { erro: `o ${l.name} ainda não autorizou ligação e o pedido de permissão já foi enviado — aguardando ele tocar em "Permitir"` }
+        : { erro: `o ${l.name} ainda não autorizou ligação pelo WhatsApp`, podePedirPermissao: true };
+      const tel = String(st.phone || '').replace(/^55(\d{2})(\d{4,5})(\d{4})$/, '($1) $2-$3');
+      return pendente({ accountId, userId, tipo: 'ligar', params: { leadId: l.id, leadName: l.name }, descricao: `Ligar agora pro ${l.name}${tel ? ` — ${tel}` : ''} pelo WhatsApp. Você fala; eu só disco (uso o seu microfone e abro a conversa dele).` }, p.fila);
+    }
+    case 'pedir_permissao_ligacao': {
+      const l = await leadOf(accountId, input?.leadId);
+      const st = await callApi(p.token, 'GET', `/calls/permission-state?leadId=${l.id}`);
+      if (st?.permitted) return { ok: true, aviso: `o ${l.name} já autorizou ligação — dá pra ligar (ligar_para_cliente)` };
+      if (st?.canRequest === false) return { erro: 'o pedido de permissão já foi enviado recentemente — aguardando o cliente (limite da Meta: 1/dia, 2/semana)' };
+      return pendente({ accountId, userId, tipo: 'pedir_permissao_ligacao', params: { leadId: l.id }, descricao: `Mandar pro ${l.name} o pedido de permissão de ligação do WhatsApp (ele recebe o botão "Permitir").` }, p.fila);
+    }
     case 'enviar_mensagem': {
       const l = await leadOf(accountId, input?.leadId);
       const texto = String(input?.texto || '').trim();
@@ -417,7 +435,7 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
 }
 
 /** A pessoa confirmou (botão ou "sim"): executa pela rota da tela, com o login dela. */
-export async function confirmPendingAction(p: { accountId: string; userId: string; token: string; id: string }): Promise<{ ok: true; resultado: string }> {
+export async function confirmPendingAction(p: { accountId: string; userId: string; token: string; id: string }): Promise<{ ok: true; resultado: string; call?: { leadId: string; leadName: string } }> {
   limpar();
   const a = pendentes.get(p.id);
   if (!a || a.accountId !== p.accountId || a.userId !== p.userId) throw new Error('Essa ação expirou ou não é sua. Peça de novo.');
@@ -434,6 +452,8 @@ export async function confirmPendingAction(p: { accountId: string; userId: strin
       await callApi(p.token, 'POST', '/notes', { leadId: x.l.id, content: `📁 Pasta movida pelo assistente para ${caminho} (${x.area.nome}). ${x.g.folderLink(x.pasta)}` }).catch(() => {});
       return { ok: true, resultado: `Pasta movida pra ${caminho}.` };
     }
+    case 'ligar': return { ok: true, resultado: `Discando pro ${x0.leadName}…`, call: { leadId: x0.leadId, leadName: x0.leadName } };
+    case 'pedir_permissao_ligacao': await callApi(p.token, 'POST', '/calls/permission-request', { leadId: x0.leadId }); return { ok: true, resultado: 'Pedido de permissão enviado; quando ele tocar em "Permitir" dá pra ligar.' };
     case 'agir_supervisao': {
       await callApi(p.token, 'POST', `/supervision/${x0.itemId}/${x0.modo}`, { text: x0.texto });
       return { ok: true, resultado: x0.modo === 'send' ? 'Mensagem enviada e o item saiu da lista.' : 'Template enviado; a mensagem sai quando o cliente responder.' };
