@@ -1081,6 +1081,8 @@ async function notaFinanciamentoInter(db: Db, accountId: string, row: AnalysisRo
   const label: Record<string, string> = { APPROVED: 'Aprovado', CONDITIONAL: 'Aprovado condicional', REJECTED: 'Rejeitado', SENT: 'Em análise', CHECK: 'Em análise', FAILED: 'Falhou', INCOMPLETE: 'Incompleto' };
   const st = label[row.status];
   if (!st) return;
+  // CHECK de conferência que NÃO leu o resultado (não achou o cliente, erro do portal) não é "Em análise": não mexe no resumo (Alexandro 29/10).
+  if (row.status === 'CHECK' && !/em an[aá]lise/i.test(row.detail || '')) return;
   const brl = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const motivo = String(row.detail || '').replace(/Titular na an[aá]lise:[^.]*\.\s*/i, '').replace(/^RESULTADO:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 160);
   const texto = [st, row.proposalNumber ? `proposta ${row.proposalNumber}` : '', row.approvedValue ? brl(Number(row.approvedValue)) : '', row.termMonths ? `${row.termMonths} meses` : ''].filter(Boolean).join(', ') + (motivo ? ` — ${motivo}` : '');
