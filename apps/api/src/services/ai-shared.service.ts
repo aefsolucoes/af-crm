@@ -790,7 +790,12 @@ export async function applyAiExtractedActions(
         }
       } catch (e: any) { console.error('[IA] marcar opção pela CAIXA/BRB falhou:', e?.message); }
     }
-    if (action.chooseBank && action.chooseBank !== 'CAIXA' && action.chooseBank !== 'BRB') {
+    // Financiamento Habitacional: escolher escrevendo = o mesmo fluxo do botão "Seguir com esta" do FH (simulação, documentos, próximos passos, ⭐ e card preenchido).
+    let escolhaFh = false;
+    if (action.chooseBank && ['INTER', 'SANTANDER', 'BRADESCO', 'ITAU'].includes(action.chooseBank)) {
+      escolhaFh = await (require('./fh-approval.service') as typeof import('./fh-approval.service')).chooseFhBankByAi(accountId, leadId, action.chooseBank, io).catch((e: any) => { console.error('[IA] escolha do Financiamento falhou:', e?.message); return false; });
+    }
+    if (action.chooseBank && !escolhaFh && !['CAIXA', 'BRB', 'BRADESCO', 'ITAU'].includes(action.chooseBank)) {
       try {
         const bank = action.chooseBank === 'SANTANDER' ? 'CREDIMORAR' : action.chooseBank;
         const alvo = await prisma.creditAnalysis.findFirst({

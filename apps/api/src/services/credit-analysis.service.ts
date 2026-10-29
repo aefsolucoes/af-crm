@@ -1825,6 +1825,12 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };
 
+/** Bancos que "rodar de novo" usa pra este card: Financiamento Habitacional → Credimorar FH + Inter FH (nosso portal); Home Equity → os 3 do HE (Fabio 29/10: "todo o processo do HE deve migrar pro FH"). */
+export async function bancosDoProduto(db: Db, leadId: string): Promise<string[]> {
+  const l = await db.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { department: { select: { name: true } } } } } });
+  return /habitacional/i.test(l?.pipeline?.department?.name || '') ? [FH_BANK, 'INTER_FH'] : [...BANK_KEYS];
+}
+
 /** "CAIXA: 1ª parcela R$ 4.446,10 | Taxa 10,65% a.a. | CET 12,18% a.a." da proposta do site → simulação por banco. Pura (testável). */
 export function simulacaoDoSite(texto: string): Record<string, string> {
   const out: Record<string, string> = {};

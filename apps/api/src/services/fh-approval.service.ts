@@ -225,6 +225,17 @@ async function sendFhNotice(accountId: string, leadId: string, leadName: string,
   return true;
 }
 
+/** O cliente disse ESCREVENDO com qual banco do Financiamento vai seguir (a IA marcou "chooseBank") — mesmo efeito do botão "Seguir com esta". */
+export async function chooseFhBankByAi(accountId: string, leadId: string, bankKey: string, io?: any): Promise<boolean> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!lead || !/habitacional/i.test(lead.pipeline?.department?.name || '')) return false;
+  const cf = (lead.customFields || {}) as Cf;
+  const nome = ({ BRADESCO: 'Bradesco', ITAU: 'Itaú', SANTANDER: 'Santander', INTER: 'Inter' } as Record<string, string>)[bankKey];
+  const avisados: string[] = Array.isArray(cf._fhNotice?.bancos) ? cf._fhNotice.bancos : [];
+  if (!nome || !avisados.includes(nome) || cf._fhChosen?.bank === nome) return false;
+  return chooseFhBank(accountId, lead, cf, nome, io);
+}
+
 /** Botões e respostas do fluxo do Financiamento. true = tratou (a IA da conversa não responde por cima). */
 export async function maybeHandleFhReply(accountId: string, leadId: string, text: string, repliedWamid: string | undefined, io?: any): Promise<boolean> {
   const t = norm(text);
@@ -252,11 +263,40 @@ export async function maybeHandleFhReply(accountId: string, leadId: string, text
   return false;
 }
 
+/** Escolha do Financiamento preenche o card igual ao "Seguir com esta" do Home Equity (chooseAnalysis): ⭐ na análise, instituição, valor, prazo, taxa, 1ª parcela,
+ *  nº da proposta e Valor da venda (Fabio 29/10: "todo o processo do HE deve migrar pro FH"). */
+export async function preencherEscolhaFh(accountId: string, leadId: string, banco: string): Promise<void> {
+  const { parseBancosFinanciamento, chooseAnalysis } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  const run = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: FH_BANK, kind: 'RUN', dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
+  const [o] = await enriquecer(leadId, cf, fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`).aprovadas.filter((x) => x.banco === banco));
+  // Inter: a linha do nosso portal tem os números estruturados — ⭐ nela pelo mesmo caminho do HE.
+  if (banco === 'Inter') {
+    const row = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, orderBy: { approvedValue: 'desc' }, select: { id: true } });
+    if (row) { await chooseAnalysis(prisma as any, { accountId, id: row.id, userName: 'Cliente — "Seguir com esta" no Financiamento' }); return; }
+  }
+  if (!o) return;
+  const num = (t: string) => Number(String(t || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+  const valor = num(o.valor);
+  const proposta = (new RegExp(`${banco}:[^|]*?proposta\\s*(\\d{5,})`, 'i').exec(String(cf._fhResumo || '')) || [])[1];
+  const fill: Cf = { instituicao: banco };
+  if (valor) { fill.valor_credito = String(valor); if (cf.valor_credito && Number(String(cf.valor_credito).replace(/[^\d.]/g, '')) !== valor) fill._valorPedido = cf.valor_credito; }
+  if (o.prazo) fill.prazo_financ = `${o.prazo} meses`;
+  if (o.taxa) fill.taxa_efetiva = o.taxa;
+  if (o.parcela) fill.primeira_parcela = String(num(o.parcela));
+  if (proposta) fill.num_proposta = proposta;
+  await saveCf(leadId, fill);
+  if (valor) await prisma.lead.update({ where: { id: leadId }, data: { value: valor } });
+  await note(leadId, `⭐ Proposta escolhida: ${banco}${o.valor ? ` — ${o.valor}` : ''}. Card preenchido: ${Object.keys(fill).filter((k) => !k.startsWith('_')).join(', ')}.`);
+}
+
 async function chooseFhBank(accountId: string, lead: { id: string; name: string; aiAutoReplyActive: boolean }, cf: Cf, banco: string, io?: any): Promise<boolean> {
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const { moveToAwaitingDocs } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const jaEra = cf._fhChosen?.bank === banco;
   await saveCf(lead.id, { _fhChosen: { bank: banco, at: new Date().toISOString() } });
+  if (!jaEra) await preencherEscolhaFh(accountId, lead.id, banco).catch((e: any) => console.error('[Financiamento] preencher a escolha:', e?.message));
   if (!jaEra) {
     await note(lead.id, `⭐ Financiamento: o cliente escolheu o ${banco} (botão "Seguir com esta").`);
     push(accountId, `🏠 ${lead.name}: escolheu o ${banco}`, 'Financiamento — o CRM manda simulação, documentos, próximos passos e taxas', lead.id);

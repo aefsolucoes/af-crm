@@ -201,8 +201,8 @@ export async function cadastroCorrigido(accountId: string, leadId: string, campo
   if (!mudouIdentidade) return false;
   if (!l || !cd || cd.status !== 'ASKED') return false;
   await salva(leadId, { status: 'CORRIGIDO', correctedAt: new Date().toISOString(), campos: camposMudados.filter((k) => CAMPOS_IDENTIDADE.includes(k)) });
-  const { createRequests, BANK_KEYS } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-  const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: BANK_KEYS, dryRun: false, kind: 'RUN', source: 'AI', force: true, queueIfBusy: true });
+  const { createRequests, bancosDoProduto } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: await bancosDoProduto(prisma as any, leadId), dryRun: false, kind: 'RUN', source: 'AI', force: true, queueIfBusy: true }); // FH refaz no Credimorar FH + Inter FH
   await note(leadId, `🔁 O cliente corrigiu nome/CPF/nascimento (${camposMudados.filter((k) => CAMPOS_IDENTIDADE.includes(k)).join(', ')}) depois do "Cadastro Divergente": o card foi atualizado e refiz a análise em ${r.created} banco(s) (todos os bancos, com os dados certos).`);
   push(accountId, '🔁 Cadastro corrigido', `${l.name}: análise refeita nos bancos com nome/CPF corrigidos`, leadId);
   void io;
@@ -297,8 +297,8 @@ async function confirmacaoRespondida(accountId: string, leadId: string, nome: st
   }
   const mudados = campos.filter((k) => CAMPOS_IDENTIDADE.includes(k));
   await salvaConfirm(leadId, { status: 'CORRIGIDO', correctedAt: new Date().toISOString(), campos: mudados });
-  const { createRequests, BANK_KEYS } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-  const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: BANK_KEYS, dryRun: false, kind: 'RUN', source: 'AI', force: true, queueIfBusy: true });
+  const { createRequests, bancosDoProduto } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: await bancosDoProduto(prisma as any, leadId), dryRun: false, kind: 'RUN', source: 'AI', force: true, queueIfBusy: true }); // FH refaz no Credimorar FH + Inter FH
   await note(leadId, `🔁 O cliente corrigiu dados da proposta (${mudados.join(', ')}): o card foi atualizado e refiz a análise em ${r.created} banco(s) com os dados certos.`);
   push(accountId, '🔁 Cadastro corrigido', `${nome}: análise refeita nos bancos com os dados corrigidos`, leadId);
   return true;

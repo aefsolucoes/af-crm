@@ -187,9 +187,10 @@ async function startNewFhLeads(accountId: string, enabledAt: Date) {
       await addNote(l.id, '🚫 Análise do Financiamento NÃO rodada sozinha: na proposta o cliente marcou RESTRIÇÃO NO SERASA, e no Financiamento os bancos exigem nome limpo. Se quiser tentar assim mesmo, use "Rodar" na aba Análise de Crédito — Financiamento.');
       continue;
     }
-    const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [FH_BANK], dryRun: false, force: false });
+    // Inter do Financiamento roda no NOSSO portal (Fabio 29/10: "os financiamentos habitacionais devem ser feitos no nosso Inter"; a extensão do Credimorar desmarca o Inter de lá).
+    const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [FH_BANK, 'INTER_FH'], dryRun: false, force: false });
     await saveCf(l.id, { _fhAutoStartedAt: new Date().toISOString() });
-    await addNote(l.id, `🤖 Análise do Financiamento pedida no Credimorar (Bradesco, Itaú, Santander e Inter numa simulação só). ${out.created} pedido na fila pra extensão. O resultado de cada banco vem em nota; o cliente não é avisado sozinho.`);
+    await addNote(l.id, `🤖 Análise do Financiamento pedida: Credimorar (Bradesco, Itaú e Santander numa simulação só) e Inter no nosso portal. ${out.created} pedido(s) na fila das extensões. Quando os bancos responderem, o cliente recebe o aviso padrão.`);
   }
 }
 
