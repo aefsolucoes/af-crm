@@ -62,7 +62,7 @@ export async function processDocsChecks(accountId: string, io: Io): Promise<void
 
 const WINDOW_MS = 23 * 3_600_000;
 const BRT = -3 * 3_600_000; // Brasília = UTC−3 (sem horário de verão)
-const TIME_RX = /(\bdia \d{1,2}\b|\b\d{1,2}\/\d{1,2}\b|fim d[oa] m[êe]s|final d[oa] m[êe]s|amanh[ãa]|mais tarde|\bdepois\b|hoje (à|a) noite|[àa] noite|daqui (a )?(pouco|uns?|\d+)|logo mais|\bsegunda\b|\bter[çc]a\b|\bquarta\b|\bquinta\b|\bsexta\b|s[áa]bado|domingo|semana que vem|fim de semana|quando (chegar|sair|puder|conseguir|tiver)|assim que (puder|conseguir|chegar|sair|tiver)|estou no trabalho|n[ãa]o (tenho como|consigo|posso) (enviar|mandar|encaminhar)( agora)?|agora n[ãa]o|depois do (trabalho|expediente)|quando eu (chegar|sair|puder))/i;
+export const TIME_RX = /(\bdia \d{1,2}\b|\b\d{1,2}\/\d{1,2}\b|fim d[oa] m[êe]s|final d[oa] m[êe]s|amanh[ãa]|mais tarde|\bdepois\b|hoje (à|a) noite|[àa] noite|daqui (a )?(pouco|uns?|\d+)|logo mais|\bsegunda\b|\bter[çc]a\b|\bquarta\b|\bquinta\b|\bsexta\b|s[áa]bado|domingo|semana que vem|fim de semana|quando (chegar|sair|puder|conseguir|tiver)|assim que (puder|conseguir|chegar|sair|tiver)|estou no trabalho|n[ãa]o (tenho como|consigo|posso) (enviar|mandar|encaminhar)( agora)?|agora n[ãa]o|depois do (trabalho|expediente)|quando eu (chegar|sair|puder))/i;
 const SEND_RX = /(mand|envi|encaminh|pass(o|ar)|trag|junt|separ|entreg|forne|te dou|consigo|tir(o|ar)|escane|fotograf)/i;
 const NEGATIVE_RX = /(n[ãa]o (tenho|quero|vou) (mais )?(interesse|seguir|continuar)|desist|cancel)/i;
 

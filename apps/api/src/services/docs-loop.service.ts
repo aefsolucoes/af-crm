@@ -68,8 +68,8 @@ const BRT = -3 * 3_600_000;
 
 export type DocLoopState = { passo: number; ultimoAt?: string; ciclo?: number };
 
-const diaBrt = (d: Date) => Math.floor((d.getTime() + BRT) / 86_400_000);
-const diasDesde = (d: Date) => diaBrt(new Date()) - diaBrt(d);
+export const diaBrt = (d: Date) => Math.floor((d.getTime() + BRT) / 86_400_000);
+export const diasDesde = (d: Date) => diaBrt(new Date()) - diaBrt(d);
 const emHorario = () => { const h = new Date(Date.now() + BRT).getUTCHours(); return h >= 7 && h < 21; };
 
 /** Os 3 templates aprovados na Meta → o loop assume (cache de 15 min; depois de aprovado não consulta mais). */
@@ -89,7 +89,7 @@ export async function docLoopAtivo(accountId: string): Promise<boolean> {
 }
 
 /** Última conversa de verdade: cliente no WhatsApp ou equipe escrevendo à mão (template, IA respondendo sozinha e e-mail do banco não contam). */
-async function ultimaConversa(leadId: string): Promise<Date | null> {
+export async function ultimaConversa(leadId: string): Promise<Date | null> {
   const m = await prisma.message.findFirst({
     where: { leadId, channel: { not: 'EMAIL' }, OR: [{ direction: 'INBOUND' }, { direction: 'OUTBOUND', sentByUserId: { not: null } }] },
     orderBy: { createdAt: 'desc' }, select: { createdAt: true },

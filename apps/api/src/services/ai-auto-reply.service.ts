@@ -695,6 +695,7 @@ ${conversasPorTelefone}` : ''}`;
     const aprovado = /aprovad|aguardando document|document|contrata|conclu|fechad/i.test(ctx.etapaTexto.split('→').pop() || '');
     if (!aprovado && result.reply) result.reply = stripApprovalClaims(result.reply);
     await addDocsDoubtQuestions(leadId, incomingText, ctx.etapaTexto, result);
+    await addFollowPrazoQuestion(leadId, incomingText, ctx.etapaTexto, result);
     return result;
   } catch (err) {
     console.error('[AI Auto-reply] Erro ao gerar resposta:', err);
@@ -717,6 +718,27 @@ const BUDGET_Q = 'A parcela coube no seu orçamento?';
 export function promisesDocsSoon(text: string): boolean {
   const t = (text || '').trim();
   return !!t && t.length <= 220 && DOCS_PROMISE_SEND_RX.test(t) && DOCS_PROMISE_LATER_RX.test(t) && !DOCS_PROMISE_PAST_RX.test(t) && !DOCS_PROMISE_NEG_RX.test(t);
+}
+
+// Fabio 29/10 (loop do Follow Up): em Prospecção/Follow Up o cliente diz que preenche depois ("agora não", "mais tarde", "vou ver") sem dizer quando →
+// a IA pergunta quando fica bom; a data que ele der segura o Follow Up (follow-loop.maybeSetFollowPrazo). Uma vez a cada 2 dias.
+const FOLLOW_LATER_RX = /(agora n[ãa]o|depois|mais tarde|outra hora|outro dia|vou (preencher|fazer|ver|pensar|analisar)|quando (eu )?(puder|der|tiver tempo)|sem tempo)/i;
+const FOLLOW_PRAZO_Q = 'Quando fica bom pra você preencher a proposta?';
+async function addFollowPrazoQuestion(leadId: string, incomingText: string, etapaTexto: string, result: AiAutoReplyResult): Promise<void> {
+  try {
+    if (result.handoff || result.askTeam || result.markLost || result.resumeOn) return;
+    const etapa = (etapaTexto.split('→').pop() || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    if (!/^(prospec|follow up)/.test(etapa)) return;
+    const t = (incomingText || '').trim();
+    if (!t || t.length > 220 || !FOLLOW_LATER_RX.test(t) || DOCS_PRAZO_RX.test(t) || /n[ãa]o (tenho|quero) (mais )?interesse|desist/i.test(t)) return;
+    if (/quando (fica|voc[êe]|seria|consegue)|qual (o )?melhor (dia|hor[áa]rio)/i.test(result.reply || '')) return;
+    const ja = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: FOLLOW_PRAZO_Q }, createdAt: { gte: new Date(Date.now() - 2 * 86_400_000) } }, select: { id: true } });
+    if (ja) return;
+    if ((result.reply || '').trim()) result.reply = `${(result.reply || '').trim()}\n\n${FOLLOW_PRAZO_Q}`;
+    else if (result.noReply) { result.reply = FOLLOW_PRAZO_Q; result.noReply = false; }
+  } catch (err) {
+    console.error('[AI Auto-reply] Pergunta do prazo (Follow Up) não adicionada:', err);
+  }
 }
 
 async function addDocsDoubtQuestions(leadId: string, incomingText: string, etapaTexto: string, result: AiAutoReplyResult): Promise<void> {

@@ -671,6 +671,8 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
       const docReminder = stageNamePattern.includes('aguardando document');
       // Loop novo de lembretes (docs-loop.service) no ar: as regras antigas de lembrete de Aguardando Documentação param sozinhas.
       if (docReminder && await (require('./docs-loop.service') as typeof import('./docs-loop.service')).docLoopAtivo(rule.accountId)) continue;
+      // Loop do Follow Up (follow-loop.service) no ar: as regras antigas de Prospecção/Follow Up ("manhã seguinte" e "final") param sozinhas.
+      if (/^(prospec|follow up)/.test(stageNamePattern) && await (require('./follow-loop.service') as typeof import('./follow-loop.service')).followLoopAtivo(rule.accountId)) continue;
       const proprios = ((rule.actions as any[]) || []).flatMap((a) => [a?.config?.templateName, a?.config?.utilityTemplateName]).filter((x): x is string => typeof x === 'string' && !!x);
       const { isWaitingApprovalReply } = require('./approval-notice.service') as typeof import('./approval-notice.service');
 

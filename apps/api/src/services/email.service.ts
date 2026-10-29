@@ -102,10 +102,10 @@ export async function sendGenericEmail(to: string, subject: string, bodyText: st
   });
 }
 
-/** E-mail dos lembretes de documentação (Fabio 28/10: "refaz novos e-mails mais chamativos") — faixa azul da A&F, título grande, caixa de destaque e botão
- *  pro WhatsApp da API Oficial (61 8172-1313). Usado pelo loop de Aguardando Documentação (docs-loop.service). */
-export function emailLembreteDocs(p: { nome: string; titulo: string; paragrafos: string[]; destaque: string }): string {
-  const wa = 'https://wa.me/556181721313';
+/** E-mail dos lembretes (Fabio 28/10: "refaz novos e-mails mais chamativos") — faixa azul da A&F, título grande, caixa de destaque e botão (padrão: WhatsApp
+ *  da API Oficial, 61 8172-1313; o Follow Up passa o link da proposta). Usado pelos loops de Aguardando Documentação e de Follow Up. */
+export function emailLembreteDocs(p: { nome: string; titulo: string; paragrafos: string[]; destaque: string; cta?: { texto: string; url: string; rodape?: string } }): string {
+  const cta = p.cta || { texto: '📲 Enviar documentos pelo WhatsApp', url: 'https://wa.me/556181721313', rodape: 'ou responda este e-mail com os arquivos' };
   return `
 <div style="background:#eef2f7;padding:24px 12px;font-family:-apple-system,Segoe UI,Roboto,sans-serif">
   <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 18px rgba(13,37,69,.10)">
@@ -119,9 +119,9 @@ export function emailLembreteDocs(p: { nome: string; titulo: string; paragrafos:
       ${p.paragrafos.map((t) => `<p style="margin:0 0 14px;color:#334155;font-size:15px;line-height:1.6">${escapeHtml(t)}</p>`).join('')}
       <div style="margin:20px 0;padding:14px 16px;background:#fff7e6;border-left:4px solid #f59e0b;border-radius:8px;color:#7c4a03;font-size:14px;line-height:1.5">📌 ${escapeHtml(p.destaque)}</div>
       <div style="text-align:center;margin:26px 0 8px">
-        <a href="${wa}" style="display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px">📲 Enviar documentos pelo WhatsApp</a>
+        <a href="${cta.url}" style="display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:12px">${escapeHtml(cta.texto)}</a>
       </div>
-      <p style="margin:12px 0 0;text-align:center;color:#94a3b8;font-size:12px">ou responda este e-mail com os arquivos</p>
+      ${cta.rodape ? `<p style="margin:12px 0 0;text-align:center;color:#94a3b8;font-size:12px">${escapeHtml(cta.rodape)}</p>` : ''}
     </div>
     <div style="padding:0 28px 24px">${COMPANY_SIGNATURE_HTML}</div>
   </div>

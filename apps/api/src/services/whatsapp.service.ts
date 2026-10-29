@@ -1251,6 +1251,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       if (msg.type === 'text' && text) {
         const { maybeScheduleDocsFollowUp } = require('./docs-checker.service') as typeof import('./docs-checker.service');
         maybeScheduleDocsFollowUp(accountId, leadId, text).catch(() => {});
+        // Prospecção/Follow Up: o cliente disse quando preenche a proposta → o loop do Follow Up espera a data (Fabio 29/10).
+        (require('./follow-loop.service') as typeof import('./follow-loop.service')).maybeSetFollowPrazo(accountId, leadId, text).catch(() => {});
         const { maybeRecheckOwnerAnswer } = require('./docs-checker.service') as typeof import('./docs-checker.service');
         maybeRecheckOwnerAnswer(accountId, leadId, io).catch(() => {}); // respondeu de quem é o imóvel → reconfere os documentos
       }
