@@ -52,4 +52,10 @@ router.post('/:leadId/cadastro', async (req: AuthRequest, res: Response) => {
   try { await gravarCadastro(req.user!.accountId, req.params.leadId, Number(ordem), { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
+// Histórico da extensão nos logs do servidor (diagnóstico sem precisar abrir o Chrome do Fabio).
+router.post('/log', async (req: AuthRequest, res: Response) => {
+  console.log('[CAIXA ext]', String((req.body as any)?.texto || '').replace(/\d{11}/g, '[CPF]').slice(0, 500));
+  res.json({ ok: true });
+});
+
 export default router;
