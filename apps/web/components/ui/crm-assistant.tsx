@@ -228,6 +228,16 @@ export function CrmAssistant() {
   const cartaoRef = useRef<Cartao | null>(null);
   const vozIdRef = useRef('');
   const [vozNome, setVozNome] = useState('');
+  // Chamar pelo nome (Fabio 29/10: "somente o primeiro nome, sem ei"): desligado por padrão; ligado, um reconhecimento fica ouvindo (com o CRM aberto) e abre a conversa quando ouve o nome da voz escolhida.
+  const WAKE_KEY = 'jv_chamar_nome';
+  const [chamarPorNome, setChamarPorNome] = useState(false);
+  const partidaRef = useRef('');
+  useEffect(() => { try { setChamarPorNome(localStorage.getItem(WAKE_KEY) === '1'); } catch { /* */ } }, []);
+  function alternaChamarPorNome() {
+    const novo = !chamarPorNome; setChamarPorNome(novo);
+    try { localStorage.setItem(WAKE_KEY, novo ? '1' : '0'); } catch { /* */ }
+    toast(novo ? `Pronto: é só dizer "${vozNome || 'o nome da voz'}" (Chrome com o CRM aberto)` : 'Chamar pelo nome desligado', 'success');
+  }
   useEffect(() => { vozIdRef.current = lerVoz(); try { setVozNome(localStorage.getItem(`${VOZ_KEY}_nome`) || ''); } catch { /* */ } }, []);
   const setCard = (c: Cartao | null) => { cartaoRef.current = c; setCartao(c); };
 
@@ -423,13 +433,16 @@ export function CrmAssistant() {
     if (!SR) { toast('Este navegador não reconhece fala (use o Chrome ou o Safari)', 'error'); return; }
     vozRef.current = true;
     if (!precisaClique) setCard(null);
-    await falar(primeiroNome ? `Oi, ${primeiroNome}.` : 'Oi.');
+    const inicial = partidaRef.current; partidaRef.current = '';
+    if (!inicial) await falar(primeiroNome ? `Oi, ${primeiroNome}.` : 'Oi.');
+    let primeira = inicial;
     let silencios = 0;
     while (vozRef.current) {
       const parcial = interrompidoRef.current; interrompidoRef.current = '';
       // se interrompeu, ainda pega o resto da frase (no máx. 2 s: o que ela já ouviu vale como pedido)
-      const mais = parcial ? await Promise.race([escutar(), new Promise<string>((r) => setTimeout(() => { try { recRef.current?.stop(); } catch { /* */ } r(''); }, 2000))]) : await escutar();
-      const dito = [parcial, mais].filter(Boolean).join(' ').trim();
+      const mais = primeira ? '' : parcial ? await Promise.race([escutar(), new Promise<string>((r) => setTimeout(() => { try { recRef.current?.stop(); } catch { /* */ } r(''); }, 2000))]) : await escutar();
+      const dito = primeira || [parcial, mais].filter(Boolean).join(' ').trim();
+      primeira = '';
       if (!vozRef.current) break;
       if (!dito) { if (++silencios >= 2) break; continue; }
       silencios = 0;
@@ -460,6 +473,37 @@ export function CrmAssistant() {
     parar();
   }
   useEffect(() => () => { vozRef.current = false; calar(); }, []);
+  useEffect(() => {
+    if (!chamarPorNome || !vozNome || voz !== 'off') return;
+    const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    const nome = vozNome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean)[0];
+    if (!nome) return;
+    let vivo = true;
+    let rec: any;
+    const iniciar = () => {
+      if (!vivo || document.visibilityState !== 'visible') return;
+      try {
+        rec = new SR(); rec.lang = 'pt-BR'; rec.continuous = true; rec.interimResults = true;
+        rec.onresult = (e: any) => {
+          if (!vivo) return;
+          let txt = '';
+          for (let i = e.resultIndex; i < e.results.length; i++) txt += `${e.results[i][0].transcript} `;
+          const ws = txt.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+          const i = ws.indexOf(nome);
+          if (i < 0) return;
+          vivo = false; try { rec.abort(); } catch { /* */ }
+          partidaRef.current = ws.slice(i + 1).join(' '); // "Nina, abre o card do Pedro": o resto já vale como pedido
+          void conversar();
+        };
+        rec.onend = () => { if (vivo) setTimeout(iniciar, 400); };
+        rec.onerror = () => { /* microfone ocupado/negado: tenta de novo no onend */ };
+        rec.start();
+      } catch { /* */ }
+    };
+    iniciar();
+    return () => { vivo = false; try { rec?.abort(); } catch { /* */ } };
+  }, [chamarPorNome, vozNome, voz]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── lembretes: na hora, a bolinha fala (além do push) ──
   useEffect(() => {
@@ -524,6 +568,7 @@ export function CrmAssistant() {
           ))}
           {cartao?.nav?.path && <button onClick={() => router.push(cartao.nav!.path)} className="mt-1.5 flex items-center gap-1 text-xs font-medium text-[#2261a8] hover:underline"><ExternalLink size={12} /> {cartao.nav.label}</button>}
           {!cartao?.escolherVoz && vozNome && <button onClick={() => { if (vozRef.current) parar(); setCard({ escolherVoz: true }); }} className="mt-2 flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600"><Volume2 size={11} /> Voz: {vozNome} · trocar</button>}
+          {!cartao?.escolherVoz && vozNome && <button onClick={alternaChamarPorNome} className="mt-1 flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600"><Volume2 size={11} /> Chamar dizendo "{vozNome}": {chamarPorNome ? 'ligado' : 'desligado'}</button>}
         </div>
       )}
 
