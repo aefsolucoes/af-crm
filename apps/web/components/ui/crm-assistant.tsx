@@ -279,6 +279,7 @@ export function CrmAssistant() {
     if (!t) return;
     setVoz('falando');
     try { audioRef.current?.pause(); } catch { /* */ }
+    const soltaVigia = vigiarInterrupcao(t);
     try {
       const r = await api.post('/api/assistant/tts', { text: t.slice(0, 900), voiceId: vozIdRef.current || undefined }, { responseType: 'blob' });
       const url = URL.createObjectURL(r.data as Blob);
@@ -289,7 +290,34 @@ export function CrmAssistant() {
       });
       URL.revokeObjectURL(url);
     } catch { await vozNavegador(t); }
+    soltaVigia();
     setVoz(vozRef.current ? 'pensando' : 'off');
+  }
+  /** Interromper a bolinha falando (Fabio 29/10: "falei o nome da cliente e ela continuou a lista"). Enquanto ela fala, um 2º reconhecimento fica ouvindo: palavra que ela NÃO está dizendo (o eco da própria voz é descartado) ou "pare/espera/calma/chega" corta a fala na hora e o que foi dito vira o pedido seguinte. */
+  const interrompidoRef = useRef('');
+  function vigiarInterrupcao(falado: string): () => void {
+    const SR: any = typeof window !== 'undefined' ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
+    if (!SR || !vozRef.current) return () => {};
+    const norm = (x: string) => x.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+    const dele = new Set(norm(falado));
+    let ativo = true;
+    let rec: any;
+    try {
+      rec = new SR(); rec.lang = 'pt-BR'; rec.continuous = true; rec.interimResults = true;
+      rec.onresult = (e: any) => {
+        if (!ativo) return;
+        let txt = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) txt += `${e.results[i][0].transcript} `;
+        const ws = norm(txt);
+        if (!ws.length) return;
+        const pediuParar = ws.some((w) => ['pare', 'para', 'espera', 'espere', 'calma', 'chega', 'jarvis'].includes(w));
+        if (pediuParar || ws.some((w) => !dele.has(w))) { ativo = false; interrompidoRef.current = txt.trim(); try { rec.abort(); } catch { /* */ } calar(); }
+      };
+      rec.onend = () => { if (ativo) { try { rec.start(); } catch { /* */ } } };
+      rec.onerror = () => { /* sem microfone livre: segue sem interromper */ };
+      rec.start();
+    } catch { return () => {}; }
+    return () => { ativo = false; try { rec.abort(); } catch { /* */ } };
   }
   function calar() {
     try { audioRef.current?.pause(); } catch { /* */ }
@@ -398,7 +426,10 @@ export function CrmAssistant() {
     await falar(primeiroNome ? `Oi, ${primeiroNome}.` : 'Oi.');
     let silencios = 0;
     while (vozRef.current) {
-      const dito = await escutar();
+      const parcial = interrompidoRef.current; interrompidoRef.current = '';
+      // se interrompeu, ainda pega o resto da frase (no máx. 2 s: o que ela já ouviu vale como pedido)
+      const mais = parcial ? await Promise.race([escutar(), new Promise<string>((r) => setTimeout(() => { try { recRef.current?.stop(); } catch { /* */ } r(''); }, 2000))]) : await escutar();
+      const dito = [parcial, mais].filter(Boolean).join(' ').trim();
       if (!vozRef.current) break;
       if (!dito) { if (++silencios >= 2) break; continue; }
       silencios = 0;
