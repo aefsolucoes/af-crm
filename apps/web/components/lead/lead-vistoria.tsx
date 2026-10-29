@@ -215,3 +215,58 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
     </div>
   );
 }
+
+/* Vistoria do Santander (Fabio 29/10: "coloca dentro do card igual é do Inter"). Não tem extensão: é um e-mail à Letícia. O botão avança o fluxo do CRM
+ * (autorização USECASA ao cliente → assinatura no gov.br → documentos da pasta + cadastro WEB CASAS → e-mail à Letícia). Ver vistoria-santander.service.ts. */
+type SantanderPreview =
+  | { aplicavel: false }
+  | { aplicavel: true; status: string; statusTexto: string; askedAt: string | null; signedAt: string | null; sentAt: string | null; to: string; docs: { key: string; label: string; ok: boolean }[]; temLinkPasta: boolean };
+
+export function LeadVistoriaSantander({ leadId }: { leadId: string }) {
+  const [p, setP] = useState<SantanderPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const carregar = () => api.get<SantanderPreview>('/api/vistorias/santander/preview', { params: { leadId } }).then((r) => setP(r.data)).catch(() => {});
+  useEffect(() => { carregar(); }, [leadId]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!p || !p.aplicavel) return null;
+
+  const enviada = p.status === 'ENVIADA';
+  const pronta = p.status === 'PRONTA';
+  const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : null);
+
+  async function avancar() {
+    const msg = !p || !p.aplicavel ? '' : pronta || p.signedAt
+      ? `Conferir tudo e ENVIAR o pedido de vistoria à Letícia (${p.to}), com a autorização assinada, o cadastro WEB CASAS e os documentos da pasta?`
+      : p.askedAt
+        ? 'Conferir agora se o cliente já devolveu a autorização assinada e se os documentos estão na pasta?'
+        : 'Mandar ao cliente, pelo WhatsApp, a autorização USECASA já preenchida para ele assinar pelo gov.br?';
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post<SantanderPreview>('/api/vistorias/santander/run', { leadId });
+      setP(data);
+      toast(data.aplicavel && data.status === 'ENVIADA' ? 'Vistoria solicitada à Letícia' : 'Fluxo avançado — veja o andamento e as notas do card', 'success');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao avançar a vistoria do Santander', 'error');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <ClipboardCheck className="h-3.5 w-3.5" /> Vistoria do imóvel (Santander)
+      </div>
+      {enviada && <div className="mb-2 text-xs text-emerald-700">Pedido enviado à Letícia{p.sentAt ? ` em ${fmt(p.sentAt)}` : ''}.</div>}
+      {!enviada && p.statusTexto && <div className={`mb-2 text-xs ${pronta ? 'text-amber-700' : p.status === 'ERRO' ? 'text-red-600' : 'text-slate-500'}`}>🏦 {p.statusTexto}</div>}
+      {!p.status && <div className="mb-2 text-xs text-slate-500">Ainda não iniciada. A vistoria do Santander sai por e-mail à Letícia: o CRM manda a autorização USECASA ao cliente (assinar pelo gov.br), junta o cadastro WEB CASAS e os documentos da pasta.</div>}
+      <ul className="mb-2 space-y-0.5 text-xs">
+        {p.docs.map((d) => <li key={d.key} className={d.ok ? 'text-emerald-700' : 'text-amber-700'}>{d.ok ? '✓' : '•'} {d.label}{d.ok ? '' : ' — falta na pasta do Drive'}</li>)}
+      </ul>
+      {!p.temLinkPasta && <div className="mb-2 text-xs text-red-600">Este card não tem pasta do Drive vinculada.</div>}
+      {!enviada && (
+        <button onClick={avancar} disabled={busy} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">
+          {busy ? 'Trabalhando…' : pronta || p.signedAt ? 'Enviar à Letícia' : p.askedAt ? 'Conferir assinatura e documentos' : 'Iniciar: mandar autorização ao cliente'}
+        </button>
+      )}
+    </div>
+  );
+}

@@ -68,10 +68,21 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
   // Chave geral desligada (Fabio 22/10: passos manuais por enquanto): nada sai sozinho — a equipe recebe a nota com o que fazer. Ligando a chave, o card segue daqui automaticamente.
   if (!(await contractingAutoOn(accountId))) {
     const nome = BANCO[banco] || banco;
+    // Santander: se a equipe já começou pelo botão do card, o CRM continua conferindo assinatura/documentos (e segura o envio à Letícia até o clique) e avisa o colaborador se faltar a CND de IPTU.
+    if (banco === 'CREDIMORAR') {
+      const sant = require('./vistoria-santander.service') as typeof import('./vistoria-santander.service');
+      if ((cf._vistoriaSant || {}).startedByTeam) {
+        if (st.status !== 'SANTANDER') await salva(leadId, { status: 'SANTANDER', banco, since: st.since || new Date().toISOString() });
+        const enviado = await sant.processVistoriaSantander(accountId, leadId, io as any, { holdSend: true });
+        if (enviado) await salva(leadId, { status: 'ENVIADA', banco, at: new Date().toISOString(), por: 'equipe' });
+        return;
+      }
+      await sant.avisaCndSeFalta(accountId, leadId).catch(() => {});
+    }
     const passos = banco === 'INTER'
       ? 'Se o e-mail de engajamento do Inter ainda não chegou, confirme com o cliente e clique em "Seguir com proposta" no portal; com o e-mail na caixa, use o botão "Solicitar vistoria" do card (os anexos já vêm marcados).'
       : banco === 'CREDIMORAR'
-        ? 'Envie a solicitação por e-mail à Letícia (Santander) com a autorização USECASA assinada pelo cliente no gov.br, o cadastro WEB CASAS e os documentos da pasta do Drive.'
+        ? 'Abra a aba Financiamento do card, em "Vistoria do imóvel (Santander)", e clique em "Iniciar / avançar": o CRM manda a autorização USECASA ao cliente (assinar pelo gov.br), junta o cadastro WEB CASAS e os documentos da pasta, e você envia à Letícia no botão "Enviar à Letícia". Se faltar a CND de IPTU, o colaborador do card recebe um push para solicitá-la.'
         : `Solicite a vistoria do ${nome} à mão.`;
     const avisou = await manualStep({ accountId, leadId, leadName: lead.name, step: 'vistoria', pushTitle: '🏠 Solicitar a vistoria', pushBody: `${lead.name}: documentação completa, segue pelo ${nome}`,
       note: `🏠 Documentação completa; o cliente segue pelo ${nome}. Passo manual (automação da contratação desligada): ${passos}` });

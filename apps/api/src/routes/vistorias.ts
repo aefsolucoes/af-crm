@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { vistoriaPreview, solicitarVistoria, laudoPreview, requestLaudo, claimLaudo, reportLaudo, seguirPreview, requestSeguir, claimSeguir, reportSeguir } from '../services/vistoria-inter.service';
+import { santanderPreview, executarVistoriaSantander } from '../services/vistoria-santander.service';
 
 /** Botão "Solicitar vistoria" do card — ver vistoria-inter.service.ts. */
 const router = Router();
@@ -51,6 +52,14 @@ router.get('/seguir/queue', async (req: AuthRequest, res: Response) => {
 });
 router.post('/seguir/:leadId/report', async (req: AuthRequest, res: Response) => {
   try { res.json(await reportSeguir(req.user!.accountId, req.params.leadId, req.body || {})); } catch (err) { fail(res, err, 'Erro ao registrar'); }
+});
+
+// ── Vistoria do Santander (e-mail à Letícia) — botão do card; ver vistoria-santander.service.ts ──
+router.get('/santander/preview', async (req: AuthRequest, res: Response) => {
+  try { res.json(await santanderPreview(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao ler a vistoria do Santander'); }
+});
+router.post('/santander/run', async (req: AuthRequest, res: Response) => {
+  try { res.json(await executarVistoriaSantander(req.user!.accountId, String(req.body?.leadId || ''), (req as any).app.get('io'))); } catch (err) { fail(res, err, 'Erro ao avançar a vistoria do Santander'); }
 });
 
 export default router;

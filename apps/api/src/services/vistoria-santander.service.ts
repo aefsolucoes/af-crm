@@ -17,10 +17,19 @@ type Io = Parameters<typeof sendOutboundMedia>[0]['io'];
 export const VISTORIA_SANTANDER_TO = process.env.VISTORIA_SANTANDER_TO || 'leticia.gomes@credimorar.com.vc';
 const AVISO_REPETIR_MS = 12 * 3600_000;
 
-type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string };
+type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string; cndCheckAt?: string; prontaNoteAt?: string; startedByTeam?: boolean };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
 const push = (accountId: string, title: string, body: string, leadId: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
+/** Push ao colaborador responsável pelo card (Lead.userId); se ele não tem aparelho cadastrado, vai pra equipe toda. */
+async function pushDono(accountId: string, leadId: string, title: string, body: string) {
+  try {
+    const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true } });
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    const tem = l?.userId ? await prisma.pushSubscription.count({ where: { userId: l.userId } }) : 0;
+    sendPushToAccount(accountId, { title, body, leadId }, tem && l?.userId ? [l.userId] : undefined).catch(() => {});
+  } catch { /* aviso */ }
+}
 async function salva(leadId: string, patch: Partial<St>) {
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = { ...((fresh?.customFields || {}) as Record<string, any>) };
@@ -67,6 +76,25 @@ async function arquivosDoDrive(accountId: string, cf: Record<string, any>): Prom
   } catch { return []; }
 }
 
+/** CND de IPTU é a A&F que emite: sem ela na pasta, avisa (nota + push) o COLABORADOR do card pra solicitar/emitir (Fabio 29/10). Confere o Drive no máx. a cada 30 min e repete o aviso a cada 12 h. Devolve true se a CND está faltando. */
+export async function avisaCndSeFalta(accountId: string, leadId: string, opts: { force?: boolean } = {}): Promise<boolean> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  if (!lead) return false;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const st = (cf._vistoriaSant || {}) as St;
+  if (!opts.force && faz(st.cndCheckAt) < 30 * 60_000) return false;
+  await salva(leadId, { cndCheckAt: new Date().toISOString() });
+  const cat = categoriasDoDrive(await arquivosDoDrive(accountId, cf));
+  if (cat.cnd.length) return false;
+  if (opts.force || faz(st.cndNoteAt) > AVISO_REPETIR_MS) {
+    await salva(leadId, { cndNoteAt: new Date().toISOString() });
+    const insc = String((cf._docReview && Object.values(cf._docReview as Record<string, any>).map((r: any) => r?.inscricao).find(Boolean)) || '').trim();
+    await note(leadId, `🏦 Santander: falta a CND de IPTU na pasta do Drive. É a A&F que emite: solicitar/emitir no site da prefeitura do município do imóvel (certidão negativa de débitos imobiliários/IPTU)${insc ? `, inscrição ${insc}` : ''}, e subir na subpasta IMOVEL do Drive com o nome "CND IPTU". Sem ela o pedido de vistoria não vai à Letícia.`);
+    await pushDono(accountId, leadId, '🏦 Falta a CND de IPTU (Santander)', `${lead.name}: solicitar/emitir a CND de IPTU e subir na pasta do Drive`);
+  }
+  return true;
+}
+
 async function bytesDoAnexo(accountId: string, a: { data: Uint8Array | Buffer | null; driveFileId: string | null; mimeType: string }): Promise<Buffer | null> {
   if (a.data && a.data.length) return Buffer.from(a.data);
   if (!a.driveFileId) return null;
@@ -86,13 +114,15 @@ async function guardaFormulario(accountId: string, cf: Record<string, any>, nome
 }
 
 /** Chamado pelo vigia da vistoria (um card por vez) quando o cliente segue pelo Santander. Devolve true quando o pedido já foi enviado. */
-export async function processVistoriaSantander(accountId: string, leadId: string, io: Io): Promise<boolean> {
+export async function processVistoriaSantander(accountId: string, leadId: string, io: Io, opts: { manual?: boolean; holdSend?: boolean } = {}): Promise<boolean> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true, contact: { select: { phone: true } } } });
   if (!lead) return false;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._autoPaused) return false;
   const st = (cf._vistoriaSant || {}) as St;
   if (st.status === 'ENVIADA') return true;
+  if (opts.manual && !st.startedByTeam) { await salva(leadId, { startedByTeam: true }); st.startedByTeam = true; }
+  const repete = (iso?: string) => opts.manual || faz(iso) > AVISO_REPETIR_MS;
 
   const propMsg = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Proposta preenchida no site' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
   const campos = camposDaProposta(propMsg?.content || '');
@@ -101,14 +131,14 @@ export async function processVistoriaSantander(accountId: string, leadId: string
 
   // 1) mandar a autorização pro cliente assinar
   if (!st.askedAt) {
-    if (!lead.aiAutoReplyActive) {
+    if (!lead.aiAutoReplyActive && !opts.manual) {
       if (!st.teamAskNoteAt) { await salva(leadId, { teamAskNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander: documentação completa. Falta mandar ao cliente a autorização USECASA pra assinar pelo gov.br (IA do card desligada: o CRM não mandou sozinho).'); push(accountId, '🏦 Vistoria Santander', `${lead.name}: mandar a autorização USECASA pra assinar`, leadId); }
       return false;
     }
     const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-    if (!inNoticeWindow()) return false;
+    if (!inNoticeWindow() && !opts.manual) return false;
     if (!(await whatsappWindowOpen(leadId))) {
-      if (!st.teamAskNoteAt) { await salva(leadId, { teamAskNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander: documentação completa, mas a janela de 24 h do WhatsApp está fechada. A autorização USECASA sai assim que o cliente responder qualquer mensagem.'); push(accountId, '🏦 Vistoria Santander', `${lead.name}: janela fechada, aguardando o cliente falar`, leadId); }
+      if (opts.manual || !st.teamAskNoteAt) { await salva(leadId, { teamAskNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander: documentação completa, mas a janela de 24 h do WhatsApp está fechada. A autorização USECASA sai assim que o cliente responder qualquer mensagem.'); push(accountId, '🏦 Vistoria Santander', `${lead.name}: janela fechada, aguardando o cliente falar`, leadId); }
       return false;
     }
     const cidade = (campos['Cidade/UF residência'] || campos['Imóvel em garantia'] || '').replace(/\s*\/\s*[A-Za-z]{2}\s*$/, '').trim();
@@ -120,6 +150,9 @@ export async function processVistoriaSantander(accountId: string, leadId: string
     await note(leadId, `🏦 Santander: mandei ao cliente a autorização USECASA (já com nomes e CPFs) pra assinar pelo gov.br${guardou ? ' (cópia na pasta FORMULARIOS do Drive)' : ''}. Quando o PDF assinado voltar, o CRM junta os documentos e pede a vistoria por e-mail à Letícia.`);
     return false;
   }
+
+  // CND de IPTU: já avisa o colaborador enquanto o cliente assina (a A&F leva dias pra emitir)
+  await avisaCndSeFalta(accountId, leadId, { force: opts.manual }).catch(() => {});
 
   // 2) esperar o PDF assinado de volta
   if (!st.signedAt) {
@@ -162,12 +195,13 @@ export async function processVistoriaSantander(accountId: string, leadId: string
   if (cat.ident.length < (p2 ? 2 : 1)) faltam.push(`documento de identidade${p2 ? ' (dos dois)' : ''}`);
   if (!cat.civil.length) faltam.push('certidão de estado civil');
   if (faltam.length) {
-    if (faz(st.faltaNoteAt) > AVISO_REPETIR_MS) {
+    if (repete(st.faltaNoteAt)) {
       await salva(leadId, { status: 'AGUARDA_DOCS', faltaNoteAt: new Date().toISOString(), ...(faltam.some((f) => /CND/.test(f)) ? { cndNoteAt: new Date().toISOString() } : {}) });
       const cnd = faltam.some((f) => /CND/.test(f));
       const insc = String((cf._docReview && Object.values(cf._docReview as Record<string, any>).map((r: any) => r?.inscricao).find(Boolean)) || '').trim();
       await note(leadId, `🏦 Santander: autorização assinada, mas a pasta do Drive ainda não tem: ${faltam.join('; ')}.${cnd ? `\nA CND de IPTU é da A&F: emitir no site da prefeitura do município do imóvel (certidão negativa de débitos imobiliários/IPTU)${insc ? `, inscrição ${insc}` : ''}, e subir na subpasta IMOVEL do Drive (nome "CND IPTU"). Assim que estiver na pasta, o CRM envia o pedido à Letícia.` : ''}`);
-      push(accountId, '🏦 Vistoria Santander: falta documento', `${lead.name}: ${faltam.join('; ').slice(0, 110)}`, leadId);
+      if (cnd) await pushDono(accountId, leadId, '🏦 Falta a CND de IPTU (Santander)', `${lead.name}: ${faltam.join('; ').slice(0, 110)}`);
+      else push(accountId, '🏦 Vistoria Santander: falta documento', `${lead.name}: ${faltam.join('; ').slice(0, 110)}`, leadId);
     }
     return false;
   }
@@ -179,11 +213,21 @@ export async function processVistoriaSantander(accountId: string, leadId: string
   const essenciais = dados.faltando.filter((f) => /sexo|estado civil|n[uú]mero do documento|endere[cç]o completo do im[oó]vel|tipo do im[oó]vel|telefone do comprador/i.test(f));
   const docx = await preencherWebCasas(dados.ops);
   if (essenciais.length) {
-    if (faz(st.faltaNoteAt) > AVISO_REPETIR_MS || st.status !== 'FALTAM_DADOS') {
+    if (repete(st.faltaNoteAt) || st.status !== 'FALTAM_DADOS') {
       await salva(leadId, { status: 'FALTAM_DADOS', faltaNoteAt: new Date().toISOString() });
       const guardou = await guardaFormulario(accountId, cf, 'WEB CASAS - CADASTRO PARA COMPLETAR.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', docx);
       await note(leadId, `🏦 Santander: tudo pronto pra pedir a vistoria, mas o cadastro WEB CASAS ficou sem dado essencial: ${essenciais.join('; ')}.${guardou ? ' Guardei o Word preenchido na pasta FORMULARIOS do Drive ("WEB CASAS - CADASTRO PARA COMPLETAR"): complete e envie à Letícia com os documentos, ou me diga o que preencher.' : ' Complete o cadastro e envie à Letícia com os documentos, ou me diga o que preencher.'}`);
       push(accountId, '🏦 Vistoria Santander: cadastro incompleto', `${lead.name}: ${essenciais.join('; ').slice(0, 110)}`, leadId);
+    }
+    return false;
+  }
+
+  // Automação da contratação desligada: tudo pronto, mas quem envia à Letícia é a equipe (botão "Enviar à Letícia" no card).
+  if (opts.holdSend && !opts.manual) {
+    if (st.status !== 'PRONTA') {
+      await salva(leadId, { status: 'PRONTA', prontaNoteAt: new Date().toISOString() });
+      await note(leadId, '🏦 Santander: autorização assinada, documentos completos e cadastro WEB CASAS preenchido. Falta só enviar à Letícia: botão "Enviar à Letícia" em "Vistoria do imóvel (Santander)", na aba Financiamento do card.');
+      await pushDono(accountId, leadId, '🏦 Vistoria Santander pronta', `${lead.name}: clique em "Enviar à Letícia" no card`);
     }
     return false;
   }
@@ -238,4 +282,53 @@ export async function processVistoriaSantander(accountId: string, leadId: string
     }
   } catch (e: any) { console.warn('[Vistoria Santander] não consegui mover o card:', e?.message); }
   return true;
+}
+
+// ── Card: "Vistoria do imóvel (Santander)" (Fabio 29/10: igual ao do Inter, dentro do card) ──
+
+const STATUS_TXT: Record<string, string> = {
+  ASSINATURA_PEDIDA: 'Autorização USECASA enviada ao cliente — aguardando ele assinar pelo gov.br e devolver',
+  ASSINADA: 'Autorização assinada pelo cliente — conferindo os documentos da pasta',
+  AGUARDA_DOCS: 'Autorização assinada — faltam documentos na pasta do Drive',
+  FALTAM_DADOS: 'Documentos ok, mas o cadastro WEB CASAS ficou sem dado essencial (Word na pasta FORMULARIOS)',
+  PRONTA: 'Tudo pronto — falta enviar o pedido à Letícia',
+  ENVIADA: 'Pedido de vistoria enviado à Letícia',
+  ERRO: 'Deu erro no envio (veja a nota do card)',
+};
+
+/** O que o card mostra: andamento, documentos da pasta (achou/faltou) e a CND de IPTU. `aplicavel` = o cliente tem aprovação do Santander (ou o fluxo já começou). */
+export async function santanderPreview(accountId: string, leadId: string) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const st = (cf._vistoriaSant || {}) as St;
+  const aprov = await prisma.creditAnalysis.count({ where: { leadId, bank: 'CREDIMORAR', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } } });
+  const aplicavel = aprov > 0 || !!cf._vistoriaSant;
+  if (!aplicavel) return { aplicavel: false as const };
+  const propMsg = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Proposta preenchida no site' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const campos = camposDaProposta(propMsg?.content || '');
+  const { p2 } = participantesDe(cf, campos, lead.name);
+  const cat = categoriasDoDrive(await arquivosDoDrive(accountId, cf));
+  const docs = [
+    { key: 'cnd', label: 'CND de IPTU (a A&F emite)', ok: cat.cnd.length > 0 },
+    { key: 'capa', label: 'Capa do IPTU', ok: cat.capa.length > 0 },
+    { key: 'onus', label: 'Certidão de ônus/matrícula', ok: cat.onus.length > 0 },
+    { key: 'ident', label: `Documento de identidade${p2 ? ' (dos dois)' : ''}`, ok: cat.ident.length >= (p2 ? 2 : 1) },
+    { key: 'civil', label: 'Certidão de estado civil', ok: cat.civil.length > 0 },
+  ];
+  return {
+    aplicavel: true as const,
+    status: st.status || '',
+    statusTexto: STATUS_TXT[st.status || ''] || '',
+    askedAt: st.askedAt || null, signedAt: st.signedAt || null, sentAt: st.sentAt || null, to: st.to || VISTORIA_SANTANDER_TO,
+    docs, temLinkPasta: !!String(cf.link_pasta_drive || '').trim(),
+  };
+}
+
+/** Botão do card: avança o fluxo AGORA (manda a autorização ao cliente, confere assinatura/documentos e, se tudo estiver pronto, envia o e-mail à Letícia). Devolve o preview novo. */
+export async function executarVistoriaSantander(accountId: string, leadId: string, io: Io) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  await processVistoriaSantander(accountId, leadId, io, { manual: true });
+  return santanderPreview(accountId, leadId);
 }
