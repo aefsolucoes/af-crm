@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
-import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro } from '../services/caixa-cadastro.service';
+import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro } from '../services/caixa-cadastro.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -36,6 +36,20 @@ router.post('/:leadId/conferir', async (req: AuthRequest, res: Response) => {
     if (!r) return res.status(502).json({ error: 'Não consegui conferir agora' });
     res.json(r);
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+
+router.post('/:leadId/cadastrar', async (req: AuthRequest, res: Response) => {
+  const ordens = (Array.isArray(req.body?.ordens) ? req.body.ordens : []).map(Number).filter((n: number) => n > 0);
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const erro = await pedirCadastroParticipantes(req.user!.accountId, req.params.leadId, ordens, quem).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+
+router.post('/:leadId/cadastro', async (req: AuthRequest, res: Response) => {
+  const { ordem, status, texto } = req.body as { ordem?: number; status?: string; texto?: string };
+  if (!ordem || !status) return res.status(400).json({ error: 'ordem e status obrigatórios' });
+  try { await gravarCadastro(req.user!.accountId, req.params.leadId, Number(ordem), { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
 export default router;

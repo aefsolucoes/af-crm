@@ -47,11 +47,26 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
       AND "customFields"->'_caixaCadastro'->>'status' = 'FILA'
     ORDER BY "customFields"->'_caixaCadastro'->>'pedidoEm' ASC LIMIT 10`;
-  for (const { id } of ids) {
+  // Depois das consultas: cadastros pedidos (Fabio 29/10: "faz o cadastro da Bianca e da Adriana").
+  const cads = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
+      AND "customFields"->'_caixaCadastro'->'cadastros' IS NOT NULL
+    ORDER BY "customFields"->'_caixaCadastro'->>'pedidoEm' ASC LIMIT 10`;
+  for (const { id } of [...ids, ...cads.filter((x) => !ids.some((y) => y.id === x.id))]) {
     const l = await prisma.lead.findUnique({ where: { id }, select: { id: true, name: true, customFields: true } });
     const cf = (l?.customFields || {}) as Cf;
     const c = cf._caixaCadastro || {};
     if (c.atual && Date.now() - Date.parse(c.atual.desde) < LEASE_MS) return null; // um por vez: espera o que está em andamento
+    if (c.status !== 'FILA') {
+      const ps = participantesDa(cf);
+      const ordem = Object.entries(c.cadastros || {}).find(([, v]: [string, any]) => v?.status === 'FILA')?.[0];
+      const pc = ordem && ps.find((x) => x.ordem === Number(ordem));
+      if (!pc) continue;
+      await salvar(id, (x) => { x.atual = { ordem: pc.ordem, desde: new Date().toISOString(), tipo: 'cadastrar' }; x.cadastros[pc.ordem] = { ...x.cadastros[pc.ordem], status: 'RODANDO', inicio: new Date().toISOString() }; });
+      const { fontes, faltando, ...participante } = pc;
+      const p1 = ps.find((x) => x.ordem === 1);
+      return { tipo: 'cadastrar', leadId: id, leadName: l!.name, ordem: pc.ordem, nome: pc.nome, cpf: pc.cpf, participante, primeiro: p1 ? { endereco: p1.endereco } : null };
+    }
     const p = participantesDa(cf).find((x) => !c.consultas?.[x.ordem]);
     if (!p) continue;
     if (p.cpf.length !== 11) {
@@ -60,7 +75,7 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
       continue;
     }
     await salvar(id, (x) => { x.atual = { ordem: p.ordem, desde: new Date().toISOString() }; });
-    return { leadId: id, leadName: l!.name, ordem: p.ordem, nome: p.nome, cpf: p.cpf };
+    return { tipo: 'consultar', leadId: id, leadName: l!.name, ordem: p.ordem, nome: p.nome, cpf: p.cpf };
   }
   return null;
 }
@@ -134,4 +149,27 @@ export async function conferirCadastro(accountId: string, leadId: string, ordem:
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔎 Conferência do cadastro na CAIXA — ${ordem}º participante (${p.nome || '—'}): ${out.ok && !linhas.length ? '✅ tudo confere com os documentos.' : 'precisa corrigir antes de gravar:'}${linhas.length ? `\n${linhas.join('\n')}` : ''}${out.resumo ? `\n${out.resumo}` : ''}` } }).catch(() => {});
   await salvar(leadId, (x) => { x.conferencias = { ...(x.conferencias || {}), [ordem]: { at: new Date().toISOString(), ok: out.ok && !linhas.length } }; });
   return out;
+}
+
+/** Pede o cadastro de participantes na CAIXA (a extensão faz: CPF → formulário preenchido pela ficha → conferência do CRM). */
+export async function pedirCadastroParticipantes(accountId: string, leadId: string, ordens: number[], por: string): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!l) return 'Lead não encontrado';
+  const ps = participantesDa((l.customFields || {}) as Cf);
+  const validos = ordens.filter((o) => ps.some((p) => p.ordem === o));
+  if (!validos.length) return 'Participante não está na ficha';
+  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of validos) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA pedido (${por}) para: ${validos.map((o) => ps.find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')}. A extensão preenche pela ficha e o CRM confere.` } }).catch(() => {});
+  return null;
+}
+
+/** Resultado do cadastro vindo da extensão (preenchido + conferência; salvo ou parado antes de salvar). */
+export async function gravarCadastro(accountId: string, leadId: string, ordem: number, r: { status: string; texto: string }): Promise<void> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!l) return;
+  const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === Number(ordem));
+  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}), [ordem]: { ...(x.cadastros?.[ordem] || {}), status: r.status, fim: new Date().toISOString() } }; delete x.atual; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA — ${ordem}º participante (${p?.nome || '—'}): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `🏦 ${l.name}: cadastro CAIXA (${p?.nome || `${ordem}º`})`, body: r.status, leadId }).catch(() => {});
 }
