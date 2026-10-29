@@ -278,6 +278,16 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
       // Achado pelo Mapa do ONR (endereço → cartório): o CRM grava NA HORA a região (CEP + bairro → cartório), sem esperar a certidão sair (Fabio 29/10: "esse conhecimento deve ir pro CRM também").
       const e = (r.endereco || {}) as any;
       await (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).aprenderCartorio(r.accountId, { uf: r.uf, cidade, cartorio, cep: e.cep, bairro: e.bairro }).catch(() => {});
+      // E vai pro CARD do cliente: campo "Cartório de registro" (cartorio_registro), se ainda estiver vazio (Fabio 29/10: "quando achar, coloca no card do cliente").
+      try {
+        const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { customFields: true } });
+        const cf = { ...((lead?.customFields || {}) as Record<string, any>) };
+        if (!String(cf.cartorio_registro || '').trim()) {
+          const txt = /(\d{1,2})\s*[º°ª]?\s*(?:Oficial de\s+)?Registro de Im[óo]veis de [^.]+/i.exec(String(d.origem || ''));
+          cf.cartorio_registro = (txt ? txt[0] : cartorio).replace(/\s+-\s+[A-Z]{2}\s*$/, '').trim().slice(0, 120);
+          await db.lead.update({ where: { id: r.leadId }, data: { customFields: cf as any } });
+        }
+      } catch { /* o card é bônus */ }
       await note(db, r.leadId, `🗺️ Certidão: o Mapa do ONR diz que o imóvel é do ${cartorio} (${String(d.origem).replace(/^Mapa do ONR\s*—\s*/i, '')}). O CRM guardou pra região (CEP ${String(e.cep || '').slice(0, 5)} / ${e.bairro || '—'}).`, r.requestedById);
     } else await note(db, r.leadId, `🏛️ Certidão: o cartório "${String(d.origem || r.cartorio)}" fica no portal como ${cartorio} (cidade ${cidade}). A extensão memorizou pra próxima vez.`, r.requestedById);
   } else if (d.event === 'ordered') {
