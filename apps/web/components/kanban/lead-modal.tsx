@@ -18,6 +18,8 @@ interface LeadModalProps {
   defaultStageId?: string;
   contacts: Contact[];
   users: User[];
+  /** Setor do funil — Home Equity não tem "Valor de entrada" (Fabio 28/10). */
+  departmentName?: string | null;
 }
 
 const VINCULO_OPTIONS = ['CLT', 'Autônomo', 'Empresário', 'Aposentado', 'Servidor Público', 'Profissional Liberal', 'Outro'];
@@ -34,7 +36,7 @@ function parseBRNumber(raw: string): number {
   return isNaN(n) ? 0 : n;
 }
 
-export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaultStageId, contacts, users }: LeadModalProps) {
+export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaultStageId, contacts, users, departmentName }: LeadModalProps) {
   const { user } = useAuthStore();
 
   const emptyForm = () => ({
@@ -383,14 +385,16 @@ export function LeadModal({ open, onClose, onCreated, stages, pipelineId, defaul
               onChange={e => handleChange('valor_credito', e.target.value)}
               placeholder="Ex: 250.000"
             />
-            <Input
-              label="Valor de entrada (R$)"
-              type="text"
-              inputMode="numeric"
-              value={form.valor_entrada}
-              onChange={e => handleChange('valor_entrada', e.target.value)}
-              placeholder="Ex: 50.000"
-            />
+            {!/home equity/i.test(departmentName || '') && (
+              <Input
+                label="Valor de entrada (R$)"
+                type="text"
+                inputMode="numeric"
+                value={form.valor_entrada}
+                onChange={e => handleChange('valor_entrada', e.target.value)}
+                placeholder="Ex: 50.000"
+              />
+            )}
           </div>
         </section>
 

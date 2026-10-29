@@ -201,7 +201,7 @@ export async function reopenForCaixa(accountId: string, leadId: string, reason: 
   if (!sales || !alvo) return false;
   delete cf._reentryHold;
   cf._reentryCaixaAt = new Date().toISOString();
-  await prisma.lead.update({ where: { id: leadId }, data: { status: 'OPEN', archived: false, lostReason: null, pipelineId: sales.id, stageId: alvo.id, stageEnteredAt: new Date(), customFields: cf as any } });
+  await prisma.lead.update({ where: { id: leadId }, data: { status: 'OPEN', archived: false, lostReason: null, pipelineId: sales.id, stageId: alvo.id, stageEnteredAt: new Date(), aiAutoReplyActive: true, customFields: cf as any } });
   await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `🔓 Card reaberto pela CAIXA: saiu do funil "Perdidos" pra "${sales.name}" (${alvo.name}) — ${reason || 'cliente reprovado nos outros bancos confirmou nome limpo, imóvel com Habite-se e que tem a documentação'}. A conferência dos documentos segue daqui.` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: '🔓 Reprovado vai tentar a CAIXA', body: `${lead.name}: nome limpo, com Habite-se e com a documentação — card reaberto em ${alvo.name}`, leadId }).catch(() => {});

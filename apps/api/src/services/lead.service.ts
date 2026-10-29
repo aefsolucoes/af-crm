@@ -122,13 +122,20 @@ export async function updateLeadStage(id: string, accountId: string, stageId: st
   // pipelineId gravado é o mesmo que já estava lá.
   const stage = await prisma.stage.findFirst({
     where: { id: stageId, pipeline: { accountId } },
-    select: { pipelineId: true },
+    select: { pipelineId: true, name: true },
   });
   if (!stage) throw new Error('Estágio não encontrado nesta conta');
 
+  // Entrou em Aguardando Documentação: IA ligada (Fabio 28/10). A automação "Ativar IA ao entrar em Aguardando Documentação" só roda quando a equipe
+  // move o card pela tela; o aviso de aprovação, a IA e os fluxos do CRM movem por aqui — e o card chegava com a IA desligada. STOP TOTAL não religa.
+  let ligaIa = false;
+  if (/aguardando document/i.test(stage.name)) {
+    const atual = await prisma.lead.findUnique({ where: { id }, select: { customFields: true } });
+    ligaIa = !((atual?.customFields || {}) as Record<string, unknown>)._autoPaused;
+  }
   return prisma.lead.update({
     where: { id },
-    data: { stageId, pipelineId: stage.pipelineId },
+    data: { stageId, pipelineId: stage.pipelineId, ...(ligaIa ? { aiAutoReplyActive: true } : {}) },
     include: { stage: true },
   });
 }

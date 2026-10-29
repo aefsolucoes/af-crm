@@ -547,6 +547,7 @@ export function FunilView() {
           pipelineId={pipeline.id}
           contacts={contacts}
           users={users}
+          departmentName={pipeline.department?.name}
         />
       )}
 

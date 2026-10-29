@@ -32,8 +32,10 @@ function logClientReply(req: AuthRequest, leadId: string) {
 }
 
 async function turnOffAiOnHumanReply(req: AuthRequest, leadId: string) {
+  // Em Aguardando Documentação a IA continua ligada mesmo com a equipe respondendo (Fabio 28/10: "a IA ainda fica desligada quando vai para
+  // aguardando documentação… pode tirar isso") — é ela que confere os documentos, cobra o que falta e conduz a escolha da proposta.
   const { count } = await prisma.lead.updateMany({
-    where: { id: leadId, accountId: req.user!.accountId, aiAutoReplyActive: true },
+    where: { id: leadId, accountId: req.user!.accountId, aiAutoReplyActive: true, NOT: { stage: { name: { contains: 'aguardando document', mode: 'insensitive' } } } },
     data: { aiAutoReplyActive: false },
   });
   if (!count) return;

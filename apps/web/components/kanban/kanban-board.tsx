@@ -290,6 +290,7 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
         defaultStageId={addLeadStageId || undefined}
         contacts={contacts}
         users={users}
+        departmentName={pipeline.department?.name}
       />
 
       <LeadDetailModal

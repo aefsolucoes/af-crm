@@ -211,7 +211,9 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
   // esses campos soltos não aparecem de novo (o dado continua guardado; cliente sem análise segue com os campos).
   const { data: creditAnalyses } = useLeadAnalyses(lead.id);
   const hideDuplicated = activeTab === 'Financiamento' && !!creditAnalyses && creditAnalyses.history.length > 0;
-  const fieldsForTab = fieldDefs.filter(f => f.tab === activeTab && !(hideDuplicated && FIELDS_FROM_ANALYSES.includes(f.key))).sort((a, b) => a.order - b.order);
+  // Home Equity não tem entrada (Fabio 28/10: "o card de Home Equity não deve ter o campo Entrada, porque não tem") — só Financiamento usa.
+  const semEntrada = /home equity/i.test(lead.pipeline?.department?.name || '');
+  const fieldsForTab = fieldDefs.filter(f => f.tab === activeTab && !(hideDuplicated && FIELDS_FROM_ANALYSES.includes(f.key)) && !(semEntrada && f.key === 'valor_entrada')).sort((a, b) => a.order - b.order);
 
   const saveFieldValue = async (key: string, value: string) => {
     setSaving(true);
