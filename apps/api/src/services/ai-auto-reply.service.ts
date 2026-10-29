@@ -398,7 +398,7 @@ export function parseResumeOn(raw: unknown, now = Date.now()): string | null {
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS", "CAIXA", "BRB" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA; "CAIXA"/"BRB" quando o cliente disser CLARAMENTE que quer seguir pela CAIXA/BRB (ex.: a parcela dos outros não coube e ele quer a CAIXA) — o CRM guarda as outras aprovações e avisa a equipe>}`;
 
 /** "sendSimulation" vindo do JSON da IA: aceita só SANTANDER/INTER (lista ou texto); qualquer outra coisa = null. */
 /** "simulate" vindo do JSON da IA: {prazo?: meses (60 a 240), valor?: crédito em reais} (ou só o número do prazo); qualquer outra coisa = null. */
@@ -416,6 +416,12 @@ function parseRunBanks(raw: unknown): string[] | null {
   const list = (Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []).map((v) => String(v || '').trim().toUpperCase());
   const ok = Array.from(new Set(list.filter((v) => v === 'SANTANDER' || v === 'INTER' || v === 'CREDITAS')));
   return ok.length ? ok : null;
+}
+
+/** Banco com que o cliente disse que vai seguir: os aprovados (Inter/Santander/Creditas) ou a CAIXA/BRB (Fabio 29/10, Taynara: optou pela CAIXA → as outras aprovações ficam guardadas). */
+function parseChooseBank(raw: unknown): string | null {
+  const v = String((Array.isArray(raw) ? raw[0] : raw) || '').trim().toUpperCase();
+  return ['SANTANDER', 'INTER', 'CREDITAS', 'CAIXA', 'BRB'].includes(v) ? v : null;
 }
 
 function parseSendSimulation(raw: unknown): string[] | null {
@@ -866,7 +872,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
         sendApproval: parsed.sendApproval === true,
         simulate: parseSimulate(parsed.simulate),
-        chooseBank: parseRunBanks(parsed.chooseBank)?.[0] || null,
+        chooseBank: parseChooseBank(parsed.chooseBank),
       };
     }
     if (parsed && typeof parsed.reply === 'string' && parsed.reply.trim()) {
@@ -889,7 +895,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         sendSimulation: parseSendSimulation(parsed.sendSimulation),
         sendApproval: parsed.sendApproval === true,
         simulate: parseSimulate(parsed.simulate),
-        chooseBank: parseRunBanks(parsed.chooseBank)?.[0] || null,
+        chooseBank: parseChooseBank(parsed.chooseBank),
       };
     }
   } catch {

@@ -776,7 +776,21 @@ export async function applyAiExtractedActions(
 
     // Cliente disse com qual banco vai seguir (Fabio 28/10: "a proposta que o cliente for seguir deve preencher o valor da venda"): mesma ação do botão "Seguir com esta" —
     // ⭐ na proposta aprovada mais recente desse banco, Valor da venda e aba Financiamento. Já escolhida: não mexe.
-    if (action.chooseBank) {
+    // Optou pela CAIXA/BRB (Fabio 29/10, Taynara: "se a cliente optou pela CAIXA, só encaminha as outras aprovações se ela perguntar, por enquanto deixa guardado" — HE e FH):
+    // marca no card; os avisos automáticos de aprovação dos outros bancos param (ficam guardados) e a equipe é avisada pra rodar a CAIXA/BRB com a documentação.
+    if (action.chooseBank === 'CAIXA' || action.chooseBank === 'BRB') {
+      try {
+        const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+        const cfAtual = (fresh?.customFields || {}) as Record<string, any>;
+        if (cfAtual._optouCaixa?.banco !== action.chooseBank) {
+          await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfAtual, _optouCaixa: { banco: action.chooseBank, at: new Date().toISOString() } } } });
+          await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🏦 O cliente disse que quer seguir pela ${action.chooseBank}. As aprovações dos outros bancos ficam GUARDADAS (não vão sozinhas ao cliente; a IA só fala delas se ele perguntar). A ${action.chooseBank} analisa com a documentação completa: rode quando os documentos chegarem.` } }).catch(() => {});
+          (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: quer seguir pela ${action.chooseBank}`, body: 'Outras aprovações guardadas. Rodar a análise com a documentação quando chegar.', leadId: lead.id }).catch(() => {});
+          logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `marcou que o cliente optou pela ${action.chooseBank}` });
+        }
+      } catch (e: any) { console.error('[IA] marcar opção pela CAIXA/BRB falhou:', e?.message); }
+    }
+    if (action.chooseBank && action.chooseBank !== 'CAIXA' && action.chooseBank !== 'BRB') {
       try {
         const bank = action.chooseBank === 'SANTANDER' ? 'CREDIMORAR' : action.chooseBank;
         const alvo = await prisma.creditAnalysis.findFirst({

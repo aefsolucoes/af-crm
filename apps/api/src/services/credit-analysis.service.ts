@@ -1812,12 +1812,47 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   const aprovados = Object.entries(p1).filter(([, r]: [string, any]) => r && (r.status === 'APPROVED' || r.status === 'CONDITIONAL') && r.approvedValue != null).map(([bank, r]: [string, any]) => ({ bank, rate: r.rate, chosen: r.chosen, firstInstallment: r.firstInstallment }));
   const escolha = aprovados.length >= 2 ? pickSimulationBank(aprovados) : null;
   if (escolha) linhas.push(`- Simulação em PDF: ${aprovados.some((a) => a.chosen) ? 'o cliente já escolheu' : 'se o cliente ainda não escolheu, mande só a do primeiro banco na ordem Inter, Creditas, Santander'} → ${BANK_LABEL_IA[escolha.bank]} (${escolha.why}).`);
+  // Financiamento Habitacional (Fabio 29/10, Taynara: a IA não via os bancos do FH e disse que "a CAIXA também consta nas opções aprovadas" lendo a simulação do site).
+  if (cf._fhResumo) {
+    const fh = parseBancosFinanciamento(cf._fhResumo);
+    for (const [banco, b] of Object.entries(fh)) linhas.push(`- ${banco} (Financiamento Habitacional): ${b.texto.slice(0, 260)}`);
+  }
+  linhas.push(...(await caixaBrbContext(db, leadId, cf)));
   if (!linhas.length) return '';
   // Fabio 20/10: a IA precisa saber que renda só vale quando Santander/Creditas estão em jogo (o Inter não pede).
   const jogo = await bancosEmJogo(db, leadId).catch(() => null);
   if (jogo && !jogo.rendaNecessaria) linhas.push('- DOCUMENTOS DE RENDA: a equipe DISPENSOU a renda deste cliente (ele não vai seguir pelo banco que pedia). NÃO peça nem cobre renda e, se ele já mandou, não aponte problema nela.');
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };
+
+/** "CAIXA: 1ª parcela R$ 4.446,10 | Taxa 10,65% a.a. | CET 12,18% a.a." da proposta do site → simulação por banco. Pura (testável). */
+export function simulacaoDoSite(texto: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const rx = /(CAIXA|BRB|Bradesco|Ita[uú]|Santander|Inter)\s*:\s*1ª parcela\s*(R\$\s*[\d.,]+)\s*\|\s*Taxa\s*([\d.,]+%\s*a\.a\.)(?:\s*\|\s*CET\s*([\d.,]+%\s*a\.a\.))?/gi;
+  for (const m of String(texto || '').matchAll(rx)) {
+    const banco = /^ita/i.test(m[1]) ? 'Itaú' : /^(caixa|brb)$/i.test(m[1]) ? m[1].toUpperCase() : m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+    out[banco] = `1ª parcela ${m[2].replace(/\s+/g, ' ')}, taxa ${m[3]}${m[4] ? `, CET ${m[4]}` : ''}`;
+  }
+  return out;
+}
+
+/** CAIXA/BRB pra IA (Fabio 29/10, Taynara — vale pro Home Equity e pro Financiamento): (1) nunca são "aprovados" sem a análise com a documentação; o "Resultados por banco" da proposta
+ *  do site é SIMULAÇÃO; (2) quando o cliente pergunta/opta pela CAIXA/BRB, a IA traz a parcela simulada; (3) cliente que OPTOU pela CAIXA/BRB: as outras aprovações ficam guardadas. */
+async function caixaBrbContext(db: Db, leadId: string, cf: Record<string, any>): Promise<string[]> {
+  const out: string[] = [];
+  const prop = await db.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Resultados por banco' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const sim = prop ? simulacaoDoSite(prop.content) : {};
+  const analisados = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, bank: { in: Object.keys(FH_DOC_BANKS) }, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] } }, select: { bank: true, status: true } });
+  for (const banco of ['CAIXA', 'BRB']) {
+    if (analisados.some((a) => FH_DOC_BANKS[a.bank] === banco)) continue;
+    out.push(`- ${banco}: NÃO ANALISADO — a ${banco} só analisa com a documentação completa; NUNCA diga que a ${banco} aprovou ou "consta nas aprovadas".${sim[banco] ? ` SIMULAÇÃO da proposta do site (não é aprovação): ${sim[banco]}. Se o cliente perguntar da ${banco} ou quiser seguir por ela (ex.: a parcela dos outros não coube), traga ESSA parcela, a taxa e o CET dizendo que é pela simulação, e que a aprovação sai depois da análise com a documentação.` : ` Se o cliente perguntar da ${banco} ou quiser seguir por ela, diga que a equipe vai simular e trazer a parcela e use "askTeam" pedindo a simulação da ${banco}.`}`);
+  }
+  if (cf._optouCaixa?.banco) {
+    const quando = new Date(cf._optouCaixa.at || Date.now()).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    out.push(`- O CLIENTE OPTOU PELA ${cf._optouCaixa.banco} (${quando}): siga só com a ${cf._optouCaixa.banco}. As aprovações dos outros bancos ficam GUARDADAS — NÃO apresente, NÃO ofereça e NÃO compare com elas, e não marque "sendApproval"/"sendSimulation"; só fale delas (com os números acima) se ELE perguntar dos outros bancos.`);
+  }
+  return out;
+}
 
 /** Cliente perguntou da análise: pede uma LEITURA NOVA (só leitura, não cria proposta) nos bancos já rodados e espera a extensão
  *  ler (até maxWaitMs). A extensão busca pedidos a cada ~1 min, então leva de 1 a 2 min. Nunca lança erro. */

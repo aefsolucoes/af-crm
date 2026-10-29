@@ -311,6 +311,14 @@ async function noticeClients(accountId: string, io: any) {
       }
       continue;
     }
+    // Cliente OPTOU pela CAIXA (Fabio 29/10, Taynara — HE e FH): as aprovações dos outros bancos ficam GUARDADAS; a IA só fala delas se ele perguntar.
+    if (cf._optouCaixa?.banco) {
+      if (cf._autoHeldSig !== sig) {
+        await saveCf(l.id, { _autoHeldSig: sig });
+        await addNote(l.id, `🗄️ Aprovação pronta, mas GUARDADA: o cliente optou pela ${cf._optouCaixa.banco}. Não mandei o aviso; a IA só fala dessa aprovação se ele perguntar. Pra mandar agora, use o botão "Avisar cliente".`);
+      }
+      continue;
+    }
     const out = await sendApprovalNoticeNow({ accountId, leadId: l.id, io, holdForPdf: true }); // aviso automático: o PDF da simulação sai junto (Fabio 15/10)
     if (out.waiting) continue; // PDF ainda sendo gerado: tenta de novo no próximo minuto
     if (out.already) { // a conversa já tem esse aviso (equipe, IA ou aviso anterior): não duplica e não tenta de novo a cada minuto

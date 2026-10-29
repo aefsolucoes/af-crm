@@ -117,6 +117,17 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
     const emAnalise = op.emAnalise;
     const aprovadas = await enriquecer(l.id, cf, op.aprovadas);
     if (!aprovadas.length) continue;
+    // Cliente OPTOU pela CAIXA/BRB (Fabio 29/10, Taynara): as aprovações dos outros bancos ficam GUARDADAS — não vão sozinhas; a IA só fala delas se ele perguntar.
+    if (cf._optouCaixa?.banco) {
+      const guardadas = new Set<string>(Array.isArray(cf._aprovacoesGuardadas) ? cf._aprovacoesGuardadas : []);
+      const novas = aprovadas.filter((o) => !guardadas.has(o.banco) && !(Array.isArray(cf._fhNotice?.bancos) && cf._fhNotice.bancos.includes(o.banco)));
+      if (novas.length) {
+        await saveCf(l.id, { _aprovacoesGuardadas: [...guardadas, ...novas.map((o) => o.banco)] });
+        await note(l.id, `🗄️ Financiamento APROVADO no ${novas.map((o) => o.banco).join(', ')} — GUARDADO: o cliente optou pela ${cf._optouCaixa.banco}, não mandei. A IA só fala dessa aprovação se ele perguntar; pra mandar agora, use o aviso na aba Análise de Crédito.`);
+        push(accountId, `🗄️ ${l.name}: aprovação guardada`, `${novas.map((o) => o.banco).join(', ')} aprovou — o cliente optou pela ${cf._optouCaixa.banco}`, l.id);
+      }
+      continue;
+    }
     // Já avisado: banco que aprovou DEPOIS (Fabio 29/10, Taynara: só foi o Inter e o Santander aprovou em seguida) — manda essa proposta também, enquanto ele não escolheu.
     if (cf._fhNotice?.sentAt) {
       const ja = new Set<string>(Array.isArray(cf._fhNotice.bancos) ? cf._fhNotice.bancos : []);

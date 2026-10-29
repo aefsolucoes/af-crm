@@ -124,11 +124,12 @@ export interface ReminderPlanItem { leadId: string; accountId: string; name: str
 export async function planApprovalReminders(): Promise<ReminderPlanItem[]> {
   const leads = await prisma.lead.findMany({
     where: { status: 'OPEN', archived: false, isGroup: false, stage: { name: { startsWith: 'Aguardando Document', mode: 'insensitive' } } },
-    select: { id: true, accountId: true, name: true },
+    select: { id: true, accountId: true, name: true, customFields: true },
   });
   const plan: ReminderPlanItem[] = [];
   const now = Date.now();
   for (const l of leads) {
+    if (((l.customFields || {}) as Record<string, any>)._optouCaixa?.banco) continue; // optou pela CAIXA/BRB: não lembra das outras aprovações (Fabio 29/10)
     const tpl = await prisma.message.findFirst({
       where: { leadId: l.id, direction: 'OUTBOUND', templateName: APPROVAL_TEMPLATE, status: { not: 'FAILED' } },
       orderBy: { createdAt: 'desc' }, select: { createdAt: true },
