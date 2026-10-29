@@ -68,6 +68,7 @@ export const ACTION_TOOLS = [
   { name: 'conferir_financiamento', description: 'Manda as extensões CONFERIREM (só ler) a situação do Financiamento do cliente nos bancos (Credimorar e Inter). Não cria proposta.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'marcar_pix_pago', description: 'PREPARA marcar o PIX da certidão do cliente como PAGO (confirmação antes) — use quando a pessoa disser que o cliente pagou. Depois disso a extensão do ONR passa a buscar a certidão emitida sozinha.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'enviar_onus_pos_registro', description: 'PREPARA o envio da CERTIDÃO DE ÔNUS PÓS-REGISTRO (a da pasta IMOVEL do Drive) ao consultor do INTER, respondendo a conversa do processo, pra pagamento ao vendedor (confirmação antes). Acontece sozinho quando o card vai pra "Pagamento ao Vendedor"; use pra mandar de novo ou quando faltou algo.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'vincular_emails_banco', description: 'Procura em TODAS as caixas de e-mail ligadas ao CRM (comercial, Fabio, Andreia…) os e-mails dos BANCOS (Inter, Creditas, Credimorar/Santander, Bradesco, Itaú, CAIXA) que citam o cliente (nome completo, CPF ou nº da proposta) e liga ao card — aparecem na conversa dele. Só administrador. Use quando pedirem "vincula os e-mails do Inter no card do Pedro".', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, termos: { type: 'array', items: { type: 'string' }, description: 'termos extras (nº da proposta, outro nome)' } }, required: ['leadId'] } },
   { name: 'escolher_voz', description: 'Abre no balão a lista de VOZES do assistente (todas brasileiras) pra pessoa ouvir e escolher. Use quando pedirem pra mudar/trocar/escolher a voz, perguntarem que vozes existem ou reclamarem da voz.', input_schema: { type: 'object', properties: {} } },
   { name: 'consultar_cartorio', description: 'Mapa dos cartórios de Registro de Imóveis do RI Digital (todos os estados): quais cartórios ficam numa cidade, o número do Ofício, a abrangência (bairros/municípios atendidos) e se tem Certidão Digital. Use pra saber qual cartório atende um imóvel ou onde um "Nº Ofício" fica no portal (ex.: no DF o 3º fica em Águas Claras).', input_schema: { type: 'object', properties: { uf: { type: 'string' }, cidade: { type: 'string', description: 'omita pra listar as cidades do estado' } }, required: ['uf'] } },
   { name: 'ver_certidao', description: 'Situação dos pedidos de certidão do cliente (pedido, protocolo, valor, PIX, paga, emitida). Se o PIX já foi gerado, o código aparece no balão com botão Copiar pra pessoa encaminhar — NÃO leia o código em voz alta. O PIX demora alguns minutos depois do pedido (a extensão faz o pedido no portal).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
@@ -491,6 +492,36 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
     case 'enviar_onus_pos_registro': {
       const l = await leadOf(accountId, input?.leadId);
       return pendente({ accountId, userId, tipo: 'enviar_onus_pos_registro', params: { leadId: l.id }, descricao: `Enviar ao consultor do Inter (respondendo a conversa do processo) a certidão de ônus pós-registro do ${l.name}, pra pagamento ao vendedor.` }, p.fila);
+    }
+    case 'vincular_emails_banco': {
+      const eu = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+      if (eu?.role !== 'ADMIN') return { naoPode: 'só administrador vincula e-mails de outras caixas' };
+      const l = await leadOf(accountId, input?.leadId);
+      const cf = (l.customFields || {}) as Record<string, any>;
+      const nome = String(cf.participante_1 || l.name || '').split('/')[0].trim();
+      const cpf = String(cf.cpf_1 || '').replace(/\D/g, '');
+      const termos = [nome, cpf.length === 11 ? `${cpf.slice(0, 3)}.${cpf.slice(3, 6)}.${cpf.slice(6, 9)}-${cpf.slice(9)}` : '', cpf, String(cf.num_proposta || ''), ...((Array.isArray(input?.termos) ? input.termos : []) as string[])].map((t) => String(t || '').trim()).filter((t) => t.length >= 6);
+      if (!termos.length) return { erro: 'sem nome/CPF/proposta pra procurar' };
+      const BANCO = ['inter.co', 'bancointer.com.br', 'creditas.com', 'credimorar', 'santander.com.br', 'bradesco', 'itau', 'caixa.gov.br'];
+      const achados = await prisma.emailMessage.findMany({
+        where: {
+          emailAccount: { accountId },
+          AND: [
+            { OR: termos.flatMap((t) => [{ subject: { contains: t, mode: 'insensitive' as const } }, { textBody: { contains: t, mode: 'insensitive' as const } }, { htmlBody: { contains: t, mode: 'insensitive' as const } }]) },
+            { OR: BANCO.flatMap((d) => [{ fromAddress: { contains: d, mode: 'insensitive' as const } }, { folder: 'SENT', toList: { string_contains: d } } as any]) },
+          ],
+        },
+        orderBy: { date: 'asc' }, take: 60,
+        select: { id: true, leadId: true, subject: true, fromAddress: true, folder: true, date: true, emailAccount: true },
+      });
+      const { linkEmailToLead } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+      const ligados: string[] = [];
+      for (const m of achados) {
+        if (m.leadId === l.id) continue;
+        if (m.leadId && m.leadId !== l.id) continue; // já é de outro card: não mexe
+        try { await linkEmailToLead(m.emailAccount as any, m.id, l.id, (p as any).io || ({ to: () => ({ emit: () => {} }) } as any)); ligados.push(`${m.date.toISOString().slice(0, 10)} ${m.fromAddress} — ${String(m.subject || '').slice(0, 80)} (caixa ${m.emailAccount.address})`); } catch { /* segue */ }
+      }
+      return { procurei: termos, encontrados: achados.length, ligadosAgora: ligados, jaEramDoCard: achados.filter((m) => m.leadId === l.id).length };
     }
     case 'escolher_voz': p.ui?.push('escolherVoz'); return { ok: true, instrucao: 'A lista de vozes abriu no balão: diga em 1 frase que é só tocar no ▶ pra ouvir e em Escolher.' };
     case 'consultar_cartorio': return (require('./ri-cartorios.service') as typeof import('./ri-cartorios.service')).consultarCartorios(String(input?.uf || ''), input?.cidade ? String(input.cidade) : undefined);

@@ -129,11 +129,11 @@ export async function loadCandidates(accountId: string): Promise<LeadCandidate[]
   return prisma.$queryRaw<LeadCandidate[]>`
     SELECT l.id, l.name, l."customFields"->>'participante_1' AS p1, l."customFields"->>'participante_2' AS p2,
            l."customFields"->>'cpf_1' AS cpf1, l."customFields"->>'cpf_2' AS cpf2,
-           -- nº da proposta do Inter: o do card ou, sem ele, o da última análise do Inter (o card do Luiz não tinha num_proposta)
-           COALESCE(NULLIF(l."customFields"->>'num_proposta', ''), (SELECT ca."proposalNumber" FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank = 'INTER' AND ca."proposalNumber" IS NOT NULL AND ca."proposalNumber" <> '' ORDER BY ca."createdAt" DESC LIMIT 1)) AS proposta,
+           -- nº da proposta do Inter: o do card ou, sem ele, o da última análise do Inter — Home Equity OU Financiamento (INTER_FH, Fabio 29/10) (o card do Luiz não tinha num_proposta)
+           COALESCE(NULLIF(l."customFields"->>'num_proposta', ''), (SELECT ca."proposalNumber" FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank IN ('INTER', 'INTER_FH') AND ca."proposalNumber" IS NOT NULL AND ca."proposalNumber" <> '' ORDER BY ca."createdAt" DESC LIMIT 1)) AS proposta,
            (coalesce(l."customFields"->>'instituicao', '') ILIKE '%inter%' OR coalesce(l."customFields"->>'num_proposta', '') <> ''
-             OR EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank = 'INTER')) AS inter,
-           EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank = 'INTER' AND ca."createdAt" > now() - interval '30 days' AND ca.status IN ('APPROVED', 'CONDITIONAL', 'SENT', 'CHECK')) AS "interRecent"
+             OR EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank IN ('INTER', 'INTER_FH'))) AS inter,
+           EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank IN ('INTER', 'INTER_FH') AND ca."createdAt" > now() - interval '30 days' AND ca.status IN ('APPROVED', 'CONDITIONAL', 'SENT', 'CHECK')) AS "interRecent"
     FROM "Lead" l WHERE l."accountId" = ${accountId} AND l.archived = false AND l.status = 'OPEN' AND l."isGroup" = false`;
 }
 
