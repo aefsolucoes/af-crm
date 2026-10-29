@@ -46,3 +46,19 @@ export async function maybeSendFichaParaAssinar(accountId: string, leadId: strin
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✍️ Ficha cadastral (${ficha.name}) enviada ao cliente pra assinar pelo gov.br. Quando voltar assinada, guardar em FORMULARIOS ASSINADOS.` } }).catch(() => {});
   return curto;
 }
+
+/** Mensagem guardada pra sair na PRÓXIMA resposta do cliente (Fabio 29/10, Jézer: janela fechada → template de atualização; quando ele responder,
+ *  vai o recado de verdade). Estado no card: `_msgNaResposta` = { texto, desde, por }. true = mandou (a IA não responde por cima). */
+export async function maybeSendMensagemNaResposta(accountId: string, leadId: string, io?: any): Promise<boolean> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const m = cf._msgNaResposta;
+  if (!m?.texto || !m?.desde) return false;
+  const { _msgNaResposta, ...resto } = cf;
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: resto as any } }); // antes de enviar: nunca manda duas vezes
+  if (Date.now() - Date.parse(m.desde) > 7 * 86_400_000) return false; // recado velho: descarta
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: String(m.texto), userId: m.userId || undefined, io });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: r.success ? `✉️ Recado guardado enviado quando o cliente respondeu: "${String(m.texto).slice(0, 300)}"` : `⚠️ O cliente respondeu, mas o recado guardado não saiu (${(r as any).error}). Mande à mão: "${String(m.texto).slice(0, 300)}"` } }).catch(() => {});
+  return !!r.success;
+}
