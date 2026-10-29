@@ -64,5 +64,5 @@ export function consultarCartorios(uf: string, cidade?: string) {
   const chave = Object.keys(m).find((c) => norm(c) === norm(cidade));
   const naCidade = chave ? m[chave].map((c) => ({ cidadeNoPortal: chave, ...c })) : [];
   const atendem = Object.entries(m).flatMap(([cid, cs]) => cs.filter((c) => cid !== chave && cita(c.ab, cidade)).map((c) => ({ cidadeNoPortal: cid, ...c })));
-  return { uf, cidade, naCidade, atendemPelaAbrangencia: atendem, obs: !naCidade.length && !atendem.length ? 'a cidade não tem cartório no portal e nenhuma abrangência a cita — confira no Mapa do Registro de Imóveis' : undefined };
+  return { uf, cidade, naCidade, atendemPelaAbrangencia: atendem, obs: !naCidade.length && !atendem.length ? 'a cidade não tem cartório no portal e nenhuma abrangência a cita — confira no Mapa do Registro de Imóveis' : naCidade.length > 1 ? 'cidade com VÁRIOS cartórios: NÃO pergunte ao cliente nem diga que não sabe — peça a certidão pelo endereço (pedir_certidao sem cartório): a extensão consulta o Mapa do ONR pelo endereço e escolhe o cartório certo sozinha.' : undefined };
 }
