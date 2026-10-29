@@ -131,6 +131,11 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
     if (!aprovadas.length) continue;
     // Cliente OPTOU pela CAIXA/BRB (Fabio 29/10, Taynara): as aprovações dos outros bancos ficam GUARDADAS — não vão sozinhas; a IA só fala delas se ele perguntar.
     if (cf._optouCaixa?.banco) {
+      // Próximos passos (escolha do imóvel, vistoria…) só DEPOIS que a CAIXA/BRB aprovar (Fabio 29/10, Taynara).
+      if (!cf._fhPassosAt && inNoticeWindow() && l.aiAutoReplyActive && (await whatsappWindowOpen(l.id))) {
+        const okCaixa = await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, dryRun: false, bank: { in: ['CAIXA_FH', 'BRB_FH'] }, status: { in: ['APPROVED', 'CONDITIONAL'] } }, select: { id: true } });
+        if (okCaixa) await proximosPassosFh(accountId, l.id, io).catch((e: any) => console.error('[Financiamento] próximos passos:', e?.message));
+      }
       const guardadas = new Set<string>(Array.isArray(cf._aprovacoesGuardadas) ? cf._aprovacoesGuardadas : []);
       const novas = aprovadas.filter((o) => !guardadas.has(o.banco) && !(Array.isArray(cf._fhNotice?.bancos) && cf._fhNotice.bancos.includes(o.banco)));
       if (novas.length) {
@@ -260,7 +265,7 @@ export async function processFhRejections(accountId: string, io?: any): Promise<
   }
 }
 
-/** Optou pela CAIXA/BRB no Financiamento (Fabio 29/10): manda também os "Próximos passos financiamento" (escolha do imóvel, vistoria…), uma vez por card. */
+/** Optou pela CAIXA/BRB no Financiamento: os "Próximos passos financiamento" (escolha do imóvel, vistoria…) vão quando a CAIXA/BRB APROVAR (Fabio 29/10), uma vez por card. */
 export async function proximosPassosFh(accountId: string, leadId: string, io?: any): Promise<void> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   const cf = (lead?.customFields || {}) as Cf;
