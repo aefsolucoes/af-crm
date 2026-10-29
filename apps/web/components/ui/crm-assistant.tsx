@@ -15,7 +15,7 @@ import { useOutboundCallStore } from '@/store/outbound-call.store';
  * Ligação: confirmada, ela para de ouvir, abre a conversa e disca (quem fala é o colaborador). Lembretes ("me lembra de…") ela fala na hora.
  * O contexto da conversa fica só neste navegador e é esquecido depois de 2 h parado. */
 
-type Attachment = { type: 'simulation'; id: string; banco: string; leadName: string };
+type Attachment = { type: 'simulation'; id: string; banco: string; leadName: string } | { type: 'document'; leadId: string; source: 'att' | 'drive'; ref: string; fileName: string; mimeType: string };
 type Pending = { id: string; descricao: string; estado?: 'PENDENTE' | 'FEITO' | 'CANCELADO' | 'ERRO'; resultado?: string };
 type Nav = { path: string; label: string };
 type AudioReq = { leadId: string; leadName: string };
@@ -73,7 +73,35 @@ function Orb3D({ voz }: { voz: Voz }) {
   );
 }
 
-function SimulationCard({ a }: { a: Attachment }) {
+/** Documento do cliente espelhado AQUI no balão (Fabio 29/10: "sem abrir telas reais"): foto ou PDF da conversa ou da pasta do Drive, baixado pelo CRM. */
+function DocumentCard({ a }: { a: Extract<Attachment, { type: 'document' }> }) {
+  const [url, setUrl] = useState('');
+  const [erro, setErro] = useState('');
+  const [grande, setGrande] = useState(false);
+  useEffect(() => {
+    let vivo = true; let u = '';
+    api.get('/api/assistant/document', { params: { leadId: a.leadId, source: a.source, ref: a.ref }, responseType: 'blob' })
+      .then((r) => { if (!vivo) return; u = URL.createObjectURL(r.data as Blob); setUrl(u); })
+      .catch(() => { if (vivo) setErro('Não consegui carregar o documento'); });
+    return () => { vivo = false; if (u) URL.revokeObjectURL(u); };
+  }, [a.leadId, a.source, a.ref]);
+  const pdf = a.mimeType === 'application/pdf';
+  const nome = a.fileName.split('/').pop() || a.fileName;
+  return (
+    <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2 text-xs">
+      <div className="flex items-center gap-1.5 font-medium text-slate-700"><FileText size={13} className="text-blue-500" /> <span className="truncate" title={a.fileName}>{nome}</span>
+        <button onClick={() => setGrande((g) => !g)} className="ml-auto shrink-0 text-[11px] text-slate-400 hover:text-slate-600">{grande ? 'diminuir' : 'ampliar'}</button>
+      </div>
+      {erro && <div className="mt-1 text-red-600">{erro}</div>}
+      {!url && !erro && <div className="mt-1 text-slate-500">Carregando…</div>}
+      {url && (pdf
+        ? <iframe src={url} title={nome} className={cn('mt-1.5 w-full rounded border border-slate-100', grande ? 'h-[70vh]' : 'h-72')} />
+        : <img src={url} alt={nome} className={cn('mt-1.5 w-full rounded object-contain', grande ? 'max-h-[70vh]' : 'max-h-72')} />)}
+    </div>
+  );
+}
+
+function SimulationCard({ a }: { a: Extract<Attachment, { type: 'simulation' }> }) {
   const [st, setSt] = useState<{ status: string; detail?: string | null; hasPdf?: boolean } | null>(null);
   const [opening, setOpening] = useState(false);
   useEffect(() => {
@@ -549,7 +577,7 @@ export function CrmAssistant() {
           {cartao?.disse && <p className="pr-5 text-xs italic text-slate-500">“{cartao.disse}”</p>}
           {status && <p className="mt-0.5 text-xs font-medium text-sky-600">{status}</p>}
           {cartao?.fala && <p className="mt-1 pr-4 leading-snug whitespace-pre-wrap max-h-48 overflow-y-auto">{cartao.fala}</p>}
-          {cartao?.attachments?.map((a) => <SimulationCard key={a.id} a={a} />)}
+          {cartao?.attachments?.map((a) => (a.type === 'document' ? <DocumentCard key={`${a.source}:${a.ref}`} a={a} /> : <SimulationCard key={a.id} a={a} />))}
           {cartao?.copiar?.map((c, i) => <CopyCard key={i} c={c} />)}
           {cartao?.escolherVoz && <VoicePicker atual={vozIdRef.current} primeiroNome={primeiroNome} onPick={escolherVoz} />}
           {cartao?.audio && <RecorderCard req={cartao.audio} onDone={(m) => setCard({ fala: m })} />}

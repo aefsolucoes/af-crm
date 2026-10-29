@@ -54,4 +54,20 @@ router.get('/simulation/:id/pdf', async (req: AuthRequest, res: Response) => {
   res.send(r.pdf);
 });
 
+// Documento do cliente mostrado no balão do Jarvis (Fabio 29/10: "espelhe o documento no balão"). Só arquivo da conversa do card ou da pasta do Drive DELE.
+router.get('/document', async (req: AuthRequest, res: Response) => {
+  try {
+    const { arquivosDoCliente, baixarArquivo } = require('../services/assistant-actions.service') as typeof import('../services/assistant-actions.service');
+    const leadId = String(req.query.leadId || ''), source = String(req.query.source || ''), ref = String(req.query.ref || '');
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true, customFields: true } });
+    if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
+    const item = (await arquivosDoCliente(req.user!.accountId, lead)).find((a) => a.source === source && a.ref === ref);
+    if (!item) return res.status(404).json({ error: 'Documento não encontrado neste cliente' });
+    const { buffer, mimeType } = await baixarArquivo(req.user!.accountId, item);
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(item.fileName.split('/').pop() || 'documento')}"`);
+    res.send(buffer);
+  } catch (err: any) { res.status(400).json({ error: err?.message || 'Erro ao abrir o documento' }); }
+});
+
 export default router;

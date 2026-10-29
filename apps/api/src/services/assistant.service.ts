@@ -15,7 +15,7 @@ const MODEL = 'claude-sonnet-5';
 const MAX_TURNS = 10;
 
 export type ChatMsg = { role: 'user' | 'assistant'; content: string };
-export type ChatAttachment = { type: 'simulation'; id: string; banco: string; leadName: string };
+export type ChatAttachment = { type: 'simulation'; id: string; banco: string; leadName: string } | import('./assistant-actions.service').DocAttachment;
 
 const READ_TOOLS = [
   {
@@ -167,6 +167,8 @@ function systemFixed(userName: string, voz: boolean): string {
 - SEJA ÁGIL (Fabio 29/10): pediu pra MOVER/AVANÇAR um card, chame buscar_clientes e mover_card NA HORA e deixe o botão Confirmar. Mover de etapa NÃO exige campo preenchido: nunca pergunte por saldo devedor, troco, e-mail do vendedor ou outro dado antes de mover, e não ofereça "abrir o card pra preencher" — os campos a pessoa preenche depois. Só fale de dado faltando se ela pedir. Sem enrolação: 1 frase e o botão. O card FICA no funil em que está: só passe o parâmetro funil em mover_card se a pessoa pedir outro funil.
 - Mensagem ao cliente: escreva como a equipe da A&F escreve no WhatsApp (curta, educada, sem emoji em excesso, sem prometer prazo ou aprovação). Mostre o texto antes.
 - Formulário do card ("preenche o card do Pedro com…", "completa o cadastro com os dados da matrícula"): ver_formulario → preencher_formulario com os campos certos. Pode tirar os dados do que o cliente mandou (ver_cliente) — nunca invente CPF, data ou valor; o que não tiver, pergunte. Formulário de portal de banco é com as extensões (rodar_analise, vistoria, certidão).
+- DOCUMENTOS DO CLIENTE (conversa + pasta do Drive): "abre/mostra o IPTU da Maria" → mostrar_documento (aparece AQUI no balão; nunca abra tela nem aba pra isso). ler_documento lê de verdade e também mostra no balão. Leu dado que cabe no card (endereço, CEP, metragens, matrícula, inscrição…)? Ofereça preencher o card com preencher_formulario (confirmação antes).
+- Certidão pelo endereço: se pedir_certidao disser que não achou o endereço, leia o documento do imóvel (ler_documento: IPTU, matrícula, escritura — da conversa ou do Drive) pedindo CEP, rua, número, complemento, bairro, cidade e UF, e chame pedir_certidao de novo com cep/logradouro/numero/cidade/uf.
 - Certidão ("pede a certidão de ônus/matrícula do Pedro"): buscar_clientes → pedir_certidao só com o leadId. NUNCA invente o cartório (ex.: "3º Ofício"): só passe cartorio se a pessoa disser. "Pelo endereço" (ou cliente sem matrícula): pedir_certidao com porEndereco true — o CRM lê o endereço nos documentos do imóvel da conversa. NÃO abra formulário, documentos nem pasta antes: a ferramenta já procura a matrícula e o endereço. Se faltar dado, ela diz o que perguntar. Se a pessoa quiser o PIX com ela ("deixa o PIX no chat", "eu mando pro cliente") → pixNoChat true. "Cadê o PIX / como está a certidão do Pedro" → ver_certidao (o código aparece no balão com Copiar; nunca leia o código).
 - EXTENSÕES: você comanda todas — análise Home Equity (rodar_analise/conferir_analise), Financiamento (rodar_financiamento/conferir_financiamento), certidão ONR (pedir_certidao/ver_certidao/buscar_certidao/marcar_pix_pago), vistoria Inter (solicitar_vistoria), simulação em PDF (pedir_simulacao_pdf). "As extensões estão funcionando?"/"por que não andou?" → ver_extensoes.
 - VOZ DO ASSISTENTE: "muda/troca/escolhe a voz", "que vozes tem?" → escolher_voz (abre a lista no balão). NUNCA mande a pessoa pras Configurações pra isso.
@@ -186,7 +188,7 @@ type ToolCtx = { accountId: string; userId: string; token: string; anexos: ChatA
 async function runTool(c: ToolCtx, name: string, input: any): Promise<unknown> {
   const { accountId, userId, anexos } = c;
   try {
-    if (ACTION_TOOL_NAMES.has(name)) return await runActionTool({ accountId, userId, token: c.token, name, input, fila: c.fila, nav: c.nav, audio: c.audio, copiar: c.copiar, ui: c.ui });
+    if (ACTION_TOOL_NAMES.has(name)) return await runActionTool({ accountId, userId, token: c.token, name, input, fila: c.fila, nav: c.nav, audio: c.audio, copiar: c.copiar, ui: c.ui, docs: c.anexos as any });
     switch (name) {
       case 'buscar_clientes': return await buscarClientes(accountId, input?.termo);
       case 'ver_cliente': return await verCliente(accountId, String(input?.leadId || ''), input?.mensagens);
@@ -241,7 +243,8 @@ export async function assistantChat(p: { accountId: string; userId: string; user
 
 function dedupe(a: ChatAttachment[]): ChatAttachment[] {
   const vistos = new Set<string>();
-  return a.filter((x) => (vistos.has(x.id) ? false : (vistos.add(x.id), true)));
+  const k = (x: ChatAttachment) => (x.type === 'document' ? `doc:${x.source}:${x.ref}` : x.id);
+  return a.filter((x) => (vistos.has(k(x)) ? false : (vistos.add(k(x)), true)));
 }
 
 /** Status de uma simulação pedida pelo assistente (o chat consulta até ficar pronta). */

@@ -31,7 +31,7 @@ router.use(authMiddleware);
 router.post('/', async (req: AuthRequest, res: Response) => {
   const b = req.body || {};
   try {
-    const out = await createCertidaoRequest(prisma, { accountId: req.user!.accountId, leadId: String(b.leadId || ''), uf: b.uf, cidade: b.cidade, cartorio: b.cartorio, matricula: b.matricula, userId: req.user!.id, sendPix: b.sendPix !== false, clientIntro: typeof b.clientIntro === 'string' ? b.clientIntro : undefined });
+    const out = await createCertidaoRequest(prisma, { accountId: req.user!.accountId, leadId: String(b.leadId || ''), uf: b.uf, cidade: b.cidade, cartorio: b.cartorio, matricula: b.matricula, userId: req.user!.id, sendPix: b.sendPix !== false, clientIntro: typeof b.clientIntro === 'string' ? b.clientIntro : undefined, ...(b.pedidoPor === 'ENDERECO' && b.endereco && typeof b.endereco === 'object' ? { pedidoPor: 'ENDERECO', endereco: b.endereco, matricula: '' } : {}) });
     io(req)?.to(`account_${req.user!.accountId}`).emit('certidao_updated', { id: out.request.id, leadId: out.request.leadId });
     res.json({ ...out, request: { ...out.request, pdf: undefined } });
   } catch (err) { fail(res, err, 'Erro ao pedir a certidão', 400); }

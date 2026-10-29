@@ -40,6 +40,7 @@ export const ACTION_TOOLS = [
   { name: 'conferir_analise', description: 'Pede pra extensão do banco CONFERIR (só ler) o resultado da análise de crédito no portal. bancos: INTER, CREDITAS, CREDIMORAR (Santander). Não cria proposta nova.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId', 'bancos'] } },
   { name: 'ver_pasta', description: 'Mostra a pasta do cliente no Google Drive: onde ela está (LEADS ATIVOS, LEADS FRIOS, CONCLUÍDOS…) e os arquivos (com subpastas).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'ver_regras_ia', description: 'Procura nas REGRAS da IA (Base de Conhecimento — o que a IA que conversa com o cliente, a Sugestão de resposta e a conferência seguem). termo = palavra pra filtrar (vazio = as 20 mais recentes). Devolve id, título, setor e texto.', input_schema: { type: 'object', properties: { termo: { type: 'string' } } } },
+  { name: 'mostrar_documento', description: 'MOSTRA um documento do cliente AQUI NO BALÃO do chat (PDF ou foto), sem abrir tela nem aba. Procura nos arquivos da conversa E na pasta do Drive do cliente. arquivo = nome (ou parte) ou o tipo (ex.: "IPTU", "matricula", "CNH"). Use quando pedirem "abre/mostra/me deixa ver o documento X".', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, arquivo: { type: 'string' } }, required: ['leadId', 'arquivo'] } },
   { name: 'consultar_conhecimento', description: 'Busca na BASE DE CONHECIMENTO do CRM (a MESMA fonte que a IA do cliente, a Sugestão de resposta e a conferência de documentos usam): regras do processo, bancos, taxas, documentos exigidos, correções ensinadas pela equipe e os arquivos do Drive de conhecimento. Use ANTES de responder qualquer dúvida de processo/regra/banco/documento. pergunta = o que quer saber, em linguagem natural.', input_schema: { type: 'object', properties: { pergunta: { type: 'string' } }, required: ['pergunta'] } },
   // ── com confirmação ──
   { name: 'mover_pasta', description: 'PREPARA mover a pasta do cliente no Drive (confirmação antes). destino: ATIVOS (LEADS ATIVOS), FRIOS (LEADS FRIOS) ou CONCLUIDOS (CONCLUÍDOS/ano/mês de hoje). Fica na mesma área (Home Equity ou Habitação) onde a pasta já está.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, destino: { type: 'string', enum: ['ATIVOS', 'FRIOS', 'CONCLUIDOS'] } }, required: ['leadId', 'destino'] } },
@@ -62,7 +63,7 @@ export const ACTION_TOOLS = [
   { name: 'marcar_status', description: 'PREPARA marcar o card como GANHO, PERDIDO, REPROVADO (perdido por reprovação do banco) ou REABRIR (confirmação antes). motivo é obrigatório pra PERDIDO/REPROVADO.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, status: { type: 'string', enum: ['GANHO', 'PERDIDO', 'REPROVADO', 'REABRIR'] }, motivo: { type: 'string' } }, required: ['leadId', 'status'] } },
   { name: 'rodar_analise', description: 'PREPARA rodar a análise de crédito nos bancos (cria proposta nova no portal; confirmação antes). bancos: INTER, CREDITAS, CREDIMORAR (Santander).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId', 'bancos'] } },
   { name: 'solicitar_vistoria', description: 'PREPARA o pedido de vistoria ao Inter: responde o e-mail do consultor com o contato e os documentos do imóvel da pasta do cliente (confirmação antes).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
-  { name: 'pedir_certidao', description: 'PREPARA o pedido da certidão de matrícula/ônus (inteiro teor) no RI Digital pela extensão, igual ao botão "Pedir certidão pelo ONR" do card; o PIX vai pro cliente (confirmação antes). Chame DIRETO com o leadId: a própria ferramenta acha a matrícula e a cidade/UF nos documentos (ou o endereço do imóvel). Só passe matricula/cidade/uf se a pessoa disser; cartorio só se ela disser (senão a extensão escolhe).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, matricula: { type: 'string' }, cidade: { type: 'string' }, uf: { type: 'string' }, cartorio: { type: 'string', description: 'como aparece no portal (ex.: "02º - BELÉM"); omita se não souber' }, porEndereco: { type: 'boolean', description: 'true quando a pessoa pede a certidão PELO ENDEREÇO (o CRM lê o endereço do imóvel nos documentos da conversa: matrícula, escritura, IPTU)' }, pixNoChat: { type: 'boolean', description: 'true quando a pessoa quer o PIX com ela (pra encaminhar ela mesma) em vez de ir direto ao cliente' } }, required: ['leadId'] } },
+  { name: 'pedir_certidao', description: 'PREPARA o pedido da certidão de matrícula/ônus (inteiro teor) no RI Digital pela extensão, igual ao botão "Pedir certidão pelo ONR" do card; o PIX vai pro cliente (confirmação antes). Chame DIRETO com o leadId: a própria ferramenta acha a matrícula e a cidade/UF nos documentos (ou o endereço do imóvel). Só passe matricula/cidade/uf se a pessoa disser; cartorio só se ela disser (senão a extensão escolhe).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, matricula: { type: 'string' }, cidade: { type: 'string' }, uf: { type: 'string' }, cartorio: { type: 'string', description: 'como aparece no portal (ex.: "02º - BELÉM"); omita se não souber' }, porEndereco: { type: 'boolean', description: 'true quando a pessoa pede a certidão PELO ENDEREÇO (o CRM lê o endereço do imóvel nos documentos da conversa: matrícula, escritura, IPTU)' }, cep: { type: 'string', description: 'pedido pelo endereço lido num documento: CEP do imóvel' }, tipoLogradouro: { type: 'string' }, logradouro: { type: 'string', description: 'nome da rua/avenida sem o tipo' }, numero: { type: 'string' }, complemento: { type: 'string' }, bairro: { type: 'string' }, pixNoChat: { type: 'boolean', description: 'true quando a pessoa quer o PIX com ela (pra encaminhar ela mesma) em vez de ir direto ao cliente' } }, required: ['leadId'] } },
   { name: 'buscar_certidao', description: 'Manda a extensão do ONR ir AGORA ao RI Digital ver se a certidão do cliente saiu e, saindo, baixar e guardar na pasta do cliente no Drive (pasta IMOVEL). Use quando pedirem "baixa a certidão", "vê se a certidão saiu", "coloca a certidão na pasta". Só lê o portal: não paga nem cria pedido.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'ver_extensoes', description: 'Situação de TODAS as extensões do Chrome (Inter, Creditas, Santander/Credimorar, Financiamento, Certidão ONR): ligada ou não, último sinal, o que está rodando agora e quantos pedidos na fila. Use quando perguntarem se as extensões estão funcionando, por que algo não andou, ou o que está rodando.', input_schema: { type: 'object', properties: {} } },
   { name: 'rodar_financiamento', description: 'PREPARA a análise do FINANCIAMENTO HABITACIONAL (cria proposta nova; confirmação antes): Credimorar (Bradesco, Itaú e Santander) e/ou o NOSSO portal do Inter. bancos: lista com CREDIMORAR e/ou INTER (padrão: os dois). Usa os valores do card.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId'] } },
@@ -119,6 +120,40 @@ async function pastaDoCliente(accountId: string, leadId: string) {
   }
   return { l, pasta, nome: info.name || '', onde, area, g };
 }
+/** Arquivos do cliente que o Jarvis pode ler/mostrar: os que ele mandou na conversa + os da pasta dele no Drive (Fabio 29/10: "procura em tudo, conversa e pasta"). PDF e imagem. */
+type ArqCliente = { source: 'att' | 'drive'; ref: string; fileName: string; mimeType: string; tipo?: string; driveFileId?: string | null };
+const ARQ_OK = (m: string) => m === 'application/pdf' || /^image\/(jpeg|png|gif|webp|heic|heif)$/.test(m);
+export async function arquivosDoCliente(accountId: string, l: { id: string; customFields: unknown }): Promise<ArqCliente[]> {
+  const cf = (l.customFields || {}) as Record<string, any>;
+  const rev = (cf._docReview || {}) as Record<string, any>;
+  const atts = await prisma.messageAttachment.findMany({ where: { leadId: l.id, message: { direction: 'INBOUND' } }, orderBy: { createdAt: 'desc' }, select: { id: true, fileName: true, mimeType: true, driveFileId: true } });
+  const out: ArqCliente[] = atts.filter((a) => ARQ_OK(a.mimeType)).map((a) => ({ source: 'att', ref: a.id, fileName: a.fileName, mimeType: a.mimeType, tipo: rev[a.id]?.tipo, driveFileId: a.driveFileId }));
+  const link = String(cf.link_pasta_drive || '').trim();
+  if (link) {
+    try {
+      const g = require('./google.service') as typeof import('./google.service');
+      const ja = new Set(out.map((a) => a.driveFileId).filter(Boolean));
+      for (const f of await g.listAllFilesInFolderTree(accountId, g.extractFolderId(link), 3)) if (ARQ_OK(f.mimeType) && !ja.has(f.id)) out.push({ source: 'drive', ref: f.id, fileName: f.path || f.name, mimeType: f.mimeType });
+    } catch { /* sem Drive: só os da conversa */ }
+  }
+  return out;
+}
+export function acharArquivo(lista: ArqCliente[], arquivo: string): ArqCliente | undefined {
+  const q = norm(arquivo || '');
+  if (!q) return undefined;
+  return lista.find((a) => norm(a.fileName).includes(q)) || lista.find((a) => norm(a.tipo || '').includes(q)) || lista.find((a) => q.split(' ').filter((w) => w.length >= 3).every((w) => norm(`${a.fileName} ${a.tipo || ''}`).includes(w)));
+}
+export async function baixarArquivo(accountId: string, a: ArqCliente): Promise<{ buffer: Buffer; mimeType: string }> {
+  const g = require('./google.service') as typeof import('./google.service');
+  if (a.source === 'att') {
+    const row = await prisma.messageAttachment.findUnique({ where: { id: a.ref }, select: { data: true, driveFileId: true, mimeType: true } });
+    if (row?.data?.length) return g.convertHeicIfNeeded(Buffer.from(row.data), row.mimeType);
+    if (row?.driveFileId) return g.downloadDriveFileForVision(accountId, row.driveFileId, row.mimeType);
+    throw new Error('o arquivo não está mais disponível (nem no banco nem no Drive)');
+  }
+  return g.downloadDriveFileForVision(accountId, a.ref, a.mimeType);
+}
+
 /** Texto da regra pro Jarvis: regra comum = começo; regra FIXA (enorme) = o pedaço em volta do termo procurado, pra ele copiar o trecho exato que quer trocar. */
 function trechoDa(content: string, termo: string, fixa: boolean): string {
   if (!fixa || !termo) return content.slice(0, 1200);
@@ -136,7 +171,8 @@ const bancosValidos = (b: unknown): string[] => (Array.isArray(b) ? b : [b]).map
 const NOME_BANCO: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
 
 /** Roda (ou prepara) uma ferramenta de ação. token = Authorization de quem está falando (pras ações diretas que passam pelas rotas). */
-export async function runActionTool(p: { accountId: string; userId: string; token: string; name: string; input: any; fila: PendingAction[]; nav: ScreenNav[]; audio?: AudioReq[]; copiar?: CopyReq[]; ui?: string[] }): Promise<unknown> {
+export type DocAttachment = { type: 'document'; leadId: string; source: 'att' | 'drive'; ref: string; fileName: string; mimeType: string };
+export async function runActionTool(p: { accountId: string; userId: string; token: string; name: string; input: any; fila: PendingAction[]; nav: ScreenNav[]; audio?: AudioReq[]; copiar?: CopyReq[]; ui?: string[]; docs?: DocAttachment[] }): Promise<unknown> {
   const { accountId, userId, input } = p;
   switch (p.name) {
     case 'abrir_na_tela': {
@@ -398,21 +434,24 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       if (!r) return { ok: true, aviso: 'esse cliente não mandou documento' };
       return { ok: true, cliente: l.name, lidosAgora: r.novas.map((n) => `${n.arquivo}: ${n.r.tipo} — ${n.r.resultado}`), ok_: r.ok, problemas: r.problemas, duvidas: r.duvidas.map((d) => `${d.doc}: ${d.pergunta}`), donoPendente: r.donoPendente.map((d) => `${d.doc}: dono ${d.dono}`) };
     }
+    case 'mostrar_documento': {
+      const l = await leadOf(accountId, input?.leadId);
+      const lista = await arquivosDoCliente(accountId, l);
+      const att = acharArquivo(lista, input?.arquivo || '');
+      if (!att) return { erro: `não achei "${input?.arquivo}" entre os arquivos do cliente (conversa e pasta do Drive)`, arquivos: lista.slice(0, 40).map((a) => `${a.fileName}${a.tipo ? ` (${a.tipo})` : ''}${a.source === 'drive' ? ' [Drive]' : ''}`) };
+      p.docs?.push({ type: 'document', leadId: l.id, source: att.source, ref: att.ref, fileName: att.fileName, mimeType: att.mimeType });
+      return { ok: true, mostrando: att.fileName, onde: att.source === 'drive' ? 'pasta do Drive' : 'conversa', obs: 'O documento aparece no balão. Diga só o nome dele em 1 frase.' };
+    }
     case 'ler_documento': {
       const l = await leadOf(accountId, input?.leadId);
-      const q = norm(input?.arquivo || '');
-      const cf = (l.customFields || {}) as Record<string, any>;
-      const rev = (cf._docReview || {}) as Record<string, any>;
-      const atts = (await prisma.messageAttachment.findMany({ where: { leadId: l.id, message: { direction: 'INBOUND' } }, orderBy: { createdAt: 'desc' }, select: { id: true, fileName: true, mimeType: true, driveFileId: true, data: true } }))
-        .filter((a) => a.mimeType === 'application/pdf' || /^image\/(jpeg|png|gif|webp)$/.test(a.mimeType));
-      const att = atts.find((a) => norm(a.fileName).includes(q)) || atts.find((a) => norm(rev[a.id]?.tipo || '').includes(q));
-      if (!att) return { erro: `não achei "${input?.arquivo}" entre os arquivos do cliente`, arquivos: atts.slice(0, 30).map((a) => `${a.fileName}${rev[a.id]?.tipo ? ` (${rev[a.id].tipo})` : ''}`) };
-      let buffer: Buffer, mime = att.mimeType;
-      if (att.data?.length) buffer = Buffer.from(att.data);
-      else if (att.driveFileId) { const { downloadDriveFileForVision } = require('./google.service') as typeof import('./google.service'); ({ buffer, mimeType: mime } = await downloadDriveFileForVision(accountId, att.driveFileId, att.mimeType)); }
-      else return { erro: 'o arquivo não está mais disponível (nem no banco nem no Drive)' };
+      const lista = await arquivosDoCliente(accountId, l);
+      const att = acharArquivo(lista, input?.arquivo || '');
+      if (!att) return { erro: `não achei "${input?.arquivo}" entre os arquivos do cliente (conversa e pasta do Drive)`, arquivos: lista.slice(0, 40).map((a) => `${a.fileName}${a.tipo ? ` (${a.tipo})` : ''}${a.source === 'drive' ? ' [Drive]' : ''}`) };
+      let buffer: Buffer, mime: string;
+      try { ({ buffer, mimeType: mime } = await baixarArquivo(accountId, att)); } catch (e: any) { return { erro: e?.message || 'não consegui abrir o arquivo' }; }
       if (buffer.length > 10_000_000) return { erro: 'arquivo grande demais pra ler aqui (mais de 10 MB)' };
-      const isPdf = att.mimeType === 'application/pdf';
+      p.docs?.push({ type: 'document', leadId: l.id, source: att.source, ref: att.ref, fileName: att.fileName, mimeType: mime }); // espelha no balão (Fabio 29/10)
+      const isPdf = mime === 'application/pdf';
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY || '', 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 3000, system: 'Você analisa documentos de clientes de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional) para a EQUIPE. Responda em português, direto, citando o que está escrito no documento (números, nomes, datas). Se algo não aparece ou está ilegível, diga isso — nunca invente.', messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source: { type: 'base64', media_type: isPdf ? 'application/pdf' : mime, data: buffer.toString('base64') } }, { type: 'text', text: `Cliente: ${l.name}. Arquivo: ${att.fileName}.\nPergunta: ${String(input?.pergunta || 'O que é este documento e o que ele mostra de importante?')}` }] }] }),
@@ -586,6 +625,13 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       const pixNoChat = input?.pixNoChat === true;
       const ondePix = pixNoChat ? 'o PIX NÃO vai pro cliente: fica com você (peça "o PIX da certidão" que eu mostro pra copiar)' : 'o PIX da certidão vai pro cliente';
       const matricula = String(input?.matricula || '').replace(/\D/g, ''), cidade = String(input?.cidade || '').trim(), uf = String(input?.uf || '').trim().toUpperCase();
+      // Endereço lido pelo Jarvis num documento (conversa ou Drive) quando a busca automática não acha (Fabio 29/10).
+      const cepIn = String(input?.cep || '').replace(/\D/g, '');
+      if (cepIn.length === 8 && input?.logradouro && input?.numero && cidade && uf) {
+        const endereco = { cep: cepIn, tipoLogradouro: String(input?.tipoLogradouro || 'Rua'), logradouro: String(input.logradouro).trim(), numero: String(input.numero).trim(), complemento: String(input?.complemento || '').trim().slice(0, 30) || undefined, bairro: String(input?.bairro || '').trim() || undefined };
+        const params = { leadId: l.id, uf, cidade, cartorio: String(input?.cartorio || '').trim() || 'AUTO', matricula: '', pedidoPor: 'ENDERECO', endereco, sendPix: !pixNoChat };
+        return pendente({ accountId, userId, tipo: 'pedir_certidao', params, descricao: `Pedir a certidão de ônus PELO ENDEREÇO ${endereco.tipoLogradouro} ${endereco.logradouro}, ${endereco.numero}${endereco.complemento ? ` ${endereco.complemento}` : ''} — CEP ${cepIn.slice(0, 5)}-${cepIn.slice(5)}, ${cidade}/${uf} do ${l.name} no RI Digital — ${ondePix}.` }, p.fila);
+      }
       if (matricula && cidade && uf) {
         const params = { leadId: l.id, uf, cidade, cartorio: String(input?.cartorio || '').trim() || 'AUTO', matricula, sendPix: !pixNoChat };
         return pendente({ accountId, userId, tipo: 'pedir_certidao', params, descricao: `Pedir a certidão da matrícula nº ${matricula} (${params.cartorio === 'AUTO' ? cidade : params.cartorio}/${uf}) do ${l.name} no RI Digital — ${ondePix}.` }, p.fila);
