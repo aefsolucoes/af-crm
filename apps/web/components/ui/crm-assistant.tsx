@@ -334,7 +334,7 @@ export function CrmAssistant() {
                     <button key={s} onClick={() => setInput(s.replace(' …', ' ').replace('…', ''))} className="text-xs rounded-full border border-slate-300 bg-white px-2.5 py-1 hover:bg-slate-100 text-slate-600">{s}</button>
                   ))}
                 </div>
-                <p className="text-[11px] text-slate-400">Anotação, lembrete e abrir telas eu faço direto. Mensagem a cliente, mover card, ganho/perdido, análise, vistoria e certidão só depois que você confirmar. Clique no microfone pra conversar por voz.</p>
+                <p className="text-[11px] text-slate-400">Anotação, lembrete e abrir telas eu faço direto. Mensagem a cliente, e-mail, mover card ou pasta do Drive, ganho/perdido, análise, vistoria, certidão e regras da IA só depois que você confirmar. Clique no microfone pra conversar por voz.</p>
               </div>
             )}
             {msgs.map((m, i) => (

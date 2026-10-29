@@ -36,7 +36,12 @@ export const ACTION_TOOLS = [
   { name: 'criar_anotacao', description: 'Grava uma anotação interna no card (não vai pro cliente).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, texto: { type: 'string' } }, required: ['leadId', 'texto'] } },
   { name: 'criar_lembrete', description: 'Cria um LEMBRETE/tarefa pra quem está falando ("me lembra de falar com o Pedro amanhã às 10h", "sexta 14h ligar pra Maria"), opcionalmente ligado a um cliente. Na hora marcada o CRM manda push no celular E o assistente FALA o lembrete em voz alta na tela (se o CRM estiver aberto). quando = data/hora ISO 8601 com fuso -03:00, calculada a partir de "Agora"; sem hora dita, use 09:00; se a data/hora já passou, pergunte. titulo curto, no infinitivo (ex.: "Falar com o Pedro sobre a vistoria").', input_schema: { type: 'object', properties: { titulo: { type: 'string' }, quando: { type: 'string' }, leadId: { type: 'string' } }, required: ['titulo', 'quando'] } },
   { name: 'conferir_analise', description: 'Pede pra extensão do banco CONFERIR (só ler) o resultado da análise de crédito no portal. bancos: INTER, CREDITAS, CREDIMORAR (Santander). Não cria proposta nova.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId', 'bancos'] } },
+  { name: 'ver_pasta', description: 'Mostra a pasta do cliente no Google Drive: onde ela está (LEADS ATIVOS, LEADS FRIOS, CONCLUÍDOS…) e os arquivos (com subpastas).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'ver_regras_ia', description: 'Procura nas REGRAS da IA (Base de Conhecimento — o que a IA que conversa com o cliente, a Sugestão de resposta e a conferência seguem). termo = palavra pra filtrar (vazio = as 20 mais recentes). Devolve id, título, setor e texto.', input_schema: { type: 'object', properties: { termo: { type: 'string' } } } },
   // ── com confirmação ──
+  { name: 'mover_pasta', description: 'PREPARA mover a pasta do cliente no Drive (confirmação antes). destino: ATIVOS (LEADS ATIVOS), FRIOS (LEADS FRIOS) ou CONCLUIDOS (CONCLUÍDOS/ano/mês de hoje). Fica na mesma área (Home Equity ou Habitação) onde a pasta já está.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, destino: { type: 'string', enum: ['ATIVOS', 'FRIOS', 'CONCLUIDOS'] } }, required: ['leadId', 'destino'] } },
+  { name: 'enviar_email', description: 'PREPARA um e-mail pela caixa comercial do CRM (confirmação antes). Se tiver leadId e já houver e-mail desse destinatário no cliente, responde no MESMO fio. anexos = nomes (ou parte do nome) de arquivos da pasta do cliente no Drive (use ver_pasta antes). Escreva como a A&F escreve: cordial, objetivo, com saudação e "Atenciosamente".', input_schema: { type: 'object', properties: { para: { type: 'string' }, cc: { type: 'string' }, assunto: { type: 'string' }, texto: { type: 'string' }, leadId: { type: 'string' }, anexos: { type: 'array', items: { type: 'string' } } }, required: ['para', 'assunto', 'texto'] } },
+  { name: 'alterar_regra_ia', description: 'PREPARA uma mudança nas REGRAS da IA (Base de Conhecimento) — é assim que se muda o comportamento da IA do CRM sem mexer no código (confirmação antes). acao: CRIAR (titulo+conteudo), EDITAR (id+conteudo, titulo opcional), APAGAR (id). setor: "Home Equity", "Habitação" ou "todos" (padrão: o da regra, ou todos). Use ver_regras_ia antes pra não duplicar; prefira EDITAR a regra que já existe.', input_schema: { type: 'object', properties: { acao: { type: 'string', enum: ['CRIAR', 'EDITAR', 'APAGAR'] }, id: { type: 'string' }, titulo: { type: 'string' }, conteudo: { type: 'string' }, setor: { type: 'string' } }, required: ['acao'] } },
   { name: 'enviar_mensagem', description: 'PREPARA uma mensagem de WhatsApp pro cliente (só sai depois que a pessoa confirmar). Se a janela de 24 h estiver fechada, o envio vira o template de atualização do processo + a mensagem guardada pra sair quando o cliente responder.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, texto: { type: 'string' } }, required: ['leadId', 'texto'] } },
   { name: 'mover_card', description: 'PREPARA a mudança de etapa do card (confirmação antes). etapa = nome da etapa; funil opcional (se a etapa for de outro funil).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, etapa: { type: 'string' }, funil: { type: 'string' } }, required: ['leadId', 'etapa'] } },
   { name: 'marcar_status', description: 'PREPARA marcar o card como GANHO, PERDIDO, REPROVADO (perdido por reprovação do banco) ou REABRIR (confirmação antes). motivo é obrigatório pra PERDIDO/REPROVADO.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, status: { type: 'string', enum: ['GANHO', 'PERDIDO', 'REPROVADO', 'REABRIR'] }, motivo: { type: 'string' } }, required: ['leadId', 'status'] } },
@@ -64,6 +69,30 @@ function pendente(p: { accountId: string; userId: string; tipo: string; descrica
   pendentes.set(a.id, a); fila.push(a);
   return { aguardandoConfirmacao: true, oQueVaiAcontecer: p.descricao, instrucao: 'Diga à pessoa exatamente o que vai acontecer e pergunte se confirma. NÃO diga que já foi feito.' };
 }
+
+async function pastaDoCliente(accountId: string, leadId: string) {
+  const l = await leadOf(accountId, leadId);
+  const link = String(((l.customFields || {}) as any).link_pasta_drive || '');
+  if (!link) throw new Error(`o ${l.name} não tem pasta do Drive no card (campo link_pasta_drive)`);
+  const g = require('./google.service') as typeof import('./google.service');
+  const pasta = g.extractFolderId(link);
+  const drive = await g.getDrive(accountId);
+  const info = (await drive.files.get({ fileId: pasta, fields: 'id,name,parents', supportsAllDrives: true })).data;
+  const pai = info.parents?.[0] || '';
+  const { loadAreas } = require('./drive-lifecycle.service') as typeof import('./drive-lifecycle.service');
+  const areas = await loadAreas(accountId);
+  let onde = 'fora das pastas de leads', area = areas.find((a) => a.ativos === pai);
+  if (area) onde = `LEADS ATIVOS (${area.nome})`;
+  else if ((area = areas.find((a) => a.frios === pai))) onde = `LEADS FRIOS (${area.nome})`;
+  else {
+    const avo = pai ? (await drive.files.get({ fileId: pai, fields: 'parents', supportsAllDrives: true }).catch(() => null))?.data.parents?.[0] : '';
+    const bisavo = avo ? (await drive.files.get({ fileId: avo, fields: 'parents', supportsAllDrives: true }).catch(() => null))?.data.parents?.[0] : '';
+    area = areas.find((a) => a.concluidos && (a.concluidos === avo || a.concluidos === bisavo));
+    if (area) onde = `CONCLUÍDOS (${area.nome})`;
+  }
+  return { l, pasta, nome: info.name || '', onde, area, g };
+}
+const SETORES = async (accountId: string) => prisma.department.findMany({ where: { accountId }, select: { id: true, name: true } });
 const janelaAberta = async (leadId: string) => {
   const u = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
   return !!u && Date.now() - u.createdAt.getTime() < 23.5 * 3600_000;
@@ -120,6 +149,79 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       if (!banks.length) return { erro: 'bancos: INTER, CREDITAS ou CREDIMORAR (Santander)' };
       const r = await callApi(p.token, 'POST', '/credit-analysis/requests', { leadIds: [l.id], banks, kind: 'CHECK' });
       return { ok: true, conferencia: banks.map((b) => NOME_BANCO[b]).join(', '), cliente: l.name, retorno: r, aviso: 'A extensão confere em 1–2 min (Chrome com a extensão aberto).' };
+    }
+    case 'ver_pasta': {
+      const x = await pastaDoCliente(accountId, input?.leadId);
+      const arquivos = await x.g.listAllFilesInFolderTree(accountId, x.pasta, 2);
+      return { cliente: x.l.name, pasta: x.nome, onde: x.onde, link: x.g.folderLink(x.pasta), arquivos: arquivos.filter((f) => !/folder$/.test(f.mimeType)).slice(0, 60).map((f) => f.path || f.name) };
+    }
+    case 'ver_regras_ia': {
+      const t = String(input?.termo || '').trim();
+      const deps = await SETORES(accountId);
+      const rows = await prisma.knowledgeEntry.findMany({ where: { accountId, ...(t ? { OR: [{ title: { contains: t, mode: 'insensitive' } }, { content: { contains: t, mode: 'insensitive' } }] } : {}) }, orderBy: { updatedAt: 'desc' }, take: 20, select: { id: true, title: true, content: true, departmentId: true, updatedAt: true } });
+      return { total: rows.length, regras: rows.map((r) => ({ id: r.id, titulo: r.title, setor: deps.find((d) => d.id === r.departmentId)?.name || 'todos', atualizada: quando(r.updatedAt), texto: r.content.slice(0, 1200) })) };
+    }
+    case 'mover_pasta': {
+      const x = await pastaDoCliente(accountId, input?.leadId);
+      const dest = String(input?.destino || '').toUpperCase();
+      if (!x.area) return { erro: `a pasta "${x.nome}" está ${x.onde}; não sei em qual área (Home Equity/Habitação) ela fica` };
+      if (dest === 'FRIOS' && !x.area.frios) return { erro: `não achei LEADS FRIOS de ${x.area.nome}` };
+      if (dest === 'CONCLUIDOS' && !x.area.concluidos) return { erro: `não achei CONCLUÍDOS de ${x.area.nome}` };
+      if (!['ATIVOS', 'FRIOS', 'CONCLUIDOS'].includes(dest)) return { erro: 'destino: ATIVOS, FRIOS ou CONCLUIDOS' };
+      const nomeDest = dest === 'ATIVOS' ? 'LEADS ATIVOS' : dest === 'FRIOS' ? 'LEADS FRIOS' : 'CONCLUÍDOS / ano / mês de hoje';
+      return pendente({ accountId, userId, tipo: 'mover_pasta', params: { leadId: x.l.id, dest }, descricao: `Mover a pasta "${x.nome}" do ${x.l.name} de ${x.onde} para ${nomeDest} (${x.area.nome}).` }, p.fila);
+    }
+    case 'enviar_email': {
+      const para = String(input?.para || '').split(/[,;]/).map((e) => e.trim().toLowerCase()).filter(Boolean);
+      if (!para.length || para.some((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e))) return { erro: 'e-mail do destinatário inválido' };
+      const assunto = String(input?.assunto || '').trim(), texto = String(input?.texto || '').trim();
+      if (!assunto || !texto) return { erro: 'faltou assunto ou texto' };
+      const l = input?.leadId ? await leadOf(accountId, input.leadId) : null;
+      const caixa = await prisma.emailAccount.findFirst({ where: { accountId, userId: null }, orderBy: { createdAt: 'asc' }, select: { id: true, address: true } });
+      if (!caixa) return { erro: 'a caixa de e-mail comercial não está configurada' };
+      let replyToId: string | null = null, subject = assunto;
+      if (l) {
+        const ant = await prisma.emailMessage.findFirst({ where: { leadId: l.id, fromAddress: { in: para, mode: 'insensitive' } }, orderBy: { date: 'desc' }, select: { id: true, subject: true } });
+        if (ant) { replyToId = ant.id; subject = /^re:/i.test(ant.subject || '') ? String(ant.subject) : `Re: ${ant.subject || assunto}`; }
+      }
+      const pedidos = (Array.isArray(input?.anexos) ? input.anexos : []).map((a: unknown) => norm(String(a))).filter(Boolean);
+      const anexos: { driveFileId: string; filename: string; contentType: string }[] = [];
+      if (pedidos.length) {
+        if (!l) return { erro: 'pra anexar arquivo da pasta, diga de qual cliente (leadId)' };
+        const x = await pastaDoCliente(accountId, l.id);
+        const arquivos = (await x.g.listAllFilesInFolderTree(accountId, x.pasta, 2)).filter((f) => !/folder$/.test(f.mimeType));
+        for (const q of pedidos) {
+          const f = arquivos.find((a) => norm(a.name) === q) || arquivos.find((a) => norm(a.name).includes(q));
+          if (!f) return { erro: `não achei "${q}" na pasta do cliente`, arquivos: arquivos.slice(0, 40).map((a) => a.path || a.name) };
+          anexos.push({ driveFileId: f.id, filename: f.name, contentType: f.mimeType });
+        }
+      }
+      const cc = String(input?.cc || '').trim();
+      return pendente({ accountId, userId, tipo: 'enviar_email', params: { caixaId: caixa.id, to: para, cc, subject, body: texto, replyToId, leadId: l?.id || null, attachments: anexos }, descricao: `Enviar e-mail de ${caixa.address} para ${para.join(', ')}${cc ? ` (cc ${cc})` : ''}${replyToId ? ' respondendo no mesmo fio' : ''} — assunto "${subject}"${anexos.length ? ` — anexos: ${anexos.map((a) => a.filename).join('; ')}` : ' — sem anexo'}:\n\n${texto}` }, p.fila);
+    }
+    case 'alterar_regra_ia': {
+      const acao = String(input?.acao || '').toUpperCase();
+      const deps = await SETORES(accountId);
+      const setorTxt = norm(input?.setor || '');
+      const depId = !setorTxt ? undefined : /todo|geral|ambos/.test(setorTxt) ? null : deps.find((d) => norm(d.name).includes(setorTxt.slice(0, 6)) || (/habita/.test(setorTxt) && /habita/i.test(d.name)) || (/home|equity/.test(setorTxt) && /home/i.test(d.name)))?.id;
+      if (setorTxt && depId === undefined) return { erro: `setor "${input?.setor}" não encontrado`, setores: deps.map((d) => d.name) };
+      const nomeSetor = (id: string | null | undefined) => (id ? deps.find((d) => d.id === id)?.name : 'todos os setores');
+      if (acao === 'CRIAR') {
+        const titulo = String(input?.titulo || '').trim(), conteudo = String(input?.conteudo || '').trim();
+        if (!titulo || !conteudo) return { erro: 'faltou título ou conteúdo' };
+        return pendente({ accountId, userId, tipo: 'alterar_regra_ia', params: { acao, titulo, conteudo, departmentId: depId ?? null }, descricao: `Criar regra da IA (${nomeSetor(depId ?? null)}): "${titulo}"\n${conteudo}` }, p.fila);
+      }
+      const r = await prisma.knowledgeEntry.findFirst({ where: { id: String(input?.id || ''), accountId }, select: { id: true, title: true, content: true, departmentId: true } });
+      if (!r) return { erro: 'regra não encontrada (use ver_regras_ia pra achar o id)' };
+      if (acao === 'APAGAR') return pendente({ accountId, userId, tipo: 'alterar_regra_ia', params: { acao, id: r.id }, descricao: `APAGAR a regra da IA "${r.title}" (${nomeSetor(r.departmentId)}):\n${r.content.slice(0, 600)}` }, p.fila);
+      if (acao === 'EDITAR') {
+        const conteudo = String(input?.conteudo || '').trim();
+        if (!conteudo) return { erro: 'faltou o novo conteúdo' };
+        const titulo = String(input?.titulo || '').trim() || r.title;
+        const dep = depId === undefined ? r.departmentId : depId;
+        return pendente({ accountId, userId, tipo: 'alterar_regra_ia', params: { acao, id: r.id, titulo, conteudo, departmentId: dep }, descricao: `Mudar a regra da IA "${r.title}" (${nomeSetor(dep)}).\nANTES: ${r.content.slice(0, 500)}\nDEPOIS: ${conteudo}` }, p.fila);
+      }
+      return { erro: 'acao: CRIAR, EDITAR ou APAGAR' };
     }
     // ── com confirmação ──
     case 'enviar_mensagem': {
@@ -179,8 +281,28 @@ export async function confirmPendingAction(p: { accountId: string; userId: strin
   const a = pendentes.get(p.id);
   if (!a || a.accountId !== p.accountId || a.userId !== p.userId) throw new Error('Essa ação expirou ou não é sua. Peça de novo.');
   pendentes.delete(p.id);
-  const x = a.params;
+  const x = a.params, x0 = a.params;
   switch (a.tipo) {
+    case 'mover_pasta': {
+      const x = await pastaDoCliente(a.accountId, x0.leadId);
+      if (!x.area) throw new Error('a pasta saiu do lugar desde a pergunta');
+      let destino = x.area.ativos, caminho = 'LEADS ATIVOS';
+      if (x0.dest === 'FRIOS') { destino = x.area.frios!; caminho = 'LEADS FRIOS'; }
+      if (x0.dest === 'CONCLUIDOS') { const { monthFolderFor } = require('./drive-lifecycle.service') as typeof import('./drive-lifecycle.service'); const m = await monthFolderFor(a.accountId, x.area.concluidos!, new Date()); destino = m.id; caminho = `CONCLUÍDOS / ${m.caminho}`; }
+      await x.g.moveDriveItem(a.accountId, x.pasta, destino);
+      await callApi(p.token, 'POST', '/notes', { leadId: x.l.id, content: `📁 Pasta movida pelo assistente para ${caminho} (${x.area.nome}). ${x.g.folderLink(x.pasta)}` }).catch(() => {});
+      return { ok: true, resultado: `Pasta movida pra ${caminho}.` };
+    }
+    case 'enviar_email': {
+      await callApi(p.token, 'POST', `/email/accounts/${x0.caixaId}/send`, { to: x0.to, cc: x0.cc, subject: x0.subject, body: x0.body, replyToId: x0.replyToId, leadId: x0.leadId, attachments: x0.attachments });
+      return { ok: true, resultado: 'E-mail enviado.' };
+    }
+    case 'alterar_regra_ia': {
+      if (x0.acao === 'CRIAR') await callApi(p.token, 'POST', '/knowledge/entries', { title: x0.titulo, content: x0.conteudo, departmentId: x0.departmentId });
+      else if (x0.acao === 'EDITAR') await callApi(p.token, 'PUT', `/knowledge/entries/${x0.id}`, { title: x0.titulo, content: x0.conteudo, departmentId: x0.departmentId });
+      else await callApi(p.token, 'DELETE', `/knowledge/entries/${x0.id}`);
+      return { ok: true, resultado: x0.acao === 'CRIAR' ? 'Regra criada — a IA já usa a partir da próxima mensagem.' : x0.acao === 'EDITAR' ? 'Regra alterada — vale a partir da próxima mensagem.' : 'Regra apagada.' };
+    }
     case 'enviar_mensagem': {
       if (await janelaAberta(x.leadId)) {
         await callApi(p.token, 'POST', '/messages', { leadId: x.leadId, content: x.texto, direction: 'OUTBOUND', channel: 'WHATSAPP' });

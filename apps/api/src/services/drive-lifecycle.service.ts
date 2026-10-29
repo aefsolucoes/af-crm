@@ -25,9 +25,9 @@ export function findMonthFolder<T extends { name?: string | null }>(folders: T[]
   return folders.find((f) => norm(String(f.name || '')).replace(/[^A-Z]/g, '') === alvo);
 }
 
-type Area = { root: string; ativos: string; frios: string | null; concluidos: string | null; nome: string };
+export type Area = { root: string; ativos: string; frios: string | null; concluidos: string | null; nome: string };
 
-async function loadAreas(accountId: string): Promise<Area[]> {
+export async function loadAreas(accountId: string): Promise<Area[]> {
   const drive = await getDrive(accountId);
   const deps = await prisma.department.findMany({ where: { accountId, activeLeadsFolderId: { not: null } }, select: { name: true, activeLeadsFolderId: true } });
   const areas: Area[] = [];
@@ -53,7 +53,7 @@ async function listFoldersIn(accountId: string, parent: string) {
 }
 
 /** CONCLUIDOS / <ano> / <mês> — cria o que faltar. */
-async function monthFolderFor(accountId: string, concluidos: string, quando: Date): Promise<{ id: string; caminho: string }> {
+export async function monthFolderFor(accountId: string, concluidos: string, quando: Date): Promise<{ id: string; caminho: string }> {
   const brt = new Date(quando.getTime() - 3 * 3600_000);
   const ano = String(brt.getUTCFullYear()), mes = brt.getUTCMonth() + 1;
   const anos = await listFoldersIn(accountId, concluidos);
