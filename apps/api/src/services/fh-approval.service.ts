@@ -54,11 +54,19 @@ export function fhOptions(resumo: Record<string, { status: string; texto: string
       const taxa = c[3] ? `${c[3]}% a.a.` : juros || ((/taxa efetiva\s*([\d.,]+)%/i.exec(b.texto) || [])[1] ? `${(/taxa efetiva\s*([\d.,]+)%/i.exec(b.texto) || [])[1]}% a.a.` : '');
       const cet = c[4] || (/CET\s*([\d.,]+)%/i.exec(b.texto) || [])[1] || '';
       const parcela = (/1[ªa]\s*parcela\s*R\$\s*([\d.,]+)/i.exec(b.texto) || [])[1] || '';
-      const condicao = /condicion/i.test(`${b.status} ${b.texto}`) ? ((/condicionad[oa]\s*(?:a|à|ao)\s*([^.;|]{4,80})/i.exec(b.texto) || [])[1] || 'envio de documentos pedidos pelo banco') : '';
+      // Nunca o texto cru do portal (Fabio 29/10, Pedro Paulo: saiu "o envio de documentos (proposta 005732633 — lista: Tratativa comercial — Análise" pro cliente).
+      const condicao = /condicion/i.test(`${b.status} ${b.texto}`) ? condicaoLegivel(b.texto) : '';
       aprovadas.push({ banco, valor: valor ? `R$ ${valor}` : '', prazo, taxa, cet, parcela: parcela ? `R$ ${parcela}` : '', condicao });
     } else if (/em an[aá]lise|aguard|pendente|processando/i.test(b.status)) emAnalise.push(banco);
   }
   return { aprovadas, emAnalise };
+}
+
+/** "… Documentos pendentes: Imóvel: Matrícula Imóvel, IPTU, Comprovante de Quitação Condominial …" → "envio dos documentos: Matrícula do imóvel, IPTU, …". Pura. */
+export function condicaoLegivel(texto: string): string {
+  const docs = (/Documentos pendentes:\s*([^\n]+?)(?:\.\s|\s—\s|$)/i.exec(String(texto || '')) || [])[1] || '';
+  const itens = docs.split(/[;,]/).map((x) => x.replace(/^[^:]{1,40}:\s*/, '').replace(/Matr[ií]cula Im[oó]vel/i, 'Matrícula do imóvel').trim()).filter((x) => x && x.length < 60);
+  return itens.length ? `envio dos documentos: ${Array.from(new Set(itens)).join(', ')}` : 'envio dos documentos pedidos pelo banco';
 }
 
 /** Mesmo padrão do aviso do Home Equity (approvalBlock): resumo da proposta, linha por informação. A 1ª linha (FH_NOTICE_MARK + banco) é a que o "Seguir com esta" reconhece. */
@@ -90,6 +98,10 @@ async function enriquecer(leadId: string, cf: Cf, ops: FhOption[]): Promise<FhOp
       const d = inter.detail;
       if (!x.taxa) x.taxa = (/juros\s*([\d.,]+%\s*a\.\s*[am]\.(?:\s*\+\s*[A-Z]+)?)/i.exec(d) || [])[1] || '';
       if (!x.cet) x.cet = (/CET\s*([\d.,]+)%/i.exec(d) || [])[1] || '';
+      if (!x.valor) { const v = (/valor aprovado\s*R\$\s*([\d.,]+)/i.exec(d) || [])[1]; if (v) x.valor = `R$ ${v}`; }
+      if (!x.prazo) x.prazo = (/prazo\s*(\d+)\s*meses/i.exec(d) || [])[1] || '';
+      if (!x.parcela) { const p1 = (/1[ªa]\s*parcela\s*R\$\s*([\d.,]+)/i.exec(d) || [])[1]; if (p1) x.parcela = `R$ ${p1}`; }
+      if (x.condicao) x.condicao = condicaoLegivel(d);
     }
     if (pedido && num(x.valor) && num(x.valor) + 1 < pedido) x.pedido = brl(pedido);
     return x;
@@ -132,6 +144,23 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
     if (cf._fhNotice?.sentAt) {
       const ja = new Set<string>(Array.isArray(cf._fhNotice.bancos) ? cf._fhNotice.bancos : []);
       const novas = aprovadas.filter((o) => !ja.has(o.banco));
+      // Aviso saiu SEM os números (aprovação condicional do Inter) e agora eles chegaram — igual ao Home Equity, vai a proposta completa (Fabio 29/10, Pedro Paulo:
+      // "por que a aprovação não trouxe parcela, prazo, taxas igual ao do HE?").
+      const semNum = new Set<string>(Array.isArray(cf._fhNotice.semNumeros) ? cf._fhNotice.semNumeros : []);
+      const completas = aprovadas.filter((o) => semNum.has(o.banco) && o.valor && o.prazo);
+      if (completas.length && !cf._fhChosen && inNoticeWindow() && l.aiAutoReplyActive && (await whatsappWindowOpen(l.id))) {
+        const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+        await saveCf(l.id, { _fhNotice: { ...cf._fhNotice, semNumeros: [...semNum].filter((b) => !completas.some((o) => o.banco === b)) } });
+        const nome = firstName(cf.falando_com || cf.participante_1 || l.name);
+        await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `📋 ${nome ? `${nome}, ` : ''}saíram as condições da sua proposta${completas.length > 1 ? 's' : ` no *${completas[0].banco}*`}:` });
+        for (const o of completas) {
+          await new Promise((r) => setTimeout(r, 1200));
+          const r = await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: fhOptionText(o), buttons: [CHOOSE] });
+          if (!r.success) await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `${fhOptionText(o)}\n\n👉 Para seguir com esta, é só me responder "${o.banco}".` });
+        }
+        await note(l.id, `📣 Cliente recebeu as condições completas (valor, prazo, taxa, parcela) de: ${completas.map((o) => o.banco).join(', ')} — o 1º aviso tinha saído sem os números.`);
+        continue;
+      }
       if (!novas.length) continue;
       if (cf._fhChosen) {
         await saveCf(l.id, { _fhNotice: { ...cf._fhNotice, bancos: [...ja, ...novas.map((o) => o.banco)] } });
@@ -183,7 +212,7 @@ async function sendFhNotice(accountId: string, leadId: string, leadName: string,
   const intro = aprovadas.length > 1
     ? `✅ ${nome ? `${nome}, ` : ''}boa notícia: seu financiamento foi aprovado em ${aprovadas.length} bancos! Veja as opções abaixo e toque em *${CHOOSE}* na que preferir.`
     : `✅ ${nome ? `${nome}, ` : ''}boa notícia: seu financiamento foi aprovado! Veja a proposta abaixo e toque em *${CHOOSE}* para seguirmos.`;
-  await saveCf(leadId, { _fhNotice: { sentAt: new Date().toISOString(), bancos: aprovadas.map((o) => o.banco) } }); // antes de enviar: se algo falhar no meio, não repete em laço
+  await saveCf(leadId, { _fhNotice: { sentAt: new Date().toISOString(), bancos: aprovadas.map((o) => o.banco), semNumeros: aprovadas.filter((o) => !o.valor || !o.prazo).map((o) => o.banco) } }); // antes de enviar: se algo falhar no meio, não repete em laço
   const a = await sendOutboundWhatsApp({ ...base, content: intro });
   if (!a.success) { await note(leadId, `⚠️ O aviso do Financiamento aprovado NÃO saiu (${a.error}). Avise o cliente à mão.`); return false; }
   for (const o of aprovadas) {
