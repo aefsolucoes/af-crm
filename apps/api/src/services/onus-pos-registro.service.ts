@@ -5,7 +5,7 @@ import { cleanSubject } from './inter-email.service';
  * Pagamento ao vendedor — Inter (Fabio 29/10, Alexandro): "sempre que o card for para a etapa de PAGAMENTO AO VENDEDOR, o CRM identifica qual e-mail do Inter
  * se refere a este processo e encaminha a CERTIDÃO DE ÔNUS PÓS-REGISTRO (a que está na pasta do Drive) para pagamento ao vendedor". Só processos do Inter;
  * o fluxo dos outros bancos vem depois.
- * Responde NA MESMA CONVERSA do consultor do Inter (e-mails ligados ao card), pela caixa comercial, com a certidão em anexo. Uma vez por card
+ * Responde NA MESMA CONVERSA do consultor do Inter (e-mails ligados ao card), pela MESMA caixa que recebeu/conversa (nunca troca de remetente), com a certidão em anexo. Uma vez por card
  * (`_onusPosRegistroSentAt`); faltando o e-mail do Inter ou a certidão, não envia: nota + push dizendo o que falta.
  */
 
@@ -59,9 +59,10 @@ export async function enviarOnusPosRegistroInter(p: { accountId: string; leadId:
     return { ok: false, motivo: 'sem certidão de ônus na pasta IMOVEL' };
   }
 
-  // Responde pela MESMA caixa que recebeu o e-mail do Inter (ex.: a da Andreia, quando o consultor fala com ela) — senão o consultor recebe de outro remetente; sem ela, a comercial.
-  const acc = (await prisma.emailAccount.findFirst({ where: { id: pessoa.emailAccountId, accountId: p.accountId } })) || (await prisma.emailAccount.findFirst({ where: { accountId: p.accountId, userId: null }, orderBy: { createdAt: 'asc' } }));
-  if (!acc) return { ok: false, motivo: 'caixa de e-mail não configurada' };
+  // Responde SEMPRE pela caixa que RECEBEU o e-mail do Inter / que está conversando com o consultor (Fabio 29/10: "precisa ser o e-mail que recebeu, ou o e-mail que está conversando").
+  // Nunca troca pela comercial: se essa caixa não existir mais, não envia.
+  const acc = await prisma.emailAccount.findFirst({ where: { id: pessoa.emailAccountId, accountId: p.accountId } });
+  if (!acc) { await avisar(p.accountId, p.leadId, lead.name, '⚠️ Pagamento ao vendedor (Inter): NÃO enviei — a caixa de e-mail que conversa com o consultor do Inter não está mais ligada ao CRM.'); return { ok: false, motivo: 'a caixa que conversa com o Inter não está ligada ao CRM' }; }
   const { downloadDriveFile } = await import('./google.service');
   const content = await downloadDriveFile(p.accountId, arquivo.id, arquivo.mimeType);
   const consultor = pessoa.fromName ? firstName(pessoa.fromName) : '';
