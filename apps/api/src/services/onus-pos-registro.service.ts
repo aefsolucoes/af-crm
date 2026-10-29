@@ -16,6 +16,24 @@ const firstName = (full: string | null | undefined) => { const w = String(full |
 const titleCase = (s: string) => s.toLowerCase().replace(/(^|\s)(\S)/g, (_m, a, b) => a + b.toUpperCase()).replace(/\b(Da|De|Do|Das|Dos|E)\b/g, (m) => m.toLowerCase());
 
 export const ETAPA_PAGAMENTO_VENDEDOR = /pagamento ao vendedor/i;
+export const nomeOnusPosRegistro = (matricula: string | null | undefined) => `CERTIDAO DE ONUS POS REGISTRO${matricula ? ` - MATRICULA ${matricula}` : ''}.pdf`;
+
+/** Renomeia no Drive a certidão de ônus (a última emitida pelo CRM; senão a de ônus/matrícula mais recente da pasta IMOVEL) pra "CERTIDAO DE ONUS POS REGISTRO" (Fabio 29/10). */
+export async function renomearOnusPosRegistro(accountId: string, leadId: string): Promise<{ ok: boolean; de?: string; para?: string; motivo?: string }> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!lead) return { ok: false, motivo: 'card não encontrado' };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const { arquivosDoImovel } = require('./vistoria-inter.service') as typeof import('./vistoria-inter.service');
+  const doImovel = await arquivosDoImovel(accountId, cf).catch(() => []);
+  const cert = await prisma.certidaoRequest.findFirst({ where: { accountId, leadId, status: 'ISSUED', driveFileId: { not: null } }, orderBy: { finishedAt: 'desc' }, select: { driveFileId: true, matricula: true } });
+  const arq = (cert && doImovel.find((f) => f.id === cert.driveFileId)) || [...doImovel].reverse().find((f) => /ONUS|MATRICULA/i.test(f.name)) || null;
+  if (!arq) return { ok: false, motivo: 'não achei a certidão de ônus na pasta IMOVEL' };
+  const para = nomeOnusPosRegistro(cert?.matricula || String(cf.numero_matricula || '').trim());
+  if (arq.name === para) return { ok: true, de: arq.name, para };
+  const { renameFile } = await import('./google.service');
+  await renameFile(accountId, arq.id, para);
+  return { ok: true, de: arq.name, para };
+}
 
 /** O processo segue pelo Inter? (banco do card, ou a aprovação escolhida/maior do Inter) */
 async function processoDoInter(leadId: string, cf: Record<string, any>): Promise<boolean> {
@@ -64,6 +82,8 @@ export async function enviarOnusPosRegistroInter(p: { accountId: string; leadId:
   const acc = await prisma.emailAccount.findFirst({ where: { id: pessoa.emailAccountId, accountId: p.accountId } });
   if (!acc) { await avisar(p.accountId, p.leadId, lead.name, '⚠️ Pagamento ao vendedor (Inter): NÃO enviei — a caixa de e-mail que conversa com o consultor do Inter não está mais ligada ao CRM.'); return { ok: false, motivo: 'a caixa que conversa com o Inter não está ligada ao CRM' }; }
   const { downloadDriveFile } = await import('./google.service');
+  // O anexo vai com o nome "CERTIDAO DE ONUS POS REGISTRO" (e o arquivo é renomeado no Drive também).
+  if (!/POS REGISTRO/i.test(arquivo.name)) { try { const r = await renomearOnusPosRegistro(p.accountId, p.leadId); if (r.ok && r.para) arquivo.name = r.para; } catch { /* segue com o nome atual */ } }
   const content = await downloadDriveFile(p.accountId, arquivo.id, arquivo.mimeType);
   const consultor = pessoa.fromName ? firstName(pessoa.fromName) : '';
   const matricula = cert?.matricula || String(cf.numero_matricula || '').trim();

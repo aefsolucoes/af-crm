@@ -335,8 +335,10 @@ const leadNameOf = async (db: Db, leadId: string) => (await db.lead.findUnique({
 export async function saveCertidaoToDrive(db: Db, r: { accountId: string; leadId: string; matricula: string }, pdf: Buffer, nomeDoArquivo?: string): Promise<{ ok: true; fileId: string; fileUrl: string; folderUrl: string; fileName: string } | { ok: false; reason: string }> {
   try {
     const { createFolder, uploadFile, extractFolderId, findFolderByNameUnderRoot, folderLink } = await import('./google.service');
-    const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true, customFields: true } });
+    const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true, customFields: true, stage: { select: { name: true } } } });
     if (!lead) return { ok: false, reason: 'card não encontrado' };
+    // Card já no registro/pagamento ao vendedor: é a certidão PÓS-REGISTRO (Fabio 29/10: "renomear a ônus para ônus pós registro").
+    if (!nomeDoArquivo && /registro em cart|pagamento ao vendedor/i.test(lead.stage?.name || '')) nomeDoArquivo = `CERTIDAO DE ONUS POS REGISTRO - MATRICULA ${r.matricula}.pdf`;
     const link = String(((lead.customFields || {}) as Record<string, unknown>).link_pasta_drive || '').trim();
     let clientFolderId = link ? extractFolderId(link) : '';
     if (!clientFolderId) clientFolderId = (await findFolderByNameUnderRoot(r.accountId, lead.name))?.folderId || '';
