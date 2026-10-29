@@ -163,6 +163,8 @@ function systemFixed(userName: string, voz: boolean): string {
 - AÇÕES QUE MEXEM COM CLIENTE, PROCESSO, DRIVE, E-MAIL OU A IA (enviar_mensagem, enviar_email, preencher_formulario, agir_supervisao ENVIAR/TEMPLATE, ligar_para_cliente, pedir_permissao_ligacao, mover_card, marcar_status, rodar_analise, solicitar_vistoria, pedir_certidao, mover_pasta, alterar_regra_ia): a ferramenta só PREPARA; aparece um botão "Confirmar" pra pessoa. Diga em 1 frase o que vai acontecer e peça a confirmação. NUNCA diga que já foi feito. Só prepare o que a pessoa pediu — nada a mais.
 - Mensagem ao cliente: escreva como a equipe da A&F escreve no WhatsApp (curta, educada, sem emoji em excesso, sem prometer prazo ou aprovação). Mostre o texto antes.
 - Formulário do card ("preenche o card do Pedro com…", "completa o cadastro com os dados da matrícula"): ver_formulario → preencher_formulario com os campos certos. Pode tirar os dados do que o cliente mandou (ver_cliente) — nunca invente CPF, data ou valor; o que não tiver, pergunte. Formulário de portal de banco é com as extensões (rodar_analise, vistoria, certidão).
+- Certidão ("pede a certidão de ônus/matrícula do Pedro"): buscar_clientes → pedir_certidao só com o leadId. NÃO abra formulário, documentos nem pasta antes: a ferramenta já procura a matrícula e o endereço. Se faltar dado, ela diz o que perguntar.
+- RAPIDEZ: cada volta demora; use o MENOR número de ferramentas. Quando precisar de várias leituras independentes, peça todas na mesma volta.
 - Documentos: "quem mandou documento e precisa de andamento?" → docs_para_andamento; sugira o próximo passo de cada um (PRONTO → seguir o processo: Fechado/Em contratação, vistoria, certidão; PROBLEMA/FALTA → o que pedir ao cliente; DÚVIDA → responder no balão Dúvidas da IA). Pra analisar um cliente: documentos_do_cliente; se houver arquivo não lido, conferir_documentos; pra uma pergunta específica sobre o conteúdo, ler_documento. Dê sua avaliação como um analista de crédito: serve pro banco? está no nome certo? atual? falta frente/verso?
 - Áudio: "quero mandar um áudio pro Pedro" → gravar_audio (abre o gravador; quem grava é a pessoa; o envio é no botão dela).
 - Ligação: "liga pro Pedro" → ligar_para_cliente. Por enquanto quem fala com o cliente é o colaborador; você só disca. Nunca diga que você vai conversar com o cliente.
@@ -218,13 +220,13 @@ export async function assistantChat(p: { accountId: string; userId: string; user
       return fim(reply || '(sem resposta)');
     }
     msgs.push({ role: 'assistant', content: blocks });
-    const results = [];
-    for (const u of usos) {
+    // As ferramentas da mesma volta rodam juntas (a fila de ações mantém a ordem pelo push de cada uma).
+    const results = await Promise.all(usos.map(async (u) => {
       const t0 = Date.now();
       const out = await runTool(ctx, u.name, u.input);
       console.log(`[Assistente] ${u.name} ${Date.now() - t0} ms`);
-      results.push({ type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out).slice(0, 30_000) });
-    }
+      return { type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out).slice(0, 30_000) };
+    }));
     msgs.push({ role: 'user', content: results });
   }
   return fim('Precisei de passos demais pra responder isso — tente perguntar de forma mais direta (ex.: o nome do cliente e o que você quer saber).');

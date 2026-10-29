@@ -216,6 +216,7 @@ export function CrmAssistant() {
     const t = frase.replace(/[*_#`>⏰]/g, '').replace(/https?:\S+/g, '').trim();
     if (!t) return;
     setVoz('falando');
+    try { audioRef.current?.pause(); } catch { /* */ }
     try {
       const r = await api.post('/api/assistant/tts', { text: t.slice(0, 900) }, { responseType: 'blob' });
       const url = URL.createObjectURL(r.data as Blob);
@@ -249,11 +250,24 @@ export function CrmAssistant() {
 
   // ── conversa com o Claude ──
   function lembra(m: Msg) { msgsRef.current = [...msgsRef.current, m].slice(-20); save(msgsRef.current); }
+  // "Um instante" na mesma voz, quando a resposta demora (o áudio é baixado uma vez e reaproveitado).
+  const aguardeRef = useRef<string | null>(null);
+  async function avisaQueEstaVendo() {
+    try {
+      if (!aguardeRef.current) {
+        const r = await api.post('/api/assistant/tts', { text: 'Um instante, já vejo.' }, { responseType: 'blob' });
+        aguardeRef.current = URL.createObjectURL(r.data as Blob);
+      }
+      const a = new Audio(aguardeRef.current); audioRef.current = a;
+      await a.play();
+    } catch { /* sem aviso, segue pensando */ }
+  }
   async function perguntar(content: string): Promise<Cartao> {
     lembra({ role: 'user', content });
     setVoz('pensando');
+    const demora = setTimeout(() => { if (vozRef.current) void avisaQueEstaVendo(); }, 2500);
     try {
-      const { data } = await api.post('/api/assistant/chat', { voice: true, messages: msgsRef.current });
+      const { data } = await api.post('/api/assistant/chat', { voice: true, messages: msgsRef.current }).finally(() => clearTimeout(demora));
       const fala = String(data.reply || '').trim() || 'Não consegui responder agora.';
       lembra({ role: 'assistant', content: fala });
       const c: Cartao = { disse: content, fala, pending: data.pending?.length ? data.pending.map((p: Pending) => ({ ...p, estado: 'PENDENTE' })) : undefined, attachments: data.attachments?.length ? data.attachments : undefined, nav: data.navigate || null, audio: data.audio || null };
