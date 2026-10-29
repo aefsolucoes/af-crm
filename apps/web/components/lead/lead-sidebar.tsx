@@ -612,6 +612,12 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
                         >
                           <DisplayValue fieldDef={field} value={customValues[field.key]} />
                         </button>
+                        {/* Link (ex.: "Pasta no Drive"): o "Abrir" abre o link, então o lápis é o jeito de TROCAR (Fabio 29/10: "precisa ter a opção de trocar link"). */}
+                        {field.type === 'LINK' && customValues[field.key] ? (
+                          <button onClick={() => setEditingKey(field.key)} className="text-slate-400 hover:text-af-mid flex-shrink-0" title="Trocar o link">
+                            <Pencil size={11} />
+                          </button>
+                        ) : null}
                         <button
                           onClick={() => {
                             setEditingField(field);

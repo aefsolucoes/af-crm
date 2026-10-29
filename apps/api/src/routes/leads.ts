@@ -410,6 +410,16 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
     const lead = await updateLead(req.params.id, req.user!.accountId, { ...updateData, ...(isRejection ? { rejectedAt: new Date() } : {}) }, req.app.get('io'));
     res.json(lead);
 
+    // Link da pasta do Drive trocado (Fabio 29/10, Alexandro: "precisa ter a opção de trocar link"): leva os arquivos que o CRM gerou (certidões) pra pasta nova.
+    {
+      const linkAntes = String(((before?.customFields || {}) as Record<string, any>).link_pasta_drive || '').trim();
+      const linkDepois = String(((updateData as any)?.customFields || {}).link_pasta_drive ?? linkAntes).trim();
+      if (linkDepois && linkAntes !== linkDepois) {
+        const { pastaDoDriveTrocada } = require('../services/drive-relink.service') as typeof import('../services/drive-relink.service');
+        pastaDoDriveTrocada(req.user!.accountId, req.params.id, linkAntes, linkDepois).catch((e: any) => console.error('[Pasta trocada]', e?.message || e));
+      }
+    }
+
     // Auditoria assíncrona
     try {
       const userName = req.user!.id
