@@ -22,9 +22,16 @@ async function salvar(leadId: string, mut: (c: Cf) => void): Promise<Cf> {
 
 const participantesDa = (cf: Cf): any[] => {
   const ps = Array.isArray(cf._fichaCadastral?.participantes) ? cf._fichaCadastral.participantes : [];
-  return ps.map((p: any, i: number) => {
+  const base = ps.map((p: any, i: number) => {
     const n = Number(p.ordem) || i + 1;
     return { ...p, ordem: n, cpf: String(p.cpf || cf[`cpf_${n}`] || '').replace(/\D/g, ''), telefone: cf[`telefone_${n}`] || '', email: cf[`email_${n}`] || '' };
+  });
+  // CPF do cônjuge: a certidão de casamento não traz — se o cônjuge é o outro participante do card, usa o CPF dele (Jézer/Bianca 29/10).
+  const primeiroNome = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim().split(/\s+/)[0];
+  return base.map((p: any) => {
+    if (!p.conjuge?.nome || String(p.conjuge.cpf || '').replace(/\D/g, '').length === 11) return p;
+    const outro = base.find((o: any) => o.ordem !== p.ordem && primeiroNome(o.nome) === primeiroNome(p.conjuge.nome) && o.cpf.length === 11);
+    return outro ? { ...p, conjuge: { ...p.conjuge, cpf: outro.cpf } } : p;
   });
 };
 
