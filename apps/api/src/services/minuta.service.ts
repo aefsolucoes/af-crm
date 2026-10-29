@@ -12,11 +12,11 @@ import { logActivity } from './activity.service';
  *    "MINUTA" — se existir uma com "minuta" no nome (ex.: "Minuta do contrato"), vira "MINUTA"; se não existir nenhuma, o CRM cria (pra equipe soltar o arquivo). */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
-type Leitura = { tipo: string; valorCredito: number | null; valorLiquido: number | null; valorCompraVenda: number | null; valorAvaliacao: number | null; valorEntrada: number | null; prazoMeses: number | null; banco: string | null; observacao: string };
+type Leitura = { tipo: string; valorCredito: number | null; valorLiquido: number | null; valorCompraVenda: number | null; valorAvaliacao: number | null; valorEntrada: number | null; prazoMeses: number | null; banco: string | null; taxaEfetiva?: string | null; sistema?: string | null; primeiraParcela?: number | null; observacao: string };
 
 const SYSTEM = `Você lê a MINUTA (rascunho do contrato) de uma operação de crédito imobiliário de um banco brasileiro: financiamento habitacional (compra de imóvel) ou crédito com garantia de imóvel (home equity). Extraia SÓ o que está escrito no documento — nunca calcule nem invente.
 Responda SOMENTE com JSON:
-{"tipo":"FINANCIAMENTO|HOME_EQUITY|OUTRO","valorCredito":<número ou null — valor TOTAL do financiamento/empréstimo/crédito concedido (o que o contrato chama de valor do financiamento, valor do empréstimo, valor do crédito, valor total da dívida na assinatura)>,"valorLiquido":<número ou null — valor líquido liberado ao cliente, se o contrato separar>,"valorCompraVenda":<número ou null — preço de compra e venda do imóvel (só financiamento)>,"valorAvaliacao":<número ou null — valor de avaliação do imóvel / valor da garantia para leilão>,"valorEntrada":<número ou null — recursos próprios/entrada, se estiver escrito>,"prazoMeses":<número ou null>,"banco":"<nome do banco ou null>","observacao":"<1 frase: o que é o documento e qualquer ponto de atenção (ex.: valor diferente do esperado, minuta de outro cliente)>"}
+{"tipo":"FINANCIAMENTO|HOME_EQUITY|OUTRO","valorCredito":<número ou null — valor TOTAL do financiamento/empréstimo/crédito concedido (o que o contrato chama de valor do financiamento, valor do empréstimo, valor do crédito, valor total da dívida na assinatura)>,"valorLiquido":<número ou null — valor líquido liberado ao cliente, se o contrato separar>,"valorCompraVenda":<número ou null — preço de compra e venda do imóvel (só financiamento)>,"valorAvaliacao":<número ou null — valor de avaliação do imóvel / valor da garantia para leilão>,"valorEntrada":<número ou null — recursos próprios/entrada, se estiver escrito>,"prazoMeses":<número ou null>,"banco":"<nome do banco ou null>","taxaEfetiva":"<taxa de juros EFETIVA anual como está escrita, ex.: 10,49% a.a. + TR, ou null>","sistema":"<SAC|PRICE|null>","primeiraParcela":<número ou null — valor da 1ª prestação/encargo inicial>,"observacao":"<1 frase: o que é o documento e qualquer ponto de atenção (ex.: valor diferente do esperado, minuta de outro cliente)>"}
 Números em reais como número puro (ex.: 250000.5), sem R$ nem pontos de milhar.`;
 
 const num = (v: unknown): number | null => { const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(/[^\d.,-]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null; };
@@ -72,6 +72,22 @@ async function etapasDaMinuta(accountId: string): Promise<string[]> {
 let tokenMudancas: string | null = null;
 let varreduraFeita = false;
 let ultimaMudanca = 0;
+/** Lê AGORA a minuta de um card (Jarvis "lê a minuta do Pedro"): cria/acha a pasta MINUTA e lê o que ainda não foi lido. */
+export async function lerMinutaDoCard(accountId: string, leadId: string, io?: Io, releitura = false): Promise<{ lidas: number; arquivos: string[] }> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, value: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!l) throw new Error('card não encontrado');
+  const cf = (l.customFields || {}) as Record<string, any>;
+  if (!String(cf.link_pasta_drive || '').trim()) throw new Error('o card não tem a pasta do Drive');
+  if (releitura && cf._minuta?.lidos) { const c2 = { ...cf, _minuta: { ...cf._minuta, lidos: [] } }; await prisma.lead.update({ where: { id: leadId }, data: { customFields: c2 as any } }); l.customFields = c2; }
+  const google = await import('./google.service');
+  if (!cf._minuta?.pasta) await garantirPastaMinuta(accountId, l.id, google.extractFolderId(String(cf.link_pasta_drive)), cf).catch(() => {});
+  const antes = await prisma.note.count({ where: { leadId } });
+  await conferirPasta(accountId, l, io);
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const m = (fresh?.customFields as any)?._minuta || {};
+  return { lidas: Math.max(0, (await prisma.note.count({ where: { leadId } })) - antes), arquivos: m.arquivo ? [m.arquivo] : [] };
+}
+
 export async function processMinutas(accountId: string, io?: Io): Promise<void> {
   if (!process.env.ANTHROPIC_API_KEY) return;
   const etapas = await etapasDaMinuta(accountId);
@@ -197,7 +213,20 @@ async function aplicarMinuta(
     const compra = num(cf.valor_imovel);
     troca('valor_entrada', 'Entrada', leitura.valorEntrada || (compra && compra > leitura.valorCredito ? Math.round((compra - leitura.valorCredito) * 100) / 100 : null));
   }
-  troca('valor_avaliacao', 'Avaliação do imóvel', leitura.valorAvaliacao);
+  troca('valor_de_avaliacao', 'Avaliação do imóvel', leitura.valorAvaliacao); // a chave do campo é valor_de_avaliacao (antes gravava em valor_avaliacao, que não aparece no card)
+  troca('primeira_parcela', 'Primeira parcela', leitura.primeiraParcela ?? null);
+  // Banco, prazo e taxa (Fabio 29/10, Alexandro: "lê a minuta e preenche o card"): só o que a minuta traz escrito.
+  const textoCampo = (chave: string, rotulo: string, novo: string | null | undefined) => {
+    const v = String(novo || '').trim();
+    if (!v || String(cf[chave] || '').trim() === v) return;
+    mudancas.push(`${rotulo}: ${v}${cf[chave] ? ` (era ${cf[chave]})` : ''}`);
+    cf[chave] = v;
+  };
+  const BANCOS: [RegExp, string][] = [[/caixa/i, 'Caixa'], [/bradesco/i, 'Bradesco'], [/ita[uú]/i, 'Itaú'], [/santander/i, 'Santander'], [/brasil|\bbb\b/i, 'BB'], [/brb|bras[ií]lia/i, 'BRB'], [/inter/i, 'Inter'], [/creditas/i, 'Creditas']];
+  const banco = leitura.banco ? (BANCOS.find(([re]) => re.test(leitura.banco!))?.[1] || null) : null;
+  textoCampo('instituicao', 'Instituição', banco);
+  textoCampo('prazo_financ', 'Prazo', leitura.prazoMeses ? `${leitura.prazoMeses} meses` : null);
+  textoCampo('taxa_efetiva', 'Taxa efetiva', leitura.taxaEfetiva || null);
   const valorAntes = fresh?.value || null;
   const novoValor = leitura.valorCredito;
   if (!valorAntes || Math.abs(valorAntes - novoValor) >= 0.01) mudancas.push(`Valor da venda: ${brl(novoValor)} (era ${brl(valorAntes)})`);
