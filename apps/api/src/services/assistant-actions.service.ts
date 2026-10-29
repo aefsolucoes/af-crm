@@ -47,6 +47,10 @@ export const ACTION_TOOLS = [
   { name: 'iniciar_supervisao', description: 'Inicia/atualiza a SUPERVISÃO DE SEXTA agora (só administrador): a IA resume cada card dos funis "Em contratação" que ainda não tem item nesta semana. Roda em segundo plano (pode levar alguns minutos) e abre a tela da Supervisão. Nada vai pro cliente.', input_schema: { type: 'object', properties: {} } },
   { name: 'ver_supervisao', description: 'Lista a supervisão desta semana: cada card com id do item, cliente, etapa, status (PENDING/SENT/SKIPPED/DONE), resumo, situação, pendências, mensagem sugerida, ação pra equipe e se a janela de 24 h está aberta. Use pra conduzir a supervisão card por card (comece pelos PENDING).', input_schema: { type: 'object', properties: { soPendentes: { type: 'boolean' } } } },
   { name: 'agir_supervisao', description: 'Age num item da supervisão. PULAR e FEITO são diretos. ENVIAR (janela aberta) e TEMPLATE (janela fechada: template de atualização + mensagem guardada pra quando responder) mandam a mensagem ao cliente e por isso PREPARAM com confirmação. texto = mensagem final (a sugerida ou a ajustada pela pessoa).', input_schema: { type: 'object', properties: { itemId: { type: 'string' }, acao: { type: 'string', enum: ['ENVIAR', 'TEMPLATE', 'PULAR', 'FEITO'] }, texto: { type: 'string' } }, required: ['itemId', 'acao'] } },
+  { name: 'docs_para_andamento', description: 'Clientes que MANDARAM DOCUMENTOS nos últimos N dias (padrão 10) e o que falta pra dar andamento: situação da conferência (tudo OK / com problema / falta documento / dúvida com a equipe), etapa, quando chegou o último arquivo e se a equipe falou com ele depois. Os "PRONTO" vêm primeiro — use pra sugerir em quem dar andamento e qual o próximo passo.', input_schema: { type: 'object', properties: { dias: { type: 'number' }, funil: { type: 'string' } } } },
+  { name: 'documentos_do_cliente', description: 'Os documentos que o cliente mandou e o que a IA leu em cada um: tipo, titular, OK/PROBLEMA/DÚVIDA, problemas, emissão, dono do imóvel, matrícula/cartório, gravame (alienação/hipoteca), ressalvas; e o que ainda falta.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'conferir_documentos', description: 'Roda a conferência de documentos AGORA (lê com a IA os arquivos ainda não lidos e atualiza o card). Não manda nada ao cliente. Depois use documentos_do_cliente.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'ler_documento', description: 'Abre UM documento do cliente e responde uma pergunta sobre ele lendo o arquivo de verdade (ex.: "a matrícula tem alienação vigente?", "qual a área do imóvel no IPTU?", "o comprovante está no nome de quem?"). arquivo = nome (ou parte) do arquivo ou o tipo (ex.: "matricula", "IPTU", "CNH").', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, arquivo: { type: 'string' }, pergunta: { type: 'string' } }, required: ['leadId', 'arquivo', 'pergunta'] } },
   { name: 'enviar_mensagem', description: 'PREPARA uma mensagem de WhatsApp pro cliente (só sai depois que a pessoa confirmar). Se a janela de 24 h estiver fechada, o envio vira o template de atualização do processo + a mensagem guardada pra sair quando o cliente responder.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, texto: { type: 'string' } }, required: ['leadId', 'texto'] } },
   { name: 'mover_card', description: 'PREPARA a mudança de etapa do card (confirmação antes). etapa = nome da etapa; funil opcional (se a etapa for de outro funil).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, etapa: { type: 'string' }, funil: { type: 'string' } }, required: ['leadId', 'etapa'] } },
   { name: 'marcar_status', description: 'PREPARA marcar o card como GANHO, PERDIDO, REPROVADO (perdido por reprovação do banco) ou REABRIR (confirmação antes). motivo é obrigatório pra PERDIDO/REPROVADO.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, status: { type: 'string', enum: ['GANHO', 'PERDIDO', 'REPROVADO', 'REABRIR'] }, motivo: { type: 'string' } }, required: ['leadId', 'status'] } },
@@ -205,6 +209,9 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       return pendente({ accountId, userId, tipo: 'enviar_email', params: { caixaId: caixa.id, to: para, cc, subject, body: texto, replyToId, leadId: l?.id || null, attachments: anexos }, descricao: `Enviar e-mail de ${caixa.address} para ${para.join(', ')}${cc ? ` (cc ${cc})` : ''}${replyToId ? ' respondendo no mesmo fio' : ''} — assunto "${subject}"${anexos.length ? ` — anexos: ${anexos.map((a) => a.filename).join('; ')}` : ' — sem anexo'}:\n\n${texto}` }, p.fila);
     }
     case 'alterar_regra_ia': {
+      // Regras da IA valem pra todos os clientes: só administrador muda (colaborador pode ver).
+      const quem = await prisma.user.findFirst({ where: { id: userId, accountId }, select: { role: true } });
+      if (quem?.role !== 'ADMIN') return { erro: 'só administrador pode mudar as regras da IA — peça ao Fabio' };
       const acao = String(input?.acao || '').toUpperCase();
       const deps = await SETORES(accountId);
       const setorTxt = norm(input?.setor || '');
@@ -280,6 +287,75 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       const aberta = await janelaAberta(it.leadId);
       const modo = aberta ? 'send' : 'template';
       return pendente({ accountId, userId, tipo: 'agir_supervisao', params: { itemId: it.id, modo, texto }, descricao: aberta ? `Supervisão — mandar pro ${l.name}: "${texto}"` : `Supervisão — janela do ${l.name} fechada: mandar o template de atualização agora; a mensagem "${texto}" sai quando ele responder.` }, p.fila);
+    }
+    case 'docs_para_andamento': {
+      const dias = Math.max(1, Math.min(Number(input?.dias) || 10, 60));
+      const corte = new Date(Date.now() - dias * 86400_000);
+      const funil = input?.funil ? `%${input.funil}%` : '%';
+      const rows = await prisma.$queryRaw<any[]>`
+        SELECT l.id, l.name, s.name AS etapa, p.name AS funil, max(a."createdAt") AS ultimo_doc, count(a.id)::int AS arquivos,
+          (SELECT max(m."createdAt") FROM "Message" m WHERE m."leadId" = l.id AND m.direction = 'OUTBOUND' AND m."sentByUserId" IS NOT NULL) AS ultima_equipe
+        FROM "Lead" l JOIN "MessageAttachment" a ON a."leadId" = l.id JOIN "Message" mi ON mi.id = a."messageId" AND mi.direction = 'INBOUND'
+          JOIN "Stage" s ON s.id = l."stageId" JOIN "Pipeline" p ON p.id = l."pipelineId"
+        WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false AND a."createdAt" >= ${corte}
+          AND a."mimeType" NOT LIKE 'audio/%' AND a."mimeType" NOT LIKE 'video/%' AND a."mimeType" <> 'image/webp' AND p.name ILIKE ${funil}
+        GROUP BY l.id, l.name, s.name, p.name ORDER BY max(a."createdAt") ASC LIMIT 40`;
+      const { aiDocsContext } = require('./doc-review.service') as typeof import('./doc-review.service');
+      const out = [] as any[];
+      for (const r of rows) {
+        const ctx = await aiDocsContext(r.id).catch(() => '');
+        const linhas = ctx.split('\n').filter((x) => x.startsWith('- '));
+        const problema = linhas.filter((x) => /PROBLEMA/.test(x)), duvida = linhas.filter((x) => /EM ANÁLISE PELA EQUIPE/.test(x));
+        const falta = (ctx.match(/Ainda falta \(lista do banco\): (.*)/) || [])[1] || '';
+        const situacao = !linhas.length ? 'NAO_CONFERIDO' : duvida.length ? 'DUVIDA_COM_A_EQUIPE' : problema.length ? 'COM_PROBLEMA' : falta ? 'FALTA_DOCUMENTO' : 'PRONTO';
+        out.push({ leadId: r.id, nome: r.name, funil: r.funil, etapa: r.etapa, situacao, ultimoDocumento: quando(r.ultimo_doc), arquivos: r.arquivos,
+          equipeFalouDepois: !!(r.ultima_equipe && new Date(r.ultima_equipe) > new Date(r.ultimo_doc)),
+          ...(problema.length ? { problemas: problema.map((x) => x.slice(2, 160)) } : {}), ...(falta ? { falta: falta.slice(0, 200) } : {}), ...(duvida.length ? { duvidas: duvida.map((x) => x.slice(2, 80)) } : {}) });
+      }
+      const ordem: Record<string, number> = { PRONTO: 0, DUVIDA_COM_A_EQUIPE: 1, NAO_CONFERIDO: 2, COM_PROBLEMA: 3, FALTA_DOCUMENTO: 4 };
+      out.sort((a, b) => ordem[a.situacao] - ordem[b.situacao]);
+      return { total: out.length, clientes: out };
+    }
+    case 'documentos_do_cliente': {
+      const l = await leadOf(accountId, input?.leadId);
+      const cf = (l.customFields || {}) as Record<string, any>;
+      const rev = (cf._docReview || {}) as Record<string, any>;
+      const atts = await prisma.messageAttachment.findMany({ where: { leadId: l.id, message: { direction: 'INBOUND' }, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] }, orderBy: { createdAt: 'asc' }, select: { id: true, fileName: true, createdAt: true } });
+      const { aiDocsContext } = require('./doc-review.service') as typeof import('./doc-review.service');
+      return {
+        cliente: l.name, etapa: l.stage?.name, resumo: (await aiDocsContext(l.id).catch(() => '')) || 'nenhum documento conferido ainda',
+        arquivos: atts.slice(-40).map((a) => { const r = rev[a.id]; return { arquivo: a.fileName, chegou: quando(a.createdAt), ...(r ? { tipo: r.tipo, titular: r.titular, resultado: r.resultado, problemas: r.problemas?.length ? r.problemas : undefined, emissao: r.emissao || undefined, lado: r.lado || undefined, dono: r.dono, donoSituacao: r.donoSituacao, matricula: r.matricula, cartorio: r.cartorio, gravame: r.gravame || undefined, ressalva: r.ressalva, outros: r.outros, observacao: r.observacao || undefined } : { resultado: 'NAO_LIDO' }) }; }),
+      };
+    }
+    case 'conferir_documentos': {
+      const l = await leadOf(accountId, input?.leadId);
+      const { reviewReceivedDocs } = require('./doc-review.service') as typeof import('./doc-review.service');
+      const r = await reviewReceivedDocs(accountId, l.id);
+      if (!r) return { ok: true, aviso: 'esse cliente não mandou documento' };
+      return { ok: true, cliente: l.name, lidosAgora: r.novas.map((n) => `${n.arquivo}: ${n.r.tipo} — ${n.r.resultado}`), ok_: r.ok, problemas: r.problemas, duvidas: r.duvidas.map((d) => `${d.doc}: ${d.pergunta}`), donoPendente: r.donoPendente.map((d) => `${d.doc}: dono ${d.dono}`) };
+    }
+    case 'ler_documento': {
+      const l = await leadOf(accountId, input?.leadId);
+      const q = norm(input?.arquivo || '');
+      const cf = (l.customFields || {}) as Record<string, any>;
+      const rev = (cf._docReview || {}) as Record<string, any>;
+      const atts = (await prisma.messageAttachment.findMany({ where: { leadId: l.id, message: { direction: 'INBOUND' } }, orderBy: { createdAt: 'desc' }, select: { id: true, fileName: true, mimeType: true, driveFileId: true, data: true } }))
+        .filter((a) => a.mimeType === 'application/pdf' || /^image\/(jpeg|png|gif|webp)$/.test(a.mimeType));
+      const att = atts.find((a) => norm(a.fileName).includes(q)) || atts.find((a) => norm(rev[a.id]?.tipo || '').includes(q));
+      if (!att) return { erro: `não achei "${input?.arquivo}" entre os arquivos do cliente`, arquivos: atts.slice(0, 30).map((a) => `${a.fileName}${rev[a.id]?.tipo ? ` (${rev[a.id].tipo})` : ''}`) };
+      let buffer: Buffer, mime = att.mimeType;
+      if (att.data?.length) buffer = Buffer.from(att.data);
+      else if (att.driveFileId) { const { downloadDriveFileForVision } = require('./google.service') as typeof import('./google.service'); ({ buffer, mimeType: mime } = await downloadDriveFileForVision(accountId, att.driveFileId, att.mimeType)); }
+      else return { erro: 'o arquivo não está mais disponível (nem no banco nem no Drive)' };
+      if (buffer.length > 10_000_000) return { erro: 'arquivo grande demais pra ler aqui (mais de 10 MB)' };
+      const isPdf = att.mimeType === 'application/pdf';
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY || '', 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 3000, system: 'Você analisa documentos de clientes de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional) para a EQUIPE. Responda em português, direto, citando o que está escrito no documento (números, nomes, datas). Se algo não aparece ou está ilegível, diga isso — nunca invente.', messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source: { type: 'base64', media_type: isPdf ? 'application/pdf' : mime, data: buffer.toString('base64') } }, { type: 'text', text: `Cliente: ${l.name}. Arquivo: ${att.fileName}.\nPergunta: ${String(input?.pergunta || 'O que é este documento e o que ele mostra de importante?')}` }] }] }),
+      });
+      if (!res.ok) return { erro: `não consegui ler o documento agora (${res.status})` };
+      const j = (await res.json()) as { content: any[] };
+      return { arquivo: att.fileName, resposta: (j.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim() || '(sem resposta)' };
     }
     case 'enviar_mensagem': {
       const l = await leadOf(accountId, input?.leadId);
