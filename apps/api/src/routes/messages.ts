@@ -32,10 +32,11 @@ function logClientReply(req: AuthRequest, leadId: string) {
 }
 
 async function turnOffAiOnHumanReply(req: AuthRequest, leadId: string) {
-  // Em Aguardando Documentação a IA continua ligada mesmo com a equipe respondendo (Fabio 28/10: "a IA ainda fica desligada quando vai para
-  // aguardando documentação… pode tirar isso") — é ela que confere os documentos, cobra o que falta e conduz a escolha da proposta.
+  // Vale em QUALQUER etapa (Fabio 29/10: "qualquer pessoa da equipe que responde à mão, a IA desliga sozinha — essa regra continua"). O que liga a IA
+  // de volta é o card ENTRAR em Aguardando Documentação (lead.service.updateLeadStage / automação "Ativar IA"); a lista de quem está nessa etapa com a
+  // IA desligada vai na Supervisão de sexta.
   const { count } = await prisma.lead.updateMany({
-    where: { id: leadId, accountId: req.user!.accountId, aiAutoReplyActive: true, NOT: { stage: { name: { contains: 'aguardando document', mode: 'insensitive' } } } },
+    where: { id: leadId, accountId: req.user!.accountId, aiAutoReplyActive: true },
     data: { aiAutoReplyActive: false },
   });
   if (!count) return;
