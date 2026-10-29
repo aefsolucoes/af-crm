@@ -210,7 +210,9 @@ export async function finishSimulationDoc(db: Db, p: { accountId: string; id: st
   // Financiamento Habitacional: o PDF original do Credimorar só troca a logo pela da A&F (o redesenho de 8 campos é do Home Equity).
   if (r.institution.startsWith('FH_')) {
     let b;
-    try { b = await brandPortalPdf(p.pdf); } catch (e: any) { return fail(`Não consegui pôr a logo A&F no PDF do Financiamento (${e?.message || 'erro'}). Não enviei.`); }
+    // Bradesco/Itaú/Santander: PDF do Credimorar (PDFsharp) → troca a logo. Inter: o Credimorar devolve o "Evolução Teórica" do PRÓPRIO Inter (Skia) →
+    // mantém a logo Inter e põe a faixa A&F, como no Home Equity (Jaime 29/10: "não está no modelo conhecido" e o PDF não saiu).
+    try { b = looksLikePortalPdf(p.pdf) ? await brandPortalPdf(p.pdf) : await brandSimulationPdf(p.pdf); } catch (e: any) { return fail(`Não consegui pôr a logo A&F no PDF do Financiamento (${e?.message || 'erro'}). Não enviei.`); }
     if (!b.recognized) return fail('O PDF do Financiamento baixado não está no modelo conhecido do Credimorar. Não enviei, pra não sair com a marca errada — mande à mão.');
     return deliver(db, r, b.pdf, p.io);
   }
