@@ -133,9 +133,16 @@ async function conferirPasta(accountId: string, l: { id: string; name: string; v
   const fresh = await prisma.lead.findUnique({ where: { id: l.id }, select: { customFields: true } });
   const lidos = new Set<string>(Array.isArray((fresh?.customFields as any)?._minuta?.lidos) ? (fresh?.customFields as any)._minuta.lidos : []);
   const minutas = arquivos.filter((f) => (/minuta/i.test(f.path) || /minuta/i.test(f.name)) && !lidos.has(f.id) && /pdf|document|word|officedocument|image/.test(f.mimeType));
+  const pastaMinuta = (fresh?.customFields as any)?._minuta?.pasta as string | undefined;
   for (const minuta of minutas) {
     const leitura = await lerMinuta(accountId, minuta).catch((e) => { console.error('[Minuta] leitura:', e?.message); return null; });
     await aplicarMinuta(accountId, l, minuta, leitura, io);
+    // Fora da pasta MINUTA (solta na pasta do cliente ou noutra subpasta): o CRM move pra MINUTA — o padrão (Fabio 29/10: "o CRM pode mover pastas no Drive").
+    if (pastaMinuta && !/^MINUTA(\s*>|$)/.test(minuta.path)) {
+      await google.moveDriveItem(accountId, minuta.id, pastaMinuta)
+        .then(() => prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `📁 A minuta "${minuta.name}" estava em "${minuta.path || 'pasta do cliente'}" — movi pra pasta MINUTA (padrão).` } }))
+        .catch((e) => console.error('[Minuta] mover pra MINUTA:', e?.message));
+    }
   }
 }
 
