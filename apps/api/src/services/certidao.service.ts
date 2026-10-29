@@ -112,11 +112,17 @@ export async function createCertidaoRequest(db: Db, p: { accountId: string; lead
   // Cada pedido é uma cobrança nova no portal: nunca cria outro enquanto houver um andando pra mesma matrícula (ou, por endereço, pro mesmo imóvel) do mesmo cliente.
   const ativo = await db.certidaoRequest.findFirst({ where: { accountId: p.accountId, leadId: p.leadId, ...(porEndereco ? { pedidoPor: 'ENDERECO' } : { matricula }), status: { in: ACTIVE } }, orderBy: { createdAt: 'desc' } });
   if (ativo) return { request: ativo, duplicate: true };
+  // Mapa do portal (Fabio 29/10, Alexandro: o "3º Ofício de Brasília" fica em ÁGUAS CLARAS no RI Digital): corrige cidade/cartório antes da extensão tentar.
+  let cidade = p.cidade.trim(), cartorio = p.cartorio.trim(), ajuste = '';
+  try {
+    const r = (require('./ri-cartorios.service') as typeof import('./ri-cartorios.service')).resolverCartorio(uf, cidade, cartorio);
+    if (r) { ajuste = ` Ajustado pelo mapa do RI Digital: ${r.motivo} (era "${cartorio}" / ${cidade}).${r.semCertidaoDigital ? ' ⚠️ Esse cartório não aparece com Certidão Digital no portal.' : ''}`; cidade = r.cidade; cartorio = r.cartorio; }
+  } catch { /* sem mapa: segue como veio */ }
   const request = await db.certidaoRequest.create({
-    data: { accountId: p.accountId, leadId: p.leadId, uf, cidade: p.cidade.trim(), cartorio: p.cartorio.trim(), matricula, pedidoPor: porEndereco ? 'ENDERECO' : 'MATRICULA', endereco: (endereco as any) ?? undefined, source: p.source || 'USER', requestedById: p.userId, sendPix: p.sendPix !== false, clientIntro: p.clientIntro?.trim() || null },
+    data: { accountId: p.accountId, leadId: p.leadId, uf, cidade, cartorio, matricula, pedidoPor: porEndereco ? 'ENDERECO' : 'MATRICULA', endereco: (endereco as any) ?? undefined, source: p.source || 'USER', requestedById: p.userId, sendPix: p.sendPix !== false, clientIntro: p.clientIntro?.trim() || null },
   });
-  const oQue = porEndereco ? `pelo ENDEREÇO do imóvel (${enderecoTexto(endereco)}, ${p.cidade.trim()}/${uf} — o cliente não sabe a matrícula)` : `de matrícula nº ${matricula} (${p.cartorio.trim()}/${uf})`;
-  await note(db, p.leadId, `🏛️ Certidão ${oQue} pedida pelo CRM — a extensão "Certidão ONR" faz o pedido no RI Digital e o PIX ${request.sendPix ? 'vai direto ao cliente' : 'fica guardado aqui'}.`, p.userId);
+  const oQue = porEndereco ? `pelo ENDEREÇO do imóvel (${enderecoTexto(endereco)}, ${cidade}/${uf} — o cliente não sabe a matrícula)` : `de matrícula nº ${matricula} (${cartorio === 'AUTO' ? cidade : cartorio}/${uf})`;
+  await note(db, p.leadId, `🏛️ Certidão ${oQue} pedida pelo CRM — a extensão "Certidão ONR" faz o pedido no RI Digital e o PIX ${request.sendPix ? 'vai direto ao cliente' : 'fica guardado aqui'}.${ajuste}`, p.userId);
   return { request, duplicate: false };
 }
 
