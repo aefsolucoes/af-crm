@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { ACTION_TOOLS, ACTION_TOOL_NAMES, runActionTool, PendingAction, ScreenNav } from './assistant-actions.service';
 
 /**
  * ASSISTENTE DO CRM (Fabio 26/10: "preciso que abra o chat para que eu possa pedir qualquer coisa sobre qualquer cliente a ele, inclusive simulação —
@@ -6,16 +7,17 @@ import { prisma } from '../lib/prisma';
  * Chat da EQUIPE (não do cliente) com o Claude usando ferramentas que leem o CRM de verdade: achar cliente, ver o card inteiro (estado da análise,
  * documentos, contratação, conversa, notas, tarefas), ver as análises de crédito, listar clientes por etapa e pedir a simulação em PDF — que fica
  * SÓ pra equipe (status PRIVATE, nunca vai ao cliente) e aparece no chat com o botão "Abrir PDF".
- * Nesta versão o assistente NÃO manda mensagem a cliente nem altera card (só lê e pede a simulação). O antigo balão (removido em 08/09) não volta.
+ * 29/10 ("Jarvis"): também AGE no CRM — anota, cria lembrete (falado na hora), abre telas pra pessoa ver, e prepara ações que mexem com cliente
+ * (mensagem, mover card, ganho/perdido, rodar análise, vistoria, certidão), que só rodam depois da confirmação no balão (assistant-actions.service.ts).
  */
 
 const MODEL = 'claude-sonnet-5';
-const MAX_TURNS = 8;
+const MAX_TURNS = 10;
 
 export type ChatMsg = { role: 'user' | 'assistant'; content: string };
 export type ChatAttachment = { type: 'simulation'; id: string; banco: string; leadName: string };
 
-const TOOLS = [
+const READ_TOOLS = [
   {
     name: 'buscar_clientes',
     description: 'Procura clientes (cards) pelo nome do titular ou do 2º participante, CPF, telefone ou nº da proposta. Devolve até 10, do mais recente pro mais antigo.',
@@ -47,6 +49,7 @@ const TOOLS = [
     input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] },
   },
 ];
+const TOOLS = [...READ_TOOLS, ...ACTION_TOOLS];
 
 const corta = (t: unknown, n: number) => { const s = String(t ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? `${s.slice(0, n)}…` : s; };
 const quando = (d: Date | null | undefined) => (d ? d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
@@ -144,19 +147,27 @@ async function verSimulacoes(accountId: string, leadId: string, anexos: ChatAtta
   return rows.map((r) => ({ banco: r.institution, status: r.status === 'PRIVATE' ? 'PRONTO (só pra equipe — botão Abrir PDF no chat)' : r.status === 'DONE' ? 'ENVIADO AO CLIENTE pelo WhatsApp' : r.status, pedidoPor: r.source, quando: quando(r.createdAt), detalhe: corta(r.detail, 200) }));
 }
 
-function systemPrompt(userName: string): string {
+function systemPrompt(userName: string, voz: boolean): string {
   const agora = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date());
-  return `Você é o assistente interno do CRM da A&F Soluções Financeiras (correspondente bancário: crédito com garantia de imóvel/Home Equity, financiamento habitacional e consórcio). Quem fala com você é ${userName}, da EQUIPE — nunca um cliente.
+  return `Você é o assistente do CRM da A&F Soluções Financeiras (correspondente bancário: crédito com garantia de imóvel/Home Equity, financiamento habitacional e consórcio) — um copiloto no estilo do Jarvis: entende o pedido, raciocina, usa as ferramentas e resolve. Quem fala com você é ${userName}, da EQUIPE — nunca um cliente.
 Agora: ${agora} (Brasília).
-- Responda em português, curto e direto, com os dados reais do CRM: SEMPRE use as ferramentas antes de afirmar algo sobre um cliente; nunca invente número, data ou status.
+- Responda em português, com os dados reais do CRM: SEMPRE use as ferramentas antes de afirmar algo sobre um cliente; nunca invente número, data ou status.
 - Pra achar o cliente use buscar_clientes; se vier mais de um com o nome, liste (nome, etapa, CPF) e pergunte qual — a menos que só um faça sentido.
-- Simulação em PDF: use pedir_simulacao_pdf com o banco APROVADO do cliente (veja analises_credito ou o campo instituicao do card). Diga que o PDF aparece aqui no chat em 1–2 min (botão "Abrir PDF") e que ele NÃO vai pro cliente. Creditas não tem PDF.
-- Você só LÊ o CRM e pede simulações: não manda mensagem ao cliente, não muda card, etapa nem análise. Se pedirem isso, diga como fazer na tela (ex.: botão no card, aba Análise de Crédito).
-- Valores em reais no formato R$ 1.234,56; datas em dd/mm.`;
+- Pense como um gerente experiente: ao resumir um cliente, diga onde está, o que falta e qual o próximo passo que você recomenda.
+- Simulação em PDF: pedir_simulacao_pdf com o banco APROVADO (veja analises_credito ou o campo instituicao). O PDF aparece aqui no chat em 1–2 min e NÃO vai pro cliente. Creditas não tem PDF.
+- AÇÕES DIRETAS (pode fazer sem perguntar): criar_anotacao, criar_lembrete ("me lembra de…": na hora o CRM manda push e você fala o lembrete na tela), conferir_analise (só lê o portal), abrir_na_tela.
+- AÇÕES QUE MEXEM COM CLIENTE OU PROCESSO (enviar_mensagem, mover_card, marcar_status, rodar_analise, solicitar_vistoria, pedir_certidao): a ferramenta só PREPARA; aparece um botão "Confirmar" pra pessoa. Diga em 1 frase o que vai acontecer e peça a confirmação. NUNCA diga que já foi feito. Só prepare o que a pessoa pediu — nada a mais.
+- Mensagem ao cliente: escreva como a equipe da A&F escreve no WhatsApp (curta, educada, sem emoji em excesso, sem prometer prazo ou aprovação). Mostre o texto antes.
+- abrir_na_tela: use quando pedirem pra abrir/mostrar ("abre a conversa do Pedro", "me mostra o funil") e também quando for útil a pessoa ver o que você está falando (ex.: depois de resumir um cliente, abra a conversa dele). A tela da pessoa muda na hora.
+- Valores em reais no formato R$ 1.234,56; datas em dd/mm.${voz ? `
+- MODO VOZ: a sua resposta será FALADA em voz alta. Seja curto (1 a 3 frases), natural, como numa conversa; sem listas, sem markdown, sem emoji, sem ler IDs ou links. Números por extenso só quando ajudar. Se houver muitos itens, diga os 3 principais e pergunte se quer o resto.` : ''}`;
 }
 
-async function runTool(accountId: string, userId: string, name: string, input: any, anexos: ChatAttachment[]): Promise<unknown> {
+type ToolCtx = { accountId: string; userId: string; token: string; anexos: ChatAttachment[]; fila: PendingAction[]; nav: ScreenNav[] };
+async function runTool(c: ToolCtx, name: string, input: any): Promise<unknown> {
+  const { accountId, userId, anexos } = c;
   try {
+    if (ACTION_TOOL_NAMES.has(name)) return await runActionTool({ accountId, userId, token: c.token, name, input, fila: c.fila, nav: c.nav });
     switch (name) {
       case 'buscar_clientes': return await buscarClientes(accountId, input?.termo);
       case 'ver_cliente': return await verCliente(accountId, String(input?.leadId || ''), input?.mensagens);
@@ -171,7 +182,8 @@ async function runTool(accountId: string, userId: string, name: string, input: a
   }
 }
 
-export async function assistantChat(p: { accountId: string; userId: string; userName: string; messages: ChatMsg[] }): Promise<{ reply: string; attachments: ChatAttachment[] }> {
+export type AssistantReply = { reply: string; attachments: ChatAttachment[]; pending: { id: string; descricao: string }[]; navigate: ScreenNav | null };
+export async function assistantChat(p: { accountId: string; userId: string; userName: string; token: string; voice?: boolean; messages: ChatMsg[] }): Promise<AssistantReply> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('IA indisponível (sem chave da Anthropic)');
   const history = p.messages.filter((m) => (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim()).slice(-20).map((m) => ({ role: m.role, content: String(m.content).slice(0, 6000) }));
@@ -179,11 +191,13 @@ export async function assistantChat(p: { accountId: string; userId: string; user
   if (!history.length) throw new Error('mensagem vazia');
   const msgs: any[] = [...history];
   const anexos: ChatAttachment[] = [];
+  const ctx: ToolCtx = { accountId: p.accountId, userId: p.userId, token: p.token, anexos, fila: [], nav: [] };
+  const fim = (reply: string): AssistantReply => ({ reply, attachments: dedupe(anexos), pending: ctx.fila.map((a) => ({ id: a.id, descricao: a.descricao })), navigate: ctx.nav[ctx.nav.length - 1] || null });
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: MODEL, max_tokens: 4096, system: systemPrompt(p.userName), tools: TOOLS, messages: msgs }),
+      body: JSON.stringify({ model: MODEL, max_tokens: 4096, system: systemPrompt(p.userName, !!p.voice), tools: TOOLS, messages: msgs }),
     });
     if (!res.ok) throw new Error(`IA indisponível (${res.status}) ${(await res.text().catch(() => '')).slice(0, 160)}`);
     const data = (await res.json()) as { content: any[]; stop_reason: string };
@@ -191,17 +205,17 @@ export async function assistantChat(p: { accountId: string; userId: string; user
     const usos = blocks.filter((b) => b.type === 'tool_use');
     if (!usos.length || data.stop_reason !== 'tool_use') {
       const reply = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
-      return { reply: reply || '(sem resposta)', attachments: dedupe(anexos) };
+      return fim(reply || '(sem resposta)');
     }
     msgs.push({ role: 'assistant', content: blocks });
     const results = [];
     for (const u of usos) {
-      const out = await runTool(p.accountId, p.userId, u.name, u.input, anexos);
+      const out = await runTool(ctx, u.name, u.input);
       results.push({ type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out).slice(0, 30_000) });
     }
     msgs.push({ role: 'user', content: results });
   }
-  return { reply: 'Precisei de passos demais pra responder isso — tente perguntar de forma mais direta (ex.: o nome do cliente e o que você quer saber).', attachments: dedupe(anexos) };
+  return fim('Precisei de passos demais pra responder isso — tente perguntar de forma mais direta (ex.: o nome do cliente e o que você quer saber).');
 }
 
 function dedupe(a: ChatAttachment[]): ChatAttachment[] {
@@ -227,3 +241,10 @@ export async function assistantSimulationPdf(accountId: string, id: string): Pro
 
 /** Só leitura — usado em teste local das ferramentas. */
 export const _assistantReadTools = { buscarClientes, verCliente, analisesCredito, listarClientes };
+
+/** Lembretes da pessoa que venceram agora (o balão fala em voz alta). Janela de 15 min pra trás: CRM aberto depois disso não fala atrasado. */
+export async function dueReminders(userId: string) {
+  const agora = Date.now();
+  const rows = await prisma.task.findMany({ where: { userId, done: false, dueAt: { gte: new Date(agora - 15 * 60_000), lte: new Date(agora + 5_000) } }, orderBy: { dueAt: 'asc' }, take: 5, select: { id: true, title: true, dueAt: true, lead: { select: { id: true, name: true } } } });
+  return rows.map((t) => ({ id: t.id, titulo: t.title, quando: quando(t.dueAt), leadId: t.lead?.id || null, cliente: t.lead?.name || null }));
+}
