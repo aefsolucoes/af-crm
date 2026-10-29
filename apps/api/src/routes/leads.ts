@@ -1096,4 +1096,22 @@ router.post('/:id/docs-check', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Ficha de cadastro lida dos documentos da pasta do Drive (Fabio 29/10) — base do cadastro na CAIXA/BRB; a extensão lê pelo GET.
+router.post('/:id/ficha-cadastral', async (req: AuthRequest, res: Response) => {
+  const { gerarFichaCadastral } = require('../services/ficha-cadastral.service') as typeof import('../services/ficha-cadastral.service');
+  const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
+  if (!lead) return res.status(404).json({ error: 'Lead não encontrado' });
+  // Leva 1–3 min (um arquivo por vez na IA): responde já e a anotação aparece no card quando terminar.
+  res.status(202).json({ started: true });
+  gerarFichaCadastral(req.user!.accountId, lead.id, { userId: req.user!.id, io: req.app.get('io') })
+    .then((erro) => { if (erro) prisma.note.create({ data: { leadId: lead.id, userId: req.user!.id, type: 'COMMENT', content: `📋 Ficha de cadastro não gerada: ${erro}.` } }).catch(() => {}); })
+    .catch((e) => console.error('[Ficha cadastral]', e?.message));
+});
+
+router.get('/:id/ficha-cadastral', async (req: AuthRequest, res: Response) => {
+  const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { customFields: true } });
+  if (!lead) return res.status(404).json({ error: 'Lead não encontrado' });
+  res.json((lead.customFields as any)?._fichaCadastral || null);
+});
+
 export default router;
