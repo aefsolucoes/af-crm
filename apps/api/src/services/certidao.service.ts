@@ -21,12 +21,12 @@ const WARN_MARK = 'sem atendimento';
 const GIVE_UP_DAYS = 3; // pago e a certidão não saiu em 3 DIAS ÚTEIS: para de procurar e AVISA a equipe por push (Fabio 19/10: "FDS ninguém trabalha"; feriado não é descontado)
 const RUNNING_TTL_MIN = 25; // pegou e sumiu (aba fechou) — o PIX demora até ~2 min, o pedido todo cabe folgado
 const PIX_MAX_ATTEMPTS = 4; // tentativas de pegar o PIX de um pedido já feito
-const CHECK_EVERY_MIN = 300; // conferência da emissão de 5 em 5 h (Fabio 16/10); o e-mail "Resposta ao seu pedido" do RI Digital adianta (certidaoEmailArrived)
+const CHECK_EVERY_MIN = 240; // 29/10 (Fabio): de 4 em 4 h depois que o PIX é encaminhado — antes: conferência da emissão de 5 em 5 h (Fabio 16/10); o e-mail "Resposta ao seu pedido" do RI Digital adianta (certidaoEmailArrived)
 // Qualquer protocolo do RI Digital (P… do pedido, S… da certidão emitida ou formato novo): 1–3 letras + 6–16 dígitos + até 3 letras. Nunca travar por formato diferente.
 const PROTO_SRC = '[A-Z]{1,3}\\d{6,16}[A-Z]{0,3}';
 const PROTO_OK = new RegExp(`^${PROTO_SRC}$`);
 const PROTO_IN_TEXT = () => new RegExp(`\\b${PROTO_SRC}\\b`, 'g');
-const PAID_CHECK_EVERY_MIN = 300; // depois do pagamento confirmado, confere a emissão de 5 em 5 h (Fabio 19/10); o e-mail do cartório adianta
+const PAID_CHECK_EVERY_MIN = 240; // 29/10: 4 em 4 h — antes: depois do pagamento confirmado, confere a emissão de 5 em 5 h (Fabio 19/10); o e-mail do cartório adianta
 const ACTIVE = ['REQUESTED', 'RUNNING', 'AWAITING_PAYMENT'];
 
 export const onlyDigits = (v: unknown) => String(v ?? '').replace(/\D/g, '');
@@ -177,6 +177,20 @@ export function enderecoTexto(e: EnderecoCertidao | null | undefined): string {
 }
 
 /** A extensão pergunta "tem serviço?" (a cada minuto). Devolve UM trabalho por vez — ela usa o navegador inteiro pra isso. */
+/** PIX da certidão vencido sem pagamento: push pro colaborador (quem pediu; sem ele, a conta), nota no card e o pedido sai da conferência (FAILED). */
+async function avisarPixVencidos(db: Db, accountId: string) {
+  const vencidos = await db.certidaoRequest.findMany({ where: { accountId, status: 'AWAITING_PAYMENT', paidAt: null, pixCode: { not: null }, pixExpiresAt: { lt: new Date() } }, take: 10, select: { id: true, leadId: true, protocolo: true, valorCents: true, pixExpiresAt: true, requestedById: true } });
+  for (const r of vencidos) {
+    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT', paidAt: null }, data: { status: 'FAILED', finishedAt: new Date(), nextCheckAt: null, forceCheck: false, detail: `PIX vencido sem pagamento (venceu em ${r.pixExpiresAt?.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}). Parei de conferir — se o cliente ainda quiser, peça a certidão de novo.` } });
+    if (!c.count) continue;
+    const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
+    await note(db, r.leadId, `⏰ O PIX da certidão${r.protocolo ? ` (protocolo ${r.protocolo})` : ''}${r.valorCents ? ` de ${brl(r.valorCents)}` : ''} VENCEU sem pagamento. O CRM parou de conferir esse pedido; se o cliente ainda precisar, peça a certidão de novo (gera PIX novo).`, r.requestedById);
+    try {
+      (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '⏰ PIX da certidão venceu', body: `${lead?.name || 'Cliente'}: o PIX${r.valorCents ? ` de ${brl(r.valorCents)}` : ''} venceu sem pagamento — peça a certidão de novo se ainda precisar`, leadId: r.leadId }, r.requestedById ? [r.requestedById] : undefined).catch(() => {});
+    } catch { /* push é só aviso */ }
+  }
+}
+
 export async function claimCertidao(db: Db, p: { accountId: string }): Promise<CertidaoJob | null> {
   await expireStuck(db, p.accountId);
   await retryCertidaoDrive(db, p.accountId).catch((e) => console.warn('[Certidão] reenvio ao Drive falhou:', e?.message));
@@ -197,10 +211,13 @@ export async function claimCertidao(db: Db, p: { accountId: string }): Promise<C
     const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT', pixCode: null, attempts: r.attempts }, data: { attempts: { increment: 1 }, nextCheckAt: new Date(now.getTime() + 4 * 60_000), startedAt: now } });
     if (c.count) return toJob(r, 'PIX');
   }
-  // 3) SÓ com o pagamento CONFIRMADO (comprovante do cliente ou e-mail do cartório): confere se a certidão saiu (07h–21h). Sem pagamento não há o que procurar (Fabio 19/10).
+  // PIX VENCIDO sem pagamento (Fabio 29/10): avisa o colaborador em push e para de conferir esse pedido (fica FAILED — dá pra pedir de novo).
+  await avisarPixVencidos(db, p.accountId).catch((e) => console.warn('[Certidão] PIX vencido:', e?.message));
+  // 3) Pagamento CONFIRMADO, ou PIX já ENCAMINHADO e ainda válido (Fabio 29/10: "checar de 4 em 4 horas quando for encaminhado" — o cliente pode pagar sem mandar comprovante):
+  // confere se a certidão saiu (07h–21h).
   if (foraDoHorario()) return null;
   // (botão "Buscar certidão agora" = forceCheck: uma busca avulsa mesmo sem pagamento confirmado)
-  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { not: null }, AND: [{ OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, { OR: [{ pixCode: { not: null }, paidAt: { not: null } }, { forceCheck: true }] }] }, orderBy: { createdAt: 'asc' }, take: 3 });
+  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { not: null }, AND: [{ OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, { OR: [{ pixCode: { not: null }, paidAt: { not: null } }, { forceCheck: true }, { pixCode: { not: null }, paidAt: null, OR: [{ pixSentAt: { not: null } }, { sendPix: false }], AND: [{ OR: [{ pixExpiresAt: null }, { pixExpiresAt: { gt: now } }] }] }] }] }, orderBy: { createdAt: 'asc' }, take: 3 });
   for (const r of aguardando) {
     const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT' }, data: { forceCheck: false, nextCheckAt: new Date(now.getTime() + PAID_CHECK_EVERY_MIN * 60_000) } });
     if (c.count) return toJob(r, 'COLLECT');
