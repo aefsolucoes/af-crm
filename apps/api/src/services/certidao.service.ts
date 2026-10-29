@@ -273,7 +273,13 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
     const cidade = String(d.cidade || '').trim().slice(0, 80), cartorio = String(d.cartorio || '').trim().slice(0, 120);
     if (!cidade || !cartorio) throw new Error('cidade/cartório vazios');
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { cidade, cartorio, detail: `Cartório achado no portal: ${cartorio} (${cidade}).` } });
-    await note(db, r.leadId, `🏛️ Certidão: o cartório "${String(d.origem || r.cartorio)}" fica no portal como ${cartorio} (cidade ${cidade}). A extensão memorizou pra próxima vez.`, r.requestedById);
+    const doMapa = /^Mapa do ONR/i.test(String(d.origem || ''));
+    if (doMapa) {
+      // Achado pelo Mapa do ONR (endereço → cartório): o CRM grava NA HORA a região (CEP + bairro → cartório), sem esperar a certidão sair (Fabio 29/10: "esse conhecimento deve ir pro CRM também").
+      const e = (r.endereco || {}) as any;
+      await (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).aprenderCartorio(r.accountId, { uf: r.uf, cidade, cartorio, cep: e.cep, bairro: e.bairro }).catch(() => {});
+      await note(db, r.leadId, `🗺️ Certidão: o Mapa do ONR diz que o imóvel é do ${cartorio} (${String(d.origem).replace(/^Mapa do ONR\s*—\s*/i, '')}). O CRM guardou pra região (CEP ${String(e.cep || '').slice(0, 5)} / ${e.bairro || '—'}).`, r.requestedById);
+    } else await note(db, r.leadId, `🏛️ Certidão: o cartório "${String(d.origem || r.cartorio)}" fica no portal como ${cartorio} (cidade ${cidade}). A extensão memorizou pra próxima vez.`, r.requestedById);
   } else if (d.event === 'ordered') {
     const protocolo = String(d.protocolo || '').trim();
     if (!PROTO_OK.test(protocolo.toUpperCase())) throw new Error('protocolo inválido');
