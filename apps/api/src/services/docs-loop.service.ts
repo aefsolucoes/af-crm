@@ -29,7 +29,7 @@ export const LEMBRETES: Lembrete[] = [
   },
   {
     template: 'docs_lembrete_2',
-    texto: (n) => `${n}, seu processo de crédito segue aguardando os documentos para continuar. Se estiver com dificuldade para conseguir algum deles, me avise que eu te ajudo.`,
+    texto: (n) => `Oi, ${n}! Seu processo de crédito segue aguardando os documentos para continuar. Se estiver com dificuldade para conseguir algum deles, me avise que eu te ajudo.`,
     botoes: ['Vou enviar', 'Preciso de ajuda'],
     email: {
       assunto: '⏳ Seu processo de crédito está esperando os seus documentos',
@@ -40,7 +40,7 @@ export const LEMBRETES: Lembrete[] = [
   },
   {
     template: 'docs_lembrete_3',
-    texto: (n) => `${n}, para dar andamento ao seu crédito aprovado precisamos receber a sua documentação. Consegue enviar por aqui?`,
+    texto: (n) => `Oi, ${n}! Para dar andamento ao seu crédito aprovado precisamos receber a sua documentação. Consegue enviar por aqui?`,
     botoes: ['Vou enviar hoje', 'Preciso de prazo'],
     email: {
       assunto: '📄 Último passo para seguir com o seu crédito',
