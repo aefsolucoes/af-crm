@@ -198,6 +198,13 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       const lotes = await Promise.all([undefined, ...deps.map((d) => d.id)].map((d) => searchKnowledge(accountId, q, 6, d).catch(() => [])));
       const vistos = new Set<string>();
       const hits = lotes.flat().filter((h) => { const k = h.content.slice(0, 120); if (vistos.has(k)) return false; vistos.add(k); return true; }).sort((a, b) => b.score - a.score).slice(0, 14);
+      // Regras FIXAS (CORE_RULES…) não passam pela busca por vetor: acha as linhas que mais batem com as palavras da pergunta.
+      const fixas = await prisma.knowledgeEntry.findMany({ where: { accountId, fixedKey: { not: null } }, select: { title: true, content: true } });
+      const palavras = q.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/[^a-z0-9]+/).filter((w) => w.length >= 4);
+      for (const f of fixas) {
+        const linhas = f.content.split(/\n(?=- )/).map((l) => ({ l, n: palavras.filter((w) => l.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(w)).length })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n).slice(0, 4);
+        for (const x of linhas) hits.unshift({ content: x.l, fileName: f.title, score: 1 });
+      }
       return { total: hits.length, trechos: hits.map((h) => ({ fonte: h.fileName, texto: h.content.slice(0, 900) })), obs: hits.length ? 'Responda com base nestes trechos e cite a fonte; se não cobrirem a pergunta, diga que a Base não tem e ofereça registrar a regra (alterar_regra_ia).' : 'A Base de Conhecimento não tem nada sobre isso: diga isso, não invente, e ofereça registrar a regra (alterar_regra_ia).' };
     }
     case 'ver_regras_ia': {
