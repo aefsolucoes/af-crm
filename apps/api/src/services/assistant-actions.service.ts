@@ -289,32 +289,40 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       return pendente({ accountId, userId, tipo: 'agir_supervisao', params: { itemId: it.id, modo, texto }, descricao: aberta ? `Supervisão — mandar pro ${l.name}: "${texto}"` : `Supervisão — janela do ${l.name} fechada: mandar o template de atualização agora; a mensagem "${texto}" sai quando ele responder.` }, p.fila);
     }
     case 'docs_para_andamento': {
+      const t0 = Date.now();
       const dias = Math.max(1, Math.min(Number(input?.dias) || 10, 60));
       const corte = new Date(Date.now() - dias * 86400_000);
       const funil = input?.funil ? `%${input.funil}%` : '%';
-      const rows = await prisma.$queryRaw<any[]>`
-        SELECT l.id, l.name, s.name AS etapa, p.name AS funil, max(a."createdAt") AS ultimo_doc, count(a.id)::int AS arquivos,
-          (SELECT max(m."createdAt") FROM "Message" m WHERE m."leadId" = l.id AND m.direction = 'OUTBOUND' AND m."sentByUserId" IS NOT NULL) AS ultima_equipe
-        FROM "Lead" l JOIN "MessageAttachment" a ON a."leadId" = l.id JOIN "Message" mi ON mi.id = a."messageId" AND mi.direction = 'INBOUND'
-          JOIN "Stage" s ON s.id = l."stageId" JOIN "Pipeline" p ON p.id = l."pipelineId"
-        WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false AND a."createdAt" >= ${corte}
-          AND a."mimeType" NOT LIKE 'audio/%' AND a."mimeType" NOT LIKE 'video/%' AND a."mimeType" <> 'image/webp' AND p.name ILIKE ${funil}
-        GROUP BY l.id, l.name, s.name, p.name ORDER BY max(a."createdAt") ASC LIMIT 40`;
-      const { aiDocsContext } = require('./doc-review.service') as typeof import('./doc-review.service');
-      const out = [] as any[];
-      for (const r of rows) {
-        const ctx = await aiDocsContext(r.id).catch(() => '');
-        const linhas = ctx.split('\n').filter((x) => x.startsWith('- '));
-        const problema = linhas.filter((x) => /PROBLEMA/.test(x)), duvida = linhas.filter((x) => /EM ANÁLISE PELA EQUIPE/.test(x));
-        const falta = (ctx.match(/Ainda falta \(lista do banco\): (.*)/) || [])[1] || '';
-        const situacao = !linhas.length ? 'NAO_CONFERIDO' : duvida.length ? 'DUVIDA_COM_A_EQUIPE' : problema.length ? 'COM_PROBLEMA' : falta ? 'FALTA_DOCUMENTO' : 'PRONTO';
-        out.push({ leadId: r.id, nome: r.name, funil: r.funil, etapa: r.etapa, situacao, ultimoDocumento: quando(r.ultimo_doc), arquivos: r.arquivos,
-          equipeFalouDepois: !!(r.ultima_equipe && new Date(r.ultima_equipe) > new Date(r.ultimo_doc)),
-          ...(problema.length ? { problemas: problema.map((x) => x.slice(2, 160)) } : {}), ...(falta ? { falta: falta.slice(0, 200) } : {}), ...(duvida.length ? { duvidas: duvida.map((x) => x.slice(2, 80)) } : {}) });
-      }
+      // 1) anexos recebidos no período (só o necessário), 2) os cards abertos deles — sem ler a conversa nem o texto dos documentos
+      const anexos = await prisma.$queryRaw<{ id: string; leadId: string; createdAt: Date }[]>`
+        SELECT a.id, a."leadId", a."createdAt" FROM "MessageAttachment" a JOIN "Message" m ON m.id = a."messageId"
+        WHERE a."createdAt" >= ${corte} AND m.direction = 'INBOUND' AND a."mimeType" NOT LIKE 'audio/%' AND a."mimeType" NOT LIKE 'video/%' AND a."mimeType" <> 'image/webp'`;
+      const porLead = new Map<string, { ultimo: Date; n: number }>();
+      for (const x of anexos) { const v = porLead.get(x.leadId); if (!v) porLead.set(x.leadId, { ultimo: x.createdAt, n: 1 }); else { v.n++; if (x.createdAt > v.ultimo) v.ultimo = x.createdAt; } }
+      const leads = await prisma.lead.findMany({ where: { id: { in: [...porLead.keys()] }, accountId, status: 'OPEN', archived: false, isGroup: false, ...(input?.funil ? { pipeline: { name: { contains: String(input.funil), mode: 'insensitive' } } } : {}) }, select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { name: true } } }, take: 80 });
+      void funil;
+      const equipe = await prisma.message.groupBy({ by: ['leadId'], where: { leadId: { in: leads.map((l) => l.id) }, direction: 'OUTBOUND', sentByUserId: { not: null } }, _max: { createdAt: true } });
+      const ultEquipe = new Map(equipe.map((e) => [e.leadId, e._max.createdAt]));
+      const datas = new Map((await prisma.messageAttachment.findMany({ where: { leadId: { in: leads.map((l) => l.id) } }, select: { id: true, createdAt: true } })).map((x) => [x.id, x.createdAt.getTime()]));
+      const out = leads.map((l) => {
+        const cf = (l.customFields || {}) as Record<string, any>;
+        const rev = Object.entries((cf._docReview || {}) as Record<string, any>).filter(([, r]) => r && r.resultado !== 'NAO_DOCUMENTO');
+        const ultimo = new Map<string, any>(); // a leitura mais recente de cada documento (tipo + titular + lado)
+        for (const [id, r] of rev.sort((x, y) => (datas.get(x[0]) || 0) - (datas.get(y[0]) || 0))) ultimo.set(`${norm(r.tipo)}|${norm(r.titular)}|${r.lado || ''}`, r);
+        const vals = [...ultimo.values()];
+        const problemas = vals.filter((r) => r.resultado === 'PROBLEMA').map((r) => `${r.tipo}${r.titular ? ` (${r.titular})` : ''}: ${(r.problemas || []).join('; ')}`.slice(0, 160));
+        const duvidas = vals.filter((r) => r.resultado === 'DUVIDA').map((r) => String(r.tipo));
+        const falta = String(cf._docsFaltando || '').trim();
+        const situacao = !vals.length ? 'NAO_CONFERIDO' : duvidas.length ? 'DUVIDA_COM_A_EQUIPE' : problemas.length ? 'COM_PROBLEMA' : falta ? 'FALTA_DOCUMENTO' : 'PRONTO';
+        const d = porLead.get(l.id)!;
+        const eq = ultEquipe.get(l.id);
+        return { leadId: l.id, nome: l.name, funil: l.pipeline?.name, etapa: l.stage?.name, situacao, ultimoDocumento: quando(d.ultimo), arquivosNoPeriodo: d.n, conferidosOk: vals.filter((r) => r.resultado === 'OK').map((r) => r.tipo).slice(0, 12),
+          equipeFalouDepois: !!(eq && eq > d.ultimo), ...(problemas.length ? { problemas } : {}), ...(falta ? { falta: falta.slice(0, 200) } : {}), ...(duvidas.length ? { duvidas } : {}), _t: d.ultimo.getTime() };
+      });
       const ordem: Record<string, number> = { PRONTO: 0, DUVIDA_COM_A_EQUIPE: 1, NAO_CONFERIDO: 2, COM_PROBLEMA: 3, FALTA_DOCUMENTO: 4 };
-      out.sort((a, b) => ordem[a.situacao] - ordem[b.situacao]);
-      return { total: out.length, clientes: out };
+      out.sort((a, b) => ordem[a.situacao] - ordem[b.situacao] || a._t - b._t);
+      console.log(`[Assistente] docs_para_andamento ${out.length} clientes em ${Date.now() - t0} ms`);
+      return { total: out.length, clientes: out.slice(0, 30).map(({ _t, ...r }) => r) };
     }
     case 'documentos_do_cliente': {
       const l = await leadOf(accountId, input?.leadId);

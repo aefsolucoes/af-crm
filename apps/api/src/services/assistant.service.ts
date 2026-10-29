@@ -214,7 +214,9 @@ export async function assistantChat(p: { accountId: string; userId: string; user
     msgs.push({ role: 'assistant', content: blocks });
     const results = [];
     for (const u of usos) {
+      const t0 = Date.now();
       const out = await runTool(ctx, u.name, u.input);
+      console.log(`[Assistente] ${u.name} ${Date.now() - t0} ms`);
       results.push({ type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(out).slice(0, 30_000) });
     }
     msgs.push({ role: 'user', content: results });
