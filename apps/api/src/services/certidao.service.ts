@@ -118,6 +118,13 @@ export async function createCertidaoRequest(db: Db, p: { accountId: string; lead
     const r = (require('./ri-cartorios.service') as typeof import('./ri-cartorios.service')).resolverCartorio(uf, cidade, cartorio);
     if (r) { ajuste = ` Ajustado pelo mapa do RI Digital: ${r.motivo} (era "${cartorio}" / ${cidade}).${r.semCertidaoDigital ? ' ⚠️ Esse cartório não aparece com Certidão Digital no portal.' : ''}`; cidade = r.cidade; cartorio = r.cartorio; }
   } catch { /* sem mapa: segue como veio */ }
+  // Cidade com vários cartórios e pedido por endereço sem cartório: usa o cartório que já deu certo nessa região (cartorio-regiao.service).
+  if (porEndereco && /^auto$/i.test(cartorio) && endereco) {
+    try {
+      const ap = await (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).cartorioAprendido(p.accountId, { uf, cidade, cep: endereco.cep, bairro: endereco.bairro });
+      if (ap) { cartorio = ap.cartorio; ajuste += ` Cartório escolhido pelo que o CRM já aprendeu da região (${ap.por}): ${ap.cartorio}.`; }
+    } catch { /* segue AUTO */ }
+  }
   const request = await db.certidaoRequest.create({
     data: { accountId: p.accountId, leadId: p.leadId, uf, cidade, cartorio, matricula, pedidoPor: porEndereco ? 'ENDERECO' : 'MATRICULA', endereco: (endereco as any) ?? undefined, source: p.source || 'USER', requestedById: p.userId, sendPix: p.sendPix !== false, clientIntro: p.clientIntro?.trim() || null },
   });
@@ -302,6 +309,7 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
   } else if (d.event === 'issued_manual') {
     // A certidão saiu, mas a extensão não conseguiu mandar o PDF ao CRM (ficou na pasta Downloads do Chrome do Fabio): fecha o pedido e avisa a equipe.
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', finishedAt: new Date(), nextCheckAt: null, detail: String(d.reason || 'Certidão emitida; PDF fora do CRM.').slice(0, 400) } });
+    void (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).aprenderDoPedido(r.id);
     await note(db, r.leadId, `📄 Certidão ${qualCertidao(r)} EMITIDA (protocolo ${out.protocolo || '—'}), mas o PDF NÃO ficou no CRM: ${String(d.reason || '').slice(0, 200)}. Baixe em "Visualizar Pedidos" do RI Digital.`, r.requestedById);
   } else if (d.event === 'failed') {
     const reason = String(d.reason || 'a extensão não conseguiu').slice(0, 500);
@@ -399,12 +407,14 @@ export async function finishCertidaoFiles(db: Db, p: { accountId: string; id: st
     const todos: CertidaoFile[] = [...files, ...salvos.map(({ buffer: _b, ...f }) => f)];
     const primeiro = todos[0];
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', files: todos as any, pdf: null, pdfName: primeiro.name, driveFileId: primeiro.driveFileId || null, driveUrl: primeiro.driveUrl || null, finishedAt: r.finishedAt || new Date(), detail: `Certidão emitida e salva no Drive (pasta IMOVEL) — ${todos.length} arquivo${todos.length > 1 ? 's' : ''}.`, nextCheckAt: null, forceCheck: false } });
+    void (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).aprenderDoPedido(r.id);
     await note(db, r.leadId, `📄 Certidão ${qualCertidao(r)} EMITIDA (protocolo ${out.protocolo || '—'}) — ${salvos.length > 1 ? `${salvos.length} arquivos novos salvos` : '1 arquivo novo salvo'} no Drive, subpasta IMOVEL:\n${salvos.map((f) => `• ${f.name}: ${f.driveUrl}`).join('\n')}${falha ? `\n⚠️ Outro arquivo NÃO subiu pro Drive (${falha}) — baixe do ONR.` : ''}`, r.requestedById);
     pushAll(p.accountId, '📄 Certidão emitida e salva no Drive', `${nome} — matrícula ${r.matricula} (${salvos.length > 1 ? `${salvos.length} arquivos, ` : ''}pasta IMOVEL)`, r.leadId);
   } else {
     // Drive fora do ar / pasta não achada: guarda o 1º PDF só de passagem (como sempre) e tenta de novo a cada 10 min
     const nomeTrans = (novos[0].name || `Certidao matricula ${r.matricula}.pdf`).replace(/[\\/:*?"<>|]/g, ' ').slice(0, 120);
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', pdf: novos[0].buffer, pdfName: nomeTrans, finishedAt: new Date(), detail: `Certidão emitida, mas NÃO subiu pro Drive (${falha}); o CRM tenta de novo a cada 10 min.`, nextCheckAt: new Date(Date.now() + 10 * 60_000) } });
+    void (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).aprenderDoPedido(r.id);
     await note(db, r.leadId, `⚠️ Certidão ${qualCertidao(r)} EMITIDA, mas NÃO consegui salvar no Drive (${falha}). O CRM guarda o PDF só de passagem e tenta de novo a cada 10 minutos.`, r.requestedById);
     pushAll(p.accountId, '⚠️ Certidão emitida, mas NÃO foi pro Drive', `${nome} — matrícula ${r.matricula}: ${falha}. Vou tentar de novo.`, r.leadId);
   }

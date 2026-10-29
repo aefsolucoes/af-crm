@@ -1527,3 +1527,20 @@ model SupervisionItem {
   @@unique([weekKey, leadId])
   @@index([accountId, weekKey, status])
 }
+
+/// Cartório de Registro de Imóveis aprendido por REGIÃO (Fabio 29/10: "o CRM já identifica o cartório só pelo endereço"): cada certidão emitida grava CEP (5 primeiros dígitos) e bairro → cartório.
+/// O mapa do RI Digital só diz os cartórios de cada CIDADE; nas cidades com vários (São Paulo tem 18) quem resolve é esta tabela.
+model CartorioRegiao {
+  id        String   @id @default(cuid())
+  accountId String
+  uf        String
+  cidade    String   // como no pedido (normalizada: maiúscula, sem acento)
+  chave     String   // "CEP:04777" ou "BAIRRO:VILA DA PAZ"
+  cartorio  String   // como no portal, ex.: "11º - SÃO PAULO"
+  hits      Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([accountId, uf, cidade, chave, cartorio])
+  @@index([accountId, uf, cidade, chave])
+}
