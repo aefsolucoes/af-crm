@@ -4,7 +4,7 @@ import { requirePermission } from '../middleware/permission';
 import { prisma } from '../lib/prisma';
 import { assistantChat, assistantSimulationStatus, assistantSimulationPdf, dueReminders, ChatMsg } from '../services/assistant.service';
 import { confirmPendingAction, cancelPendingAction } from '../services/assistant-actions.service';
-import { supervisionTts } from '../services/supervision.service';
+import { supervisionTts, JARVIS_VOICES } from '../services/supervision.service';
 
 /** Assistente do CRM (chat da equipe) — ver services/assistant.service.ts. */
 const router = Router();
@@ -30,9 +30,12 @@ router.post('/cancel/:id', (req: AuthRequest, res: Response) => { res.json(cance
 
 // Voz natural (ElevenLabs, a mesma da supervisão); sem crédito = 503 e o balão usa a voz do navegador.
 router.post('/tts', async (req: AuthRequest, res: Response) => {
-  try { const audio = await supervisionTts(String(req.body?.text || '')); res.setHeader('Content-Type', 'audio/mpeg'); res.send(audio); }
+  try { const audio = await supervisionTts(String(req.body?.text || ''), req.body?.voiceId ? String(req.body.voiceId) : undefined); res.setHeader('Content-Type', 'audio/mpeg'); res.send(audio); }
   catch (err: any) { res.status(err?.status || 500).json({ error: err?.message || 'Erro na voz' }); }
 });
+
+// Vozes brasileiras pra pessoa escolher na bolinha (a escolha fica no navegador dela).
+router.get('/voices', (_req: AuthRequest, res: Response) => { res.json(JARVIS_VOICES); });
 
 // Lembretes que venceram agora — o balão abre e fala.
 router.get('/reminders/due', async (req: AuthRequest, res: Response) => { res.json(await dueReminders(req.user!.id)); });

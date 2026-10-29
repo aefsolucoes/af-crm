@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Loader2, FileText, Check, Ban, ExternalLink, X, Mic, Square, Send, RotateCcw } from 'lucide-react';
+import { Loader2, FileText, Check, Ban, ExternalLink, X, Mic, Square, Send, RotateCcw, Play, Volume2 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/ui/toast';
@@ -22,7 +22,10 @@ type AudioReq = { leadId: string; leadName: string };
 type Msg = { role: 'user' | 'assistant'; content: string };
 type Voz = 'off' | 'ouvindo' | 'pensando' | 'falando';
 type CopyReq = { label: string; texto: string };
-type Cartao = { fala?: string; disse?: string; pending?: Pending[]; attachments?: Attachment[]; nav?: Nav | null; audio?: AudioReq | null; copiar?: CopyReq[] };
+type Cartao = { fala?: string; disse?: string; pending?: Pending[]; attachments?: Attachment[]; nav?: Nav | null; audio?: AudioReq | null; copiar?: CopyReq[]; escolherVoz?: boolean };
+type Voice = { id: string; nome: string; desc: string };
+const VOZ_KEY = 'af_jarvis_voz';
+const lerVoz = () => { try { return localStorage.getItem(VOZ_KEY) || ''; } catch { return ''; } };
 const STORE_KEY = 'af_crm_jarvis_ctx';
 const SPOKEN_KEY = 'af_crm_assistant_reminders_spoken';
 const ORB = 64;
@@ -122,6 +125,39 @@ function CopyCard({ c }: { c: CopyReq }) {
   );
 }
 
+/** Cada colaborador escolhe a voz do assistente (Fabio 29/10) — todas brasileiras; a escolha fica neste navegador. */
+function VoicePicker({ atual, primeiroNome, onPick }: { atual: string; primeiroNome: string; onPick: (v: Voice) => void }) {
+  const [vozes, setVozes] = useState<Voice[]>([]);
+  const [tocando, setTocando] = useState('');
+  const audio = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => { api.get('/api/assistant/voices').then((r) => setVozes(r.data || [])).catch(() => setVozes([])); return () => { try { audio.current?.pause(); } catch { /* */ } }; }, []);
+  async function ouvir(v: Voice) {
+    try { audio.current?.pause(); } catch { /* */ }
+    setTocando(v.id);
+    try {
+      const masc = /masculin/i.test(v.desc);
+      const r = await api.post('/api/assistant/tts', { text: `Oi${primeiroNome ? `, ${primeiroNome}` : ''}! Eu sou ${masc ? 'o' : 'a'} ${v.nome}, ${masc ? 'seu assistente' : 'sua assistente'} aqui no CRM. É só tocar na bolinha e falar comigo.`, voiceId: v.id }, { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data as Blob);
+      const a = new Audio(url); audio.current = a;
+      a.onended = () => { setTocando(''); URL.revokeObjectURL(url); };
+      await a.play();
+    } catch { setTocando(''); toast('Não consegui tocar a amostra', 'error'); }
+  }
+  return (
+    <div className="mt-2 space-y-1.5">
+      <p className="text-xs font-medium text-slate-600">Escolha a voz do seu assistente:</p>
+      {!vozes.length && <Loader2 size={14} className="animate-spin text-slate-400" />}
+      {vozes.map((v) => (
+        <div key={v.id} className={cn('flex items-center gap-2 rounded-lg border px-2 py-1.5', v.id === atual ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200')}>
+          <button onClick={() => ouvir(v)} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sky-600 text-white hover:brightness-110" title="Ouvir">{tocando === v.id ? <Volume2 size={13} className="animate-pulse" /> : <Play size={13} />}</button>
+          <div className="min-w-0 flex-1 leading-tight"><div className="text-xs font-semibold text-slate-800">{v.nome}</div><div className="truncate text-[11px] text-slate-500">{v.desc}</div></div>
+          <button onClick={() => { try { audio.current?.pause(); } catch { /* */ } onPick(v); }} className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:brightness-110">{v.id === atual ? 'Usando' : 'Escolher'}</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RecorderCard({ req, onDone }: { req: AudioReq; onDone: (msg: string) => void }) {
   const [fase, setFase] = useState<'pronto' | 'gravando' | 'ouvir' | 'enviando'>('pronto');
   const [seg, setSeg] = useState(0);
@@ -190,13 +226,16 @@ export function CrmAssistant() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const recRef = useRef<any>(null);
   const cartaoRef = useRef<Cartao | null>(null);
+  const vozIdRef = useRef('');
+  const [vozNome, setVozNome] = useState('');
+  useEffect(() => { vozIdRef.current = lerVoz(); try { setVozNome(localStorage.getItem(`${VOZ_KEY}_nome`) || ''); } catch { /* */ } }, []);
   const setCard = (c: Cartao | null) => { cartaoRef.current = c; setCartao(c); };
 
   useEffect(() => { msgsRef.current = load(); }, []);
 
   // ── posição: no canto quando parada; passeando pela tela enquanto conversa (para quando há algo pra clicar no balão) ──
   const canto = () => ({ x: window.innerWidth - ORB - 20, y: window.innerHeight - ORB - 84 });
-  const precisaClique = !!(cartao?.pending?.some((p) => p.estado === 'PENDENTE') || cartao?.audio || cartao?.attachments?.length || cartao?.copiar?.length);
+  const precisaClique = !!(cartao?.pending?.some((p) => p.estado === 'PENDENTE') || cartao?.audio || cartao?.attachments?.length || cartao?.copiar?.length || cartao?.escolherVoz);
   const conversando = voz !== 'off';
   // Mouse em cima da bolinha ou do balão: ela PARA onde está pra pessoa olhar (Fabio 29/10); ao sair, volta a passear.
   const [mouseEm, setMouseEm] = useState(false);
@@ -240,7 +279,7 @@ export function CrmAssistant() {
     setVoz('falando');
     try { audioRef.current?.pause(); } catch { /* */ }
     try {
-      const r = await api.post('/api/assistant/tts', { text: t.slice(0, 900) }, { responseType: 'blob' });
+      const r = await api.post('/api/assistant/tts', { text: t.slice(0, 900), voiceId: vozIdRef.current || undefined }, { responseType: 'blob' });
       const url = URL.createObjectURL(r.data as Blob);
       await new Promise<void>((resolve) => {
         const a = new Audio(url); audioRef.current = a;
@@ -277,7 +316,7 @@ export function CrmAssistant() {
   async function avisaQueEstaVendo() {
     try {
       if (!aguardeRef.current) {
-        const r = await api.post('/api/assistant/tts', { text: 'Um instante, já vejo.' }, { responseType: 'blob' });
+        const r = await api.post('/api/assistant/tts', { text: 'Um instante, já vejo.', voiceId: vozIdRef.current || undefined }, { responseType: 'blob' });
         aguardeRef.current = URL.createObjectURL(r.data as Blob);
       }
       const a = new Audio(aguardeRef.current); audioRef.current = a;
@@ -340,8 +379,17 @@ export function CrmAssistant() {
     vozRef.current = false; setVoz('off'); calar();
     try { recRef.current?.abort?.(); } catch { /* */ }
   }
+  function escolherVoz(v: Voice) {
+    vozIdRef.current = v.id; setVozNome(v.nome);
+    try { localStorage.setItem(VOZ_KEY, v.id); localStorage.setItem(`${VOZ_KEY}_nome`, v.nome); } catch { /* */ }
+    if (aguardeRef.current) { URL.revokeObjectURL(aguardeRef.current); aguardeRef.current = null; } // o "um instante" é refeito na voz nova
+    setCard(null);
+    void conversar();
+  }
   async function conversar() {
     if (vozRef.current) { parar(); return; }
+    // 1ª vez neste navegador: cada colaborador escolhe a voz antes de conversar.
+    if (!vozIdRef.current) { setCard({ escolherVoz: true }); return; }
     const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) { toast('Este navegador não reconhece fala (use o Chrome ou o Safari)', 'error'); return; }
     vozRef.current = true;
@@ -354,6 +402,7 @@ export function CrmAssistant() {
       if (!dito) { if (++silencios >= 2) break; continue; }
       silencios = 0;
       if (PARAR.test(dito.trim())) { setCard(null); await falar('Até já.'); break; }
+      if (/^(trocar|mudar|muda|troca)\s+(a\s+|de\s+)?voz/i.test(dito.trim())) { setCard({ escolherVoz: true }); await falar('Escolha a voz nova aqui no balão.'); break; }
       const pend = (cartaoRef.current?.pending || []).filter((p) => p.estado === 'PENDENTE');
       if (pend.length && SIM.test(dito.trim())) {
         setCard({ ...cartaoRef.current, disse: dito });
@@ -425,6 +474,7 @@ export function CrmAssistant() {
           {cartao?.fala && <p className="mt-1 pr-4 leading-snug whitespace-pre-wrap max-h-48 overflow-y-auto">{cartao.fala}</p>}
           {cartao?.attachments?.map((a) => <SimulationCard key={a.id} a={a} />)}
           {cartao?.copiar?.map((c, i) => <CopyCard key={i} c={c} />)}
+          {cartao?.escolherVoz && <VoicePicker atual={vozIdRef.current} primeiroNome={primeiroNome} onPick={escolherVoz} />}
           {cartao?.audio && <RecorderCard req={cartao.audio} onDone={(m) => setCard({ fala: m })} />}
           {cartao?.pending?.map((p) => (
             <div key={p.id} className={cn('mt-2 rounded-lg border p-2 text-xs', p.estado === 'PENDENTE' ? 'border-amber-300 bg-amber-50' : p.estado === 'ERRO' ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-slate-50')}>
@@ -440,6 +490,7 @@ export function CrmAssistant() {
             </div>
           ))}
           {cartao?.nav?.path && <button onClick={() => router.push(cartao.nav!.path)} className="mt-1.5 flex items-center gap-1 text-xs font-medium text-[#2261a8] hover:underline"><ExternalLink size={12} /> {cartao.nav.label}</button>}
+          {!cartao?.escolherVoz && vozNome && <button onClick={() => { if (vozRef.current) parar(); setCard({ escolherVoz: true }); }} className="mt-2 flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600"><Volume2 size={11} /> Voz: {vozNome} · trocar</button>}
         </div>
       )}
 

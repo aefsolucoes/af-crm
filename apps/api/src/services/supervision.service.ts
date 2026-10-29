@@ -241,15 +241,26 @@ export async function chatOnSupervision(accountId: string, id: string, history: 
 
 // ─── Voz natural (ElevenLabs) pra conversa da supervisão (Fabio 29/10: "ficou muito ruim essa fala… queria algo mais natural") ───
 // Modelo multilíngue rápido (eleven_flash_v2_5, fala português). Sem chave/crédito → 503 e a tela cai na voz do navegador.
-export const SUPERVISION_VOICE_ID = process.env.SUPERVISION_VOICE_ID || 'XrExE9yKIg1WjnnlVkGX'; // "Matilda" (amostra 2, escolhida pelo Fabio 29/10)
+// Vozes BRASILEIRAS da biblioteca da ElevenLabs (Fabio 29/10: "sotaque em pt-BR"; liberadas com o plano pago). Cada colaborador escolhe a sua na bolinha do Jarvis.
+export const JARVIS_VOICES: { id: string; nome: string; desc: string }[] = [
+  { id: 'GDzHdQOi6jjf8zaXhCYD', nome: 'Raquel', desc: 'feminina, jovem e animada' },
+  { id: 'RGymW84CSmfVugnA5tvA', nome: 'Roberta', desc: 'feminina, tranquila e confiante' },
+  { id: 'KHmfNHtEjHhLK9eER20w', nome: 'Fernanda', desc: 'feminina, formal e clara' },
+  { id: 'GM2UA3fbsIaLHcswCDX9', nome: 'Nina', desc: 'feminina, suave e acolhedora' },
+  { id: 'xWdpADtEio43ew1zGxUQ', nome: 'Matheus', desc: 'masculina, simpática e calma' },
+  { id: 'lvkgCBi6spByiTZMPJEK', nome: 'Gabriel', desc: 'masculina, voz grave' },
+];
+// Padrão: brasileira (era a Matilda, americana — puxava pro sotaque de Portugal).
+export const SUPERVISION_VOICE_ID = process.env.SUPERVISION_VOICE_ID || JARVIS_VOICES[0].id;
 // Modelo da voz (Fabio 29/10: sotaque do Brasil) — trocável sem deploy pela variável SUPERVISION_TTS_MODEL.
 const TTS_MODEL = process.env.SUPERVISION_TTS_MODEL || 'eleven_flash_v2_5';
-export async function supervisionTts(text: string): Promise<Buffer> {
+export async function supervisionTts(text: string, voiceId?: string): Promise<Buffer> {
   const key = process.env.ELEVENLABS_API_KEY;
   if (!key) throw Object.assign(new Error('Sem voz natural configurada'), { status: 503 });
   const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
   if (!t) throw Object.assign(new Error('Texto vazio'), { status: 400 });
-  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${SUPERVISION_VOICE_ID}?output_format=mp3_44100_64`, {
+  const voz = JARVIS_VOICES.some((v) => v.id === voiceId) ? voiceId! : SUPERVISION_VOICE_ID;
+  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voz}?output_format=mp3_44100_64`, {
     method: 'POST',
     headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
     body: JSON.stringify({ text: t, model_id: TTS_MODEL, ...(TTS_MODEL === 'eleven_multilingual_v2' ? {} : { language_code: 'pt' }), voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true } }),
