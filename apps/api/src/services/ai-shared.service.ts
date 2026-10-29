@@ -788,6 +788,7 @@ export async function applyAiExtractedActions(
           await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🏦 O cliente disse que quer seguir pela ${action.chooseBank}. As aprovações dos outros bancos ficam GUARDADAS (não vão sozinhas ao cliente; a IA só fala delas se ele perguntar). A ${action.chooseBank} analisa com a documentação completa: rode quando os documentos chegarem.` } }).catch(() => {});
           (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: quer seguir pela ${action.chooseBank}`, body: 'Outras aprovações guardadas. Rodar a análise com a documentação quando chegar.', leadId: lead.id }).catch(() => {});
           logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `marcou que o cliente optou pela ${action.chooseBank}` });
+          setTimeout(() => { (require('./fh-approval.service') as typeof import('./fh-approval.service')).proximosPassosFh(accountId, leadId, io).catch((e: any) => console.error('[Financiamento] próximos passos:', e?.message)); }, 4000); // depois da resposta da IA
         }
       } catch (e: any) { console.error('[IA] marcar opção pela CAIXA/BRB falhou:', e?.message); }
     }

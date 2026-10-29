@@ -152,7 +152,7 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
         const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
         await saveCf(l.id, { _fhNotice: { ...cf._fhNotice, semNumeros: [...semNum].filter((b) => !completas.some((o) => o.banco === b)) } });
         const nome = firstName(cf.falando_com || cf.participante_1 || l.name);
-        await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `📋 ${nome ? `${nome}, ` : ''}saíram as condições da sua proposta${completas.length > 1 ? 's' : ` no *${completas[0].banco}*`}:` });
+        await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `📋 ${nome ? `${nome}, ` : ''}saíram as condições da sua proposta${completas.length > 1 ? 's' : ` no *${completas[0].banco}*`}. Toque em *${CHOOSE}* pra receber a simulação em PDF com todas as parcelas:` });
         for (const o of completas) {
           await new Promise((r) => setTimeout(r, 1200));
           const r = await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: fhOptionText(o), buttons: [CHOOSE] });
@@ -172,7 +172,7 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
       const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
       await saveCf(l.id, { _fhNotice: { ...cf._fhNotice, bancos: [...ja, ...novas.map((o) => o.banco)] } });
       const nome = firstName(cf.falando_com || cf.participante_1 || l.name);
-      await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `✅ ${nome ? `${nome}, ` : ''}seu financiamento também foi aprovado ${novas.length > 1 ? `em mais ${novas.length} bancos` : `no *${novas[0].banco}*`}! Veja abaixo e toque em *${CHOOSE}* na proposta que preferir.` });
+      await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `✅ ${nome ? `${nome}, ` : ''}seu financiamento também foi aprovado ${novas.length > 1 ? `em mais ${novas.length} bancos` : `no *${novas[0].banco}*`}! Veja abaixo e toque em *${CHOOSE}* na proposta que preferir — aí te mando a simulação em PDF com todas as parcelas.` });
       for (const o of novas) {
         await new Promise((r) => setTimeout(r, 1200));
         const r = await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: fhOptionText(o), buttons: [CHOOSE] });
@@ -210,8 +210,8 @@ async function sendFhNotice(accountId: string, leadId: string, leadName: string,
   const base = { accountId, leadId, io };
   const pausa = () => new Promise((r) => setTimeout(r, 1200));
   const intro = aprovadas.length > 1
-    ? `✅ ${nome ? `${nome}, ` : ''}boa notícia: seu financiamento foi aprovado em ${aprovadas.length} bancos! Veja as opções abaixo e toque em *${CHOOSE}* na que preferir.`
-    : `✅ ${nome ? `${nome}, ` : ''}boa notícia: seu financiamento foi aprovado! Veja a proposta abaixo e toque em *${CHOOSE}* para seguirmos.`;
+    ? `✅ ${nome ? `${nome}, ` : ''}boa notícia: seu financiamento foi aprovado em ${aprovadas.length} bancos! Veja as opções abaixo e toque em *${CHOOSE}* na que preferir — assim que você escolher, te mando a simulação em PDF com todas as parcelas.`
+    : `✅ ${nome ? `${nome}, ` : ''}boa notícia: seu financiamento foi aprovado! Veja a proposta abaixo e toque em *${CHOOSE}* — assim que você tocar, te mando a simulação em PDF com todas as parcelas.`;
   await saveCf(leadId, { _fhNotice: { sentAt: new Date().toISOString(), bancos: aprovadas.map((o) => o.banco), semNumeros: aprovadas.filter((o) => !o.valor || !o.prazo).map((o) => o.banco) } }); // antes de enviar: se algo falhar no meio, não repete em laço
   const a = await sendOutboundWhatsApp({ ...base, content: intro });
   if (!a.success) { await note(leadId, `⚠️ O aviso do Financiamento aprovado NÃO saiu (${a.error}). Avise o cliente à mão.`); return false; }
@@ -258,6 +258,20 @@ export async function processFhRejections(accountId: string, io?: any): Promise<
     await markRejectedAndMove({ accountId, leadId: l.id, io, motivo: `Financiamento reprovado nos bancos (${bancos.map(([b]) => b).join(', ')})` }).catch((e: any) => console.error('[Financiamento] mover reprovado:', e?.message));
     push(accountId, `🏠 ${l.name}: financiamento não aprovado`, `${bancos.map(([b]) => b).join(', ')} — cliente avisado, card em Perdidos`, l.id);
   }
+}
+
+/** Optou pela CAIXA/BRB no Financiamento (Fabio 29/10): manda também os "Próximos passos financiamento" (escolha do imóvel, vistoria…), uma vez por card. */
+export async function proximosPassosFh(accountId: string, leadId: string, io?: any): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  const cf = (lead?.customFields || {}) as Cf;
+  if (!/habitacional/i.test(lead?.pipeline?.department?.name || '') || cf._fhPassosAt) return;
+  const passos = await template(accountId, 'Proximos passos financiamento');
+  if (!passos) return;
+  const ja = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', content: { contains: passos.slice(0, 40) } }, select: { id: true } });
+  await saveCf(leadId, { _fhPassosAt: new Date().toISOString() });
+  if (ja) return;
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  await sendOutboundWhatsApp({ accountId, leadId, io, content: passos });
 }
 
 /** O cliente disse ESCREVENDO com qual banco do Financiamento vai seguir (a IA marcou "chooseBank") — mesmo efeito do botão "Seguir com esta". */
@@ -353,7 +367,7 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   const { texto, comRenda } = await docsBancoEscolhido(accountId, cf, banco);
   await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Vamos seguir com o *${banco}*. Já te mando a simulação em PDF.\n\n${texto}` });
   const passos = await template(accountId, 'Proximos passos financiamento');
-  if (passos) { await pausa(); await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: passos }); }
+  if (passos) { await pausa(); await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: passos }); await saveCf(lead.id, { _fhPassosAt: new Date().toISOString() }); }
   const taxas = await template(accountId, 'Taxas Financiamento Habitacional');
   if (taxas) { await pausa(); await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: taxas }); }
   await saveCf(lead.id, { _fhDocsAt: new Date().toISOString() });
@@ -385,7 +399,7 @@ async function blocoImovelVendedor(accountId: string): Promise<string> {
 }
 
 /** Lista de documentos do comprador pelo PERFIL (Respostas rápidas "Documentos comprador …" — a equipe edita lá). */
-function perfilTemplate(cf: Cf): string {
+export function perfilTemplate(cf: Cf): string {
   const v = norm(`${cf.vinculo_1 || ''} ${cf.perfil_renda || ''}`);
   if (/servidor|public/.test(v)) return 'Documentos comprador servidor público';
   if (/aposent|pension/.test(v)) return 'Documentos Aposentado';

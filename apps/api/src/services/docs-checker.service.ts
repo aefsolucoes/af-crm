@@ -242,8 +242,12 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const fhSoComprador = ehFh && (!!cfAll._optouCaixa?.banco || !cfAll._fhChosen);
   const listas = ehFh ? lists.filter((l) => !/home equity/i.test(l.name)) : lists;
   if (!listas.length && !fhSoComprador) return null;
-  const blocoFh = !ehFh ? '' : fhSoComprador
-    ? `FINANCIAMENTO HABITACIONAL — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10): de cada comprador: RG, CPF (a CNH vale pelos dois), comprovante de endereço, último contracheque e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge. NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "Financiamento Habitacional — comprador".\n\n`
+  // CAIXA (ou ainda sem banco): lista ENXUTA pra rodar na CAIXA. BRB: documentação COMPLETA pela profissão (lista do perfil) — Fabio 29/10.
+  const { perfilTemplate } = require('./fh-approval.service') as typeof import('./fh-approval.service');
+  const blocoFh = !ehFh ? '' : fhSoComprador && cfAll._optouCaixa?.banco === 'BRB'
+    ? `FINANCIAMENTO HABITACIONAL — BRB (Fabio 29/10): o BRB analisa com a documentação COMPLETA do comprador pela profissão — a referência é a lista "${perfilTemplate(cfAll)}" abaixo (pessoais + renda). NÃO cobre nada do imóvel nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false.\n\n`
+    : fhSoComprador
+    ? `FINANCIAMENTO HABITACIONAL — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10 — lista ENXUTA pra rodar na CAIXA): de cada comprador: RG, CPF (a CNH vale pelos dois), comprovante de endereço, último contracheque e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge. NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "Financiamento Habitacional — comprador".\n\n`
     : `FINANCIAMENTO HABITACIONAL (banco ${cfAll._fhChosen?.bank || 'escolhido'}): a referência é a lista que o CRM mandou na conversa depois da escolha do banco. NUNCA use a lista "Documentos Home Equity".\n\n`;
   // Autorização da emissão da certidão: SEM campo (Fabio 15/10) — fica registrada numa ANOTAÇÃO do card (marcador abaixo) e o CRM mesmo lê.
   const jaAutorizou = !!(await prisma.note.findFirst({ where: { leadId, content: { startsWith: AUTORIZOU_EMISSAO } }, select: { id: true } }));

@@ -1855,6 +1855,7 @@ async function caixaBrbContext(db: Db, leadId: string, cf: Record<string, any>):
   }
   if (cf._optouCaixa?.banco) {
     const quando = new Date(cf._optouCaixa.at || Date.now()).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    out.push(`- DOCUMENTOS (Fabio 29/10): CAIXA = lista ENXUTA (RG, CPF, comprovante de endereço, último contracheque, certidão de estado civil; cônjuge: RG e CPF). BRB = documentação COMPLETA pela profissão (a Resposta Rápida "Documentos comprador …" do perfil dele: pessoais + renda).`);
     out.push(`- O CLIENTE OPTOU PELA ${cf._optouCaixa.banco} (${quando}): siga só com a ${cf._optouCaixa.banco}. As aprovações dos outros bancos ficam GUARDADAS — NÃO apresente, NÃO ofereça e NÃO compare com elas, e não marque "sendApproval"/"sendSimulation"; só fale delas (com os números acima) se ELE perguntar dos outros bancos.`);
   }
   return out;
