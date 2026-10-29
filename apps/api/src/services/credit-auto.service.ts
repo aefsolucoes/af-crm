@@ -139,6 +139,7 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
     const cf = (l.customFields || {}) as Cf;
     if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     if (cf._autoStartedAt || cf._autoGiveUp) continue;
+    if (await descartarImovelRural(accountId, l, cf, io).catch((e) => { console.error('[Imóvel rural]', e?.message); return false; })) continue;
     // TRIAGEM DE IDADE NA ENTRADA (Fabio 17/10, Admir de 75 anos: o CRM sabia que o Inter e o Santander barravam e deixou o card parado, com e-mails inúteis aos bancos).
     if (await descartarPorIdade(accountId, l, cf, io).catch((e) => { console.error('[Triagem de idade]', e?.message); return false; })) continue;
     // Cliente reprovado há pouco que voltou (Fabio 19/10): a IA compara a proposta nova com a reprovada ANTES de gastar análise nos bancos.
@@ -163,6 +164,29 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
   }
 }
 
+/** IMÓVEL RURAL (Fabio 29/10, Floriza: "não fazemos imóvel rural… os que tiverem essa qualificação deverão ir para Perdidos, imóvel desqualificado para a operação"):
+ *  proposta marcada como rural não vai pros bancos — o cliente é avisado (IA ligada, 07h–21h, conversa aberta) e o card vai pra Perdidos como desqualificado. HE e FH. */
+async function descartarImovelRural(accountId: string, l: { id: string; name: string }, cf: Cf, io?: any): Promise<boolean> {
+  if (cf._imovelRuralAt) return true;
+  const proposta = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const rural = /tipo do im[óo]vel:\s*\**\s*(rural|ch[áa]cara|s[íi]tio|fazenda)/i.test(proposta?.content || '') || /rural/i.test(String(cf.tipo_imovel || cf.tipo_do_imovel || ''));
+  if (!rural) return false;
+  await saveCf(l.id, { _imovelRuralAt: new Date().toISOString() });
+  const lead = await prisma.lead.findUnique({ where: { id: l.id }, select: { aiAutoReplyActive: true } });
+  const { inNoticeWindow, whatsappWindowOpen, markRejectedAndMove } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  let avisou = false;
+  if (lead?.aiAutoReplyActive && inNoticeWindow() && (await whatsappWindowOpen(l.id))) {
+    const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+    const nome = callableFirstName(cf.falando_com, cf.participante_1, l.name);
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    const r = await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `${nome ? `${nome}, ` : ''}vi na sua proposta que o imóvel é rural. Infelizmente não trabalhamos com imóvel rural nessa operação. Se você tiver outro imóvel urbano com matrícula, é só preencher a proposta de novo com ele que eu sigo por aqui.` });
+    avisou = !!r.success;
+  }
+  await markRejectedAndMove({ accountId, leadId: l.id, io, disqualify: true, motivo: 'Imóvel desqualificado para a operação (imóvel rural)' }).catch((e: any) => console.error('[Imóvel rural] mover:', e?.message));
+  await addNote(l.id, `🚫 Proposta com IMÓVEL RURAL: não rodei nos bancos (a A&F não trabalha com imóvel rural). Card em Perdidos — imóvel desqualificado para a operação.${avisou ? ' Cliente avisado.' : ' Cliente NÃO avisado (IA desligada, fora do horário ou conversa fechada) — avise pela conversa.'}`);
+  return true;
+}
+
 /** 1b) Financiamento Habitacional (Fabio 27/10): card novo na Pré-Análise com a proposta do site → a extensão do Credimorar roda Bradesco, Itaú, Santander e Inter numa
  *  simulação só. Sem a conferência da IA do Home Equity (aiReadiness é de Home Equity); a extensão recusa sozinha se faltar dado. CAIXA e BRB só com a documentação completa (depois). */
 async function startNewFhLeads(accountId: string, enabledAt: Date) {
@@ -181,6 +205,7 @@ async function startNewFhLeads(accountId: string, enabledAt: Date) {
     if (cf._autoPaused || cf._fhAutoStartedAt) continue;
     const proposta = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', content: { contains: 'Financiamento Habitacional' }, OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { id: true, content: true } });
     if (!proposta) continue;
+    if (await descartarImovelRural(accountId, l, cf).catch((e) => { console.error('[Imóvel rural]', e?.message); return false; })) continue;
     // Financiamento exige NOME LIMPO (Fabio 27/10): com restrição no Serasa os bancos não aprovam — não gasta análise; a equipe roda à mão na aba se quiser.
     if (/Restri[cç][aã]o no Serasa:\s*\**\s*Sim/i.test(proposta.content)) {
       await saveCf(l.id, { _fhAutoStartedAt: new Date().toISOString() });

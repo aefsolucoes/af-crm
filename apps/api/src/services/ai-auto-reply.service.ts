@@ -329,7 +329,7 @@ const FORM_FIRST_RULES = `FORMULÁRIO PRIMEIRO — REGRA PRINCIPAL DE CONDUÇÃO
   3. Se ajudar, UMA frase sobre a diferença: a A&F trabalha com garantia de IMÓVEL (Home Equity), que costuma permitir prazo longo e parcela menor; NÃO prometa ser mais barato e NÃO invente taxa nossa.
   4. Só depois que ele passar a taxa (ou disser que não tem), ofereça seguir com a pré-análise (link da proposta) pra rodar nos bancos parceiros e comparar. Se ele JÁ aceitou o link ("pode sim") sem ter dito a taxa dele: mande o link e peça também, por aqui, a taxa do outro banco ("e me manda a taxa que o seu banco ofereceu, pra eu comparar com o resultado").
   5. Quando a análise sair e ele tiver passado a taxa do outro banco, na hora de apresentar as opções compare com ela (sem inventar nada: só os números do aviso de aprovação).
-- IMÓVEL RURAL (fazenda, sítio, chácara, "hectares") — ALERTA SEMPRE (Fabio 14/10, José/Eduardo: "o banco aceita a minha fazenda?"): pode dizer que dá pra tentar, mas SEMPRE com o alerta de que tudo depende de COMO O BANCO VAI ANALISAR, da DOCUMENTAÇÃO APRESENTADA e da DOCUMENTAÇÃO QUE O BANCO VAI PEDIR. NUNCA confirme que o banco aceita nem prometa aprovação (ex.: "o banco aceita?" → "Dá pra tentar sim, mas tudo depende da análise do banco, da documentação do imóvel que você apresentar e do que o banco vai pedir de documentação.").
+- IMÓVEL RURAL — NÃO TRABALHAMOS (Fabio 29/10, Floriza: "não fazemos imóvel rural"; revoga o "dá pra tentar" de 14/10): a A&F NÃO faz operação com imóvel RURAL (terreno rural, fazenda, sítio, chácara, área em hectares, imóvel com ITR/CCIR) — nem como garantia no Home Equity, nem no Financiamento Habitacional, em nenhum banco nem na CAIXA. É IMÓVEL DESQUALIFICADO PARA A OPERAÇÃO. Assim que aparecer (o cliente contar, a proposta vier marcada como rural, um documento mostrar): NUNCA diga que dá pra tentar nem peça documento desse imóvel; explique em 1 frase, com educação, que não trabalhamos com imóvel rural e que, se ele tiver outro imóvel URBANO com matrícula, é só preencher a proposta de novo com ele; e marque "markLost": "Imóvel desqualificado para a operação (imóvel rural)".
 - EXPLICAR A GARANTIA com cuidado: o imóvel fica como garantia da operação até o crédito ser quitado (alienado ao banco); o cliente segue usando; quando quitar, a garantia é liberada. NÃO diga só "isso, ele continua sendo seu" e NÃO responda "isso/pode sim" como se estivesse tudo certo: lembre que a aprovação e as condições dependem da análise do banco.
 - DEPOIS DA NEGATIVA, CLIENTE PEDE PRA "MUDAR VALOR" / REFAZER (Fabio 15/10, Willian): se a conversa JÁ tem o aviso de que o crédito não foi aprovado e o motivo é o IMÓVEL (valor abaixo do mínimo dos bancos, terreno, saldo devedor), mudar o valor do crédito ou do imóvel NÃO resolve — o imóvel vale o que vale e a reprovação seguiria a mesma. NÃO ofereça mudar dados ("quer mudar o valor do imóvel ou outro dado?"), refazer a análise nem testar outros valores. A ÚNICA saída: tentar em OUTRO CPF — um PARENTE DE 1º GRAU (pai, mãe, filho) ou outra pessoa que tenha um imóvel que sirva de garantia (com valor dentro do mínimo dos bancos). Explique em 2 frases curtas e pergunte se ele tem alguém assim; se tiver, peça o nome/contato e mande o link da proposta manual pra preencher no nome dessa pessoa. Se não tiver, agradeça e deixe a porta aberta sem prometer nada.
 - NÃO CONSEGUE PREENCHER AGORA (ex.: "não posso imprimir", "tô sem tempo", "difícil pelo celular"): explique que o preenchimento é digital, pelo próprio celular, no link. E ofereça a alternativa da equipe: "Se preferir, pode me mandar uma foto do seu documento pessoal e um comprovante de residência, que eu consigo seguir com a pré-análise pra você." (Exceção à regra de não pedir documento antes da pré-análise — só nesse caso, e uma vez.)
@@ -423,6 +423,16 @@ function parseChooseBank(raw: unknown): string | null {
   const v = String((Array.isArray(raw) ? raw[0] : raw) || '').trim().toUpperCase();
   const k = v.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   return ['SANTANDER', 'INTER', 'CREDITAS', 'CAIXA', 'BRB', 'BRADESCO', 'ITAU'].includes(k) ? k : null;
+}
+
+const PALAVRAS_COMUNS = new Set('cliente clientes proposta propostas banco bancos credito imovel imoveis documento documentos documentacao analise valor valores aprovado aprovada equipe pedir precisa precisamos porque sobre quando ainda pode podemos seria mesmo tambem outro outra outros outras voce vocês dele dela deles essa esse isso aqui agora entao certo certinho tudo nesse nessa desse dessa sendo estar estou estamos fazer feito ficar ficou tenho temos qual quais como onde enviar enviada enviado seguir obrigada obrigado'.split(' '));
+const palavrasChave = (t: string) => new Set(String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 5 && !PALAVRAS_COMUNS.has(w)));
+/** A resposta ao cliente trata do mesmo assunto da pergunta que foi pra equipe? (2+ palavras-chave em comum: "terreno", "rural", "garantia"…). Pura. */
+export function respondeOQueFoiPraEquipe(reply: string, askTeam: string): boolean {
+  const a = palavrasChave(askTeam);
+  let comuns = 0;
+  for (const w of palavrasChave(reply)) if (a.has(w)) comuns++;
+  return comuns >= 2;
 }
 
 function parseSendSimulation(raw: unknown): string[] | null {
@@ -705,6 +715,13 @@ ${conversasPorTelefone}` : ''}`;
     // (Fabio 30/09) — mas às vezes ela escreve "deixa eu confirmar com a
     // equipe, já te retorno" junto (Marcelo 08/10). Trava fixa: descarta.
     if (result.askTeam && result.reply && /(vou|deixa eu|deixe-me|deixa eu s[oó]) (verificar|confirmar|checar|conferir|ver)|com a equipe|j[aá] te (retorno|respondo|falo)|te retorno|retorno por aqui/i.test(result.reply)) {
+      result.reply = '';
+      result.noReply = true;
+    }
+    // Trava 2 (Fabio 29/10, Floriza: a IA respondeu "dá pra tentar sim usar o terreno rural como garantia" E mandou a mesma dúvida pra equipe, que disse "não fazemos
+    // imóvel rural"): se a resposta fala do MESMO assunto que foi pra equipe, ela não sai — o cliente recebe só a resposta da equipe, pelo balão.
+    if (result.askTeam && result.reply && respondeOQueFoiPraEquipe(result.reply, result.askTeam)) {
+      console.log(`[AI Auto-reply] resposta descartada: falava do mesmo assunto da pergunta pra equipe ("${result.askTeam.slice(0, 80)}")`);
       result.reply = '';
       result.noReply = true;
     }
