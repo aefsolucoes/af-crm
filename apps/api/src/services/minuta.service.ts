@@ -207,11 +207,13 @@ async function aplicarMinuta(
     cf[chave] = String(novo);
     mudancas.push(`${rotulo}: ${brl(novo)} (era ${brl(antes)})`);
   };
-  troca('valor_credito', 'Crédito', leitura.valorCredito);
+  // Fabio 29/10 (Alexandro: crédito R$ 305 mil, líquido R$ 300 mil): "sempre o valor LÍQUIDO" — card, Valor da venda e comissão usam o líquido quando a minuta separa.
+  const credito = leitura.valorLiquido || leitura.valorCredito;
+  troca('valor_credito', leitura.valorLiquido ? 'Crédito (líquido)' : 'Crédito', credito);
   if (financiamento) {
     troca('valor_imovel', 'Compra e venda', leitura.valorCompraVenda);
     const compra = num(cf.valor_imovel);
-    troca('valor_entrada', 'Entrada', leitura.valorEntrada || (compra && compra > leitura.valorCredito ? Math.round((compra - leitura.valorCredito) * 100) / 100 : null));
+    troca('valor_entrada', 'Entrada', leitura.valorEntrada || (compra && compra > credito ? Math.round((compra - credito) * 100) / 100 : null));
   }
   troca('valor_de_avaliacao', 'Avaliação do imóvel', leitura.valorAvaliacao); // a chave do campo é valor_de_avaliacao (antes gravava em valor_avaliacao, que não aparece no card)
   troca('primeira_parcela', 'Primeira parcela', leitura.primeiraParcela ?? null);
@@ -228,7 +230,7 @@ async function aplicarMinuta(
   textoCampo('prazo_financ', 'Prazo', leitura.prazoMeses ? `${leitura.prazoMeses} meses` : null);
   textoCampo('taxa_efetiva', 'Taxa efetiva', leitura.taxaEfetiva || null);
   const valorAntes = fresh?.value || null;
-  const novoValor = leitura.valorCredito;
+  const novoValor = credito;
   if (!valorAntes || Math.abs(valorAntes - novoValor) >= 0.01) mudancas.push(`Valor da venda: ${brl(novoValor)} (era ${brl(valorAntes)})`);
   cf._minuta.valores = leitura;
   await prisma.lead.update({ where: { id: l.id }, data: { customFields: cf as any, value: novoValor } });
