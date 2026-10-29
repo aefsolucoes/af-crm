@@ -444,6 +444,7 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       return {
         pedidos: rs.map((r) => ({ status: r.status, matricula: r.pedidoPor === 'ENDERECO' ? 'pelo endereço' : r.matricula, cidade: `${r.cidade}/${r.uf}`, protocolo: r.protocolo, valor: r.valorCents ? r.valorCents / 100 : null, pixGerado: !!(r.pixCode && r.pixCode !== 'ADOTADO'), pixEnviadoAoCliente: !!r.pixSentAt, pago: !!r.paidAt, pixVence: r.pixExpiresAt, situacao: r.detail, pedidoEm: r.createdAt })),
         pixNoBalao: !!pix,
+        ...(rs[0]?.status === 'FAILED' && /não existe em/i.test(String(rs[0]?.detail || '')) ? { obsCartorio: 'A extensão agora procura o mesmo número de cartório nas OUTRAS cidades do estado (no DF cada Ofício fica numa região) e memoriza. NÃO sugira trocar por outro cartório: ofereça refazer o pedido com o MESMO cartório (pedir_certidao com a mesma matrícula/cidade/UF/cartório).' } : {}),
         instrucao: pix ? 'O código PIX está no balão com o botão Copiar. Diga só o valor e que está pronto pra copiar.' : 'Se o PIX ainda não foi gerado, diga que a extensão ainda está fazendo o pedido no portal e que é só perguntar de novo em alguns minutos.',
       };
     }
