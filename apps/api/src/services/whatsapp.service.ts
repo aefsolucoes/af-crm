@@ -1296,7 +1296,9 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
           // Financiamento Habitacional (Fabio 27/10): "Seguir com esta" numa proposta do Financiamento e a resposta à pergunta da CAIXA/BRB (botão ou "sim"/"não").
           (await (require('./fh-approval.service') as typeof import('./fh-approval.service')).maybeHandleFhReply(accountId, leadId, text, msg.context?.id, io).catch((e: any) => { console.error('[Financiamento] resposta do cliente:', e?.message); return false; })) ||
           // "Seguir com esta" numa proposta do aviso de aprovação (Fabio 27/10): marca a proposta escolhida e confirma ao cliente.
-          (msg.type === 'interactive' && await approvalNotice.maybeHandleChooseButton(accountId, leadId, text, msg.context?.id, io).catch((e) => { console.error('[Aprovação] botão Seguir com esta:', e?.message); return false; }));
+          (msg.type === 'interactive' && await approvalNotice.maybeHandleChooseButton(accountId, leadId, text, msg.context?.id, io).catch((e) => { console.error('[Aprovação] botão Seguir com esta:', e?.message); return false; })) ||
+          // Resposta ao pedido de assinatura da ficha cadastral (template assinatura_ficha_cadastral, Fabio 29/10): manda a ficha da pasta FORMULARIOS + como assinar pelo gov.br.
+          (await (require('./ficha-assinatura.service') as typeof import('./ficha-assinatura.service')).maybeSendFichaParaAssinar(accountId, leadId, text, io).catch((e: any) => { console.error('[Ficha p/ assinar]', e?.message); return false; }));
         // Proposta do site que chega pelo WhatsApp DEPOIS do e-mail da mesma
         // proposta: o e-mail já levou o card pra Pré-Análise e a automação
         // já mandou o "Recebi sua proposta" — a IA respondia de novo
