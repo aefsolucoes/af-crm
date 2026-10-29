@@ -66,7 +66,7 @@ router.post('/fh-request', async (req: AuthRequest, res: Response) => {
     const leadId = String(req.body?.leadId || '');
     const kind = req.body?.kind === 'CHECK' ? 'CHECK' : 'RUN';
     if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
-    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds: [leadId], banks: [FH_BANK, 'INTER_FH'], dryRun: req.body?.dryRun === true, kind, force: kind === 'RUN', queueIfBusy: kind === 'RUN' }); // Credimorar (Bradesco/Itaú/Santander) + Inter no nosso portal
+    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds: [leadId], banks: Array.isArray(req.body?.banks) && req.body.banks.length ? [FH_BANK, 'INTER_FH'].filter((b) => req.body.banks.includes(b)) : [FH_BANK, 'INTER_FH'], dryRun: req.body?.dryRun === true, kind, force: kind === 'RUN', queueIfBusy: kind === 'RUN' }); // Credimorar (Bradesco/Itaú/Santander) + Inter no nosso portal
     emit(req, { leadId });
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao pedir a análise do Financiamento'); }
