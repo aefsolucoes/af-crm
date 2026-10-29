@@ -29,6 +29,30 @@ router.get('/board', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao carregar as análises'); }
 });
 
+// Total de crédito por banco em cada estágio do Kanban (Fabio 28/10: "em cada estágio mostre o total de crédito feito por cada banco"). Devolve, por card do
+// funil, o valor aprovado de cada banco (a aprovação mais recente; a escolhida ⭐ do banco, se houver) — a coluna soma os cards que está mostrando, então
+// segue a busca e os filtros da tela.
+router.get('/approved-by-lead', async (req: AuthRequest, res: Response) => {
+  try {
+    const pipelineId = String(req.query.pipelineId || '');
+    if (!pipelineId) return res.json({});
+    const rows = await prisma.creditAnalysis.findMany({
+      where: { accountId: req.user!.accountId, dryRun: false, status: 'APPROVED', approvedValue: { gt: 0 }, lead: { pipelineId } },
+      orderBy: { createdAt: 'desc' },
+      select: { leadId: true, bank: true, approvedValue: true, chosen: true },
+    });
+    const out: Record<string, Record<string, number>> = {};
+    const escolhida = new Set<string>();
+    for (const r of rows) {
+      const k = `${r.leadId}:${r.bank}`;
+      const porBanco = (out[r.leadId] ||= {});
+      if (r.chosen && !escolhida.has(k)) { porBanco[r.bank] = r.approvedValue!; escolhida.add(k); continue; }
+      if (!(r.bank in porBanco)) porBanco[r.bank] = r.approvedValue!;
+    }
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao somar o crédito por banco'); }
+});
+
 // Aba "Análise de Crédito — Financiamento Imobiliário" (Fabio 27/10): cards do Financiamento Habitacional × 6 bancos.
 router.get('/fh-board', async (req: AuthRequest, res: Response) => {
   try {

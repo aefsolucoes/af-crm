@@ -29,7 +29,12 @@ interface KanbanColumnProps {
   onToggleSelect?: (leadId: string) => void;
   /** Marca/desmarca de uma vez todos os cards DESTA etapa. */
   onToggleStageSelection?: (stageLeadIds: string[]) => void;
+  /** Crédito aprovado por banco de cada card (leadId → banco → valor), pro total por banco do estágio. */
+  approvedByLead?: Record<string, Record<string, number>>;
 }
+
+const BANK_SHORT: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar' };
+const BANK_ORDER = ['INTER', 'CREDITAS', 'CREDIMORAR', 'CREDIMORAR_FH'];
 
 const STAGE_DESCRIPTIONS: Record<string, string> = {
   // Pipeline Principal — Financiamento Habitacional
@@ -57,7 +62,7 @@ const STAGE_DESCRIPTIONS: Record<string, string> = {
   'Pagamento ao Vendedor':   'Transferência liberada — negócio concluído',
 };
 
-export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLeadIds, onToggleSelect, onToggleStageSelection }: KanbanColumnProps) {
+export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLeadIds, onToggleSelect, onToggleStageSelection, approvedByLead }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
 
   // Seleção em massa por etapa — checkbox no cabeçalho da coluna.
@@ -77,6 +82,16 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLead
   const [saving, setSaving] = useState(false);
 
   const totalValue = leads.reduce((sum, l) => sum + (l.value || 0), 0);
+  // Total de crédito aprovado por banco nos cards deste estágio (Fabio 28/10). Um card aprovado em 2 bancos conta nos 2.
+  const porBanco = new Map<string, { total: number; cards: number }>();
+  for (const l of leads) {
+    for (const [bank, v] of Object.entries(approvedByLead?.[l.id] || {})) {
+      const cur = porBanco.get(bank) || { total: 0, cards: 0 };
+      porBanco.set(bank, { total: cur.total + v, cards: cur.cards + 1 });
+    }
+  }
+  const ordem = (bank: string) => { const i = BANK_ORDER.indexOf(bank); return i < 0 ? 99 : i; };
+  const bancos = Array.from(porBanco.entries()).sort((a, b) => ordem(a[0]) - ordem(b[0]));
   const description = STAGE_DESCRIPTIONS[stage.name];
 
   function openEdit() {
@@ -211,6 +226,18 @@ export function KanbanColumn({ stage, leads, onAddLead, onOpenLead, selectedLead
         {/* Total */}
         {!editing && totalValue > 0 && (
           <div className="text-xs text-slate-500 mt-1 font-medium">{formatCurrency(totalValue)}</div>
+        )}
+
+        {/* Crédito aprovado por banco neste estágio */}
+        {!editing && bancos.length > 0 && (
+          <div className="mt-1 space-y-0.5" title="Crédito aprovado por banco nos cards deste estágio (um card aprovado em 2 bancos conta nos 2)">
+            {bancos.map(([bank, b]) => (
+              <div key={bank} className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                <span className="truncate">{BANK_SHORT[bank] || bank} <span className="text-slate-400">· {b.cards}</span></span>
+                <span className="font-semibold text-slate-600 flex-shrink-0">{formatCurrency(b.total)}</span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 

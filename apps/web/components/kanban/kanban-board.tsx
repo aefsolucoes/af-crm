@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DndContext, DragEndEvent, PointerSensor, useSensor, useSensors, closestCorners,
 } from '@dnd-kit/core';
@@ -31,6 +31,12 @@ interface KanbanBoardProps {
 
 export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSearching }: KanbanBoardProps) {
   const { moveLeadOptimistic } = usePipelineStore();
+  // Crédito aprovado por banco de cada card do funil — cada coluna soma os seus (total por banco no topo do estágio).
+  const { data: approvedByLead } = useQuery<Record<string, Record<string, number>>>({
+    queryKey: ['approved-by-lead', pipeline.id],
+    queryFn: async () => (await api.get('/api/credit-analysis/approved-by-lead', { params: { pipelineId: pipeline.id } })).data,
+    staleTime: 60_000,
+  });
   const [addLeadStageId, setAddLeadStageId] = useState<string | null>(null);
   const [openLeadId, setOpenLeadId] = useState<string | null>(null);
   const queryClient = useQueryClient();
@@ -225,6 +231,7 @@ export function KanbanBoard({ pipeline, leads, contacts, users, onRefresh, isSea
                 selectedLeadIds={selectedLeadIds}
                 onToggleSelect={toggleLeadSelect}
                 onToggleStageSelection={toggleStageSelection}
+                approvedByLead={approvedByLead}
               />
             ))}
           </SortableContext>
