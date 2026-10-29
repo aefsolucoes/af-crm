@@ -10,7 +10,7 @@ import { diasDesde, ultimaConversa } from './docs-loop.service';
  *  - "Vou preencher depois": a IA pergunta quando; com data (`_followPrazo`) espera até ela; sem resposta, 2 dias parado e volta pro Follow Up 1.
  *  - "Não tenho interesse" → Perdido (no-interest.service); "Sim, tenho interesse" → as 3 opções (dúvidas / simulação / aprovação) de sempre.
  *  - Preencheu a proposta → o card vai pra Pré-Análise e sai daqui.
- *  - Envia das 08h às 10h (como as automações antigas). Entra no ar quando a Meta aprovar os 3 templates; aí as regras antigas de Prospecção/Follow Up param. */
+ *  - Envia das 07h às 10h (Fabio 29/10: "coloca os dois para as 07"). Entra no ar quando a Meta aprovar os 3 templates; aí as regras antigas de Prospecção/Follow Up param. */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 type Lembrete = { template: string; texto: (nome: string) => string; botoes: string[]; email: { assunto: string; titulo: string; paragrafos: string[]; destaque: string } };
@@ -68,7 +68,7 @@ const LINK_PROPOSTA = { he: 'https://aefsolucoesfinanceiras.com.br/proposta-manu
 
 export type FollowLoopState = { passo: number; ultimoAt?: string };
 
-const emHorario = () => { const h = new Date(Date.now() + BRT).getUTCHours(); return h >= 8 && h < 10; };
+const emHorario = () => { const h = new Date(Date.now() + BRT).getUTCHours(); return h >= 7 && h < 10; }; // 07h, junto com o loop de documentos (Fabio 29/10)
 const norm = (s: string) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 export const ehEtapaFollow = (stageName: string) => /^(prospec|follow up)/.test(norm(stageName));
 
@@ -87,7 +87,7 @@ export async function followLoopAtivo(accountId: string): Promise<boolean> {
   return ativo;
 }
 
-/** Poller (1 min, 08h–10h). */
+/** Poller (1 min, 07h–10h). */
 export async function processFollowLoop(accountId: string, io?: Io): Promise<void> {
   if (!emHorario() || !(await followLoopAtivo(accountId))) return;
   const leads = await prisma.lead.findMany({
