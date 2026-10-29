@@ -71,6 +71,23 @@ function push(accountId: string, ids: string[], title: string, body: string) {
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, url: '/supervisao' }, ids).catch(() => {}); } catch { /* aviso */ }
 }
 
+/** Resume UM cliente (sem gravar nada). */
+export async function summarizeLead(accountId: string, leadId: string, leadName: string) {
+  const l = { id: leadId, name: leadName };
+    const ctx = await buildSharedAiContext(accountId, l.id, '', { fullHistory: true, historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' } }).catch(() => null);
+    if (!ctx) return null;
+    const ultimaIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    const janela = ultimaIn && Date.now() - ultimaIn.createdAt.getTime() < 23 * 3600_000 ? 'ABERTA (dá pra mandar texto)' : 'FECHADA (só template; a sugestão vai ser enviada pela equipe quando ele responder)';
+    const hoje = brtNow().toISOString().slice(0, 10);
+    const contexto = [
+      `Hoje: ${hoje}. Cliente: ${l.name}. Etapa: ${ctx.etapaTexto}. Banco: ${ctx.bancoTexto || '?'}. Janela do WhatsApp: ${janela}.`,
+      ctx.nomeTexto ? `Como chamar: ${ctx.nomeTexto}` : '',
+      ctx.creditoTexto ? `--- ESTADO DO CARD ---\n${ctx.creditoTexto}` : '',
+      `--- CONVERSA ---\n${ctx.historicoTexto}`,
+    ].filter(Boolean).join('\n\n');
+    return ask(contexto);
+}
+
 /** Monta (ou completa) a lista da semana. force = roda fora do horário (botão "Gerar agora"). Devolve quantos cards entraram. */
 export async function buildWeeklySupervision(accountId: string, opts: { force?: boolean; notify?: boolean } = {}): Promise<{ weekKey: string; criados: number; total: number }> {
   const weekKey = weekKeyFor();
@@ -82,18 +99,7 @@ export async function buildWeeklySupervision(accountId: string, opts: { force?: 
   let criados = 0;
   for (const l of leads) {
     if (ja.has(l.id)) continue;
-    const ctx = await buildSharedAiContext(accountId, l.id, '', { fullHistory: true, historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' } }).catch(() => null);
-    if (!ctx) continue;
-    const ultimaIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
-    const janela = ultimaIn && Date.now() - ultimaIn.createdAt.getTime() < 23 * 3600_000 ? 'ABERTA (dá pra mandar texto)' : 'FECHADA (só template; a sugestão vai ser enviada pela equipe quando ele responder)';
-    const hoje = brtNow().toISOString().slice(0, 10);
-    const contexto = [
-      `Hoje: ${hoje}. Cliente: ${l.name}. Etapa: ${ctx.etapaTexto}. Banco: ${ctx.bancoTexto || '?'}. Janela do WhatsApp: ${janela}.`,
-      ctx.nomeTexto ? `Como chamar: ${ctx.nomeTexto}` : '',
-      ctx.creditoTexto ? `--- ESTADO DO CARD ---\n${ctx.creditoTexto}` : '',
-      `--- CONVERSA ---\n${ctx.historicoTexto}`,
-    ].filter(Boolean).join('\n\n');
-    const out = await ask(contexto);
+    const out = await summarizeLead(accountId, l.id, l.name);
     if (!out) continue;
     await prisma.supervisionItem.create({ data: { accountId, leadId: l.id, weekKey, ...out } }).catch(() => {});
     criados++;
