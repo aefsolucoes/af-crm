@@ -90,7 +90,18 @@ export async function enderecoDoImovel(leadId: string, cf: Record<string, any>):
   const complemento = (m ? m[3].replace(/^[\s,;-]+/, '') : String(cf.imovel_complemento || '')).trim();
   let tipoLogradouro = 'Rua';
   for (const [re, nome] of TIPOS_LOGRADOURO) if (re.test(rua)) { tipoLogradouro = nome; rua = rua.replace(re, '').replace(/^[\s.]+/, '').trim(); break; }
-  if (cep.length !== 8 || !rua || !numero || !cu) return enderecoDosDocumentos(cf);
+  if (cep.length !== 8 || !rua || !numero || !cu) {
+    // Fernanda Karita 29/10: a proposta diz "Endereço do imóvel em garantia: Mesmo endereço do cliente" — o endereço é o do cliente ("Endereço: Av. X, 130 - Apto 12 — Bairro, Cidade/UF — CEP …").
+    const garantia = linha(/Endere[cç]o do im[oó]vel em garantia:\s*([^\n]+)/i);
+    const doCliente = linha(/^\s*Endere[cç]o:\s*([^\n]+)/im);
+    const alvo = /mesmo endere/i.test(garantia) ? doCliente : garantia;
+    const e = alvo ? enderecoDeTexto(alvo) : null;
+    if (e) {
+      const dono0 = String(cf.participante_1 || '').trim(); const cpf0 = digits(cf.cpf_1);
+      return { ...e, endereco: { ...e.endereco, observacao: dono0 ? `Proprietário: ${dono0}${cpf0.length === 11 ? ` (CPF ${cpf0.slice(0, 3)}.${cpf0.slice(3, 6)}.${cpf0.slice(6, 9)}-${cpf0.slice(9)})` : ''}` : undefined } };
+    }
+    return enderecoDosDocumentos(cf);
+  }
   const dono = String(cf.participante_1 || '').trim();
   const cpf = digits(cf.cpf_1);
   return {
@@ -102,13 +113,13 @@ export async function enderecoDoImovel(leadId: string, cf: Record<string, any>):
 /** Endereço do imóvel lido num DOCUMENTO do imóvel que o cliente mandou (matrícula, certidão de ônus, escritura, IPTU, cadastro imobiliário…): o campo `endereco` da leitura da conferência
  *  ("RUA 294, Nº 135, APTO 201, MEIA PRAIA, ITAPEMA/SC, CEP 88220000"). Fabio 29/10: a certidão por endereço deve usar o endereço dos documentos da conversa. Pura (testável). */
 export function enderecoDeTexto(txt: string): { endereco: EnderecoCertidao; cidade: string; uf: string } | null {
-  const t = String(txt || '').replace(/\s+/g, ' ').trim();
+  const t = String(txt || '').replace(/\s+/g, ' ').replace(/\s+[—–-]\s+/g, ', ').trim();
   if (!t) return null;
   const cepM = /CEP[:\s]*([\d.\-]{8,10})/i.exec(t) || /\b(\d{2}\.?\d{3}-?\d{3})\b/.exec(t);
   const cep = digits(cepM?.[1]);
   const semCep = t.replace(/,?\s*CEP[:\s]*[\d.\-]{8,10}/i, '').replace(/\b\d{2}\.?\d{3}-?\d{3}\b/, '').trim();
   let cu = cidadeUfDe(semCep);
-  if (!cu) { const m = /([A-Za-zÀ-ú' ]{2,40}?)\s*[-–]\s*([A-Z]{2})\s*$/.exec(semCep); if (m) cu = { cidade: m[1].trim(), uf: m[2] }; }
+  if (!cu) { const m = /([A-Za-zÀ-ú' ]{2,40}?)\s*[,–-]\s*([A-Z]{2})\s*(?:,|$)/.exec(semCep); if (m) cu = { cidade: m[1].trim(), uf: m[2] }; }
   if (cep.length !== 8 || !cu) return null;
   const segs = semCep.split(/\s*,\s*/).map((x) => x.trim()).filter(Boolean);
   let logr = segs[0] || '';
@@ -117,12 +128,15 @@ export function enderecoDeTexto(txt: string): { endereco: EnderecoCertidao; cida
   const rest: string[] = [];
   for (const sg of segs.slice(1)) {
     const n = /^(?:n[º°o.]*\s*)(\d{1,6}[A-Za-z]?)$/i.exec(sg) || (!numero ? /^(\d{1,6}[A-Za-z]?)$/.exec(sg) : null);
-    if (n && !numero) numero = n[1]; else rest.push(sg);
+    const n2 = !numero && !n ? /^(?:n[º°o.]*\s*)?(\d{1,6}[A-Za-z]?)\s+(.+)$/i.exec(sg) : null;
+    if (n && !numero) numero = n[1];
+    else if (n2) { numero = n2[1]; rest.push(n2[2]); }
+    else rest.push(sg);
   }
   if (!numero && inl && /\D/.test(inl[1])) { logr = inl[1]; numero = inl[2]; }
   if (!numero) return null;
   const cidadeSeg = cu.cidade.toLowerCase();
-  const util = rest.filter((x) => !x.toLowerCase().includes(cidadeSeg) && !/^[A-Z]{2}$/.test(x) && !/\/\s*[A-Z]{2}$/.test(x));
+  const util = rest.filter((x) => !x.toLowerCase().includes(cidadeSeg) && !/^[A-Z]{2}$/.test(x) && !/\/\s*[A-Z]{2}$/.test(x) && x !== cu!.uf);
   const complemento = util.filter((x) => /\b(apto|apartamento|bloco|casa|sala|lote|quadra|andar|ed\.|edif|resid)/i.test(x)).join(', ');
   const bairro = [...util].reverse().find((x) => !/\b(apto|apartamento|bloco|casa|sala|lote|quadra|andar|ed\.|edif|resid)/i.test(x)) || '';
   let tipoLogradouro = 'Rua';
