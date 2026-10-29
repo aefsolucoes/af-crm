@@ -4,8 +4,8 @@ import { buildSharedAiContext } from './ai-shared.service';
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 
 /**
- * SUPERVISÃO DE SEXTA (Fabio 28/10): toda sexta às 08:00 (Brasília) o CRM pega cada card ABERTO num funil "Em contratação…" (Home Equity e Habitacional) — e, desde
- * 29/10, os de Aguardando Documentação com a IA desligada —,
+ * SUPERVISÃO DE SEXTA (Fabio 28/10): toda sexta às 08:00 (Brasília) o CRM pega cada card ABERTO num funil "Em contratação…" (Home Equity e Habitacional)
+ * — SÓ esses (Fabio 29/10: os de Aguardando Documentação com a IA desligada NÃO entram; tinha sido pedido por engano),
  * lê a conversa inteira + o estado do card, e a IA escreve: resumo, onde o processo está, o que está pendente, a mensagem sugerida pro cliente e o que a equipe
  * deveria fazer. Manda UM push pro Fabio, que passa card por card em /supervisao: enviar a sugestão (editada ou não), abrir o card, marcar feito ou pular.
  * Sobrou pendente às 14:00 da sexta → um lembrete. Nada sai pro cliente sem clique. Janela de 24 h fechada = não dá pra mandar texto (a tela avisa).
@@ -96,25 +96,17 @@ export async function buildWeeklySupervision(accountId: string, opts: { force?: 
     where: { accountId, archived: false, status: 'OPEN', isGroup: false, pipeline: { name: { startsWith: 'Em contrata' } } },
     select: { id: true, name: true }, orderBy: { updatedAt: 'asc' },
   });
-  // Fabio 29/10: os cards de Aguardando Documentação com a IA DESLIGADA também entram (alguém da equipe respondeu à mão e a IA desligou sozinha —
-  // a regra continua; a supervisão é onde se decide religar ou seguir na mão).
-  const iaDesligada = await prisma.lead.findMany({
-    where: { accountId, archived: false, status: 'OPEN', isGroup: false, aiAutoReplyActive: false, stage: { name: { contains: 'aguardando document', mode: 'insensitive' } } },
-    select: { id: true, name: true }, orderBy: { updatedAt: 'asc' },
-  });
-  const semIa = new Set(iaDesligada.map((l) => l.id));
   const ja = new Set((await prisma.supervisionItem.findMany({ where: { accountId, weekKey }, select: { leadId: true } })).map((x) => x.leadId));
   let criados = 0;
-  for (const l of [...leads, ...iaDesligada.filter((x) => !leads.some((y) => y.id === x.id))]) {
+  for (const l of leads) {
     if (ja.has(l.id)) continue;
     const out = await summarizeLead(accountId, l.id, l.name);
     if (!out) continue;
-    if (semIa.has(l.id)) out.acao = `🤖 IA DESLIGADA neste card (Aguardando Documentação — alguém da equipe respondeu à mão). Religar a IA ou seguir na mão?${out.acao ? ` ${out.acao}` : ''}`;
     await prisma.supervisionItem.create({ data: { accountId, leadId: l.id, weekKey, ...out } }).catch(() => {});
     criados++;
   }
   const total = await prisma.supervisionItem.count({ where: { accountId, weekKey } });
-  if (opts.notify !== false && total > 0) push(accountId, await supervisorIds(accountId), '📋 Supervisão de sexta', `${total} cliente(s) pra revisar, um por um${semIa.size ? ` — ${semIa.size} em Aguardando Documentação com a IA desligada` : ''}.`);
+  if (opts.notify !== false && total > 0) push(accountId, await supervisorIds(accountId), '📋 Supervisão de sexta', `${total} cliente(s) em contratação pra revisar, um por um.`);
   return { weekKey, criados, total };
 }
 
