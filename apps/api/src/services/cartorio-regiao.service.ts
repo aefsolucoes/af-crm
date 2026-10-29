@@ -66,3 +66,29 @@ export async function aprenderDoPedido(requestId: string): Promise<void> {
     await aprenderCartorio(r.accountId, { uf: r.uf, cidade: r.cidade, cartorio: r.cartorio, cep, bairro });
   } catch { /* aprender é bônus */ }
 }
+
+/** Documentação do imóvel chegou e o cliente NÃO tem matrícula nem cartório (Fabio 29/10: "o CRM pode fazer isso sozinho… procura no mapa pelo endereço e já deixa gravado no card").
+ *  Cidade com 1 cartório → grava direto; cidade com vários → o que o CRM já aprendeu da região; senão pede à extensão uma CONSULTA ao Mapa do ONR (não é pedido de certidão). Uma vez por card. Nunca lança. */
+export async function ensureCartorioPorEndereco(accountId: string, leadId: string): Promise<void> {
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+    if (!lead) return;
+    const cf = { ...((lead.customFields || {}) as Record<string, any>) };
+    if (String(cf.cartorio_registro || '').trim() || String(cf.numero_matricula || '').trim() || cf._cartorioMapaAt) return;
+    const offer = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
+    if (offer.certidaoFromDocs(cf)) return; // os documentos já trazem matrícula + cartório
+    const e = await offer.enderecoDoImovel(leadId, cf);
+    if (!e) return;
+    const salva = async (campos: Record<string, unknown>) => { const f = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }); await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((f?.customFields || {}) as any), ...campos } } }); };
+    const { consultarCartorios } = require('./ri-cartorios.service') as typeof import('./ri-cartorios.service');
+    const c = consultarCartorios(e.uf, e.cidade) as any;
+    const naCidade: any[] = Array.isArray(c?.naCidade) ? c.naCidade : [];
+    if (naCidade.length === 1) { await salva({ cartorio_registro: String(naCidade[0].nome || '').slice(0, 120), _cartorioMapaAt: new Date().toISOString() }); return; }
+    const ap = await cartorioAprendido(accountId, { uf: e.uf, cidade: e.cidade, cep: e.endereco.cep, bairro: e.endereco.bairro });
+    if (ap) { await salva({ cartorio_registro: ap.cartorio, _cartorioMapaAt: new Date().toISOString() }); return; }
+    if (naCidade.length < 2) return;
+    await salva({ _cartorioMapaAt: new Date().toISOString() });
+    const { createCertidaoRequest } = require('./certidao.service') as typeof import('./certidao.service');
+    await createCertidaoRequest(prisma as any, { accountId, leadId, uf: e.uf, cidade: e.cidade, cartorio: 'AUTO', pedidoPor: 'ENDERECO', endereco: e.endereco, source: 'MAPA', sendPix: false });
+  } catch (err: any) { console.warn('[Cartório pelo endereço]', err?.message); }
+}
