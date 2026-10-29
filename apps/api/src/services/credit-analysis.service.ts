@@ -871,9 +871,9 @@ export async function liberadoAte(db: Db, accountId: string): Promise<Date | nul
   const s = await db.creditAutoSetting.findUnique({ where: { accountId }, select: { afterHoursUntil: true } }).catch(() => null);
   return s?.afterHoursUntil && s.afterHoursUntil.getTime() > Date.now() ? s.afterHoursUntil : null;
 }
-export function foraDoHorario(ms = Date.now()): boolean {
-  const h = new Date(ms - BRT_MS).getUTCHours();
-  return h < EXT_HORA_INICIO || h >= EXT_HORA_FIM;
+/** Fabio 29/10: as extensões trabalham 24 h — a fila não para mais à noite (antes: 07h–22h, salvo liberação). Os avisos ao CLIENTE seguem no horário deles (07h–21h). */
+export function foraDoHorario(_ms = Date.now()): boolean {
+  return false;
 }
 /** Empurra um horário que cai fora de 07h–22h (Brasília) pras 7h seguintes. Pura (testável). */
 export function pushOutOfQuiet(ms: number): Date {
