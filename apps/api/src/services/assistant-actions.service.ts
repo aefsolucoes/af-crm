@@ -44,7 +44,7 @@ export const ACTION_TOOLS = [
   // ── com confirmação ──
   { name: 'mover_pasta', description: 'PREPARA mover a pasta do cliente no Drive (confirmação antes). destino: ATIVOS (LEADS ATIVOS), FRIOS (LEADS FRIOS) ou CONCLUIDOS (CONCLUÍDOS/ano/mês de hoje). Fica na mesma área (Home Equity ou Habitação) onde a pasta já está.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, destino: { type: 'string', enum: ['ATIVOS', 'FRIOS', 'CONCLUIDOS'] } }, required: ['leadId', 'destino'] } },
   { name: 'enviar_email', description: 'PREPARA um e-mail pela caixa comercial do CRM (confirmação antes). Se tiver leadId e já houver e-mail desse destinatário no cliente, responde no MESMO fio. anexos = nomes (ou parte do nome) de arquivos da pasta do cliente no Drive (use ver_pasta antes). Escreva como a A&F escreve: cordial, objetivo, com saudação e "Atenciosamente".', input_schema: { type: 'object', properties: { para: { type: 'string' }, cc: { type: 'string' }, assunto: { type: 'string' }, texto: { type: 'string' }, leadId: { type: 'string' }, anexos: { type: 'array', items: { type: 'string' } } }, required: ['para', 'assunto', 'texto'] } },
-  { name: 'alterar_regra_ia', description: 'PREPARA uma mudança nas REGRAS da IA (Base de Conhecimento) — é assim que se muda o comportamento da IA do CRM sem mexer no código (confirmação antes). acao: CRIAR (titulo+conteudo), EDITAR (id+conteudo, titulo opcional), APAGAR (id). setor: "Home Equity", "Habitação" ou "todos" (padrão: o da regra, ou todos). Use ver_regras_ia antes pra não duplicar; prefira EDITAR a regra que já existe.', input_schema: { type: 'object', properties: { acao: { type: 'string', enum: ['CRIAR', 'EDITAR', 'APAGAR'] }, id: { type: 'string' }, titulo: { type: 'string' }, conteudo: { type: 'string' }, setor: { type: 'string' } }, required: ['acao'] } },
+  { name: 'alterar_regra_ia', description: 'PREPARA uma mudança nas REGRAS da IA (Base de Conhecimento) — é assim que se muda o comportamento da IA do CRM sem mexer no código (confirmação antes). acao: CRIAR (titulo+conteudo), EDITAR (id+conteudo, titulo opcional), APAGAR (id). REGRA FIXA (fixa=true no ver_regras_ia, ex.: CORE_RULES): é um bloco grande — NUNCA mande o conteúdo inteiro; EDITAR com trechoAntigo (copiado exato do texto) + trechoNovo, ou só trechoNovo pra ACRESCENTAR no fim; não dá pra APAGAR. setor: "Home Equity", "Habitação" ou "todos" (padrão: o da regra, ou todos). Use ver_regras_ia antes pra não duplicar; prefira EDITAR a regra que já existe.', input_schema: { type: 'object', properties: { acao: { type: 'string', enum: ['CRIAR', 'EDITAR', 'APAGAR'] }, id: { type: 'string' }, titulo: { type: 'string' }, conteudo: { type: 'string' }, trechoAntigo: { type: 'string' }, trechoNovo: { type: 'string' }, setor: { type: 'string' } }, required: ['acao'] } },
   { name: 'ver_formulario', description: 'Mostra o FORMULÁRIO (cadastro) do card do cliente: todos os campos por aba, com o nome que aparece na tela, a chave, o tipo, as opções (se for lista) e o valor atual. Use antes de preencher.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, aba: { type: 'string', description: 'filtrar por aba (opcional)' } }, required: ['leadId'] } },
   { name: 'preencher_formulario', description: 'PREPARA o preenchimento de campos do formulário/cadastro do card (confirmação antes; mostra antes → depois). campos = objeto { "nome do campo como na tela" ou chave: valor }. Valor vazio "" apaga o campo. Use ver_formulario antes; em campo de lista use exatamente uma das opções. Datas dd/mm/aaaa; dinheiro só número (ex.: 250000).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, campos: { type: 'object' } }, required: ['leadId', 'campos'] } },
   { name: 'iniciar_supervisao', description: 'Inicia/atualiza a SUPERVISÃO DE SEXTA agora (só administrador): a IA resume cada card dos funis "Em contratação" que ainda não tem item nesta semana. Roda em segundo plano (pode levar alguns minutos) e abre a tela da Supervisão. Nada vai pro cliente.', input_schema: { type: 'object', properties: {} } },
@@ -117,6 +117,14 @@ async function pastaDoCliente(accountId: string, leadId: string) {
     if (area) onde = `CONCLUÍDOS (${area.nome})`;
   }
   return { l, pasta, nome: info.name || '', onde, area, g };
+}
+/** Texto da regra pro Jarvis: regra comum = começo; regra FIXA (enorme) = o pedaço em volta do termo procurado, pra ele copiar o trecho exato que quer trocar. */
+function trechoDa(content: string, termo: string, fixa: boolean): string {
+  if (!fixa || !termo) return content.slice(0, 1200);
+  const i = content.toLowerCase().indexOf(termo.toLowerCase());
+  if (i < 0) return content.slice(0, 1200);
+  const a = Math.max(0, content.lastIndexOf('\n', i - 1));
+  return content.slice(a, Math.min(content.length, a + 1600)).trim();
 }
 const SETORES = async (accountId: string) => prisma.department.findMany({ where: { accountId }, select: { id: true, name: true } });
 const janelaAberta = async (leadId: string) => {
@@ -194,8 +202,8 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
     case 'ver_regras_ia': {
       const t = String(input?.termo || '').trim();
       const deps = await SETORES(accountId);
-      const rows = await prisma.knowledgeEntry.findMany({ where: { accountId, ...(t ? { OR: [{ title: { contains: t, mode: 'insensitive' } }, { content: { contains: t, mode: 'insensitive' } }] } : {}) }, orderBy: { updatedAt: 'desc' }, take: 20, select: { id: true, title: true, content: true, departmentId: true, updatedAt: true } });
-      return { total: rows.length, regras: rows.map((r) => ({ id: r.id, titulo: r.title, setor: deps.find((d) => d.id === r.departmentId)?.name || 'todos', atualizada: quando(r.updatedAt), texto: r.content.slice(0, 1200) })) };
+      const rows = await prisma.knowledgeEntry.findMany({ where: { accountId, ...(t ? { OR: [{ title: { contains: t, mode: 'insensitive' } }, { content: { contains: t, mode: 'insensitive' } }] } : {}) }, orderBy: { updatedAt: 'desc' }, take: 20, select: { id: true, title: true, content: true, departmentId: true, fixedKey: true, updatedAt: true } });
+      return { total: rows.length, regras: rows.map((r) => ({ id: r.id, titulo: r.title, setor: deps.find((d) => d.id === r.departmentId)?.name || 'todos', atualizada: quando(r.updatedAt), ...(r.fixedKey ? { fixa: true, tamanho: r.content.length } : {}), texto: trechoDa(r.content, t, !!r.fixedKey) })) };
     }
     case 'mover_pasta': {
       const x = await pastaDoCliente(accountId, input?.leadId);
@@ -250,8 +258,21 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
         if (!titulo || !conteudo) return { erro: 'faltou título ou conteúdo' };
         return pendente({ accountId, userId, tipo: 'alterar_regra_ia', params: { acao, titulo, conteudo, departmentId: depId ?? null }, descricao: `Criar regra da IA (${nomeSetor(depId ?? null)}): "${titulo}"\n${conteudo}` }, p.fila);
       }
-      const r = await prisma.knowledgeEntry.findFirst({ where: { id: String(input?.id || ''), accountId }, select: { id: true, title: true, content: true, departmentId: true } });
+      const r = await prisma.knowledgeEntry.findFirst({ where: { id: String(input?.id || ''), accountId }, select: { id: true, title: true, content: true, departmentId: true, fixedKey: true } });
       if (!r) return { erro: 'regra não encontrada (use ver_regras_ia pra achar o id)' };
+      // Regra FIXA (bloco inteiro do prompt, ~17 mil caracteres): o Jarvis só vê um pedaço dela — trocar o conteúdo inteiro apagaria o resto. Só troca de TRECHO ou acréscimo; nunca apagar.
+      if ((r as any).fixedKey) {
+        if (acao === 'APAGAR') return { erro: 'regra FIXA do prompt não pode ser apagada; dá pra trocar um trecho (trechoAntigo + trechoNovo) ou acrescentar (trechoNovo)' };
+        const antigo = String(input?.trechoAntigo || ''), novoT = String(input?.trechoNovo || '').trim();
+        if (!novoT) return { erro: 'regra FIXA: mande trechoNovo (e trechoAntigo copiado exato, se for trocar um trecho) — nunca o conteúdo inteiro' };
+        let conteudo: string;
+        if (antigo.trim()) {
+          const n = r.content.split(antigo).length - 1;
+          if (n !== 1) return { erro: n ? 'o trechoAntigo aparece mais de uma vez: pegue um trecho maior' : 'não achei o trechoAntigo no texto da regra: copie exatamente (use ver_regras_ia com um termo dele)' };
+          conteudo = r.content.replace(antigo, novoT);
+        } else conteudo = `${r.content.trimEnd()}\n- ${novoT.replace(/^-\s*/, '')}`;
+        return pendente({ accountId, userId, tipo: 'alterar_regra_ia', params: { acao: 'EDITAR', id: r.id, titulo: r.title, conteudo, departmentId: r.departmentId }, descricao: `Mudar a REGRA FIXA "${r.title}":\n${antigo.trim() ? `ANTES: ${antigo.slice(0, 600)}\nDEPOIS: ${novoT}` : `ACRESCENTAR: ${novoT}`}` }, p.fila);
+      }
       if (acao === 'APAGAR') return pendente({ accountId, userId, tipo: 'alterar_regra_ia', params: { acao, id: r.id }, descricao: `APAGAR a regra da IA "${r.title}" (${nomeSetor(r.departmentId)}):\n${r.content.slice(0, 600)}` }, p.fila);
       if (acao === 'EDITAR') {
         const conteudo = String(input?.conteudo || '').trim();
