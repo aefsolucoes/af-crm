@@ -47,14 +47,13 @@ function bancoDoTexto(t: unknown): string | null {
   if (/inter\b/.test(s)) return 'INTER';
   return null;
 }
-/** Selos do card: o banco escolhido (⭐); sem escolha, os que aprovaram; sem aprovação, o banco escrito no card. */
+/** Selos do card: o banco escolhido (⭐); sem escolha, os que aprovaram. Sem aprovação, nenhum — o "instituicao" do card pode ser o banco do
+ *  financiamento atual do imóvel (Home Equity), não o banco do processo; ele só serve pra dizer qual banco do Credimorar (Financiamento) aprovou. */
 function selosDoCard(banks: KanbanCardProps['banks'], instituicao: unknown): { key: string; chosen: boolean }[] {
   const daAnalise = (b: string) => (b === 'CREDIMORAR' ? 'SANTANDER' : b === 'CREDIMORAR_FH' ? bancoDoTexto(instituicao) || 'CREDIMORAR' : b);
   if (banks?.chosen) return [{ key: daAnalise(banks.chosen), chosen: true }];
   const aprovados = Array.from(new Set(Object.keys(banks?.banks || {}).map(daAnalise)));
-  if (aprovados.length) return aprovados.slice(0, 3).map((key) => ({ key, chosen: aprovados.length === 1 }));
-  const escrito = bancoDoTexto(instituicao);
-  return escrito ? [{ key: escrito, chosen: false }] : [];
+  return aprovados.slice(0, 3).map((key) => ({ key, chosen: aprovados.length === 1 }));
 }
 
 export function KanbanCard({ lead, labelColor, onOpen, selected = false, selectionActive = false, onToggleSelect, banks }: KanbanCardProps) {
