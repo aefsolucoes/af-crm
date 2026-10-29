@@ -90,13 +90,58 @@ export async function enderecoDoImovel(leadId: string, cf: Record<string, any>):
   const complemento = (m ? m[3].replace(/^[\s,;-]+/, '') : String(cf.imovel_complemento || '')).trim();
   let tipoLogradouro = 'Rua';
   for (const [re, nome] of TIPOS_LOGRADOURO) if (re.test(rua)) { tipoLogradouro = nome; rua = rua.replace(re, '').replace(/^[\s.]+/, '').trim(); break; }
-  if (cep.length !== 8 || !rua || !numero || !cu) return null;
+  if (cep.length !== 8 || !rua || !numero || !cu) return enderecoDosDocumentos(cf);
   const dono = String(cf.participante_1 || '').trim();
   const cpf = digits(cf.cpf_1);
   return {
     cidade: cu.cidade, uf: cu.uf,
     endereco: { cep, tipoLogradouro, logradouro: rua, numero, complemento: complemento.slice(0, 30) || undefined, bairro: bairro?.trim() || undefined, observacao: dono ? `Proprietário: ${dono}${cpf.length === 11 ? ` (CPF ${cpf.slice(0, 3)}.${cpf.slice(3, 6)}.${cpf.slice(6, 9)}-${cpf.slice(9)})` : ''}` : undefined },
   };
+}
+
+/** Endereço do imóvel lido num DOCUMENTO do imóvel que o cliente mandou (matrícula, certidão de ônus, escritura, IPTU, cadastro imobiliário…): o campo `endereco` da leitura da conferência
+ *  ("RUA 294, Nº 135, APTO 201, MEIA PRAIA, ITAPEMA/SC, CEP 88220000"). Fabio 29/10: a certidão por endereço deve usar o endereço dos documentos da conversa. Pura (testável). */
+export function enderecoDeTexto(txt: string): { endereco: EnderecoCertidao; cidade: string; uf: string } | null {
+  const t = String(txt || '').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  const cepM = /CEP[:\s]*([\d.\-]{8,10})/i.exec(t) || /\b(\d{2}\.?\d{3}-?\d{3})\b/.exec(t);
+  const cep = digits(cepM?.[1]);
+  const semCep = t.replace(/,?\s*CEP[:\s]*[\d.\-]{8,10}/i, '').replace(/\b\d{2}\.?\d{3}-?\d{3}\b/, '').trim();
+  let cu = cidadeUfDe(semCep);
+  if (!cu) { const m = /([A-Za-zÀ-ú' ]{2,40}?)\s*[-–]\s*([A-Z]{2})\s*$/.exec(semCep); if (m) cu = { cidade: m[1].trim(), uf: m[2] }; }
+  if (cep.length !== 8 || !cu) return null;
+  const segs = semCep.split(/\s*,\s*/).map((x) => x.trim()).filter(Boolean);
+  let logr = segs[0] || '';
+  let numero = '';
+  const inl = /^(.*?)\s+(?:n[º°o.]*\s*)?(\d{1,6}[A-Za-z]?)$/i.exec(logr);
+  const rest: string[] = [];
+  for (const sg of segs.slice(1)) {
+    const n = /^(?:n[º°o.]*\s*)(\d{1,6}[A-Za-z]?)$/i.exec(sg) || (!numero ? /^(\d{1,6}[A-Za-z]?)$/.exec(sg) : null);
+    if (n && !numero) numero = n[1]; else rest.push(sg);
+  }
+  if (!numero && inl && /\D/.test(inl[1])) { logr = inl[1]; numero = inl[2]; }
+  if (!numero) return null;
+  const cidadeSeg = cu.cidade.toLowerCase();
+  const util = rest.filter((x) => !x.toLowerCase().includes(cidadeSeg) && !/^[A-Z]{2}$/.test(x) && !/\/\s*[A-Z]{2}$/.test(x));
+  const complemento = util.filter((x) => /\b(apto|apartamento|bloco|casa|sala|lote|quadra|andar|ed\.|edif|resid)/i.test(x)).join(', ');
+  const bairro = [...util].reverse().find((x) => !/\b(apto|apartamento|bloco|casa|sala|lote|quadra|andar|ed\.|edif|resid)/i.test(x)) || '';
+  let tipoLogradouro = 'Rua';
+  let rua = logr;
+  for (const [re, nome] of TIPOS_LOGRADOURO) if (re.test(rua)) { tipoLogradouro = nome; rua = rua.replace(re, '').replace(/^[\s.]+/, '').trim(); break; }
+  if (!rua) return null;
+  return { cidade: cu.cidade, uf: cu.uf, endereco: { cep, tipoLogradouro, logradouro: rua, numero, complemento: complemento.slice(0, 30) || undefined, bairro: bairro || undefined } as EnderecoCertidao };
+}
+
+function enderecoDosDocumentos(cf: Record<string, any>): { endereco: EnderecoCertidao; cidade: string; uf: string } | null {
+  const revs = (Object.values((cf._docReview || {}) as Record<string, Rev>) as Rev[]).filter((r) => r && r.resultado !== 'NAO_DOCUMENTO' && r.endereco);
+  const peso = (r: Rev) => (/MATRICULA|ONUS/.test(String(r.tipo || '').toUpperCase()) ? 0 : /ESCRITURA/.test(String(r.tipo || '').toUpperCase()) ? 1 : 2);
+  const dono = String(cf.participante_1 || '').trim();
+  const cpf = digits(cf.cpf_1);
+  for (const r of [...revs].sort((a, b) => peso(a) - peso(b))) {
+    const e = enderecoDeTexto(String(r.endereco));
+    if (e) return { ...e, endereco: { ...e.endereco, observacao: dono ? `Proprietário: ${dono}${cpf.length === 11 ? ` (CPF ${cpf.slice(0, 3)}.${cpf.slice(3, 6)}.${cpf.slice(6, 9)}-${cpf.slice(9)})` : ''}` : undefined } };
+  }
+  return null;
 }
 
 export function certidaoOfferText(nome: string | null, saudar: boolean, matricula: string): string {
@@ -159,13 +204,13 @@ async function jaTemCertidaoValida(leadId: string, cf: Record<string, any>): Pro
 }
 
 /** Cria o pedido no ONR (a extensão pega na fila): chamado quando o cliente aceitou. Uma vez por matrícula. */
-export async function ensureCertidaoRequest(accountId: string, leadId: string, opts: { manual?: boolean; userId?: string; sendPix?: boolean } = {}): Promise<{ created: boolean; why?: string }> {
+export async function ensureCertidaoRequest(accountId: string, leadId: string, opts: { manual?: boolean; userId?: string; sendPix?: boolean; porEndereco?: boolean } = {}): Promise<{ created: boolean; why?: string }> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return { created: false, why: 'lead não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
   // Clique da equipe no botão do card (opts.manual) vale sempre; o caminho automático respeita a chave e a certidão que o cliente já mandou.
   if (!opts.manual && (await jaTemCertidaoValida(leadId, cf))) return { created: false, why: 'o cliente já enviou a certidão de ônus/matrícula e o banco não recusou' };
-  const d = certidaoFromDocs(cf);
+  const d = opts.porEndereco ? null : certidaoFromDocs(cf);
   if (!d) {
     // Sem matrícula nos documentos (o cliente não sabe): pede POR ENDEREÇO (Fabio 29/10). Cartório 'AUTO': cidade com um só, a extensão escolhe; com mais de um,
     // o CRM pergunta ao cliente qual é; se ele não souber, a equipe confere no mapa do registro de imóveis.
@@ -201,12 +246,12 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
 }
 
 /** Pro botão "Pedir certidão pelo ONR" do card: dá pra pedir? (matrícula + cidade/UF lidas nos documentos e nenhum pedido andando). */
-export async function previewCertidaoDosDocs(accountId: string, leadId: string): Promise<{ possible: boolean; matricula?: string; cidade?: string; uf?: string; jaTemCertidao: boolean; existe: boolean } | null> {
+export async function previewCertidaoDosDocs(accountId: string, leadId: string, opts: { porEndereco?: boolean } = {}): Promise<{ possible: boolean; matricula?: string; cidade?: string; uf?: string; jaTemCertidao: boolean; existe: boolean } | null> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return null;
   const cf = (lead.customFields || {}) as Record<string, any>;
-  const d = certidaoFromDocs(cf);
-  const e = d ? null : await enderecoDoImovel(leadId, cf); // sem matrícula: pelo endereço do imóvel
+  const d = opts.porEndereco ? null : certidaoFromDocs(cf);
+  const e = d ? null : await enderecoDoImovel(leadId, cf); // sem matrícula (ou pedido pelo endereço): pelo endereço do imóvel
   const existe = !!(await prisma.certidaoRequest.findFirst({ where: { leadId, ...(d ? { matricula: d.matricula } : { pedidoPor: 'ENDERECO' }), status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } }));
   return { possible: !!(d || e) && !existe, matricula: d?.matricula || (e ? `pelo endereço: ${enderecoTexto(e.endereco)}` : undefined), cidade: d?.cidade || e?.cidade, uf: d?.uf || e?.uf, jaTemCertidao: await jaTemCertidaoValida(leadId, cf), existe };
 }
