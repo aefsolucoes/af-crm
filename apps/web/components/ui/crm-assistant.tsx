@@ -38,7 +38,9 @@ function save(msgs: Msg[]) { try { localStorage.setItem(STORE_KEY, JSON.stringif
 function spokenIds(): string[] { try { const v = JSON.parse(localStorage.getItem(SPOKEN_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } }
 function markSpoken(id: string) { try { localStorage.setItem(SPOKEN_KEY, JSON.stringify([...spokenIds(), id].slice(-100))); } catch { /* */ } }
 
-const SIM = /^(sim|pode|pode sim|confirmo|confirma|confirmar|manda|pode mandar|faz|pode fazer|isso|ok|beleza|claro|liga|pode ligar)\b/i;
+const SIM = /^(sim|pode|pode sim|confirmo|confirma|confirmar|confirmado|firma|firmo|manda|pode mandar|faz|pode fazer|isso|ok|beleza|claro|liga|pode ligar)\b/i; // "firma": o reconhecimento às vezes corta o começo de "confirma"
+// Pedido que JÁ traz a confirmação ("…e confirma", "pode pedir", "sem perguntar"): a ação sai sem pedir de novo (Fabio 29/10: "não precisa confirmar 2x se eu já disse confirmar").
+const JA_CONFIRMOU = /\b(e\s+)?(confirm[ao]|confirmar|confirmado|j[aá] confirmo|sem perguntar|pode (pedir|mandar|fazer|enviar|solicitar)|j[aá] pode)\b/i;
 const NAO = /^(não|nao|cancela|cancelar|deixa|esquece|negativo)\b/i;
 const FALHA_MIC = '\u0000falha';
 const PARAR = /^(parar|para|para de ouvir|chega|encerrar|tchau|obrigado|valeu|só isso|é só isso)[.!]?$/i;
@@ -587,6 +589,14 @@ export function CrmAssistant() {
       setCard({ disse: dito });
       const c = await perguntar(dito);
       if (!vozRef.current) break;
+      const pendNovas = (c.pending || []).filter((p) => p.estado === 'PENDENTE');
+      if (pendNovas.length === 1 && JA_CONFIRMOU.test(dito)) {
+        setVoz('pensando');
+        const r = await confirmar(pendNovas[0].id);
+        if (!vozRef.current) break;
+        await falar(r);
+        continue;
+      }
       if (c.audio) { await falar(c.fala || 'Pode gravar.'); break; } // gravador aberto: solta o microfone pra gravação
       if (c.escolherVoz) { await falar(c.fala || 'Escolha a voz aqui no balão.'); break; } // lista de vozes aberta: solta o microfone pra pessoa ouvir as amostras
       if (c.fala) await falar(c.fala);
