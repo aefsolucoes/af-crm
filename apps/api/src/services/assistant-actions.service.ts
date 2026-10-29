@@ -12,6 +12,7 @@ import { prisma } from '../lib/prisma';
 export type PendingAction = { id: string; accountId: string; userId: string; tipo: string; descricao: string; params: Record<string, any>; at: number };
 export type ScreenNav = { path: string; label: string };
 export type AudioReq = { leadId: string; leadName: string };
+export type CopyReq = { label: string; texto: string };
 
 const pendentes = new Map<string, PendingAction>();
 const TTL = 30 * 60_000;
@@ -60,7 +61,8 @@ export const ACTION_TOOLS = [
   { name: 'marcar_status', description: 'PREPARA marcar o card como GANHO, PERDIDO, REPROVADO (perdido por reprovação do banco) ou REABRIR (confirmação antes). motivo é obrigatório pra PERDIDO/REPROVADO.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, status: { type: 'string', enum: ['GANHO', 'PERDIDO', 'REPROVADO', 'REABRIR'] }, motivo: { type: 'string' } }, required: ['leadId', 'status'] } },
   { name: 'rodar_analise', description: 'PREPARA rodar a análise de crédito nos bancos (cria proposta nova no portal; confirmação antes). bancos: INTER, CREDITAS, CREDIMORAR (Santander).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId', 'bancos'] } },
   { name: 'solicitar_vistoria', description: 'PREPARA o pedido de vistoria ao Inter: responde o e-mail do consultor com o contato e os documentos do imóvel da pasta do cliente (confirmação antes).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
-  { name: 'pedir_certidao', description: 'PREPARA o pedido da certidão de matrícula/ônus (inteiro teor) no RI Digital pela extensão, igual ao botão "Pedir certidão pelo ONR" do card; o PIX vai pro cliente (confirmação antes). Chame DIRETO com o leadId: a própria ferramenta acha a matrícula e a cidade/UF nos documentos (ou o endereço do imóvel). Só passe matricula/cidade/uf se a pessoa disser; cartorio só se ela disser (senão a extensão escolhe).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, matricula: { type: 'string' }, cidade: { type: 'string' }, uf: { type: 'string' }, cartorio: { type: 'string', description: 'como aparece no portal (ex.: "02º - BELÉM"); omita se não souber' } }, required: ['leadId'] } },
+  { name: 'pedir_certidao', description: 'PREPARA o pedido da certidão de matrícula/ônus (inteiro teor) no RI Digital pela extensão, igual ao botão "Pedir certidão pelo ONR" do card; o PIX vai pro cliente (confirmação antes). Chame DIRETO com o leadId: a própria ferramenta acha a matrícula e a cidade/UF nos documentos (ou o endereço do imóvel). Só passe matricula/cidade/uf se a pessoa disser; cartorio só se ela disser (senão a extensão escolhe).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, matricula: { type: 'string' }, cidade: { type: 'string' }, uf: { type: 'string' }, cartorio: { type: 'string', description: 'como aparece no portal (ex.: "02º - BELÉM"); omita se não souber' }, pixNoChat: { type: 'boolean', description: 'true quando a pessoa quer o PIX com ela (pra encaminhar ela mesma) em vez de ir direto ao cliente' } }, required: ['leadId'] } },
+  { name: 'ver_certidao', description: 'Situação dos pedidos de certidão do cliente (pedido, protocolo, valor, PIX, paga, emitida). Se o PIX já foi gerado, o código aparece no balão com botão Copiar pra pessoa encaminhar — NÃO leia o código em voz alta. O PIX demora alguns minutos depois do pedido (a extensão faz o pedido no portal).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
 ];
 export const ACTION_TOOL_NAMES = new Set(ACTION_TOOLS.map((t) => t.name));
 
@@ -114,7 +116,7 @@ const bancosValidos = (b: unknown): string[] => (Array.isArray(b) ? b : [b]).map
 const NOME_BANCO: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
 
 /** Roda (ou prepara) uma ferramenta de ação. token = Authorization de quem está falando (pras ações diretas que passam pelas rotas). */
-export async function runActionTool(p: { accountId: string; userId: string; token: string; name: string; input: any; fila: PendingAction[]; nav: ScreenNav[]; audio?: AudioReq[] }): Promise<unknown> {
+export async function runActionTool(p: { accountId: string; userId: string; token: string; name: string; input: any; fila: PendingAction[]; nav: ScreenNav[]; audio?: AudioReq[]; copiar?: CopyReq[] }): Promise<unknown> {
   const { accountId, userId, input } = p;
   switch (p.name) {
     case 'abrir_na_tela': {
@@ -433,19 +435,33 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       if (!anexos.length) return { erro: 'não há documento do imóvel marcado pra anexar (o pedido vai sempre com anexo)', avisos: prev.avisos };
       return pendente({ accountId, userId, tipo: 'solicitar_vistoria', params: { leadId: l.id, prev: { to: prev.to, cc: prev.cc, subject: prev.subject, body: prev.body, replyToId: prev.replyToId, ids: anexos.map((a: any) => a.id) } }, descricao: `${prev.jaSolicitadaEm ? `ATENÇÃO: a vistoria já foi pedida em ${quando(new Date(prev.jaSolicitadaEm))}. ` : ''}Responder o e-mail do Inter (${prev.to}) pedindo a vistoria do ${l.name}, com ${anexos.length} anexo(s): ${anexos.map((a: any) => a.name).join('; ')}.` }, p.fila);
     }
+    case 'ver_certidao': {
+      const l = await leadOf(accountId, input?.leadId);
+      const rs = await prisma.certidaoRequest.findMany({ where: { leadId: l.id, accountId }, orderBy: { createdAt: 'desc' }, take: 5, select: { id: true, status: true, matricula: true, pedidoPor: true, cidade: true, uf: true, protocolo: true, valorCents: true, pixCode: true, pixExpiresAt: true, pixSentAt: true, paidAt: true, detail: true, createdAt: true, sendPix: true } });
+      if (!rs.length) return { pedidos: [], obs: `o ${l.name} não tem pedido de certidão` };
+      const pix = rs.find((r) => r.pixCode && r.pixCode !== 'ADOTADO' && !r.paidAt && ['REQUESTED', 'IN_PROGRESS', 'AWAITING_PAYMENT'].includes(r.status));
+      if (pix) p.copiar?.push({ label: `PIX da certidão do ${l.name}${pix.valorCents ? ` (R$ ${(pix.valorCents / 100).toFixed(2).replace('.', ',')})` : ''}`, texto: pix.pixCode! });
+      return {
+        pedidos: rs.map((r) => ({ status: r.status, matricula: r.pedidoPor === 'ENDERECO' ? 'pelo endereço' : r.matricula, cidade: `${r.cidade}/${r.uf}`, protocolo: r.protocolo, valor: r.valorCents ? r.valorCents / 100 : null, pixGerado: !!(r.pixCode && r.pixCode !== 'ADOTADO'), pixEnviadoAoCliente: !!r.pixSentAt, pago: !!r.paidAt, pixVence: r.pixExpiresAt, situacao: r.detail, pedidoEm: r.createdAt })),
+        pixNoBalao: !!pix,
+        instrucao: pix ? 'O código PIX está no balão com o botão Copiar. Diga só o valor e que está pronto pra copiar.' : 'Se o PIX ainda não foi gerado, diga que a extensão ainda está fazendo o pedido no portal e que é só perguntar de novo em alguns minutos.',
+      };
+    }
     case 'pedir_certidao': {
       const l = await leadOf(accountId, input?.leadId);
+      const pixNoChat = input?.pixNoChat === true;
+      const ondePix = pixNoChat ? 'o PIX NÃO vai pro cliente: fica com você (peça "o PIX da certidão" que eu mostro pra copiar)' : 'o PIX da certidão vai pro cliente';
       const matricula = String(input?.matricula || '').replace(/\D/g, ''), cidade = String(input?.cidade || '').trim(), uf = String(input?.uf || '').trim().toUpperCase();
       if (matricula && cidade && uf) {
-        const params = { leadId: l.id, uf, cidade, cartorio: String(input?.cartorio || '').trim() || 'AUTO', matricula, sendPix: true };
-        return pendente({ accountId, userId, tipo: 'pedir_certidao', params, descricao: `Pedir a certidão da matrícula nº ${matricula} (${params.cartorio === 'AUTO' ? cidade : params.cartorio}/${uf}) do ${l.name} no RI Digital — o PIX da certidão vai pro cliente.` }, p.fila);
+        const params = { leadId: l.id, uf, cidade, cartorio: String(input?.cartorio || '').trim() || 'AUTO', matricula, sendPix: !pixNoChat };
+        return pendente({ accountId, userId, tipo: 'pedir_certidao', params, descricao: `Pedir a certidão da matrícula nº ${matricula} (${params.cartorio === 'AUTO' ? cidade : params.cartorio}/${uf}) do ${l.name} no RI Digital — ${ondePix}.` }, p.fila);
       }
       // Sem os dados na fala: o mesmo caminho do botão do card (matrícula + cidade/UF dos documentos, ou o endereço do imóvel).
       const { previewCertidaoDosDocs } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
       const pv = await previewCertidaoDosDocs(accountId, l.id);
       if (pv?.existe) return { naoPrecisa: `o ${l.name} já tem um pedido de certidão andando (veja na aba Financiamento do card)` };
       if (!pv?.possible) return { naoDaPraPedir: `não achei a matrícula nem o endereço completo do imóvel do ${l.name} nos documentos e no card`, falta: 'número da matrícula + cidade/UF do imóvel (o cartório é opcional), ou CEP, rua e número do imóvel', instrucao: 'Diga isso em 1 frase e peça a matrícula e a cidade; com elas chame pedir_certidao de novo. Não procure em outras ferramentas.' };
-      return pendente({ accountId, userId, tipo: 'pedir_certidao_docs', params: { leadId: l.id }, descricao: `Pedir a certidão ${/^pelo endere/.test(String(pv.matricula)) ? pv.matricula : `da matrícula nº ${pv.matricula}`} (${pv.cidade}/${pv.uf}) do ${l.name} no RI Digital — o PIX da certidão vai pro cliente.${pv.jaTemCertidao ? ' Atenção: o cliente já mandou uma certidão.' : ''}` }, p.fila);
+      return pendente({ accountId, userId, tipo: 'pedir_certidao_docs', params: { leadId: l.id, sendPix: !pixNoChat }, descricao: `Pedir a certidão ${/^pelo endere/.test(String(pv.matricula)) ? pv.matricula : `da matrícula nº ${pv.matricula}`} (${pv.cidade}/${pv.uf}) do ${l.name} no RI Digital — ${ondePix}.${pv.jaTemCertidao ? ' Atenção: o cliente já mandou uma certidão.' : ''}` }, p.fila);
     }
     default: return { erro: `ferramenta desconhecida: ${p.name}` };
   }
@@ -514,8 +530,8 @@ export async function confirmPendingAction(p: { accountId: string; userId: strin
     case 'marcar_status': await callApi(p.token, 'PUT', `/leads/${x.leadId}`, x.body); return { ok: true, resultado: 'Status alterado.' };
     case 'rodar_analise': { const r = await callApi(p.token, 'POST', '/credit-analysis/requests', { leadIds: [x.leadId], banks: x.banks, kind: 'RUN' }); return { ok: true, resultado: `Análise pedida${r?.created ? ` (${r.created} na fila)` : ''}; a extensão roda com o Chrome aberto.` }; }
     case 'solicitar_vistoria': { const v = x.prev; await callApi(p.token, 'POST', '/vistorias/request', { leadId: x.leadId, to: v.to, cc: v.cc, subject: v.subject, body: v.body, replyToId: v.replyToId, attachDriveFileIds: v.ids }); return { ok: true, resultado: 'Pedido de vistoria enviado ao Inter.' }; }
-    case 'pedir_certidao_docs': await callApi(p.token, 'POST', '/certidoes/from-docs', { leadId: x0.leadId }); return { ok: true, resultado: 'Certidão pedida; a extensão do ONR faz o pedido e o PIX vai pro cliente.' };
-    case 'pedir_certidao': await callApi(p.token, 'POST', '/certidoes', x); return { ok: true, resultado: 'Certidão pedida; a extensão do ONR faz o pedido e o PIX vai pro cliente.' };
+    case 'pedir_certidao_docs': await callApi(p.token, 'POST', '/certidoes/from-docs', { leadId: x0.leadId, sendPix: x0.sendPix !== false }); return { ok: true, resultado: x0.sendPix === false ? 'Certidão pedida; quando o PIX sair (alguns minutos) você recebe um aviso — é só me pedir o PIX que eu mostro pra copiar.' : 'Certidão pedida; a extensão do ONR faz o pedido e o PIX vai pro cliente.' };
+    case 'pedir_certidao': await callApi(p.token, 'POST', '/certidoes', x); return { ok: true, resultado: x.sendPix === false ? 'Certidão pedida; quando o PIX sair (alguns minutos) você recebe um aviso — é só me pedir o PIX que eu mostro pra copiar.' : 'Certidão pedida; a extensão do ONR faz o pedido e o PIX vai pro cliente.' };
     default: throw new Error('ação desconhecida');
   }
 }

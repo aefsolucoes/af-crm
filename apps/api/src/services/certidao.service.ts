@@ -223,6 +223,7 @@ async function sendPixToClient(db: Db, r: { id: string; accountId: string; leadI
 
 export type CertidaoEvent =
   | { event: 'step'; detail?: string }
+  | { event: 'cartorio_found'; cidade: string; cartorio: string; origem?: string }
   | { event: 'ordered'; protocolo: string; numeroRegistral?: string; valorCents?: number }
   | { event: 'pix'; code: string; expiresAt?: string; valorCents?: number }
   | { event: 'status'; portalStatus?: string; detail?: string }
@@ -237,6 +238,12 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
   let out = r;
   if (d.event === 'step') {
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { detail: String(d.detail || '').slice(0, 400) } });
+  } else if (d.event === 'cartorio_found') {
+    // O cartório da escritura não fica na cidade dela no portal (DF: cada Ofício numa região): a extensão achou em outra cidade do estado e memorizou.
+    const cidade = String(d.cidade || '').trim().slice(0, 80), cartorio = String(d.cartorio || '').trim().slice(0, 120);
+    if (!cidade || !cartorio) throw new Error('cidade/cartório vazios');
+    out = await db.certidaoRequest.update({ where: { id: r.id }, data: { cidade, cartorio, detail: `Cartório achado no portal: ${cartorio} (${cidade}).` } });
+    await note(db, r.leadId, `🏛️ Certidão: o cartório "${String(d.origem || r.cartorio)}" fica no portal como ${cartorio} (cidade ${cidade}). A extensão memorizou pra próxima vez.`, r.requestedById);
   } else if (d.event === 'ordered') {
     const protocolo = String(d.protocolo || '').trim();
     if (!PROTO_OK.test(protocolo.toUpperCase())) throw new Error('protocolo inválido');
@@ -261,6 +268,11 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
       }
     } else if (!out.sendPix) {
       await note(db, r.leadId, `💸 PIX da certidão (${brl(out.valorCents)}, protocolo ${out.protocolo}) gerado e guardado no CRM — não foi enviado ao cliente (pedido sem envio automático). Código:\n${code}`, r.requestedById);
+      // Quem pediu fica com o PIX pra encaminhar (Jarvis "deixa o PIX no chat"): avisa no celular/navegador.
+      if (r.requestedById) {
+        const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
+        try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(r.accountId, { title: '💸 PIX da certidão pronto', body: `${lead?.name || 'Cliente'}: ${brl(out.valorCents)} — peça ao assistente "o PIX da certidão" pra copiar (está também nas anotações do card)`, leadId: r.leadId }, [r.requestedById]).catch(() => {}); } catch { /* push é só aviso */ }
+      }
     }
   } else if (d.event === 'status') {
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { detail: String(d.detail || (d.portalStatus ? `No portal: ${d.portalStatus}` : r.detail || '')).slice(0, 400) } });

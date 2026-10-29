@@ -21,7 +21,8 @@ type Nav = { path: string; label: string };
 type AudioReq = { leadId: string; leadName: string };
 type Msg = { role: 'user' | 'assistant'; content: string };
 type Voz = 'off' | 'ouvindo' | 'pensando' | 'falando';
-type Cartao = { fala?: string; disse?: string; pending?: Pending[]; attachments?: Attachment[]; nav?: Nav | null; audio?: AudioReq | null };
+type CopyReq = { label: string; texto: string };
+type Cartao = { fala?: string; disse?: string; pending?: Pending[]; attachments?: Attachment[]; nav?: Nav | null; audio?: AudioReq | null; copiar?: CopyReq[] };
 const STORE_KEY = 'af_crm_jarvis_ctx';
 const SPOKEN_KEY = 'af_crm_assistant_reminders_spoken';
 const ORB = 64;
@@ -106,6 +107,21 @@ function SimulationCard({ a }: { a: Attachment }) {
 }
 
 /** Gravador de áudio pro cliente: a pessoa grava com a própria voz, ouve e só sai no Enviar (mesmo envio da Inbox, convertido pra voz do WhatsApp no servidor). */
+/** Texto pra copiar e encaminhar (ex.: PIX da certidão): o assistente não lê em voz alta, só mostra aqui. */
+function CopyCard({ c }: { c: CopyReq }) {
+  const [ok, setOk] = useState(false);
+  async function copiar() {
+    try { await navigator.clipboard.writeText(c.texto); setOk(true); setTimeout(() => setOk(false), 2500); } catch { /* sem permissão: dá pra selecionar o texto à mão */ }
+  }
+  return (
+    <div className="mt-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2">
+      <div className="text-[11px] font-medium text-emerald-300">{c.label}</div>
+      <div className="mt-1 max-h-16 overflow-y-auto break-all rounded bg-black/30 p-1.5 font-mono text-[10px] leading-tight text-gray-200 select-all">{c.texto}</div>
+      <button type="button" onClick={copiar} className="mt-1.5 w-full rounded-md bg-emerald-600 py-1 text-xs font-medium text-white hover:bg-emerald-500">{ok ? 'Copiado ✓' : 'Copiar'}</button>
+    </div>
+  );
+}
+
 function RecorderCard({ req, onDone }: { req: AudioReq; onDone: (msg: string) => void }) {
   const [fase, setFase] = useState<'pronto' | 'gravando' | 'ouvir' | 'enviando'>('pronto');
   const [seg, setSeg] = useState(0);
@@ -180,7 +196,7 @@ export function CrmAssistant() {
 
   // ── posição: no canto quando parada; passeando pela tela enquanto conversa (para quando há algo pra clicar no balão) ──
   const canto = () => ({ x: window.innerWidth - ORB - 20, y: window.innerHeight - ORB - 84 });
-  const precisaClique = !!(cartao?.pending?.some((p) => p.estado === 'PENDENTE') || cartao?.audio || cartao?.attachments?.length);
+  const precisaClique = !!(cartao?.pending?.some((p) => p.estado === 'PENDENTE') || cartao?.audio || cartao?.attachments?.length || cartao?.copiar?.length);
   const conversando = voz !== 'off';
   useEffect(() => {
     setPos(canto());
@@ -270,7 +286,7 @@ export function CrmAssistant() {
       const { data } = await api.post('/api/assistant/chat', { voice: true, messages: msgsRef.current }).finally(() => clearTimeout(demora));
       const fala = String(data.reply || '').trim() || 'Não consegui responder agora.';
       lembra({ role: 'assistant', content: fala });
-      const c: Cartao = { disse: content, fala, pending: data.pending?.length ? data.pending.map((p: Pending) => ({ ...p, estado: 'PENDENTE' })) : undefined, attachments: data.attachments?.length ? data.attachments : undefined, nav: data.navigate || null, audio: data.audio || null };
+      const c: Cartao = { disse: content, fala, pending: data.pending?.length ? data.pending.map((p: Pending) => ({ ...p, estado: 'PENDENTE' })) : undefined, attachments: data.attachments?.length ? data.attachments : undefined, nav: data.navigate || null, audio: data.audio || null, copiar: data.copiar?.length ? data.copiar : undefined };
       setCard(c);
       if (c.nav?.path) router.push(c.nav.path);
       return c;
@@ -400,6 +416,7 @@ export function CrmAssistant() {
           {status && <p className="mt-0.5 text-xs font-medium text-sky-600">{status}</p>}
           {cartao?.fala && <p className="mt-1 pr-4 leading-snug whitespace-pre-wrap max-h-48 overflow-y-auto">{cartao.fala}</p>}
           {cartao?.attachments?.map((a) => <SimulationCard key={a.id} a={a} />)}
+          {cartao?.copiar?.map((c, i) => <CopyCard key={i} c={c} />)}
           {cartao?.audio && <RecorderCard req={cartao.audio} onDone={(m) => setCard({ fala: m })} />}
           {cartao?.pending?.map((p) => (
             <div key={p.id} className={cn('mt-2 rounded-lg border p-2 text-xs', p.estado === 'PENDENTE' ? 'border-amber-300 bg-amber-50' : p.estado === 'ERRO' ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-slate-50')}>
