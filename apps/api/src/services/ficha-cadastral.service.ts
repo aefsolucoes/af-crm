@@ -44,7 +44,7 @@ Responda SOMENTE com JSON:
 "endereco":{"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"cep":null,"comprovanteMesAno":null},
 "pis":null,"profissao":null,"escolaridade":null,
 "trabalho":{"vinculo":"CLT|SERVIDOR PUBLICO|AUTONOMO|EMPRESARIO|APOSENTADO|OUTRO|null","empregador":null,"cnpj":null,"cargo":null,"admissao":null},
-"contracheques":[{"competencia":null,"empregador":null,"bruto":null,"liquido":null}],"semRenda":false,"rendaInformal":false,"rendaBrutaMensal":null,"rendaLiquidaMensal":null,
+"contracheques":[{"competencia":null,"empregador":null,"cnpj":null,"bruto":null,"liquido":null}],"semRenda":false,"rendaInformal":false,"rendaBrutaMensal":null,"rendaLiquidaMensal":null,
 "outrasRendas":[{"tipo":null,"valor":null}],"patrimonioTotal":null,
 "fontes":{"<campo>":"<nome do arquivo>"},"faltando":["<campo que nenhum documento trouxe e o cadastro do banco pede>"]}],
 "conflitos":["<divergência entre documentos ou entre documento e card, em 1 frase>"],"observacao":"<1 frase>"}
