@@ -493,6 +493,21 @@ export function CrmAssistant() {
       if (PARAR.test(dito.trim())) { setCard(null); await falar('Até já.'); break; }
       if (/^(trocar|mudar|muda|troca)\s+(a\s+|de\s+)?voz/i.test(dito.trim())) { setCard({ escolherVoz: true }); await falar('Escolha a voz nova aqui no balão.'); break; }
       const pend = (cartaoRef.current?.pending || []).filter((p) => p.estado === 'PENDENTE');
+      // Mais de uma ação esperando: "sim" sozinho NÃO confirma todas (Fabio 29/10: pediu a mensagem ao cliente e saiu também o pedido da certidão). Pergunta qual.
+      const ORD = /\b(primeir[ao]|1|um|segund[ao]|2|dois|terceir[ao]|3|tr[eê]s)\b/i;
+      if (pend.length > 1 && (SIM.test(dito.trim()) || ORD.test(dito)) && !/\b(todas|todos|tudo|as duas|os dois|ambas|ambos)\b/i.test(dito)) {
+        const m = ORD.exec(dito);
+        if (!m) { await falar(`Tem ${pend.length} ações esperando: ${pend.map((p, i) => `${i + 1}, ${p.descricao.split(/[.\n]/)[0]}`).join('; ')}. Qual eu confirmo? Diga a primeira, a segunda ou todas.`); continue; }
+        const w = m[1].toLowerCase();
+        const idx = /^(primeir|1|um)/.test(w) ? 0 : /^(segund|2|dois)/.test(w) ? 1 : 2;
+        const alvo = pend[idx];
+        if (!alvo) { await falar('Não achei essa. Diga a primeira ou a segunda.'); continue; }
+        setVoz('pensando');
+        const r = await confirmar(alvo.id);
+        if (!vozRef.current) break;
+        await falar(r);
+        continue;
+      }
       if (pend.length && SIM.test(dito.trim())) {
         setCard({ ...cartaoRef.current, disse: dito });
         setVoz('pensando');
