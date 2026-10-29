@@ -620,7 +620,10 @@ export async function applyAiExtractedActions(
     // automation.service.ts.
     // Perdido já levou o card pro funil "Perdidos" — mover etapa aqui (no funil
     // antigo) traria ele de volta pro funil ativo.
-    if (action.moveToStage && !(action.markLost && action.markLost.trim())) {
+    // Reprovado que voltou e segue pela CAIXA (Fabio 28/10): card Perdido em "Perdidos" reabre no funil de Vendas, em Aguardando Documentação.
+    const reabriuCaixa = !!action.moveToStage && /aguardando doc/.test(normalize(action.moveToStage)) && !(action.markLost && action.markLost.trim())
+      && await (require('./reentry.service') as typeof import('./reentry.service')).reopenForCaixa(accountId, lead.id, action.moveReason || null, io).catch(() => false);
+    if (action.moveToStage && !reabriuCaixa && !(action.markLost && action.markLost.trim())) {
       const ALLOWED = ['prospeccao', 'follow up', 'lead sem retorno', 'pre-analise', 'pre analise', 'venda futura', 'aguardando doc'];
       const target = normalize(action.moveToStage);
       const isAllowed = ALLOWED.some((a) => target.includes(a) || a.includes(target));
