@@ -55,27 +55,22 @@ export default function SupervisaoPage() {
     setIdx((cur) => (cur < items.length ? (items[cur].status === 'PENDING' ? cur : p >= 0 ? p : cur) : Math.max(0, p)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
-  useEffect(() => { setTexto(item?.sentText || item?.sugestao || ''); if (typeof window !== 'undefined' && 'speechSynthesis' in window) { window.speechSynthesis.cancel(); setFalando(false); } }, [item?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setTexto(item?.sentText || item?.sugestao || ''); calar(); setFalando(false); }, [item?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const recarregar = () => qc.invalidateQueries({ queryKey: ['supervision'] });
   const proximo = () => { const n = items.findIndex((i, k) => k > idx && i.status === 'PENDING'); setIdx(n >= 0 ? n : Math.min(idx + 1, items.length - 1)); };
 
   // ── Voz (só ao clicar): o CRM lê o card em voz alta; você responde falando e vira o texto da mensagem ──
-  function ouvir() {
-    if (!item || typeof window === 'undefined' || !('speechSynthesis' in window)) { toast('Este navegador não fala em voz alta', 'error'); return; }
-    if (falando) { window.speechSynthesis.cancel(); setFalando(false); return; }
+  async function ouvir() {
+    if (!item) return;
+    if (falando) { calar(); setFalando(false); return; }
     const partes = [`${item.leadName}.`, item.resumo, item.situacao ? `Onde está: ${item.situacao}.` : '', item.pendencias ? `Pendências: ${item.pendencias}.` : '', item.acao ? `Sugestão pra equipe: ${item.acao}.` : '', texto.trim() ? `Mensagem sugerida pro cliente: ${texto}` : 'A sugestão é não falar com o cliente agora.'];
-    const u = new SpeechSynthesisUtterance(partes.filter(Boolean).join(' '));
-    u.lang = 'pt-BR'; u.rate = 1.05;
-    const voz = window.speechSynthesis.getVoices().find((v) => v.lang?.toLowerCase().startsWith('pt'));
-    if (voz) u.voice = voz;
-    u.onend = () => setFalando(false); u.onerror = () => setFalando(false);
-    window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); setFalando(true);
+    setFalando(true); await falar(partes.filter(Boolean).join(' ')); setFalando(false);
   }
   function responderFalando() {
     const SR: any = typeof window !== 'undefined' && ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
     if (!SR) { toast('Este navegador não reconhece fala (use o Chrome ou o Safari)', 'error'); return; }
-    if (falando) { window.speechSynthesis.cancel(); setFalando(false); }
+    if (falando) { calar(); setFalando(false); }
     const rec = new SR();
     rec.lang = 'pt-BR'; rec.interimResults = false; rec.maxAlternatives = 1;
     rec.onresult = (e: any) => {
@@ -92,7 +87,9 @@ export default function SupervisaoPage() {
     rec.start(); setOuvindo(true);
   }
 
-  function falar(frase: string): Promise<void> {
+  // Voz natural (ElevenLabs pelo servidor); sem crédito/erro → voz do navegador.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  function vozNavegador(frase: string): Promise<void> {
     return new Promise((resolve) => {
       if (typeof window === 'undefined' || !('speechSynthesis' in window)) return resolve();
       const u = new SpeechSynthesisUtterance(frase);
@@ -103,6 +100,19 @@ export default function SupervisaoPage() {
       window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
     });
   }
+  async function falar(frase: string): Promise<void> {
+    try {
+      const r = await api.post('/api/supervision/tts', { text: frase }, { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data as Blob);
+      await new Promise<void>((resolve) => {
+        const a = new Audio(url); audioRef.current = a;
+        a.onended = () => resolve(); a.onerror = () => resolve(); a.onpause = () => resolve();
+        a.play().catch(() => resolve());
+      });
+      URL.revokeObjectURL(url);
+    } catch { await vozNavegador(frase); }
+  }
+  function calar() { try { audioRef.current?.pause(); } catch { /* */ } if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel(); }
   function escutar(): Promise<string> {
     return new Promise((resolve) => {
       const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -117,15 +127,15 @@ export default function SupervisaoPage() {
   }
   function pararConversa() {
     conversaRef.current = false; setConversa(false); setOuvindo(false); setPensando(false);
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+    calar();
   }
   async function conversar() {
     if (conversa) { pararConversa(); return; }
     const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR || !('speechSynthesis' in window)) { toast('Este navegador não conversa por voz (use o Chrome ou o Safari)', 'error'); return; }
+    if (!SR) { toast('Este navegador não reconhece fala (use o Chrome ou o Safari)', 'error'); return; }
     if (!item) return;
     conversaRef.current = true; setConversa(true); falasRef.current = []; setFalas([]);
-    const abertura = [`${item.leadName}.`, item.resumo, item.situacao ? `Onde está: ${item.situacao}.` : '', textoRef.current.trim() ? `Minha sugestão de mensagem é: ${textoRef.current}` : 'Minha sugestão é não falar com o cliente agora.', 'O que você acha?'].filter(Boolean).join(' ');
+    const abertura = [`Vamos falar do ${item.leadName.split(/[\s/]/)[0].charAt(0)}${item.leadName.split(/[\s/]/)[0].slice(1).toLowerCase()}.`, item.situacao || item.resumo, textoRef.current.trim() ? 'Tenho uma sugestão de mensagem pra ele. Quer que eu leia, ou prefere me perguntar algo antes?' : 'Acho melhor não falar com ele agora. Quer saber por quê?'].filter(Boolean).join(' ');
     falasRef.current = [{ de: 'ia', texto: abertura }]; setFalas(falasRef.current);
     await falar(abertura);
     let silencios = 0;

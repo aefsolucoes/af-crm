@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { listSupervision, actOnSupervision, buildWeeklySupervision, chatOnSupervision } from '../services/supervision.service';
+import { listSupervision, actOnSupervision, buildWeeklySupervision, chatOnSupervision, supervisionTts } from '../services/supervision.service';
 
 /** Supervisão de sexta — ver supervision.service.ts. Só administrador. */
 const router = Router();
@@ -15,6 +15,11 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 // Gera a lista desta semana agora (sem esperar a sexta) — completa só os cards que ainda não têm item.
 router.post('/generate', async (req: AuthRequest, res: Response) => {
   try { res.json(await buildWeeklySupervision(req.user!.accountId, { force: true, notify: false })); } catch (err) { fail(res, err, 'Erro ao gerar', 500); }
+});
+// Voz natural (ElevenLabs) — devolve mp3; sem crédito = 503 (a tela usa a voz do navegador).
+router.post('/tts', async (req: AuthRequest, res: Response) => {
+  try { const audio = await supervisionTts(String(req.body?.text || '')); res.setHeader('Content-Type', 'audio/mpeg'); res.send(audio); }
+  catch (err: any) { res.status(err?.status || 500).json({ error: err?.message || 'Erro na voz' }); }
 });
 // Conversa por voz sobre o card (a fala vira texto no navegador). Não envia nada ao cliente.
 router.post('/:id/chat', async (req: AuthRequest, res: Response) => {

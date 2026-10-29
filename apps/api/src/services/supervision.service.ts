@@ -238,3 +238,20 @@ export async function chatOnSupervision(accountId: string, id: string, history: 
     return { fala: String(j.fala || '').slice(0, 1200) || 'Não entendi, pode repetir?', mensagem: String(j.mensagem || '').trim().slice(0, 1500), comando: ['PULAR', 'FEITO', 'PROXIMO', 'PARAR'].includes(cmd) ? cmd : '' };
   } catch { return { fala: raw.replace(/[{}"]/g, '').slice(0, 600) || 'Não entendi, pode repetir?', mensagem: '', comando: '' }; }
 }
+
+// ─── Voz natural (ElevenLabs) pra conversa da supervisão (Fabio 29/10: "ficou muito ruim essa fala… queria algo mais natural") ───
+// Modelo multilíngue rápido (eleven_flash_v2_5, fala português). Sem chave/crédito → 503 e a tela cai na voz do navegador.
+export const SUPERVISION_VOICE_ID = process.env.SUPERVISION_VOICE_ID || 'XrExE9yKIg1WjnnlVkGX'; // "Matilda" (amostra 2, escolhida pelo Fabio 29/10)
+export async function supervisionTts(text: string): Promise<Buffer> {
+  const key = process.env.ELEVENLABS_API_KEY;
+  if (!key) throw Object.assign(new Error('Sem voz natural configurada'), { status: 503 });
+  const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+  if (!t) throw Object.assign(new Error('Texto vazio'), { status: 400 });
+  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${SUPERVISION_VOICE_ID}?output_format=mp3_44100_64`, {
+    method: 'POST',
+    headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+    body: JSON.stringify({ text: t, model_id: 'eleven_flash_v2_5', language_code: 'pt', voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.15, use_speaker_boost: true } }),
+  });
+  if (!r.ok) throw Object.assign(new Error(`Voz natural indisponível (${r.status}): ${(await r.text()).slice(0, 120)}`), { status: 503 });
+  return Buffer.from(await r.arrayBuffer());
+}
