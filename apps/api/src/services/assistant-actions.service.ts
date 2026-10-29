@@ -154,6 +154,49 @@ export async function baixarArquivo(accountId: string, a: ArqCliente): Promise<{
   return g.downloadDriveFileForVision(accountId, a.ref, a.mimeType);
 }
 
+/** Limites da API da Anthropic: ~32 MB por pedido (o arquivo vai em base64, +33%) e 100 páginas por PDF; foto até 5 MB. Arquivo de até 50 MB (Fabio 29/10): PDF grande é dividido em partes por página; foto grande é reduzida. */
+const PARTE_MAX = 18_000_000;
+async function partesParaLer(buffer: Buffer, mimeType: string): Promise<{ buffer: Buffer; mimeType: string; rotulo: string }[]> {
+  if (mimeType !== 'application/pdf') {
+    if (buffer.length <= 3_700_000) return [{ buffer, mimeType, rotulo: 'imagem' }];
+    try {
+      const sharp = require('sharp');
+      const out: Buffer = await sharp(buffer).rotate().resize({ width: 2400, height: 2400, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
+      return [{ buffer: out, mimeType: 'image/jpeg', rotulo: 'imagem' }];
+    } catch { throw new Error('a foto passa de 5 MB e não consegui reduzir aqui'); }
+  }
+  const { PDFDocument } = require('pdf-lib') as typeof import('pdf-lib');
+  let doc;
+  try { doc = await PDFDocument.load(buffer, { ignoreEncryption: true }); } catch { if (buffer.length <= PARTE_MAX) return [{ buffer, mimeType, rotulo: 'documento' }]; throw new Error('não consegui abrir o PDF pra dividir (protegido ou corrompido)'); }
+  const total = doc.getPageCount();
+  if (buffer.length <= PARTE_MAX && total <= 100) return [{ buffer, mimeType, rotulo: 'documento' }];
+  const corta = async (de: number, ate: number): Promise<{ buffer: Buffer; mimeType: string; rotulo: string }[]> => {
+    const novo = await PDFDocument.create();
+    const pgs = await novo.copyPages(doc!, Array.from({ length: ate - de }, (_, k) => de + k));
+    pgs.forEach((pg) => novo.addPage(pg));
+    const b = Buffer.from(await novo.save());
+    if (b.length > PARTE_MAX && ate - de > 1) { const meio = de + Math.ceil((ate - de) / 2); return [...(await corta(de, meio)), ...(await corta(meio, ate))]; }
+    if (b.length > 30_000_000) throw new Error(`a página ${de + 1} sozinha passa do limite da leitura`);
+    return [{ buffer: b, mimeType, rotulo: de + 1 === ate ? `pág. ${ate}` : `págs. ${de + 1}–${ate}` }];
+  };
+  const nPartes = Math.max(Math.ceil(buffer.length / PARTE_MAX), Math.ceil(total / 100));
+  const porParte = Math.ceil(total / nPartes);
+  const partes: { buffer: Buffer; mimeType: string; rotulo: string }[] = [];
+  for (let i = 0; i < total; i += porParte) partes.push(...(await corta(i, Math.min(total, i + porParte))));
+  if (partes.length > 6) throw new Error(`o PDF tem ${total} páginas e precisaria de ${partes.length} leituras — peça uma parte específica (ex.: "a última página")`);
+  return partes;
+}
+async function perguntarAoDocumento(buffer: Buffer, mimeType: string, texto: string): Promise<string> {
+  const isPdf = mimeType === 'application/pdf';
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY || '', 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 3000, system: 'Você analisa documentos de clientes de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional) para a EQUIPE. Responda em português, direto, citando o que está escrito no documento (números, nomes, datas). Se algo não aparece ou está ilegível, diga isso — nunca invente.', messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source: { type: 'base64', media_type: isPdf ? 'application/pdf' : mimeType, data: buffer.toString('base64') } }, { type: 'text', text: texto }] }] }),
+  });
+  if (!res.ok) throw new Error(`não consegui ler o documento agora (${res.status})`);
+  const j = (await res.json()) as { content: any[] };
+  return (j.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+}
+
 /** Texto da regra pro Jarvis: regra comum = começo; regra FIXA (enorme) = o pedaço em volta do termo procurado, pra ele copiar o trecho exato que quer trocar. */
 function trechoDa(content: string, termo: string, fixa: boolean): string {
   if (!fixa || !termo) return content.slice(0, 1200);
@@ -449,16 +492,18 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       if (!att) return { erro: `não achei "${input?.arquivo}" entre os arquivos do cliente (conversa e pasta do Drive)`, arquivos: lista.slice(0, 40).map((a) => `${a.fileName}${a.tipo ? ` (${a.tipo})` : ''}${a.source === 'drive' ? ' [Drive]' : ''}`) };
       let buffer: Buffer, mime: string;
       try { ({ buffer, mimeType: mime } = await baixarArquivo(accountId, att)); } catch (e: any) { return { erro: e?.message || 'não consegui abrir o arquivo' }; }
-      if (buffer.length > 10_000_000) return { erro: 'arquivo grande demais pra ler aqui (mais de 10 MB)' };
+      if (buffer.length > 50_000_000) return { erro: 'arquivo grande demais pra ler aqui (mais de 50 MB)' };
       p.docs?.push({ type: 'document', leadId: l.id, source: att.source, ref: att.ref, fileName: att.fileName, mimeType: mime }); // espelha no balão (Fabio 29/10)
-      const isPdf = mime === 'application/pdf';
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY || '', 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 3000, system: 'Você analisa documentos de clientes de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional) para a EQUIPE. Responda em português, direto, citando o que está escrito no documento (números, nomes, datas). Se algo não aparece ou está ilegível, diga isso — nunca invente.', messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source: { type: 'base64', media_type: isPdf ? 'application/pdf' : mime, data: buffer.toString('base64') } }, { type: 'text', text: `Cliente: ${l.name}. Arquivo: ${att.fileName}.\nPergunta: ${String(input?.pergunta || 'O que é este documento e o que ele mostra de importante?')}` }] }] }),
-      });
-      if (!res.ok) return { erro: `não consegui ler o documento agora (${res.status})` };
-      const j = (await res.json()) as { content: any[] };
-      return { arquivo: att.fileName, resposta: (j.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim() || '(sem resposta)' };
+      const pergunta = String(input?.pergunta || 'O que é este documento e o que ele mostra de importante?');
+      try {
+        const partes = await partesParaLer(buffer, mime);
+        const respostas: string[] = [];
+        for (const [i, pt] of partes.entries()) {
+          const r = await perguntarAoDocumento(pt.buffer, pt.mimeType, `Cliente: ${l.name}. Arquivo: ${att.fileName}${partes.length > 1 ? ` (parte ${i + 1} de ${partes.length}: ${pt.rotulo})` : ''}.\nPergunta: ${pergunta}`);
+          respostas.push(partes.length > 1 ? `[${pt.rotulo}] ${r}` : r);
+        }
+        return { arquivo: att.fileName, ...(partes.length > 1 ? { lidoEmPartes: partes.length } : {}), resposta: respostas.join('\n\n') || '(sem resposta)' };
+      } catch (e: any) { return { erro: e?.message || 'não consegui ler o documento agora' }; }
     }
     case 'ligar_para_cliente': {
       const l = await leadOf(accountId, input?.leadId);
