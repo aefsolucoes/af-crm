@@ -184,8 +184,8 @@ export async function processPediuParar(accountId: string, io?: Io): Promise<voi
 export async function processSeguirAprovado(accountId: string, io?: Io): Promise<void> {
   const { SEGUIR_APROVADO_Q } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
   const leads = await prisma.lead.findMany({
-    where: { accountId, status: 'OPEN', archived: false, isGroup: false, customFields: { path: ['_seguirAprovadoAt'], string_starts_with: '20' } },
-    select: { id: true, name: true, tags: true, customFields: true, pipeline: { select: { departmentId: true } } },
+    where: { accountId, status: { in: ['OPEN', 'LOST'] }, archived: false, isGroup: false, customFields: { path: ['_seguirAprovadoAt'], string_starts_with: '20' } },
+    select: { id: true, name: true, status: true, tags: true, customFields: true, pipeline: { select: { departmentId: true } } },
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Record<string, any>;
@@ -198,6 +198,13 @@ export async function processSeguirAprovado(accountId: string, io?: Io): Promise
     const depois = await prisma.message.findFirst({ where: { leadId: l.id, channel: { not: 'EMAIL' }, createdAt: { gt: pergunta.createdAt }, OR: [{ direction: 'INBOUND' }, { direction: 'OUTBOUND', sentByUserId: { not: null } }] }, select: { id: true } });
     if (depois) { await limpar(); continue; } // respondeu, ou alguém da equipe escreveu
     const lostReason = 'Achou caro e não respondeu se quer seguir com o crédito aprovado';
+    if (l.status === 'LOST') {
+      // Já estava em Perdidos (a equipe mandou a pergunta pra quem a IA tinha fechado): só a etiqueta.
+      await limpar();
+      if (!l.tags.includes(TAG_APROVADO_SEM_ANDAMENTO)) await prisma.lead.update({ where: { id: l.id }, data: { tags: [...l.tags, TAG_APROVADO_SEM_ANDAMENTO] } }).catch(() => {});
+      await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `↪️ Perguntei "${SEGUIR_APROVADO_Q}" e não respondeu em 1 dia: card segue em Perdidos, com a etiqueta "${TAG_APROVADO_SEM_ANDAMENTO}".` } }).catch(() => {});
+      continue;
+    }
     const { updateLead } = require('./lead.service') as typeof import('./lead.service');
     const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
     await limpar();
@@ -210,3 +217,24 @@ export async function processSeguirAprovado(accountId: string, io?: Io): Promise
   }
 }
 
+
+/** "Sim" à pergunta "Você deseja seguir com o crédito aprovado?" de quem está em Perdidos (Fabio 29/10, Iranildes: a IA tinha fechado o card antes de perguntar):
+ *  reabre no funil de Vendas do setor, em Aguardando Documentação — como a reentrada pela CAIXA. Só vale com a pergunta enviada nos últimos 3 dias. */
+export async function reopenSeguirAprovado(accountId: string, leadId: string, reason: string | null, io?: Io): Promise<boolean> {
+  const { SEGUIR_APROVADO_Q } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, status: true, tags: true, customFields: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead || lead.status !== 'LOST' || !lead.pipeline?.departmentId) return false;
+  const perguntou = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: SEGUIR_APROVADO_Q }, createdAt: { gte: new Date(Date.now() - 3 * DIA) } }, select: { id: true } });
+  if (!perguntou) return false;
+  const sales = await prisma.pipeline.findFirst({ where: { accountId, departmentId: lead.pipeline.departmentId, name: { contains: 'Vendas', mode: 'insensitive' } }, select: { id: true, name: true, stages: { select: { id: true, name: true } } } });
+  const alvo = sales?.stages.find((st) => /^aguardando doc/i.test(st.name));
+  if (!sales || !alvo) return false;
+  const { _seguirAprovadoAt, ...cf } = (lead.customFields || {}) as Record<string, any>;
+  await prisma.lead.update({ where: { id: leadId }, data: { status: 'OPEN', archived: false, lostReason: null, pipelineId: sales.id, stageId: alvo.id, stageEnteredAt: new Date(), aiAutoReplyActive: true, customFields: cf as any, tags: lead.tags.filter((t) => t !== TAG_APROVADO_SEM_ANDAMENTO) } });
+  await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `🔓 Card reaberto: respondeu que quer seguir com o crédito aprovado — saiu do funil "Perdidos" pra "${sales.name}" (${alvo.name})${reason ? `. ${reason}` : ''}` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: '🔓 Aprovado quer seguir', body: `${lead.name}: respondeu que quer seguir com o crédito aprovado — card reaberto em ${alvo.name}`, leadId }).catch(() => {});
+  if (io) io.to(`lead:${leadId}`).emit('lead_moved', { leadId, stageId: alvo.id });
+  console.log(`[Seguir com o aprovado] ${lead.name}: reaberto em ${sales.name}/${alvo.name}`);
+  return true;
+}

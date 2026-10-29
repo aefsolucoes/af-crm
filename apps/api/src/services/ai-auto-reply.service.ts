@@ -749,13 +749,15 @@ async function addFollowPrazoQuestion(leadId: string, incomingText: string, etap
 export const SEGUIR_APROVADO_Q = 'Você deseja seguir com o crédito aprovado?';
 const HESITA_RX = /(car[oa]s?\b|taxa|juros|parcela|alt[oa]s?\b|pesad|n[ãa]o (cabe|coube|compensa|d[aá] pra)|or[çc]amento|vou pensar|deixa (pra|para) l[aá]|n[ãa]o sei se)/i;
 const DESPEDIDA_RX = /(fico [àa] disposi|estou [àa] disposi|qualquer (coisa|d[uú]vida),? (é só|me) (chamar|falar)|se (quiser|mudar de ideia|precisar)|retomar (depois|mais tarde|futuramente)|quando quiser|porta (fica )?aberta)/i;
+// Recusa com todas as letras: aí o Perdido da IA vale. Só "achou caro" (Iranildes 29/10: "Muito caro ainda" → a IA marcou Perdido direto) vira a pergunta.
+const RECUSA_RX = /(n[ãa]o (quero|tenho (mais )?interesse|vou (querer|seguir|fazer|continuar))|desist|n[ãa]o,? obrigad|deixa quieto|pode (cancelar|encerrar|parar)|n[ãa]o precis|esquece)/i;
 async function addSeguirAprovadoQuestion(leadId: string, incomingText: string, etapaTexto: string, result: AiAutoReplyResult): Promise<void> {
   try {
-    if (result.handoff || result.askTeam || result.markLost || result.resumeOn || result.sendApproval || result.chooseBank || result.moveToStage || result.simulate) return;
+    if (result.handoff || result.askTeam || result.resumeOn || result.sendApproval || result.chooseBank || result.moveToStage || result.simulate) return;
     const reply = (result.reply || '').trim();
-    if (!reply || reply.includes('?') || !DESPEDIDA_RX.test(reply)) return;
+    if (!reply || reply.includes('?') || (!result.markLost && !DESPEDIDA_RX.test(reply))) return;
     const t = (incomingText || '').trim();
-    if (!t || t.length > 300 || !HESITA_RX.test(t) || promisesDocsSoon(t)) return;
+    if (!t || t.length > 300 || !HESITA_RX.test(t) || promisesDocsSoon(t) || (result.markLost && RECUSA_RX.test(t))) return;
     const etapa = (etapaTexto.split('→').pop() || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
     const aprovado = /aguardando document/.test(etapa)
       || !!(await prisma.creditAnalysis.findFirst({ where: { leadId, dryRun: false, status: 'APPROVED', approvedValue: { gt: 0 } }, select: { id: true } }));
@@ -767,6 +769,7 @@ async function addSeguirAprovadoQuestion(leadId: string, incomingText: string, e
     result.reply = resto ? `${resto}\n\n${SEGUIR_APROVADO_Q}` : SEGUIR_APROVADO_Q;
     result.noReply = false;
     result.stopFollowUp = false;
+    result.markLost = null; // a resposta dele decide (Não → Perdido; sem resposta em 1 dia → Perdidos)
     const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((l?.customFields || {}) as Record<string, unknown>), _seguirAprovadoAt: new Date().toISOString() } as any } });
   } catch (err) {

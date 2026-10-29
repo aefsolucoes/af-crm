@@ -656,7 +656,9 @@ export async function applyAiExtractedActions(
     // antigo) traria ele de volta pro funil ativo.
     // Reprovado que voltou e segue pela CAIXA (Fabio 28/10): card Perdido em "Perdidos" reabre no funil de Vendas, em Aguardando Documentação.
     const reabriuCaixa = !!action.moveToStage && /aguardando doc/.test(normalize(action.moveToStage)) && !(action.markLost && action.markLost.trim())
-      && await (require('./reentry.service') as typeof import('./reentry.service')).reopenForCaixa(accountId, lead.id, action.moveReason || null, io).catch(() => false);
+      && (await (require('./reentry.service') as typeof import('./reentry.service')).reopenForCaixa(accountId, lead.id, action.moveReason || null, io).catch(() => false)
+        // "Sim, quero seguir com o aprovado" de quem a IA já tinha mandado pra Perdidos (Iranildes 29/10).
+        || await (require('./prosseguir.service') as typeof import('./prosseguir.service')).reopenSeguirAprovado(accountId, lead.id, action.moveReason || null, io).catch(() => false));
     if (action.moveToStage && !reabriuCaixa && !(action.markLost && action.markLost.trim())) {
       const ALLOWED = ['prospeccao', 'follow up', 'lead sem retorno', 'pre-analise', 'pre analise', 'venda futura', 'aguardando doc'];
       const target = normalize(action.moveToStage);
