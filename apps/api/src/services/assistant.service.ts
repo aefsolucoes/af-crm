@@ -40,8 +40,8 @@ const READ_TOOLS = [
   },
   {
     name: 'pedir_simulacao_pdf',
-    description: 'Pede a simulação em PDF (modelo A&F) de um banco APROVADO do cliente. O PDF é gerado pela extensão do banco (1 a 2 min) e fica SÓ pra equipe: aparece aqui no chat com o botão "Abrir PDF" — NÃO vai pro cliente. Bancos: INTER ou SANTANDER (o da Creditas está desativado).',
-    input_schema: { type: 'object', properties: { leadId: { type: 'string' }, banco: { type: 'string', enum: ['INTER', 'SANTANDER'] } }, required: ['leadId', 'banco'] },
+    description: 'Pede a simulação em PDF (modelo A&F) de um banco APROVADO do cliente. O PDF é gerado pela extensão do banco (1 a 2 min) e fica SÓ pra equipe: aparece aqui no chat com o botão "Abrir PDF" — NÃO vai pro cliente. Home Equity: INTER ou SANTANDER (o da Creditas está desativado). Financiamento Habitacional: FH_BRADESCO, FH_ITAU, FH_SANTANDER ou FH_INTER.',
+    input_schema: { type: 'object', properties: { leadId: { type: 'string' }, banco: { type: 'string', enum: ['INTER', 'SANTANDER', 'FH_BRADESCO', 'FH_ITAU', 'FH_SANTANDER', 'FH_INTER'] } }, required: ['leadId', 'banco'] },
   },
   {
     name: 'ver_simulacoes',
@@ -129,13 +129,16 @@ async function listarClientes(accountId: string, p: { etapa?: string; funil?: st
 }
 
 async function pedirSimulacao(accountId: string, userId: string, leadId: string, banco: string, anexos: ChatAttachment[]) {
-  const inst = /santander|credimorar/i.test(banco) ? 'SANTANDER' : /inter/i.test(banco) ? 'INTER' : '';
-  if (!inst) return { erro: 'banco inválido: use INTER ou SANTANDER (o PDF da Creditas está desativado)' };
+  // Financiamento Habitacional (FH_BRADESCO, FH_ITAU, FH_SANTANDER, FH_INTER) ou Home Equity (INTER, SANTANDER).
+  const b = String(banco || '').toUpperCase();
+  const fh = /^FH_|FINANC|BRADESCO|ITA[UÚ]/.test(b);
+  const inst = fh ? (/BRADESCO/.test(b) ? 'FH_BRADESCO' : /ITA[UÚ]/.test(b) ? 'FH_ITAU' : /SANTANDER/.test(b) ? 'FH_SANTANDER' : /INTER/.test(b) ? 'FH_INTER' : '') : /santander|credimorar/i.test(banco) ? 'SANTANDER' : /inter/i.test(banco) ? 'INTER' : '';
+  if (!inst) return { erro: 'banco inválido: Home Equity = INTER ou SANTANDER (o PDF da Creditas está desativado); Financiamento = FH_BRADESCO, FH_ITAU, FH_SANTANDER ou FH_INTER' };
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true } });
   if (!lead) return { erro: 'cliente não encontrado' };
   const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
   const r = await requestSimulationDocs(prisma as any, { accountId, leadId, institutions: [inst], userId, source: 'ASSISTANT' });
-  if (!r.created.length) return { erro: `já existe uma simulação do ${inst === 'INTER' ? 'Inter' : 'Santander'} sendo gerada pra esse cliente — espere ela terminar` };
+  if (!r.created.length) return { erro: `já existe uma simulação desse banco (${inst}) sendo gerada pra esse cliente — espere ela terminar` };
   anexos.push({ type: 'simulation', id: r.created[0].id, banco: inst, leadName: lead.name });
   return { ok: true, pedido: r.created[0].id, aviso: 'A extensão do banco gera o PDF em 1 a 2 minutos (o Chrome com a extensão precisa estar aberto). Ele aparece no chat com o botão "Abrir PDF" e NÃO vai pro cliente.' };
 }
@@ -164,6 +167,7 @@ function systemFixed(userName: string, voz: boolean): string {
 - Mensagem ao cliente: escreva como a equipe da A&F escreve no WhatsApp (curta, educada, sem emoji em excesso, sem prometer prazo ou aprovação). Mostre o texto antes.
 - Formulário do card ("preenche o card do Pedro com…", "completa o cadastro com os dados da matrícula"): ver_formulario → preencher_formulario com os campos certos. Pode tirar os dados do que o cliente mandou (ver_cliente) — nunca invente CPF, data ou valor; o que não tiver, pergunte. Formulário de portal de banco é com as extensões (rodar_analise, vistoria, certidão).
 - Certidão ("pede a certidão de ônus/matrícula do Pedro"): buscar_clientes → pedir_certidao só com o leadId. NÃO abra formulário, documentos nem pasta antes: a ferramenta já procura a matrícula e o endereço. Se faltar dado, ela diz o que perguntar. Se a pessoa quiser o PIX com ela ("deixa o PIX no chat", "eu mando pro cliente") → pixNoChat true. "Cadê o PIX / como está a certidão do Pedro" → ver_certidao (o código aparece no balão com Copiar; nunca leia o código).
+- EXTENSÕES: você comanda todas — análise Home Equity (rodar_analise/conferir_analise), Financiamento (rodar_financiamento/conferir_financiamento), certidão ONR (pedir_certidao/ver_certidao/buscar_certidao/marcar_pix_pago), vistoria Inter (solicitar_vistoria), simulação em PDF (pedir_simulacao_pdf). "As extensões estão funcionando?"/"por que não andou?" → ver_extensoes.
 - VOZ DO ASSISTENTE: "muda/troca/escolhe a voz", "que vozes tem?" → escolher_voz (abre a lista no balão). NUNCA mande a pessoa pras Configurações pra isso.
 - RAPIDEZ: cada volta demora; use o MENOR número de ferramentas. Quando precisar de várias leituras independentes, peça todas na mesma volta.
 - Documentos: "quem mandou documento e precisa de andamento?" → docs_para_andamento; sugira o próximo passo de cada um (PRONTO → seguir o processo: Fechado/Em contratação, vistoria, certidão; PROBLEMA/FALTA → o que pedir ao cliente; DÚVIDA → responder no balão Dúvidas da IA). Pra analisar um cliente: documentos_do_cliente; se houver arquivo não lido, conferir_documentos; pra uma pergunta específica sobre o conteúdo, ler_documento. Dê sua avaliação como um analista de crédito: serve pro banco? está no nome certo? atual? falta frente/verso?

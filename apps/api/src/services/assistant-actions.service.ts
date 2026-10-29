@@ -62,6 +62,11 @@ export const ACTION_TOOLS = [
   { name: 'rodar_analise', description: 'PREPARA rodar a análise de crédito nos bancos (cria proposta nova no portal; confirmação antes). bancos: INTER, CREDITAS, CREDIMORAR (Santander).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId', 'bancos'] } },
   { name: 'solicitar_vistoria', description: 'PREPARA o pedido de vistoria ao Inter: responde o e-mail do consultor com o contato e os documentos do imóvel da pasta do cliente (confirmação antes).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'pedir_certidao', description: 'PREPARA o pedido da certidão de matrícula/ônus (inteiro teor) no RI Digital pela extensão, igual ao botão "Pedir certidão pelo ONR" do card; o PIX vai pro cliente (confirmação antes). Chame DIRETO com o leadId: a própria ferramenta acha a matrícula e a cidade/UF nos documentos (ou o endereço do imóvel). Só passe matricula/cidade/uf se a pessoa disser; cartorio só se ela disser (senão a extensão escolhe).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, matricula: { type: 'string' }, cidade: { type: 'string' }, uf: { type: 'string' }, cartorio: { type: 'string', description: 'como aparece no portal (ex.: "02º - BELÉM"); omita se não souber' }, pixNoChat: { type: 'boolean', description: 'true quando a pessoa quer o PIX com ela (pra encaminhar ela mesma) em vez de ir direto ao cliente' } }, required: ['leadId'] } },
+  { name: 'buscar_certidao', description: 'Manda a extensão do ONR ir AGORA ao RI Digital ver se a certidão do cliente saiu e, saindo, baixar e guardar na pasta do cliente no Drive (pasta IMOVEL). Use quando pedirem "baixa a certidão", "vê se a certidão saiu", "coloca a certidão na pasta". Só lê o portal: não paga nem cria pedido.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'ver_extensoes', description: 'Situação de TODAS as extensões do Chrome (Inter, Creditas, Santander/Credimorar, Financiamento, Certidão ONR): ligada ou não, último sinal, o que está rodando agora e quantos pedidos na fila. Use quando perguntarem se as extensões estão funcionando, por que algo não andou, ou o que está rodando.', input_schema: { type: 'object', properties: {} } },
+  { name: 'rodar_financiamento', description: 'PREPARA a análise do FINANCIAMENTO HABITACIONAL (cria proposta nova; confirmação antes): Credimorar (Bradesco, Itaú e Santander) e/ou o NOSSO portal do Inter. bancos: lista com CREDIMORAR e/ou INTER (padrão: os dois). Usa os valores do card.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId'] } },
+  { name: 'conferir_financiamento', description: 'Manda as extensões CONFERIREM (só ler) a situação do Financiamento do cliente nos bancos (Credimorar e Inter). Não cria proposta.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'marcar_pix_pago', description: 'PREPARA marcar o PIX da certidão do cliente como PAGO (confirmação antes) — use quando a pessoa disser que o cliente pagou. Depois disso a extensão do ONR passa a buscar a certidão emitida sozinha.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'escolher_voz', description: 'Abre no balão a lista de VOZES do assistente (todas brasileiras) pra pessoa ouvir e escolher. Use quando pedirem pra mudar/trocar/escolher a voz, perguntarem que vozes existem ou reclamarem da voz.', input_schema: { type: 'object', properties: {} } },
   { name: 'consultar_cartorio', description: 'Mapa dos cartórios de Registro de Imóveis do RI Digital (todos os estados): quais cartórios ficam numa cidade, o número do Ofício, a abrangência (bairros/municípios atendidos) e se tem Certidão Digital. Use pra saber qual cartório atende um imóvel ou onde um "Nº Ofício" fica no portal (ex.: no DF o 3º fica em Águas Claras).', input_schema: { type: 'object', properties: { uf: { type: 'string' }, cidade: { type: 'string', description: 'omita pra listar as cidades do estado' } }, required: ['uf'] } },
   { name: 'ver_certidao', description: 'Situação dos pedidos de certidão do cliente (pedido, protocolo, valor, PIX, paga, emitida). Se o PIX já foi gerado, o código aparece no balão com botão Copiar pra pessoa encaminhar — NÃO leia o código em voz alta. O PIX demora alguns minutos depois do pedido (a extensão faz o pedido no portal).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
@@ -437,6 +442,44 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       if (!anexos.length) return { erro: 'não há documento do imóvel marcado pra anexar (o pedido vai sempre com anexo)', avisos: prev.avisos };
       return pendente({ accountId, userId, tipo: 'solicitar_vistoria', params: { leadId: l.id, prev: { to: prev.to, cc: prev.cc, subject: prev.subject, body: prev.body, replyToId: prev.replyToId, ids: anexos.map((a: any) => a.id) } }, descricao: `${prev.jaSolicitadaEm ? `ATENÇÃO: a vistoria já foi pedida em ${quando(new Date(prev.jaSolicitadaEm))}. ` : ''}Responder o e-mail do Inter (${prev.to}) pedindo a vistoria do ${l.name}, com ${anexos.length} anexo(s): ${anexos.map((a: any) => a.name).join('; ')}.` }, p.fila);
     }
+    case 'ver_extensoes': {
+      const live = (await callApi(p.token, 'GET', '/credit-analysis/live')) as any[];
+      const fh = await prisma.creditAnalysis.groupBy({ by: ['bank', 'status'], where: { accountId, bank: { in: ['CREDIMORAR_FH', 'INTER_FH'] }, status: { in: ['REQUESTED', 'RUNNING'] } }, _count: true }).catch(() => [] as any[]);
+      const cert = await prisma.certidaoRequest.groupBy({ by: ['status'], where: { accountId, status: { in: ['REQUESTED', 'IN_PROGRESS', 'AWAITING_PAYMENT'] } }, _count: true }).catch(() => [] as any[]);
+      const certUlt = await prisma.certidaoRequest.findFirst({ where: { accountId }, orderBy: { updatedAt: 'desc' }, select: { updatedAt: true, status: true, detail: true } });
+      return {
+        bancos: (live || []).map((b: any) => ({ banco: b.bank, ligada: b.online, ultimoSinal: b.lastSeenAt, precisaLogin: b.loginNeeded, foraDoHorario: b.foraDoHorario, rodandoAgora: (b.running || []).map((r: any) => `${r.leadName} (${r.kind}) — ${r.step || ''}`), naFila: (b.queue || []).length })),
+        financiamento: fh.map((x: any) => `${x.bank === 'INTER_FH' ? 'Inter (nosso portal)' : 'Credimorar'}: ${x._count} ${x.status === 'RUNNING' ? 'rodando' : 'na fila'}`),
+        certidaoOnr: { pedidos: cert.map((x: any) => `${x._count} ${x.status === 'AWAITING_PAYMENT' ? 'aguardando pagamento/emissão' : x.status === 'IN_PROGRESS' ? 'em andamento' : 'na fila'}`), ultimaAtividade: certUlt ? `${certUlt.updatedAt.toISOString()} — ${String(certUlt.detail || certUlt.status).slice(0, 120)}` : null },
+        obs: 'O Financiamento do Inter roda pela extensão do Inter; o do Credimorar pela extensão do Credimorar. Extensão sem sinal há mais de 3 min = Chrome fechado, computador dormindo ou extensão desligada.',
+      };
+    }
+    case 'rodar_financiamento': {
+      const l = await leadOf(accountId, input?.leadId);
+      const pedidos = (Array.isArray(input?.bancos) ? input.bancos : []).map((b: unknown) => String(b).toUpperCase());
+      const banks = [...(pedidos.length === 0 || pedidos.some((b: string) => /CREDIMORAR|BRADESCO|ITAU|ITAÚ|SANTANDER/.test(b)) ? ['CREDIMORAR_FH'] : []), ...(pedidos.length === 0 || pedidos.some((b: string) => /INTER/.test(b)) ? ['INTER_FH'] : [])];
+      const cf = (l.customFields || {}) as Record<string, any>;
+      const quais = banks.map((b) => (b === 'INTER_FH' ? 'Inter (nosso portal)' : 'Credimorar (Bradesco, Itaú e Santander)')).join(' e ');
+      return pendente({ accountId, userId, tipo: 'rodar_financiamento', params: { leadId: l.id, banks }, descricao: `Rodar o Financiamento do ${l.name} no ${quais} — cria proposta nova. Valores do card: imóvel ${cf.valor_imovel || '?'}, crédito ${cf.valor_credito || '?'}, entrada ${cf.valor_entrada || '?'}.` }, p.fila);
+    }
+    case 'conferir_financiamento': {
+      const l = await leadOf(accountId, input?.leadId);
+      await callApi(p.token, 'POST', '/credit-analysis/fh-request', { leadId: l.id, kind: 'CHECK' });
+      return { ok: true, obs: `Pedi pras extensões lerem a situação do Financiamento do ${l.name} (Credimorar e Inter). O resultado entra no card em alguns minutos.` };
+    }
+    case 'marcar_pix_pago': {
+      const l = await leadOf(accountId, input?.leadId);
+      const r = await prisma.certidaoRequest.findFirst({ where: { leadId: l.id, accountId, status: 'AWAITING_PAYMENT', paidAt: null }, orderBy: { createdAt: 'desc' }, select: { id: true, protocolo: true, valorCents: true } });
+      if (!r) return { naoDa: `o ${l.name} não tem certidão aguardando pagamento` };
+      return pendente({ accountId, userId, tipo: 'marcar_pix_pago', params: { id: r.id }, descricao: `Marcar como PAGO o PIX da certidão do ${l.name}${r.protocolo ? ` (protocolo ${r.protocolo})` : ''}${r.valorCents ? `, R$ ${(r.valorCents / 100).toFixed(2).replace('.', ',')}` : ''} — a extensão do ONR passa a buscar a certidão emitida e guardar no Drive.` }, p.fila);
+    }
+    case 'buscar_certidao': {
+      const l = await leadOf(accountId, input?.leadId);
+      const r = await prisma.certidaoRequest.findFirst({ where: { leadId: l.id, accountId, status: { in: ['AWAITING_PAYMENT', 'REQUESTED', 'IN_PROGRESS'] }, protocolo: { not: null } }, orderBy: { createdAt: 'desc' }, select: { id: true, protocolo: true, paidAt: true } });
+      if (!r) return { naoDa: `o ${l.name} não tem pedido de certidão feito no portal esperando emissão (veja com ver_certidao)` };
+      const out = await callApi(p.token, 'POST', `/certidoes/${r.id}/collect-now`, {});
+      return { ok: true, protocolo: r.protocolo, fora_do_horario: !!(out as any)?.queuedUntilMorning, obs: `A extensão vai ao portal agora (protocolo ${r.protocolo}); se a certidão já saiu, ela baixa e guarda na pasta IMOVEL do Drive e anota no card. Se ainda não saiu, o pedido segue aguardando.${r.paidAt ? '' : ' O PIX não está marcado como pago no CRM.'}` };
+    }
     case 'escolher_voz': p.ui?.push('escolherVoz'); return { ok: true, instrucao: 'A lista de vozes abriu no balão: diga em 1 frase que é só tocar no ▶ pra ouvir e em Escolher.' };
     case 'consultar_cartorio': return (require('./ri-cartorios.service') as typeof import('./ri-cartorios.service')).consultarCartorios(String(input?.uf || ''), input?.cidade ? String(input.cidade) : undefined);
     case 'ver_certidao': {
@@ -535,6 +578,8 @@ export async function confirmPendingAction(p: { accountId: string; userId: strin
     case 'marcar_status': await callApi(p.token, 'PUT', `/leads/${x.leadId}`, x.body); return { ok: true, resultado: 'Status alterado.' };
     case 'rodar_analise': { const r = await callApi(p.token, 'POST', '/credit-analysis/requests', { leadIds: [x.leadId], banks: x.banks, kind: 'RUN' }); return { ok: true, resultado: `Análise pedida${r?.created ? ` (${r.created} na fila)` : ''}; a extensão roda com o Chrome aberto.` }; }
     case 'solicitar_vistoria': { const v = x.prev; await callApi(p.token, 'POST', '/vistorias/request', { leadId: x.leadId, to: v.to, cc: v.cc, subject: v.subject, body: v.body, replyToId: v.replyToId, attachDriveFileIds: v.ids }); return { ok: true, resultado: 'Pedido de vistoria enviado ao Inter.' }; }
+    case 'rodar_financiamento': await callApi(p.token, 'POST', '/credit-analysis/fh-request', { leadId: x0.leadId, kind: 'RUN', banks: x0.banks }); return { ok: true, resultado: 'Financiamento pedido; as extensões rodam em seguida e o resultado entra no card.' };
+    case 'marcar_pix_pago': await callApi(p.token, 'POST', `/certidoes/${x0.id}/paid`, {}); return { ok: true, resultado: 'PIX marcado como pago; a extensão do ONR vai buscar a certidão.' };
     case 'pedir_certidao_docs': await callApi(p.token, 'POST', '/certidoes/from-docs', { leadId: x0.leadId, sendPix: x0.sendPix !== false }); return { ok: true, resultado: x0.sendPix === false ? 'Certidão pedida; quando o PIX sair (alguns minutos) você recebe um aviso — é só me pedir o PIX que eu mostro pra copiar.' : 'Certidão pedida; a extensão do ONR faz o pedido e o PIX vai pro cliente.' };
     case 'pedir_certidao': await callApi(p.token, 'POST', '/certidoes', x); return { ok: true, resultado: x.sendPix === false ? 'Certidão pedida; quando o PIX sair (alguns minutos) você recebe um aviso — é só me pedir o PIX que eu mostro pra copiar.' : 'Certidão pedida; a extensão do ONR faz o pedido e o PIX vai pro cliente.' };
     default: throw new Error('ação desconhecida');
