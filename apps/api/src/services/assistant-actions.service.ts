@@ -413,8 +413,15 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       const stages = await prisma.stage.findMany({ where: { pipeline: { accountId } }, select: { id: true, name: true, pipeline: { select: { id: true, name: true } } } });
       let c = stages.filter((s) => norm(s.name) === etapa); if (!c.length) c = stages.filter((s) => norm(s.name).includes(etapa));
       if (funil) c = c.filter((s) => norm(s.pipeline.name).includes(funil));
-      const mesmoFunil = c.filter((s) => s.pipeline.id === l.pipeline?.id);
-      if (mesmoFunil.length === 1) c = mesmoFunil;
+      // Sem funil dito pela pessoa, o card FICA no funil em que está (Fabio 29/10): só procura a etapa nele; se não existir lá, avisa em vez de mandar pra outro funil.
+      if (!funil && l.pipeline?.id) {
+        const mesmoFunil = c.filter((s) => s.pipeline.id === l.pipeline?.id);
+        if (!mesmoFunil.length && c.length) {
+          const doFunil = stages.filter((s) => s.pipeline.id === l.pipeline?.id).map((s) => s.name);
+          return { erro: `o funil "${l.pipeline.name}" não tem a etapa "${input?.etapa}" (ela existe em outro funil e eu não troco de funil sem você pedir)`, etapasDoFunil: doFunil };
+        }
+        c = mesmoFunil;
+      }
       if (!c.length) return { erro: `não achei a etapa "${input?.etapa}"${funil ? ` no funil "${input?.funil}"` : ''}` };
       if (c.length > 1) return { erro: 'mais de uma etapa com esse nome — diga o funil', opcoes: c.slice(0, 8).map((s) => `${s.pipeline.name} → ${s.name}`) };
       return pendente({ accountId, userId, tipo: 'mover_card', params: { leadId: l.id, stageId: c[0].id }, descricao: `Mover o ${l.name} de "${l.pipeline?.name} → ${l.stage?.name}" para "${c[0].pipeline.name} → ${c[0].name}".` }, p.fila);
