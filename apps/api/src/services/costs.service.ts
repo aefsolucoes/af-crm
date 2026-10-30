@@ -8,14 +8,17 @@ import { flushProviderUsage } from '../lib/provider-usage';
  *  - Anthropic: ESTIMATIVA pelo uso gravado em AiUsage (tokens × preço de tabela) — a fatura real entra como lançamento "fatura real" e substitui a estimativa;
  *  - WhatsApp: valor REAL cobrado pela Meta (pricing_analytics da conta do WhatsApp Business: categoria, volume e custo por dia);
  *  - Voyage: tokens gravados em ProviderUsage × preço de tabela (estimativa; a Voyage tem uma franquia grátis grande);
- *  - Railway, campanhas da Meta, ElevenLabs, domínio, e-mail, Google…: lançamentos manuais (CostEntry), únicos ou recorrentes.
+ *  - Railway: fatura REAL lida da API da Railway (RAILWAY_API_TOKEN, token do workspace) — cada fatura cai no mês em que foi cobrada (fim do ciclo, dia 18); sem o token, lançamento manual;
+ *  - Anthropic com ANTHROPIC_ADMIN_KEY (chave de administrador do Console): custo REAL do cost_report no lugar da estimativa (Fabio 30/10);
+ *  - campanhas da Meta, ElevenLabs, domínio, e-mail, Google…: lançamentos manuais (CostEntry), únicos ou recorrentes.
  * Dólar: cotação fixa definida à mão (CostSetting.usdBrl) ou a do dia (AwesomeAPI, cache de 6 h; se cair, usa a última conhecida / 5,50).
  */
 
 export const PROVIDERS: Record<string, string> = {
   RAILWAY: 'Railway (hospedagem)',
   META_ADS: 'Meta Ads (campanhas)',
-  ANTHROPIC: 'Anthropic (IA)',
+  ANTHROPIC: 'Anthropic (API da IA)',
+  ANTHROPIC_PLANO: 'Anthropic (assinatura mensal)',
   WHATSAPP: 'WhatsApp (Meta)',
   VOYAGE: 'Voyage (busca da Base)',
   ELEVENLABS: 'ElevenLabs (voz)',
@@ -24,7 +27,10 @@ export const PROVIDERS: Record<string, string> = {
   DOMINIO: 'Domínio / Cloudflare',
   OUTRO: 'Outros',
 };
-const AUTO_PROVIDERS = ['ANTHROPIC', 'WHATSAPP', 'VOYAGE'];
+const RAILWAY_TOKEN = () => process.env.RAILWAY_API_TOKEN || '';
+const RAILWAY_WORKSPACE = () => process.env.RAILWAY_WORKSPACE_ID || '79b43c9c-8d5f-4d38-86cd-e9a4b994847c'; // "aefsolucoes's Projects"
+const ANTHROPIC_ADMIN_KEY = () => process.env.ANTHROPIC_ADMIN_KEY || '';
+const autoProviders = () => ['ANTHROPIC', 'WHATSAPP', 'VOYAGE', ...(RAILWAY_TOKEN() ? ['RAILWAY'] : [])];
 const VOYAGE_USD_POR_MILHAO = 0.06; // voyage-3.5 — preço de tabela SUPOSTO; a Voyage dá centenas de milhões de tokens grátis por conta
 const FALLBACK_USD_BRL = 5.5;
 
@@ -117,6 +123,72 @@ async function whatsappCost(accountId: string, month: string): Promise<WaResult>
   return data;
 }
 
+// ── Railway: faturas (GraphQL público da Railway) ────────────────────────────
+type RwInvoice = { periodStart: string; periodEnd: string; total: number; amountPaid: number; status: string };
+type RwData = { invoices: RwInvoice[]; currentUsage: number; periodEnd: string | null };
+let rwCache: { at: number; data: RwData } | null = null;
+const brtMonth = (iso: string) => new Date(new Date(iso).getTime() - BRT_MS).toISOString().slice(0, 7);
+
+async function railwayData(): Promise<RwData | { error: string }> {
+  if (rwCache && Date.now() - rwCache.at < 30 * 60_000) return rwCache.data;
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 15_000);
+    const r = await fetch('https://backboard.railway.com/graphql/v2', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RAILWAY_TOKEN()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: 'query($id:String!){ workspace(workspaceId:$id){ customer { currentUsage billingPeriod { end } invoices { periodStart periodEnd total amountPaid status } } } }',
+        variables: { id: RAILWAY_WORKSPACE() },
+      }),
+      signal: ctl.signal,
+    });
+    clearTimeout(t);
+    const j: any = await r.json().catch(() => ({}));
+    const c = j?.data?.workspace?.customer;
+    if (!r.ok || !c) return { error: j?.errors?.[0]?.message || `HTTP ${r.status}` };
+    const data: RwData = { invoices: (c.invoices || []).filter((i: any) => i?.periodEnd), currentUsage: Number(c.currentUsage) || 0, periodEnd: c.billingPeriod?.end || null };
+    rwCache = { at: Date.now(), data };
+    return data;
+  } catch (e: any) { return { error: e?.name === 'AbortError' ? 'A Railway demorou demais pra responder.' : String(e?.message || e).slice(0, 160) }; }
+}
+
+// ── Anthropic: custo real (Admin API cost_report, valores em centavos de dólar) ─
+const antCache = new Map<string, { at: number; usd: number }>();
+
+async function anthropicRealCost(month: string): Promise<{ usd: number } | { error: string } | null> {
+  if (!ANTHROPIC_ADMIN_KEY()) return null;
+  const cur = month === currentMonth();
+  const hit = antCache.get(month);
+  if (hit && Date.now() - hit.at < (cur ? 30 * 60_000 : 12 * 3600_000)) return { usd: hit.usd };
+  const start = new Date(`${month}-01T00:00:00Z`);
+  const end = new Date(Math.min(new Date(`${addMonths(month, 1)}-01T00:00:00Z`).getTime(), Date.now()));
+  if (end <= start) return { usd: 0 };
+  try {
+    let cents = 0;
+    let page: string | null = null;
+    for (let i = 0; i < 5; i++) {
+      const qs = new URLSearchParams({ starting_at: start.toISOString(), ending_at: end.toISOString(), bucket_width: '1d', limit: '31' });
+      if (page) qs.set('page', page);
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 15_000);
+      const r = await fetch(`https://api.anthropic.com/v1/organizations/cost_report?${qs}`, {
+        headers: { 'x-api-key': ANTHROPIC_ADMIN_KEY(), 'anthropic-version': '2023-06-01' },
+        signal: ctl.signal,
+      });
+      clearTimeout(t);
+      const j: any = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: j?.error?.message || `HTTP ${r.status}` };
+      for (const b of j.data || []) for (const it of b.results || []) if (!it.currency || it.currency === 'USD') cents += Number(it.amount) || 0;
+      if (!j.has_more || !j.next_page) break;
+      page = j.next_page;
+    }
+    const usd = cents / 100;
+    antCache.set(month, { at: Date.now(), usd });
+    return { usd };
+  } catch (e: any) { return { error: e?.name === 'AbortError' ? 'A Anthropic demorou demais pra responder.' : String(e?.message || e).slice(0, 160) }; }
+}
+
 // ── lançamentos manuais ──────────────────────────────────────────────────────
 export type EntryDTO = {
   id: string; provider: string; label: string; amount: number; currency: string; month: string; recurring: boolean; endMonth: string | null; kind: string; campaign: string | null; note: string | null;
@@ -174,6 +246,7 @@ export type MonthCosts = { month: string; totalBrl: number; providers: ProviderB
 async function monthCosts(accountId: string, month: string, usdBrl: number, entries: EntryDTO[], withDetail: boolean): Promise<MonthCosts> {
   const from = `${month}-01`;
   const toExcl = `${addMonths(month, 1)}-01`;
+  const AUTO = autoProviders();
   const blocks = new Map<string, ProviderBlock>();
   const block = (p: string): ProviderBlock => {
     let b = blocks.get(p);
@@ -193,7 +266,30 @@ async function monthCosts(accountId: string, month: string, usdBrl: number, entr
     }
     const detail: Record<string, unknown> = { calls, errors, tokensIn, tokensOut, firstDay: ai.length ? ai.reduce((m, r) => (r.day < m ? r.day : m), ai[0].day) : null };
     if (withDetail) detail.topFeatures = [...byFeature].sort((a, b) => b[1].usd - a[1].usd).slice(0, 10).map(([feature, v]) => ({ feature, usd: round2(v.usd), calls: v.calls }));
-    block('ANTHROPIC').auto = { kind: 'ESTIMATIVA', usd: round2(usd), brl: round2(usd * usdBrl), noData: !ai.length, detail };
+    const real = await anthropicRealCost(month);
+    if (real && 'usd' in real) {
+      detail.estimativaUsd = round2(usd);
+      block('ANTHROPIC').auto = { kind: 'REAL', usd: round2(real.usd), brl: round2(real.usd * usdBrl), noData: real.usd === 0 && !ai.length, detail };
+    } else {
+      if (real?.error) detail.realError = real.error;
+      block('ANTHROPIC').auto = { kind: 'ESTIMATIVA', usd: round2(usd), brl: round2(usd * usdBrl), noData: !ai.length, detail };
+    }
+  }
+
+  // Railway — fatura real (só com RAILWAY_API_TOKEN)
+  if (RAILWAY_TOKEN()) {
+    const rw = await railwayData();
+    if ('error' in rw) block('RAILWAY').auto = { kind: 'REAL', usd: 0, brl: 0, error: rw.error, detail: {} };
+    else {
+      const faturas = rw.invoices.filter((i) => brtMonth(i.periodEnd) === month);
+      const cents = faturas.reduce((s, i) => s + (i.status === 'paid' ? i.amountPaid : i.total), 0);
+      const usd = Math.max(0, cents) / 100;
+      const detail: Record<string, unknown> = {
+        faturas: faturas.map((i) => ({ de: i.periodStart.slice(0, 10), ate: i.periodEnd.slice(0, 10), usd: round2((i.status === 'paid' ? i.amountPaid : i.total) / 100), status: i.status })),
+      };
+      if (month === currentMonth()) { detail.cicloAtualUsd = round2(rw.currentUsage); detail.cicloAte = rw.periodEnd?.slice(0, 10) || null; }
+      block('RAILWAY').auto = { kind: 'REAL', usd: round2(usd), brl: round2(usd * usdBrl), noData: !faturas.length && month !== currentMonth(), detail };
+    }
   }
 
   // Voyage — tokens × preço de tabela
@@ -225,9 +321,9 @@ async function monthCosts(accountId: string, month: string, usdBrl: number, entr
   // totais por fornecedor: fatura real substitui a estimativa automática
   for (const b of blocks.values()) {
     const actual = b.manual.filter((m) => m.kind === 'ACTUAL');
-    const rest = b.manual.filter((m) => m.kind !== 'ACTUAL' || !AUTO_PROVIDERS.includes(b.provider));
+    const rest = b.manual.filter((m) => m.kind !== 'ACTUAL' || !AUTO.includes(b.provider));
     const manualBrl = b.manual.reduce((s, m) => s + m.brl, 0);
-    if (b.auto && actual.length && AUTO_PROVIDERS.includes(b.provider)) {
+    if (b.auto && actual.length && AUTO.includes(b.provider)) {
       b.replacedAuto = true;
       b.brl = round2(actual.reduce((s, m) => s + m.brl, 0) + rest.reduce((s, m) => s + m.brl, 0));
     } else {
@@ -235,7 +331,7 @@ async function monthCosts(accountId: string, month: string, usdBrl: number, entr
     }
     b.usd = usdBrl > 0 ? round2(b.brl / usdBrl) : 0;
   }
-  const providers = [...blocks.values()].filter((b) => b.brl > 0 || b.manual.length || (b.auto && !b.auto.noData) || b.auto?.error || AUTO_PROVIDERS.includes(b.provider));
+  const providers = [...blocks.values()].filter((b) => b.brl > 0 || b.manual.length || (b.auto && !b.auto.noData) || b.auto?.error || AUTO.includes(b.provider));
   providers.sort((a, b) => b.brl - a.brl);
   return { month, totalBrl: round2(providers.reduce((s, b) => s + b.brl, 0)), providers };
 }
@@ -254,6 +350,6 @@ export async function costsOverview(accountId: string, month: string, months = 6
     selected,
     trend: results.map((r) => ({ month: r.month, totalBrl: r.totalBrl, byProvider: Object.fromEntries(r.providers.filter((p) => p.brl > 0).map((p) => [p.provider, p.brl])) })),
     entries: entries.filter((e) => appliesTo(e, month)),
-    providerOptions: Object.entries(PROVIDERS).map(([key, label]) => ({ key, label, auto: AUTO_PROVIDERS.includes(key) })),
+    providerOptions: Object.entries(PROVIDERS).map(([key, label]) => ({ key, label, auto: autoProviders().includes(key) })),
   };
 }

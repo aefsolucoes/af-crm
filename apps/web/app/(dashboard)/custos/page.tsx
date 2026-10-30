@@ -29,7 +29,7 @@ interface Overview {
 interface MonthRow { month: string; entered: number; approved: number; docsSent: number; contracted: number }
 
 const COLORS: Record<string, string> = {
-  WHATSAPP: '#16a34a', ANTHROPIC: '#7c3aed', RAILWAY: '#0ea5e9', META_ADS: '#2563eb', VOYAGE: '#f59e0b',
+  WHATSAPP: '#16a34a', ANTHROPIC: '#7c3aed', ANTHROPIC_PLANO: '#a78bfa', RAILWAY: '#0ea5e9', META_ADS: '#2563eb', VOYAGE: '#f59e0b',
   ELEVENLABS: '#ec4899', GOOGLE: '#ef4444', EMAIL: '#14b8a6', DOMINIO: '#64748b', OUTRO: '#94a3b8',
 };
 const WA_CAT: Record<string, string> = { MARKETING: 'Marketing', UTILITY: 'Utilidade', SERVICE: 'Atendimento', AUTHENTICATION: 'Autenticação', MARKETING_LITE: 'Marketing lite' };
@@ -139,10 +139,10 @@ export default function CustosPage() {
     <div className="flex flex-col h-full">
       <Topbar title="Custos do CRM" subtitle="Tudo que é pago por causa do CRM, mês a mês — IA, WhatsApp, hospedagem, campanhas e o resto" />
       <div className="flex-1 overflow-auto px-4 md:px-6 py-4 space-y-4 scrollbar-thin">
-        <div className="flex flex-wrap items-center gap-2">
-          <button onClick={() => setMonth(shiftMonth(month, -1))} className="p-1.5 rounded-lg border border-af-border hover:bg-af-light" title="Mês anterior"><ChevronLeft size={16} /></button>
+        <div className="flex flex-wrap items-center gap-2 bg-white rounded-xl border border-af-border shadow-sm px-3 py-2">
+          <button onClick={() => setMonth(shiftMonth(month, -1))} className="p-1.5 rounded-lg border border-af-border text-slate-700 hover:bg-af-light" title="Mês anterior"><ChevronLeft size={16} /></button>
           <span className="text-sm font-semibold text-slate-800 min-w-[150px] text-center">{monthLabel(month).replace(/^./, (c) => c.toUpperCase())}</span>
-          <button onClick={() => setMonth(shiftMonth(month, 1))} disabled={month >= nowMonth()} className="p-1.5 rounded-lg border border-af-border hover:bg-af-light disabled:opacity-30" title="Próximo mês"><ChevronRight size={16} /></button>
+          <button onClick={() => setMonth(shiftMonth(month, 1))} disabled={month >= nowMonth()} className="p-1.5 rounded-lg border border-af-border text-slate-700 hover:bg-af-light disabled:opacity-30" title="Próximo mês"><ChevronRight size={16} /></button>
           {month !== nowMonth() && <button onClick={() => setMonth(nowMonth())} className="text-xs text-af-mid underline">Mês atual</button>}
           {data && (
             <div className="ml-auto text-[11px] text-slate-500 flex items-center gap-2">
@@ -203,7 +203,7 @@ export default function CustosPage() {
                 {data.selected.providers.map((b) => {
                   const isOpen = !!open[b.provider];
                   const pct = total > 0 ? (b.brl / total) * 100 : 0;
-                  const tag = b.replacedAuto ? 'fatura real' : b.auto ? (b.auto.kind === 'REAL' ? 'real (Meta)' : 'estimativa') : 'manual';
+                  const tag = b.replacedAuto ? 'fatura real' : b.auto ? (b.auto.kind === 'REAL' ? (b.provider === 'WHATSAPP' ? 'real (Meta)' : b.provider === 'RAILWAY' ? 'fatura (Railway)' : 'real') : 'estimativa') : 'manual';
                   return (
                     <div key={b.provider}>
                       <button onClick={() => setOpen({ ...open, [b.provider]: !isOpen })} className="w-full flex items-center gap-3 py-2.5 text-left hover:bg-slate-50 px-1 rounded">
@@ -310,7 +310,9 @@ function BlockDetail({ b, onEdit, onDelete }: { b: Block; onEdit: (e: Entry) => 
       {b.auto?.error && <p className="text-red-600">Não consegui ler o valor: {b.auto.error}</p>}
       {b.provider === 'ANTHROPIC' && b.auto && (
         <div>
-          <p>{b.auto.noData ? 'Sem uso registrado nesse mês (o registro começou em 16/10).' : <>Estimativa <b>{usd(b.auto.usd)}</b> ({brl(b.auto.brl)}) · {n0(d.calls || 0)} chamadas{d.errors ? `, ${n0(d.errors)} com erro` : ''} · {n0(d.tokensIn || 0)} tokens de entrada, {n0(d.tokensOut || 0)} de saída{d.firstDay ? ` · dados desde ${d.firstDay.split('-').reverse().join('/')}` : ''}</>}</p>
+          {b.auto.kind === 'REAL' && <p>Custo <b>real</b> da API lido da Anthropic: <b>{usd(b.auto.usd)}</b> ({brl(b.auto.brl)}){d.estimativaUsd != null ? <> · a estimativa pelo uso gravado dava {usd(d.estimativaUsd)}</> : null}. A assinatura mensal fica na linha "Anthropic (assinatura mensal)".</p>}
+          {d.realError && <p className="text-amber-700">Não consegui ler o custo real na Anthropic ({d.realError}) — mostrando a estimativa.</p>}
+          {b.auto.kind !== 'REAL' && <p>{b.auto.noData ? 'Sem uso registrado nesse mês (o registro começou em 16/10).' : <>Estimativa <b>{usd(b.auto.usd)}</b> ({brl(b.auto.brl)}) · {n0(d.calls || 0)} chamadas{d.errors ? `, ${n0(d.errors)} com erro` : ''} · {n0(d.tokensIn || 0)} tokens de entrada, {n0(d.tokensOut || 0)} de saída{d.firstDay ? ` · dados desde ${d.firstDay.split('-').reverse().join('/')}` : ''}</>}</p>}
           {b.replacedAuto && <p className="text-emerald-700">Substituída pela fatura real lançada.</p>}
           {!!d.topFeatures?.length && (
             <table className="mt-1 w-full max-w-xl"><tbody>
@@ -341,6 +343,21 @@ function BlockDetail({ b, onEdit, onDelete }: { b: Block; onEdit: (e: Entry) => 
               })()}
             </>
           )}
+        </div>
+      )}
+      {b.provider === 'RAILWAY' && b.auto && !b.auto.error && (
+        <div>
+          {(d.faturas || []).length ? (
+            <table className="w-full max-w-xl"><tbody>
+              {d.faturas.map((f: any, i: number) => (
+                <tr key={i} className="border-t border-slate-100">
+                  <td className="py-1 pr-2">Fatura {f.de.split('-').reverse().join('/')} a {f.ate.split('-').reverse().join('/')}{f.status !== 'paid' ? <span className="text-amber-700"> · em aberto</span> : ''}</td>
+                  <td className="text-right w-24">{usd(f.usd)}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          ) : <p>Nenhuma fatura da Railway fechou nesse mês.</p>}
+          {d.cicloAtualUsd != null && <p className="mt-1">Ciclo atual até agora: <b>{usd(d.cicloAtualUsd)}</b>{d.cicloAte ? ` — fecha em ${d.cicloAte.split('-').reverse().join('/')} e entra no mês da cobrança` : ''}.</p>}
         </div>
       )}
       {b.provider === 'VOYAGE' && b.auto && (
