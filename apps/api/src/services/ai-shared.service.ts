@@ -444,6 +444,8 @@ export async function aiEmailsContext(leadId: string, opts: { dias?: number; max
   });
   const itens = rows
     .filter((m) => /^📧/.test(m.content) && (comEngajamento || !/Engajamento Autom[aá]tico/i.test(m.content.split('\n')[0])))
+    // Questionário da contratação do Inter: quem pergunta ao cliente é o inter-questionario.service (Fabio 30/10, Pedro: a IA repassou solto e perguntou "física ou digital", que é sempre digital).
+    .filter((m) => !(/question[aá]rio/i.test(m.content) && /vencimento/i.test(m.content) && /im[oó]ve(l|is)\s+(foi\s+|foram\s+)?aprovad|vistoria\s+(foi\s+)?conclu[ií]da|laudo\s+(foi\s+)?conclu[ií]do/i.test(m.content)))
     .slice(0, max)
     .reverse()
     .map((m) => {

@@ -217,6 +217,11 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
     }
   }
   if (kind === 'VISTORIA_CONCLUIDA') await marcarVistoriaConcluida(acc.accountId, leadId, fresh, io).catch((e) => console.warn('[Inter e-mail] vistoria concluída:', e?.message));
+  // Questionário da contratação (vencimento, assinatura, registro, despesas…): o CRM pergunta ao cliente e responde o consultor (inter-questionario.service, Fabio 30/10).
+  if (kind === 'VISTORIA_CONCLUIDA') {
+    const iq = require('./inter-questionario.service') as typeof import('./inter-questionario.service');
+    if (iq.pedeQuestionarioContratacao(fresh)) await iq.iniciarQuestionarioInter(acc.accountId, leadId, row.id, io as any).catch((e) => console.warn('[Inter e-mail] questionário:', e?.message));
+  }
   io?.to(`account_${acc.accountId}`).emit('lead_updated', { leadId });
   return true;
 }

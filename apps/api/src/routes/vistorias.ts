@@ -62,4 +62,16 @@ router.post('/santander/run', async (req: AuthRequest, res: Response) => {
   try { res.json(await executarVistoriaSantander(req.user!.accountId, String(req.body?.leadId || ''), (req as any).app.get('io'))); } catch (err) { fail(res, err, 'Erro ao avançar a vistoria do Santander'); }
 });
 
+// ── Questionário da contratação do Inter (vistoria concluída) — ver inter-questionario.service.ts ──
+router.get('/inter-questionario', async (req: AuthRequest, res: Response) => {
+  try { const { questionarioPreview } = require('../services/inter-questionario.service') as typeof import('../services/inter-questionario.service'); res.json(await questionarioPreview(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao ler o questionário'); }
+});
+// Começa à mão (e-mail que chegou antes do fluxo existir). jaPerguntadoEm = a pergunta já foi feita ao cliente nessa hora (só lê as respostas).
+router.post('/inter-questionario/start', async (req: AuthRequest, res: Response) => {
+  try { const { iniciarManual } = require('../services/inter-questionario.service') as typeof import('../services/inter-questionario.service'); res.json(await iniciarManual(req.user!.accountId, String(req.body?.leadId || ''), (req as any).app.get('io'), req.body?.jaPerguntadoEm ? String(req.body.jaPerguntadoEm) : undefined)); } catch (err) { fail(res, err, 'Erro ao começar o questionário'); }
+});
+router.post('/inter-questionario/send', async (req: AuthRequest, res: Response) => {
+  try { const { enviarEmailQuestionario } = require('../services/inter-questionario.service') as typeof import('../services/inter-questionario.service'); const out = await enviarEmailQuestionario(req.user!.accountId, String(req.body?.leadId || ''), (req as any).app.get('io')); if (!out.ok) return res.status(400).json({ error: out.erro }); res.json(out); } catch (err) { fail(res, err, 'Erro ao responder o Inter'); }
+});
+
 export default router;
