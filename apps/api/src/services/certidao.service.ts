@@ -129,7 +129,7 @@ export async function createCertidaoRequest(db: Db, p: { accountId: string; lead
   let precisaAchar = false;
   if (porEndereco && /^auto$/i.test(cartorio)) {
     try { const c = (require('./ri-cartorios.service') as typeof import('./ri-cartorios.service')).consultarCartorios(uf, cidade) as any; precisaAchar = Array.isArray(c?.naCidade) && c.naCidade.length > 1; } catch { /* sem mapa: segue */ }
-    if (precisaAchar) ajuste += ' Antes do pedido, a extensão acha o cartório no Mapa do ONR pelo endereço e grava no card.';
+    if (precisaAchar) ajuste += ' Antes do pedido, o CRM acha o cartório pela pesquisa nas fontes oficiais e grava no card.';
   }
   if (p.source === 'MAPA' && !precisaAchar) return { request: null as any, duplicate: true }; // só consulta e não precisa do mapa: nada a fazer
   const request = await db.certidaoRequest.create({
@@ -161,7 +161,7 @@ async function acharCartorioPelaWeb(db: Db, id: string): Promise<void> {
     }
   } catch (err: any) {
     console.warn('[Certidão] pesquisa do cartório na web:', err?.message);
-    await db.certidaoRequest.updateMany({ where: { id, status: 'FIND_WEB' }, data: { status: 'FIND' } }).catch(() => {});
+    await db.certidaoRequest.updateMany({ where: { id, status: 'FIND_WEB' }, data: { status: 'FAILED', finishedAt: new Date(), detail: 'A pesquisa do cartório deu erro. Informe o cartório e peça de novo.' } }).catch(() => {});
   }
 }
 
@@ -176,7 +176,7 @@ export async function listCertidoes(db: Db, p: { accountId: string; leadId?: str
 /** Pedidos que ficaram sem dono: o que já tem protocolo vira "aguardando pagamento" (a fase PIX acha o código); o que não tem NÃO é refeito sozinho (pode já existir no portal e cobrar de novo). */
 async function expireStuck(db: Db, accountId: string) {
   const agora = Date.now();
-  await db.certidaoRequest.updateMany({ where: { accountId, status: 'FIND_WEB', createdAt: { lt: new Date(agora - 5 * 60_000) } }, data: { status: 'FIND' } }).catch(() => {});
+  await db.certidaoRequest.updateMany({ where: { accountId, status: 'FIND_WEB', createdAt: { lt: new Date(agora - 5 * 60_000) } }, data: { status: 'FAILED', finishedAt: new Date(), detail: 'A pesquisa do cartório não respondeu em 5 min. Informe o cartório e peça de novo.' } }).catch(() => {});
   // Achando o cartório há mais de 10 min (extensão fechada/travou): falha com motivo — dá pra pedir de novo.
   await db.certidaoRequest.updateMany({ where: { accountId, status: 'FINDING', startedAt: { lt: new Date(agora - 10 * 60_000) } }, data: { status: 'FAILED', finishedAt: new Date(), detail: 'A extensão não respondeu ao procurar o cartório no Mapa do ONR (10 min). Peça de novo.' } }).catch(() => {});
   const rodando = await db.certidaoRequest.findMany({ where: { accountId, status: 'RUNNING', startedAt: { lt: new Date(agora - RUNNING_TTL_MIN * 60_000) } }, select: { id: true, leadId: true, protocolo: true, matricula: true } });
