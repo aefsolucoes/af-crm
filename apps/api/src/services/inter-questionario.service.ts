@@ -170,26 +170,12 @@ async function arquivosDoDrive(accountId: string, cf: Cf): Promise<DriveF[]> {
   try { const { extractFolderId, listAllFilesInFolderTree } = await import('./google.service'); return (await listAllFilesInFolderTree(accountId, extractFolderId(link), 3)) as DriveF[]; } catch { return []; }
 }
 
-/** Endereço pelos campos do imóvel no card + CEP (ViaCEP): Pedro não tinha a proposta com "Endereço do imóvel" nem leitura de documento com endereço, e o e-mail saiu "(confirmo em seguida)". */
-export async function enderecoDoCard(cf: Cf): Promise<string | null> {
-  const cep = String(cf.imovel_cep || '').replace(/\D/g, '');
-  if (cep.length !== 8 || vazio(cf.imovel_numero)) return null;
-  const v = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: AbortSignal.timeout(6000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null) as Record<string, any> | null;
-  if (!v || v.erro || vazio(v.logradouro)) return null;
-  return [`${v.logradouro}, ${String(cf.imovel_numero).trim()}${vazio(cf.imovel_complemento) ? '' : ` - ${String(cf.imovel_complemento).trim()}`}`, v.bairro, `${v.localidade}/${v.uf}`, `CEP ${cep.slice(0, 5)}-${cep.slice(5)}`]
-    .filter((x) => !vazio(x)).join(' — ');
-}
-
+/** Endereço dos proponentes = o do imóvel: o campo "Endereço do imóvel" do card (preenchido sozinho pela documentação — endereco-imovel.service) ou, sem ele,
+ *  proposta/documentos/CEP do card. */
 async function enderecoTexto(leadId: string, cf: Cf): Promise<string | null> {
-  const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
-  const e = await enderecoDoImovel(leadId, cf).catch(() => null);
-  if (!e) return enderecoDoCard(cf);
-  const x = e.endereco as Record<string, any>;
-  const cep = String(x.cep || '').replace(/\D/g, '');
-  return [
-    `${[x.tipoLogradouro, x.logradouro].filter((v) => !vazio(v)).join(' ')}${vazio(x.numero) ? '' : `, ${x.numero}`}${vazio(x.complemento) ? '' : ` - ${x.complemento}`}`,
-    x.bairro, `${e.cidade}/${e.uf}`, cep.length === 8 ? `CEP ${cep.slice(0, 5)}-${cep.slice(5)}` : null,
-  ].filter((v) => !vazio(v)).join(' — ');
+  if (!vazio(cf.endereco_imovel)) return String(cf.endereco_imovel).trim();
+  const { enderecoDoImovelInfo } = require('./endereco-imovel.service') as typeof import('./endereco-imovel.service');
+  return (await enderecoDoImovelInfo(leadId, cf).catch(() => null))?.texto || null;
 }
 
 const PRIMEIRO_NOME = (s: string | null | undefined) => { const w = String(s || '').trim().split(/\s+/)[0] || ''; return /^[A-Za-zÀ-ÿ]{2,}$/.test(w) ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ''; };
