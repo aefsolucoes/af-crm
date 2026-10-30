@@ -325,7 +325,7 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
         const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { customFields: true } });
         const cf = { ...((lead?.customFields || {}) as Record<string, any>) };
         if (!String(cf.cartorio_registro || '').trim()) {
-          const txt = /(\d{1,2})\s*[º°ª]?\s*(?:Oficial de\s+)?Registro de Im[óo]veis de [^.]+/i.exec(String(d.origem || ''));
+          const txt = /(\d{1,2})\s*[º°ª]?\s*(?:Oficial de\s+|Of[íi]cio de\s+)?Registro de Im[óo]veis (?:da Comarca )?(?:de|do|da) [^.(:]+/i.exec(String(d.origem || ''));
           cf.cartorio_registro = (txt ? txt[0] : cartorio).replace(/\s+-\s+[A-Z]{2}\s*$/, '').trim().slice(0, 120);
           await db.lead.update({ where: { id: r.leadId }, data: { customFields: cf as any } });
         }
