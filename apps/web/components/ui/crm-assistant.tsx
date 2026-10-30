@@ -27,6 +27,9 @@ type Voice = { id: string; nome: string; desc: string };
 const VOZ_KEY = 'af_jarvis_voz';
 const lerVoz = () => { try { return localStorage.getItem(VOZ_KEY) || ''; } catch { return ''; } };
 const STORE_KEY = 'af_crm_jarvis_ctx';
+// Conversa ativa (sessionStorage, por aba): se a página recarregar no meio — depois de um deploy, a 1ª troca de tela recarrega o site inteiro — a conversa volta sozinha (Fabio 30/10: "mudei de tela e ela parou").
+const ATIVO_KEY = 'af_jarvis_ativo';
+function marcaAtivo(on: boolean) { try { if (on) sessionStorage.setItem(ATIVO_KEY, String(Date.now())); else sessionStorage.removeItem(ATIVO_KEY); } catch { /* */ } }
 const SPOKEN_KEY = 'af_crm_assistant_reminders_spoken';
 const ORB = 64;
 const MOVE_MS = 4200;
@@ -538,7 +541,7 @@ export function CrmAssistant() {
   }
 
   function parar() {
-    vozRef.current = false; setVoz('off'); calar();
+    vozRef.current = false; setVoz('off'); calar(); marcaAtivo(false);
     try { recRef.current?.abort?.(); } catch { /* */ }
   }
   function escolherVoz(v: Voice) {
@@ -555,9 +558,12 @@ export function CrmAssistant() {
     const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) { toast('Este navegador não reconhece fala (use o Chrome ou o Safari)', 'error'); return; }
     vozRef.current = true;
+    marcaAtivo(true);
+    const pulso = setInterval(() => { if (vozRef.current) marcaAtivo(true); else clearInterval(pulso); }, 5000);
     if (!precisaClique) setCard(null);
     const inicial = partidaRef.current; partidaRef.current = '';
-    if (!inicial) await falar(primeiroNome ? `Oi, ${primeiroNome}.` : 'Oi.');
+    if (retomarRef.current) { retomarRef.current = false; setCard({ fala: 'Voltei — a tela recarregou. Pode falar.' }); }
+    else if (!inicial) await falar(primeiroNome ? `Oi, ${primeiroNome}.` : 'Oi.');
     let primeira = inicial;
     let silencios = 0;
     let falhasMic = 0;
@@ -626,6 +632,17 @@ export function CrmAssistant() {
     parar();
   }
   useEffect(() => () => { vozRef.current = false; calar(); }, []);
+  // Página recarregou no meio da conversa (até 90 s atrás): retoma ouvindo, sem o "oi" de novo; o histórico já está no localStorage.
+  const retomarRef = useRef(false);
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const at = Number(sessionStorage.getItem(ATIVO_KEY) || 0);
+      if (at && Date.now() - at < 90_000) t = setTimeout(() => { if (!vozRef.current && vozIdRef.current) { retomarRef.current = true; void conversar(); } else marcaAtivo(false); }, 800);
+      else marcaAtivo(false);
+    } catch { /* */ }
+    return () => { if (t) clearTimeout(t); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!chamarPorNome || !vozNome || voz !== 'off') return;
     const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
