@@ -407,7 +407,7 @@ function parseSimulate(raw: unknown): { prazo?: number; valor?: number } | null 
   const prazo = Math.round(Number(o.prazo));
   const valor = Math.round(Number(typeof o.valor === 'string' ? o.valor.replace(/[R$\s.]/g, '').replace(',', '.') : o.valor));
   const out: { prazo?: number; valor?: number } = {};
-  if (prazo >= 60 && prazo <= 240) out.prazo = prazo;
+  if (prazo >= 60 && prazo <= 420) out.prazo = prazo; // Home Equity até 240 (o CRM confere); Financiamento até 420
   if (valor >= 10_000 && valor <= 5_000_000) out.valor = valor;
   return out.prazo || out.valor ? out : null;
 }

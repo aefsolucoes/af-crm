@@ -359,6 +359,18 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   io?.to(`lead:${lead.id}`).emit('lead_updated', { leadId: lead.id });
   if (!lead.aiAutoReplyActive) { await note(lead.id, '💬 A IA deste card está desligada: mande a simulação do banco escolhido, a lista de documentos, os próximos passos e as taxas, e pergunte se ele quer aprovar também na CAIXA e no BRB.'); return true; }
   if (jaEra && cf._fhDocsAt) return true; // tocou de novo no mesmo botão: não repete
+  // Nova proposta (outro prazo/valor) de quem JÁ recebeu a lista de documentos: só a simulação em PDF do banco escolhido, sem repetir documentos/passos/taxas.
+  if (cf._fhDocsAt) {
+    const instNova = PDF_INST[banco];
+    if (instNova) {
+      try {
+        const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+        await requestSimulationDocs(prisma as any, { accountId, leadId: lead.id, institutions: [instNova], source: 'AI', caption: `Segue a nova simulação do financiamento no ${banco} em PDF 📄` });
+      } catch (e: any) { await note(lead.id, `⚠️ Não consegui pedir a simulação do ${banco} em PDF (${e?.message}). Mande à mão.`); }
+    }
+    await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Seguimos com o *${banco}* nessa nova proposta. Já te mando a simulação em PDF.` });
+    return true;
+  }
   const pausa = () => new Promise((r) => setTimeout(r, 1200));
   // Simulação do banco escolhido: a extensão do Credimorar baixa o "Evolução das parcelas" e o CRM manda com a logo A&F.
   const inst = PDF_INST[banco];

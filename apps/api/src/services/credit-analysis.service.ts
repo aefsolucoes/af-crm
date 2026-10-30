@@ -1825,6 +1825,7 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   if (cf._fhResumo) {
     const fh = parseBancosFinanciamento(cf._fhResumo);
     for (const [banco, b] of Object.entries(fh)) linhas.push(`- ${banco} (Financiamento Habitacional): ${b.texto.slice(0, 260)}`);
+    linhas.push(`- NOVA PROPOSTA NO FINANCIAMENTO: se o cliente pedir OUTRO prazo (60 a 420 meses) ou OUTRO valor financiado, use "simulate" ({"prazo": N} e/ou {"valor": N}) — o CRM roda uma simulação nova no Credimorar e no Inter e o aviso com o resultado sai sozinho. Nunca invente parcela.${cf._fhPrazo ? ` Última simulação pedida com ${cf._fhPrazo} meses.` : ''}`);
   }
   linhas.push(...(await caixaBrbContext(db, leadId, cf)));
   if (!linhas.length) return '';
@@ -1917,18 +1918,39 @@ const fmtBRL = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionD
 
 /** A IA marca `simulate` {prazo?, valor?}: o CRM guarda o prazo/valor como ajuste dos bancos que já aprovaram (o escolhido pelo cliente, senão todos) e pede uma análise REAL nova.
  *  Creditas não deixa escolher prazo (o portal oferece as opções): numa troca só de prazo ele fica de fora. O resultado vira o aviso padrão de aprovação (finishProposalChange). */
+/** Financiamento Habitacional: o cliente pediu OUTRO prazo (até 420 meses) ou OUTRO valor financiado (Fabio 29/10: "todo o processo do HE deve migrar pro FH").
+ *  Grava no card (`_fhPrazo` lido pelas extensões; valor financiado e entrada) e roda uma simulação NOVA no Credimorar FH e no Inter FH. O aviso do FH sai de novo
+ *  com o resultado (o anterior é zerado); quem já recebeu a lista de documentos só recebe o PDF quando escolher. */
+async function novaPropostaFh(db: Db, accountId: string, leadId: string, p: { prazo: number; valor: number }, cf: Record<string, any>): Promise<{ ok: boolean; detail: string }> {
+  if (p.prazo && !(p.prazo >= 60 && p.prazo <= 420)) return { ok: false, detail: `prazo de ${p.prazo} meses fora do Financiamento (60 a 420)` };
+  if (!cf._fhResumo) return { ok: false, detail: 'o Financiamento deste cliente ainda não rodou (use a análise normal)' };
+  const imovel = Number(String(cf.valor_imovel || '').replace(/[^\d.]/g, '')) || 0;
+  if (p.valor && imovel && p.valor > imovel * 0.8) return { ok: false, detail: `o valor pedido (${fmtBRL(p.valor)}) passa de 80% do imóvel (${fmtBRL(imovel)})` };
+  const fresh = ((await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+  const novo: Record<string, any> = { ...fresh };
+  if (p.prazo) novo._fhPrazo = p.prazo;
+  if (p.valor) { novo._valorPedido = fresh.valor_credito; novo.valor_credito = String(p.valor); if (imovel) novo.valor_entrada = String(imovel - p.valor); }
+  for (const k of ['_fhNotice', '_fhFirstApprovalAt', '_fhChosen', '_fhNoticeTeamAt']) delete novo[k];
+  novo._changeAsk = [p.prazo && `o prazo de ${p.prazo} meses`, p.valor && `o valor de ${fmtBRL(p.valor)}`].filter(Boolean).join(' e ');
+  await db.lead.update({ where: { id: leadId }, data: { customFields: novo as any, ...(p.valor ? { value: p.valor } : {}) } });
+  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: [FH_BANK, FH_INTER_BANK], dryRun: false, kind: 'RUN', source: 'AI', force: true, queueIfBusy: true });
+  if (!r.created) return { ok: false, detail: 'já havia análise do Financiamento em andamento' };
+  return { ok: true, detail: `simulação NOVA do Financiamento pedida (Credimorar e Inter) com ${novo._changeAsk}` };
+}
+
 export async function requestProposalChangeForAi(db: Db, accountId: string, leadId: string, p: { prazo?: number; valor?: number }): Promise<{ ok: boolean; detail: string }> {
   const prazo = p.prazo ? Math.round(Number(p.prazo)) : 0;
   const valor = p.valor ? Math.round(Number(p.valor)) : 0;
   if (!prazo && !valor) return { ok: false, detail: 'sem prazo nem valor pra analisar' };
-  if (prazo && !(prazo >= 60 && prazo <= 240)) return { ok: false, detail: `prazo de ${p.prazo} meses fora do que os bancos aceitam (60 a 240)` };
   const set = await db.creditAutoSetting.findUnique({ where: { accountId } });
   if (!set?.enabled) return { ok: false, detail: 'a "Análise automática" do CRM está desligada' };
   if (set.paused) return { ok: false, detail: 'a pausa geral das execuções automáticas está ligada' };
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { status: true, archived: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead || lead.status !== 'OPEN' || lead.archived) return { ok: false, detail: 'o card não está aberto' };
-  if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity' };
   if ((lead.customFields as any)?._autoPaused) return { ok: false, detail: 'este cliente está PAUSADO na Análise de Crédito (botão da tela)' };
+  if (/habitacional/i.test(lead.pipeline?.department?.name || '')) return novaPropostaFh(db, accountId, leadId, { prazo, valor }, (lead.customFields || {}) as Record<string, any>);
+  if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return { ok: false, detail: 'só vale para Home Equity e Financiamento' };
+  if (prazo && !(prazo >= 60 && prazo <= 240)) return { ok: false, detail: `prazo de ${prazo} meses fora do que os bancos aceitam (60 a 240)` };
   const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 12, select: { bank: true, chosen: true, termMonths: true, approvedValue: true, detail: true } });
   if (!aprovadas.length) return { ok: false, detail: 'o cliente não tem banco aprovado (use a análise normal)' };
   const escolhido = aprovadas.find((a) => a.chosen)?.bank;
