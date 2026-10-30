@@ -153,8 +153,12 @@ async function acharCartorioPelaWeb(db: Db, id: string): Promise<void> {
     if (atual?.status !== 'FIND_WEB') return;
     if (achado?.numero) {
       const cartorio = `${String(achado.numero).padStart(2, '0')}º - ${r.cidade.toUpperCase()}`;
-      await reportCertidao(db, { accountId: r.accountId, id, data: { event: 'cartorio_found', cidade: r.cidade, cartorio, origem: `Pesquisa na web — ${achado.cartorio}: ${achado.motivo} (${achado.fonte})` } as any });
-    } else await db.certidaoRequest.update({ where: { id }, data: { status: 'FIND', detail: 'A pesquisa nas fontes oficiais não fechou o cartório: vai pro Mapa do ONR (extensão).' } });
+      await reportCertidao(db, { accountId: r.accountId, id, data: { event: 'cartorio_found', cidade: r.cidade, cartorio, origem: `Pesquisa na web — ${achado.cartorio} (confiança ${achado.confianca}): ${achado.motivo} (${achado.fonte})` } as any });
+    } else {
+      // Mapa do ONR pela extensão DESLIGADO (Fabio 29/10 21h): sem resposta da pesquisa, o pedido para e a equipe informa o cartório.
+      await db.certidaoRequest.update({ where: { id }, data: { status: 'FAILED', finishedAt: new Date(), detail: 'Não achei o cartório pela pesquisa nas fontes oficiais. Diga o cartório ao Jarvis ("pede a certidão… cartório 11º") e peça de novo.' } });
+      await note(db, r.leadId, '⚠️ Certidão pelo endereço NÃO foi pedida: a pesquisa nas fontes oficiais não fechou qual cartório atende o imóvel. Informe o cartório e peça de novo.', r.requestedById);
+    }
   } catch (err: any) {
     console.warn('[Certidão] pesquisa do cartório na web:', err?.message);
     await db.certidaoRequest.updateMany({ where: { id, status: 'FIND_WEB' }, data: { status: 'FIND' } }).catch(() => {});
