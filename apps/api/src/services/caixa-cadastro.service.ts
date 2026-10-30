@@ -185,6 +185,28 @@ export async function reenfileirarComFichaNova(leadId: string, antes: any[]): Pr
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Chegou o documento de identidade de ${voltar.map((o) => ps.find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')} — a ficha foi refeita e o cadastro na CAIXA voltou pra fila da extensão.` } }).catch(() => {});
 }
 
+/** Formulário do cadastro ("Imprimir Formulário" da tela final da CAIXA, PDF) → subpasta FORMULARIOS da pasta do cliente no Drive (Fabio 30/10).
+ *  A assinatura do cliente na ficha da CAIXA fica pra contratação. Cadastro refeito: troca o arquivo de mesmo nome. */
+export async function salvarFormularioCaixa(accountId: string, leadId: string, ordem: number, pdfBase64: string): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!l) return 'Lead não encontrado';
+  const cf = (l.customFields || {}) as Cf;
+  const link = String(cf.link_pasta_drive || '').trim();
+  if (!link) return 'O card não tem a pasta do Drive';
+  const data = Buffer.from(String(pdfBase64 || ''), 'base64');
+  if (data.length < 1000 || data.subarray(0, 4).toString('latin1') !== '%PDF') return 'O arquivo do formulário não é um PDF';
+  const p = participantesDa(cf).find((x) => x.ordem === Number(ordem));
+  const quem = String(p?.nome || `${ordem}º participante`).toUpperCase();
+  const nome = `FICHA CADASTRAL CAIXA - ${quem}.pdf`;
+  const google = await import('./google.service');
+  const pasta = await google.createFolder(accountId, 'FORMULARIOS', google.extractFolderId(link));
+  for (const velho of (await google.listFolderContents(accountId, pasta.id)).filter((f) => f.name === nome)) await google.trashDriveItem(accountId, velho.id).catch(() => {});
+  const up = await google.uploadFile(accountId, { name: nome, mimeType: 'application/pdf', parentId: pasta.id, data });
+  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}), [ordem]: { ...(x.cadastros?.[ordem] || {}), formulario: up.id } }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📄 Formulário do cadastro na CAIXA de ${quem} salvo na pasta FORMULARIOS do Drive (${nome}). A assinatura do cliente fica pra contratação.` } }).catch(() => {});
+  return null;
+}
+
 /** Resultado do cadastro vindo da extensão (preenchido + conferência; salvo ou parado antes de salvar). */
 export async function gravarCadastro(accountId: string, leadId: string, ordem: number, r: { status: string; texto: string }): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });

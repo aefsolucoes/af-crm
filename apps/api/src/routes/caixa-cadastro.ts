@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
-import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro } from '../services/caixa-cadastro.service';
+import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa } from '../services/caixa-cadastro.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -50,6 +50,15 @@ router.post('/:leadId/cadastro', async (req: AuthRequest, res: Response) => {
   const { ordem, status, texto } = req.body as { ordem?: number; status?: string; texto?: string };
   if (!ordem || !status) return res.status(400).json({ error: 'ordem e status obrigatórios' });
   try { await gravarCadastro(req.user!.accountId, req.params.leadId, Number(ordem), { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+
+// PDF do "Imprimir Formulário" da tela final → pasta FORMULARIOS do cliente no Drive.
+router.post('/:leadId/formulario', async (req: AuthRequest, res: Response) => {
+  const { ordem, pdf } = req.body as { ordem?: number; pdf?: string };
+  if (!ordem || !pdf) return res.status(400).json({ error: 'ordem e pdf obrigatórios' });
+  const erro = await salvarFormularioCaixa(req.user!.accountId, req.params.leadId, Number(ordem), String(pdf)).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
 });
 
 // Mapa do formulário de cadastro da CAIXA (nomes, rótulos, opções e botões — sem valores), pra acertar o preenchimento.
