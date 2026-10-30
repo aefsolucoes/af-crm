@@ -182,7 +182,7 @@ function blocoPessoa(t: (i: number, s: unknown) => boolean, m: (i: number, n: nu
 
 /** Monta as operações da ficha. Só preenche o que se SABE; o resto vira "faltando". Pura (testável). */
 export function dadosFichaFh(d: {
-  compradores: PessoaFicha[]; vendedores: PessoaFicha[]; conta: ContaCredito | null; imovel: ImovelFh; contato: { pessoa: string; telefone: string }; usaFgts: boolean; financiado?: string;
+  compradores: PessoaFicha[]; vendedores: PessoaFicha[]; conta: ContaCredito | null; contaDebito?: { agencia?: string; conta?: string; digito?: string } | null; imovel: ImovelFh; contato: { pessoa: string; telefone: string }; usaFgts: boolean; financiado?: string;
 }): { ops: Op[]; faltando: string[] } {
   const ops: Op[] = [];
   const faltando: string[] = [];
@@ -197,6 +197,9 @@ export function dadosFichaFh(d: {
   blocoPessoa(t, m, c1, { sexo: 4, profissao: 6, cargo: 7, telefone: 8, estadoCivil: 9, nascimento: 10, uniao: 11, dataCasamento: 12, regime: 13, nacionalidade: 14, documento: 15, numDoc: 16, orgao: 17, ufDoc: 18, emissao: 19, procurador: 20,
     cep: 22, tipoEnd: 23, rua: 24, num: 25, compl: 26, bairro: 27, cidade: 28, uf: 29 }, faltando, 'do comprador');
   t(21, d.usaFgts ? 'Sim' : 'Não');
+  // Conta do comprador no Santander (débito das parcelas — Fabio 30/10: sem conta, abrir pelo app)
+  if (d.contaDebito?.conta) t(31, `ag. ${d.contaDebito.agencia || '—'} / conta ${d.contaDebito.conta}${d.contaDebito.digito ? `-${d.contaDebito.digito}` : ''}`);
+  else faltando.push('conta do comprador no Santander (débito das parcelas)');
   if (/casad/i.test(String(c1.estadoCivil || '')) && (!c1.dataCasamento || !c1.regimeBens)) faltando.push('data do casamento e regime de comunhão');
 
   // Cônjuge / 2º comprador

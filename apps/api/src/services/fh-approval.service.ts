@@ -382,7 +382,8 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   }
   // Na escolha já vão a LISTA DE DOCUMENTOS, os PRÓXIMOS PASSOS e as TAXAS, e o card vai pra Aguardando Documentação (Fabio 27/10).
   const { texto, comRenda } = await docsBancoEscolhido(accountId, cf, banco);
-  await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Vamos seguir com o *${banco}*. Já te mando a simulação em PDF.\n\n${texto}` });
+  const conta = (require('./approval-notice.service') as typeof import('./approval-notice.service')).avisoContaNoBanco(banco); // Fabio 30/10: sem conta no banco, abrir pelo app
+  await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Vamos seguir com o *${banco}*. Já te mando a simulação em PDF.${conta ? `\n\n${conta}` : ''}\n\n${texto}` });
   const passos = await template(accountId, 'Proximos passos financiamento');
   if (passos) { await pausa(); await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: passos }); await saveCf(lead.id, { _fhPassosAt: new Date().toISOString() }); }
   const taxas = await template(accountId, 'Taxas Financiamento Habitacional');

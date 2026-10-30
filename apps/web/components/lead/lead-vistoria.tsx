@@ -264,7 +264,7 @@ export function LeadVistoriaSantander({ leadId }: { leadId: string }) {
         ? 'Ainda não iniciada. Financiamento: o CRM manda ao cliente a autorização e a declaração de saúde (assinar pelo gov.br), pede o contato do corretor/vendedor e a conta do vendedor, preenche a ficha de cadastro e junta os documentos da pasta; tudo vai por e-mail à Letícia.'
         : 'Ainda não iniciada. A vistoria do Santander sai por e-mail à Letícia: o CRM manda a autorização USECASA ao cliente (assinar pelo gov.br), junta o cadastro WEB CASAS e os documentos da pasta.'}</div>}
       <ul className="mb-2 space-y-0.5 text-xs">
-        {p.docs.map((d) => <li key={d.key} className={d.ok ? 'text-emerald-700' : 'text-amber-700'}>{d.ok ? '✓' : '•'} {d.label}{d.ok ? '' : d.key === 'conta' || d.key === 'contato' ? ' — falta (o CRM pede ao cliente)' : ' — falta na pasta do Drive'}</li>)}
+        {p.docs.map((d) => <li key={d.key} className={d.ok ? 'text-emerald-700' : 'text-amber-700'}>{d.ok ? '✓' : '•'} {d.label}{d.ok ? '' : d.key === 'conta' || d.key === 'contato' || d.key === 'contaComprador' ? ' — falta (o CRM pede ao cliente)' : ' — falta na pasta do Drive'}</li>)}
       </ul>
       {!p.temLinkPasta && <div className="mb-2 text-xs text-red-600">Este card não tem pasta do Drive vinculada.</div>}
       {!enviada && (

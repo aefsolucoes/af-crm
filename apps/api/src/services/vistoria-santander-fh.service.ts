@@ -9,8 +9,9 @@ type Io = Parameters<typeof sendOutboundMedia>[0]['io'];
  * VISTORIA NO FINANCIAMENTO (Fabio 30/10).
  *  A) CONTATO DA VISTORIA (Inter e Santander): "o CRM pode perguntar ao cliente o contato do corretor para solicitar a vistoria, ou se tem o contato do vendedor". No Santander a mesma mensagem
  *     pede o que a ficha precisa e só o cliente sabe: e-mail, telefone, profissão e conta para crédito do vendedor (e o que faltar dos compradores/do imóvel). A resposta é lida por IA (Haiku) e vai pro card.
- *  B) SANTANDER (Credimorar): 3 formulários. Autorização + Declaração de Saúde (PDF) → cliente assina pelo gov.br; Ficha para cadastro (Word) → só preenchida. As respostas da declaração de
- *     saúde vêm do CLIENTE: o CRM manda a lista padrão e só marca se ele responder CONFIRMO (outra resposta → a equipe preenche à mão). Com os 2 PDFs assinados de volta, o e-mail vai à Letícia
+ *  B) SANTANDER (Credimorar): 3 formulários. Autorização + Declaração de Saúde (PDF) → cliente assina pelo gov.br; Ficha para cadastro (Word) → só preenchida. Declaração de saúde: Fabio 30/10
+ *     "marcar todas como não" — vai com as respostas padrão (Não nas 8 perguntas de risco; Sim em "plena atividade de trabalho" e "plenas condições de saúde") e o cliente confere ao assinar
+ *     (se algo não valer, ele avisa e a equipe ajusta). A conta do COMPRADOR no banco (débito das parcelas) é pedida junto: sem conta, abrir pelo app. Com os 2 PDFs assinados de volta, o e-mail vai à Letícia
  *     com: certidão de matrícula, CND de IPTU; dos compradores RG/CNH, comprovante de residência e certidão de estado civil; do vendedor RG/CNH, certidão de estado civil e a conta para crédito;
  *     e-mail, telefone e profissão de todos. Card → "Vistoria do Imóvel".
  * Estado: customFields._vistoriaDadosFh (pedido dos dados) + _dadosVistoriaFh (o que o cliente respondeu) e _vistoriaSantFh (fluxo do Santander).
@@ -18,15 +19,15 @@ type Io = Parameters<typeof sendOutboundMedia>[0]['io'];
 
 const AVISO_REPETIR_MS = 12 * 3600_000;
 const MARCA_DADOS = 'agendar a vistoria do imóvel';
-const MARCA_SAUDE = 'declaração de saúde do seguro habitacional';
 /** Seguradora marcada na declaração (o modelo pede "de acordo com a Seguradora da sua Simulação"). */
 const SEGURO: SeguroFh = (process.env.SANTANDER_FH_SEGURO === 'SANTANDER_AUTO' ? 'SANTANDER_AUTO' : 'ZURICH');
 
 type Cf = Record<string, any>;
 type DadosSt = { askedAt?: string; banco?: string; itens?: string[]; teamNoteAt?: string; lidoAt?: string; completoAt?: string; cobrouAt?: string };
 type Dados = { contato?: { nome?: string; telefone?: string; papel?: string }; vendedor?: { email?: string; telefone?: string; profissao?: string }; conta?: ContaCredito;
+  contaComprador?: { agencia?: string; conta?: string; digito?: string; naoTem?: boolean };
   compradores?: { profissao?: string; email?: string }[]; imovel?: ImovelFh };
-type St = { status?: string; autAskedAt?: string; saudeAskAt?: string; saudeResp?: 'PADRAO' | 'OUTRA'; saudeRespText?: string; saudeSentAt?: string; saudeEquipeAt?: string;
+type St = { status?: string; autAskedAt?: string; saudeSentAt?: string;
   autSignedAt?: string; autSignedName?: string; saudeSignedAt?: string; saudeSignedName?: string; faltaNoteAt?: string; teamAskNoteAt?: string; semAssinaturaNoteAt?: string;
   sentAt?: string; to?: string; erro?: string; prontaNoteAt?: string; startedByTeam?: boolean; fichaTentouAt?: string };
 
@@ -67,6 +68,7 @@ export function itensDoPedido(banco: 'Inter' | 'Santander', cf: Cf, compradores:
   const d = (cf._dadosVistoriaFh || {}) as Dados;
   const itens: string[] = [];
   if (vazio(cf.contato_vistoria) && vazio(d.contato?.telefone)) itens.push('contato');
+  if (vazio(d.contaComprador?.agencia) || vazio(d.contaComprador?.conta)) itens.push('contaComprador'); // Fabio 30/10: conta do comprador no banco do processo (sem conta, abrir pelo app)
   if (banco !== 'Santander') return itens;
   if (vazio(d.vendedor?.email) || vazio(d.vendedor?.telefone) || vazio(d.vendedor?.profissao)) itens.push('vendedor');
   if (vazio(d.conta?.banco) || vazio(d.conta?.agencia) || vazio(d.conta?.conta)) itens.push('conta');
@@ -75,12 +77,13 @@ export function itensDoPedido(banco: 'Inter' | 'Santander', cf: Cf, compradores:
   return itens;
 }
 
-export function textoPedidoDados(nome: string, itens: string[], doisCompradores: boolean): string {
+export function textoPedidoDados(nome: string, itens: string[], doisCompradores: boolean, banco: 'Inter' | 'Santander' = 'Santander'): string {
   const l: string[] = [`${nome ? `${nome}, pra` : 'Pra'} ${MARCA_DADOS} preciso de algumas informações:`, ''];
   let n = 0;
   if (itens.includes('contato')) l.push(`${++n}. O contato de quem vai receber o engenheiro no imóvel: se tiver corretor, o nome e o telefone do corretor; se não, o nome e o telefone do vendedor`);
   if (itens.includes('vendedor')) l.push(`${++n}. Do vendedor: e-mail, telefone e profissão`);
   if (itens.includes('conta')) l.push(`${++n}. A conta do vendedor pra receber o valor: banco, agência, conta (com dígito) e se é corrente ou poupança, e o nome do titular`);
+  if (itens.includes('contaComprador')) l.push(`${++n}. ${doisCompradores ? 'A conta de um dos compradores' : 'Sua conta'} no ${banco} (agência e conta com dígito): é nela que as parcelas são debitadas. Se ainda não tiver conta no ${banco}, abra pelo app do ${banco} e me mande os dados`);
   if (itens.includes('comprador')) l.push(`${++n}. ${doisCompradores ? 'A profissão e o e-mail de cada comprador' : 'Sua profissão e seu e-mail'}`);
   if (itens.includes('imovel')) l.push(`${++n}. O endereço completo do imóvel (rua, número, complemento, bairro e CEP) e se é casa ou apartamento`);
   l.push('', 'Pode mandar tudo numa mensagem só, do jeito que for mais fácil. 🙂');
@@ -102,7 +105,7 @@ export async function pedirDadosVistoriaFh(accountId: string, leadId: string, ba
   const avisaEquipe = async (motivo: string) => {
     if (st.teamNoteAt && !opts.manual) return;
     await salvaDadosSt(leadId, { teamNoteAt: new Date().toISOString() });
-    await note(leadId, `🏠 Vistoria do ${banco} (Financiamento): falta saber pelo cliente ${itens.map((i) => ({ contato: 'o contato de quem recebe o engenheiro (corretor ou vendedor)', vendedor: 'e-mail/telefone/profissão do vendedor', conta: 'a conta do vendedor pra crédito', comprador: 'profissão/e-mail dos compradores', imovel: 'o endereço completo do imóvel' } as Record<string, string>)[i]).join('; ')}. ${motivo} Preencha "Contato vistoria" no card (e os dados na anotação) quando tiver.`);
+    await note(leadId, `🏠 Vistoria do ${banco} (Financiamento): falta saber pelo cliente ${itens.map((i) => ({ contato: 'o contato de quem recebe o engenheiro (corretor ou vendedor)', contaComprador: `a conta do comprador no ${banco} (sem conta: abrir pelo app)`, vendedor: 'e-mail/telefone/profissão do vendedor', conta: 'a conta do vendedor pra crédito', comprador: 'profissão/e-mail dos compradores', imovel: 'o endereço completo do imóvel' } as Record<string, string>)[i]).join('; ')}. ${motivo} Preencha "Contato vistoria" no card (e os dados na anotação) quando tiver.`);
     push(accountId, `🏠 Dados da vistoria (${banco})`, `${lead.name}: pedir ao cliente o contato do corretor/vendedor`, leadId);
   };
   const { contractingAutoOn } = require('./contracting-auto.service') as typeof import('./contracting-auto.service');
@@ -113,7 +116,7 @@ export async function pedirDadosVistoriaFh(accountId: string, leadId: string, ba
   if (!(await whatsappWindowOpen(leadId))) { await avisaEquipe('A janela de 24 h do WhatsApp está fechada: a pergunta sai assim que o cliente responder.'); return false; }
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
-  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoPedidoDados(nome, itens, compradores.length > 1), io });
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoPedidoDados(nome, itens, compradores.length > 1, banco), io });
   if (!r.success) return false;
   await salvaDadosSt(leadId, { askedAt: new Date().toISOString(), banco, itens });
   await note(leadId, `🏠 Pedi ao cliente os dados da vistoria do ${banco}: ${itens.join(', ')}. A resposta é lida e vai pro card ("Contato vistoria" e os dados do vendedor).`);
@@ -123,8 +126,9 @@ export async function pedirDadosVistoriaFh(accountId: string, leadId: string, ba
 const SYSTEM_DADOS = `Você lê mensagens de WhatsApp de um cliente que comprou um imóvel com financiamento bancário. Ele está respondendo a um pedido de dados para a VISTORIA do imóvel. Extraia SÓ o que está escrito (nunca invente) e responda SOMENTE com JSON:
 {"contato":{"nome":null,"telefone":null,"papel":"corretor|vendedor|outro|null"},"vendedor":{"email":null,"telefone":null,"profissao":null},
 "conta":{"titular":null,"banco":null,"agencia":null,"conta":null,"digito":null,"tipo":"corrente|poupança|null"},
+"contaComprador":{"agencia":null,"conta":null,"digito":null,"naoTem":false},
 "compradores":[{"profissao":null,"email":null}],"imovel":{"cep":null,"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"tipo":"Apartamento|Casa|null"}}
-Regras: "contato" é quem recebe o engenheiro (corretor; sem corretor, o vendedor). Se o cliente mandar só o telefone do vendedor, ele também é o contato. Telefone só dígitos com DDD. "compradores" na ordem em que aparecem (1º = o próprio cliente). Conta: separe o dígito se vier "12345-6".`;
+Regras: "contato" é quem recebe o engenheiro (corretor; sem corretor, o vendedor). Se o cliente mandar só o telefone do vendedor, ele também é o contato. Telefone só dígitos com DDD. "compradores" na ordem em que aparecem (1º = o próprio cliente). Conta: separe o dígito se vier "12345-6". "conta" é a do VENDEDOR (recebe o valor); "contaComprador" é a do próprio cliente/comprador no banco do financiamento (débito das parcelas) — "naoTem": true se ele disse que ainda não tem conta nesse banco.`;
 
 async function lerResposta(accountId: string, leadId: string, desde: Date): Promise<Dados | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -181,6 +185,8 @@ async function lerDadosAgora(accountId: string, leadId: string) {
   const linhas = [
     contato && `Contato da vistoria: ${contato}`,
     dados.vendedor && Object.values(dados.vendedor).some((v) => !vazio(v)) && `Vendedor: ${[dados.vendedor.email, dados.vendedor.telefone, dados.vendedor.profissao].filter((v) => !vazio(v)).join(' · ')}`,
+    dados.contaComprador && !vazio(dados.contaComprador.conta) && `Conta do comprador (débito das parcelas): ag. ${dados.contaComprador.agencia || '—'}, conta ${dados.contaComprador.conta}${dados.contaComprador.digito ? `-${dados.contaComprador.digito}` : ''}`,
+    dados.contaComprador?.naoTem && vazio(dados.contaComprador.conta) && `⚠️ O comprador disse que ainda NÃO tem conta no banco: precisa abrir pelo app antes de seguir.`,
     dados.conta && !vazio(dados.conta.conta) && `Conta do vendedor: ${[dados.conta.banco, dados.conta.agencia && `ag. ${dados.conta.agencia}`, dados.conta.conta && `conta ${dados.conta.conta}${dados.conta.digito ? `-${dados.conta.digito}` : ''}`, dados.conta.tipo, dados.conta.titular].filter((v) => !vazio(v)).join(', ')}`,
   ].filter(Boolean);
   if (linhas.length) await note(leadId, `🏠 Dados da vistoria que o cliente mandou:\n${linhas.join('\n')}${faltam.length ? `\nAinda falta: ${faltam.join(', ')}.` : ''}`);
@@ -194,32 +200,8 @@ export const textoPedidoAssinaturaFh = (nome: string, qual: 'aut' | 'saude', doi
   '2. Envie o PDF, entre com a sua conta gov.br e assine',
   '3. Baixe o arquivo assinado e me mande por aqui',
   ...(doisCompradores ? ['', 'O 2º comprador também precisa assinar o mesmo arquivo, depois de você.'] : []),
+  ...(qual === 'saude' ? ['', 'Antes de assinar, confira as respostas: se alguma não vale pra você, me avise que a gente ajusta.'] : []),
 ].join('\n');
-
-export const textoPerguntaSaude = (doisCompradores: boolean): string => [
-  `Pra ${MARCA_SAUDE} (obrigatória no financiamento do Santander), confirme se TUDO abaixo vale pra você${doisCompradores ? ' e pro 2º comprador' : ''}:`,
-  '',
-  '• está em plenas condições de saúde e em plena atividade de trabalho',
-  '• não pratica esporte radical ou perigoso',
-  '• não é aposentado por invalidez nem está afastado pelo INSS',
-  '• não exerce nem exerceu atividade com esforço repetitivo, insalubre ou perigosa',
-  '• nunca foi afastado do trabalho por doença ou acidente',
-  '• não tem doença em tratamento contínuo nem cirurgia prevista',
-  '• não faz nem fez tratamento por LER/DORT ou psiquiátrico (depressão, pânico, estresse)',
-  '• nunca foi internado para tratamento clínico ou cirúrgico',
-  '• não tem deficiência ou redução funcional de membros ou dos sentidos',
-  '',
-  'Se tudo isso vale, responda CONFIRMO. Se algum item não vale, me diga qual que a gente ajusta a declaração.',
-].join('\n');
-
-/** Resposta à lista da saúde: CONFIRMO claro / alguma exceção / outra coisa (não decide). Pura. */
-export function respostaSaude(text: string): 'PADRAO' | 'OUTRA' | null {
-  const t = norm(text).replace(/[!.,😊🙏👍]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!t) return null;
-  if (/^(confirmo|confirmado|confirmamos|sim confirmo|confirmo sim|sim,? confirmo|tudo certo|vale tudo|tudo vale|todos? valem?|sim tudo vale|sim vale tudo|confirmo tudo|correto|sim)$/.test(t)) return 'PADRAO';
-  if (/\b(nao|exceto|menos|tenho|tive|fui|sou|fa[cç]o|tomo|aposentad|afastad|internad|cirurgia|depress|ansiedad|diabet|press[aã]o|hipertens|cancer|doen[cç]a)\b/.test(t) && t.length > 2) return 'OUTRA';
-  return null;
-}
 
 type DriveF = { id: string; name: string; path: string; mimeType: string; size: number };
 const OK_ARQ = /^(application\/pdf|image\/)/;
@@ -314,28 +296,14 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
     const pdf = await preencherAutorizacaoFh({ c1: comp(c1), c2: c2 ? comp(c2) : null, cidade, leadId });
     const sent = await sendOutboundMedia({ accountId, leadId, buffer: pdf, fileName: 'Autorizacao Santander - assinar pelo gov.br.pdf', mimeType: 'application/pdf', caption: textoPedidoAssinaturaFh(primeiroNome, 'aut', !!c2), io });
     if (!sent.success) return false;
-    const pergunta = await sendOutboundWhatsApp({ accountId, leadId, content: textoPerguntaSaude(!!c2), io });
-    await salvaSt(leadId, { status: 'ASSINATURA_PEDIDA', autAskedAt: new Date().toISOString(), ...(pergunta.success ? { saudeAskAt: new Date().toISOString() } : {}) });
+    await new Promise((r) => setTimeout(r, 1500));
+    const saudePdf = await preencherDeclaracaoSaude({ c1: comp(c1), c2: c2 ? comp(c2) : null, prazoMeses: prazoDoCard(cf), cidade, leadId, seguro: SEGURO, respostasPadrao: true });
+    const sentSaude = await sendOutboundMedia({ accountId, leadId, buffer: saudePdf, fileName: 'Declaracao de saude Santander - assinar pelo gov.br.pdf', mimeType: 'application/pdf', caption: textoPedidoAssinaturaFh(primeiroNome, 'saude', !!c2), io });
+    await salvaSt(leadId, { status: 'ASSINATURA_PEDIDA', autAskedAt: new Date().toISOString(), ...(sentSaude.success ? { saudeSentAt: new Date().toISOString() } : {}) });
     const guardou = await guardaFormulario(accountId, cf, 'AUTORIZACAO SANTANDER - PARA ASSINAR.pdf', 'application/pdf', pdf);
-    await note(leadId, `🏦 Santander (Financiamento): mandei ao cliente a autorização (nomes e CPFs) pra assinar pelo gov.br${guardou ? ' (cópia na pasta FORMULARIOS do Drive)' : ''} e ${pergunta.success ? 'a lista da declaração de saúde pra ele CONFIRMAR' : 'NÃO consegui mandar a lista da declaração de saúde'}. Com o CONFIRMO, a declaração preenchida vai pra assinatura.`);
+    await guardaFormulario(accountId, cf, 'DECLARACAO DE SAUDE - PARA ASSINAR.pdf', 'application/pdf', saudePdf);
+    await note(leadId, `🏦 Santander (Financiamento): mandei ao cliente pra assinar pelo gov.br a autorização (nomes e CPFs)${sentSaude.success ? ` e a declaração de saúde (respostas padrão — Não nas perguntas de risco, Sim em plena atividade/plenas condições de saúde; seguro Habitacional Zurich Santander; prazo ${prazoDoCard(cf) || '—'} meses)` : ' — a declaração de saúde NÃO saiu, mande à mão'}${guardou ? '. Cópias na pasta FORMULARIOS do Drive' : ''}. Se o cliente disser que alguma resposta não vale, ajuste a declaração com ele.`);
     return false;
-  }
-
-  // 2) declaração de saúde: só com a confirmação do cliente
-  if (st.saudeResp === 'PADRAO' && !st.saudeSentAt) {
-    const pdf = await preencherDeclaracaoSaude({ c1: comp(c1), c2: c2 ? comp(c2) : null, prazoMeses: prazoDoCard(cf), cidade, leadId, seguro: SEGURO, respostasPadrao: true });
-    const sent = await sendOutboundMedia({ accountId, leadId, buffer: pdf, fileName: 'Declaracao de saude Santander - assinar pelo gov.br.pdf', mimeType: 'application/pdf', caption: textoPedidoAssinaturaFh(primeiroNome, 'saude', !!c2), io });
-    if (sent.success) {
-      await salvaSt(leadId, { saudeSentAt: new Date().toISOString() });
-      await guardaFormulario(accountId, cf, 'DECLARACAO DE SAUDE - PARA ASSINAR.pdf', 'application/pdf', pdf);
-      await note(leadId, `🏦 Santander: o cliente CONFIRMOU a lista da saúde ("${st.saudeRespText || 'confirmo'}"). Mandei a declaração preenchida (seguro ${SEGURO === 'ZURICH' ? 'Habitacional Zurich Santander' : 'Habitacional Santander A. S.A.'}, prazo ${prazoDoCard(cf) || '—'} meses) pra assinar pelo gov.br.`);
-    }
-  } else if (st.saudeResp === 'OUTRA' && !st.saudeEquipeAt) {
-    const pdf = await preencherDeclaracaoSaude({ c1: comp(c1), c2: c2 ? comp(c2) : null, prazoMeses: prazoDoCard(cf), cidade, leadId, seguro: SEGURO, respostasPadrao: false });
-    const guardou = await guardaFormulario(accountId, cf, 'DECLARACAO DE SAUDE - COMPLETAR (respostas em branco).pdf', 'application/pdf', pdf);
-    await salvaSt(leadId, { saudeEquipeAt: new Date().toISOString() });
-    await note(leadId, `🏦 Santander: na declaração de saúde o cliente respondeu que algo não vale: "${st.saudeRespText || ''}". O CRM NÃO marcou as respostas: preencha a declaração com ele${guardou ? ' (modelo com nomes/nascimentos/prazo na pasta FORMULARIOS do Drive)' : ''} e mande pra assinar pelo gov.br. Quando o PDF assinado voltar, o fluxo segue sozinho.`);
-    push(accountId, '🏦 Declaração de saúde: conferir', `${lead.name}: o cliente indicou uma exceção na saúde`, leadId);
   }
 
   await avisaCndSeFalta(accountId, leadId, { force: opts.manual }).catch(() => {});
@@ -406,9 +374,9 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
     numero: endImovel?.endereco.numero || im.numero, complemento: endImovel?.endereco.complemento || im.complemento, bairro: endImovel?.endereco.bairro || im.bairro,
     cidade: endImovel?.cidade || im.cidade, uf: endImovel?.uf || im.uf, tipo: String(fresh.imovel_tipo || im.tipo || ''),
   };
-  const ficha = dadosFichaFh({ compradores: compradoresDe(fresh, lead.name), vendedores, conta: dados.conta || null, imovel, contato, usaFgts: /^(s|sim|true|1)/i.test(String(fresh.usa_fgts ?? '').trim()) });
+  const ficha = dadosFichaFh({ compradores: compradoresDe(fresh, lead.name), vendedores, conta: dados.conta || null, contaDebito: dados.contaComprador || null, imovel, contato, usaFgts: /^(s|sim|true|1)/i.test(String(fresh.usa_fgts ?? '').trim()) });
   const docx = await preencherFichaFh(ficha.ops);
-  const essenciais = ficha.faltando.filter((f) => /contat|endere[cç]o completo do im[oó]vel|tipo do im[oó]vel|conta do vendedor|dados do vendedor|n[uú]mero do documento|estado civil|telefone|e-mail|profiss/i.test(f));
+  const essenciais = ficha.faltando.filter((f) => /conta do comprador|contat|endere[cç]o completo do im[oó]vel|tipo do im[oó]vel|conta do vendedor|dados do vendedor|n[uú]mero do documento|estado civil|telefone|e-mail|profiss/i.test(f));
   if (essenciais.length) {
     if (repete(st.faltaNoteAt) || st.status !== 'FALTAM_DADOS') {
       await salvaSt(leadId, { status: 'FALTAM_DADOS', faltaNoteAt: new Date().toISOString() });
@@ -493,21 +461,11 @@ export async function onClientReplyVistoriaFh(accountId: string, leadId: string,
   const cf = (lead?.customFields || {}) as Cf;
   const dst = cf._vistoriaDadosFh as DadosSt | undefined;
   if (dst?.askedAt && !dst.completoAt) agendaLeitura(accountId, leadId);
-  const st = cf._vistoriaSantFh as St | undefined;
-  if (!st?.saudeAskAt || st.saudeResp) return;
-  const resp = respostaSaude(text);
-  if (!resp) return;
-  // a lista precisa ser a última pergunta do CRM (senão o "sim" pode ser resposta a outra coisa)
-  const ultimas = await prisma.message.findMany({ where: { leadId, direction: 'OUTBOUND' }, orderBy: { createdAt: 'desc' }, take: 2, select: { content: true } });
-  if (!ultimas.some((m) => (m.content || '').includes(MARCA_SAUDE))) return;
-  await salvaSt(leadId, { saudeResp: resp, saudeRespText: text.slice(0, 200) });
-  const { contractingAutoOn } = require('./contracting-auto.service') as typeof import('./contracting-auto.service');
-  await processVistoriaSantanderFh(accountId, leadId, io, { holdSend: !(await contractingAutoOn(accountId)) }).catch((e: any) => console.warn('[Vistoria FH] saúde:', e?.message));
 }
 
 // ── Card: andamento (mesmo painel do Santander do Home Equity) ──
 const STATUS_TXT: Record<string, string> = {
-  ASSINATURA_PEDIDA: 'Autorização e lista da saúde enviadas — aguardando o cliente confirmar e assinar pelo gov.br',
+  ASSINATURA_PEDIDA: 'Autorização e declaração de saúde enviadas — aguardando o cliente assinar pelo gov.br e devolver',
   ASSINADA: 'Formulários assinados — conferindo os documentos da pasta',
   AGUARDA_DOCS: 'Formulários assinados — faltam documentos na pasta do Drive',
   FALTAM_DADOS: 'Documentos ok, mas a ficha de cadastro ficou sem dado essencial (Word na pasta FORMULARIOS)',
@@ -533,6 +491,7 @@ export async function santanderFhPreview(accountId: string, leadId: string) {
     { key: 'venCivil', label: 'Certidão de estado civil do vendedor', ok: cat.venCivil.length > 0 },
     { key: 'conta', label: 'Conta do vendedor para crédito', ok: !vazio(((cf._dadosVistoriaFh || {}) as Dados).conta?.conta) },
     { key: 'contato', label: 'Contato da vistoria (corretor/vendedor)', ok: !vazio(cf.contato_vistoria) },
+    { key: 'contaComprador', label: 'Conta do comprador no Santander (débito das parcelas)', ok: !vazio(((cf._dadosVistoriaFh || {}) as Dados).contaComprador?.conta) },
   ];
   return {
     aplicavel: true as const, financiamento: true as const,

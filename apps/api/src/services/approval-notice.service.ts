@@ -772,10 +772,18 @@ export async function maybeHandleChooseButton(accountId: string, leadId: string,
   }
   const docsJa = await docsAlreadySent(leadId);
   const resposta = escolhida
-    ? `Perfeito! ✅ Vamos seguir com a proposta ${qual}.${docsJa ? '\n\nAgora é só me enviar os documentos da lista que te passei, que eu já dou andamento. 😊' : '\n\nJá te passo os próximos passos.'}`
+    ? `Perfeito! ✅ Vamos seguir com a proposta ${qual}.${avisoContaNoBanco(par.inst) ? `\n\n${avisoContaNoBanco(par.inst)}` : ''}${docsJa ? '\n\nAgora é só me enviar os documentos da lista que te passei, que eu já dou andamento. 😊' : '\n\nJá te passo os próximos passos.'}`
     : `Anotado! Vou confirmar com a equipe a proposta ${qual} e já te retorno por aqui.`;
   await sendOutboundWhatsApp({ accountId, leadId, content: resposta, io });
   return true;
+}
+
+/** Conta no banco do processo (Fabio 30/10, HE e Financiamento): as parcelas são debitadas numa conta do comprador NO banco que está fazendo o processo — sem conta, abrir pelo app.
+ *  Vai junto da confirmação da escolha do banco. Creditas fica de fora (não é banco de conta corrente). Pura. */
+export function avisoContaNoBanco(banco: string): string {
+  const b = /santander|credimorar/i.test(banco) ? 'Santander' : /inter/i.test(banco) ? 'Inter' : /bradesco/i.test(banco) ? 'Bradesco' : null;
+  if (!b) return '';
+  return `🏦 Importante: as parcelas são debitadas numa conta no *${b}* em nome do comprador. Se você ainda não tem conta no ${b}, já pode abrir pelo app do ${b} — mais pra frente vou te pedir a agência e a conta.`;
 }
 
 // ─── Aviso de aprovação sob demanda (botão "Avisar cliente" da aba Análise de Crédito) ───
