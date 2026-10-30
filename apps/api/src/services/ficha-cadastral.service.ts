@@ -25,10 +25,11 @@ Responda SOMENTE com JSON:
 "mae":null,"pai":null,"estadoCivil":null,"regimeBens":null,"dataCasamento":"dd/mm/aaaa","conjuge":{"nome":null,"cpf":null},
 "endereco":{"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"cep":null,"comprovanteMesAno":"mm/aaaa"},
 "pis":null,"ctps":{"numero":null,"serie":null},"profissao":null,"escolaridade":null,
-"empregador":{"nome":null,"cnpj":null},"cargo":null,"admissao":"dd/mm/aaaa","competencia":"mm/aaaa","rendaBruta":null,"rendaLiquida":null,
+"empregador":{"nome":null,"cnpj":null},"cargo":null,"admissao":"dd/mm/aaaa","competencia":"mm/aaaa","rendaBruta":null,"rendaLiquida":null,"tipoRenda":"salario|aposentadoria|pensao|null","inicioBeneficio":null,"verbasEventuais":[{"descricao":null,"valor":null}],
+"fontesPagadoras":[{"nome":null,"cnpj":null}],"contratos":[{"empregador":null,"cnpj":null,"cargo":null,"admissao":null,"saida":null}],
 "outrasRendas":[{"tipo":"aposentadoria|pensao|aluguel|outra","valor":null}],"patrimonioTotal":null}],
 "observacao":"<1 frase: o que é o documento e qualquer ponto de atenção (ilegível, vencido, cortado, de outra pessoa)>"}
-Regras: uma entrada em "pessoas" por pessoa que o documento identifica como titular (certidão de casamento = os DOIS cônjuges, com estadoCivil "CASADO(A)", o regime e a data do casamento; o nome de cada um pode mudar com o casamento — use o nome que a certidão diz que passou a usar). CNH: cnh.numero = Nº REGISTRO da CNH (11 dígitos — não o número do espelho/formulário), cnh.orgao = órgão emissor da CNH (DETRAN), cnh.uf = UF da CNH, cnh.emissao = DATA DE EMISSÃO da CNH, cnh.validade = VALIDADE, cnh.primeiraHabilitacao = data da 1ª HABILITAÇÃO; o RG que aparece impresso na CNH vai em "rg". Comprovante de residência: a pessoa é o titular da conta, o endereço é o da conta e endereco.comprovanteMesAno = mês/ano de referência da conta (mm/aaaa). Contracheque: rendaBruta = total de vencimentos/proventos, rendaLiquida = líquido a receber, competencia = mês de referência. Datas sempre dd/mm/aaaa; valores em reais como número puro (ex.: 12296.77); CPF e CEP só com os dígitos.`;
+Regras: uma entrada em "pessoas" por pessoa que o documento identifica como titular (certidão de casamento = os DOIS cônjuges, com estadoCivil "CASADO(A)", o regime e a data do casamento; o nome de cada um pode mudar com o casamento — use o nome que a certidão diz que passou a usar). CNH: cnh.numero = Nº REGISTRO da CNH (11 dígitos — não o número do espelho/formulário), cnh.orgao = órgão emissor da CNH (DETRAN), cnh.uf = UF da CNH, cnh.emissao = DATA DE EMISSÃO da CNH, cnh.validade = VALIDADE, cnh.primeiraHabilitacao = data da 1ª HABILITAÇÃO; o RG que aparece impresso na CNH vai em "rg". Comprovante de residência: a pessoa é o titular da conta, o endereço é o da conta e endereco.comprovanteMesAno = mês/ano de referência da conta (mm/aaaa). Contracheque/demonstrativo de benefício: competencia = mês de referência; rendaBruta = SÓ as verbas que se repetem todo mês (salário, adicionais fixos, suplemento/benefício mensal) — verba EVENTUAL (saque ou resgate de plano de previdência, férias e 1/3, 13º, rescisão, PLR, adiantamento) NÃO é renda: vai em "verbasEventuais" e fica fora da rendaBruta; rendaLiquida = líquido a receber SEM a verba eventual (desconte só os descontos regulares; imposto em percentual sobre o total = o mesmo percentual sobre a renda recorrente) — sem verba eventual, é o líquido a receber (Fabio 30/10: suplemento de aposentadoria R$ 1.390,85 + saque do plano R$ 12.272,23 não é renda de R$ 13.663,08). Aposentadoria/benefício: "tipoRenda":"aposentadoria", "inicioBeneficio" = data de início do benefício se o documento mostrar. Imposto de renda: liste em "fontesPagadoras" cada fonte de "rendimentos tributáveis recebidos de pessoa jurídica" com nome e CNPJ; carteira de trabalho: liste em "contratos" cada contrato (empregador, CNPJ do estabelecimento, cargo, admissão, saída ou null se ativo). Datas sempre dd/mm/aaaa; valores em reais como número puro (ex.: 12296.77); CPF e CEP só com os dígitos.`;
 
 const SYSTEM_JUNTA = `Você monta a FICHA DE CADASTRO dos participantes de uma operação de crédito imobiliário juntando as leituras de vários documentos (cada leitura diz de qual arquivo veio). Use SÓ o que as leituras trazem — nunca invente. IDENTIDADE = O DOCUMENTO APRESENTADO (Fabio 29/10): se a pessoa apresentou CNH, a identidade é a CNH — tipo "CNH", número = Nº REGISTRO da CNH, órgão/UF/emissão da CNH — mesmo que a CNH traga também o número do RG; RG só quando não há CNH. CNH VENCIDA NÃO É PROBLEMA pro cadastro: não aponte em conflitos nem em faltando.
 Quando dois documentos discordam, fique com o mais confiável pro campo (filiação/naturalidade: o documento de identidade apresentado; estado civil/regime/data do casamento/nome de casado: certidão de casamento; endereço: o comprovante de residência mais recente; trabalho e renda: contracheques mais recentes e carteira de trabalho; PIS: carteira de trabalho ou contracheque; patrimônio: imposto de renda) e registre a divergência em "conflitos".
@@ -36,6 +37,7 @@ Os participantes da operação vêm em PARTICIPANTES DO CARD (nome e CPF digitad
 ENDEREÇO: participante sem comprovante de residência próprio que é CÔNJUGE do 1º participante ou compõe renda usa o endereço do comprovante do 1º participante (fonte "comprovante do 1º participante") — não é falta.
 SEM RENDA: participante sem nenhum documento de renda (contracheque, IR, extrato de benefício, extrato bancário) fica com "semRenda": true, renda e trabalho null — no cadastro do banco ele entra como SEM RENDA; não liste trabalho/renda em "faltando".
 RENDA INFORMAL (Fabio 29/10): participante SEM comprovante formal (nenhum contracheque, IR, CTPS ativa ou extrato de benefício) que trouxe APENAS extrato bancário fica com "rendaInformal": true e "semRenda": false — no cadastro da CAIXA a renda formal vai SEM RENDA e a informal R$ 3.000.
+RENDAS (Fabio 30/10): um item em "contracheques" por FONTE PAGADORA (o mês mais recente de cada uma), com a renda RECORRENTE do mês (verba eventual — saque/resgate de plano, férias, 13º, rescisão — nunca entra), "cargo" e "admissao" DAQUELA fonte (carteira de trabalho/contracheque dela; aposentadoria: "tipo":"aposentadoria", cargo null e admissao = data de início do benefício se algum documento mostrar). Contracheque SEM CNPJ: pegue o CNPJ da mesma fonte no IMPOSTO DE RENDA ("fontesPagadoras") ou na CARTEIRA DE TRABALHO ("contratos"), pelo nome; ainda sem → "faltando": "CNPJ de <fonte>". Aposentadoria sem data de início → "faltando": "data de início do benefício (<fonte>)".
 PIS: preencha só se algum documento trouxer. Só entra em "faltando" quando USA FGTS = sim.
 Responda SOMENTE com JSON:
 {"participantes":[{"ordem":1,"nome":null,"cpf":null,"nascimento":null,"sexo":null,"nacionalidade":null,"naturalidade":{"cidade":null,"uf":null},
@@ -44,11 +46,11 @@ Responda SOMENTE com JSON:
 "endereco":{"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"cep":null,"comprovanteMesAno":null},
 "pis":null,"profissao":null,"escolaridade":null,
 "trabalho":{"vinculo":"CLT|SERVIDOR PUBLICO|AUTONOMO|EMPRESARIO|APOSENTADO|OUTRO|null","empregador":null,"cnpj":null,"cargo":null,"admissao":null},
-"contracheques":[{"competencia":null,"empregador":null,"cnpj":null,"bruto":null,"liquido":null}],"semRenda":false,"rendaInformal":false,"rendaBrutaMensal":null,"rendaLiquidaMensal":null,
+"contracheques":[{"competencia":null,"empregador":null,"cnpj":null,"bruto":null,"liquido":null,"tipo":"salario|aposentadoria|pensao","cargo":null,"admissao":null}],"semRenda":false,"rendaInformal":false,"rendaBrutaMensal":null,"rendaLiquidaMensal":null,
 "outrasRendas":[{"tipo":null,"valor":null}],"patrimonioTotal":null,
 "fontes":{"<campo>":"<nome do arquivo>"},"faltando":["<campo que nenhum documento trouxe e o cadastro do banco pede>"]}],
 "conflitos":["<divergência entre documentos ou entre documento e card, em 1 frase>"],"observacao":"<1 frase>"}
-rendaBrutaMensal/rendaLiquidaMensal = do mês mais recente (se a pessoa tem DOIS empregos com contracheque do mesmo mês, some os dois). "faltando" considera: identidade (número, órgão, UF, emissão), naturalidade, filiação, estado civil, endereço com CEP e, de quem tem renda, empregador/cargo/admissão (PIS só com FGTS). Datas dd/mm/aaaa; valores número puro; CPF/CEP só dígitos.`;
+rendaBrutaMensal/rendaLiquidaMensal = soma da renda RECORRENTE do mês mais recente de cada fonte (dois empregos/aposentadoria + emprego = some). "faltando" considera: identidade (número, órgão, UF, emissão), naturalidade, filiação, estado civil, endereço com CEP e, de quem tem renda, empregador/cargo/admissão (PIS só com FGTS). Datas dd/mm/aaaa; valores número puro; CPF/CEP só dígitos.`;
 
 const hoje = () => new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 const norm = (s: string) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
@@ -261,11 +263,44 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     await gravarNota(leadId, ['📋 FICHA DE CADASTRO — CAIXA', '📋 FICHA DE CADASTRO — lida'], `📋 FICHA DE CADASTRO — CAIXA — lida dos documentos da pasta do Drive em ${quando}.\n\n${blocos.join('\n\n')}${conflitos}${lidos}`, opts.userId);
     if (/habitacional|financiamento/i.test(lead.pipeline?.department?.name || '')) await gravarNota(leadId, ['📋 FICHA DE CADASTRO — BRB'], fichaBrb(ficha.participantes, cf, quando), opts.userId);
     opts.io?.to(`lead:${leadId}`).emit('lead_updated', { leadId });
+    await pedirCnpjAoCliente(accountId, leadId, ficha.participantes, opts.io).catch((e) => console.error('[Ficha cadastral] pedido de CNPJ:', e?.message));
     logActivity({ accountId, userId: opts.userId || null, userName: opts.userId ? undefined : 'Assistente IA', action: 'lead_note_added', leadId, leadName: lead.name, summary: 'gravou a ficha de cadastro lida dos documentos do Drive' });
     console.log(`[Ficha cadastral] ${lead.name}: ${ficha.participantes.length} participante(s), ${pessoais.length} arquivo(s)`);
     return null;
   } finally {
     emAndamento.delete(leadId);
+  }
+}
+
+/** Renda sem CNPJ da fonte pagadora (nem no contracheque, nem no IR, nem na carteira de trabalho) → o CRM pede ao cliente o CNPJ ou a declaração do IR, onde ele
+ *  consta (Fabio 30/10). Uma vez por fonte; fora das 07h–21h ou com a janela do WhatsApp fechada, avisa a equipe (anotação + push) em vez de mandar. */
+async function pedirCnpjAoCliente(accountId: string, leadId: string, participantes: any[], io?: Io): Promise<void> {
+  const fontes = [...new Set(participantes.flatMap((p: any) => (Array.isArray(p?.contracheques) ? p.contracheques : [])
+    .filter((c: any) => c && (Number(c.bruto) > 0 || Number(c.liquido) > 0) && String(c.cnpj || '').replace(/\D/g, '').length !== 14)
+    .map((c: any) => String(c.empregador || '').trim()).filter(Boolean)))];
+  if (!fontes.length) return;
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const ja = (cf._fichaCnpjPedido || {}) as Record<string, string>;
+  const novas = fontes.filter((f) => !ja[f]);
+  if (!novas.length || cf._autoPaused) return;
+  const lista = novas.join(' e ');
+  const texto = `Para concluir o seu cadastro no banco, preciso do CNPJ ${novas.length > 1 ? 'das empresas' : 'da empresa'} ${lista} (aparece no contracheque ou no informe de rendimentos). Se preferir, pode me mandar a declaração completa do seu Imposto de Renda, que lá também consta.`;
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  let enviado = false;
+  if (inNoticeWindow() && (await whatsappWindowOpen(leadId))) {
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    enviado = !!(await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }).catch(() => null))?.success;
+  }
+  const agora = new Date().toISOString();
+  const marca = { ...ja, ...Object.fromEntries(novas.map((f) => [f, `${enviado ? 'cliente' : 'equipe'}:${agora}`])) };
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_fichaCnpjPedido}', ${JSON.stringify(marca)}::jsonb, true) WHERE id = ${leadId}`;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: enviado
+    ? `📋 A ficha de cadastro ficou sem o CNPJ de ${lista} (nem contracheque, nem IR, nem carteira de trabalho trazem). Pedi ao cliente o CNPJ ou a declaração do Imposto de Renda.`
+    : `📋 A ficha de cadastro ficou sem o CNPJ de ${lista} (nem contracheque, nem IR, nem carteira de trabalho trazem). Não mandei ao cliente agora (fora do horário ou conversa fechada) — pedir o CNPJ ou a declaração do Imposto de Renda:\n"${texto}"` } }).catch(() => {});
+  if (!enviado) {
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(accountId, { title: '📋 Falta CNPJ da fonte de renda', body: `Pedir ao cliente o CNPJ de ${lista} ou o IRPF`, leadId }).catch(() => {});
   }
 }
 
