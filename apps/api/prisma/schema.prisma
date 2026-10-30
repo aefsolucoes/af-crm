@@ -1087,6 +1087,8 @@ model CertidaoRequest {
   driveUrl        String?
   files           Json? // TODOS os arquivos que o ONR devolveu pro pedido (matrícula + certidão de ônus…): [{ name, driveFileId, driveUrl, sha, size, at }]; driveFileId/driveUrl acima = o 1º
   attempts        Int       @default(0) // tentativas de pegar o PIX / conferir a emissão
+  pixRemindedAt   DateTime? // lembrete das 18h do PIX que vence hoje (Fabio 30/10)
+  retryOfId       String? // pedido refeito porque o PIX do anterior venceu (1 vez só — Fabio 30/10)
   nextCheckAt     DateTime?
   createdAt       DateTime  @default(now())
   startedAt       DateTime?

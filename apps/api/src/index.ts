@@ -317,6 +317,8 @@ httpServer.listen(PORT, () => {
     setInterval(() => { processWeeklySupervision().catch((err) => console.error('[Supervisão] Poll:', err?.message)); }, 60 * 1000);
     setInterval(() => { processDriveLifecycle().catch((err) => console.error('[Pasta do card] Poll:', err?.message)); }, 5 * 60 * 1000);
     setInterval(() => { processTaskReminders().catch((err) => console.error('[Tarefas] Lembretes:', err?.message)); }, 60 * 1000);
+    // Certidão (Fabio 30/10): lembrete das 18h do PIX que vence hoje + PIX vencido refeito 1x — no servidor, sem depender do Chrome da extensão.
+    setInterval(() => { (require('./services/certidao.service') as typeof import('./services/certidao.service')).processCertidaoPix((require('./lib/prisma') as typeof import('./lib/prisma')).prisma as any, io as any).catch((err: any) => console.error('[Certidão] PIX:', err?.message)); }, 5 * 60 * 1000);
   }, 90 * 1000);
 
   // Aprendizado por conversa (Fabio 22/10): conversas relevantes da IA/equipe viram aviso em push pro administrador responder e a IA aprender.

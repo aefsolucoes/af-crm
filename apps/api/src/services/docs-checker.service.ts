@@ -309,8 +309,9 @@ ${history}`;
   if (fhSoComprador) verdict.faltando = (verdict.faltando || []).filter((f) => !/[ôo]nus|matr[ií]cula|escritura|iptu|inscri[cç][aã]o imobili|vendedor/i.test(String(f)));
   // Sem a permissão do cliente a A&F NÃO emite (custo de R$ 40 a R$ 100 pra ele): o que o modelo pôs em "emitir" volta pra "faltando" e a certidão trava a conclusão.
   // Escritura com a matrícula identificada (Fabio 20/10): a certidão NÃO é cobrada do cliente — a IA se OFERECE pra emitir pelo ONR (certidao-offer.service) e só emite quando ele aceita.
-  const { certidaoFromDocs } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
-  const ofertavel = !autorizou && emitirBruto.length > 0 && !!certidaoFromDocs(cfAll);
+  const { certidaoFromDocs, enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
+  // Sem matrícula (Fabio 30/10): com o endereço completo do imóvel a IA também se oferece (pelo endereço) em vez de cobrar a certidão do cliente.
+  const ofertavel = !autorizou && emitirBruto.length > 0 && (!!certidaoFromDocs(cfAll) || !!(await enderecoDoImovel(leadId, cfAll).catch(() => null)));
   const faltandoFinal = [...(verdict.faltando || []), ...(autorizou || ofertavel ? [] : emitirBruto)];
   return { leadName: lead.name, complete: verdict.complete === true && (autorizou || !emitirBruto.length), listaUsada: verdict.listaUsada, faltando: faltandoFinal, emitir: autorizou ? emitirBruto : [], emitirPendente: ofertavel ? emitirBruto : [], receivedText };
 }
@@ -415,7 +416,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   if (verdict) {
     const offer = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
     if (verdict.emitir.length) await offer.ensureCertidaoRequest(accountId, leadId).catch((e: any) => console.error('[Certidão] pedido ONR:', e?.message || e));
-    else if (verdict.emitirPendente.length) await offer.maybeOfferCertidao(accountId, leadId, io).catch((e: any) => console.error('[Certidão] oferta:', e?.message || e));
+    else if (verdict.emitirPendente.length) await offer.maybeOfferCertidao(accountId, leadId, io, { porEnderecoOk: true }).catch((e: any) => console.error('[Certidão] oferta:', e?.message || e));
   }
   const faltando = verdict && !verdict.complete ? verdict.faltando : [];
   const faltaTxt = faltando.length ? `\n\nAinda falta mandar:\n${faltando.map((f) => `• ${f}`).join('\n')}` : '';

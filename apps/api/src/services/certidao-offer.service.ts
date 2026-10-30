@@ -164,6 +164,17 @@ export function certidaoOfferText(nome: string | null, saudar: boolean, matricul
   return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Recebi a escritura do imóvel e já identifiquei o número da matrícula (nº ${matricula}), porém não recebi a certidão de ônus/matrícula, ela é essencial para que possamos solicitar a vistoria. Você teria ela aí ou posso emitir ela por aqui, através do cartório digital?`;
 }
 
+/** Oferta SEM matrícula (Fabio 30/10, "Sim, oferece e confirma"): uma mensagem só — oferece emitir pelo endereço e pede pra confirmar o endereço. O "sim" autoriza e confirma juntos. */
+export function certidaoOfferEnderecoText(nome: string | null, saudar: boolean, endereco: string): string {
+  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Não recebi a certidão de ônus/matrícula do imóvel, ela é essencial para que possamos solicitar a vistoria. Você teria ela aí ou posso emitir por aqui, através do cartório digital, pelo endereço do imóvel? Se puder emitir, só me confirma se o endereço é este:\n${endereco}`;
+}
+
+/** Fora do horário de pedido (07h–20h) o pedido espera as 07h: avisa o cliente que o PIX vai de manhã. */
+async function avisaPixAmanha(accountId: string, leadId: string, io: Io) {
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  await sendOutboundWhatsApp({ accountId, leadId, content: 'Combinado! O cartório digital gera o pagamento durante o dia, então amanhã cedo te mando o PIX da certidão por aqui.', io: (io || undefined) as any }).catch(() => {});
+}
+
 async function carrega(leadId: string) {
   return prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, accountId: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
 }
@@ -175,7 +186,7 @@ async function salvaOferta(leadId: string, patch: Record<string, unknown>) {
 }
 
 /** A IA oferece a emissão (uma vez por matrícula). Só Home Equity (ou Financiamento pelo Inter) em "Aguardando Documentação", IA do card ligada, sem STOP TOTAL, 07h–21h e janela de 24 h aberta (senão tenta de novo na próxima conferência). */
-export async function maybeOfferCertidao(accountId: string, leadId: string, io: Io): Promise<boolean> {
+export async function maybeOfferCertidao(accountId: string, leadId: string, io: Io, opts: { porEnderecoOk?: boolean } = {}): Promise<boolean> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return false;
   const cf = (lead.customFields || {}) as Record<string, any>;
@@ -187,7 +198,7 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   if (!/home equity/i.test(dept) && !(/habitacional/i.test(dept) && /^inter$/i.test(String(cf._fhChosen?.bank || '')) && !cf._optouCaixa)) return false;
   if (temCertidaoEmMaos(cf)) return false;
   const d = certidaoFromDocs(cf);
-  if (!d) return false;
+  if (!d) return opts.porEnderecoOk ? maybeOfferPorEndereco(accountId, leadId, lead, cf, io) : false;
   const oferta = cf._certidaoOffer as { matricula?: string; at?: string } | undefined;
   if (oferta?.matricula === d.matricula) return false; // já ofereci (aceitou, recusou ou está esperando a resposta)
   const ativo = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
@@ -211,6 +222,39 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   return true;
 }
 
+/** Sem matrícula nos documentos (Fernanda 29/10): só a conferência dos documentos chama (ela é quem sabe que a certidão falta). Uma vez por endereço. */
+async function maybeOfferPorEndereco(accountId: string, leadId: string, lead: NonNullable<Awaited<ReturnType<typeof carrega>>>, cf: Record<string, any>, io: Io): Promise<boolean> {
+  const e = await enderecoDoImovel(leadId, cf);
+  if (!e) return false;
+  const chave = `END:${digits(e.endereco.cep)}:${digits(e.endereco.numero) || e.endereco.lote || ''}`;
+  if ((cf._certidaoOffer as any)?.matricula === chave) return false;
+  const ativo = await prisma.certidaoRequest.findFirst({ where: { leadId, pedidoPor: 'ENDERECO', status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
+  if (ativo) return false;
+  const pe = cf._certidaoEndereco as EnderecoAsk | undefined;
+  if (pe?.askedAt && !pe.answeredAt && Date.now() - new Date(pe.askedAt).getTime() < 7 * 86_400_000) return false; // já perguntado (Jarvis/equipe), esperando
+  const end = `${enderecoTexto(e.endereco)} — ${e.cidade}/${e.uf}`;
+  if (!(await contractingAutoOn(accountId))) {
+    await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-oferta-${chave}`, pushTitle: '🏛️ Certidão de ônus/matrícula', pushBody: `${lead.name}: falta a certidão e não há matrícula — oferecer a emissão pelo endereço`,
+      note: `🏛️ Falta a certidão de ônus/matrícula e os documentos não trazem a matrícula. Passo manual (automação da contratação desligada): a IA NÃO ofereceu a emissão. Pra emitir pelo endereço (${end}), combine com o cliente e peça pelo Jarvis ou pelo botão do card.` });
+    return false;
+  }
+  const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return false;
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
+  const texto = certidaoOfferEnderecoText(nome, !(await conversationActive(leadId)), end);
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: (io || undefined) as any });
+  if (!r.success) return false;
+  await salvaOferta(leadId, { matricula: chave, cidade: e.cidade, uf: e.uf, at: new Date().toISOString() });
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
+  c._certidaoEndereco = { endereco: e.endereco, cidade: e.cidade, uf: e.uf, cartorio: 'AUTO', sendPix: true, askedAt: new Date().toISOString(), oferta: true } as EnderecoAsk;
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+  await note(leadId, `🏛️ Falta a certidão de ônus/matrícula e os documentos não trazem a matrícula: ofereci emitir pelo cartório digital pelo ENDEREÇO (${end}) e pedi pra confirmar o endereço. Confirmando, o CRM pede sozinho e o PIX vai ao cliente.`);
+  return true;
+}
+
 /** O cliente JÁ mandou uma certidão de ônus/matrícula que vale (e o banco não recusou)? Então não há o que emitir/cobrar: nem a oferta nem o pedido no ONR (Fabio 23/10, Luiz Fernando: a certidão
  *  estava no card e o 'Ok, obrigado!' dele ainda disparou o PIX). */
 async function jaTemCertidaoValida(leadId: string, cf: Record<string, any>): Promise<boolean> {
@@ -220,7 +264,7 @@ async function jaTemCertidaoValida(leadId: string, cf: Record<string, any>): Pro
 }
 
 /** Cria o pedido no ONR (a extensão pega na fila): chamado quando o cliente aceitou. Uma vez por matrícula. */
-export async function ensureCertidaoRequest(accountId: string, leadId: string, opts: { manual?: boolean; userId?: string; sendPix?: boolean; porEndereco?: boolean } = {}): Promise<{ created: boolean; why?: string }> {
+export async function ensureCertidaoRequest(accountId: string, leadId: string, opts: { manual?: boolean; userId?: string; sendPix?: boolean; porEndereco?: boolean } = {}): Promise<{ created: boolean; why?: string; agendado?: boolean }> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return { created: false, why: 'lead não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
@@ -239,7 +283,7 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
     }
     try {
       const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: e.uf, cidade: e.cidade, cartorio: 'AUTO', pedidoPor: 'ENDERECO', endereco: e.endereco, source: opts.manual ? 'USER' : 'AI', userId: opts.manual ? opts.userId : undefined, sendPix: opts.sendPix });
-      return { created: !out.duplicate };
+      return { created: !out.duplicate, agendado: !out.duplicate && !!out.agendado };
     } catch (err: any) {
       await note(leadId, `⚠️ Não consegui criar o pedido da certidão pelo endereço: ${err?.message || err}. Peça pelo card.`);
       return { created: false, why: String(err?.message || err) };
@@ -254,7 +298,7 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
   if (existente) return { created: false, why: 'já existe pedido pra esta matrícula' };
   try {
     const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: d.uf, cidade: d.cidade, cartorio: d.cartorio, matricula: d.matricula, source: opts.manual ? 'USER' : 'AI', userId: opts.manual ? opts.userId : undefined, sendPix: opts.sendPix });
-    return { created: !out.duplicate };
+    return { created: !out.duplicate, agendado: !out.duplicate && !!out.agendado };
   } catch (e: any) {
     await note(leadId, `⚠️ O cliente autorizou a emissão da certidão, mas não consegui criar o pedido no ONR: ${e?.message || e}. Peça pelo botão da certidão no card.`);
     return { created: false, why: String(e?.message || e) };
@@ -404,6 +448,7 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   await note(leadId, `${AUTORIZOU_EMISSAO} — o cliente aceitou a oferta ("${clean.slice(0, 120)}"): a emissão pelo ONR foi autorizada (o PIX vai ao cliente).`);
   const out = await ensureCertidaoRequest(accountId, leadId);
   if (out.created) io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
+  if (out.agendado) await avisaPixAmanha(accountId, leadId, io);
   else if (out.why) console.warn(`[Certidão] ${lead.name}: aceitou, mas o pedido não foi criado — ${out.why}`);
 }
 
@@ -425,7 +470,7 @@ export async function marcarTransferenciaPendente(accountId: string, leadId: str
 }
 
 // ── Confirmar o endereço com o cliente e SÓ DEPOIS pedir a certidão (Fabio 29/10, Fernanda Karita: "confirmar com a cliente e quando ela confirmar solicitar a certidão de ônus") ──
-type EnderecoAsk = { endereco: EnderecoCertidao; cidade: string; uf: string; cartorio?: string; sendPix?: boolean; userId?: string; askedAt?: string; answeredAt?: string };
+type EnderecoAsk = { endereco: EnderecoCertidao; cidade: string; uf: string; cartorio?: string; sendPix?: boolean; userId?: string; askedAt?: string; answeredAt?: string; oferta?: boolean };
 
 /** Manda ao cliente "confirma o endereço do imóvel?" e guarda o pedido esperando o SIM. Sem endereço passado, usa o da proposta/documentos (enderecoDoImovel). */
 export async function askEnderecoCertidao(accountId: string, leadId: string, opts: { endereco?: EnderecoCertidao; cidade?: string; uf?: string; cartorio?: string; sendPix?: boolean; userId?: string }, io: Io): Promise<{ ok: boolean; erro?: string; texto?: string }> {
@@ -456,12 +501,27 @@ export function classificaRespostaEndereco(texto: string): 'SIM' | 'CORRIGE' | '
   return 'OUTRO';
 }
 async function respondeEndereco(accountId: string, leadId: string, texto: string, pe: EnderecoAsk, io: Io): Promise<void> {
-  const tipo = classificaRespostaEndereco(texto);
+  let tipo: 'SIM' | 'CORRIGE' | 'OUTRO' | 'NAO' | 'TEM' = classificaRespostaEndereco(texto);
+  if (pe.oferta) {
+    // Oferta da IA (cobra um PIX do cliente): o "sim/ok" só vale respondendo à pergunta da certidão, com o card ainda esperando documentação e sem certidão em mãos.
+    const t = texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (/\btenho\b|vou (te )?(mandar|enviar)|ja (te )?(mandei|enviei)|tenho ela/.test(t) && !/pode emitir|pode tirar|emite/.test(t)) tipo = 'TEM';
+    else if (tipo === 'CORRIGE' && !/\d{2,}/.test(t)) tipo = 'NAO';
+    if (tipo === 'SIM') {
+      const lead = await carrega(leadId);
+      const cf0 = (lead?.customFields || {}) as Record<string, any>;
+      const ultima = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', deleted: false, NOT: { content: '' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+      if (!ultima || !mensagemFalaDaCertidao(ultima.content || '')) return;
+      if (cf0._autoPaused || !/aguardando document/i.test((lead?.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')) || (await jaTemCertidaoValida(leadId, cf0))) return;
+    }
+  }
   if (tipo === 'OUTRO') return;
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, name: true } });
   const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
   c._certidaoEndereco = { ...(c._certidaoEndereco || {}), answeredAt: new Date().toISOString(), resposta: tipo };
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+  if (tipo === 'TEM') { await note(leadId, `🏛️ O cliente diz que TEM a certidão de ônus/matrícula e vai mandar (“${texto.slice(0, 120)}”). Nada foi pedido no ONR.`); return; }
+  if (tipo === 'NAO') { await note(leadId, `🏛️ O cliente NÃO quer que a A&F emita a certidão (“${texto.slice(0, 120)}”). Nada foi pedido no ONR.`); return; }
   if (tipo === 'CORRIGE') {
     await note(leadId, `⚠️ O cliente NÃO confirmou o endereço da certidão: “${texto.slice(0, 300)}”. Confira e peça a certidão com o endereço certo (Jarvis: pedir_certidao com o endereço).`);
     try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏛️ Endereço da certidão', body: `${fresh?.name || 'Cliente'} corrigiu o endereço do imóvel`, leadId }).catch(() => {}); } catch { /* aviso */ }
@@ -469,7 +529,9 @@ async function respondeEndereco(accountId: string, leadId: string, texto: string
   }
   try {
     const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: pe.uf, cidade: pe.cidade, cartorio: pe.cartorio || 'AUTO', pedidoPor: 'ENDERECO', endereco: pe.endereco, source: 'AI', userId: pe.userId, sendPix: pe.sendPix !== false });
+    if (pe.oferta) await note(leadId, `${AUTORIZOU_EMISSAO} — o cliente aceitou a emissão pelo endereço (“${texto.slice(0, 120)}”).`);
     await note(leadId, `🏛️ O cliente confirmou o endereço (${enderecoTexto(pe.endereco)}). Pedi a certidão de ônus pelo endereço no ONR${out.duplicate ? ' (já havia um pedido andando)' : ''}.`);
     io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
+    if (!out.duplicate && out.agendado) await avisaPixAmanha(accountId, leadId, io);
   } catch (e: any) { await note(leadId, `⚠️ O cliente confirmou o endereço, mas não consegui pedir a certidão: ${e?.message || e}.`); }
 }

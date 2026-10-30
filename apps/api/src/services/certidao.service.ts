@@ -35,6 +35,14 @@ const BRT_MS = 3 * 3600_000;
 const brDate = (d: Date) => { const b = new Date(d.getTime() - BRT_MS); return `${String(b.getUTCDate()).padStart(2, '0')}/${String(b.getUTCMonth() + 1).padStart(2, '0')}`; };
 const sameBrDay = (a: Date, b: Date) => brDate(a) === brDate(b) && Math.abs(a.getTime() - b.getTime()) < 36 * 3600_000;
 
+/** Hora de Brasília (0–23). */
+const horaBrt = (d = new Date()) => new Date(d.getTime() - BRT_MS).getUTCHours();
+/** O PIX do RI Digital vence no MESMO DIA às 23:59 (Fernanda 29/10: pedido às 23:54, PIX valia 5 min). Fabio 30/10: o CRM só faz pedido novo das 07h às 20h; depois, fica na fila até as 07h. */
+export const CERTIDAO_PEDIDO_DAS = 7, CERTIDAO_PEDIDO_ATE = 20;
+export const podePedirCertidaoAgora = (d = new Date()) => { const h = horaBrt(d); return h >= CERTIDAO_PEDIDO_DAS && h < CERTIDAO_PEDIDO_ATE; };
+/** Início do expediente (07h BRT) do dia de hoje, em UTC. */
+const inicioExpedienteHoje = (d = new Date()) => { const b = new Date(d.getTime() - BRT_MS); return Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate(), CERTIDAO_PEDIDO_DAS) + BRT_MS; };
+
 function firstName(full: string | null | undefined): string {
   const w = String(full || '').trim().split(/\s+/)[0] || '';
   return w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : 'Olá';
@@ -111,7 +119,7 @@ export async function createCertidaoRequest(db: Db, p: { accountId: string; lead
   if (!lead) throw new Error('Lead não encontrado');
   // Cada pedido é uma cobrança nova no portal: nunca cria outro enquanto houver um andando pra mesma matrícula (ou, por endereço, pro mesmo imóvel) do mesmo cliente.
   const ativo = await db.certidaoRequest.findFirst({ where: { accountId: p.accountId, leadId: p.leadId, ...(porEndereco ? { pedidoPor: 'ENDERECO' } : { matricula }), status: { in: ACTIVE }, ...(p.source === 'MAPA' ? {} : { NOT: { source: 'MAPA' } }) }, orderBy: { createdAt: 'desc' } });
-  if (ativo) return { request: ativo, duplicate: true };
+  if (ativo) return { request: ativo, duplicate: true, agendado: false };
   // Mapa do portal (Fabio 29/10, Alexandro: o "3º Ofício de Brasília" fica em ÁGUAS CLARAS no RI Digital): corrige cidade/cartório antes da extensão tentar.
   let cidade = p.cidade.trim(), cartorio = p.cartorio.trim(), ajuste = '';
   try {
@@ -131,15 +139,16 @@ export async function createCertidaoRequest(db: Db, p: { accountId: string; lead
     try { const c = (require('./ri-cartorios.service') as typeof import('./ri-cartorios.service')).consultarCartorios(uf, cidade) as any; precisaAchar = Array.isArray(c?.naCidade) && c.naCidade.length > 1; } catch { /* sem mapa: segue */ }
     if (precisaAchar) ajuste += ' Antes do pedido, o CRM acha o cartório pela pesquisa nas fontes oficiais e grava no card.';
   }
-  if (p.source === 'MAPA' && !precisaAchar) return { request: null as any, duplicate: true }; // só consulta e não precisa do mapa: nada a fazer
+  if (p.source === 'MAPA' && !precisaAchar) return { request: null as any, duplicate: true, agendado: false }; // só consulta e não precisa do mapa: nada a fazer
   const request = await db.certidaoRequest.create({
     data: { ...(precisaAchar ? { status: 'FIND_WEB' } : {}), accountId: p.accountId, leadId: p.leadId, uf, cidade, cartorio, matricula, pedidoPor: porEndereco ? 'ENDERECO' : 'MATRICULA', endereco: (endereco as any) ?? undefined, source: p.source || 'USER', requestedById: p.userId, sendPix: p.sendPix !== false, clientIntro: p.clientIntro?.trim() || null },
   });
   if (precisaAchar) void acharCartorioPelaWeb(db, request.id);
-  if (p.source === 'MAPA') { await note(db, p.leadId, `🗺️ O cliente não tem matrícula nem cartório nos documentos: o CRM vai achar o cartório do imóvel no Mapa do ONR pelo endereço (${enderecoTexto(endereco)}, ${cidade}/${uf}) e gravar no card. NÃO é pedido de certidão (nada é cobrado).`, p.userId); return { request, duplicate: false }; }
+  if (p.source === 'MAPA') { await note(db, p.leadId, `🗺️ O cliente não tem matrícula nem cartório nos documentos: o CRM vai achar o cartório do imóvel no Mapa do ONR pelo endereço (${enderecoTexto(endereco)}, ${cidade}/${uf}) e gravar no card. NÃO é pedido de certidão (nada é cobrado).`, p.userId); return { request, duplicate: false, agendado: false }; }
   const oQue = porEndereco ? `pelo ENDEREÇO do imóvel (${enderecoTexto(endereco)}, ${cidade}/${uf} — o cliente não sabe a matrícula)` : `de matrícula nº ${matricula} (${cartorio === 'AUTO' ? cidade : cartorio}/${uf})`;
-  await note(db, p.leadId, `🏛️ Certidão ${oQue} pedida pelo CRM — a extensão "Certidão ONR" faz o pedido no RI Digital e o PIX ${request.sendPix ? 'vai direto ao cliente' : 'fica guardado aqui'}.${ajuste}`, p.userId);
-  return { request, duplicate: false };
+  const agendado = !podePedirCertidaoAgora();
+  await note(db, p.leadId, `🏛️ Certidão ${oQue} pedida pelo CRM — a extensão "Certidão ONR" faz o pedido no RI Digital e o PIX ${request.sendPix ? 'vai direto ao cliente' : 'fica guardado aqui'}.${agendado ? ` ⏰ Fora do horário de pedido (${CERTIDAO_PEDIDO_DAS}h–${CERTIDAO_PEDIDO_ATE}h): o PIX do cartório vence no mesmo dia, então o pedido sai às ${String(CERTIDAO_PEDIDO_DAS).padStart(2, '0')}h.` : ''}${ajuste}`, p.userId);
+  return { request, duplicate: false, agendado };
 }
 
 /** 1º tenta a PESQUISA NA WEB (Claude + fontes oficiais, ~20 s); achou com confiança alta → mesmo caminho do "cartorio_found" (card, nota, região, fila do pedido). Senão o pedido vai pra fase FIND (Mapa do ONR pela extensão). */
@@ -196,7 +205,9 @@ async function expireStuck(db: Db, accountId: string) {
       pushAll(accountId, '⚠️ Certidão não saiu em 3 dias úteis', `${await leadNameOf(db, r.leadId)} — matrícula ${r.matricula}: confira o ONR`, r.leadId);
     }
   }
-  const velhos = await db.certidaoRequest.findMany({ where: { accountId, status: 'REQUESTED', createdAt: { lt: new Date(agora - REQUESTED_WARN_H * 3600_000) }, OR: [{ detail: null }, { detail: { not: { contains: WARN_MARK } } }] }, select: { id: true, leadId: true, matricula: true } });
+  // Pedido da noite espera as 07h (podePedirCertidaoAgora): o tempo parado só conta a partir do início do horário de pedido de hoje.
+  const velhos = !podePedirCertidaoAgora() ? [] : (await db.certidaoRequest.findMany({ where: { accountId, status: 'REQUESTED', createdAt: { lt: new Date(agora - REQUESTED_WARN_H * 3600_000) }, OR: [{ detail: null }, { detail: { not: { contains: WARN_MARK } } }] }, select: { id: true, leadId: true, matricula: true, createdAt: true } }))
+    .filter((r) => agora - Math.max(r.createdAt.getTime(), inicioExpedienteHoje()) > REQUESTED_WARN_H * 3600_000);
   for (const r of velhos) {
     const u = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'REQUESTED' }, data: { detail: `Pedido ${WARN_MARK} há mais de ${REQUESTED_WARN_H} h: abra o Chrome com a extensão "Certidão ONR" (logada no CRM) que ela pega sozinha. Continua na fila, sem limite.` } });
     if (u.count) {
@@ -221,15 +232,55 @@ export function enderecoTexto(e: EnderecoCertidao | null | undefined): string {
 /** A extensão pergunta "tem serviço?" (a cada minuto). Devolve UM trabalho por vez — ela usa o navegador inteiro pra isso. */
 /** PIX da certidão vencido sem pagamento: push pro colaborador (quem pediu; sem ele, a conta), nota no card e o pedido sai da conferência (FAILED). */
 async function avisarPixVencidos(db: Db, accountId: string) {
-  const vencidos = await db.certidaoRequest.findMany({ where: { accountId, status: 'AWAITING_PAYMENT', paidAt: null, pixCode: { not: null }, pixExpiresAt: { lt: new Date() } }, take: 10, select: { id: true, leadId: true, protocolo: true, valorCents: true, pixExpiresAt: true, requestedById: true } });
+  const vencidos = await db.certidaoRequest.findMany({ where: { accountId, status: 'AWAITING_PAYMENT', paidAt: null, pixCode: { not: null }, pixExpiresAt: { lt: new Date() } }, take: 10 });
   for (const r of vencidos) {
-    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT', paidAt: null }, data: { status: 'FAILED', finishedAt: new Date(), nextCheckAt: null, forceCheck: false, detail: `PIX vencido sem pagamento (venceu em ${r.pixExpiresAt?.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}). Parei de conferir — se o cliente ainda quiser, peça a certidão de novo.` } });
+    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT', paidAt: null }, data: { status: 'FAILED', finishedAt: new Date(), nextCheckAt: null, forceCheck: false, detail: `PIX vencido sem pagamento (venceu em ${r.pixExpiresAt?.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}).` } });
     if (!c.count) continue;
-    const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
-    await note(db, r.leadId, `⏰ O PIX da certidão${r.protocolo ? ` (protocolo ${r.protocolo})` : ''}${r.valorCents ? ` de ${brl(r.valorCents)}` : ''} VENCEU sem pagamento. O CRM parou de conferir esse pedido; se o cliente ainda precisar, peça a certidão de novo (gera PIX novo).`, r.requestedById);
+    const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true, customFields: true, stage: { select: { name: true } } } });
+    const cf = (lead?.customFields || {}) as Record<string, any>;
+    // Fabio 30/10: PIX que foi ao cliente e venceu → o CRM pede de novo UMA vez (PIX novo vai ao cliente no horário de pedido); o 2º que vencer só avisa a equipe.
+    const podeRefazer = !!r.pixSentAt && r.sendPix && !r.retryOfId && !cf._autoPaused && !/perdid|ganho|conclu/i.test(lead?.stage?.name || '');
+    let refeito = false;
+    if (podeRefazer) {
+      try {
+        const out = await createCertidaoRequest(db, { accountId, leadId: r.leadId, uf: r.uf, cidade: r.cidade, cartorio: r.cartorio, matricula: r.matricula, pedidoPor: r.pedidoPor === 'ENDERECO' ? 'ENDERECO' : 'MATRICULA', endereco: (r.endereco as EnderecoCertidao | null) || null, source: r.source === 'USER' ? 'USER' : 'AI', userId: r.requestedById || undefined, sendPix: true, clientIntro: 'o PIX anterior da certidão venceu, então gerei um novo' });
+        if (!out.duplicate && out.request) { await db.certidaoRequest.update({ where: { id: out.request.id }, data: { retryOfId: r.id } }); refeito = true; }
+      } catch (e: any) { console.warn('[Certidão] refazer PIX vencido:', e?.message); }
+    }
+    await note(db, r.leadId, refeito
+      ? `⏰ O PIX da certidão${r.protocolo ? ` (protocolo ${r.protocolo})` : ''}${r.valorCents ? ` de ${brl(r.valorCents)}` : ''} VENCEU sem pagamento. O CRM pediu de novo (1 vez só): o PIX novo vai ao cliente ${podePedirCertidaoAgora() ? 'em seguida' : `às ${String(CERTIDAO_PEDIDO_DAS).padStart(2, '0')}h`}.`
+      : `⏰ O PIX da certidão${r.protocolo ? ` (protocolo ${r.protocolo})` : ''}${r.valorCents ? ` de ${brl(r.valorCents)}` : ''} VENCEU sem pagamento${r.retryOfId ? ' pela 2ª vez' : ''}. O CRM parou de conferir esse pedido; se o cliente ainda precisar, peça a certidão de novo (gera PIX novo).`, r.requestedById);
+    if (refeito) continue;
     try {
-      (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '⏰ PIX da certidão venceu', body: `${lead?.name || 'Cliente'}: o PIX${r.valorCents ? ` de ${brl(r.valorCents)}` : ''} venceu sem pagamento — peça a certidão de novo se ainda precisar`, leadId: r.leadId }, r.requestedById ? [r.requestedById] : undefined).catch(() => {});
+      (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '⏰ PIX da certidão venceu', body: `${lead?.name || 'Cliente'}: o PIX${r.valorCents ? ` de ${brl(r.valorCents)}` : ''} venceu sem pagamento${r.retryOfId ? ' (2ª vez)' : ''} — peça a certidão de novo se ainda precisar`, leadId: r.leadId }, r.requestedById ? [r.requestedById] : undefined).catch(() => {});
     } catch { /* push é só aviso */ }
+  }
+}
+
+/** Fabio 30/10: às 18h lembra o cliente do PIX que vence HOJE (1 vez; só se foi enviado há mais de 2 h e ainda não pagou). */
+async function lembrarPixHoje(db: Db, accountId: string, io?: Io) {
+  const agora = new Date();
+  const h = horaBrt(agora);
+  if (h < 18 || h >= 22) return;
+  const rows = await db.certidaoRequest.findMany({ where: { accountId, status: 'AWAITING_PAYMENT', paidAt: null, pixRemindedAt: null, pixCode: { not: null }, pixSentAt: { lt: new Date(agora.getTime() - 2 * 3600_000) }, pixExpiresAt: { gt: agora } }, take: 10 });
+  for (const r of rows) {
+    if (!r.pixExpiresAt || !sameBrDay(r.pixExpiresAt, agora)) continue;
+    const c = await db.certidaoRequest.updateMany({ where: { id: r.id, pixRemindedAt: null }, data: { pixRemindedAt: agora } });
+    if (!c.count) continue;
+    const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true, customFields: true } });
+    if (((lead?.customFields || {}) as any)._autoPaused) continue;
+    const texto = `${firstName(lead?.name)}, passando pra lembrar do PIX da certidão${r.valorCents ? ` (${brl(r.valorCents)})` : ''}: ele vale só até hoje às 23h59. Se já pagou, me manda o comprovante por aqui, por favor.`;
+    const out = await sendOutboundWhatsApp({ accountId, leadId: r.leadId, content: texto, userId: r.requestedById || undefined, io });
+    await note(db, r.leadId, out.success ? `⏰ Lembrei o cliente do PIX da certidão que vence hoje às 23h59.` : `⚠️ Não consegui lembrar o cliente do PIX da certidão que vence hoje (${out.error || 'WhatsApp'}).`, r.requestedById);
+  }
+}
+
+/** Poller do servidor (5 em 5 min): lembrete das 18h e PIX vencido (refaz 1x) — não depende do Chrome com a extensão estar aberto. */
+export async function processCertidaoPix(db: Db, io?: Io) {
+  const contas = await db.certidaoRequest.findMany({ where: { status: 'AWAITING_PAYMENT', paidAt: null, pixCode: { not: null } }, distinct: ['accountId'], select: { accountId: true } });
+  for (const { accountId } of contas) {
+    await lembrarPixHoje(db, accountId, io).catch((e) => console.warn('[Certidão] lembrete PIX:', e?.message));
+    await avisarPixVencidos(db, accountId).catch((e) => console.warn('[Certidão] PIX vencido:', e?.message));
   }
 }
 
@@ -247,8 +298,8 @@ export async function claimCertidao(db: Db, p: { accountId: string }): Promise<C
     const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'FIND' }, data: { status: 'FINDING', startedAt: now, detail: 'A extensão está procurando o cartório no Mapa do ONR pelo endereço.' } });
     if (c.count) return toJob(r, 'FIND');
   }
-  // 1) pedido novo
-  const novos = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'REQUESTED' }, orderBy: { createdAt: 'asc' }, take: 3 });
+  // 1) pedido novo — só das 07h às 20h (o PIX vence no mesmo dia às 23:59): fora disso fica na fila
+  const novos = podePedirCertidaoAgora() ? await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'REQUESTED' }, orderBy: { createdAt: 'asc' }, take: 3 }) : [];
   for (const r of novos) {
     const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'REQUESTED' }, data: { status: 'RUNNING', startedAt: now, detail: 'A extensão pegou o pedido e está preenchendo o portal.' } });
     if (c.count) return toJob(r, 'ORDER');
