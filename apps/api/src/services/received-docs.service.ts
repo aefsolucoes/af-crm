@@ -30,7 +30,7 @@ function folderNameFor(lead: { name: string; customFields: unknown }): string {
 }
 
 export const DOC_PROMPT = `Este arquivo foi enviado por um cliente de crédito imobiliário (financiamento ou crédito com garantia de imóvel). Diga qual documento é.
-Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, AUTORIZACAO SCR BACEN (formulário de autorização de consulta ao SCR do Banco Central, com ou sem assinatura), AUTORIZACAO USECASA (formulário "Autorização do(s) Cliente(s) para USECASA - Crédito com Garantia do Imóvel" do Santander, com ou sem assinatura do gov.br), CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU (SOMENTE a certidão negativa de débitos do IPTU emitida pela prefeitura — documento escrito "Certidão"), GUIA IPTU (guia/carnê de PAGAMENTO do IPTU: parcelas com vencimento e código de barras — NÃO é certidão), CAPA IPTU (capa do carnê/IPTU com as metragens e a inscrição imobiliária), SALDO DEVEDOR (print/extrato do app ou site do banco mostrando o saldo devedor do financiamento do imóvel), CERTIDAO DE ONUS (SOMENTE a emitida pelo CARTORIO DE REGISTRO DE IMOVEIS: ônus reais, negativa de ônus ou inteiro teor da matrícula), CERTIDAO DE CADASTRO IMOBILIARIO (certidão da PREFEITURA/município com a inscrição imobiliária, proprietários e endereço do imóvel — NÃO é do cartório e NUNCA é certidão de ônus), MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE, SIMULACAO.
+Responda SOMENTE em uma linha, em CAIXA ALTA, sem acento. O nome do documento, de preferência um destes: RG, CNH, CPF, AUTORIZACAO SCR BACEN (formulário de autorização de consulta ao SCR do Banco Central, com ou sem assinatura), AUTORIZACAO USECASA (formulário "Autorização do(s) Cliente(s) para USECASA - Crédito com Garantia do Imóvel" do Santander, com ou sem assinatura do gov.br), CERTIDAO DE NASCIMENTO, CERTIDAO DE CASAMENTO, COMPROVANTE DE RESIDENCIA, CONTRACHEQUE, EXTRATO BANCARIO, IMPOSTO DE RENDA, RECIBO IMPOSTO DE RENDA, CTPS, EXTRATO FGTS, HISTORICO INSS, CND IPTU (SOMENTE a certidão negativa de débitos do IPTU emitida pela prefeitura — documento escrito "Certidão"), GUIA IPTU (guia/carnê de PAGAMENTO do IPTU: parcelas com vencimento e código de barras — NÃO é certidão), CAPA IPTU (capa do carnê/IPTU com as metragens e a inscrição imobiliária), SALDO DEVEDOR (print/extrato do app ou site do banco mostrando o saldo devedor do financiamento do imóvel), DESCRITIVO DA PARCELA (extrato/demonstrativo das PRESTAÇÕES do financiamento do imóvel emitido pelo banco: dados do contrato — prazo, taxa, sistema de amortização — e a lista das últimas parcelas com vencimento, pagamento e valores; mesmo que também mostre o saldo, é DESCRITIVO DA PARCELA; NÃO é extrato bancário), CERTIDAO DE ONUS (SOMENTE a emitida pelo CARTORIO DE REGISTRO DE IMOVEIS: ônus reais, negativa de ônus ou inteiro teor da matrícula), CERTIDAO DE CADASTRO IMOBILIARIO (certidão da PREFEITURA/município com a inscrição imobiliária, proprietários e endereço do imóvel — NÃO é do cartório e NUNCA é certidão de ônus), MATRICULA DO IMOVEL, CONTRATO SOCIAL, CARTAO CNPJ, DEFIS, PGDAS, DECORE, SIMULACAO.
 Guia para NÃO confundir (aprendido com arquivos reais de clientes — Fabio 19/10):
 - CERTIDAO DE ONUS e MATRICULA DO IMOVEL são SÓ do CARTÓRIO de Registro de Imóveis (matrícula, registros R-, averbações AV-, selo/QR do Registro de Imóveis). Só use esses dois nomes com CERTEZA.
 - CERTIDAO DE CADASTRO IMOBILIARIO = PREFEITURA, com inscrição imobiliária, proprietários e endereço (não é do cartório).
@@ -144,6 +144,13 @@ export function chuteTipoPeloNome(fileName: string): string {
   if (/matricula|onus/.test(n)) return 'MATRICULA DO IMOVEL';
   if (/iptu|cadastro/.test(n)) return 'IPTU';
   return 'DOCUMENTO PROTEGIDO';
+}
+
+/** DESCRITIVO DA PARCELA (Fabio 30/10): extrato das prestações do financiamento do imóvel que o banco pede junto com o print do saldo devedor (PDF gerado no app do banco).
+ *  Aceita os nomes que a leitura costuma dar ("DEMONSTRATIVO DAS PRESTACOES", "EXTRATO DO FINANCIAMENTO"). */
+export function isDescritivoParcela(type: string | null | undefined): boolean {
+  const t = String(type || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+  return /(DESCRITIVO|DEMONSTRATIVO) D[AEO]S? (PARCELA|PRESTAC)|EXTRATO D[AEO]S? (PARCELA|PRESTAC|FINANCIAMENTO)/.test(t); // "MEMORIAL DESCRITIVO" é do imóvel: fica de fora
 }
 
 /** Documento do imóvel (vai pra subpasta IMOVEL; sem nome de pessoa no arquivo). */
@@ -273,7 +280,7 @@ async function organizeLead(lead: {
       if (simulationDriveIds.has(f.driveFileId) || SIMULATION_FILE_RE.test(f.fileName)) return 'RAIZ';
       const info = docInfo[attIdByDriveId.get(f.driveFileId) || ''];
       if (!info) return 'COMPRADOR';
-      if (/SIMULACAO/.test(info.type) || /^SALDO DEVEDOR/.test(info.type)) return 'RAIZ'; // simulação e print do saldo devedor: direto na pasta do cliente
+      if (/SIMULACAO/.test(info.type) || /^SALDO DEVEDOR/.test(info.type) || isDescritivoParcela(info.type)) return 'RAIZ'; // simulação, print do saldo devedor e descritivo da parcela: direto na pasta do cliente
       if (isPropertyDocType(info.type)) return 'IMOVEL';
       if (isHab && SELLER_DOC_RE.test(info.type) && !COMPANY_RE.test(info.holder || '') && !isBuyerHolder(info.holder, buyers)) return 'VENDEDOR';
       return 'COMPRADOR';

@@ -2,7 +2,7 @@ import { cachedSystem } from '../lib/anthropic-usage';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { fixedRule } from './fixed-rules.service';
-import { getDocInfo, isStickerAttachment, isScreenshotAttachment } from './received-docs.service';
+import { getDocInfo, isStickerAttachment, isScreenshotAttachment, isDescritivoParcela } from './received-docs.service';
 import { moveLeadToContracting } from './contracting.service';
 import { sendOutboundWhatsApp } from './message.service';
 import { logActivity } from './activity.service';
@@ -25,6 +25,9 @@ import { reviewReceivedDocs, buildDocProblemsMessage } from './doc-review.servic
 /** Anotação que registra o OK do cliente pra A&F emitir a certidão (Fabio 15/10: sem campo — o CRM anota e lê). */
 export const AUTORIZOU_EMISSAO = '🏛️ CLIENTE AUTORIZOU A EMISSÃO DA CERTIDÃO';
 const CHECK_DELAY_MS = 5 * 60_000; // Fabio 15/10: 10 min → 5 min
+
+/** Item que a conferência cobra quando o imóvel ainda tem financiamento (Fabio 30/10: além do print do saldo devedor, o banco pede o descritivo da parcela). */
+export const ITEM_DESCRITIVO = 'Descritivo da parcela do financiamento — o PDF com as últimas prestações, que o próprio app do banco gera';
 
 export const DOCS_COMPLETE_MESSAGE = 'Recebi toda a documentação, obrigada! Já vou seguir com a análise. Se o banco achar necessário, pode pedir algum documento a mais, aí te aviso por aqui.';
 
@@ -258,6 +261,10 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const bancosTxt = jogo.texto || 'sem leitura';
   const rendaNecessaria = fhSoComprador || jogo.rendaNecessaria; // FH: o último contracheque faz parte da lista do comprador
   const comMetragens = Array.from(new Set(Object.values((cfAll._docReview || {}) as Record<string, any>).filter((r: any) => r && r.metragens === true).map((r: any) => String(r.tipo)))) as string[];
+  // Imóvel com FINANCIAMENTO ATIVO (proposta "Imóvel quitado: Não"; Home Equity): o banco pede o DESCRITIVO DA PARCELA em PDF (Fabio 30/10). Só o PDF conta — a foto/print
+  // vira problema na leitura (doc-review) e o cliente é avisado que precisa do PDF.
+  const precisaDescritivo = !ehFh && (await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).proposalFinancing(leadId).catch(() => null))?.quitado === false;
+  const temDescritivo = atts.some((a) => a.mimeType === 'application/pdf' && revAll[a.id]?.resultado !== 'PROBLEMA' && (isDescritivoParcela(info[a.id]?.type) || isDescritivoParcela(revAll[a.id]?.tipo)));
   const participants = [
     cf.participante_1 && `1) ${cf.participante_1}${cf.vinculo_1 ? ` — ${cf.vinculo_1}` : ''}`,
     cf.participante_2 && `2) ${cf.participante_2}${cf.vinculo_2 ? ` — ${cf.vinculo_2}` : ''}`,
@@ -275,7 +282,8 @@ ${participants}
 BANCOS EM JOGO: ${bancosTxt}
 Comprovação de renda: ${rendaNecessaria ? 'necessária (o banco pediu documento de renda)' : 'NÃO é necessária (nenhum banco pediu renda — Fabio 27/10: renda só quando o banco pede — ou a equipe dispensou)'}
 Documentos da PREFEITURA recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
-
+${precisaDescritivo ? `Imóvel com FINANCIAMENTO ATIVO: o banco pede o DESCRITIVO DA PARCELA (PDF do app do banco do financiamento, com as últimas prestações) — ${temDescritivo ? 'JÁ RECEBIDO: não cobre.' : `NÃO recebido: ponha em "faltando" o item "${ITEM_DESCRITIVO}".`}
+` : ''}
 ${blocoFh}LISTAS DE DOCUMENTOS:
 ${listas.map((l) => `--- ${l.name} ---\n${l.body}`).join('\n\n')}
 
@@ -304,6 +312,11 @@ ${history}`;
   if (!autorizou && verdict.autorizouEmissao === true) {
     autorizou = true;
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `${AUTORIZOU_EMISSAO} — o cliente aceitou na conversa que a A&F emita a certidão de ônus/matrícula pelo ONR (custo de R$ 40 a R$ 100 pra ele).` } }).catch(() => {});
+  }
+  // Descritivo da parcela: decide o CRM (o PDF chegou ou não), não o modelo.
+  if (precisaDescritivo) {
+    verdict.faltando = (verdict.faltando || []).filter((f) => !/descritivo|prestac/i.test(String(f)));
+    if (!temDescritivo) { verdict.faltando.push(ITEM_DESCRITIVO); verdict.complete = false; }
   }
   const emitirBruto = fhSoComprador ? [] : Array.isArray(verdict.emitir) ? verdict.emitir.map((x) => String(x).slice(0, 120)) : [];
   if (fhSoComprador) verdict.faltando = (verdict.faltando || []).filter((f) => !/[ôo]nus|matr[ií]cula|escritura|iptu|inscri[cç][aã]o imobili|vendedor/i.test(String(f)));

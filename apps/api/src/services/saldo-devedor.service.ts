@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { downloadDriveFileForVision } from './google.service';
-import { isStickerAttachment } from './received-docs.service';
+import { isStickerAttachment, isDescritivoParcela } from './received-docs.service';
 import { sendOutboundWhatsApp } from './message.service';
 import { roundUpToThousand } from '../lib/text';
 
@@ -80,16 +80,17 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
   const nome = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
   const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const abertura = opts.docsReceived ? `Recebi a documentação${nome ? `, ${nome}` : ''}, obrigada! 🙏\n\n` : ((await conversationActive(leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `);
-  const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de um *print do saldo devedor atualizado* (no app ou no site do banco). Esse saldo é *somado* ao troco que você precisa receber${liquido ? ` (${brl(liquido)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. ${liquido ? `O troco de ${brl(liquido)} está correto? Se não, me diz quanto você precisa receber.` : 'Quanto de troco você precisa receber, depois de quitar o financiamento?'} Assim que você mandar o print, te aviso do resultado.`;
+  // Fabio 30/10: além do print do saldo, o banco pede o DESCRITIVO DA PARCELA — o PDF com as últimas prestações que o próprio app do banco do financiamento gera.
+  const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de dois documentos do banco do financiamento:\n• um *print do saldo devedor atualizado* (no app ou no site do banco);\n• o *descritivo da parcela* em PDF — o extrato das prestações, que o próprio app do banco gera.\n\nO saldo é *somado* ao troco que você precisa receber${liquido ? ` (${brl(liquido)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. ${liquido ? `O troco de ${brl(liquido)} está correto? Se não, me diz quanto você precisa receber.` : 'Quanto de troco você precisa receber, depois de quitar o financiamento?'} Assim que você mandar o print do saldo, te aviso do resultado.`;
   const marker = { askedAt: new Date().toISOString(), base, liquido, declared, gravame };
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoDevedor: marker, ...(liquido > 0 ? { troco: String(liquido) } : {}) } as any } }); // "Troco" = o que sobra pro cliente depois de quitar
   const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Crédito aprovado e o imóvel tem financiamento ativo (proposta: faltam ${declared ? brl(declared) : '—'}${gravame ? `; matrícula: ${gravame}` : ''}). ${sent.success ? 'Pedi ao cliente o print do saldo devedor: o saldo será somado ao valor líquido que ele precisa' + (liquido ? ` (${brl(liquido)})` : '') + ' e a análise refeita com o total.' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor.' : 'IA desligada: peça ao cliente o print do saldo devedor (será somado ao crédito pedido e a análise refeita).'}` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Crédito aprovado e o imóvel tem financiamento ativo (proposta: faltam ${declared ? brl(declared) : '—'}${gravame ? `; matrícula: ${gravame}` : ''}). ${sent.success ? 'Pedi ao cliente o print do saldo devedor e o descritivo da parcela (PDF do app do banco): o saldo será somado ao valor líquido que ele precisa' + (liquido ? ` (${brl(liquido)})` : '') + ' e a análise refeita com o total.' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor.' : 'IA desligada: peça ao cliente o print do saldo devedor (será somado ao crédito pedido e a análise refeita).'}` } }).catch(() => {});
   return !!sent.success;
 }
 
 const SALDO_PROMPT = `Este arquivo foi enviado por um cliente que precisa comprovar o SALDO DEVEDOR do financiamento do imóvel (print de app/site do banco, extrato do financiamento, boleto de quitação). Responda SOMENTE com JSON:
-{"ehSaldo": <true se o arquivo mostra o saldo devedor / valor para quitação do financiamento; false se for outra coisa>, "saldo": <número em reais, ex.: 85400.37 — o SALDO DEVEDOR TOTAL ATUAL (ou valor total pra quitação hoje); NÃO a parcela, NÃO o valor financiado original; null se não aparecer>, "banco": "<banco/credor ou vazio>", "data": "<data de referência do saldo se aparecer, ou vazio>"}`;
+{"ehSaldo": <true se o arquivo mostra o saldo devedor / valor para quitação do financiamento; false se for outra coisa>, "saldo": <número em reais, ex.: 85400.37 — o SALDO DEVEDOR TOTAL ATUAL (ou valor total pra quitação hoje); NÃO a parcela, NÃO o valor financiado original, NÃO saldo de FGTS nem "diferença de pagamento" (o DESCRITIVO DA PARCELA — lista das prestações pagas — só vale aqui se mostrar escrito o saldo devedor do contrato); null se não aparecer>, "banco": "<banco/credor ou vazio>", "data": "<data de referência do saldo se aparecer, ou vazio>"}`;
 
 async function readSaldo(accountId: string, att: { driveFileId: string | null; data?: Uint8Array | null; mimeType: string }): Promise<{ ehSaldo: boolean; saldo: number | null; banco: string; data: string } | undefined> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -241,6 +242,9 @@ async function lerTrocoCorrigido(leadId: string, since: string, trocoAtual: numb
   } catch { return null; }
 }
 
+/** Rótulo do arquivo de onde saiu o saldo: o DESCRITIVO DA PARCELA que também mostra o saldo continua DESCRITIVO (a conferência cobra os dois — Fabio 30/10). */
+const rotuloSaldo = (antes?: string) => (antes && isDescritivoParcela(antes.split('|')[0]) ? antes : 'SALDO DEVEDOR|');
+
 async function processOne(accountId: string, leadId: string, io: Io): Promise<void> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
   if (!lead) return;
@@ -289,7 +293,7 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
     const trocoReal = Math.round((am.valor - achou.saldo) * 100) / 100;
     st.doneAt = new Date().toISOString();
     (st as any).saldo = achou.saldo; (st as any).aMenor = true; (st as any).trocoReal = trocoReal; (st as any).attachmentId = achouAtt;
-    const docInfoAM = { ...(cf2._docInfo || {}), ...(achouAtt ? { [achouAtt]: 'SALDO DEVEDOR|' } : {}) };
+    const docInfoAM = { ...(cf2._docInfo || {}), ...(achouAtt ? { [achouAtt]: rotuloSaldo(cf2._docInfo?.[achouAtt]) } : {}) };
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), ...(trocoReal > 0 ? { troco: String(trocoReal) } : {}), _docInfo: docInfoAM, _saldoDevedor: st } as any } });
     if (cf2._driveOrganizedAt) { try { const { organizeLeadDocsNow } = require('./received-docs.service') as typeof import('./received-docs.service'); await organizeLeadDocsNow(leadId); } catch (e: any) { console.error('[Saldo] não reorganizei a pasta:', e?.message || e); } }
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}. Aprovação A MENOR (${brl(am.valor)}): o banco não aprova mais, então NÃO refiz a análise — só calculei o troco: ${brl(am.valor)} − ${brl(achou.saldo)} = ${brl(trocoReal)}.${trocoReal < 0 ? ' O valor aprovado NÃO cobre o saldo devedor: a equipe decide como seguir.' : ''}` } }).catch(() => {});
@@ -307,7 +311,7 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   st.doneAt = new Date().toISOString();
   (st as any).saldo = achou.saldo; (st as any).total = total; (st as any).attachmentId = achouAtt;
   // O print fica na PASTA DO CLIENTE com o nome "SALDO DEVEDOR" (única captura de tela que vai pra lá).
-  const docInfo = { ...(cf2._docInfo || {}), ...(achouAtt ? { [achouAtt]: 'SALDO DEVEDOR|' } : {}) };
+  const docInfo = { ...(cf2._docInfo || {}), ...(achouAtt ? { [achouAtt]: rotuloSaldo(cf2._docInfo?.[achouAtt]) } : {}) };
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), troco: String(base), valor_credito: String(total), _docInfo: docInfo, _saldoDevedor: st } as any } });
   if (cf2._driveOrganizedAt) { try { const { organizeLeadDocsNow } = require('./received-docs.service') as typeof import('./received-docs.service'); await organizeLeadDocsNow(leadId); } catch (e: any) { console.error('[Saldo] não reorganizei a pasta:', e?.message || e); } }
   let r: { created?: number } = {};
