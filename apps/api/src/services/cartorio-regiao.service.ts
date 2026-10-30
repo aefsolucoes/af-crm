@@ -98,13 +98,13 @@ export async function ensureCartorioPorEndereco(accountId: string, leadId: strin
  * O próprio CRM pergunta ao Claude, com a ferramenta de pesquisa na web da Anthropic, qual Ofício de Registro de Imóveis atende o endereço. Só vale resposta com confiança ALTA
  * e fonte oficial (Tribunal de Justiça, ONR/RI Digital, Registro de Imóveis, site do cartório); senão devolve null e quem decide é o Mapa do ONR (extensão). Nunca lança.
  */
-export async function cartorioPelaWeb(p: { uf: string; cidade: string; endereco: string; bairro?: string; cep?: string }): Promise<{ numero: number | null; cartorio: string; fonte: string; motivo: string; confianca: string } | null> {
+export async function cartorioPelaWeb(p: { uf: string; cidade: string; endereco: string; bairro?: string; cep?: string }): Promise<{ numero: number | null; cartorio: string; fonte: string; motivo: string; confianca: string; irregular?: boolean } | null> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return null;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 90_000);
   try {
-    const sistema = 'Você descobre qual Cartório (Ofício) de Registro de Imóveis tem a competência (circunscrição) sobre um endereço no Brasil. Pesquise em fontes OFICIAIS: Tribunal de Justiça do estado (lista de circunscrições/abrangência), ONR/RI Digital, Registro de Imóveis do Brasil, site do próprio cartório, provimento da Corregedoria. Use bairro, distrito, subdistrito ou setor do endereço. Nunca chute: se as fontes não fecharem, confianca "baixa". Responda no FINAL só um JSON numa linha: {"numero":11,"cartorio":"11º Oficial de Registro de Imóveis de São Paulo","confianca":"alta|media|baixa","fonte":"url oficial","motivo":"1 frase"}. "numero" = nº do Ofício (null se for cartório único da comarca).';
+    const sistema = 'Você descobre qual Cartório (Ofício) de Registro de Imóveis tem a competência (circunscrição) sobre um endereço no Brasil. Pesquise em fontes OFICIAIS: Tribunal de Justiça do estado (lista de circunscrições/abrangência), ONR/RI Digital, Registro de Imóveis do Brasil, site do próprio cartório, provimento da Corregedoria. Use bairro, distrito, subdistrito ou setor do endereço. Nunca chute: se as fontes não fecharem, confianca "baixa". Veja também se o endereço fica em ÁREA IRREGULAR (loteamento irregular/clandestino, favela/comunidade, ocupação, área de posse, núcleo ainda não regularizado/REURB em andamento): nesse caso o imóvel pode não ter matrícula — marque "irregular":true e diga por quê em "motivo"; só marque com indício concreto nas fontes. Responda no FINAL só um JSON numa linha: {"numero":11,"cartorio":"11º Oficial de Registro de Imóveis de São Paulo","confianca":"alta|media|baixa","irregular":false,"fonte":"url oficial","motivo":"1 frase"}. "numero" = nº do Ofício (null se for cartório único da comarca).';
     const messages: any[] = [{ role: 'user', content: `Endereço do imóvel: ${p.endereco}${p.bairro ? ` — bairro ${p.bairro}` : ''}${p.cep ? ` — CEP ${p.cep}` : ''} — ${p.cidade}/${p.uf}. Qual Cartório de Registro de Imóveis atende esse endereço?` }];
     let texto = '';
     // A pesquisa na web é ferramenta do servidor da Anthropic: a resposta pode vir "pausada" (pause_turn) no meio — continua até 4 vezes.
@@ -125,6 +125,7 @@ export async function cartorioPelaWeb(p: { uf: string; cidade: string; endereco:
     const r = JSON.parse(m[0]);
     // Alta ou MÉDIA (teste 29/10: a Fernanda veio 11º com confiança "média" 2 vezes — certo); baixa = não vale.
     const conf = String(r.confianca || '').toLowerCase();
+    if (r.irregular === true) return { numero: null, cartorio: String(r.cartorio || '').slice(0, 140), fonte: String(r.fonte || '').slice(0, 300), motivo: String(r.motivo || '').slice(0, 300), confianca: conf, irregular: true };
     if (!['alta', 'media', 'média'].includes(conf) || !r.cartorio) { console.warn('[Cartório pela web] confiança baixa:', m[0].slice(0, 300)); return null; }
     if (!/(\.jus\.br|onr\.org\.br|ridigital|registrodeimoveis|\bri\b|cartorio|oficio|registro|\.gov\.br)/i.test(String(r.fonte || ''))) { console.warn('[Cartório pela web] fonte não oficial:', r.fonte); return null; }
     const numero = Number.isFinite(Number(r.numero)) && Number(r.numero) > 0 ? Number(r.numero) : null;

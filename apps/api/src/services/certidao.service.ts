@@ -108,10 +108,18 @@ export async function createCertidaoRequest(db: Db, p: { accountId: string; lead
   if (!porEndereco && (matricula.length < 1 || matricula.length > 12)) throw new Error('Número de matrícula inválido');
   let endereco: EnderecoCertidao | null = null;
   if (porEndereco) {
-    const e = p.endereco || ({} as EnderecoCertidao);
+    const e = { ...(p.endereco || {}) } as EnderecoCertidao;
     const cep = onlyDigits(e.cep);
     if (cep.length !== 8) throw new Error('Pedido por endereço precisa do CEP do imóvel (8 dígitos)');
     if (!((e.logradouro && e.numero) || (e.loteamento && e.quadra && e.lote))) throw new Error('Pedido por endereço precisa da rua e do número (ou loteamento, quadra e lote)');
+    // "Avenida Avenida João Paulo da Silva" no portal (Fernanda 29/10): o tipo veio também no começo da rua — tira do logradouro.
+    const TIPO_RX = /^(rua|r\.|avenida|av\.?|alameda|al\.|travessa|tv\.|estrada|est\.|rodovia|rod\.|pra[cç]a|p[cç]\.|largo|viela)\s+/i;
+    if (e.logradouro && TIPO_RX.test(e.logradouro.trim())) {
+      const tipoNaRua = e.logradouro.trim().match(TIPO_RX)![1];
+      e.logradouro = e.logradouro.trim().replace(TIPO_RX, '').trim();
+      const tipo = /^av/i.test(tipoNaRua) ? 'Avenida' : /^r(ua|\.)/i.test(tipoNaRua) ? 'Rua' : /^al/i.test(tipoNaRua) ? 'Alameda' : /^tv|^trav/i.test(tipoNaRua) ? 'Travessa' : /^est/i.test(tipoNaRua) ? 'Estrada' : /^rod/i.test(tipoNaRua) ? 'Rodovia' : /^p/i.test(tipoNaRua) ? 'Praça' : tipoNaRua.charAt(0).toUpperCase() + tipoNaRua.slice(1).toLowerCase();
+      e.tipoLogradouro = tipo; // o que está escrito na rua vale mais que o tipo padrão ("Rua") do leitor
+    }
     endereco = { ...e, cep: `${cep.slice(0, 5)}-${cep.slice(5)}`, complemento: e.complemento?.slice(0, 30), bloco: e.bloco?.slice(0, 30) };
   }
   if (!String(p.cidade || '').trim() || !String(p.cartorio || '').trim()) throw new Error('Informe a cidade e o cartório (ex.: Belém / 02º - BELÉM)');
@@ -160,7 +168,12 @@ async function acharCartorioPelaWeb(db: Db, id: string): Promise<void> {
     const achado = await (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).cartorioPelaWeb({ uf: r.uf, cidade: r.cidade, endereco: `${e.tipoLogradouro || ''} ${e.logradouro || ''}, ${e.numero || ''}`.trim(), bairro: e.bairro, cep: e.cep });
     const atual = await db.certidaoRequest.findUnique({ where: { id }, select: { status: true } });
     if (atual?.status !== 'FIND_WEB') return;
-    if (achado?.numero) {
+    if (achado?.irregular) {
+      // Fabio 30/10: área irregular pode não ter matrícula — não pede (cada pedido é cobrança) e a equipe confirma com o cliente.
+      await db.certidaoRequest.update({ where: { id }, data: { status: 'FAILED', finishedAt: new Date(), detail: `Não pedi: o endereço parece estar em ÁREA IRREGULAR — ${achado.motivo}`.slice(0, 400) } });
+      await note(db, r.leadId, `⚠️ Certidão pelo endereço NÃO foi pedida: a pesquisa indica que o imóvel fica em ÁREA IRREGULAR e pode não ter matrícula (${achado.motivo}${achado.fonte ? ` — ${achado.fonte}` : ''}). Confirme com o cliente se o imóvel tem matrícula/escritura registrada antes de pedir.`, r.requestedById);
+      pushAll(r.accountId, '⚠️ Imóvel em área irregular?', `${await leadNameOf(db, r.leadId)}: a certidão não foi pedida — confirme se o imóvel tem matrícula`, r.leadId);
+    } else if (achado?.numero) {
       const cartorio = `${String(achado.numero).padStart(2, '0')}º - ${r.cidade.toUpperCase()}`;
       await reportCertidao(db, { accountId: r.accountId, id, data: { event: 'cartorio_found', cidade: r.cidade, cartorio, origem: `Pesquisa na web — ${achado.cartorio} (confiança ${achado.confianca}): ${achado.motivo} (${achado.fonte})` } as any });
     } else {
@@ -348,7 +361,7 @@ export type CertidaoEvent =
   | { event: 'cartorio_found'; cidade: string; cartorio: string; origem?: string }
   | { event: 'ordered'; protocolo: string; numeroRegistral?: string; valorCents?: number }
   | { event: 'pix'; code: string; expiresAt?: string; valorCents?: number }
-  | { event: 'status'; portalStatus?: string; detail?: string }
+  | { event: 'status'; portalStatus?: string; detail?: string; paid?: boolean }
   | { event: 'issued_manual'; reason?: string }
   | { event: 'failed'; reason: string };
 
@@ -415,6 +428,8 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
     }
   } else if (d.event === 'status') {
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { detail: String(d.detail || (d.portalStatus ? `No portal: ${d.portalStatus}` : r.detail || '')).slice(0, 400) } });
+    // Fabio 30/10: cliente pagou e não avisou → a extensão vê no portal (botão do PIX sumiu / coluna Pagamento preenchida) e o CRM confirma sozinho.
+    if (d.paid === true && !r.paidAt && r.status === 'AWAITING_PAYMENT') out = (await markCertidaoPaid(db, { accountId: p.accountId, id: r.id, via: 'PORTAL', io: p.io })) || out;
   } else if (d.event === 'issued_manual') {
     // A certidão saiu, mas a extensão não conseguiu mandar o PDF ao CRM (ficou na pasta Downloads do Chrome do Fabio): fecha o pedido e avisa a equipe.
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', finishedAt: new Date(), nextCheckAt: null, detail: String(d.reason || 'Certidão emitida; PDF fora do CRM.').slice(0, 400) } });
@@ -579,11 +594,11 @@ export async function adoptCertidaoProtocol(db: Db, p: { accountId: string; id: 
 }
 
 /** Pagamento da certidão CONFIRMADO (comprovante do cliente, e-mail do cartório ou a equipe): só a partir daqui a extensão vai buscar a certidão — sem pagamento não há o que procurar. */
-export async function markCertidaoPaid(db: Db, p: { accountId: string; id: string; via: 'PROOF' | 'EMAIL' | 'MANUAL'; io?: Io }) {
+export async function markCertidaoPaid(db: Db, p: { accountId: string; id: string; via: 'PROOF' | 'EMAIL' | 'MANUAL' | 'PORTAL'; io?: Io }) {
   const r = await db.certidaoRequest.findFirst({ where: { id: p.id, accountId: p.accountId } });
   if (!r || r.status !== 'AWAITING_PAYMENT') return null;
   if (r.paidAt) return r;
-  const how = p.via === 'PROOF' ? 'pelo comprovante que o cliente mandou' : p.via === 'EMAIL' ? 'pelo e-mail do cartório (RI Digital)' : 'pela equipe';
+  const how = p.via === 'PROOF' ? 'pelo comprovante que o cliente mandou' : p.via === 'EMAIL' ? 'pelo e-mail do cartório (RI Digital)' : p.via === 'PORTAL' ? 'na lista de pedidos do RI Digital (o cliente pagou sem avisar)' : 'pela equipe';
   const out = await db.certidaoRequest.update({ where: { id: r.id }, data: { paidAt: new Date(), paidVia: p.via, nextCheckAt: new Date(), detail: `Pagamento confirmado ${how}; a extensão vai buscar a certidão.` } });
   await note(db, r.leadId, `✅ Pagamento da certidão (matrícula ${r.matricula}${r.protocolo ? `, protocolo ${r.protocolo}` : ''}) CONFIRMADO ${how}. A extensão "Certidão ONR" vai buscar a certidão no portal.`);
   pushAll(p.accountId, '💸 Pagamento da certidão confirmado', `${await leadNameOf(db, r.leadId)} — matrícula ${r.matricula}`, r.leadId);
