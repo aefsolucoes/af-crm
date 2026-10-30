@@ -373,11 +373,13 @@ export function CrmAssistant() {
     if (!t) return;
     setVoz('falando');
     try { audioRef.current?.pause(); } catch { /* */ }
+    cortouRef.current = false;
     const soltaVigia = vigiarInterrupcao(t);
     try {
       const r = await api.post('/api/assistant/tts', { text: t.slice(0, 900), voiceId: vozIdRef.current || undefined }, { responseType: 'blob' });
       const url = URL.createObjectURL(r.data as Blob);
       await new Promise<void>((resolve) => {
+        if (cortouRef.current) { resolve(); return; } // falou por cima antes do áudio chegar: nem começa
         const a = new Audio(url); audioRef.current = a;
         a.onended = () => resolve(); a.onerror = () => resolve(); a.onpause = () => resolve();
         a.play().catch(() => resolve());
@@ -390,11 +392,22 @@ export function CrmAssistant() {
   }
   /** Interromper a bolinha falando (Fabio 29/10: "falei o nome da cliente e ela continuou a lista"). Enquanto ela fala, um 2º reconhecimento fica ouvindo: palavra que ela NÃO está dizendo (o eco da própria voz é descartado) ou "pare/espera/calma/chega" corta a fala na hora e o que foi dito vira o pedido seguinte. */
   const interrompidoRef = useRef('');
+  const cortouRef = useRef(false);
   function vigiarInterrupcao(falado: string): () => void {
     const SR: any = typeof window !== 'undefined' ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
     if (!SR || !vozRef.current) return () => {};
     const norm = (x: string) => x.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
-    const dele = new Set(norm(falado));
+    const palavras = norm(falado);
+    const dele = new Set(palavras);
+    // Fabio 30/10: "escolhi a opção e ela continuou falando" — o nome da opção ESTÁ na fala dela, então era descartado como eco. Eco é só o que ela está dizendo AGORA
+    // (as últimas palavras do áudio, o microfone ouve com ~1 s de atraso); a opção que ela já leu antes vale como escolha e corta a fala.
+    const posicao = (): number | null => {
+      const a = audioRef.current;
+      if (a && !a.paused && Number.isFinite(a.duration) && a.duration > 0) return Math.floor((a.currentTime / a.duration) * palavras.length);
+      if (typeof window !== 'undefined' && window.speechSynthesis?.speaking) return null; // voz do navegador: sem posição, toda a fala dela conta como eco
+      return -1; // ainda não começou a tocar: não há eco
+    };
+    const ESCOLHA = ['primeira', 'primeiro', 'segunda', 'segundo', 'terceira', 'terceiro', 'ultima', 'ultimo', 'opcao', 'essa', 'esse', 'isso'];
     let ativo = true;
     let rec: any;
     try {
@@ -415,7 +428,13 @@ export function CrmAssistant() {
         const frase = (final || ws.length >= 4) && novas.length >= 3 && novas.length / ws.length >= 0.6;
         // "Confirma"/"sim" falado enquanto ela ainda lê a ação: vale na hora (Fabio 29/10: "tive que confirmar 2x").
         const confirmou = (final || ws.length <= 3) && (cartaoRef.current?.pending || []).some((p) => p.estado === 'PENDENTE') && SIM.test(txt.trim());
-        if (pediuParar || frase || confirmou) { ativo = false; interrompidoRef.current = txt.trim(); try { rec.abort(); } catch { /* */ } calar(); }
+        // Escolha curta (1 a 5 palavras): uma opção que ela JÁ disse (fora da janela do eco) ou "a segunda", "essa", "opção 2".
+        const pos = posicao();
+        const eco = pos === null ? dele : pos < 0 ? new Set<string>() : new Set(palavras.slice(Math.max(0, pos - 5), pos + 2));
+        const curta = ws.length <= 5;
+        const jaDita = ws.filter((w) => (w.length >= 4 || /^\d+$/.test(w)) && dele.has(w) && !eco.has(w));
+        const escolheu = curta && (jaDita.length >= 1 || ws.some((w) => ESCOLHA.includes(w) && !eco.has(w)) || (pos !== null && pos < 0 && novas.length >= 1));
+        if (pediuParar || frase || confirmou || escolheu) { ativo = false; interrompidoRef.current = txt.trim(); cortouRef.current = true; try { rec.abort(); } catch { /* */ } calar(); }
       };
       rec.onend = () => { if (ativo) { try { rec.start(); } catch { /* */ } } };
       rec.onerror = () => { /* sem microfone livre: segue sem interromper */ };
