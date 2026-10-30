@@ -407,7 +407,8 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   const pediuSaldo = await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).maybeAskSaldoDevedor(accountId, leadId, io, { docsReceived: true }).catch((e: any) => { console.error('[Saldo] pedido:', e?.message || e); return false; });
 
   // Sem matrícula e sem cartório nos documentos: o CRM acha o cartório pelo endereço (Mapa do ONR) e grava no card (Fabio 29/10).
-  void (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).ensureCartorioPorEndereco(accountId, leadId);
+  // DESLIGADO 29/10 21h (Fabio: "para ela agora") — religar quando a consulta ao mapa/web estiver estável:
+  // void (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).ensureCartorioPorEndereco(accountId, leadId);
 
   const verdict = await evaluateDocs(accountId, leadId);
   // Certidão pelo ONR: autorizada → aciona a extensão (cria o pedido, 1 vez por matrícula); só escritura e ainda sem OK → a IA oferece (1 vez por matrícula).
