@@ -1639,8 +1639,15 @@ export function extensionStatus(accountId: string): Record<string, { lastSeenAt:
 
 /** Painel "o que cada extensão está fazendo agora" (Fabio 19/10: "um painel lá no início com o logo de cada banco, a extensão mostrando qual cliente ela está rodando" e depois "coloca os que estão
  *  na fila também, os que estão rodando e os que foram rodados"). Só leitura. */
-export async function extensionsLive(db: Db, accountId: string) {
-  const ext = extensionStatus(accountId);
+export async function extensionsLive(db: Db, accountId: string, produto: 'HE' | 'FH' = 'HE') {
+  const ext0 = extensionStatus(accountId);
+  // Financiamento (Fabio 29/10: "cadê os outros bancos?" — a tela do FH mostrava o painel do Home Equity): Credimorar FH e Inter FH usam as extensões do Credimorar e do Inter;
+  // CAIXA e BRB ainda são à mão (sem extensão: aparecem só com o que foi registrado).
+  const semExt = { online: false, loginNeeded: false, lastSeenAt: null };
+  const ext: Record<string, { online: boolean; loginNeeded: boolean; lastSeenAt: any }> = produto === 'FH'
+    ? { CREDIMORAR_FH: ext0.CREDIMORAR, INTER_FH: ext0.INTER, CAIXA_FH: semExt, BRB_FH: semExt }
+    : ext0 as any;
+  const bancosDoPainel = produto === 'FH' ? [FH_BANK, 'INTER_FH', 'CAIXA_FH', 'BRB_FH'] : BANK_KEYS;
   const out: any[] = [];
   const agora = new Date();
   const passoDe = (steps: unknown) => {
@@ -1648,7 +1655,7 @@ export async function extensionsLive(db: Db, accountId: string) {
     const last = arr[arr.length - 1];
     return { step: last ? String(last.s).replace(/^passo:\s*/i, '').replace(/\s*\(\d+ s depois de abrir a proposta\)$/, '').slice(0, 120) : null, stepAt: last?.t || null };
   };
-  for (const bank of BANK_KEYS) {
+  for (const bank of bancosDoPainel) {
     const running = await db.creditAnalysis.findMany({
       where: { accountId, bank, status: 'RUNNING', dryRun: false }, orderBy: { startedAt: 'desc' }, take: 3,
       select: { id: true, leadId: true, kind: true, startedAt: true, steps: true, holderName: true, lead: { select: { name: true } } },

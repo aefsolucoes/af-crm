@@ -213,7 +213,7 @@ export default function AnaliseFinanciamentoPage() {
       <Topbar title="Análise de Crédito — Financiamento Imobiliário" subtitle="Bradesco, Itaú e Santander pelo Credimorar · Inter pelo nosso portal · CAIXA e BRB com a documentação completa" />
       <div className="flex-1 overflow-auto px-4 md:px-6 py-4 space-y-4 scrollbar-thin">
         {/* Extensões: logo de cada banco e o cliente que a extensão está rodando agora */}
-        <ExtensionsLivePanel />
+        <ExtensionsLivePanel produto="fh" />
         <p className="-mt-2 text-xs text-slate-400">As análises rodam no Chrome do Fabio (login e código dos bancos ficam lá), das 07h às 22h. Com o Chrome aberto, a extensão busca os pedidos desta tela a cada minuto.</p>
 
         <div className="bg-white rounded-xl border border-af-border p-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">

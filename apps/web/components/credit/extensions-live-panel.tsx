@@ -13,7 +13,7 @@ import { BankLogo } from './bank-logo';
 
 interface Item { id: string; leadId: string; leadName: string; kind: string }
 interface Live {
-  bank: Bank; online: boolean; loginNeeded: boolean; lastSeenAt: string | null; foraDoHorario: boolean; queued: number; queuedRuns?: number; scheduled: number;
+  bank: string; online: boolean; loginNeeded: boolean; lastSeenAt: string | null; foraDoHorario: boolean; queued: number; queuedRuns?: number; scheduled: number;
   scheduledList?: (Item & { at: string })[];
   running: (Item & { holderName: string | null; since: string; step: string | null; stepAt: string | null })[];
   queue: (Item & { since: string; manual: boolean; aguardandoLogin: boolean })[];
@@ -22,7 +22,8 @@ interface Live {
 
 type Estado = { rotulo: string; cls: string; borda: string; pulsa?: boolean };
 
-function estadoDe(l: Live): Estado {
+function estadoDe(l: Live, manual = false): Estado {
+  if (manual) return l.running.length || l.queued > 0 ? { rotulo: 'Em análise (à mão)', cls: 'bg-blue-50 text-blue-700', borda: 'border-l-blue-500' } : { rotulo: 'À mão — com a documentação', cls: 'bg-slate-100 text-slate-600', borda: 'border-l-slate-300' };
   if (l.loginNeeded) return { rotulo: 'Deslogada — entre no portal', cls: 'bg-red-50 text-red-700', borda: 'border-l-red-500' };
   if (l.running.length) return { rotulo: l.running[0].kind === 'CHECK' ? 'Conferindo resultado' : 'Rodando', cls: 'bg-blue-50 text-blue-700', borda: 'border-l-blue-500', pulsa: true };
   if (l.foraDoHorario) return { rotulo: 'Parada (fora de 07h–22h)', cls: 'bg-slate-100 text-slate-500', borda: 'border-l-slate-300' };
@@ -37,12 +38,27 @@ function Titulo({ children, n }: { children: React.ReactNode; n?: number }) {
   return <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{children}{n != null && <span className="ml-1 text-slate-500 normal-case font-medium">({n})</span>}</p>;
 }
 
-export function ExtensionsLivePanel() {
+/** Colunas do painel. Financiamento (Fabio 29/10: "cadê os outros bancos?"): Credimorar (Bradesco, Itaú, Santander), Inter no nosso portal, CAIXA e BRB (à mão). */
+type Coluna = { key: string; short: string; sub?: string; logo?: Bank; sigla?: string; cor?: string; manual?: boolean };
+const COLUNAS_FH: Coluna[] = [
+  { key: 'CREDIMORAR_FH', short: 'Credimorar', sub: 'Bradesco · Itaú · Santander', sigla: 'CM', cor: '#1F3A93' },
+  { key: 'INTER_FH', short: 'Inter', sub: 'nosso portal', logo: 'INTER' },
+  { key: 'CAIXA_FH', short: 'CAIXA', sub: 'roda com a documentação enxuta', sigla: 'CX', cor: '#005CA9', manual: true },
+  { key: 'BRB_FH', short: 'BRB', sub: 'roda com a documentação completa', sigla: 'BRB', cor: '#00529B', manual: true },
+];
+
+function Emblema({ c }: { c: Coluna }) {
+  if (c.logo) return <BankLogo bank={c.logo} size={40} />;
+  return <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg text-[11px] font-bold text-white" style={{ background: c.cor }}>{c.sigla}</span>;
+}
+
+export function ExtensionsLivePanel({ produto = 'he' }: { produto?: 'he' | 'fh' }) {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const colunas: Coluna[] = produto === 'fh' ? COLUNAS_FH : BANKS.map((b) => ({ key: b.key, short: b.short, logo: b.key }));
   const { data } = useQuery<Live[]>({
-    queryKey: ['credit-live'],
-    queryFn: async () => (await api.get('/api/credit-analysis/live')).data,
+    queryKey: ['credit-live', produto],
+    queryFn: async () => (await api.get('/api/credit-analysis/live', { params: produto === 'fh' ? { produto: 'fh' } : {} })).data,
     refetchInterval: 5_000,
     refetchIntervalInBackground: true,
   });
@@ -60,7 +76,7 @@ export function ExtensionsLivePanel() {
   const esperando = new Map<string, { nome: string; bancos: string[] }>();
   for (const l of data || []) for (const q of [...l.queue, ...(l.scheduledList || [])]) {
     const e = esperando.get(q.leadId) || { nome: q.leadName, bancos: [] };
-    const bk = BANKS.find((x) => x.key === l.bank)?.short || l.bank;
+    const bk = colunas.find((x) => x.key === l.bank)?.short || l.bank;
     if (!e.bancos.includes(bk)) e.bancos.push(bk);
     esperando.set(q.leadId, e);
   }
@@ -78,16 +94,16 @@ export function ExtensionsLivePanel() {
         </div>
       </div>
     )}
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-      {BANKS.map((b) => {
+    <div className={cn('grid grid-cols-1 gap-3', produto === 'fh' ? 'md:grid-cols-2 xl:grid-cols-4' : 'lg:grid-cols-3')}>
+      {colunas.map((b) => {
         const l = data?.find((x) => x.bank === b.key);
-        const e = l ? estadoDe(l) : { rotulo: 'carregando…', cls: 'bg-slate-100 text-slate-400', borda: 'border-l-slate-200' };
+        const e = l ? estadoDe(l, b.manual) : { rotulo: 'carregando…', cls: 'bg-slate-100 text-slate-400', borda: 'border-l-slate-200' };
         return (
           <div key={b.key} className={cn('bg-white rounded-xl border border-af-border border-l-4 p-3 min-w-0', e.borda)}>
             <div className="flex items-center gap-3">
-              <BankLogo bank={b.key} size={40} />
+              <Emblema c={b} />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-slate-800 truncate">{b.short}</p>
+                <p className="text-sm font-semibold text-slate-800 truncate">{b.short}{b.sub && <span className="ml-1.5 text-[11px] font-normal text-slate-400">{b.sub}</span>}</p>
                 <span className={cn('inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full', e.cls)}>
                   {e.pulsa && <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75 animate-ping" /><span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" /></span>}
                   {e.rotulo}
@@ -96,7 +112,8 @@ export function ExtensionsLivePanel() {
             </div>
 
             {l?.loginNeeded && <p className="mt-2 text-xs text-red-600">A sessão do portal venceu. Entre nele (CAPTCHA + código por e-mail) que a fila segue sozinha.</p>}
-            {l && !l.loginNeeded && !l.running.length && (
+            {l && b.manual && !l.running.length && !l.recent.length && <p className="mt-2 text-xs text-slate-400">Ainda sem extensão: a equipe roda no portal e registra o resultado no card (aba Financiamento → "Resultado CAIXA/BRB").</p>}
+            {l && !b.manual && !l.loginNeeded && !l.running.length && (
               <p className="mt-2 text-xs text-slate-400">{l.foraDoHorario ? 'Volta a trabalhar às 07h.' : l.online ? 'Nenhum cliente rodando agora.' : l.lastSeenAt ? `Vista ${ago(l.lastSeenAt)}. Chrome aberto e extensão ligada?` : 'Extensão sem sinal. Chrome aberto e extensão ligada?'}</p>
             )}
 

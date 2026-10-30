@@ -246,7 +246,7 @@ router.put('/auto', async (req: AuthRequest, res: Response) => {
 router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));
 // Painel do topo: o que cada extensão está fazendo agora (cliente, passo, fila).
 router.get('/live', async (req: AuthRequest, res: Response) => {
-  try { res.json(await extensionsLive(prisma, req.user!.accountId)); } catch (err) { fail(res, err, 'Erro ao ler as extensões'); }
+  try { res.json(await extensionsLive(prisma, req.user!.accountId, req.query.produto === 'fh' ? 'FH' : 'HE')); } catch (err) { fail(res, err, 'Erro ao ler as extensões'); }
 });
 
 // Dispara a análise de vários clientes em vários bancos (a extensão busca na fila).
