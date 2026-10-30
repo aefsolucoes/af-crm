@@ -8,6 +8,7 @@ import { cn, formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, iso
 import { LeadCreditAnalysis } from './lead-credit-analysis';
 import { LeadFhAnalysis } from './lead-fh-analysis';
 import { LeadCertidoes } from './lead-certidoes';
+import { LeadItbi } from './lead-itbi';
 import { LeadVistoria, LeadVistoriaSantander } from './lead-vistoria';
 import { useLeadAnalyses, FIELDS_FROM_ANALYSES } from '@/components/credit/shared';
 
@@ -540,6 +541,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
           {/* Financiamento Habitacional tem os seus bancos (Credimorar + nosso Inter); o bloco do Home Equity mostrava Santander/Creditas/Inter com "—" (Fabio 29/10, Jaime). */}
           {expanded && activeTab === 'Financiamento' && (/habitacional/i.test(lead.pipeline?.department?.name || '') ? <LeadFhAnalysis leadId={lead.id} /> : <LeadCreditAnalysis leadId={lead.id} onChanged={onRefresh} />)}
           {expanded && activeTab === 'Financiamento' && <LeadCertidoes leadId={lead.id} />}
+          {expanded && activeTab === 'Financiamento' && <LeadItbi leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoria leadId={lead.id} proposta={customValues.num_proposta} instituicao={customValues.instituicao} solicitadaEm={(lead as any).customFields?._vistoriaRequestedAt} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoriaSantander leadId={lead.id} />}
 
