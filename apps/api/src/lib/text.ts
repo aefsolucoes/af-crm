@@ -11,9 +11,13 @@ export function normalizeClientName(name: string): string {
  *  espaço, apóstrofo, hífen e ponto. Com número, %, emoji, "_" e afins não é
  *  nome de verdade (perfil do WhatsApp, telefone) — aí não chama pelo nome
  *  (Fabio 08/10: a IA chamou um cliente de "53999257733"). */
+// Perfil do WhatsApp que não é nome (Fabio 29/10: a cliente salva como "Eu" recebeu "Oi EU, tudo bem?").
+const NAO_E_NOME = /^(eu|eu mesm[oa]|me|mim|cliente|teste|test|sem nome|nome|user|usu[aá]rio|whatsapp|null|undefined|ok|oi|ola|olá|contato|desconhecido|unknown|amor|vida|m[aã]e|pai)$/i;
+
 export function isCallableName(raw: unknown): boolean {
   const s = String(raw ?? '').trim();
   if (!s || /[^\p{L}\s'.-]/u.test(s)) return false;
+  if (NAO_E_NOME.test(s.replace(/[.'-]/g, '').trim())) return false;
   return s.split(/\s+/)[0].replace(/[.'-]/g, '').length >= 2;
 }
 

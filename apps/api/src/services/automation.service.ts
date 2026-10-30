@@ -70,6 +70,7 @@ type LeadForActions = {
   tags: string[];
   pipeline: { departmentId: string | null };
   contact: { name: string | null; phone: string | null; whatsappPhone: string | null; email: string | null } | null;
+  customFields?: unknown;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -160,10 +161,11 @@ export async function listAutomationLogs(ruleId: string, accountId: string) {
 export function fillVariables(text: string, lead: LeadForActions, context?: RunContext): string {
   // {{nome}} só com nome de verdade — com número/emoji/símbolo fica vazio e a
   // frase se ajeita ("Oi {{nome}}, tudo bem?" → "Oi, tudo bem?").
-  const { isCallableName } = require('../lib/text') as typeof import('../lib/text');
-  const nomeCru = (lead.contact?.name || lead.name || '').trim();
+  // Quem fala no WhatsApp > titular da proposta > contato > card (Fabio 29/10: o perfil "Eu" virou "Oi EU" com a proposta da Kelli no card). Só o 1º nome.
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const cf = (lead.customFields || {}) as Record<string, unknown>;
   const vars: Record<string, string> = {
-    nome: isCallableName(nomeCru) ? nomeCru : '',
+    nome: callableFirstName(cf.falando_com, cf.participante_1, lead.contact?.name, lead.name) || '',
     telefone: lead.contact?.phone || lead.contact?.whatsappPhone || '',
     mensagem_recebida: context?.incomingText || '',
   };
