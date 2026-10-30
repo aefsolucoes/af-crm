@@ -185,6 +185,16 @@ export async function reenfileirarComFichaNova(leadId: string, antes: any[]): Pr
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Chegou o documento de identidade de ${voltar.map((o) => ps.find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')} — a ficha foi refeita e o cadastro na CAIXA voltou pra fila da extensão.` } }).catch(() => {});
 }
 
+/** Dado novo na ficha (resposta do cliente com CNPJ/admissão — Fabio 30/10): cadastro da CAIXA que não saiu (nem gravado, nem na fila/rodando) volta pra fila. */
+export async function reenfileirarCadastrosPendentes(leadId: string, motivo: string): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cads = (((l?.customFields || {}) as Cf)._caixaCadastro?.cadastros || {}) as Record<string, any>;
+  const voltar = Object.entries(cads).filter(([, v]) => v && !['GRAVADO', 'FILA', 'RODANDO'].includes(String(v.status))).map(([o]) => Number(o));
+  if (!voltar.length) return;
+  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of voltar) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por: `CRM (${motivo})` }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA de volta pra fila da extensão (${motivo}).` } }).catch(() => {});
+}
+
 /** Formulário do cadastro ("Imprimir Formulário" da tela final da CAIXA, PDF) → subpasta FORMULARIOS da pasta do cliente no Drive (Fabio 30/10).
  *  A assinatura do cliente na ficha da CAIXA fica pra contratação. Cadastro refeito: troca o arquivo de mesmo nome. */
 export async function salvarFormularioCaixa(accountId: string, leadId: string, ordem: number, pdfBase64: string): Promise<string | null> {

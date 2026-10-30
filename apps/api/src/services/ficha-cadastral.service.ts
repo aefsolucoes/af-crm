@@ -272,41 +272,104 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
   }
 }
 
-/** Renda sem CNPJ da fonte pagadora (nem no contracheque, nem no IR, nem na carteira de trabalho) → o CRM pede ao cliente o CNPJ ou a declaração do IR, onde ele
- *  consta (Fabio 30/10). Uma vez por fonte; fora das 07h–21h ou com a janela do WhatsApp fechada, avisa a equipe (anotação + push) em vez de mandar. */
-async function pedirCnpjAoCliente(accountId: string, leadId: string, participantes: any[], io?: Io): Promise<void> {
-  const fontes = [...new Set(participantes.flatMap((p: any) => (Array.isArray(p?.contracheques) ? p.contracheques : [])
-    .filter((c: any) => c && (Number(c.bruto) > 0 || Number(c.liquido) > 0) && String(c.cnpj || '').replace(/\D/g, '').length !== 14)
-    .map((c: any) => String(c.empregador || '').trim()).filter(Boolean)))];
-  if (!fontes.length) return;
+/** Dado da renda que a CAIXA exige e nenhum documento trouxe (Fabio 30/10): CNPJ da fonte pagadora (nem contracheque, nem IR, nem carteira de trabalho) e
+ *  data de admissão (aposentadoria: início do benefício) → o CRM pede ao cliente (CNPJ: ou a declaração do IR, onde ele consta). Uma vez por item; fora das
+ *  07h–21h ou com a conversa fechada fica "pendente" (anotação + push na 1ª vez) e o poller manda quando der. A resposta volta pra ficha (capturarCnpjDaResposta). */
+const chaveFonte = (s: unknown) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().trim().split(/\s+/).slice(0, 2).join(' ');
+function faltasDeRenda(participantes: any[]): { chave: string; texto: string; cnpj: boolean }[] {
+  const out: { chave: string; texto: string; cnpj: boolean }[] = [];
+  for (const p of participantes || []) {
+    const t = p?.trabalho || {};
+    for (const c of Array.isArray(p?.contracheques) ? p.contracheques : []) {
+      if (!c || !(Number(c.bruto) > 0 || Number(c.liquido) > 0)) continue;
+      const fonte = String(c.empregador || t.empregador || '').trim();
+      if (!fonte) continue;
+      const apos = /aposent|pens/i.test(String(c.tipo || '')) || /seguridade|previd|aposent/i.test(fonte);
+      const semCnpj = String(c.cnpj || '').replace(/\D/g, '').length !== 14;
+      const semAdm = !c.admissao && !(apos ? c.inicioBeneficio : (chaveFonte(t.empregador) === chaveFonte(fonte) && t.admissao));
+      if (semCnpj && !out.some((x) => x.chave === `cnpj:${fonte}`)) out.push({ chave: `cnpj:${fonte}`, texto: `o CNPJ ${apos ? 'de' : 'da empresa'} ${fonte}`, cnpj: true });
+      if (semAdm && !out.some((x) => x.chave === `adm:${fonte}`)) out.push({ chave: `adm:${fonte}`, texto: apos ? `a data de início da aposentadoria (${fonte})` : `a sua data de admissão em ${fonte}`, cnpj: false });
+    }
+  }
+  return out;
+}
+export async function pedirCnpjAoCliente(accountId: string, leadId: string, participantes: any[], io?: Io): Promise<void> {
+  const faltas = faltasDeRenda(participantes);
+  if (!faltas.length) return;
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
   const ja = (cf._fichaCnpjPedido || {}) as Record<string, string>;
-  const novas = fontes.filter((f) => !ja[f]);
+  const novas = faltas.filter((f) => !ja[f.chave] || /^pendente:/.test(ja[f.chave]));
   if (!novas.length || cf._autoPaused) return;
-  const lista = novas.join(' e ');
-  const texto = `Para concluir o seu cadastro no banco, preciso do CNPJ ${novas.length > 1 ? 'das empresas' : 'da empresa'} ${lista} (aparece no contracheque ou no informe de rendimentos). Se preferir, pode me mandar a declaração completa do seu Imposto de Renda, que lá também consta.`;
+  const primeiraVez = novas.some((f) => !ja[f.chave]);
+  const lista = novas.map((f) => f.texto).join('; ');
+  const texto = `Para concluir o seu cadastro no banco, preciso de: ${lista}.${novas.some((f) => f.cnpj) ? ' O CNPJ aparece no contracheque ou no informe de rendimentos — se preferir, pode me mandar a declaração completa do seu Imposto de Renda, que lá também consta.' : ''}`;
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   let enviado = false;
   if (inNoticeWindow() && (await whatsappWindowOpen(leadId))) {
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     enviado = !!(await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }).catch(() => null))?.success;
   }
+  if (!enviado && !primeiraVez) return; // segue pendente; tenta na próxima rodada
   const agora = new Date().toISOString();
-  const marca = { ...ja, ...Object.fromEntries(novas.map((f) => [f, `${enviado ? 'cliente' : 'equipe'}:${agora}`])) };
+  const marca = { ...ja, ...Object.fromEntries(novas.map((f) => [f.chave, `${enviado ? 'cliente' : 'pendente'}:${agora}`])) };
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_fichaCnpjPedido}', ${JSON.stringify(marca)}::jsonb, true) WHERE id = ${leadId}`;
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: enviado
-    ? `📋 A ficha de cadastro ficou sem o CNPJ de ${lista} (nem contracheque, nem IR, nem carteira de trabalho trazem). Pedi ao cliente o CNPJ ou a declaração do Imposto de Renda.`
-    : `📋 A ficha de cadastro ficou sem o CNPJ de ${lista} (nem contracheque, nem IR, nem carteira de trabalho trazem). Não mandei ao cliente agora (fora do horário ou conversa fechada) — pedir o CNPJ ou a declaração do Imposto de Renda:\n"${texto}"` } }).catch(() => {});
+    ? `📋 A ficha de cadastro ficou sem ${lista} — nenhum documento traz. Pedi ao cliente:\n"${texto}"`
+    : `📋 A ficha de cadastro ficou sem ${lista} — nenhum documento traz. Fora do horário ou conversa fechada: o CRM manda ao cliente assim que der:\n"${texto}"` } }).catch(() => {});
   if (!enviado) {
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-    sendPushToAccount(accountId, { title: '📋 Falta CNPJ da fonte de renda', body: `Pedir ao cliente o CNPJ de ${lista} ou o IRPF`, leadId }).catch(() => {});
+    sendPushToAccount(accountId, { title: '📋 Ficha sem CNPJ/admissão', body: `Vou pedir ao cliente: ${lista}`.slice(0, 160), leadId }).catch(() => {});
   }
+}
+
+/** Resposta do cliente ao pedido acima (Fabio 30/10): CNPJ (14 dígitos) e data dd/mm/aaaa na mensagem → gravados na ficha, na fonte que estava sem;
+ *  o cadastro da CAIXA que não saiu volta pra fila. Só quando o CRM pediu (não lê CNPJ solto de qualquer conversa). */
+export async function capturarCnpjDaResposta(accountId: string, leadId: string, text: string): Promise<void> {
+  const cnpjs = [...String(text || '').matchAll(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/g)].map((m) => m[1].replace(/\D/g, '')).filter((c) => c.length === 14);
+  const datas = [...String(text || '').matchAll(/\b(\d{2})\/(\d{2})\/(\d{4})\b/g)].map((m) => `${m[1]}/${m[2]}/${m[3]}`);
+  if (!cnpjs.length && !datas.length) return;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const pedido = (cf._fichaCnpjPedido || {}) as Record<string, string>;
+  const abertos = Object.entries(pedido).filter(([, v]) => /^cliente:/.test(String(v))).map(([k]) => k);
+  const ficha = cf._fichaCadastral;
+  if (!abertos.length || !Array.isArray(ficha?.participantes)) return;
+  const gravou: string[] = [];
+  for (const chave of abertos) {
+    const [tipo, ...resto] = chave.split(':'); const fonte = resto.join(':');
+    const valor = tipo === 'cnpj' ? cnpjs.shift() : datas.shift();
+    if (!valor) continue;
+    for (const p of ficha.participantes) {
+      let achou = false;
+      for (const c of Array.isArray(p.contracheques) ? p.contracheques : []) {
+        if (chaveFonte(c?.empregador || p.trabalho?.empregador) !== chaveFonte(fonte)) continue;
+        achou = true;
+        if (tipo === 'cnpj') c.cnpj = valor; else if (/aposent|pens/i.test(String(c.tipo || ''))) c.inicioBeneficio = valor; else c.admissao = valor;
+      }
+      if (achou && p.trabalho && chaveFonte(p.trabalho.empregador) === chaveFonte(fonte)) { if (tipo === 'cnpj') p.trabalho.cnpj = p.trabalho.cnpj || valor; else p.trabalho.admissao = p.trabalho.admissao || valor; }
+      if (achou) p.faltando = (Array.isArray(p.faltando) ? p.faltando : []).filter((f: string) => !(tipo === 'cnpj' ? /cnpj/i : /admiss|inicio do benef|início do benef/i).test(String(f)));
+    }
+    pedido[chave] = `respondido:${new Date().toISOString()}`;
+    gravou.push(`${tipo === 'cnpj' ? 'CNPJ' : 'data'} de ${fonte}: ${tipo === 'cnpj' ? valor.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5') : valor}`);
+  }
+  if (!gravou.length) return;
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_fichaCadastral}', ${JSON.stringify(ficha)}::jsonb, true), '{_fichaCnpjPedido}', ${JSON.stringify(pedido)}::jsonb, true) WHERE id = ${leadId}`;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📋 O cliente respondeu e gravei na ficha de cadastro: ${gravou.join('; ')}.` } }).catch(() => {});
+  const { reenfileirarCadastrosPendentes } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  await reenfileirarCadastrosPendentes(leadId, 'dado da renda respondido pelo cliente').catch(() => {});
 }
 
 /** Card que chegou em "Documentação Recebida" (funis Em contratação) com a pasta do Drive e ainda sem ficha → lê. Um por rodada do poller.
  *  Por SQL: filtro de JSON do Prisma com NOT dá NULL em card sem a chave e some com a linha (ver fila parada de 15/10). */
 export async function processFichasCadastrais(accountId: string, io?: Io): Promise<void> {
+  // Pedido de CNPJ/admissão que ficou pendente (fora do horário/conversa fechada): manda quando der, um card por rodada.
+  const pend = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND "customFields"->>'_fichaCnpjPedido' LIKE '%pendente:%' LIMIT 1`.catch(() => []);
+  if (pend[0]) {
+    const l = await prisma.lead.findUnique({ where: { id: pend[0].id }, select: { customFields: true } });
+    const ps = ((l?.customFields || {}) as Record<string, any>)._fichaCadastral?.participantes;
+    if (Array.isArray(ps)) await pedirCnpjAoCliente(accountId, pend[0].id, ps, io).catch((e) => console.error('[Ficha cadastral] pedido pendente:', e?.message));
+  }
   if (!process.env.ANTHROPIC_API_KEY || emAndamento.size >= 2) return;
   const ids = await prisma.$queryRaw<{ id: string }[]>`
     SELECT l.id FROM "Lead" l JOIN "Stage" s ON s.id = l."stageId" JOIN "Pipeline" p ON p.id = l."pipelineId"
@@ -332,8 +395,11 @@ async function rodar(accountId: string, leadId: string, io: Io): Promise<void> {
   const erro = await gerarFichaCadastral(accountId, leadId, { io }).catch((e: any) => e?.message || 'erro');
   if (!erro) {
     if (Array.isArray(psAntes)) {
-      const { reenfileirarComFichaNova } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+      const { reenfileirarComFichaNova, reenfileirarCadastrosPendentes } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
       await reenfileirarComFichaNova(leadId, psAntes).catch((e) => console.error('[Ficha cadastral] fila da CAIXA:', e?.message));
+      // Documento novo trouxe CNPJ/admissão que faltava (ex.: o IRPF que o CRM pediu) → cadastro que não saiu volta pra fila.
+      const depois = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as Record<string, any> | null)?._fichaCadastral?.participantes;
+      if (Array.isArray(depois) && faltasDeRenda(depois).length < faltasDeRenda(psAntes).length) await reenfileirarCadastrosPendentes(leadId, 'documento novo com o dado da renda').catch(() => {});
     }
     return;
   }
