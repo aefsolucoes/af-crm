@@ -15,7 +15,8 @@ import { OBJECTIVE_FAIL, DADO_PARA_CORRIGIR, semRuidoDeSimulacao } from './credi
 type Cf = Record<string, any>;
 
 const BANKS = ['CREDIMORAR', 'CREDITAS', 'INTER'];
-const LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+const LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar (Financiamento)', INTER_FH: 'Inter (Financiamento)' };
+const BANKS_FH = ['CREDIMORAR_FH', 'INTER_FH'];
 
 const NAO_ACHEI = /n[aã]o achei o cliente na lista|ainda n[aã]o apareceu na lista|proposta aberta pelo n[uú]mero n[aã]o traz/i;
 const SO_SIMULACAO = /SIMULA[ÇC][ÃA]O[^\n]*Ainda sem resultado/i;
@@ -41,13 +42,15 @@ export function isChase(text: string): boolean {
 }
 
 /** O que fazer em cada banco com a análise que não saiu. Pura (testável). RUN = rodar de novo; CHECK = conferir o que já está no portal. */
-export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?: (bank: string) => boolean } = {}): RecAction[] {
+export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?: (bank: string) => boolean; fh?: boolean } = {}): RecAction[] {
   const now = opts.now ?? Date.now();
   const out: RecAction[] = [];
   // Pedido vivo: mexido nos últimos 25 min OU conferência marcada (notBefore) que ainda vai rodar / acabou de vencer. Antes só valia o updatedAt e a conferência da Creditas
   // marcada de 30 em 30 min (ou pras 7h do dia seguinte) parecia parada — a retomada das 7h abria uma 2ª cadeia em paralelo (Alziro 28/10: 48ª e 19ª conferências ao mesmo tempo).
   const vivo = (r: RecRow) => (r.status === 'REQUESTED' || r.status === 'RUNNING') && (now - r.updatedAt.getTime() < 25 * 60_000 || (r.status === 'REQUESTED' && !!r.notBefore && now - new Date(r.notBefore).getTime() < 25 * 60_000));
-  for (const bank of BANKS) {
+  // Financiamento (Fabio 29/10: migrar o HE pro FH): Credimorar FH + Inter FH. Proposta enviada sem resposta é sempre CONFERIDA (a conferência do Credimorar FH já reenvia
+  // os bancos que ficaram em Simulação) — rodar de novo criaria outra simulação no portal.
+  for (const bank of opts.fh ? BANKS_FH : BANKS) {
     const mine = rows.filter((r) => r.bank === bank && semRuidoDeSimulacao(r)).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     if (!mine.length) continue;
     // rodada (ou leitura) EM EXECUÇÃO nesse banco agora: espera. Só conferência na fila (as de 3–10 min, até 18 vezes) não segura uma nova rodada — senão uma proposta que nunca aparece
@@ -81,6 +84,7 @@ export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?:
       continue;
     }
     if (efetiva.status !== 'SENT') continue; // INCOMPLETE e afins: o dado precisa de gente
+    if (opts.fh) { if (!conferenciaNaFila) out.push({ bank, mode: 'CHECK', why: 'conferir o resultado no portal (e reenviar o banco que ficou em Simulação)' }); continue; }
 
     const leituras = desde.filter((r) => r.kind === 'CHECK' || r.status === 'SENT');
     const ult = (leituras[leituras.length - 1]?.detail || ultimaRodada.detail || '');
@@ -115,16 +119,17 @@ export async function recoverStuckAnalyses(accountId: string, leadId: string, wh
     where: {
       id: leadId, accountId, status: 'OPEN', archived: false, isGroup: false,
       stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
-      pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
+      pipeline: { department: { OR: [{ name: { contains: 'Home Equity', mode: 'insensitive' } }, { name: { contains: 'Habitacional', mode: 'insensitive' } }] } },
     },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true, notBefore: true } } },
+    select: { id: true, name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } }, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true, notBefore: true } } },
   });
   if (!lead) return [];
   const cf = (lead.customFields || {}) as Cf;
   if (cf._autoPaused || cf._noticeAt) return []; // cliente pausado pela equipe / já avisado do resultado
   // Conferência já marcada pra daqui a pouco (3–10 min): cliente cobrando adianta pra agora.
   if (why === 'cobranca') await prisma.creditAnalysis.updateMany({ where: { leadId, dryRun: false, kind: 'CHECK', status: 'REQUESTED', notBefore: { gt: new Date() } }, data: { notBefore: null } }).catch(() => {});
-  const plan = planRecovery(lead.creditAnalyses as RecRow[], { loginNeeded: (b) => loginNeededFor(accountId, b) });
+  const fh = /habitacional/i.test(lead.pipeline?.department?.name || '');
+  const plan = planRecovery(lead.creditAnalyses as RecRow[], { fh, loginNeeded: (b) => loginNeededFor(accountId, b.replace(/_FH$/, '')) });
   if (!plan.length) return [];
 
   const hoje = dayBrt();
@@ -210,7 +215,7 @@ export async function processMorningRerun(accountId: string): Promise<void> {
     SELECT l.id FROM "Lead" l
     JOIN "Pipeline" p ON p.id = l."pipelineId" JOIN "Department" d ON d.id = p."departmentId" JOIN "Stage" st ON st.id = l."stageId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
-      AND d.name ILIKE '%home equity%' AND st.name ILIKE 'Pré-An%'
+      AND (d.name ILIKE '%home equity%' OR d.name ILIKE '%habitacional%') AND st.name ILIKE 'Pré-An%'
       AND COALESCE(l."customFields"->>'_morningRerunDay', '') <> ${hoje}
       AND EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca."dryRun" = false)
     ORDER BY l."stageEnteredAt" ASC

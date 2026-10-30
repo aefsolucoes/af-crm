@@ -534,12 +534,16 @@ const RETRY_GAP_MS = 15 * 60_000;
 
 /** 5) Falha TÉCNICA (extensão travou, tela não carregou, dado faltando) não deixa o cliente parado na Pré-Análise: refaz sozinho o banco que falhou, até 3 vezes, de 15 em
  *  15 min (Fabio 14/10: "como faz pros clientes que falhou rodar sozinha depois?"). Falha OBJETIVA (regra do banco/imóvel) e "rodada anulada" não entram — essas são decisão. */
-async function retryTechnicalFailures(accountId: string) {
+/** Refaz sozinha (até RETRY_MAX vezes, com intervalo) a análise que falhou por problema técnico. `produto` = 'FH' faz o mesmo no Financiamento Habitacional
+ *  (Credimorar FH + Inter FH) — Fabio 29/10: "todo o processo do HE deve migrar pro FH". */
+async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 'HE') {
+  const fh = produto === 'FH';
+  const BANCOS = fh ? ['CREDIMORAR_FH', 'INTER_FH'] : BANKS;
   const leads = await prisma.lead.findMany({
     where: {
       accountId, status: 'OPEN', archived: false, isGroup: false,
       stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
-      pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
+      pipeline: { department: { name: { contains: fh ? 'Habitacional' : 'Home Equity', mode: 'insensitive' } } },
       creditAnalyses: { some: { dryRun: false } },
     },
     select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true } } },
@@ -556,7 +560,7 @@ async function retryTechnicalFailures(accountId: string) {
     const redo: string[] = [];
     const redoCheck = new Set<string>(); // bancos cuja ÚLTIMA linha era uma CONFERÊNCIA que falhou: refaz a conferência, NUNCA cria proposta nova
     const gaveUp: string[] = [];
-    for (const b of BANKS) {
+    for (const b of BANCOS) {
       const r = rows.filter((x) => x.bank === b && semRuidoDeSimulacao(x) && !(x.kind === 'CHECK' && x.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
       if (!r || aberto(b)) continue;
       const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE';
@@ -576,7 +580,7 @@ async function retryTechnicalFailures(accountId: string) {
       // Falha de um RODAR que já tinha ENVIADO a proposta ao banco (teto de tempo/extensão travada depois do envio): refazer como RODAR criaria proposta DUPLICADA no portal.
       if (r.kind === 'CHECK' || r.proposalNumber || /proposta (j[aá] )?enviada|lendo o resultado/i.test(r.detail || '')) redoCheck.add(b);
     }
-    const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+    const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar (Financiamento)', INTER_FH: 'Inter (Financiamento)' };
     if (redo.length) {
       const runBanks = redo.filter((b) => !redoCheck.has(b));
       if (runBanks.length) await createRequests(prisma, { accountId, leadIds: [l.id], banks: runBanks, dryRun: false, force: true });
@@ -805,6 +809,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await noticeClients(s.accountId, io).catch((e) => console.error('[Análise automática] aviso:', e?.message));
       await closeRejected(s.accountId, io).catch((e) => console.error('[Análise automática] fechar reprovados:', e?.message));
       await retryTechnicalFailures(s.accountId).catch((e) => console.error('[Análise automática] refazer falhas técnicas:', e?.message));
+      await retryTechnicalFailures(s.accountId, 'FH').catch((e) => console.error('[Análise automática] refazer falhas técnicas (Financiamento):', e?.message));
       await ackPendingProposals(s.accountId, io).catch((e) => console.error('[Análise automática] confirmação da proposta:', e?.message));
       await flagInterSemNumero(s.accountId).catch((e) => console.error('[Análise automática] Inter sem número:', e?.message));
       await emailInterSemProposta(s.accountId, io).catch((e) => console.error('[Análise automática] e-mail Vania:', e?.message));
