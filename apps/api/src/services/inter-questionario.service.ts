@@ -14,13 +14,13 @@ type DriveF = { id: string; name: string; path: string; mimeType: string; size: 
  *  - financiar as despesas de registro: perguntar ao cliente, explicando que funciona como um reembolso;
  *  - profissão, e-mail e telefone: os do card, confirmados com o cliente;
  *  - endereço dos proponentes: o da documentação do imóvel;
- *  - documentos (RG/CNH e registro civil): vão anexados na resposta do e-mail (pasta COMPRADOR do Drive);
+ *  - documentos: NÃO vão no e-mail (Fabio 30/10: "não precisa anexar nada, apenas responder o questionário") — sobem pelo portal Zeev (extensão a fazer, módulo da extensão do Inter);
  *  - responsável pelos documentos na Zeev: Andreia (zeevResponsavel — CPF na variável do Railway).
  * "Quando receber esse e-mail deve ser disparado ao cliente um template caso a conversa esteja fechada e/ou perguntar o questionário" — vale mesmo com a chave da contratação
  * automática desligada (pedido explícito); só o STOP do card (_autoPaused) e o horário 07–21h seguram a mensagem ao cliente.
  * Fluxo (customFields._interQuest): e-mail chega → PERGUNTAR → pergunta ao cliente (janela fechada: template de atualização 1×; a pergunta sai quando ele responder) → PERGUNTADO →
  * respostas lidas por IA (Haiku) 60 s depois da última mensagem → falta algo: pergunta só o que falta (1×) → completo: responde o e-mail do consultor no mesmo fio → ENVIADO.
- * Sem o registro civil do cliente na pasta: o e-mail sai sem ele e, quando a certidão chegar na pasta, vai num 2º e-mail no mesmo fio.
+ * Documento que não está na pasta (ex.: certidão de estado civil) é pedido ao cliente junto com as perguntas — e só ele (a Zeev vai precisar).
  */
 
 /** Responsável pelos documentos na Zeev (Fabio 30/10: Andreia). O CPF não fica no código: vem da variável INTER_ZEEV_RESPONSAVEL do Railway ("Nome;CPF;e-mail").
@@ -40,7 +40,7 @@ type Q = {
   askedAt?: string; templateAt?: string; cobrouAt?: string; lidoAt?: string;
   vencimento?: number | null; despesas?: 'SIM' | 'NAO' | null; dadosOk?: boolean | null;
   profissao?: string | null; email?: string | null; telefone?: string | null; duvida?: string | null;
-  enviadoAt?: string; anexos?: string[]; faltaCivil?: boolean; civilCheckAt?: string; civilEnviadoAt?: string; civilDesistiuAt?: string; erro?: string;
+  enviadoAt?: string; erro?: string;
 };
 type Dados = { nome: string; profissao: string | null; email: string | null; telefone: string | null };
 
@@ -138,7 +138,7 @@ export function textoCobranca(nome: string, faltas: FaltaQ[], d: Dados): string 
   return `${nome ? `${nome}, o` : 'O'}brigado! Pra fechar com o banco, só falta me dizer ${lista(faltas.map((x) => t[x]))}.`;
 }
 
-export function corpoEmailQuestionario(p: { consultor: string; q: Q; d: Dados; endereco: string | null; anexos: string[]; faltaCivil: boolean; zeev: { nome: string; cpf: string; email: string } }): string {
+export function corpoEmailQuestionario(p: { consultor: string; q: Q; d: Dados; endereco: string | null; zeev: { nome: string; cpf: string; email: string } }): string {
   const { q, d } = p;
   return [
     `Olá, ${p.consultor || 'tudo bem'}${p.consultor ? ', tudo bem?' : '?'}`,
@@ -153,10 +153,6 @@ export function corpoEmailQuestionario(p: { consultor: string; q: Q; d: Dados; e
     `• Irá financiar despesas de registro? ${q.despesas === 'SIM' ? 'Sim' : 'Não'}`,
     `• Profissão, e-mail e telefone dos proponentes: ${d.nome} — ${d.profissao} — ${d.email} — ${d.telefone}`,
     `• Endereço dos proponentes: ${p.endereco || '(confirmo em seguida)'}`,
-    '',
-    'DOCUMENTOS:',
-    p.anexos.length ? `Seguem em anexo: ${p.anexos.join('; ')}.` : 'Encaminho em seguida.',
-    ...(p.faltaCivil ? ['O registro civil do cliente encaminho em seguida, assim que ele me enviar.'] : []),
     '',
     'RESPONSÁVEL PELOS DOCUMENTOS PARA EMISSÃO DO CONTRATO (acesso à Zeev):',
     `• Nome completo: ${p.zeev.nome}`,
@@ -174,10 +170,20 @@ async function arquivosDoDrive(accountId: string, cf: Cf): Promise<DriveF[]> {
   try { const { extractFolderId, listAllFilesInFolderTree } = await import('./google.service'); return (await listAllFilesInFolderTree(accountId, extractFolderId(link), 3)) as DriveF[]; } catch { return []; }
 }
 
+/** Endereço pelos campos do imóvel no card + CEP (ViaCEP): Pedro não tinha a proposta com "Endereço do imóvel" nem leitura de documento com endereço, e o e-mail saiu "(confirmo em seguida)". */
+export async function enderecoDoCard(cf: Cf): Promise<string | null> {
+  const cep = String(cf.imovel_cep || '').replace(/\D/g, '');
+  if (cep.length !== 8 || vazio(cf.imovel_numero)) return null;
+  const v = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: AbortSignal.timeout(6000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null) as Record<string, any> | null;
+  if (!v || v.erro || vazio(v.logradouro)) return null;
+  return [`${v.logradouro}, ${String(cf.imovel_numero).trim()}${vazio(cf.imovel_complemento) ? '' : ` - ${String(cf.imovel_complemento).trim()}`}`, v.bairro, `${v.localidade}/${v.uf}`, `CEP ${cep.slice(0, 5)}-${cep.slice(5)}`]
+    .filter((x) => !vazio(x)).join(' — ');
+}
+
 async function enderecoTexto(leadId: string, cf: Cf): Promise<string | null> {
   const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
   const e = await enderecoDoImovel(leadId, cf).catch(() => null);
-  if (!e) return null;
+  if (!e) return enderecoDoCard(cf);
   const x = e.endereco as Record<string, any>;
   const cep = String(x.cep || '').replace(/\D/g, '');
   return [
@@ -329,71 +335,34 @@ export async function enviarEmailQuestionario(accountId: string, leadId: string,
     }
     return { ok: false, erro: 'Falta configurar o responsável da Zeev (INTER_ZEEV_RESPONSAVEL)' };
   }
-  const files = await arquivosDoDrive(accountId, cf);
-  const docs = docsDoTitular(files);
-  const umProponente = vazio(cf.participante_2);
-  const { downloadDriveFile } = await import('./google.service');
-  const attachments: { filename: string; contentType: string; content: Buffer }[] = [];
-  for (const f of [...docs.ident, ...docs.civil]) {
-    const content = await downloadDriveFile(accountId, f.id, f.mimeType).catch(() => null);
-    if (content?.length) attachments.push({ filename: nomeDoAnexo(f, d.nome, umProponente), contentType: f.mimeType, content });
+  const endereco = await enderecoTexto(leadId, cf);
+  if (!endereco) {
+    if (!q.erro?.startsWith('ENDERECO')) {
+      await salva(leadId, { erro: 'ENDERECO: não achei o endereço do imóvel' });
+      await note(leadId, `⚠️ Questionário do Inter pronto (vencimento dia ${q.vencimento}), mas o e-mail não saiu: não achei o endereço do imóvel (proposta, documentos ou CEP/número no card, aba Financiamento). Preencha CEP e número do imóvel no card que o CRM envia sozinho.`);
+      push(accountId, '⚠️ Questionário do Inter parado', `${lead.name}: falta o endereço do imóvel`, leadId);
+    }
+    return { ok: false, erro: 'Falta o endereço do imóvel' };
   }
-  const faltaCivil = !docs.civil.length;
   const proprio = acc.address.toLowerCase();
   const cc = [...new Set([...(Array.isArray(row.toList) ? row.toList : []), ...(Array.isArray(row.ccList) ? row.ccList : [])]
     .map((a: any) => String(a?.address || '').toLowerCase())
     .filter((a) => a && a !== proprio && a !== row.fromAddress!.toLowerCase() && /@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br)$/.test(a)))];
   const sub = String(row.subject || 'Home Equity').trim();
-  const corpo = corpoEmailQuestionario({ consultor: PRIMEIRO_NOME(row.fromName), q, d, endereco: await enderecoTexto(leadId, cf), anexos: attachments.map((a) => a.filename), faltaCivil, zeev });
+  const corpo = corpoEmailQuestionario({ consultor: PRIMEIRO_NOME(row.fromName), q, d, endereco, zeev });
   try {
     const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-    await sendEmailFrom({ acc, userId: dono?.id || null, to: [row.fromAddress], cc, subject: /^re:/i.test(sub) ? sub : `Re: ${sub}`, body: corpo, replyToId: row.id, leadId, io: (io || ({ to: () => ({ emit: () => {} }) })) as any, attachments });
+    await sendEmailFrom({ acc, userId: dono?.id || null, to: [row.fromAddress], cc, subject: /^re:/i.test(sub) ? sub : `Re: ${sub}`, body: corpo, replyToId: row.id, leadId, io: (io || ({ to: () => ({ emit: () => {} }) })) as any });
   } catch (e: any) {
     await salva(leadId, { erro: String(e?.message || e).slice(0, 200) });
     await note(leadId, `⚠️ Questionário do Inter: o e-mail de resposta não saiu (${e?.message}). Responda à mão.`);
     push(accountId, '⚠️ Questionário do Inter não saiu', lead.name, leadId);
     return { ok: false, erro: e?.message };
   }
-  await salva(leadId, { status: 'ENVIADO', enviadoAt: new Date().toISOString(), anexos: attachments.map((a) => a.filename), faltaCivil });
-  await note(leadId, `📨 Questionário do Inter respondido por e-mail a ${row.fromAddress}: vencimento dia ${q.vencimento}, despesas de registro ${q.despesas === 'SIM' ? 'financiadas' : 'não financiadas'}, assinatura digital (sem ICP-Brasil), registro eletrônico, responsável na Zeev ${zeev.nome}.${attachments.length ? ` Anexos: ${attachments.map((a) => a.filename).join('; ')}.` : ' Sem anexos (RG/CNH não achado na pasta).'}${faltaCivil ? ' O registro civil do cliente não está na pasta: vai num 2º e-mail quando chegar.' : ''}`);
+  await salva(leadId, { status: 'ENVIADO', enviadoAt: new Date().toISOString() });
+  await note(leadId, `📨 Questionário do Inter respondido por e-mail a ${row.fromAddress}: vencimento dia ${q.vencimento}, despesas de registro ${q.despesas === 'SIM' ? 'financiadas' : 'não financiadas'}, assinatura digital (sem ICP-Brasil), registro eletrônico, responsável na Zeev ${zeev.nome}, endereço ${endereco}. Os documentos sobem pelo portal Zeev.`);
   push(accountId, '📨 Questionário do Inter respondido', `${lead.name}: vencimento dia ${q.vencimento}`, leadId);
   return { ok: true };
-}
-
-/** Certidão de estado civil chegou na pasta depois do e-mail: vai num 2º e-mail no mesmo fio. */
-async function enviarCivilDepois(accountId: string, leadId: string, io?: Io) {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
-  if (!lead) return;
-  const cf = (lead.customFields || {}) as Cf;
-  const q = (cf._interQuest || {}) as Q;
-  if (q.status !== 'ENVIADO' || !q.faltaCivil || q.civilEnviadoAt || q.civilDesistiuAt) return;
-  if (faz(q.civilCheckAt) < 30 * 60_000) return;
-  await salva(leadId, { civilCheckAt: new Date().toISOString() });
-  if (faz(q.enviadoAt) > CIVIL_ESPERA_MS) {
-    await salva(leadId, { civilDesistiuAt: new Date().toISOString() });
-    await note(leadId, '📝 Questionário do Inter: a certidão de estado civil do cliente não chegou na pasta em 10 dias. Peça ao cliente e encaminhe ao Inter à mão.');
-    push(accountId, '📝 Inter: falta o registro civil', lead.name, leadId);
-    return;
-  }
-  const d = dadosDoTitular(cf, lead.name, q);
-  const civil = docsDoTitular(await arquivosDoDrive(accountId, cf)).civil;
-  if (!civil.length) return;
-  const row = q.emailId ? await prisma.emailMessage.findUnique({ where: { id: q.emailId }, select: { id: true, emailAccountId: true, fromAddress: true, fromName: true, subject: true } }) : null;
-  const acc = row ? await prisma.emailAccount.findUnique({ where: { id: row.emailAccountId } }) : null;
-  if (!row || !acc || !row.fromAddress) return;
-  const { downloadDriveFile } = await import('./google.service');
-  const attachments: { filename: string; contentType: string; content: Buffer }[] = [];
-  for (const f of civil) { const content = await downloadDriveFile(accountId, f.id, f.mimeType).catch(() => null); if (content?.length) attachments.push({ filename: nomeDoAnexo(f, d.nome, vazio(cf.participante_2)), contentType: f.mimeType, content }); }
-  if (!attachments.length) return;
-  const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
-  const sub = String(row.subject || 'Home Equity').trim();
-  const consultor = PRIMEIRO_NOME(row.fromName);
-  try {
-    const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-    await sendEmailFrom({ acc, userId: dono?.id || null, to: [row.fromAddress], subject: /^re:/i.test(sub) ? sub : `Re: ${sub}`, body: `Olá${consultor ? `, ${consultor}` : ''}!\n\nSegue em anexo o registro civil do cliente ${d.nome}, que ficou faltando no e-mail anterior.\n\nQualquer dúvida, fico à disposição.`, replyToId: row.id, leadId, io: (io || ({ to: () => ({ emit: () => {} }) })) as any, attachments });
-  } catch (e: any) { console.warn('[Questionário Inter] registro civil:', e?.message); return; }
-  await salva(leadId, { civilEnviadoAt: new Date().toISOString() });
-  await note(leadId, `📨 Registro civil do cliente encaminhado ao Inter (${attachments.map((a) => a.filename).join('; ')}).`);
 }
 
 const RETOMA_DESDE = new Date('2026-10-30T03:00:00Z');
@@ -420,23 +389,22 @@ async function retomarSemFluxo(accountId: string, io?: Io): Promise<void> {
   }
 }
 
-/** Poller (1 min, credit-auto): pergunta quem está esperando, fecha quem só não confirmou os dados há 24 h e manda o registro civil que chegou depois. */
+/** Poller (1 min, credit-auto): pergunta quem está esperando, fecha quem só não confirmou os dados há 24 h e manda o e-mail que estava esperando (responsável da Zeev / endereço). */
 export async function processQuestionariosInter(accountId: string, io?: Io): Promise<void> {
   await retomarSemFluxo(accountId, io).catch((e: any) => console.warn('[Questionário Inter] retomar:', e?.message));
   const ids = await prisma.$queryRaw<{ id: string; status: string }[]>`
     SELECT id, "customFields"->'_interQuest'->>'status' AS status FROM "Lead"
     WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND "isGroup" = false
-      AND "customFields"->'_interQuest'->>'status' IN ('PERGUNTAR', 'PERGUNTADO', 'ENVIADO')
-      AND COALESCE("customFields"->'_interQuest'->>'civilEnviadoAt', '') = '' AND COALESCE("customFields"->'_interQuest'->>'civilDesistiuAt', '') = ''`;
+      AND "customFields"->'_interQuest'->>'status' IN ('PERGUNTAR', 'PERGUNTADO')`;
   for (const { id, status } of ids) {
     try {
       if (status === 'PERGUNTAR') await perguntarQuestionario(accountId, id, io);
-      else if (status === 'ENVIADO') await enviarCivilDepois(accountId, id, io);
       else {
         const lead = await prisma.lead.findUnique({ where: { id }, select: { name: true, customFields: true } });
         const q = (((lead?.customFields || {}) as Cf)._interQuest || {}) as Q;
         if (!lead) continue;
         if (q.erro?.startsWith('ZEEV')) { if (zeevResponsavel().cpf) await enviarEmailQuestionario(accountId, id, io); continue; } // respostas prontas esperando o responsável da Zeev
+        if (q.erro?.startsWith('ENDERECO')) { if (faz(q.lidoAt) > 10 * 60_000) { await salva(id, { lidoAt: new Date().toISOString() }); await enviarEmailQuestionario(accountId, id, io); } continue; } // tenta de novo a cada 10 min (equipe preenche CEP/nº no card)
         if (!q.cobrouAt || faz(q.cobrouAt) < CONFIRMA_ESPERA_MS) continue;
         const f = faltasDoQuestionario(q, dadosDoTitular((lead.customFields || {}) as Cf, lead.name, q));
         if (f.length === 1 && f[0] === 'confirmar') await enviarEmailQuestionario(accountId, id, io); // só não confirmou os dados do card: seguem os do card
@@ -461,7 +429,7 @@ export async function questionarioPreview(accountId: string, leadId: string) {
   const q = (cf._interQuest || {}) as Q;
   const d = dadosDoTitular(cf, lead.name, q);
   const docs = docsDoTitular(await arquivosDoDrive(accountId, cf));
-  return { estado: q, dados: d, faltas: faltasDoQuestionario(q, d), anexos: [...docs.ident, ...docs.civil].map((f) => nomeDoAnexo(f, d.nome, vazio(cf.participante_2))), endereco: await enderecoTexto(leadId, cf) };
+  return { estado: q, dados: d, faltas: faltasDoQuestionario(q, d), documentosNaPasta: [...docs.ident, ...docs.civil].map((f) => nomeDoAnexo(f, d.nome, vazio(cf.participante_2))), endereco: await enderecoTexto(leadId, cf) };
 }
 
 /** Início manual (e-mail que já tinha chegado antes do fluxo existir): acha o e-mail do questionário ligado ao card. */
