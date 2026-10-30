@@ -779,9 +779,9 @@ export async function maybeHandleChooseButton(accountId: string, leadId: string,
 }
 
 /** Conta no banco do processo (Fabio 30/10, HE e Financiamento): as parcelas são debitadas numa conta do comprador NO banco que está fazendo o processo — sem conta, abrir pelo app.
- *  Vai junto da confirmação da escolha do banco. Creditas fica de fora (não é banco de conta corrente). Pura. */
+ *  Vai junto da confirmação da escolha do banco. Santander, Inter, Bradesco e Itaú; Creditas não precisa (Fabio 30/10). Pura. */
 export function avisoContaNoBanco(banco: string): string {
-  const b = /santander|credimorar/i.test(banco) ? 'Santander' : /inter/i.test(banco) ? 'Inter' : /bradesco/i.test(banco) ? 'Bradesco' : null;
+  const b = /santander|credimorar/i.test(banco) ? 'Santander' : /inter/i.test(banco) ? 'Inter' : /bradesco/i.test(banco) ? 'Bradesco' : /ita[uú]/i.test(banco) ? 'Itaú' : null;
   if (!b) return '';
   return `🏦 Importante: as parcelas são debitadas numa conta no *${b}* em nome do comprador. Se você ainda não tem conta no ${b}, já pode abrir pelo app do ${b} — mais pra frente vou te pedir a agência e a conta.`;
 }
