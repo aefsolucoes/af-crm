@@ -396,8 +396,33 @@ async function enviarCivilDepois(accountId: string, leadId: string, io?: Io) {
   await note(leadId, `📨 Registro civil do cliente encaminhado ao Inter (${attachments.map((a) => a.filename).join('; ')}).`);
 }
 
+const RETOMA_DESDE = new Date('2026-10-30T03:00:00Z');
+/** E-mail do questionário que chegou antes do fluxo existir (Pedro, 30/10) ou que o vigia não pegou: começa sozinho. Se a pergunta já saiu na conversa
+ *  (à mão), começa como PERGUNTADO dessa hora e só lê as respostas (Fabio 30/10: "o Pedro já confirmou, o próximo passo é responder o e-mail pro André"). */
+async function retomarSemFluxo(accountId: string, io?: Io): Promise<void> {
+  const rows = await prisma.$queryRaw<{ id: string; leadId: string; date: Date }[]>`
+    SELECT em.id, em."leadId", em.date FROM "EmailMessage" em
+      JOIN "EmailAccount" ea ON ea.id = em."emailAccountId"
+      JOIN "Lead" l ON l.id = em."leadId"
+    WHERE ea."accountId" = ${accountId} AND em.folder = 'INBOX' AND em.date > ${RETOMA_DESDE} AND em.date > now() - interval '5 days'
+      AND em."fromAddress" ~* '@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br)$'
+      AND (em."textBody" ILIKE '%question%rio%' OR em."htmlBody" ILIKE '%question%rio%')
+      AND l.status = 'OPEN' AND l.archived = false AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_interQuest')
+    ORDER BY em.date DESC LIMIT 10`;
+  const { vistoriaConcluida, interEmailTexto, freshPart } = require('./inter-email.service') as typeof import('./inter-email.service');
+  for (const r of rows) {
+    const em = await prisma.emailMessage.findUnique({ where: { id: r.id }, select: { textBody: true, htmlBody: true } });
+    const fresh = freshPart(interEmailTexto(em?.textBody, em?.htmlBody));
+    if (!pedeQuestionarioContratacao(fresh) || !vistoriaConcluida(fresh)) continue;
+    const ja = await prisma.message.findFirst({ where: { leadId: r.leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', createdAt: { gt: r.date }, content: { contains: 'vencimento das parcelas' } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    await iniciarQuestionarioInter(accountId, r.leadId, r.id, io, ja ? { jaPerguntadoEm: ja.createdAt.toISOString() } : {});
+    await note(r.leadId, `📝 Questionário do Inter retomado pelo CRM (e-mail que chegou antes do fluxo). ${ja ? 'A pergunta já tinha saído na conversa: o CRM lê as respostas do cliente e responde o consultor.' : 'O CRM vai perguntar ao cliente.'}`);
+  }
+}
+
 /** Poller (1 min, credit-auto): pergunta quem está esperando, fecha quem só não confirmou os dados há 24 h e manda o registro civil que chegou depois. */
 export async function processQuestionariosInter(accountId: string, io?: Io): Promise<void> {
+  await retomarSemFluxo(accountId, io).catch((e: any) => console.warn('[Questionário Inter] retomar:', e?.message));
   const ids = await prisma.$queryRaw<{ id: string; status: string }[]>`
     SELECT id, "customFields"->'_interQuest'->>'status' AS status FROM "Lead"
     WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND "isGroup" = false
