@@ -1224,6 +1224,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
 
       // Oferta de emissão da certidão pelo ONR esperando resposta (Fabio 20/10): se o cliente aceitou, a extensão do ONR é acionada agora. Sem oferta pendente não gasta nada.
       if (text) { const { checkCertidaoAcceptance } = require('./certidao-offer.service') as typeof import('./certidao-offer.service'); checkCertidaoAcceptance(accountId, leadId, text, io).catch((e: any) => console.warn('[Certidão] aceitação:', e?.message)); }
+      // Cliente disse que pagou o PIX da certidão (Fabio 30/10): só aí a extensão confere no RI Digital.
+      if (text) { const { checkPaidClaim } = require('./certidao.service') as typeof import('./certidao.service'); checkPaidClaim(prisma, { accountId, leadId, text, io }).catch((e: any) => console.warn('[Certidão] disse que pagou:', e?.message)); }
       // Resposta do cliente à pergunta "você confirma que quer seguir com a proposta do Inter?" (Fabio 21/10): SIM claro libera o aviso à equipe pra clicar em "Seguir com proposta".
       if (text) { const { onClientReply } = require('./inter-seguir.service') as typeof import('./inter-seguir.service'); onClientReply(accountId, leadId, text).catch((e: any) => console.warn('[Inter seguir] resposta:', e?.message)); }
       // Vistoria do Financiamento (Fabio 30/10): resposta à lista da declaração de saúde do Santander e aos dados da vistoria (contato do corretor/vendedor, conta do vendedor…).

@@ -168,11 +168,14 @@ async function acharCartorioPelaWeb(db: Db, id: string): Promise<void> {
     const achado = await (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).cartorioPelaWeb({ uf: r.uf, cidade: r.cidade, endereco: `${e.tipoLogradouro || ''} ${e.logradouro || ''}, ${e.numero || ''}`.trim(), bairro: e.bairro, cep: e.cep });
     const atual = await db.certidaoRequest.findUnique({ where: { id }, select: { status: true } });
     if (atual?.status !== 'FIND_WEB') return;
-    if (achado?.irregular) {
+    const cfLead = ((await db.lead.findUnique({ where: { id: r.leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+    if (achado?.irregular && cfLead._certidaoIrregular?.resposta !== 'SIM') {
       // Fabio 30/10: área irregular pode não ter matrícula — não pede (cada pedido é cobrança) e a equipe confirma com o cliente.
       await db.certidaoRequest.update({ where: { id }, data: { status: 'FAILED', finishedAt: new Date(), detail: `Não pedi: o endereço parece estar em ÁREA IRREGULAR — ${achado.motivo}`.slice(0, 400) } });
-      await note(db, r.leadId, `⚠️ Certidão pelo endereço NÃO foi pedida: a pesquisa indica que o imóvel fica em ÁREA IRREGULAR e pode não ter matrícula (${achado.motivo}${achado.fonte ? ` — ${achado.fonte}` : ''}). Confirme com o cliente se o imóvel tem matrícula/escritura registrada antes de pedir.`, r.requestedById);
-      pushAll(r.accountId, '⚠️ Imóvel em área irregular?', `${await leadNameOf(db, r.leadId)}: a certidão não foi pedida — confirme se o imóvel tem matrícula`, r.leadId);
+      const cartorioAchado = achado.numero ? `${String(achado.numero).padStart(2, '0')}º - ${r.cidade.toUpperCase()}` : 'AUTO';
+      const perguntou = await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).askImovelRegular(r.accountId, r.leadId, { uf: r.uf, cidade: r.cidade, cartorio: cartorioAchado, endereco: e, sendPix: r.sendPix, userId: r.requestedById || undefined, motivo: achado.motivo }).catch(() => false);
+      await note(db, r.leadId, `⚠️ Certidão pelo endereço NÃO foi pedida: a pesquisa indica que o imóvel fica em ÁREA IRREGULAR e pode não ter matrícula (${achado.motivo}${achado.fonte ? ` — ${achado.fonte}` : ''}). ${perguntou ? 'Perguntei ao cliente se o imóvel tem matrícula registrada: se ele confirmar, o CRM pede a certidão sozinho.' : 'NÃO consegui perguntar ao cliente (janela do WhatsApp fechada ou fora do horário): pergunte se o imóvel tem matrícula registrada.'}`, r.requestedById);
+      pushAll(r.accountId, '⚠️ Imóvel em área irregular?', `${await leadNameOf(db, r.leadId)}: certidão não pedida — ${perguntou ? 'perguntei ao cliente se tem matrícula' : 'pergunte ao cliente se tem matrícula'}`, r.leadId);
     } else if (achado?.numero) {
       const cartorio = `${String(achado.numero).padStart(2, '0')}º - ${r.cidade.toUpperCase()}`;
       await reportCertidao(db, { accountId: r.accountId, id, data: { event: 'cartorio_found', cidade: r.cidade, cartorio, origem: `Pesquisa na web — ${achado.cartorio} (confiança ${achado.confianca}): ${achado.motivo} (${achado.fonte})` } as any });
@@ -270,21 +273,21 @@ async function avisarPixVencidos(db: Db, accountId: string) {
   }
 }
 
-/** Fabio 30/10: às 18h lembra o cliente do PIX que vence HOJE (1 vez; só se foi enviado há mais de 2 h e ainda não pagou). */
+/** Fabio 30/10: às 20h pergunta ao cliente que ainda não confirmou se deu certo o pagamento do PIX que vence HOJE (1 vez; PIX enviado há mais de 1 h). */
 async function lembrarPixHoje(db: Db, accountId: string, io?: Io) {
   const agora = new Date();
   const h = horaBrt(agora);
-  if (h < 18 || h >= 22) return;
-  const rows = await db.certidaoRequest.findMany({ where: { accountId, status: 'AWAITING_PAYMENT', paidAt: null, pixRemindedAt: null, pixCode: { not: null }, pixSentAt: { lt: new Date(agora.getTime() - 2 * 3600_000) }, pixExpiresAt: { gt: agora } }, take: 10 });
+  if (h < 20 || h >= 22) return;
+  const rows = await db.certidaoRequest.findMany({ where: { accountId, status: 'AWAITING_PAYMENT', paidAt: null, paidClaimedAt: null, pixRemindedAt: null, pixCode: { not: null }, pixSentAt: { lt: new Date(agora.getTime() - 3600_000) }, pixExpiresAt: { gt: agora } }, take: 10 });
   for (const r of rows) {
     if (!r.pixExpiresAt || !sameBrDay(r.pixExpiresAt, agora)) continue;
     const c = await db.certidaoRequest.updateMany({ where: { id: r.id, pixRemindedAt: null }, data: { pixRemindedAt: agora } });
     if (!c.count) continue;
     const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true, customFields: true } });
     if (((lead?.customFields || {}) as any)._autoPaused) continue;
-    const texto = `${firstName(lead?.name)}, passando pra lembrar do PIX da certidão${r.valorCents ? ` (${brl(r.valorCents)})` : ''}: ele vale só até hoje às 23h59. Se já pagou, me manda o comprovante por aqui, por favor.`;
+    const texto = `${firstName(lead?.name)}, deu certo o pagamento do PIX da certidão${r.valorCents ? ` (${brl(r.valorCents)})` : ''}? Ele vale só até hoje às 23h59. Se já pagou, me avisa por aqui, por favor.`;
     const out = await sendOutboundWhatsApp({ accountId, leadId: r.leadId, content: texto, userId: r.requestedById || undefined, io });
-    await note(db, r.leadId, out.success ? `⏰ Lembrei o cliente do PIX da certidão que vence hoje às 23h59.` : `⚠️ Não consegui lembrar o cliente do PIX da certidão que vence hoje (${out.error || 'WhatsApp'}).`, r.requestedById);
+    await note(db, r.leadId, out.success ? `⏰ Perguntei ao cliente se deu certo o pagamento do PIX da certidão (vence hoje às 23h59).` : `⚠️ Não consegui perguntar ao cliente sobre o pagamento do PIX da certidão que vence hoje (${out.error || 'WhatsApp'}).`, r.requestedById);
   }
 }
 
@@ -325,11 +328,11 @@ export async function claimCertidao(db: Db, p: { accountId: string }): Promise<C
   }
   // PIX VENCIDO sem pagamento (Fabio 29/10): avisa o colaborador em push e para de conferir esse pedido (fica FAILED — dá pra pedir de novo).
   await avisarPixVencidos(db, p.accountId).catch((e) => console.warn('[Certidão] PIX vencido:', e?.message));
-  // 3) Pagamento CONFIRMADO, ou PIX já ENCAMINHADO e ainda válido (Fabio 29/10: "checar de 4 em 4 horas quando for encaminhado" — o cliente pode pagar sem mandar comprovante):
-  // confere se a certidão saiu (07h–21h).
+  // 3) Pagamento CONFIRMADO (comprovante, e-mail do cartório, equipe) ou consulta pedida (cliente disse que pagou / botão do card): confere no portal.
+  // Fabio 30/10: PIX não pago NÃO é conferido de 4 em 4 h — às 20h a IA pergunta ao cliente se deu certo e só consulta quando ele diz que pagou.
   if (foraDoHorario()) return null;
   // (botão "Buscar certidão agora" = forceCheck: uma busca avulsa mesmo sem pagamento confirmado)
-  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { not: null }, AND: [{ OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, { OR: [{ pixCode: { not: null }, paidAt: { not: null } }, { forceCheck: true }, { pixCode: { not: null }, paidAt: null, OR: [{ pixSentAt: { not: null } }, { sendPix: false }], AND: [{ OR: [{ pixExpiresAt: null }, { pixExpiresAt: { gt: now } }] }] }] }] }, orderBy: { createdAt: 'asc' }, take: 3 });
+  const aguardando = await db.certidaoRequest.findMany({ where: { accountId: p.accountId, status: 'AWAITING_PAYMENT', protocolo: { not: null }, AND: [{ OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] }, { OR: [{ pixCode: { not: null }, paidAt: { not: null } }, { forceCheck: true }] }] }, orderBy: { createdAt: 'asc' }, take: 3 });
   for (const r of aguardando) {
     const c = await db.certidaoRequest.updateMany({ where: { id: r.id, status: 'AWAITING_PAYMENT' }, data: { forceCheck: false, nextCheckAt: new Date(now.getTime() + PAID_CHECK_EVERY_MIN * 60_000) } });
     if (c.count) return toJob(r, 'COLLECT');
@@ -430,6 +433,14 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { detail: String(d.detail || (d.portalStatus ? `No portal: ${d.portalStatus}` : r.detail || '')).slice(0, 400) } });
     // Fabio 30/10: cliente pagou e não avisou → a extensão vê no portal (botão do PIX sumiu / coluna Pagamento preenchida) e o CRM confirma sozinho.
     if (d.paid === true && !r.paidAt && r.status === 'AWAITING_PAYMENT') out = (await markCertidaoPaid(db, { accountId: p.accountId, id: r.id, via: 'PORTAL', io: p.io })) || out;
+    else if (!r.paidAt && r.paidClaimedAt && r.status === 'AWAITING_PAYMENT') {
+      if (Date.now() - r.paidClaimedAt.getTime() < 2 * 3600_000) out = await db.certidaoRequest.update({ where: { id: r.id }, data: { forceCheck: true, nextCheckAt: new Date(Date.now() + 30 * 60_000) } });
+      else {
+        out = await db.certidaoRequest.update({ where: { id: r.id }, data: { paidClaimedAt: null } });
+        await note(db, r.leadId, `⚠️ O cliente disse que pagou o PIX da certidão${r.protocolo ? ` (protocolo ${r.protocolo})` : ''}, mas em 2 horas o pagamento não apareceu no RI Digital nem chegou o e-mail do cartório. Peça o comprovante ao cliente.`, r.requestedById);
+        pushAll(p.accountId, '⚠️ Pagamento da certidão não apareceu', `${await leadNameOf(db, r.leadId)}: disse que pagou, mas o portal não mostra — peça o comprovante`, r.leadId);
+      }
+    }
   } else if (d.event === 'issued_manual') {
     // A certidão saiu, mas a extensão não conseguiu mandar o PDF ao CRM (ficou na pasta Downloads do Chrome do Fabio): fecha o pedido e avisa a equipe.
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { status: 'ISSUED', finishedAt: new Date(), nextCheckAt: null, detail: String(d.reason || 'Certidão emitida; PDF fora do CRM.').slice(0, 400) } });
@@ -646,7 +657,20 @@ export async function checkPaymentProof(db: Db, p: { accountId: string; leadId: 
   if (j.efetuado && alvo && favOk) { await markCertidaoPaid(db, { accountId: p.accountId, id: alvo.id, via: 'PROOF', io: p.io }); return; }
   const r0 = pend[0];
   const motivo = !j.efetuado ? 'o pagamento não aparece como efetuado' : !alvo ? `o valor (${Number.isFinite(cents) ? brl(cents) : 'ilegível'}) não bate com o do PIX (${brl(r0.valorCents)})` : `o favorecido ("${fav}") não parece ser a ONR`;
-  await note(db, p.leadId, `⚠️ O cliente mandou um comprovante, mas NÃO confirmei o pagamento da certidão (matrícula ${r0.matricula}): ${motivo}. Se estiver certo, confirme à mão (POST /api/certidoes/${r0.id}/paid).`);
+  await db.certidaoRequest.update({ where: { id: r0.id }, data: { paidClaimedAt: new Date(), forceCheck: true, nextCheckAt: new Date() } }).catch(() => {});
+  await note(db, p.leadId, `⚠️ O cliente mandou um comprovante, mas NÃO confirmei o pagamento da certidão (matrícula ${r0.matricula}): ${motivo}. Vou conferir no RI Digital; se estiver certo, confirme à mão (POST /api/certidoes/${r0.id}/paid).`);
+}
+
+/** O cliente DISSE que pagou ("paguei", "fiz o pix", "já tá pago") — Fabio 30/10: só aí a extensão consulta o RI Digital (o e-mail do cartório também confirma). */
+export const DISSE_QUE_PAGOU_RX = /\b(j[aá]\s+)?(paguei|pago|efetuei|transferi|fiz\s+o\s+(pix|pagamento))\b|\bpix\s+(feito|pago|enviado)\b|\bpagamento\s+(feito|efetuado|realizado)\b|\bdeu\s+certo\b/i;
+export async function checkPaidClaim(db: Db, p: { accountId: string; leadId: string; text: string; io?: Io }): Promise<void> {
+  const t = String(p.text || '').trim();
+  if (!t || t.length > 300 || !DISSE_QUE_PAGOU_RX.test(t) || /n[aã]o\s+(deu|consegui|paguei|foi)|ainda\s+n[aã]o|vou\s+pagar/i.test(t)) return;
+  const r = await db.certidaoRequest.findFirst({ where: { accountId: p.accountId, leadId: p.leadId, status: 'AWAITING_PAYMENT', paidAt: null, pixSentAt: { not: null } }, orderBy: { createdAt: 'desc' } });
+  if (!r || (r.paidClaimedAt && Date.now() - r.paidClaimedAt.getTime() < 2 * 3600_000)) return;
+  await db.certidaoRequest.update({ where: { id: r.id }, data: { paidClaimedAt: new Date(), forceCheck: true, nextCheckAt: new Date(), detail: 'O cliente disse que pagou: a extensão vai conferir no RI Digital.' } });
+  await note(db, r.leadId, `💸 O cliente disse que pagou o PIX da certidão (“${t.slice(0, 120)}”). A extensão vai conferir no RI Digital agora (e o e-mail do cartório também confirma).`, r.requestedById);
+  emitUpdate(p.io, p.accountId, r.leadId, r.id);
 }
 
 export async function cancelCertidao(db: Db, p: { accountId: string; id: string; userId?: string }) {

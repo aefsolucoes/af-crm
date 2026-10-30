@@ -402,6 +402,8 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
+  const ir = cf._certidaoIrregular as IrregularAsk | undefined;
+  if (ir?.askedAt && !ir.answeredAt && Date.now() - new Date(ir.askedAt).getTime() < 7 * 86_400_000) { await respondeImovelRegular(accountId, leadId, clean, ir, io); return; }
   const pe = cf._certidaoEndereco as EnderecoAsk | undefined;
   if (pe?.askedAt && !pe.answeredAt && Date.now() - new Date(pe.askedAt).getTime() < 7 * 86_400_000) { await respondeEndereco(accountId, leadId, clean, pe, io); return; }
   const pend = cf._certidaoCartorio as { requestId?: string; matricula: string; cidade: string; uf: string; opcoes: string[]; askedAt?: string; answeredAt?: string } | undefined;
@@ -534,4 +536,61 @@ async function respondeEndereco(accountId: string, leadId: string, texto: string
     io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
     if (!out.duplicate && out.agendado) await avisaPixAmanha(accountId, leadId, io);
   } catch (e: any) { await note(leadId, `⚠️ O cliente confirmou o endereço, mas não consegui pedir a certidão: ${e?.message || e}.`); }
+}
+
+// ── Área irregular (Fabio 30/10: "envia o push e pergunta ao cliente"): a pesquisa do cartório indicou que o endereço pode não ter matrícula. Pergunta antes de pedir (cada pedido é cobrança). ──
+type IrregularAsk = { uf: string; cidade: string; cartorio: string; endereco: EnderecoCertidao; sendPix?: boolean; userId?: string; motivo?: string; askedAt?: string; answeredAt?: string; resposta?: 'SIM' | 'NAO' };
+
+export async function askImovelRegular(accountId: string, leadId: string, p: Omit<IrregularAsk, 'askedAt' | 'answeredAt' | 'resposta'>): Promise<boolean> {
+  const lead = await carrega(leadId);
+  if (!lead || lead.accountId !== accountId) return false;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (cf._autoPaused) return false;
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return false;
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
+  const texto = `${nome ? `${nome}, p` : 'P'}ra emitir a certidão do imóvel, uma dúvida: ele tem matrícula registrada no Cartório de Registro de Imóveis (escritura registrada)? Pergunto porque, pelo endereço, a região pode ainda não ser regularizada.`;
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: undefined });
+  if (!r.success) return false;
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
+  c._certidaoIrregular = { ...p, askedAt: new Date().toISOString() } as IrregularAsk;
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+  return true;
+}
+
+async function respondeImovelRegular(accountId: string, leadId: string, texto: string, ir: IrregularAsk, io: Io): Promise<void> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5', max_tokens: 600,
+      system: 'A atendente perguntou ao cliente se o imóvel dele tem matrícula registrada no Cartório de Registro de Imóveis (escritura registrada), porque a região pode não ser regularizada. Classifique a RESPOSTA. Só JSON: {"r":"SIM"|"NAO"|"INDEFINIDO"}. SIM = confirma que tem matrícula/escritura registrada. NAO = não tem, só contrato de compra e venda/gaveta, cessão de direitos, posse, área não regularizada, ou não sabe se é registrado. INDEFINIDO = outro assunto, pergunta ou resposta que não decide. Na dúvida, INDEFINIDO (SIM faz cobrar um PIX do cliente).',
+      messages: [{ role: 'user', content: `RESPOSTA DO CLIENTE: ${texto.slice(0, 400)}` }],
+    }),
+  }).catch(() => null);
+  if (!res?.ok) return;
+  const d: any = await res.json().catch(() => null);
+  let r = 'INDEFINIDO';
+  try { r = String(JSON.parse(String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}').r || 'INDEFINIDO').toUpperCase(); } catch { /* indefinido */ }
+  if (r !== 'SIM' && r !== 'NAO') return;
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, name: true } });
+  const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
+  c._certidaoIrregular = { ...(c._certidaoIrregular || {}), answeredAt: new Date().toISOString(), resposta: r };
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+  if (r === 'NAO') {
+    await note(leadId, `⚠️ O cliente disse que o imóvel NÃO tem matrícula registrada (“${texto.slice(0, 160)}”). A certidão não foi pedida — sem matrícula o imóvel não serve de garantia; fale com o cliente.`);
+    try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '⚠️ Imóvel sem matrícula', body: `${fresh?.name || 'Cliente'}: disse que o imóvel não tem matrícula registrada`, leadId }).catch(() => {}); } catch { /* aviso */ }
+    return;
+  }
+  try {
+    const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: ir.uf, cidade: ir.cidade, cartorio: ir.cartorio || 'AUTO', pedidoPor: 'ENDERECO', endereco: ir.endereco, source: 'AI', userId: ir.userId, sendPix: ir.sendPix !== false });
+    await note(leadId, `🏛️ O cliente confirmou que o imóvel tem matrícula registrada (“${texto.slice(0, 120)}”). Pedi a certidão pelo endereço${out.duplicate ? ' (já havia um pedido andando)' : ''}.`);
+    io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
+    if (!out.duplicate && out.agendado) await avisaPixAmanha(accountId, leadId, io);
+  } catch (e: any) { await note(leadId, `⚠️ O cliente confirmou que o imóvel tem matrícula, mas não consegui pedir a certidão: ${e?.message || e}.`); }
 }
