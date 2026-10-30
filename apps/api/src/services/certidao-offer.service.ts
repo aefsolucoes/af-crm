@@ -403,6 +403,7 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   if (!lead || lead.accountId !== accountId) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const ir = cf._certidaoIrregular as IrregularAsk | undefined;
+  if (ir?.outroImovelAskedAt && !ir.outroImovel && Date.now() - new Date(ir.outroImovelAskedAt).getTime() < 7 * 86_400_000) { await respondeOutroImovel(accountId, leadId, clean, ir, io); return; }
   if (ir?.waitingReply && !ir.askedAt) { const { waitingReply: _w, ...resto } = ir; await salvaIrregular(leadId, { ...resto, askedAt: new Date().toISOString() }); return; }
   if (ir?.askedAt && !ir.answeredAt && Date.now() - new Date(ir.askedAt).getTime() < 7 * 86_400_000) { await respondeImovelRegular(accountId, leadId, clean, ir, io); return; }
   const pe = cf._certidaoEndereco as EnderecoAsk | undefined;
@@ -541,7 +542,7 @@ async function respondeEndereco(accountId: string, leadId: string, texto: string
 
 // ── Área irregular (Fabio 30/10: "envia o push e pergunta ao cliente"): a pesquisa do cartório indicou que o endereço pode não ter matrícula. Pergunta antes de pedir (cada pedido é cobrança). ──
 // Fora do horário de aviso: guarda e pergunta no primeiro horário (processIrregularPendentes). Conversa fechada: template "Olá, tudo bem?" e a pergunta sai quando o cliente responder.
-type IrregularAsk = { uf: string; cidade: string; cartorio: string; endereco: EnderecoCertidao; sendPix?: boolean; userId?: string; motivo?: string; pendingAsk?: boolean; waitingReply?: boolean; askedAt?: string; answeredAt?: string; resposta?: 'SIM' | 'NAO' };
+type IrregularAsk = { uf: string; cidade: string; cartorio: string; endereco: EnderecoCertidao; sendPix?: boolean; userId?: string; motivo?: string; pendingAsk?: boolean; waitingReply?: boolean; askedAt?: string; answeredAt?: string; resposta?: 'SIM' | 'NAO'; outroImovelAskedAt?: string; outroImovel?: 'TEM' | 'NAO_TEM' };
 const GREETING_TEMPLATE = 'ola_tudo_bem';
 
 async function salvaIrregular(leadId: string, v: IrregularAsk) {
@@ -610,7 +611,7 @@ async function respondeImovelRegular(accountId: string, leadId: string, texto: s
   try { r = String(JSON.parse(String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}').r || 'INDEFINIDO').toUpperCase(); } catch { /* indefinido */ }
   if (r !== 'SIM' && r !== 'NAO') return;
   const lead = await carrega(leadId);
-  await salvaIrregular(leadId, { ...ir, answeredAt: new Date().toISOString(), resposta: r });
+  await salvaIrregular(leadId, { ...ir, answeredAt: new Date().toISOString(), resposta: r, ...(r === 'NAO' ? { outroImovelAskedAt: new Date().toISOString() } : {}) });
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const cf = (lead?.customFields || {}) as Record<string, any>;
   const nome = callableFirstName(cf.falando_com, cf.participante_1, lead?.name) || null;
@@ -630,4 +631,41 @@ async function respondeImovelRegular(accountId: string, leadId: string, texto: s
     io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
     if (!out.duplicate && out.agendado) await avisaPixAmanha(accountId, leadId, io);
   } catch (e: any) { await note(leadId, `⚠️ O cliente confirmou que o imóvel tem matrícula, mas não consegui pedir a certidão: ${e?.message || e}.`); }
+}
+
+/** Resposta a "você possui outro imóvel com matrícula?" (Fabio 30/10): não tem → card vai pra Perdido; tem → equipe segue com o outro imóvel. */
+async function respondeOutroImovel(accountId: string, leadId: string, texto: string, ir: IrregularAsk, io: Io): Promise<void> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5', max_tokens: 600,
+      system: 'A atendente avisou que o imóvel do cliente não tem matrícula e não serve de garantia, e perguntou se ele possui OUTRO imóvel com matrícula registrada. Classifique a RESPOSTA. Só JSON: {"r":"TEM"|"NAO_TEM"|"INDEFINIDO"}. TEM = tem outro imóvel (ou de um parente de 1º grau) que pode ser garantia. NAO_TEM = não tem outro imóvel / só tem esse. INDEFINIDO = pergunta, dúvida, "vou ver", outro assunto. Na dúvida, INDEFINIDO (NAO_TEM encerra o atendimento).',
+      messages: [{ role: 'user', content: `RESPOSTA DO CLIENTE: ${texto.slice(0, 400)}` }],
+    }),
+  }).catch(() => null);
+  if (!res?.ok) return;
+  const d: any = await res.json().catch(() => null);
+  let r = 'INDEFINIDO';
+  try { r = String(JSON.parse(String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}').r || 'INDEFINIDO').toUpperCase(); } catch { /* indefinido */ }
+  if (r !== 'TEM' && r !== 'NAO_TEM') return;
+  await salvaIrregular(leadId, { ...ir, outroImovel: r });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, status: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead) return;
+  if (r === 'TEM') {
+    await note(leadId, `🏠 O cliente disse que TEM outro imóvel com matrícula (“${texto.slice(0, 160)}”). Siga com os dados e documentos do novo imóvel.`);
+    try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏠 Cliente tem outro imóvel', body: `${lead.name}: o 1º não tem matrícula, mas ele tem outro imóvel`, leadId }).catch(() => {}); } catch { /* aviso */ }
+    return;
+  }
+  if (lead.status !== 'OPEN') return;
+  const lostReason = 'Imóvel sem matrícula registrada (área irregular) e sem outro imóvel para garantia';
+  const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+  const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+  await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io as any);
+  await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io: io as any });
+  await note(leadId, `❌ O cliente disse que não tem outro imóvel (“${texto.slice(0, 160)}”). Card marcado como Perdido: ${lostReason}.`);
+  try { (require('./activity.service') as typeof import('./activity.service')).logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: 'marcou o card como Perdido: imóvel sem matrícula e sem outro imóvel' }).catch(() => {}); } catch { /* log é extra */ }
+  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '❌ Card perdido: imóvel sem matrícula', body: `${lead.name}: não tem outro imóvel para garantia`, leadId }).catch(() => {}); } catch { /* aviso */ }
 }
