@@ -184,6 +184,7 @@ function systemFixed(userName: string, voz: boolean): string {
 - Áudio: "quero mandar um áudio pro Pedro" → gravar_audio (abre o gravador; quem grava é a pessoa; o envio é no botão dela).
 - Ligação: "liga pro Pedro" → ligar_para_cliente. Por enquanto quem fala com o cliente é o colaborador; você só disca. Nunca diga que você vai conversar com o cliente.
 - Supervisão de sexta ("começa a supervisão", "vamos fazer a supervisão"): se ainda não há itens nesta semana, iniciar_supervisao; depois conduza card por card com ver_supervisao (pendentes): diga o cliente, onde está e a sugestão, e pergunte o que fazer (enviar a sugestão, ajustar o texto, pular, feito). Um card por vez.
+- PERGUNTA DE FORA DO CRM (notícia, lei, taxa do mercado, endereço, cartório, empresa, qualquer assunto): use web_search e responda citando a fonte em 1 frase. Coisa do CRM (cliente, card, processo, regra da A&F) continua pelas ferramentas do CRM e pela Base de Conhecimento — não pesquise na web o que o CRM sabe.
 - BASE DE CONHECIMENTO é a fonte única das regras: pergunta de processo, regra, banco, taxa, documento exigido ou "como a IA deve agir" → consultar_conhecimento ANTES de responder e cite a fonte; nunca responda dessa matéria de cabeça. Se a Base não cobrir, diga e ofereça registrar a regra (alterar_regra_ia).
 - "Mudar o prompt/comportamento da IA": as regras que a IA do CRM segue (conversa com cliente, sugestão de resposta, conferência de documentos) ficam na Base de Conhecimento — use ver_regras_ia e depois alterar_regra_ia (prefira editar a regra existente). Se o pedido exigir mudar o código do CRM (fluxo, gatilho, tela), diga que isso precisa ser feito pelo Claude Code e resuma o pedido em 1 frase pra ele copiar.
 - abrir_na_tela: use quando pedirem pra abrir/mostrar ("abre a conversa do Pedro", "me mostra o funil") e também quando for útil a pessoa ver o que você está falando (ex.: depois de resumir um cliente, abra a conversa dele). A tela da pessoa muda na hora.
@@ -251,11 +252,14 @@ export async function assistantChat(p: { accountId: string; userId: string; user
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: MODEL, max_tokens: 4096, system: systemPrompt(p.userName, !!p.voice), tools: TOOLS, messages: msgs }),
+      // + pesquisa na web da Anthropic (Fabio 29/10: "perguntar algo a mais, não só do CRM, e ela possa fazer buscas fora")
+      body: JSON.stringify({ model: MODEL, max_tokens: 4096, system: systemPrompt(p.userName, !!p.voice), tools: [...TOOLS, { type: 'web_search_20250305', name: 'web_search', max_uses: 4 }], messages: msgs }),
     });
     if (!res.ok) throw new Error(`IA indisponível (${res.status}) ${(await res.text().catch(() => '')).slice(0, 160)}`);
     const data = (await res.json()) as { content: any[]; stop_reason: string };
     const blocks = data.content || [];
+    // Pesquisa na web longa: a Anthropic devolve "pause_turn" — manda de volta pra ela continuar.
+    if (data.stop_reason === 'pause_turn') { msgs.push({ role: 'assistant', content: blocks }); continue; }
     const usos = blocks.filter((b) => b.type === 'tool_use');
     if (!usos.length || data.stop_reason !== 'tool_use') {
       const reply = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
