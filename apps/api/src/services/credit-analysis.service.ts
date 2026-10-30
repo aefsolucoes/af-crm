@@ -1042,7 +1042,8 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
     const bancos: Record<string, { status: string; texto: string }> = parseBancosFinanciamento(cf._fhResumo || resumoFinanciamento(lido?.detail));
     for (const [key, nome] of Object.entries(FH_DOC_BANKS)) {
       const r = l.creditAnalyses.find((x) => x.bank === key);
-      if (r) bancos[nome] = { status: r.status, texto: String(r.detail || '').slice(0, 240) };
+      const ROT: Record<string, string> = { APPROVED: 'Aprovado', CONDITIONAL: 'Aprovado condicional', REJECTED: 'Reprovado', REQUESTED: 'Na fila', RUNNING: 'Rodando', SENT: 'Em análise', FAILED: 'Falhou' };
+      if (r) bancos[nome] = { status: ROT[r.status] || r.status, texto: String(r.detail || '').slice(0, 240) };
     }
     return {
       id: l.id, name: l.name, status: l.status, stage: l.stage?.name || '', pipeline: l.pipeline?.name || '', stageEnteredAt: l.stageEnteredAt,
@@ -1848,9 +1849,10 @@ async function caixaBrbContext(db: Db, leadId: string, cf: Record<string, any>):
   const out: string[] = [];
   const prop = await db.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Resultados por banco' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
   const sim = prop ? simulacaoDoSite(prop.content) : {};
-  const analisados = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, bank: { in: Object.keys(FH_DOC_BANKS) }, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] } }, select: { bank: true, status: true } });
+  const analisados = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, bank: { in: Object.keys(FH_DOC_BANKS) }, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] } }, orderBy: { createdAt: 'desc' }, select: { bank: true, status: true, detail: true } });
   for (const banco of ['CAIXA', 'BRB']) {
-    if (analisados.some((a) => FH_DOC_BANKS[a.bank] === banco)) continue;
+    const feito = analisados.find((a) => FH_DOC_BANKS[a.bank] === banco);
+    if (feito) { out.push(`- ${banco}: RESULTADO DA ANÁLISE (registrado pela equipe): ${String(feito.detail || feito.status).replace(/\s*—\s*registrado à mão.*$/, '')}.`); continue; }
     out.push(`- ${banco}: NÃO ANALISADO — a ${banco} só analisa com a documentação completa; NUNCA diga que a ${banco} aprovou ou "consta nas aprovadas".${sim[banco] ? ` SIMULAÇÃO da proposta do site (não é aprovação): ${sim[banco]}. Se o cliente perguntar da ${banco} ou quiser seguir por ela (ex.: a parcela dos outros não coube), traga ESSA parcela, a taxa e o CET dizendo que é pela simulação, e que a aprovação sai depois da análise com a documentação.` : ` Se o cliente perguntar da ${banco} ou quiser seguir por ela, diga que a equipe vai simular e trazer a parcela e use "askTeam" pedindo a simulação da ${banco}.`}`);
   }
   if (cf._optouCaixa?.banco) {

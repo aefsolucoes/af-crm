@@ -79,6 +79,30 @@ router.post('/fh-request', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao pedir a análise do Financiamento'); }
 });
 
+// CAIXA/BRB do Financiamento rodam à mão (ainda sem extensão): a equipe registra o resultado aqui (Fabio 29/10 — "só após aprovar na CAIXA" mandam os próximos passos).
+router.post('/fh-manual-result', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || '');
+    const bank = ['CAIXA_FH', 'BRB_FH'].includes(req.body?.bank) ? String(req.body.bank) : '';
+    const status = ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(req.body?.status) ? String(req.body.status) : '';
+    if (!leadId || !bank || !status) return res.status(400).json({ error: 'leadId, bank (CAIXA_FH/BRB_FH) e status (APPROVED/CONDITIONAL/REJECTED) são obrigatórios' });
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true } });
+    if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
+    const num = (v: unknown) => { const n = Number(String(v ?? '').replace(/\./g, '').replace(',', '.').replace(/[^\d.]/g, '')); return Number.isFinite(n) && n > 0 ? n : null; };
+    const valor = num(req.body?.value); const prazo = num(req.body?.term); const parcela = num(req.body?.firstInstallment);
+    const taxa = String(req.body?.rate || '').trim().slice(0, 60) || null;
+    const nome = bank === 'CAIXA_FH' ? 'CAIXA' : 'BRB';
+    const brl = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const rotulo = status === 'APPROVED' ? 'Aprovado' : status === 'CONDITIONAL' ? 'Aprovado condicional' : 'Reprovado';
+    const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+    const detail = `${rotulo}${valor ? `, ${brl(valor)}` : ''}${prazo ? `, ${prazo} meses` : ''}${taxa ? `, taxa ${taxa}` : ''}${parcela ? `, 1ª parcela ${brl(parcela)}` : ''} — registrado à mão por ${quem}`;
+    const row = await prisma.creditAnalysis.create({ data: { accountId: req.user!.accountId, leadId, bank, kind: 'RUN', status, source: 'MANUAL', detail, approvedValue: status === 'REJECTED' ? null : valor, termMonths: prazo ? Math.round(prazo) : null, rate: taxa, firstInstallment: parcela, requestedById: req.user!.id, finishedAt: new Date() } });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 ${nome} (Financiamento): ${detail}.` } }).catch(() => {});
+    emit(req, { leadId });
+    res.json({ ok: true, id: row.id });
+  } catch (err) { fail(res, err, 'Erro ao registrar o resultado'); }
+});
+
 // Análises de UM card (bloco dentro do card).
 router.get('/lead/:leadId', async (req: AuthRequest, res: Response) => {
   try {

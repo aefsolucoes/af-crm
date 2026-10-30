@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { ExternalLink, FileText, Home, Play, RefreshCw } from 'lucide-react';
+import { CheckCircle2, ExternalLink, FileText, Home, Play, RefreshCw } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { pingExtensions } from '@/lib/credit-extensions';
@@ -33,6 +33,7 @@ function tom(status: string) {
 export function LeadFhAnalysis({ leadId }: { leadId: string }) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
+  const [manual, setManual] = useState<{ bank: string; status: string; value: string; term: string; rate: string; firstInstallment: string } | null>(null);
   const { data } = useQuery<{ lead: FhLead | null; extensions: Record<string, { online: boolean; extId: string | null }> }>({
     queryKey: ['fh-lead', leadId],
     queryFn: async () => (await api.get(`/api/credit-analysis/fh-lead/${leadId}`)).data,
@@ -58,6 +59,18 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
       const { data: r } = await api.post('/api/credit-analysis/simulation-docs', { leadId, institutions: [PDF[banco]] });
       toast(r.created?.length ? `Pedido feito: o PDF do ${banco} sai em instantes` : 'Já tem um pedido desse PDF em andamento', 'success');
     } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao pedir o PDF', 'error'); } finally { setBusy(null); }
+  }
+
+  // CAIXA/BRB rodam à mão (sem extensão): a equipe registra o resultado — com a CAIXA/BRB aprovada, o CRM manda os próximos passos ao cliente (Fabio 29/10).
+  async function salvarManual() {
+    if (!manual) return;
+    setBusy('manual');
+    try {
+      await api.post('/api/credit-analysis/fh-manual-result', { leadId, ...manual });
+      toast('Resultado registrado', 'success');
+      setManual(null);
+      recarregar();
+    } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao registrar', 'error'); } finally { setBusy(null); }
   }
 
   const bancos = l ? ORDEM.filter((b) => l.bancos[b]).map((b) => [b, l.bancos[b]] as const) : [];
@@ -93,9 +106,34 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
               })}
             </div>
           )}
-          <div className="mt-2 flex gap-3">
+          {manual ? (
+            <div className="mt-2 space-y-1.5 rounded-md border border-slate-200 bg-white p-2">
+              <div className="flex gap-1.5">
+                <select value={manual.bank} onChange={(e) => setManual({ ...manual, bank: e.target.value })} className="rounded border border-slate-200 px-1.5 py-1 text-xs">
+                  <option value="CAIXA_FH">CAIXA</option><option value="BRB_FH">BRB</option>
+                </select>
+                <select value={manual.status} onChange={(e) => setManual({ ...manual, status: e.target.value })} className="flex-1 rounded border border-slate-200 px-1.5 py-1 text-xs">
+                  <option value="APPROVED">Aprovado</option><option value="CONDITIONAL">Aprovado condicional</option><option value="REJECTED">Reprovado</option>
+                </select>
+              </div>
+              {manual.status !== 'REJECTED' && (
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input placeholder="Valor (R$)" value={manual.value} onChange={(e) => setManual({ ...manual, value: e.target.value })} className="rounded border border-slate-200 px-1.5 py-1 text-xs" />
+                  <input placeholder="Prazo (meses)" value={manual.term} onChange={(e) => setManual({ ...manual, term: e.target.value })} className="rounded border border-slate-200 px-1.5 py-1 text-xs" />
+                  <input placeholder="Taxa (ex.: 10,65% a.a.)" value={manual.rate} onChange={(e) => setManual({ ...manual, rate: e.target.value })} className="rounded border border-slate-200 px-1.5 py-1 text-xs" />
+                  <input placeholder="1ª parcela (R$)" value={manual.firstInstallment} onChange={(e) => setManual({ ...manual, firstInstallment: e.target.value })} className="rounded border border-slate-200 px-1.5 py-1 text-xs" />
+                </div>
+              )}
+              <div className="flex gap-3">
+                <button onClick={salvarManual} disabled={busy === 'manual'} className="text-xs font-medium text-af-mid hover:underline disabled:opacity-50">Salvar</button>
+                <button onClick={() => setManual(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
+              </div>
+            </div>
+          ) : null}
+          <div className="mt-2 flex flex-wrap gap-3">
             <button onClick={() => pedir('RUN')} disabled={!!busy || l.active} className="inline-flex items-center gap-1 text-xs font-medium text-af-mid hover:underline disabled:opacity-50"><Play size={11} /> {l.active ? 'Rodando…' : 'Rodar financiamento'}</button>
             <button onClick={() => pedir('CHECK')} disabled={!!busy} className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:underline disabled:opacity-50"><RefreshCw size={11} /> Conferir</button>
+            {!manual && <button onClick={() => setManual({ bank: 'CAIXA_FH', status: 'APPROVED', value: '', term: '', rate: '', firstInstallment: '' })} className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:underline"><CheckCircle2 size={11} /> Resultado CAIXA/BRB</button>}
           </div>
         </>
       )}
