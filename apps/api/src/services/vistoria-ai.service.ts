@@ -22,6 +22,14 @@ const note = (leadId: string, content: string) => prisma.note.create({ data: { l
 const push = (accountId: string, title: string, body: string, leadId: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
 const BANCO: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
 
+/** Financiamento Habitacional (Fabio 30/10: "INTER MESMO FLUXO, os outros bancos não precisa fazer agora"): Inter escolhido → mesmo caminho do Home Equity (seguir proposta, engajamento, vistoria, laudo);
+ *  Bradesco/Itaú/Santander (Credimorar), CAIXA e BRB → passo manual. Sem escolha: a equipe confirma o banco. Devolve 'INTER', o nome do banco manual, ou null (sem escolha). */
+function bancoDoFinanciamento(cf: Record<string, any>): string | null {
+  const escolha = String(cf._optouCaixa?.banco || cf._fhChosen?.bank || '').trim();
+  if (!escolha) return null;
+  return /^inter$/i.test(escolha) ? 'INTER' : escolha;
+}
+
 async function salva(leadId: string, patch: Record<string, unknown>) {
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = { ...((fresh?.customFields || {}) as Record<string, any>) };
@@ -34,7 +42,7 @@ export async function processVistoriaAi(accountId: string, io: Io): Promise<void
     SELECT l.id FROM "Lead" l
     JOIN "Pipeline" p ON p.id = l."pipelineId" JOIN "Stage" st ON st.id = l."stageId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
-      AND p.name = 'Em contratação Home Equity' AND st.name = 'Documentação Recebida'
+      AND p.name IN ('Em contratação Home Equity', 'Em contratação') AND st.name = 'Documentação Recebida'
       AND l."stageEnteredAt" >= ${VISTORIA_AI_FROM}
       AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaRequestedAt')
       AND COALESCE(l."customFields"->'_vistoriaAi'->>'status', '') NOT IN ('MANUAL', 'ENVIADA')
@@ -45,18 +53,50 @@ export async function processVistoriaAi(accountId: string, io: Io): Promise<void
 }
 
 async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, customFields: true } });
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._autoPaused) return;
-  const st = (cf._vistoriaAi || {}) as { status?: string; since?: string; waitNoteAt?: string; erroAt?: string };
+  const st = (cf._vistoriaAi || {}) as { status?: string; since?: string; waitNoteAt?: string; erroAt?: string; contatoNoteAt?: string };
+
+  const fh = /habitacional/i.test(lead.pipeline?.department?.name || '');
+  if (fh) {
+    const b = bancoDoFinanciamento(cf);
+    if (!b) {
+      if (st.status !== 'ESCOLHER') {
+        await salva(leadId, { status: 'ESCOLHER', since: new Date().toISOString() });
+        await note(leadId, '🏠 Financiamento com a documentação completa, mas sem banco escolhido ("Seguir com esta"). Confirme com o cliente qual banco segue: se for o Inter, a IA cuida do "seguir com proposta" e da vistoria.');
+        push(accountId, '🏠 Escolher o banco', `${lead.name}: Financiamento sem banco escolhido`, leadId);
+      }
+      return;
+    }
+    if (b !== 'INTER') {
+      await salva(leadId, { status: 'MANUAL', banco: b, at: new Date().toISOString() });
+      await note(leadId, `🏠 Financiamento: documentação completa; o cliente segue pelo ${b}. A contratação desse banco (vistoria etc.) ainda é feita à mão — o fluxo automático do Financiamento por enquanto é só do Inter.`);
+      push(accountId, '🏠 Vistoria à mão', `${lead.name}: Financiamento pelo ${b} — solicitar a vistoria`, leadId);
+      return;
+    }
+    // No Financiamento o imóvel é do VENDEDOR: quem recebe o engenheiro raramente é o comprador. Sem o campo "Contato vistoria", a equipe preenche antes (uma vez só o aviso).
+    if (!String(cf.contato_vistoria || '').trim()) {
+      if (!st.contatoNoteAt) {
+        await salva(leadId, { contatoNoteAt: new Date().toISOString(), since: st.since || new Date().toISOString() });
+        await note(leadId, '🏠 Financiamento pelo Inter: antes de solicitar a vistoria, preencha no card o campo "Contato vistoria" (nome e telefone de quem recebe o engenheiro no imóvel — normalmente o vendedor ou o corretor). Com ele preenchido, a IA segue sozinha.');
+        push(accountId, '🏠 Contato da vistoria', `${lead.name}: quem recebe o engenheiro no imóvel?`, leadId);
+      }
+      // o "seguir com proposta" não depende do contato: já pergunta ao cliente enquanto a equipe preenche
+      try { const { ensureInterSeguir } = require('./inter-seguir.service') as typeof import('./inter-seguir.service'); await ensureInterSeguir(accountId, leadId, io as any); } catch (e: any) { console.warn('[Inter seguir]', e?.message); }
+      return;
+    }
+  }
 
   // 1) banco
-  const aprov = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, select: { bank: true, chosen: true } });
+  const aprov = (await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, select: { bank: true, chosen: true } }))
+    .map((a) => ({ ...a, bank: a.bank === 'INTER_FH' ? 'INTER' : a.bank })) // Inter do Financiamento = mesmo fluxo do Inter
+    .filter((a) => !/_FH$/.test(a.bank)); // Credimorar FH/CAIXA/BRB já saíram acima (passo manual)
   if (!aprov.length) return; // sem aprovação lida não há o que seguir (a conferência já moveu por documentação completa)
   const escolhido = aprov.find((a) => a.chosen)?.bank;
   const bancos = Array.from(new Set(aprov.map((a) => a.bank)));
-  const banco = escolhido || (bancos.length === 1 ? bancos[0] : null);
+  const banco = fh ? 'INTER' : escolhido || (bancos.length === 1 ? bancos[0] : null); // Financiamento: o cliente já escolheu o Inter ("Seguir com esta")
   if (!banco) {
     if (st.status !== 'ESCOLHER') {
       await salva(leadId, { status: 'ESCOLHER', since: new Date().toISOString() });

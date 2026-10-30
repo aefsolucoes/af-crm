@@ -44,7 +44,7 @@ const push = (accountId: string, title: string, body: string, leadId: string) =>
 
 /** Número da proposta do Inter aprovada que o cliente vai seguir (a mais recente). */
 async function propostaInter(leadId: string): Promise<string | null> {
-  const r = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
+  const r = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: { in: ['INTER', 'INTER_FH'] }, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } }); // INTER_FH: Financiamento, mesmo fluxo (Fabio 30/10)
   return r?.proposalNumber || null;
 }
 

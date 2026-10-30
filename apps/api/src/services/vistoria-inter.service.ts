@@ -292,7 +292,7 @@ export type SeguirJob = { leadId: string; leadName: string; proposta: string; /*
 async function propostaDoInter(leadId: string, cf: Record<string, any>): Promise<string> {
   const direto = String(cf.num_proposta || '').replace(/\D/g, '');
   if (direto.length >= 6) return direto;
-  const r = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
+  const r = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: { in: ['INTER', 'INTER_FH'] }, dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
   return String(r?.proposalNumber || '').replace(/\D/g, '');
 }
 

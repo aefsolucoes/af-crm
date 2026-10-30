@@ -174,7 +174,7 @@ async function salvaOferta(leadId: string, patch: Record<string, unknown>) {
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
 }
 
-/** A IA oferece a emissão (uma vez por matrícula). Só Home Equity em "Aguardando Documentação", IA do card ligada, sem STOP TOTAL, 07h–21h e janela de 24 h aberta (senão tenta de novo na próxima conferência). */
+/** A IA oferece a emissão (uma vez por matrícula). Só Home Equity (ou Financiamento pelo Inter) em "Aguardando Documentação", IA do card ligada, sem STOP TOTAL, 07h–21h e janela de 24 h aberta (senão tenta de novo na próxima conferência). */
 export async function maybeOfferCertidao(accountId: string, leadId: string, io: Io): Promise<boolean> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return false;
@@ -182,7 +182,9 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   if (cf._autoPaused || !lead.aiAutoReplyActive) return false;
   if (cf._docsCheckDue) return false; // ele ainda está mandando documento: a conferência (que roda depois) é quem faz a oferta
   if (!/aguardando document/i.test((lead.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return false;
-  if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return false;
+  // Home Equity; no Financiamento só quem segue pelo Inter (Fabio 30/10: "INTER MESMO FLUXO") — os outros bancos do FH ainda são à mão.
+  const dept = lead.pipeline?.department?.name || '';
+  if (!/home equity/i.test(dept) && !(/habitacional/i.test(dept) && /^inter$/i.test(String(cf._fhChosen?.bank || '')) && !cf._optouCaixa)) return false;
   if (temCertidaoEmMaos(cf)) return false;
   const d = certidaoFromDocs(cf);
   if (!d) return false;
