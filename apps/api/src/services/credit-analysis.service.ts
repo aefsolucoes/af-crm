@@ -579,14 +579,15 @@ async function reabrirSeAprovouDepoisDaNegativa(db: Db, row: { leadId: string; b
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { id: true, name: true, status: true, lostReason: true, customFields: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } } });
   if (!lead || lead.status !== 'LOST') return;
   if (!/reprov|desqualific|n[aã]o aprov/i.test(lead.lostReason || '')) return;
-  if (!/home equity/i.test(lead.pipeline?.department?.name || '')) return;
+  // Home Equity e, desde 29/10, Financiamento Habitacional (Fabio: "todo o processo do HE deve migrar pro FH").
+  if (!/home equity|habitacional/i.test(lead.pipeline?.department?.name || '')) return;
   const sales = await db.pipeline.findFirst({ where: { departmentId: lead.pipeline!.departmentId, name: { contains: 'Vendas', mode: 'insensitive' } }, select: { id: true, name: true, stages: { orderBy: { order: 'asc' }, select: { id: true, name: true } } } });
   const pre = sales?.stages.find((st) => /^pr[ée]-an/i.test(st.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '')) || /^pre-an/i.test(st.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '')));
   if (!sales || !pre) { await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `✅ ${BANKS[row.bank]?.label || row.bank} APROVOU depois da negativa, mas não achei a Pré-Análise do funil de vendas pra reabrir o card: reabra e avise o cliente.` } }).catch(() => {}); return; }
   const cf = { ...((lead.customFields || {}) as Record<string, any>) };
-  for (const k of ['_noticeAt', '_noticeKind', '_rejHeldAt', '_rejDecision', '_rejDecisionBy', '_rejQuestionAt', '_autoCloseAfterNotice', '_autoCloseTriedAt', '_autoNoticeSig', '_autoNoticeAt', '_autoHeldSig']) delete cf[k];
+  for (const k of ['_noticeAt', '_noticeKind', '_rejHeldAt', '_rejDecision', '_rejDecisionBy', '_rejQuestionAt', '_autoCloseAfterNotice', '_autoCloseTriedAt', '_autoNoticeSig', '_autoNoticeAt', '_autoHeldSig', '_fhRejTriedAt']) delete cf[k];
   cf._reopenedOnApproval = new Date().toISOString();
-  if (!cf._autoStartedAt) cf._autoStartedAt = new Date().toISOString();
+  if (!cf._autoStartedAt && !/habitacional/i.test(lead.pipeline?.department?.name || '')) cf._autoStartedAt = new Date().toISOString(); // FH tem o aviso próprio (fh-approval)
   await db.lead.update({ where: { id: lead.id }, data: { status: 'OPEN', archived: false, lostReason: null, rejectedAt: null, pipelineId: sales.id, stageId: pre.id, stageEnteredAt: new Date(), customFields: cf as any } });
   await db.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Movido do funil "Perdidos" para "${sales.name}" (${pre.name}) — ${BANKS[row.bank]?.label || row.bank} aprovou depois da negativa` } }).catch(() => {});
   await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🔓 Card REABERTO sozinho: ${BANKS[row.bank]?.label || row.bank} APROVOU depois de o cliente ter recebido a negativa. Voltou pra "${pre.name}"; o aviso da aprovação (com a proposta) sai pelo fluxo normal e leva o card pra Aguardando Documentação — com a IA do card ligada; senão use o botão "Avisar cliente".` } }).catch(() => {});
@@ -831,7 +832,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun) await finishProposalChange(db, updated.leadId).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
   if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
-  if (becameFinal && !updated.dryRun && !FH_RUN_BANKS.includes(row.bank) && (next === 'APPROVED' || next === 'CONDITIONAL')) await reabrirSeAprovouDepoisDaNegativa(db, updated as any).catch((e: any) => console.error('[Reabrir ao aprovar]', e?.message || e));
+  if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL')) await reabrirSeAprovouDepoisDaNegativa(db, updated as any).catch((e: any) => console.error('[Reabrir ao aprovar]', e?.message || e));
   await santanderManualFlow(db, updated as any).catch((e: any) => console.error('[Santander manual]', e?.message || e));
   return { row: updated, becameFinal };
 }
