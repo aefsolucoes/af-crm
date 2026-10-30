@@ -124,6 +124,9 @@ async function descartarPorIdade(accountId: string, l: { id: string; name: strin
   return true;
 }
 
+/** Bancos do Home Equity que o automático roda neste card: tira os que ficaram de fora (`_bancosFora`: recusados pelo cliente ou não combinados com ele — Fabio 30/10). */
+export const bancosAuto = (cf: Cf): string[] => { const fora: string[] = Array.isArray(cf._bancosFora) ? cf._bancosFora : []; return BANKS.filter((b) => !fora.includes(b)); };
+
 /** 1) Cards novos na Pré-Análise: a IA confere os dados e, estando certos, pede as análises nos 3 bancos. */
 async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
   const leads = await prisma.lead.findMany({
@@ -158,9 +161,16 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
       }
       continue;
     }
-    const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: BANKS, dryRun: false, force: false });
+    // Bancos combinados com o cliente ANTES da proposta (Fabio 30/10, Marco Antonio: "rodar apenas nos bancos que o próprio CRM informou"): roda só esses; CAIXA → pede a documentação.
+    const bc = require('./bancos-combinados.service') as typeof import('./bancos-combinados.service');
+    const combinado = await bc.detectarBancosCombinados(l.id, PROPOSAL_MARKERS).catch((e: any) => { console.error('[Bancos combinados]', e?.message); return 'ERRO' as const; });
+    if (combinado === 'ERRO') continue; // a leitura falhou: tenta de novo no próximo minuto
+    const bancos = combinado ? BANKS.filter((b) => !combinado.fora.includes(b)) : BANKS;
+    const out = bancos.length ? await createRequests(prisma, { accountId, leadIds: [l.id], banks: bancos, dryRun: false, force: false }) : { created: 0 };
     await saveCf(l.id, { _autoStartedAt: new Date().toISOString(), _autoChecks: checks });
-    await addNote(l.id, `🤖 Análise automática iniciada nos 3 bancos (a IA conferiu que os dados da proposta estão certos: ${verdict.reason || 'ok'}). ${out.created} pedido(s) na fila pras extensões.`);
+    const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+    await addNote(l.id, `🤖 Análise automática iniciada ${combinado ? (bancos.length ? `só no ${bancos.map((b) => label[b]).join(', ')} (bancos combinados com o cliente)` : 'sem banco automático (nenhum combinado com o cliente)') : 'nos 3 bancos'} (a IA conferiu que os dados da proposta estão certos: ${verdict.reason || 'ok'}). ${out.created} pedido(s) na fila pras extensões.`);
+    if (combinado) await bc.aplicarCombinado(accountId, l.id, l.name, combinado, io).catch((e: any) => console.error('[Bancos combinados]', e?.message));
   }
 }
 
@@ -303,7 +313,7 @@ async function noticeClients(accountId: string, io: any) {
     // aprovou o valor TOTAL com os números completos e todos os bancos acima dele na ordem já responderam, não espera os de baixo — se algum deles aprovar depois, sai o aviso de "mais um banco".
     // Os 3 bancos já responderam (aprovou/reprovou/regra barrou) e há aprovação: não tem mais nada a esperar — avisa NA HORA, sem os 10 min de silêncio (Eva, 14/10: Santander aprovou
     // a menor, Creditas e Inter desqualificaram e o aviso ficou parado esperando).
-    const todosDecididos = BANKS.every((b) => bankVerdict(rows as any, b) !== 'PENDING');
+    const todosDecididos = bancosAuto(cf).every((b) => bankVerdict(rows as any, b) !== 'PENDING');
     if (!avisoCedo(rows as any) && !todosDecididos) {
       if (rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // ainda tem análise rodando
       // O silêncio conta só o que JÁ ASSENTOU: conferência ainda rodando (Creditas leva horas) atualiza a linha a cada 10 min e o aviso da aprovação que já saiu nunca chegava (Azevedo, 14/10).
@@ -428,10 +438,13 @@ async function closeRejected(accountId: string, io: any) {
     if (cf._noticeAt) continue; // aviso já agendado (o poller dos agendados fecha depois de enviar)
     if (cf._autoCloseTriedAt && Date.now() - new Date(cf._autoCloseTriedAt).getTime() < 6 * 3_600_000) continue;
     const rows = l.creditAnalyses;
-    if (BANKS.some((b) => bankVerdict(rows, b) !== 'NEG')) continue;
+    const emJogo = bancosAuto(cf);
+    if (!emJogo.length || emJogo.some((b) => bankVerdict(rows, b) !== 'NEG')) continue;
     const last = Math.max(...rows.map((r) => r.updatedAt.getTime()));
     if (Date.now() - last < 2 * 60_000) continue; // resultado final dos 3 bancos: só uma folga curta pra conferências em andamento
     if (cascadePlan(cf, l.name, rows as any).length) continue; // ainda falta rodar no 2º participante
+    // Bancos combinados com CAIXA/banco manual ainda pela frente: não fecha sozinho, a equipe decide (Fabio 30/10).
+    if (await (require('./bancos-combinados.service') as typeof import('./bancos-combinados.service')).segurarNegativa(accountId, l.id, l.name, cf).catch(() => true)) continue;
     // A negativa automática só sai com a IA DAQUELE card ligada (Fabio 19/10, mesma regra do aviso de aprovação): com a IA desligada (a equipe assumiu a conversa)
     // o card espera e aparece o botão "Avisar negativa" (aba Análise de Crédito e card) — a equipe manda quando quiser.
     if (!l.aiAutoReplyActive) {
@@ -444,7 +457,7 @@ async function closeRejected(accountId: string, io: any) {
     // Desqualificado x Reprovado: se NENHUM banco chegou a reprovar (todas as respostas são regra do banco/imóvel — mínimo, terreno, saldo devedor), o lead não atende
     // aos critérios → "desqualificado". Basta um banco ter reprovado de verdade → "reprovado".
     const ultima = (b: string) => rows.filter((r) => r.bank === b && semRuidoDeSimulacao(r) && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
-    const desqualificado = BANKS.every((b) => ultima(b)?.status === 'FAILED');
+    const desqualificado = emJogo.every((b) => ultima(b)?.status === 'FAILED');
     // Motivo possivelmente TEMPORÁRIO (saldo devedor, imóvel abaixo do mínimo): ANTES de avisar o cliente e mover o card, pergunta à equipe no balão "Dúvidas da IA" — Venda Futura (a IA
     // pergunta a melhor data) ou Perdidos — e aprende com a resposta (Fabio 16/10). Regra já ensinada na Base de Conhecimento decide sozinha.
     const built0 = await buildRejectionText(l.id).catch(() => null);
@@ -494,9 +507,10 @@ export async function sendRejectionAndClose(p: { accountId: string; leadId: stri
   });
   if (!l) return { ok: false, error: 'Card não encontrado ou já fechado.' };
   const rows = l.creditAnalyses;
-  if (!rows.length || BANKS.some((b) => bankVerdict(rows, b) !== 'NEG')) return { ok: false, error: 'Ainda há banco sem resposta final (ou com aprovação): não dá pra avisar a negativa.' };
+  const emJogo = bancosAuto((l.customFields || {}) as Cf);
+  if (!rows.length || !emJogo.length || emJogo.some((b) => bankVerdict(rows, b) !== 'NEG')) return { ok: false, error: 'Ainda há banco sem resposta final (ou com aprovação): não dá pra avisar a negativa.' };
   const ultima = (b: string) => rows.filter((r) => r.bank === b && semRuidoDeSimulacao(r) && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
-  const desqualificado = BANKS.every((b) => ultima(b)?.status === 'FAILED');
+  const desqualificado = emJogo.every((b) => ultima(b)?.status === 'FAILED');
   const out = await sendRejectionNoticeNow({ accountId: p.accountId, leadId: l.id, userId: p.userId, io: p.io });
   if (out.scheduled) { await saveCf(l.id, { _autoCloseAfterNotice: desqualificado ? 'DESQ' : true }); return { ok: true, scheduled: true }; }
   if (!out.ok && !out.already) return { ok: false, error: out.error };
@@ -832,6 +846,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       { const { syncSaleValueAtVistoria } = require('./sale-value.service') as typeof import('./sale-value.service'); await syncSaleValueAtVistoria(s.accountId).catch((e: any) => console.error('[Valor da venda]', e?.message)); }
       { const { processEmailRelay } = require('./email-relay.service') as typeof import('./email-relay.service'); await processEmailRelay(s.accountId, io).catch((e: any) => console.error('[E-mail→cliente]', e?.message)); }
       { const { processVistoriaAi } = require('./vistoria-ai.service') as typeof import('./vistoria-ai.service'); await processVistoriaAi(s.accountId, io).catch((e: any) => console.error('[Vistoria IA]', e?.message)); }
+      { const { processCaixaCombinada } = require('./bancos-combinados.service') as typeof import('./bancos-combinados.service'); await processCaixaCombinada(s.accountId, io).catch((e: any) => console.error('[Bancos combinados]', e?.message)); } // documentação da CAIXA combinada antes da proposta (Fabio 30/10)
       { const { processCaixaAsk } = require('./caixa-screening.service') as typeof import('./caixa-screening.service'); await processCaixaAsk(s.accountId, io).catch((e: any) => console.error('[CAIXA]', e?.message)); }
       { const { processQuitacaoAverbar } = require('./quitacao-averbar.service') as typeof import('./quitacao-averbar.service'); await processQuitacaoAverbar(s.accountId, io).catch((e: any) => console.error('[Quitação]', e?.message)); }
       { const { processTransferenciaAsk } = require('./transferencia-ask.service') as typeof import('./transferencia-ask.service'); await processTransferenciaAsk(s.accountId, io).catch((e: any) => console.error('[Transferência]', e?.message)); }

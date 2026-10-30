@@ -397,7 +397,10 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
     // Rodada manual da equipe (botão de um participante, ajuste) e automáticas (cascata, retentativa, cobrança) respeitam o titular que já está escolhido; antes a regra trocava o titular
     // por cima do clique ("pedi o 1º participante e puxou pro nome do 2º").
     if (wantedKind === 'RUN' && !p.dryRun && p.force && p.alignApproval) await alignHoldersWithApproval(db, p.accountId, l.id).catch(() => {});
+    const foraDoCliente: string[] = Array.isArray(cfPedido._bancosFora) ? cfPedido._bancosFora : [];
     for (const bank of banks) {
+      // Banco que ficou de fora (o cliente recusou / não foi combinado com ele — Fabio 30/10): nenhuma rodada AUTOMÁTICA nele. Clique de uma pessoa (userId) roda normalmente.
+      if (wantedKind === 'RUN' && !p.userId && foraDoCliente.includes(bank)) { skipped++; continue; }
       const open = await db.creditAnalysis.findFirst({
         where: { leadId: l.id, bank, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } },
         select: { id: true, kind: true, status: true },

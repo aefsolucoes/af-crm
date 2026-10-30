@@ -47,6 +47,7 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
   if (!lead || !lead.aiAutoReplyActive) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._autoPaused || cf._caixaAsk) return;
+  if (cf._bancosCombinados?.caixa) { await marca(leadId, { skip: 'CAIXA combinada com o cliente antes da proposta (documentação já pedida)', at: new Date().toISOString() }); return; }
   if (!/home equity/i.test(lead.pipeline?.department?.name || '')) { await marca(leadId, { skip: 'não é Home Equity', at: new Date().toISOString() }); return; }
   const prop = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Bancos solicitados' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
   if (!prop || !listaCaixa(prop.content)) { await marca(leadId, { skip: 'a proposta não lista a CAIXA', at: new Date().toISOString() }); return; }

@@ -575,6 +575,7 @@ export async function generateAiAutoReply(
     const analiseCredito = await aiCreditContext(prisma, leadId).catch(() => '');
     const reentrada = await (require('./reentry.service') as typeof import('./reentry.service')).aiReentryContext(leadId).catch(() => '');
     const cessao = await (require('./reentry.service') as typeof import('./reentry.service')).aiCessaoContext(leadId).catch(() => '');
+    const combinados = await (require('./bancos-combinados.service') as typeof import('./bancos-combinados.service')).aiBancosCombinadosContext(leadId).catch(() => '');
     const escolhaPendente = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aiEscolhaPendenteContext(leadId).catch(() => '');
     const documentos = await aiDocsContext(leadId).catch(() => '');
     const scrCreditas = await (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => '');
@@ -634,7 +635,9 @@ ${buildContextBlocks(ctx)}${reentrada ? `
 
 ${reentrada}` : ''}${cessao ? `
 
-${cessao}` : ''}${escolhaPendente ? `
+${cessao}` : ''}${combinados ? `
+
+${combinados}` : ''}${escolhaPendente ? `
 
 ${escolhaPendente}` : ''}${analiseCredito ? `
 
