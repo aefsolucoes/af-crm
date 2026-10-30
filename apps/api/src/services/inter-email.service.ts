@@ -8,7 +8,7 @@ import { prisma } from '../lib/prisma';
  * NOME do cliente bate com um card. Sem card certo (ou mais de um): não liga nada.
  */
 
-export type InterEmailKind = 'ENGAJAMENTO' | 'VISTORIA' | 'PENDENCIA' | 'OUTRO';
+export type InterEmailKind = 'ENGAJAMENTO' | 'VISTORIA' | 'VISTORIA_CONCLUIDA' | 'PENDENCIA' | 'OUTRO';
 
 const norm = (s: string) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 const stripZeros = (n: string) => String(n || '').replace(/\D/g, '').replace(/^0+/, '');
@@ -51,10 +51,16 @@ export function engajamentoDizApartamento(text: string | null | undefined): bool
   return /\bapartamento\b|vistoria\s+digital|laudo\s+(?:[eé]\s+feito\s+de\s+forma\s+)?100%\s+digital/i.test(String(text || ''));
 }
 
+/** Vistoria terminou e o imóvel foi aceito: "CRÉDITO E IMÓVEL APROVADOS!" (André, 30/10, Pedro Francisco), "laudo concluído", "vistoria concluída". "Imóvel não foi aprovado" não casa. Pura (testável). */
+export function vistoriaConcluida(text: string | null | undefined): boolean {
+  return /im[oó]ve(l|is)\s+(foi\s+|foram\s+)?aprovad|laudo\s+(foi\s+)?(conclu[ií]do|aprovado|finalizado)|vistoria\s+(foi\s+)?(conclu[ií]da|aprovada|finalizada)|avalia[cç][aã]o\s+do\s+im[oó]vel\s+(foi\s+)?(conclu[ií]da|aprovada)/i.test(String(text || ''));
+}
+
 /** Tipo do e-mail, pelo assunto e pelo começo do texto NOVO (sem a conversa citada). Pura (testável). */
 export function classifyInterEmail(subject: string | null | undefined, freshText: string): InterEmailKind {
   const s = cleanSubject(subject);
   if (/resposta autom[aá]tica|out of office|fora do escrit[oó]rio/i.test(s)) return 'OUTRO';
+  if (vistoriaConcluida(freshText)) return 'VISTORIA_CONCLUIDA';
   if (/vistoria|laudo|engenheir|avalia[cç][aã]o do im[oó]vel/i.test(freshText)) return 'VISTORIA';
   if (/engajamento/i.test(s)) return 'ENGAJAMENTO';
   if (/pend[eê]ncia|falta(m)?|document|matr[ií]cula atualizada|regulariz/i.test(freshText)) return 'PENDENCIA';
@@ -68,7 +74,7 @@ export function freshPart(text: string | null | undefined): string {
   return (cut > 0 ? t.slice(0, cut) : t).replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim();
 }
 
-const KIND_LABEL: Record<InterEmailKind, string> = { ENGAJAMENTO: 'Engajamento (consultor designado)', VISTORIA: 'Vistoria', PENDENCIA: 'Pendência', OUTRO: 'Mensagem' };
+const KIND_LABEL: Record<InterEmailKind, string> = { ENGAJAMENTO: 'Engajamento (consultor designado)', VISTORIA: 'Vistoria', VISTORIA_CONCLUIDA: 'Vistoria concluída (crédito e imóvel aprovados)', PENDENCIA: 'Pendência', OUTRO: 'Mensagem' };
 
 export type LeadCandidate = { id: string; name: string | null; p1: string | null; p2: string | null; cpf1: string | null; cpf2: string | null; proposta: string | null; inter: boolean; interRecent: boolean };
 export type InterSignals = { proposta: string | null; cpfs: string[]; nomes: string[] };
@@ -170,6 +176,10 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   const sig = extractInterSignals(subject, text); // o assunto às vezes vem só "Home Equity - PEDRO"; nº da proposta/nome completo/CPF podem estar no texto citado
   if (!sig.proposta && !sig.cpfs.length && !sig.nomes.length) return false;
   const achou = pickLead(await loadCandidates(acc.accountId), sig);
+  if (!achou.id) { // resposta no mesmo fio de um e-mail que já é do card ("Re: Home Equity - PEDRO" com vários Pedros): vale o card do fio
+    const doFio = (await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { leadId: true } }).catch(() => null))?.leadId;
+    if (doFio) { achou.id = doFio; achou.ambiguous = []; }
+  }
   if (!achou.id) {
     if (achou.ambiguous.length > 1 && kind !== 'OUTRO') { // o Inter escreveu, mas há mais de um card possível: avisa a equipe pra ligar à mão (nunca adivinha)
       try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(acc.accountId, { title: `📬 Inter — ${KIND_LABEL[kind]}: qual cliente?`, body: `"${sig.nomes[0] || subject}" pode ser: ${achou.ambiguous.join(' / ')}` }).catch(() => {}); } catch { /* aviso */ }
@@ -206,6 +216,25 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔗 Link do laudo digital recebido do Inter e guardado no card (campo "Link do laudo Inter"): ${link}${apto ? '\n🏢 O e-mail diz que o imóvel é apartamento: "Tipo do imóvel" do card = Apartamento.' : ''}` } }).catch(() => {});
     }
   }
+  if (kind === 'VISTORIA_CONCLUIDA') await marcarVistoriaConcluida(acc.accountId, leadId, fresh, io).catch((e) => console.warn('[Inter e-mail] vistoria concluída:', e?.message));
   io?.to(`account_${acc.accountId}`).emit('lead_updated', { leadId });
   return true;
+}
+
+/** Vistoria concluída pelo Inter (Fabio 30/10, Pedro Francisco: "a vistoria já foi concluída pelo Inter"): o card que está no funil "Em contratação" antes da
+ *  Análise Jurídica (Documentação Recebida … Vistoria do Imóvel) vai pra "Análise Jurídica", com nota + push. Card já na Análise Jurídica ou adiante fica onde está. */
+export async function marcarVistoriaConcluida(accountId: string, leadId: string, fresh: string, io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } }): Promise<string | null> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, stageId: true, pipelineId: true, stage: { select: { name: true, order: true } }, pipeline: { select: { name: true } } } });
+  if (!lead || !/contrata/i.test(lead.pipeline?.name || '')) return null;
+  const jur = await prisma.stage.findFirst({ where: { pipelineId: lead.pipelineId, name: { contains: 'Jur', mode: 'insensitive' } }, select: { id: true, name: true, order: true } });
+  if (!jur || (lead.stage?.order ?? 0) >= jur.order) return null;
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(coalesce("customFields", '{}'::jsonb), '{_vistoriaConcluidaAt}', to_jsonb(${new Date().toISOString()}::text)) WHERE id = ${leadId}`;
+  const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+  await updateLeadStage(leadId, accountId, jur.id);
+  await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '—'}" → "${jur.name}" — vistoria concluída pelo Inter (crédito e imóvel aprovados)` } }).catch(() => {});
+  const pede = /question[aá]rio|vencimento|assinatura|zeev/i.test(fresh) ? '\nO Inter pede as informações da contratação (questionário: vencimento, assinatura, registro, despesas de registro, dados dos proponentes, responsável na Zeev) — ver o e-mail na conversa.' : '';
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Vistoria CONCLUÍDA pelo Inter: crédito e imóvel aprovados. Card levado para "${jur.name}".${pede}` } }).catch(() => {});
+  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '✅ Vistoria concluída pelo Inter', body: `${lead.name}: card foi pra ${jur.name}`, leadId }).catch(() => {}); } catch { /* aviso */ }
+  io?.to(`account_${accountId}`).emit('new_conversation', { leadId });
+  return jur.name;
 }
