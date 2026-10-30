@@ -173,8 +173,10 @@ async function acharCartorioPelaWeb(db: Db, id: string): Promise<void> {
       // Fabio 30/10: área irregular pode não ter matrícula — não pede (cada pedido é cobrança) e a equipe confirma com o cliente.
       await db.certidaoRequest.update({ where: { id }, data: { status: 'FAILED', finishedAt: new Date(), detail: `Não pedi: o endereço parece estar em ÁREA IRREGULAR — ${achado.motivo}`.slice(0, 400) } });
       const cartorioAchado = achado.numero ? `${String(achado.numero).padStart(2, '0')}º - ${r.cidade.toUpperCase()}` : 'AUTO';
-      const perguntou = await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).askImovelRegular(r.accountId, r.leadId, { uf: r.uf, cidade: r.cidade, cartorio: cartorioAchado, endereco: e, sendPix: r.sendPix, userId: r.requestedById || undefined, motivo: achado.motivo }).catch(() => false);
-      await note(db, r.leadId, `⚠️ Certidão pelo endereço NÃO foi pedida: a pesquisa indica que o imóvel fica em ÁREA IRREGULAR e pode não ter matrícula (${achado.motivo}${achado.fonte ? ` — ${achado.fonte}` : ''}). ${perguntou ? 'Perguntei ao cliente se o imóvel tem matrícula registrada: se ele confirmar, o CRM pede a certidão sozinho.' : 'NÃO consegui perguntar ao cliente (janela do WhatsApp fechada ou fora do horário): pergunte se o imóvel tem matrícula registrada.'}`, r.requestedById);
+      const como = await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).askImovelRegular(r.accountId, r.leadId, { uf: r.uf, cidade: r.cidade, cartorio: cartorioAchado, endereco: e, sendPix: r.sendPix, userId: r.requestedById || undefined, motivo: achado.motivo }).catch(() => 'FAILED' as const);
+      const perguntou = como !== 'FAILED';
+      const comoTxt = como === 'ASKED' ? 'Perguntei ao cliente' : como === 'TEMPLATE' ? 'Conversa fechada: mandei o template e a pergunta sai quando o cliente responder —' : 'Fora do horário: pergunto ao cliente no primeiro horário —';
+      await note(db, r.leadId, `⚠️ Certidão pelo endereço NÃO foi pedida: a pesquisa indica que o imóvel fica em ÁREA IRREGULAR e pode não ter matrícula (${achado.motivo}${achado.fonte ? ` — ${achado.fonte}` : ''}). ${perguntou ? `${comoTxt} se o imóvel tem matrícula registrada: se ele confirmar, o CRM pede a certidão sozinho.` : 'NÃO consegui perguntar ao cliente (o template falhou): pergunte se o imóvel tem matrícula registrada.'}`, r.requestedById);
       pushAll(r.accountId, '⚠️ Imóvel em área irregular?', `${await leadNameOf(db, r.leadId)}: certidão não pedida — ${perguntou ? 'perguntei ao cliente se tem matrícula' : 'pergunte ao cliente se tem matrícula'}`, r.leadId);
     } else if (achado?.numero) {
       const cartorio = `${String(achado.numero).padStart(2, '0')}º - ${r.cidade.toUpperCase()}`;
@@ -294,6 +296,7 @@ async function lembrarPixHoje(db: Db, accountId: string, io?: Io) {
 /** Poller do servidor (5 em 5 min): lembrete das 18h e PIX vencido (refaz 1x) — não depende do Chrome com a extensão estar aberto. */
 export async function processCertidaoPix(db: Db, io?: Io) {
   const contas = await db.certidaoRequest.findMany({ where: { status: 'AWAITING_PAYMENT', paidAt: null, pixCode: { not: null } }, distinct: ['accountId'], select: { accountId: true } });
+  await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).processIrregularPendentes().catch((e: any) => console.warn('[Certidão] área irregular pendente:', e?.message));
   for (const { accountId } of contas) {
     await lembrarPixHoje(db, accountId, io).catch((e) => console.warn('[Certidão] lembrete PIX:', e?.message));
     await avisarPixVencidos(db, accountId).catch((e) => console.warn('[Certidão] PIX vencido:', e?.message));

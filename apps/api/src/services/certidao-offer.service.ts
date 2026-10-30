@@ -403,6 +403,7 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   if (!lead || lead.accountId !== accountId) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const ir = cf._certidaoIrregular as IrregularAsk | undefined;
+  if (ir?.waitingReply && !ir.askedAt) { const { waitingReply: _w, ...resto } = ir; await salvaIrregular(leadId, { ...resto, askedAt: new Date().toISOString() }); return; }
   if (ir?.askedAt && !ir.answeredAt && Date.now() - new Date(ir.askedAt).getTime() < 7 * 86_400_000) { await respondeImovelRegular(accountId, leadId, clean, ir, io); return; }
   const pe = cf._certidaoEndereco as EnderecoAsk | undefined;
   if (pe?.askedAt && !pe.answeredAt && Date.now() - new Date(pe.askedAt).getTime() < 7 * 86_400_000) { await respondeEndereco(accountId, leadId, clean, pe, io); return; }
@@ -539,26 +540,56 @@ async function respondeEndereco(accountId: string, leadId: string, texto: string
 }
 
 // ── Área irregular (Fabio 30/10: "envia o push e pergunta ao cliente"): a pesquisa do cartório indicou que o endereço pode não ter matrícula. Pergunta antes de pedir (cada pedido é cobrança). ──
-type IrregularAsk = { uf: string; cidade: string; cartorio: string; endereco: EnderecoCertidao; sendPix?: boolean; userId?: string; motivo?: string; askedAt?: string; answeredAt?: string; resposta?: 'SIM' | 'NAO' };
+// Fora do horário de aviso: guarda e pergunta no primeiro horário (processIrregularPendentes). Conversa fechada: template "Olá, tudo bem?" e a pergunta sai quando o cliente responder.
+type IrregularAsk = { uf: string; cidade: string; cartorio: string; endereco: EnderecoCertidao; sendPix?: boolean; userId?: string; motivo?: string; pendingAsk?: boolean; waitingReply?: boolean; askedAt?: string; answeredAt?: string; resposta?: 'SIM' | 'NAO' };
+const GREETING_TEMPLATE = 'ola_tudo_bem';
 
-export async function askImovelRegular(accountId: string, leadId: string, p: Omit<IrregularAsk, 'askedAt' | 'answeredAt' | 'resposta'>): Promise<boolean> {
+async function salvaIrregular(leadId: string, v: IrregularAsk) {
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
+  c._certidaoIrregular = v;
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+}
+
+/** Pergunta ao cliente se o imóvel tem matrícula. Devolve o que fez: ASKED (mensagem saiu), TEMPLATE (conversa fechada: template enviado, pergunta sai na resposta), SCHEDULED (fora do horário: pergunta no primeiro horário) ou FAILED. */
+export async function askImovelRegular(accountId: string, leadId: string, p: Omit<IrregularAsk, 'askedAt' | 'answeredAt' | 'resposta' | 'pendingAsk' | 'waitingReply'>): Promise<'ASKED' | 'TEMPLATE' | 'SCHEDULED' | 'FAILED'> {
   const lead = await carrega(leadId);
-  if (!lead || lead.accountId !== accountId) return false;
+  if (!lead || lead.accountId !== accountId) return 'FAILED';
   const cf = (lead.customFields || {}) as Record<string, any>;
-  if (cf._autoPaused) return false;
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-  if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return false;
+  if (!inNoticeWindow()) { await salvaIrregular(leadId, { ...p, pendingAsk: true }); return 'SCHEDULED'; }
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
   const texto = `${nome ? `${nome}, p` : 'P'}ra emitir a certidão do imóvel, uma dúvida: ele tem matrícula registrada no Cartório de Registro de Imóveis (escritura registrada)? Pergunto porque, pelo endereço, a região pode ainda não ser regularizada.`;
-  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-  const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: undefined });
-  if (!r.success) return false;
-  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-  const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
-  c._certidaoIrregular = { ...p, askedAt: new Date().toISOString() } as IrregularAsk;
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
-  return true;
+  const msg = require('./message.service') as typeof import('./message.service');
+  if (!(await whatsappWindowOpen(leadId))) {
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: GREETING_TEMPLATE, language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem?', io: undefined } as any);
+    if (!t.success) return 'FAILED';
+    const { queueOnReply } = require('./reply-pending.service') as typeof import('./reply-pending.service');
+    await queueOnReply(prisma as any, { leadId, label: 'certidão: imóvel tem matrícula?', text: texto, noteText: '📨 Conversa fechada: mandei o template "Olá, tudo bem?". A pergunta se o imóvel tem matrícula sai quando o cliente responder.' });
+    await salvaIrregular(leadId, { ...p, waitingReply: true });
+    return 'TEMPLATE';
+  }
+  const r = await msg.sendOutboundWhatsApp({ accountId, leadId, content: texto, io: undefined });
+  if (!r.success) return 'FAILED';
+  await salvaIrregular(leadId, { ...p, askedAt: new Date().toISOString() });
+  return 'ASKED';
+}
+
+/** Poller (5 em 5 min): perguntas de área irregular guardadas de noite saem no primeiro horário. */
+export async function processIrregularPendentes(): Promise<void> {
+  const { inNoticeWindow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow()) return;
+  const ids = await prisma.$queryRawUnsafe<{ id: string }[]>(`SELECT id FROM "Lead" WHERE "customFields"->'_certidaoIrregular'->>'pendingAsk' = 'true' LIMIT 20`);
+  for (const { id } of ids) {
+    const l = await prisma.lead.findUnique({ where: { id }, select: { accountId: true, customFields: true } });
+    const ir = ((l?.customFields || {}) as any)._certidaoIrregular as IrregularAsk | undefined;
+    if (!l || !ir?.pendingAsk) continue;
+    const { pendingAsk: _p, ...resto } = ir;
+    const out = await askImovelRegular(l.accountId, id, resto);
+    await note(id, out === 'ASKED' ? '🏛️ Primeiro horário: perguntei ao cliente se o imóvel tem matrícula registrada (área possivelmente irregular).' : out === 'TEMPLATE' ? '🏛️ Primeiro horário: conversa fechada, mandei o template; a pergunta da matrícula sai quando o cliente responder.' : '⚠️ Não consegui perguntar ao cliente se o imóvel tem matrícula (o template falhou). Pergunte à mão.');
+    if (out === 'FAILED') await salvaIrregular(id, resto);
+  }
 }
 
 async function respondeImovelRegular(accountId: string, leadId: string, texto: string, ir: IrregularAsk, io: Io): Promise<void> {
@@ -569,7 +600,7 @@ async function respondeImovelRegular(accountId: string, leadId: string, texto: s
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-sonnet-5', max_tokens: 600,
-      system: 'A atendente perguntou ao cliente se o imóvel dele tem matrícula registrada no Cartório de Registro de Imóveis (escritura registrada), porque a região pode não ser regularizada. Classifique a RESPOSTA. Só JSON: {"r":"SIM"|"NAO"|"INDEFINIDO"}. SIM = confirma que tem matrícula/escritura registrada. NAO = não tem, só contrato de compra e venda/gaveta, cessão de direitos, posse, área não regularizada, ou não sabe se é registrado. INDEFINIDO = outro assunto, pergunta ou resposta que não decide. Na dúvida, INDEFINIDO (SIM faz cobrar um PIX do cliente).',
+      system: 'A atendente perguntou ao cliente se o imóvel dele tem matrícula registrada no Cartório de Registro de Imóveis (escritura registrada), porque a região pode não ser regularizada. Classifique a RESPOSTA. Só JSON: {"r":"SIM"|"NAO"|"INDEFINIDO"}. SIM = confirma que tem matrícula/escritura registrada. NAO = não tem, só contrato de compra e venda/gaveta, cessão de direitos, posse, área não regularizada, ou não sabe se é registrado. INDEFINIDO = cumprimento ("oi, tudo bem"), outro assunto, pergunta ou resposta que não decide. Na dúvida, INDEFINIDO (SIM faz cobrar um PIX do cliente).',
       messages: [{ role: 'user', content: `RESPOSTA DO CLIENTE: ${texto.slice(0, 400)}` }],
     }),
   }).catch(() => null);
@@ -578,18 +609,24 @@ async function respondeImovelRegular(accountId: string, leadId: string, texto: s
   let r = 'INDEFINIDO';
   try { r = String(JSON.parse(String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}').r || 'INDEFINIDO').toUpperCase(); } catch { /* indefinido */ }
   if (r !== 'SIM' && r !== 'NAO') return;
-  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, name: true } });
-  const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
-  c._certidaoIrregular = { ...(c._certidaoIrregular || {}), answeredAt: new Date().toISOString(), resposta: r };
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+  const lead = await carrega(leadId);
+  await salvaIrregular(leadId, { ...ir, answeredAt: new Date().toISOString(), resposta: r });
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead?.name) || null;
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   if (r === 'NAO') {
-    await note(leadId, `⚠️ O cliente disse que o imóvel NÃO tem matrícula registrada (“${texto.slice(0, 160)}”). A certidão não foi pedida — sem matrícula o imóvel não serve de garantia; fale com o cliente.`);
-    try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '⚠️ Imóvel sem matrícula', body: `${fresh?.name || 'Cliente'}: disse que o imóvel não tem matrícula registrada`, leadId }).catch(() => {}); } catch { /* aviso */ }
+    // Fabio 30/10: avisa que o imóvel não serve de garantia e pergunta se tem outro.
+    await sendOutboundWhatsApp({ accountId, leadId, content: `Entendi${nome ? `, ${nome}` : ''}. Sem matrícula registrada em cartório, o imóvel não é aceito pelo banco como garantia, então não temos como avançar dessa maneira. Você possui outro imóvel com matrícula registrada que possa ser usado como garantia?`, io: (io || undefined) as any });
+    await note(leadId, `⚠️ O cliente disse que o imóvel NÃO tem matrícula registrada (“${texto.slice(0, 160)}”). A certidão não foi pedida; avisei que o imóvel não serve de garantia e perguntei se ele tem outro imóvel com matrícula.`);
+    try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '⚠️ Imóvel sem matrícula', body: `${lead?.name || 'Cliente'}: imóvel sem matrícula — perguntei se tem outro imóvel`, leadId }).catch(() => {}); } catch { /* aviso */ }
     return;
   }
+  // Fabio 30/10: avisa que vai pedir e que o valor pode não ser reembolsado se o imóvel não tiver registro (o cartório cobra pelas consultas).
+  await sendOutboundWhatsApp({ accountId, leadId, content: `Perfeito${nome ? `, ${nome}` : ''}! Vou solicitar a certidão. Só um aviso: caso o imóvel não tenha registro em cartório, o valor da certidão pode não ser reembolsado, porque o cartório faz as consultas devidas e cobra por elas.`, io: (io || undefined) as any });
   try {
     const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: ir.uf, cidade: ir.cidade, cartorio: ir.cartorio || 'AUTO', pedidoPor: 'ENDERECO', endereco: ir.endereco, source: 'AI', userId: ir.userId, sendPix: ir.sendPix !== false });
-    await note(leadId, `🏛️ O cliente confirmou que o imóvel tem matrícula registrada (“${texto.slice(0, 120)}”). Pedi a certidão pelo endereço${out.duplicate ? ' (já havia um pedido andando)' : ''}.`);
+    await note(leadId, `🏛️ O cliente confirmou que o imóvel tem matrícula registrada (“${texto.slice(0, 120)}”). Avisei que o valor pode não ser reembolsado se não houver registro e pedi a certidão pelo endereço${out.duplicate ? ' (já havia um pedido andando)' : ''}.`);
     io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
     if (!out.duplicate && out.agendado) await avisaPixAmanha(accountId, leadId, io);
   } catch (e: any) { await note(leadId, `⚠️ O cliente confirmou que o imóvel tem matrícula, mas não consegui pedir a certidão: ${e?.message || e}.`); }
