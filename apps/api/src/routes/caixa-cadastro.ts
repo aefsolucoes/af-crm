@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
-import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa } from '../services/caixa-cadastro.service';
+import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao } from '../services/caixa-cadastro.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -50,6 +50,19 @@ router.post('/:leadId/cadastro', async (req: AuthRequest, res: Response) => {
   const { ordem, status, texto } = req.body as { ordem?: number; status?: string; texto?: string };
   if (!ordem || !status) return res.status(400).json({ error: 'ordem e status obrigatórios' });
   try { await gravarCadastro(req.user!.accountId, req.params.leadId, Number(ordem), { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+
+// Avaliação de Risco (passo 2): equipe pede; extensão devolve o que viu/fez.
+router.post('/:leadId/avaliar', async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const erro = await pedirAvaliacao(req.user!.accountId, req.params.leadId, quem).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+router.post('/:leadId/avaliacao', async (req: AuthRequest, res: Response) => {
+  const { status, texto } = req.body as { status?: string; texto?: string };
+  if (!status) return res.status(400).json({ error: 'status obrigatório' });
+  try { await gravarAvaliacao(req.user!.accountId, req.params.leadId, { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
 // PDF do "Imprimir Formulário" da tela final → pasta FORMULARIOS do cliente no Drive.

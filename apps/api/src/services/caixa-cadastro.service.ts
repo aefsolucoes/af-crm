@@ -58,7 +58,12 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
       AND "customFields"->'_caixaCadastro'->'cadastros' IS NOT NULL
     ORDER BY "customFields"->'_caixaCadastro'->>'pedidoEm' ASC LIMIT 10`;
-  for (const { id } of [...ids, ...cads.filter((x) => !ids.some((y) => y.id === x.id))]) {
+  // Depois: Avaliação de Risco (passo 2 — análise de crédito da CAIXA, Fabio 30/10).
+  const avs = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
+      AND "customFields"->'_caixaCadastro'->'avaliacao'->>'status' IN ('FILA', 'RODANDO')
+    ORDER BY "customFields"->'_caixaCadastro'->'avaliacao'->>'pedidoEm' ASC LIMIT 10`;
+  for (const { id } of [...ids, ...cads.filter((x) => !ids.some((y) => y.id === x.id)), ...avs.filter((x) => !ids.some((y) => y.id === x.id) && !cads.some((y) => y.id === x.id))]) {
     const l = await prisma.lead.findUnique({ where: { id }, select: { id: true, name: true, customFields: true } });
     const cf = (l?.customFields || {}) as Cf;
     const c = cf._caixaCadastro || {};
@@ -68,7 +73,14 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
       // FILA, ou RODANDO que passou do prazo (a extensão largou no meio — volta pra fila, até 3 tentativas).
       const ordem = Object.entries(c.cadastros || {}).find(([, v]: [string, any]) => v?.status === 'FILA' || (v?.status === 'RODANDO' && v.inicio && Date.now() - Date.parse(v.inicio) > LEASE_MS && (v.tentativas || 0) < 3))?.[0];
       const pc = ordem && ps.find((x) => x.ordem === Number(ordem));
-      if (!pc) continue;
+      if (!pc) {
+        const av = c.avaliacao;
+        const vez = av && (av.status === 'FILA' || (av.status === 'RODANDO' && av.inicio && Date.now() - Date.parse(av.inicio) > LEASE_MS && (av.tentativas || 0) < 3));
+        const p1 = ps.find((x) => x.ordem === 1);
+        if (!vez || !p1 || p1.cpf.length !== 11) continue;
+        await salvar(id, (x) => { x.atual = { ordem: 1, desde: new Date().toISOString(), tipo: 'avaliar' }; x.avaliacao = { ...x.avaliacao, status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.avaliacao?.tentativas || 0) + 1 }; });
+        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x) };
+      }
       await salvar(id, (x) => { x.atual = { ordem: pc.ordem, desde: new Date().toISOString(), tipo: 'cadastrar' }; x.cadastros[pc.ordem] = { ...x.cadastros[pc.ordem], status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.cadastros[pc.ordem]?.tentativas || 0) + 1 }; });
       const { fontes, faltando, ...participante } = pc;
       const p1 = ps.find((x) => x.ordem === 1);
@@ -215,6 +227,26 @@ export async function salvarFormularioCaixa(accountId: string, leadId: string, o
   await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}), [ordem]: { ...(x.cadastros?.[ordem] || {}), formulario: up.id } }; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📄 Formulário do cadastro na CAIXA de ${quem} salvo na pasta FORMULARIOS do Drive (${nome}). A assinatura do cliente fica pra contratação.` } }).catch(() => {});
   return null;
+}
+
+/** Avaliação de Risco da CAIXA (passo 2, Fabio 30/10: "vamos rodar a análise de crédito do Jézer"). Produto pelo setor: Home Equity → "11 - Empréstimo com
+ *  Garantia de Imóvel (EGI)"; Financiamento → "1 - Crédito Imobiliário". 1ª fase: a extensão abre, consulta o CPF, marca o produto e PARA mostrando a tela (mapa). */
+export async function pedirAvaliacao(accountId: string, leadId: string, por: string): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!l) return 'Lead não encontrado';
+  if (!participantesDa((l.customFields || {}) as Cf).length) return 'O card ainda não tem a ficha de cadastro';
+  const produto = /home|garantia/i.test(l.pipeline?.department?.name || '') ? '11 - empréstimo com garantia de imóvel' : '1 - crédito imobiliário';
+  await salvar(leadId, (x) => { x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco na CAIXA pedida (${por}) — produto "${produto.toUpperCase()}". A extensão consulta o CPF, marca o produto e mostra a tela antes de enviar.` } }).catch(() => {});
+  return null;
+}
+export async function gravarAvaliacao(accountId: string, leadId: string, r: { status: string; texto: string }): Promise<void> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true } });
+  if (!l) return;
+  await salvar(leadId, (x) => { x.avaliacao = { ...(x.avaliacao || {}), status: r.status, fim: new Date().toISOString() }; delete x.atual; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco CAIXA: ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `🏦 ${l.name}: Avaliação de Risco CAIXA`, body: r.status.slice(0, 120), leadId }).catch(() => {});
 }
 
 /** Resultado do cadastro vindo da extensão (preenchido + conferência; salvo ou parado antes de salvar). */
