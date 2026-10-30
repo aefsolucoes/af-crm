@@ -542,7 +542,7 @@ async function respondeEndereco(accountId: string, leadId: string, texto: string
 
 // ── Área irregular (Fabio 30/10: "envia o push e pergunta ao cliente"): a pesquisa do cartório indicou que o endereço pode não ter matrícula. Pergunta antes de pedir (cada pedido é cobrança). ──
 // Fora do horário de aviso: guarda e pergunta no primeiro horário (processIrregularPendentes). Conversa fechada: template "Olá, tudo bem?" e a pergunta sai quando o cliente responder.
-type IrregularAsk = { uf: string; cidade: string; cartorio: string; endereco: EnderecoCertidao; sendPix?: boolean; userId?: string; motivo?: string; pendingAsk?: boolean; waitingReply?: boolean; askedAt?: string; answeredAt?: string; resposta?: 'SIM' | 'NAO'; outroImovelAskedAt?: string; outroImovel?: 'TEM' | 'NAO_TEM' };
+type IrregularAsk = { uf: string; cidade: string; cartorio: string; endereco: EnderecoCertidao; sendPix?: boolean; userId?: string; motivo?: string; pendingAsk?: boolean; waitingReply?: boolean; askedAt?: string; answeredAt?: string; resposta?: 'SIM' | 'NAO'; outroImovelAskedAt?: string; outroImovel?: 'TEM' | 'NAO_TEM' | 'SEM_RESPOSTA'; outroImovelChecadoAt?: string };
 const GREETING_TEMPLATE = 'ola_tudo_bem';
 
 async function salvaIrregular(leadId: string, v: IrregularAsk) {
@@ -581,6 +581,7 @@ export async function askImovelRegular(accountId: string, leadId: string, p: Omi
 export async function processIrregularPendentes(): Promise<void> {
   const { inNoticeWindow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return;
+  await checarOutroImovelSemResposta().catch((e: any) => console.warn('[Certidão] outro imóvel sem resposta:', e?.message));
   const ids = await prisma.$queryRawUnsafe<{ id: string }[]>(`SELECT id FROM "Lead" WHERE "customFields"->'_certidaoIrregular'->>'pendingAsk' = 'true' LIMIT 20`);
   for (const { id } of ids) {
     const l = await prisma.lead.findUnique({ where: { id }, select: { accountId: true, customFields: true } });
@@ -659,13 +660,64 @@ async function respondeOutroImovel(accountId: string, leadId: string, texto: str
     try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏠 Cliente tem outro imóvel', body: `${lead.name}: o 1º não tem matrícula, mas ele tem outro imóvel`, leadId }).catch(() => {}); } catch { /* aviso */ }
     return;
   }
-  if (lead.status !== 'OPEN') return;
+  await marcarPerdidoSemImovel(accountId, leadId, `O cliente disse que não tem outro imóvel (“${texto.slice(0, 160)}”).`, io);
+}
+
+async function marcarPerdidoSemImovel(accountId: string, leadId: string, porque: string, io: Io): Promise<void> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, status: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead || lead.status !== 'OPEN') return;
   const lostReason = 'Imóvel sem matrícula registrada (área irregular) e sem outro imóvel para garantia';
   const { updateLead } = require('./lead.service') as typeof import('./lead.service');
   const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
   await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io as any);
   await moveLeadToPerdidos({ accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io: io as any });
-  await note(leadId, `❌ O cliente disse que não tem outro imóvel (“${texto.slice(0, 160)}”). Card marcado como Perdido: ${lostReason}.`);
+  await note(leadId, `❌ ${porque} Card marcado como Perdido: ${lostReason}.`);
   try { (require('./activity.service') as typeof import('./activity.service')).logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: 'marcou o card como Perdido: imóvel sem matrícula e sem outro imóvel' }).catch(() => {}); } catch { /* log é extra */ }
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '❌ Card perdido: imóvel sem matrícula', body: `${lead.name}: não tem outro imóvel para garantia`, leadId }).catch(() => {}); } catch { /* aviso */ }
+}
+
+/** Fabio 30/10: "outro imóvel?" sem resposta que decida por 2 dias → template "Olá, tudo bem?" (ou texto, com a conversa aberta) e checa de novo; 2 dias depois, se o cliente não falou mais nada → Perdido. */
+async function checarOutroImovelSemResposta(): Promise<void> {
+  const DIA = 86_400_000;
+  const ids = await prisma.$queryRawUnsafe<{ id: string }[]>(`SELECT id FROM "Lead" WHERE status = 'OPEN' AND "customFields"->'_certidaoIrregular'->>'outroImovelAskedAt' IS NOT NULL AND ("customFields"->'_certidaoIrregular'->>'outroImovel') IS NULL LIMIT 30`);
+  for (const { id } of ids) {
+    const l = await prisma.lead.findUnique({ where: { id }, select: { accountId: true, name: true, customFields: true } });
+    const ir = ((l?.customFields || {}) as any)._certidaoIrregular as IrregularAsk | undefined;
+    if (!l || !ir?.outroImovelAskedAt || ir.outroImovel) continue;
+    const agora = Date.now();
+    if (!ir.outroImovelChecadoAt) {
+      if (agora - new Date(ir.outroImovelAskedAt).getTime() < 2 * DIA) continue;
+      const cf = (l.customFields || {}) as Record<string, any>;
+      const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+      const nome = callableFirstName(cf.falando_com, cf.participante_1, l.name) || null;
+      const pergunta = `${nome ? `${nome}, c` : 'C'}onseguiu ver se você possui outro imóvel com matrícula registrada que possa ser usado como garantia? Sem isso, não temos como avançar com o empréstimo.`;
+      const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+      const msg = require('./message.service') as typeof import('./message.service');
+      let ok = false;
+      if (await whatsappWindowOpen(id)) ok = (await msg.sendOutboundWhatsApp({ accountId: l.accountId, leadId: id, content: pergunta, io: undefined })).success;
+      else {
+        const t = await msg.sendOutboundWhatsAppTemplate({ accountId: l.accountId, leadId: id, templateName: GREETING_TEMPLATE, language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem?', io: undefined } as any);
+        if (t.success) { ok = true; const { queueOnReply } = require('./reply-pending.service') as typeof import('./reply-pending.service'); await queueOnReply(prisma as any, { leadId: id, label: 'certidão: tem outro imóvel?', text: pergunta, noteText: '📨 2 dias sem resposta sobre outro imóvel: mandei o template "Olá, tudo bem?"; a pergunta sai quando o cliente responder.' }); }
+      }
+      // marca mesmo se falhar: o prazo de 2 dias pro Perdido conta daqui (a equipe é avisada)
+      await salvaIrregular(id, { ...ir, outroImovelChecadoAt: new Date().toISOString() });
+      if (!ok) {
+        await note(id, '⚠️ 2 dias sem resposta sobre outro imóvel e NÃO consegui checar com o cliente (o template falhou). Se ele não falar nada em 2 dias, o card vai pra Perdido.');
+        try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(l.accountId, { title: '⚠️ Imóvel sem matrícula', body: `${l.name}: não consegui checar se tem outro imóvel — fale com o cliente`, leadId: id }).catch(() => {}); } catch { /* aviso */ }
+      } else if (await whatsappWindowOpen(id)) await note(id, '🏠 2 dias sem resposta sobre outro imóvel: perguntei de novo ao cliente. Se ele não falar nada em 2 dias, o card vai pra Perdido.');
+      continue;
+    }
+    const checado = new Date(ir.outroImovelChecadoAt);
+    if (agora - checado.getTime() < 2 * DIA) continue;
+    const falou = await prisma.message.findFirst({ where: { leadId: id, direction: 'INBOUND', createdAt: { gt: checado } }, select: { id: true } });
+    if (falou) {
+      // respondeu, mas sem decidir: não perde sozinho — a equipe decide
+      await salvaIrregular(id, { ...ir, outroImovel: 'SEM_RESPOSTA' });
+      await note(id, '🏠 O cliente voltou a falar, mas não disse se tem outro imóvel com matrícula. Não marquei como Perdido: confira a conversa e decida.');
+      try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(l.accountId, { title: '🏠 Outro imóvel: sem resposta clara', body: `${l.name}: confira se tem outro imóvel para garantia`, leadId: id }).catch(() => {}); } catch { /* aviso */ }
+      continue;
+    }
+    await salvaIrregular(id, { ...ir, outroImovel: 'SEM_RESPOSTA' });
+    await marcarPerdidoSemImovel(l.accountId, id, 'O cliente não respondeu se tem outro imóvel (2 dias + checagem com template, sem resposta).', null);
+  }
 }
