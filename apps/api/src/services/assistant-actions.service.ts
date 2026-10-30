@@ -38,7 +38,7 @@ export const ACTION_TOOLS = [
   { name: 'criar_anotacao', description: 'Grava uma anotação interna no card (não vai pro cliente).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, texto: { type: 'string' } }, required: ['leadId', 'texto'] } },
   { name: 'criar_lembrete', description: 'Cria um LEMBRETE/tarefa pra quem está falando ("me lembra de falar com o Pedro amanhã às 10h", "sexta 14h ligar pra Maria"), opcionalmente ligado a um cliente. Na hora marcada o CRM manda push no celular E o assistente FALA o lembrete em voz alta na tela (se o CRM estiver aberto). quando = data/hora ISO 8601 com fuso -03:00, calculada a partir de "Agora"; sem hora dita, use 09:00; se a data/hora já passou, pergunte. titulo curto, no infinitivo (ex.: "Falar com o Pedro sobre a vistoria").', input_schema: { type: 'object', properties: { titulo: { type: 'string' }, quando: { type: 'string' }, leadId: { type: 'string' } }, required: ['titulo', 'quando'] } },
   { name: 'conferir_analise', description: 'Pede pra extensão do banco CONFERIR (só ler) o resultado da análise de crédito no portal. bancos: INTER, CREDITAS, CREDIMORAR (Santander). Não cria proposta nova.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId', 'bancos'] } },
-  { name: 'ver_pasta', description: 'Mostra a pasta do cliente no Google Drive: onde ela está (LEADS ATIVOS, LEADS FRIOS, CONCLUÍDOS…) e os arquivos (com subpastas).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  { name: 'ver_pasta', description: 'Mostra a pasta do cliente no Google Drive: onde ela está (LEADS ATIVOS, LEADS FRIOS, CONCLUÍDOS…) e os arquivos (com subpastas). Card sem o link da pasta: procura pelo nome do cliente em LEADS ATIVOS/FRIOS (nomePasta = nome da pasta, se for diferente do card).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, nomePasta: { type: 'string' } }, required: ['leadId'] } },
   { name: 'ver_regras_ia', description: 'Procura nas REGRAS da IA (Base de Conhecimento — o que a IA que conversa com o cliente, a Sugestão de resposta e a conferência seguem). termo = palavra pra filtrar (vazio = as 20 mais recentes). Devolve id, título, setor e texto.', input_schema: { type: 'object', properties: { termo: { type: 'string' } } } },
   { name: 'mostrar_documento', description: 'MOSTRA um documento do cliente AQUI NO BALÃO do chat (PDF ou foto), sem abrir tela nem aba. Procura nos arquivos da conversa E na pasta do Drive do cliente. arquivo = nome (ou parte) ou o tipo (ex.: "IPTU", "matricula", "CNH"). Use quando pedirem "abre/mostra/me deixa ver o documento X".', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, arquivo: { type: 'string' } }, required: ['leadId', 'arquivo'] } },
   { name: 'consultar_conhecimento', description: 'Busca na BASE DE CONHECIMENTO do CRM (a MESMA fonte que a IA do cliente, a Sugestão de resposta e a conferência de documentos usam): regras do processo, bancos, taxas, documentos exigidos, correções ensinadas pela equipe e os arquivos do Drive de conhecimento. Use ANTES de responder qualquer dúvida de processo/regra/banco/documento. pergunta = o que quer saber, em linguagem natural.', input_schema: { type: 'object', properties: { pergunta: { type: 'string' } }, required: ['pergunta'] } },
@@ -54,7 +54,7 @@ export const ACTION_TOOLS = [
   { name: 'docs_para_andamento', description: 'Clientes que MANDARAM DOCUMENTOS nos últimos N dias (padrão 10) e o que falta pra dar andamento: situação da conferência (tudo OK / com problema / falta documento / dúvida com a equipe), etapa, quando chegou o último arquivo e se a equipe falou com ele depois. Os "PRONTO" vêm primeiro — use pra sugerir em quem dar andamento e qual o próximo passo.', input_schema: { type: 'object', properties: { dias: { type: 'number' }, funil: { type: 'string' } } } },
   { name: 'documentos_do_cliente', description: 'Os documentos que o cliente mandou e o que a IA leu em cada um: tipo, titular, OK/PROBLEMA/DÚVIDA, problemas, emissão, dono do imóvel, matrícula/cartório, gravame (alienação/hipoteca), ressalvas; e o que ainda falta.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'conferir_documentos', description: 'Roda a conferência de documentos AGORA (lê com a IA os arquivos ainda não lidos e atualiza o card). Não manda nada ao cliente. Depois use documentos_do_cliente.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
-  { name: 'ler_documento', description: 'Abre UM documento do cliente e responde uma pergunta sobre ele lendo o arquivo de verdade (ex.: "a matrícula tem alienação vigente?", "qual a área do imóvel no IPTU?", "o comprovante está no nome de quem?"). arquivo = nome (ou parte) do arquivo ou o tipo (ex.: "matricula", "IPTU", "CNH").', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, arquivo: { type: 'string' }, pergunta: { type: 'string' } }, required: ['leadId', 'arquivo', 'pergunta'] } },
+  { name: 'ler_documento', description: 'Abre UM documento do cliente e responde uma pergunta sobre ele lendo o arquivo de verdade (ex.: "a matrícula tem alienação vigente?", "qual a área do imóvel no IPTU?", "o comprovante está no nome de quem?"). arquivo = nome (ou parte) do arquivo ou o tipo (ex.: "matricula", "IPTU", "CNH"). Card sem o link da pasta: procura a pasta pelo nome do cliente (nomePasta = nome da pasta, se for diferente).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, arquivo: { type: 'string' }, pergunta: { type: 'string' }, nomePasta: { type: 'string' } }, required: ['leadId', 'arquivo', 'pergunta'] } },
   { name: 'ligar_para_cliente', description: 'PREPARA uma LIGAÇÃO pelo WhatsApp pro cliente (confirmação antes). Por enquanto quem FALA é o colaborador: o assistente só disca no navegador dele (o microfone dele é usado), abre a conversa do cliente e para de ouvir. Só funciona se o cliente já autorizou ligação; se não autorizou, diga isso e ofereça pedir_permissao_ligacao.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'pedir_permissao_ligacao', description: 'PREPARA o pedido de permissão de ligação pelo WhatsApp pro cliente (a Meta manda pro cliente o botão "Permitir"; confirmação antes). Limite da Meta: 1 por dia, 2 por semana.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'gravar_audio', description: 'Abre o GRAVADOR no balão pra pessoa gravar um áudio de voz pro cliente pelo WhatsApp (ela grava com a própria voz, ouve e só sai quando ela clicar em Enviar — você não fala nada no áudio). Use quando pedirem "quero mandar um áudio pro Pedro". Só com a janela de 24 h aberta.', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
@@ -62,6 +62,7 @@ export const ACTION_TOOLS = [
   { name: 'mover_card', description: 'PREPARA a mudança de etapa do card (confirmação antes). etapa = nome da etapa; funil opcional (se a etapa for de outro funil).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, etapa: { type: 'string' }, funil: { type: 'string' } }, required: ['leadId', 'etapa'] } },
   { name: 'marcar_status', description: 'PREPARA marcar o card como GANHO, PERDIDO, REPROVADO (perdido por reprovação do banco) ou REABRIR (confirmação antes). motivo é obrigatório pra PERDIDO/REPROVADO.', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, status: { type: 'string', enum: ['GANHO', 'PERDIDO', 'REPROVADO', 'REABRIR'] }, motivo: { type: 'string' } }, required: ['leadId', 'status'] } },
   { name: 'rodar_analise', description: 'PREPARA rodar a análise de crédito nos bancos (cria proposta nova no portal; confirmação antes). bancos: INTER, CREDITAS, CREDIMORAR (Santander).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, bancos: { type: 'array', items: { type: 'string' } } }, required: ['leadId', 'bancos'] } },
+  { name: 'registrar_proposta', description: 'PREPARA (confirmação antes) a PROPOSTA de Home Equity de um cliente que NÃO preencheu o formulário (card sem proposta na conversa — sem ela a extensão do banco não roda). Monta no formato da proposta manual, preenche o card e a extensão do INTER passa a usar. Antes: leia os documentos (ler_documento — nome, CPF, nascimento, estado civil, endereço) e PERGUNTE à pessoa o que eles não têm (valor do imóvel, crédito, prazo, endereço/CEP do imóvel, celular, e-mail, renda). Nunca invente valor. Depois rode com rodar_analise (por enquanto só o Inter usa a proposta registrada).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, dados: { type: 'object', description: 'nome, cpf, nascimento (DD/MM/AAAA), email, celular, estadoCivil, renda (mensal bruta; vazio = sem renda), genero, nacionalidade, naturalidade, endereco { logradouro, numero, complemento, bairro, cidade, uf, cep }, imovel { tipo (Casa/Apartamento/Terreno…), mesmoEndereco (true se é o endereço do cliente), endereco { logradouro, numero, complemento, bairro, cidade, uf, cep } }, valorImovel, credito, prazo (meses), quitado ("Sim"/"Não"), saldoDevedor (se não quitado), certidao ("Sim"/"Não"/"Não sei"), participante2 { nome, cpf, nascimento, celular, relacao, compoeRenda, renda } (opcional)' } }, required: ['leadId', 'dados'] } },
   { name: 'solicitar_vistoria', description: 'PREPARA o pedido de vistoria ao Inter: responde o e-mail do consultor com o contato e os documentos do imóvel da pasta do cliente (confirmação antes).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
   { name: 'confirmar_endereco_certidao', description: 'PREPARA (confirmação antes) mandar ao cliente pelo WhatsApp "confirma o endereço do imóvel?" e, QUANDO ELE RESPONDER SIM, o CRM pede a certidão de ônus pelo endereço sozinho (se ele corrigir, a equipe recebe push). Use quando pedirem "confirma o endereço com o cliente e depois pede a certidão". Sem endereço = o da proposta/documentos; ou passe cep/logradouro/numero/complemento/bairro/cidade/uf lidos num documento ou na conversa. cartorio só se souber (ex.: "11º - SÃO PAULO").', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, cep: { type: 'string' }, tipoLogradouro: { type: 'string' }, logradouro: { type: 'string' }, numero: { type: 'string' }, complemento: { type: 'string' }, bairro: { type: 'string' }, cidade: { type: 'string' }, uf: { type: 'string' }, cartorio: { type: 'string' }, pixNoChat: { type: 'boolean' } }, required: ['leadId'] } },
   { name: 'pedir_certidao', description: 'PREPARA o pedido da certidão de matrícula/ônus (inteiro teor) no RI Digital pela extensão, igual ao botão "Pedir certidão pelo ONR" do card; o PIX vai pro cliente (confirmação antes). Chame DIRETO com o leadId: a própria ferramenta acha a matrícula e a cidade/UF nos documentos (ou o endereço do imóvel). Só passe matricula/cidade/uf se a pessoa disser; cartorio só se ela disser (senão a extensão escolhe).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, matricula: { type: 'string' }, cidade: { type: 'string' }, uf: { type: 'string' }, cartorio: { type: 'string', description: 'como aparece no portal (ex.: "02º - BELÉM"); omita se não souber' }, porEndereco: { type: 'boolean', description: 'true quando a pessoa pede a certidão PELO ENDEREÇO (o CRM lê o endereço do imóvel nos documentos da conversa: matrícula, escritura, IPTU)' }, cep: { type: 'string', description: 'pedido pelo endereço lido num documento: CEP do imóvel' }, tipoLogradouro: { type: 'string' }, logradouro: { type: 'string', description: 'nome da rua/avenida sem o tipo' }, numero: { type: 'string' }, complemento: { type: 'string' }, bairro: { type: 'string' }, pixNoChat: { type: 'boolean', description: 'true quando a pessoa quer o PIX com ela (pra encaminhar ela mesma) em vez de ir direto ao cliente' } }, required: ['leadId'] } },
@@ -99,12 +100,48 @@ function pendente(p: { accountId: string; userId: string; tipo: string; descrica
   return { aguardandoConfirmacao: true, oQueVaiAcontecer: p.descricao, instrucao: 'Diga à pessoa exatamente o que vai acontecer e pergunte se confirma. NÃO diga que já foi feito.' };
 }
 
-async function pastaDoCliente(accountId: string, leadId: string) {
+/** Card SEM o link da pasta (Fabio 30/10: "não tem dados desse cliente no card, só o documento no Drive"): procura a pasta do cliente pelo NOME em LEADS ATIVOS e LEADS FRIOS dos setores.
+ *  `nomePasta` = nome dito pela pessoa (quando o card só tem o telefone). Só devolve `achada` se for UMA pasta (ou uma com o nome exato); senão as candidatas. */
+async function pastaPeloNome(accountId: string, l: { name: string; customFields: unknown }, nomePasta?: string): Promise<{ achada: { id: string; nome: string } | null; candidatas: string[] }> {
+  const cf = (l.customFields || {}) as Record<string, any>;
+  const nomes = [nomePasta, cf.participante_1, l.name].map((x) => String(x || '').trim()).filter((x) => x && !/^[+\d\s()-]+$/.test(x));
+  if (!nomes.length) return { achada: null, candidatas: [] };
+  const g = require('./google.service') as typeof import('./google.service');
+  const drive = await g.getDrive(accountId);
+  const { loadAreas } = require('./drive-lifecycle.service') as typeof import('./drive-lifecycle.service');
+  const pais = (await loadAreas(accountId)).flatMap((a) => [a.ativos, a.frios]).filter((x): x is string => !!x);
+  const PARTICULAS = new Set(['de', 'da', 'do', 'das', 'dos', 'e']);
+  for (const nome of nomes) {
+    const palavras = norm(nome).split(/\s+/).filter((w) => w.length > 1 && !PARTICULAS.has(w));
+    if (!palavras.length) continue;
+    const achadas = new Map<string, string>();
+    for (const pai of pais) {
+      const r = await drive.files.list({ q: `'${pai}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false and name contains '${palavras[0].replace(/'/g, "\\'")}'`, fields: 'files(id,name)', pageSize: 50, supportsAllDrives: true, includeItemsFromAllDrives: true }).catch(() => null);
+      for (const f of r?.data.files || []) {
+        const doNome = norm(f.name || '').split(/\s+/);
+        if (doNome.includes(palavras[0]) && doNome.includes(palavras[palavras.length - 1])) achadas.set(f.id!, f.name || '');
+      }
+    }
+    const lista = [...achadas.entries()];
+    const exata = lista.filter(([, n]) => norm(n) === norm(nome));
+    if (lista.length === 1 || exata.length === 1) { const [id, n] = lista.length === 1 ? lista[0] : exata[0]; return { achada: { id, nome: n }, candidatas: [] }; }
+    if (lista.length > 1) return { achada: null, candidatas: lista.map(([, n]) => n).slice(0, 8) };
+  }
+  return { achada: null, candidatas: [] };
+}
+
+async function pastaDoCliente(accountId: string, leadId: string, nomePasta?: string) {
   const l = await leadOf(accountId, leadId);
   const link = String(((l.customFields || {}) as any).link_pasta_drive || '');
-  if (!link) throw new Error(`o ${l.name} não tem pasta do Drive no card (campo link_pasta_drive)`);
   const g = require('./google.service') as typeof import('./google.service');
-  const pasta = g.extractFolderId(link);
+  let pasta = link ? g.extractFolderId(link) : '';
+  if (!pasta) {
+    const busca = await pastaPeloNome(accountId, l, nomePasta);
+    if (!busca.achada) throw new Error(busca.candidatas.length
+      ? `o card do ${l.name} não tem o link da pasta e achei mais de uma pasta com esse nome no Drive: ${busca.candidatas.join('; ')} — diga qual (nomePasta)`
+      : `o ${l.name} não tem pasta do Drive no card (campo link_pasta_drive) e não achei pasta com esse nome em LEADS ATIVOS/FRIOS — diga o nome da pasta (nomePasta)`);
+    pasta = busca.achada.id;
+  }
   const drive = await g.getDrive(accountId);
   const info = (await drive.files.get({ fileId: pasta, fields: 'id,name,parents', supportsAllDrives: true })).data;
   const pai = info.parents?.[0] || '';
@@ -119,22 +156,96 @@ async function pastaDoCliente(accountId: string, leadId: string) {
     area = areas.find((a) => a.concluidos && (a.concluidos === avo || a.concluidos === bisavo));
     if (area) onde = `CONCLUÍDOS (${area.nome})`;
   }
-  return { l, pasta, nome: info.name || '', onde, area, g };
+  return { l, pasta, nome: info.name || '', onde, area, g, semLink: !link };
 }
+/** PROPOSTA REGISTRADA PELO JARVIS (Fabio 30/10: cliente sem proposta no card, só o documento no Drive, e precisa rodar no Inter). Mesmo texto da proposta manual do site
+ *  (SITE A&F/proposta-manual-home-equity.html): a extensão do Inter e o leitor do card (parseProposalForm) já entendem esse formato. Fica no card (`_propostaManual`), não na conversa —
+ *  não aparece como mensagem do cliente nem dispara a análise automática. */
+const PROPOSTA_MARCAS = ['Proposta preenchida no site', 'PROPOSTA RECEBIDA', 'Preenchi a proposta', 'Proposta manual'];
+type EndP = { logradouro?: string; numero?: string | number; complemento?: string; bairro?: string; cidade?: string; uf?: string; cep?: string };
+/** 500000 / "500.000,00" / "R$ 500 mil" → 500000 */
+function valorP(v: unknown): number {
+  if (typeof v === 'number') return v;
+  const t = String(v ?? '').toLowerCase().replace(/r\$\s*/g, '').trim();
+  const mil = t.match(/^([\d.,]+)\s*mil/);
+  const base = (mil ? mil[1] : t).replace(/[^\d.,]/g, '');
+  const n = base.includes(',') ? Number(base.replace(/\./g, '').replace(',', '.')) : /\.\d{3}$/.test(base) ? Number(base.replace(/\./g, '')) : Number(base);
+  return Number.isFinite(n) ? n * (mil ? 1000 : 1) : 0;
+}
+const moedaP = (v: unknown) => `R$ ${valorP(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const cepP = (c: unknown) => { const d = String(c ?? '').replace(/\D/g, ''); return d.length === 8 ? `${d.slice(0, 5)}-${d.slice(5)}` : ''; };
+const endP = (e: EndP) => `${String(e.logradouro || '').trim()}, ${String(e.numero ?? '').trim() || 's/n'}${e.complemento ? ` - ${String(e.complemento).trim()}` : ''} — ${String(e.bairro || '').trim()}, ${String(e.cidade || '').trim()}/${String(e.uf || '').trim().toUpperCase()} — CEP ${cepP(e.cep)}`;
+const endIncompleto = (e: EndP | undefined) => !e || !cepP(e.cep) || !String(e.logradouro || '').trim() || !String(e.cidade || '').trim() || !String(e.uf || '').trim();
+export function montarPropostaManual(d: Record<string, any>): { texto: string; faltam: string[]; avisos: string[] } {
+  const faltam: string[] = [], avisos: string[] = [];
+  const nome = String(d.nome || '').trim(), cpf = String(d.cpf || '').replace(/\D/g, ''), nasc = String(d.nascimento || '').trim();
+  const imovel = (d.imovel || {}) as { tipo?: string; mesmoEndereco?: boolean; endereco?: EndP };
+  const quitado = /^n/i.test(String(d.quitado || '')) ? 'Não' : /^s/i.test(String(d.quitado || '')) ? 'Sim' : '';
+  if (!nome) faltam.push('nome completo');
+  if (cpf.length !== 11) faltam.push('CPF');
+  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(nasc)) faltam.push('data de nascimento (DD/MM/AAAA)');
+  if (!String(d.estadoCivil || '').trim()) faltam.push('estado civil');
+  if (endIncompleto(d.endereco)) faltam.push('endereço do cliente com CEP (rua, número, bairro, cidade/UF)');
+  if (!String(imovel.tipo || '').trim()) faltam.push('tipo do imóvel (casa, apartamento…)');
+  if (!imovel.mesmoEndereco && endIncompleto(imovel.endereco)) faltam.push('endereço do imóvel com CEP (ou dizer que é o mesmo do cliente)');
+  if (!(valorP(d.valorImovel) > 0)) faltam.push('valor do imóvel');
+  if (!(valorP(d.credito) > 0)) faltam.push('crédito desejado');
+  if (!(Number(String(d.prazo ?? '').replace(/\D/g, '')) > 0)) faltam.push('prazo (meses)');
+  if (!quitado) faltam.push('imóvel quitado? (sim/não)');
+  if (quitado === 'Não' && !(valorP(d.saldoDevedor) > 0)) faltam.push('saldo devedor do financiamento do imóvel');
+  if (!String(d.email || '').trim()) avisos.push('sem e-mail: a extensão usa o do card, se houver');
+  if (!String(d.celular || '').trim()) avisos.push('sem celular: a extensão usa o telefone do card/WhatsApp');
+  if (!(valorP(d.renda) > 0)) avisos.push('sem renda: o Inter roda com a renda padrão da extensão');
+  const p2 = d.participante2 && String(d.participante2.nome || '').trim() ? d.participante2 : null;
+  if (p2 && String(p2.cpf || '').replace(/\D/g, '').length !== 11) faltam.push('CPF do 2º participante');
+  const linha = (rotulo: string, v: unknown) => (String(v ?? '').trim() ? `${rotulo}: ${String(v).trim()}\n` : '');
+  const credito = valorP(d.credito), saldo = valorP(d.saldoDevedor);
+  const texto = `📋 Proposta manual — Crédito com Garantia de Imóvel (Home Equity)
+Cliente: ${nome}
+
+
+👤 *DADOS DO CLIENTE*
+CPF: ${cpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')}
+Nascimento: ${nasc}
+${linha('E-mail', d.email)}${linha('Celular', d.celular)}${linha('Gênero', d.genero)}${linha('Nacionalidade', d.nacionalidade)}${linha('Naturalidade', d.naturalidade)}Estado civil: ${String(d.estadoCivil || '').trim()}
+${valorP(d.renda) > 0 ? `Renda bruta: ${moedaP(d.renda)}\n` : ''}
+🏠 *ENDEREÇO*
+${d.endereco ? endP(d.endereco) : ''}
+${p2 ? `
+👥 *2º PARTICIPANTE*
+Nome: ${p2.nome} | CPF: ${p2.cpf || '—'} | Nascimento: ${p2.nascimento || '—'}
+Celular: ${p2.celular || '—'} | Relação: ${p2.relacao || '—'}
+Compõe renda: ${p2.compoeRenda ? 'Sim' : 'Não'}
+${p2.compoeRenda ? `Renda bruta: ${moedaP(p2.renda)}\n` : 'Renda bruta: R$ 1,00\n'}` : ''}
+🏠 *IMÓVEL EM GARANTIA*
+Tipo: ${String(imovel.tipo || '').trim()}
+Endereço: ${imovel.mesmoEndereco ? 'mesmo endereço do cliente' : imovel.endereco ? endP(imovel.endereco) : ''}
+
+💰 *VALORES DA PROPOSTA*
+Valor do imóvel (garantia): ${moedaP(d.valorImovel)}
+Crédito desejado: ${moedaP(credito)}
+Prazo: ${String(d.prazo ?? '').replace(/\D/g, '')} meses
+Imóvel quitado: ${quitado}${quitado === 'Não' ? `\nValor que falta para quitação: ${moedaP(saldo)}\nTroco na conta do cliente (crédito − saldo): ${moedaP(credito - saldo)}` : ''}
+Certidão de ônus/matrícula: ${String(d.certidao || '').trim() || 'Não sei'}`;
+  return { texto, faltam, avisos };
+}
+
 /** Arquivos do cliente que o Jarvis pode ler/mostrar: os que ele mandou na conversa + os da pasta dele no Drive (Fabio 29/10: "procura em tudo, conversa e pasta"). PDF e imagem. */
 type ArqCliente = { source: 'att' | 'drive'; ref: string; fileName: string; mimeType: string; tipo?: string; driveFileId?: string | null };
 const ARQ_OK = (m: string) => m === 'application/pdf' || /^image\/(jpeg|png|gif|webp|heic|heif)$/.test(m);
-export async function arquivosDoCliente(accountId: string, l: { id: string; customFields: unknown }): Promise<ArqCliente[]> {
+export async function arquivosDoCliente(accountId: string, l: { id: string; name?: string; customFields: unknown }, nomePasta?: string): Promise<ArqCliente[]> {
   const cf = (l.customFields || {}) as Record<string, any>;
   const rev = (cf._docReview || {}) as Record<string, any>;
   const atts = await prisma.messageAttachment.findMany({ where: { leadId: l.id, message: { direction: 'INBOUND' } }, orderBy: { createdAt: 'desc' }, select: { id: true, fileName: true, mimeType: true, driveFileId: true } });
   const out: ArqCliente[] = atts.filter((a) => ARQ_OK(a.mimeType)).map((a) => ({ source: 'att', ref: a.id, fileName: a.fileName, mimeType: a.mimeType, tipo: rev[a.id]?.tipo, driveFileId: a.driveFileId }));
   const link = String(cf.link_pasta_drive || '').trim();
-  if (link) {
+  // Sem o link no card: a pasta achada pelo nome do cliente (Fabio 30/10).
+  const pastaId = link ? '' : (await pastaPeloNome(accountId, { name: l.name || '', customFields: l.customFields }, nomePasta).catch(() => null))?.achada?.id || '';
+  if (link || pastaId) {
     try {
       const g = require('./google.service') as typeof import('./google.service');
       const ja = new Set(out.map((a) => a.driveFileId).filter(Boolean));
-      for (const f of await g.listAllFilesInFolderTree(accountId, g.extractFolderId(link), 3)) if (ARQ_OK(f.mimeType) && !ja.has(f.id)) out.push({ source: 'drive', ref: f.id, fileName: f.path || f.name, mimeType: f.mimeType });
+      for (const f of await g.listAllFilesInFolderTree(accountId, pastaId || g.extractFolderId(link), 3)) if (ARQ_OK(f.mimeType) && !ja.has(f.id)) out.push({ source: 'drive', ref: f.id, fileName: f.path || f.name, mimeType: f.mimeType });
     } catch { /* sem Drive: só os da conversa */ }
   }
   return out;
@@ -266,9 +377,9 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       return { ok: true, conferencia: banks.map((b) => NOME_BANCO[b]).join(', '), cliente: l.name, retorno: r, aviso: 'A extensão confere em 1–2 min (Chrome com a extensão aberto).' };
     }
     case 'ver_pasta': {
-      const x = await pastaDoCliente(accountId, input?.leadId);
+      const x = await pastaDoCliente(accountId, input?.leadId, input?.nomePasta);
       const arquivos = await x.g.listAllFilesInFolderTree(accountId, x.pasta, 2);
-      return { cliente: x.l.name, pasta: x.nome, onde: x.onde, link: x.g.folderLink(x.pasta), arquivos: arquivos.filter((f) => !/folder$/.test(f.mimeType)).slice(0, 60).map((f) => f.path || f.name) };
+      return { cliente: x.l.name, pasta: x.nome, onde: x.onde, link: x.g.folderLink(x.pasta), ...(x.semLink ? { aviso: 'o card não tinha o link da pasta: achei pelo nome. Ofereça gravar o link no card (preencher_formulario, campo link_pasta_drive).' } : {}), arquivos: arquivos.filter((f) => !/folder$/.test(f.mimeType)).slice(0, 60).map((f) => f.path || f.name) };
     }
     case 'consultar_conhecimento': {
       const q = String(input?.pergunta || '').trim();
@@ -488,7 +599,7 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
     }
     case 'ler_documento': {
       const l = await leadOf(accountId, input?.leadId);
-      const lista = await arquivosDoCliente(accountId, l);
+      const lista = await arquivosDoCliente(accountId, l, input?.nomePasta);
       const att = acharArquivo(lista, input?.arquivo || '');
       if (!att) return { erro: `não achei "${input?.arquivo}" entre os arquivos do cliente (conversa e pasta do Drive)`, arquivos: lista.slice(0, 40).map((a) => `${a.fileName}${a.tipo ? ` (${a.tipo})` : ''}${a.source === 'drive' ? ' [Drive]' : ''}`) };
       let buffer: Buffer, mime: string;
@@ -563,10 +674,24 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       const efeito = st === 'GANHO' ? ' (vai pro funil Concluído e a pasta vai pra CONCLUÍDOS)' : st === 'REABRIR' ? ' (a pasta volta pra LEADS ATIVOS se estiver em LEADS FRIOS)' : ' (vai pro funil Perdidos e a pasta vai pra LEADS FRIOS)';
       return pendente({ accountId, userId, tipo: 'marcar_status', params: { leadId: l.id, body }, descricao: `Marcar o ${l.name} como ${st}${motivo ? ` — motivo: ${motivo}` : ''}${efeito}.` }, p.fila);
     }
+    case 'registrar_proposta': {
+      const l = await leadOf(accountId, input?.leadId);
+      if (/habita/i.test(l.pipeline?.department?.name || '')) return { erro: 'por enquanto a proposta registrada pelo assistente é só de Home Equity' };
+      const m = montarPropostaManual(input?.dados && typeof input.dados === 'object' ? input.dados : {});
+      if (m.faltam.length) return { faltam: m.faltam, instrucao: 'Pergunte à pessoa SÓ o que falta (não invente valor) e chame de novo com tudo.' };
+      return { ...pendente({ accountId, userId, tipo: 'registrar_proposta', params: { leadId: l.id, texto: m.texto }, descricao: `Registrar a proposta do ${l.name} (ele não preencheu o formulário) e preencher o card com ela. A extensão do Inter passa a usar este texto:\n\n${m.texto}` }, p.fila), ...(m.avisos.length ? { avisos: m.avisos } : {}) };
+    }
     case 'rodar_analise': {
       const l = await leadOf(accountId, input?.leadId);
       const banks = bancosValidos(input?.bancos);
       if (!banks.length) return { erro: 'bancos: INTER, CREDITAS ou CREDIMORAR (Santander)' };
+      // Sem a proposta, a extensão falha ("não achei a proposta preenchida na conversa") — Fabio 30/10: cliente só com o documento no Drive.
+      const naConversa = (await prisma.message.count({ where: { leadId: l.id, direction: 'INBOUND', OR: PROPOSTA_MARCAS.map((m) => ({ content: { contains: m } })) } })) > 0;
+      if (!naConversa) {
+        if (!((l.customFields || {}) as any)._propostaManual?.texto) return { erro: `o ${l.name} não tem proposta preenchida na conversa — a extensão do banco não roda sem ela`, instrucao: 'Monte a proposta com registrar_proposta: leia os documentos (ler_documento) e pergunte à pessoa o que faltar; depois rode.' };
+        const semSuporte = banks.filter((b) => b !== 'INTER');
+        if (semSuporte.length) return { erro: `a proposta registrada pelo assistente por enquanto só vale pro Inter — ${semSuporte.map((b) => NOME_BANCO[b]).join(' e ')} precisa${semSuporte.length > 1 ? 'm' : ''} da proposta preenchida na conversa`, podeRodar: ['INTER'] };
+      }
       return pendente({ accountId, userId, tipo: 'rodar_analise', params: { leadId: l.id, banks }, descricao: `Rodar a análise de crédito do ${l.name} no ${banks.map((b) => NOME_BANCO[b]).join(', ')} (cria proposta nova no portal do banco).` }, p.fila);
     }
     case 'solicitar_vistoria': {
@@ -770,6 +895,15 @@ export async function confirmPendingAction(p: { accountId: string; userId: strin
     }
     case 'mover_card': await callApi(p.token, 'PATCH', `/leads/${x.leadId}/stage`, { stageId: x.stageId }); return { ok: true, resultado: 'Card movido.' };
     case 'marcar_status': await callApi(p.token, 'PUT', `/leads/${x.leadId}`, x.body); return { ok: true, resultado: 'Status alterado.' };
+    case 'registrar_proposta': {
+      const { parseProposalForm } = require('./campaign-detection.service') as typeof import('./campaign-detection.service');
+      const lido = parseProposalForm(x0.texto);
+      const campos: Record<string, unknown> = { ...(lido?.fields || {}), _propostaManual: { texto: x0.texto, at: new Date().toISOString(), userId: a.userId } };
+      // Só as chaves da proposta (jsonb ||): regravar o card inteiro apaga o que outro processo gravou no meio-tempo.
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify(campos)}::jsonb WHERE id = ${x0.leadId} AND "accountId" = ${a.accountId}`;
+      await prisma.note.create({ data: { leadId: x0.leadId, type: 'COMMENT', content: `📋 Proposta registrada pelo assistente (o cliente não preencheu o formulário). O card foi preenchido com estes dados e a extensão do Inter usa este texto:\n\n${x0.texto}` } });
+      return { ok: true, resultado: `Proposta registrada e card preenchido (${Object.keys(lido?.fields || {}).length} campos). Já dá pra rodar no Inter (rodar_analise).` };
+    }
     case 'rodar_analise': { const r = await callApi(p.token, 'POST', '/credit-analysis/requests', { leadIds: [x.leadId], banks: x.banks, kind: 'RUN' }); return { ok: true, resultado: `Análise pedida${r?.created ? ` (${r.created} na fila)` : ''}; a extensão roda com o Chrome aberto.` }; }
     case 'solicitar_vistoria': { const v = x.prev; await callApi(p.token, 'POST', '/vistorias/request', { leadId: x.leadId, to: v.to, cc: v.cc, subject: v.subject, body: v.body, replyToId: v.replyToId, attachDriveFileIds: v.ids }); return { ok: true, resultado: 'Pedido de vistoria enviado ao Inter.' }; }
     case 'enviar_onus_pos_registro': {
