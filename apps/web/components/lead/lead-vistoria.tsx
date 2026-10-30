@@ -220,7 +220,7 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
  * (autorização USECASA ao cliente → assinatura no gov.br → documentos da pasta + cadastro WEB CASAS → e-mail à Letícia). Ver vistoria-santander.service.ts. */
 type SantanderPreview =
   | { aplicavel: false }
-  | { aplicavel: true; status: string; statusTexto: string; askedAt: string | null; signedAt: string | null; sentAt: string | null; to: string; docs: { key: string; label: string; ok: boolean }[]; temLinkPasta: boolean };
+  | { aplicavel: true; financiamento?: boolean; status: string; statusTexto: string; askedAt: string | null; signedAt: string | null; sentAt: string | null; to: string; docs: { key: string; label: string; ok: boolean }[]; temLinkPasta: boolean };
 
 export function LeadVistoriaSantander({ leadId }: { leadId: string }) {
   const [p, setP] = useState<SantanderPreview | null>(null);
@@ -234,11 +234,14 @@ export function LeadVistoriaSantander({ leadId }: { leadId: string }) {
   const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : null);
 
   async function avancar() {
+    const fh = !!(p && p.aplicavel && p.financiamento);
     const msg = !p || !p.aplicavel ? '' : pronta || p.signedAt
-      ? `Conferir tudo e ENVIAR o pedido de vistoria à Letícia (${p.to}), com a autorização assinada, o cadastro WEB CASAS e os documentos da pasta?`
+      ? `Conferir tudo e ENVIAR o pedido de vistoria à Letícia (${p.to}), com ${fh ? 'a autorização e a declaração de saúde assinadas, a ficha de cadastro' : 'a autorização assinada, o cadastro WEB CASAS'} e os documentos da pasta?`
       : p.askedAt
-        ? 'Conferir agora se o cliente já devolveu a autorização assinada e se os documentos estão na pasta?'
-        : 'Mandar ao cliente, pelo WhatsApp, a autorização USECASA já preenchida para ele assinar pelo gov.br?';
+        ? `Conferir agora se o cliente já devolveu ${fh ? 'a autorização e a declaração de saúde assinadas' : 'a autorização assinada'} e se os documentos estão na pasta?`
+        : fh
+          ? 'Mandar ao cliente, pelo WhatsApp, a autorização do Santander (assinar pelo gov.br), a lista da declaração de saúde (ele confirma) e o pedido do contato do corretor/vendedor e da conta do vendedor?'
+          : 'Mandar ao cliente, pelo WhatsApp, a autorização USECASA já preenchida para ele assinar pelo gov.br?';
     if (!window.confirm(msg)) return;
     setBusy(true);
     try {
@@ -257,9 +260,11 @@ export function LeadVistoriaSantander({ leadId }: { leadId: string }) {
       </div>
       {enviada && <div className="mb-2 text-xs text-emerald-700">Pedido enviado à Letícia{p.sentAt ? ` em ${fmt(p.sentAt)}` : ''}.</div>}
       {!enviada && p.statusTexto && <div className={`mb-2 text-xs ${pronta ? 'text-amber-700' : p.status === 'ERRO' ? 'text-red-600' : 'text-slate-500'}`}>🏦 {p.statusTexto}</div>}
-      {!p.status && <div className="mb-2 text-xs text-slate-500">Ainda não iniciada. A vistoria do Santander sai por e-mail à Letícia: o CRM manda a autorização USECASA ao cliente (assinar pelo gov.br), junta o cadastro WEB CASAS e os documentos da pasta.</div>}
+      {!p.status && <div className="mb-2 text-xs text-slate-500">{p.financiamento
+        ? 'Ainda não iniciada. Financiamento: o CRM manda ao cliente a autorização e a declaração de saúde (assinar pelo gov.br), pede o contato do corretor/vendedor e a conta do vendedor, preenche a ficha de cadastro e junta os documentos da pasta; tudo vai por e-mail à Letícia.'
+        : 'Ainda não iniciada. A vistoria do Santander sai por e-mail à Letícia: o CRM manda a autorização USECASA ao cliente (assinar pelo gov.br), junta o cadastro WEB CASAS e os documentos da pasta.'}</div>}
       <ul className="mb-2 space-y-0.5 text-xs">
-        {p.docs.map((d) => <li key={d.key} className={d.ok ? 'text-emerald-700' : 'text-amber-700'}>{d.ok ? '✓' : '•'} {d.label}{d.ok ? '' : ' — falta na pasta do Drive'}</li>)}
+        {p.docs.map((d) => <li key={d.key} className={d.ok ? 'text-emerald-700' : 'text-amber-700'}>{d.ok ? '✓' : '•'} {d.label}{d.ok ? '' : d.key === 'conta' || d.key === 'contato' ? ' — falta (o CRM pede ao cliente)' : ' — falta na pasta do Drive'}</li>)}
       </ul>
       {!p.temLinkPasta && <div className="mb-2 text-xs text-red-600">Este card não tem pasta do Drive vinculada.</div>}
       {!enviada && (

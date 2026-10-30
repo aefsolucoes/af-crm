@@ -307,3 +307,35 @@ async function rodar(accountId: string, leadId: string, io: Io): Promise<void> {
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as Record<string, unknown>), _fichaCadastralErro: new Date().toISOString() } as any } }).catch(() => {});
   console.log(`[Ficha cadastral] ${leadId}: ${erro}`);
 }
+
+/** VENDEDOR do Financiamento (Fabio 30/10, vistoria do Santander: a ficha leva os dados do vendedor). Lê os documentos da subpasta VENDEDOR do Drive com o mesmo leitor
+ *  (o que está escrito, nunca inventado) e junta por pessoa (CPF, senão nome). Grava `_fichaVendedor` no card. Devolve as pessoas, ou null se não houver o que ler. */
+export async function lerVendedores(accountId: string, leadId: string): Promise<any[] | null> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  const link = String(((lead?.customFields || {}) as Record<string, any>).link_pasta_drive || '').trim();
+  if (!link) return null;
+  const google = await import('./google.service');
+  const todos = (await google.listAllFilesInFolderTree(accountId, google.extractFolderId(link), 3)) as Arquivo[];
+  const arquivos = todos.filter((f) => /vendedor/.test(norm(f.path)) && /pdf|^image\//.test(f.mimeType)).slice(0, 12);
+  if (!arquivos.length) return null;
+  const leituras = (await Promise.all(arquivos.map((f) => lerArquivo(accountId, f).catch(() => null)))).filter((l) => l && Array.isArray(l.pessoas));
+  const porPessoa = new Map<string, any>();
+  const funde = (a: any, b: any): any => {
+    if (a === null || a === undefined || a === '') return b;
+    if (typeof a === 'object' && !Array.isArray(a) && b && typeof b === 'object') { const o = { ...a }; for (const k of Object.keys(b)) o[k] = funde(a[k], b[k]); return o; }
+    return a;
+  };
+  for (const l of leituras) {
+    for (const p of l.pessoas) {
+      const chave = String(p.cpf || '').replace(/\D/g, '') || norm(String(p.nome || ''));
+      if (!chave) continue;
+      const tipo = String(l.tipo || '').toUpperCase();
+      const comId = /^(RG|CNH)$/.test(tipo) ? { ...p, identidade: { tipo, numero: tipo === 'CNH' ? p.cnh?.numero : p.rg?.numero, orgao: tipo === 'CNH' ? p.cnh?.orgao : p.rg?.orgao, uf: tipo === 'CNH' ? p.cnh?.uf : p.rg?.uf, emissao: tipo === 'CNH' ? p.cnh?.emissao : p.rg?.emissao } } : p;
+      porPessoa.set(chave, funde(porPessoa.get(chave), comId));
+    }
+  }
+  const pessoas = Array.from(porPessoa.values());
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as Record<string, unknown>), _fichaVendedor: { at: new Date().toISOString(), pessoas, arquivos: arquivos.map((f) => f.name) } } as any } });
+  return pessoas;
+}

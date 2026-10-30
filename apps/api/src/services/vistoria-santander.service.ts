@@ -298,9 +298,14 @@ const STATUS_TXT: Record<string, string> = {
 
 /** O que o card mostra: andamento, documentos da pasta (achou/faltou) e a CND de IPTU. `aplicavel` = o cliente tem aprovação do Santander (ou o fluxo já começou). */
 export async function santanderPreview(accountId: string, leadId: string) {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) throw new Error('Card não encontrado');
   const cf = (lead.customFields || {}) as Record<string, any>;
+  // Financiamento pelo Santander (Credimorar): fluxo próprio com 3 formulários (Fabio 30/10) — vistoria-santander-fh.service
+  if (/habitacional/i.test(lead.pipeline?.department?.name || '')) {
+    if (!/^santander$/i.test(String(cf._fhChosen?.bank || '')) && !cf._vistoriaSantFh) return { aplicavel: false as const };
+    return (require('./vistoria-santander-fh.service') as typeof import('./vistoria-santander-fh.service')).santanderFhPreview(accountId, leadId);
+  }
   const st = (cf._vistoriaSant || {}) as St;
   const aprov = await prisma.creditAnalysis.count({ where: { leadId, bank: 'CREDIMORAR', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } } });
   const aplicavel = aprov > 0 || !!cf._vistoriaSant;
@@ -327,8 +332,9 @@ export async function santanderPreview(accountId: string, leadId: string) {
 
 /** Botão do card: avança o fluxo AGORA (manda a autorização ao cliente, confere assinatura/documentos e, se tudo estiver pronto, envia o e-mail à Letícia). Devolve o preview novo. */
 export async function executarVistoriaSantander(accountId: string, leadId: string, io: Io) {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) throw new Error('Card não encontrado');
-  await processVistoriaSantander(accountId, leadId, io, { manual: true });
+  if (/habitacional/i.test(lead.pipeline?.department?.name || '')) await (require('./vistoria-santander-fh.service') as typeof import('./vistoria-santander-fh.service')).processVistoriaSantanderFh(accountId, leadId, io, { manual: true });
+  else await processVistoriaSantander(accountId, leadId, io, { manual: true });
   return santanderPreview(accountId, leadId);
 }

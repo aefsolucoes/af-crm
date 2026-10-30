@@ -70,19 +70,32 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
       }
       return;
     }
+    // Santander (Credimorar): autorização + declaração de saúde assinadas pelo gov.br + ficha + documentos → Letícia (Fabio 30/10) — vistoria-santander-fh.service
+    if (/^santander$/i.test(b)) {
+      const sfh = require('./vistoria-santander-fh.service') as typeof import('./vistoria-santander-fh.service');
+      const auto = await contractingAutoOn(accountId);
+      if (!auto && !(cf._vistoriaSantFh || {}).startedByTeam) {
+        const avisou = await manualStep({ accountId, leadId, leadName: lead.name, step: 'vistoria', pushTitle: '🏠 Solicitar a vistoria', pushBody: `${lead.name}: documentação completa, Financiamento pelo Santander`,
+          note: '🏠 Documentação completa; o cliente segue pelo Santander (Financiamento). Passo manual (automação da contratação desligada): na vistoria do Santander do card, clique em "Iniciar / avançar": o CRM manda a autorização e a declaração de saúde pra assinar pelo gov.br, pede ao cliente o contato do corretor/vendedor e os dados do vendedor, preenche a ficha e junta os documentos; você envia à Letícia no botão "Enviar à Letícia".' });
+        if (avisou) await salva(leadId, { status: 'AGUARDA_EQUIPE', banco: b, since: st.since || new Date().toISOString() });
+        return;
+      }
+      if (st.status !== 'SANTANDER') await salva(leadId, { status: 'SANTANDER', banco: b, since: st.since || new Date().toISOString() });
+      const enviado = await sfh.processVistoriaSantanderFh(accountId, leadId, io as any, { holdSend: !auto });
+      if (enviado) await salva(leadId, { status: 'ENVIADA', banco: b, at: new Date().toISOString(), por: auto ? 'IA' : 'equipe' });
+      return;
+    }
     if (b !== 'INTER') {
       await salva(leadId, { status: 'MANUAL', banco: b, at: new Date().toISOString() });
       await note(leadId, `🏠 Financiamento: documentação completa; o cliente segue pelo ${b}. A contratação desse banco (vistoria etc.) ainda é feita à mão — o fluxo automático do Financiamento por enquanto é só do Inter.`);
       push(accountId, '🏠 Vistoria à mão', `${lead.name}: Financiamento pelo ${b} — solicitar a vistoria`, leadId);
       return;
     }
-    // No Financiamento o imóvel é do VENDEDOR: quem recebe o engenheiro raramente é o comprador. Sem o campo "Contato vistoria", a equipe preenche antes (uma vez só o aviso).
+    // No Financiamento o imóvel é do VENDEDOR: quem recebe o engenheiro raramente é o comprador. Sem o "Contato vistoria", o CRM pergunta ao cliente o contato do corretor (ou do vendedor) — Fabio 30/10;
+    // a resposta preenche o campo. Sem IA/automação/janela, a equipe recebe nota + push.
     if (!String(cf.contato_vistoria || '').trim()) {
-      if (!st.contatoNoteAt) {
-        await salva(leadId, { contatoNoteAt: new Date().toISOString(), since: st.since || new Date().toISOString() });
-        await note(leadId, '🏠 Financiamento pelo Inter: antes de solicitar a vistoria, preencha no card o campo "Contato vistoria" (nome e telefone de quem recebe o engenheiro no imóvel — normalmente o vendedor ou o corretor). Com ele preenchido, a IA segue sozinha.');
-        push(accountId, '🏠 Contato da vistoria', `${lead.name}: quem recebe o engenheiro no imóvel?`, leadId);
-      }
+      if (!st.contatoNoteAt) await salva(leadId, { contatoNoteAt: new Date().toISOString(), since: st.since || new Date().toISOString() });
+      try { const { pedirDadosVistoriaFh } = require('./vistoria-santander-fh.service') as typeof import('./vistoria-santander-fh.service'); await pedirDadosVistoriaFh(accountId, leadId, 'Inter', io as any); } catch (e: any) { console.warn('[Vistoria FH] contato:', e?.message); }
       // o "seguir com proposta" não depende do contato: já pergunta ao cliente enquanto a equipe preenche
       try { const { ensureInterSeguir } = require('./inter-seguir.service') as typeof import('./inter-seguir.service'); await ensureInterSeguir(accountId, leadId, io as any); } catch (e: any) { console.warn('[Inter seguir]', e?.message); }
       return;
