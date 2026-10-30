@@ -40,7 +40,7 @@ type Q = {
   askedAt?: string; templateAt?: string; cobrouAt?: string; lidoAt?: string;
   vencimento?: number | null; despesas?: 'SIM' | 'NAO' | null; dadosOk?: boolean | null;
   profissao?: string | null; email?: string | null; telefone?: string | null; duvida?: string | null;
-  enviadoAt?: string; erro?: string;
+  enviadoAt?: string; enderecoEnviadoAt?: string; erro?: string;
 };
 type Dados = { nome: string; profissao: string | null; email: string | null; telefone: string | null };
 
@@ -389,9 +389,44 @@ async function retomarSemFluxo(accountId: string, io?: Io): Promise<void> {
   }
 }
 
+/** E-mail que saiu com "Endereço dos proponentes: (confirmo em seguida)" (Pedro, 30/10, antes do endereço pelo CEP do card): manda o endereço no mesmo fio, uma vez
+ *  (Fabio: "pode mandar o endereço pro André"). */
+async function complementarEndereco(accountId: string, io?: Io): Promise<void> {
+  const ids = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT l.id FROM "Lead" l WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false
+      AND l."customFields"->'_interQuest'->>'status' = 'ENVIADO' AND COALESCE(l."customFields"->'_interQuest'->>'enderecoEnviadoAt', '') = ''
+      AND EXISTS (SELECT 1 FROM "Message" m WHERE m."leadId" = l.id AND m.channel = 'EMAIL' AND m.direction = 'OUTBOUND' AND m."createdAt" > now() - interval '7 days'
+                  AND m.content LIKE '%Endereço dos proponentes: (confirmo em seguida)%')`;
+  for (const { id } of ids) {
+    const lead = await prisma.lead.findUnique({ where: { id }, select: { name: true, customFields: true } });
+    if (!lead) continue;
+    const cf = (lead.customFields || {}) as Cf;
+    const q = (cf._interQuest || {}) as Q;
+    const endereco = await enderecoTexto(id, cf);
+    if (!endereco) continue;
+    const row = q.emailId ? await prisma.emailMessage.findUnique({ where: { id: q.emailId }, select: { id: true, emailAccountId: true, fromAddress: true, fromName: true, subject: true } }) : null;
+    const acc = row ? await prisma.emailAccount.findUnique({ where: { id: row.emailAccountId } }) : null;
+    if (!row || !acc || !row.fromAddress) continue;
+    await salva(id, { enderecoEnviadoAt: new Date().toISOString() }); // antes do envio: nunca manda 2×
+    const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+    const consultor = PRIMEIRO_NOME(row.fromName);
+    const sub = String(row.subject || 'Home Equity').trim();
+    const d = dadosDoTitular(cf, lead.name, q);
+    try {
+      const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+      await sendEmailFrom({ acc, userId: dono?.id || null, to: [row.fromAddress], subject: /^re:/i.test(sub) ? sub : `Re: ${sub}`, body: `Olá${consultor ? `, ${consultor}` : ''}!\n\nComplementando o questionário do cliente ${d.nome}:\n• Endereço dos proponentes: ${endereco}\n\nQualquer dúvida, fico à disposição.`, replyToId: row.id, leadId: id, io: (io || ({ to: () => ({ emit: () => {} }) })) as any });
+    } catch (e: any) {
+      await note(id, `⚠️ Questionário do Inter: o complemento com o endereço não saiu (${e?.message}). Mande à mão: ${endereco}`);
+      continue;
+    }
+    await note(id, `📨 Endereço dos proponentes enviado ao Inter (complemento do questionário): ${endereco}`);
+  }
+}
+
 /** Poller (1 min, credit-auto): pergunta quem está esperando, fecha quem só não confirmou os dados há 24 h e manda o e-mail que estava esperando (responsável da Zeev / endereço). */
 export async function processQuestionariosInter(accountId: string, io?: Io): Promise<void> {
   await retomarSemFluxo(accountId, io).catch((e: any) => console.warn('[Questionário Inter] retomar:', e?.message));
+  await complementarEndereco(accountId, io).catch((e: any) => console.warn('[Questionário Inter] endereço:', e?.message));
   const ids = await prisma.$queryRaw<{ id: string; status: string }[]>`
     SELECT id, "customFields"->'_interQuest'->>'status' AS status FROM "Lead"
     WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND "isGroup" = false
