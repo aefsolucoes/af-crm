@@ -1541,6 +1541,29 @@ async function imageWithoutContext(leadId: string): Promise<boolean> {
   return !pediu;
 }
 
+// Pergunta/pedido do cliente (não é "ok", nem só arquivo): ficar mudo aqui deixa o cliente esperando.
+const PERGUNTA_RX = /\?|\b(e|é) poss[ií]vel|\bd[aá] (pra|para)\b|\bconsegu|\bpode(m|ria)?\b|\bqual|\bquais|\bquanto|\bcomo\b|\bquando\b|\bonde\b|\bpor ?qu[eê]|\btentar\b|\bgostaria|\bquero\b|\bpreciso\b/i;
+
+/** A IA escolheu não responder e não levou nada pra equipe (Fabio 30/10, Kelli: perguntou se dava pra tentar o Inter e ficou sem resposta, sem rastro nenhum).
+ *  Mensagem com pergunta/pedido → nota no card + push "responda à mão". Sempre deixa log. */
+async function avisaSilencioDaIa(accountId: string, leadId: string, texto: string, semAcao: boolean): Promise<void> {
+  const t = (texto || '').trim();
+  console.log(`[IA] ${leadId}: noReply sem askTeam${semAcao ? '' : ' (com ação)'} — "${t.replace(/\s+/g, ' ').slice(0, 80)}"`);
+  if (!semAcao || !t || !PERGUNTA_RX.test(t)) return;
+  const { isAcknowledgmentOnly } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
+  if (isAcknowledgmentOnly(t) || t.split('\n').every((l) => !l.trim() || /^📎|^\(imagem\)$/.test(l.trim()))) return;
+  // A mesma dúvida já está no balão (regra do prompt: aí ela fica quieta de propósito).
+  const aberta = await prisma.aiTeamQuestion.findFirst({ where: { leadId, status: 'OPEN' }, select: { id: true } });
+  if (aberta) return;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A IA não respondeu a última mensagem do cliente e não levou a dúvida pra equipe. Responda à mão.\nCliente: "${t.replace(/\s+/g, ' ').slice(0, 300)}"` } });
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
+  (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, {
+    title: 'IA não respondeu o cliente',
+    body: `${lead?.name || 'Cliente'}: "${t.replace(/\s+/g, ' ').slice(0, 90)}" — responda à mão.`,
+    leadId,
+  }).catch(() => {});
+}
+
 async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
   try {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
@@ -1617,6 +1640,9 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
       if (genResult.askTeam) {
         const { createAiTeamQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
         await createAiTeamQuestion({ accountId, leadId, question: genResult.askTeam, clientMessage: textToAnswer, io });
+      } else {
+        const semAcao = !(moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulate || chooseBank);
+        await avisaSilencioDaIa(accountId, leadId, textToAnswer, semAcao).catch((e) => console.error('[IA] aviso de silêncio falhou:', e?.message));
       }
       return;
     }
