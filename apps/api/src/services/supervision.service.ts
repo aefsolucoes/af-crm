@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { buildSharedAiContext } from './ai-shared.service';
+import { buildSharedAiContext, aiEmailsContext } from './ai-shared.service';
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 
@@ -30,7 +30,9 @@ Recebe UM cliente que está na fase de CONTRATAÇÃO (crédito aprovado; documen
 Responda SOMENTE com JSON, sem markdown:
 {"resumo":"2 a 4 frases: quem é, o que já aconteceu e onde o processo está","situacao":"uma frase curta com a etapa real (ex.: aguardando o laudo do Inter)","pendencias":"o que falta, em itens separados por '; ' (vazio se nada)","sugestao":"a mensagem pronta para mandar ao cliente AGORA pelo WhatsApp, no tom da equipe, curta, sem emoji, chamando pelo primeiro nome — ou vazio se o certo agora é NÃO falar com o cliente (ex.: a bola está com o banco e ele já foi avisado ontem)","acao":"o que a equipe deveria fazer além da mensagem (cobrar o banco, pedir certidão, solicitar vistoria…) — ou vazio"}
 
-Regras: nunca invente fato, valor ou prazo que não esteja na conversa/estado; nunca anuncie aprovação de crédito em texto livre; se o cliente fez uma pergunta que ficou sem resposta, a sugestão responde a pergunta (ou diz que a equipe vai verificar); se ele está parado há dias sem mandar o que falta, a sugestão cobra com gentileza o item específico.`;
+E-MAILS DO PROCESSO (Fabio 30/10): leia também os e-mails do banco/consultor e os da A&F. O que o banco pediu ou travou por e-mail (laudo/vistoria sem agendar, documento faltando, correção, cliente sem retorno) entra no resumo, nas pendências e na ação — dizendo quem providencia (cliente, vendedor/corretor ou a equipe). Se o banco espera algo do CLIENTE e a conversa não mostra que ele já foi avisado, a sugestão repassa isso bem resumido, em linguagem simples, sem citar nome de consultor, protocolo ou número de proposta. Resultado de crédito que veio por e-mail não vai na sugestão. E-mail da A&F pro banco ainda sem resposta há dias = ação de cobrar o banco.
+
+Regras: nunca invente fato, valor ou prazo que não esteja na conversa/estado/e-mails; nunca anuncie aprovação de crédito em texto livre; se o cliente fez uma pergunta que ficou sem resposta, a sugestão responde a pergunta (ou diz que a equipe vai verificar); se ele está parado há dias sem mandar o que falta, a sugestão cobra com gentileza o item específico.`;
 
 function parse(raw: string): { resumo: string; situacao: string; pendencias: string; sugestao: string; acao: string } | null {
   const m = /\{[\s\S]*\}/.exec(String(raw || ''));
@@ -73,6 +75,9 @@ function push(accountId: string, ids: string[], title: string, body: string) {
 }
 
 /** Resume UM cliente (sem gravar nada). */
+/** E-mails do processo pra supervisão: 21 dias, até 8, com o Engajamento Automático do Inter. */
+const emailsDaSupervisao = (leadId: string) => aiEmailsContext(leadId, { dias: 21, max: 8, chars: 1200, comEngajamento: true }).catch(() => '');
+
 export async function summarizeLead(accountId: string, leadId: string, leadName: string) {
   const l = { id: leadId, name: leadName };
     const ctx = await buildSharedAiContext(accountId, l.id, '', { fullHistory: true, historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' } }).catch(() => null);
@@ -80,17 +85,19 @@ export async function summarizeLead(accountId: string, leadId: string, leadName:
     const ultimaIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
     const janela = ultimaIn && Date.now() - ultimaIn.createdAt.getTime() < 23 * 3600_000 ? 'ABERTA (dá pra mandar texto)' : 'FECHADA (só template; a sugestão vai ser enviada pela equipe quando ele responder)';
     const hoje = brtNow().toISOString().slice(0, 10);
+    const emails = await emailsDaSupervisao(l.id);
     const contexto = [
       `Hoje: ${hoje}. Cliente: ${l.name}. Etapa: ${ctx.etapaTexto}. Banco: ${ctx.bancoTexto || '?'}. Janela do WhatsApp: ${janela}.`,
       ctx.nomeTexto ? `Como chamar: ${ctx.nomeTexto}` : '',
       ctx.creditoTexto ? `--- ESTADO DO CARD ---\n${ctx.creditoTexto}` : '',
       `--- CONVERSA ---\n${ctx.historicoTexto}`,
+      emails,
     ].filter(Boolean).join('\n\n');
     return ask(contexto);
 }
 
 /** Monta (ou completa) a lista da semana. force = roda fora do horário (botão "Gerar agora"). Devolve quantos cards entraram. */
-export async function buildWeeklySupervision(accountId: string, opts: { force?: boolean; notify?: boolean } = {}): Promise<{ weekKey: string; criados: number; total: number }> {
+export async function buildWeeklySupervision(accountId: string, opts: { force?: boolean; notify?: boolean; refazerComEmail?: boolean } = {}): Promise<{ weekKey: string; criados: number; total: number; refeitos?: number }> {
   const weekKey = weekKeyFor();
   const leads = await prisma.lead.findMany({
     where: { accountId, archived: false, status: 'OPEN', isGroup: false, pipeline: { name: { startsWith: 'Em contrata' } } },
@@ -105,9 +112,23 @@ export async function buildWeeklySupervision(accountId: string, opts: { force?: 
     await prisma.supervisionItem.create({ data: { accountId, leadId: l.id, weekKey, ...out } }).catch(() => {});
     criados++;
   }
+  // Itens da semana feitos antes de a supervisão ler e-mail (Fabio 30/10): os PENDENTES de card com e-mail no período são refeitos no lugar (enviados/feitos/pulados ficam).
+  let refeitos = 0;
+  if (opts.refazerComEmail) {
+    const pend = await prisma.supervisionItem.findMany({ where: { accountId, weekKey, status: 'PENDING' }, select: { id: true, leadId: true } });
+    const nomes = new Map((await prisma.lead.findMany({ where: { id: { in: pend.map((p) => p.leadId) } }, select: { id: true, name: true } })).map((x) => [x.id, x.name]));
+    for (const it of pend) {
+      if (!(await emailsDaSupervisao(it.leadId))) continue;
+      const out = await summarizeLead(accountId, it.leadId, nomes.get(it.leadId) || '');
+      if (!out) continue;
+      await prisma.supervisionItem.update({ where: { id: it.id }, data: out }).catch(() => {});
+      ctxCache.delete(it.id);
+      refeitos++;
+    }
+  }
   const total = await prisma.supervisionItem.count({ where: { accountId, weekKey } });
   if (opts.notify !== false && total > 0) push(accountId, await supervisorIds(accountId), '📋 Supervisão de sexta', `${total} cliente(s) em contratação pra revisar, um por um.`);
-  return { weekKey, criados, total };
+  return { weekKey, criados, total, refeitos };
 }
 
 const ran = new Set<string>();
@@ -197,7 +218,7 @@ export async function actOnSupervision(accountId: string, userId: string, id: st
 // A voz é do navegador (fala → texto → aqui → texto → fala). A IA conversa com o Fabio sobre ESTE cliente: explica, ajusta a mensagem sugerida, responde dúvidas
 // com base na conversa e no estado do card. NUNCA envia nada ao cliente: no máximo devolve uma mensagem nova pro rascunho; o envio continua no botão.
 const VOICE_SYSTEM = `Você é a IA do CRM da A&F Soluções Financeiras conversando POR VOZ com o Fabio, dono da empresa, durante a supervisão semanal dos clientes em contratação.
-Você conhece este cliente pela conversa de WhatsApp inteira e pelo estado do card (abaixo). Fale como numa conversa falada: frases curtas, no máximo 4 frases, sem listas, sem markdown, sem emoji, sem ler links ou números longos.
+Você conhece este cliente pela conversa de WhatsApp inteira, pelos e-mails do processo e pelo estado do card (abaixo). Fale como numa conversa falada: frases curtas, no máximo 4 frases, sem listas, sem markdown, sem emoji, sem ler links ou números longos.
 Nunca invente fatos. Se não souber, diga que não está na conversa. Você NÃO envia nada ao cliente: se o Fabio pedir pra mudar a mensagem, devolva o texto novo em "mensagem"; pra mandar, ele clica em Enviar.
 Responda SOMENTE com JSON, sem markdown: {"fala":"o que você responde em voz","mensagem":"novo texto da mensagem pro cliente, só se o Fabio pediu pra mudar/criar — senão vazio","comando":"PULAR | FEITO | PROXIMO | PARAR | vazio"}
 Use comando quando o Fabio mandar pular, marcar como feito/resolvido, ir pro próximo ou parar a conversa.`;
@@ -211,7 +232,7 @@ export async function chatOnSupervision(accountId: string, id: string, history: 
   if (!cache || Date.now() - cache.at > 30 * 60_000) {
     const ctx = await buildSharedAiContext(accountId, it.leadId, '', { fullHistory: true, historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' } });
     if (!ctx) throw new Error('Card não encontrado');
-    cache = { at: Date.now(), texto: [`Etapa: ${ctx.etapaTexto}. Banco: ${ctx.bancoTexto || '?'}.`, ctx.nomeTexto ? `Como chamar: ${ctx.nomeTexto}` : '', ctx.creditoTexto ? `--- ESTADO DO CARD ---\n${ctx.creditoTexto}` : '', `--- CONVERSA DO CLIENTE ---\n${ctx.historicoTexto}`].filter(Boolean).join('\n\n') };
+    cache = { at: Date.now(), texto: [`Etapa: ${ctx.etapaTexto}. Banco: ${ctx.bancoTexto || '?'}.`, ctx.nomeTexto ? `Como chamar: ${ctx.nomeTexto}` : '', ctx.creditoTexto ? `--- ESTADO DO CARD ---\n${ctx.creditoTexto}` : '', `--- CONVERSA DO CLIENTE ---\n${ctx.historicoTexto}`, await emailsDaSupervisao(it.leadId)].filter(Boolean).join('\n\n') };
     ctxCache.set(id, cache);
   }
   const cartao = `--- O QUE A SUPERVISÃO MOSTROU ---\nResumo: ${it.resumo}\nOnde está: ${it.situacao || '-'}\nPendências: ${it.pendencias || '-'}\nSugestão pra equipe: ${it.acao || '-'}\nMensagem no rascunho agora: ${rascunho || '(vazia)'}`;

@@ -432,20 +432,22 @@ export function cleanEmailForAi(content: string, max = 750): { subject: string; 
   return { subject, body: body.length > max ? `${body.slice(0, max)}…` : body };
 }
 
-/** Bloco com os e-mails recentes do card (até 5, últimos 10 dias) pra IA que conversa com o cliente. '' se não houver nenhum relevante. */
-export async function aiEmailsContext(leadId: string): Promise<string> {
+/** Bloco com os e-mails recentes do card (até 5, últimos 10 dias) pra IA que conversa com o cliente. '' se não houver nenhum relevante.
+ *  A supervisão de sexta (Fabio 30/10: "precisa ver e-mails") pede uma janela maior, mais e-mails e o "Engajamento Automático" do Inter (traz pendência do laudo/vistoria). */
+export async function aiEmailsContext(leadId: string, opts: { dias?: number; max?: number; chars?: number; comEngajamento?: boolean } = {}): Promise<string> {
+  const { dias = 10, max = 5, chars = 750, comEngajamento = false } = opts;
   const rows = await prisma.message.findMany({
-    where: { leadId, channel: 'EMAIL', createdAt: { gte: new Date(Date.now() - 10 * 86_400_000) } },
+    where: { leadId, channel: 'EMAIL', createdAt: { gte: new Date(Date.now() - dias * 86_400_000) } },
     orderBy: { createdAt: 'desc' },
-    take: 12,
+    take: Math.max(12, max * 2),
     select: { direction: true, content: true, createdAt: true },
   });
   const itens = rows
-    .filter((m) => /^📧/.test(m.content) && !/Engajamento Autom[aá]tico/i.test(m.content.split('\n')[0]))
-    .slice(0, 5)
+    .filter((m) => /^📧/.test(m.content) && (comEngajamento || !/Engajamento Autom[aá]tico/i.test(m.content.split('\n')[0])))
+    .slice(0, max)
     .reverse()
     .map((m) => {
-      const { subject, body } = cleanEmailForAi(m.content);
+      const { subject, body } = cleanEmailForAi(m.content, chars);
       if (!body) return '';
       const quando = m.createdAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
       return `- ${m.direction === 'INBOUND' ? 'RECEBIDO (do banco/consultor)' : 'ENVIADO pela A&F'} em ${quando} — assunto "${subject.slice(0, 90)}": ${body}`;

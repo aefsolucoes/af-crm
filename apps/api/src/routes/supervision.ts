@@ -14,7 +14,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 // Gera a lista desta semana agora (sem esperar a sexta) — completa só os cards que ainda não têm item.
 router.post('/generate', async (req: AuthRequest, res: Response) => {
-  try { res.json(await buildWeeklySupervision(req.user!.accountId, { force: true, notify: false })); } catch (err) { fail(res, err, 'Erro ao gerar', 500); }
+  try { res.json(await buildWeeklySupervision(req.user!.accountId, { force: true, notify: false, refazerComEmail: req.body?.refazerComEmail === true })); } catch (err) { fail(res, err, 'Erro ao gerar', 500); }
 });
 // Voz natural (ElevenLabs) — devolve mp3; sem crédito = 503 (a tela usa a voz do navegador).
 router.post('/tts', async (req: AuthRequest, res: Response) => {
