@@ -27,7 +27,7 @@ const PROTO_SRC = '[A-Z]{1,3}\\d{6,16}[A-Z]{0,3}';
 const PROTO_OK = new RegExp(`^${PROTO_SRC}$`);
 const PROTO_IN_TEXT = () => new RegExp(`\\b${PROTO_SRC}\\b`, 'g');
 const PAID_CHECK_EVERY_MIN = 240; // 29/10: 4 em 4 h — antes: depois do pagamento confirmado, confere a emissão de 5 em 5 h (Fabio 19/10); o e-mail do cartório adianta
-const ACTIVE = ['FIND', 'FINDING', 'REQUESTED', 'RUNNING', 'AWAITING_PAYMENT']; // FIND/FINDING = achando o cartório no Mapa do ONR antes do pedido (Fabio 29/10)
+const ACTIVE = ['FIND_WEB', 'FIND', 'FINDING', 'REQUESTED', 'RUNNING', 'AWAITING_PAYMENT']; // FIND/FINDING = achando o cartório no Mapa do ONR antes do pedido (Fabio 29/10)
 
 export const onlyDigits = (v: unknown) => String(v ?? '').replace(/\D/g, '');
 const brl = (cents: number | null | undefined) => `R$ ${((cents || 0) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -133,12 +133,32 @@ export async function createCertidaoRequest(db: Db, p: { accountId: string; lead
   }
   if (p.source === 'MAPA' && !precisaAchar) return { request: null as any, duplicate: true }; // só consulta e não precisa do mapa: nada a fazer
   const request = await db.certidaoRequest.create({
-    data: { ...(precisaAchar ? { status: 'FIND' } : {}), accountId: p.accountId, leadId: p.leadId, uf, cidade, cartorio, matricula, pedidoPor: porEndereco ? 'ENDERECO' : 'MATRICULA', endereco: (endereco as any) ?? undefined, source: p.source || 'USER', requestedById: p.userId, sendPix: p.sendPix !== false, clientIntro: p.clientIntro?.trim() || null },
+    data: { ...(precisaAchar ? { status: 'FIND_WEB' } : {}), accountId: p.accountId, leadId: p.leadId, uf, cidade, cartorio, matricula, pedidoPor: porEndereco ? 'ENDERECO' : 'MATRICULA', endereco: (endereco as any) ?? undefined, source: p.source || 'USER', requestedById: p.userId, sendPix: p.sendPix !== false, clientIntro: p.clientIntro?.trim() || null },
   });
+  if (precisaAchar) void acharCartorioPelaWeb(db, request.id);
   if (p.source === 'MAPA') { await note(db, p.leadId, `🗺️ O cliente não tem matrícula nem cartório nos documentos: o CRM vai achar o cartório do imóvel no Mapa do ONR pelo endereço (${enderecoTexto(endereco)}, ${cidade}/${uf}) e gravar no card. NÃO é pedido de certidão (nada é cobrado).`, p.userId); return { request, duplicate: false }; }
   const oQue = porEndereco ? `pelo ENDEREÇO do imóvel (${enderecoTexto(endereco)}, ${cidade}/${uf} — o cliente não sabe a matrícula)` : `de matrícula nº ${matricula} (${cartorio === 'AUTO' ? cidade : cartorio}/${uf})`;
   await note(db, p.leadId, `🏛️ Certidão ${oQue} pedida pelo CRM — a extensão "Certidão ONR" faz o pedido no RI Digital e o PIX ${request.sendPix ? 'vai direto ao cliente' : 'fica guardado aqui'}.${ajuste}`, p.userId);
   return { request, duplicate: false };
+}
+
+/** 1º tenta a PESQUISA NA WEB (Claude + fontes oficiais, ~20 s); achou com confiança alta → mesmo caminho do "cartorio_found" (card, nota, região, fila do pedido). Senão o pedido vai pra fase FIND (Mapa do ONR pela extensão). */
+async function acharCartorioPelaWeb(db: Db, id: string): Promise<void> {
+  try {
+    const r = await db.certidaoRequest.findUnique({ where: { id } });
+    if (!r || r.status !== 'FIND_WEB') return;
+    const e = (r.endereco || {}) as EnderecoCertidao;
+    const achado = await (require('./cartorio-regiao.service') as typeof import('./cartorio-regiao.service')).cartorioPelaWeb({ uf: r.uf, cidade: r.cidade, endereco: `${e.tipoLogradouro || ''} ${e.logradouro || ''}, ${e.numero || ''}`.trim(), bairro: e.bairro, cep: e.cep });
+    const atual = await db.certidaoRequest.findUnique({ where: { id }, select: { status: true } });
+    if (atual?.status !== 'FIND_WEB') return;
+    if (achado?.numero) {
+      const cartorio = `${String(achado.numero).padStart(2, '0')}º - ${r.cidade.toUpperCase()}`;
+      await reportCertidao(db, { accountId: r.accountId, id, data: { event: 'cartorio_found', cidade: r.cidade, cartorio, origem: `Pesquisa na web — ${achado.cartorio}: ${achado.motivo} (${achado.fonte})` } as any });
+    } else await db.certidaoRequest.update({ where: { id }, data: { status: 'FIND', detail: 'A pesquisa nas fontes oficiais não fechou o cartório: vai pro Mapa do ONR (extensão).' } });
+  } catch (err: any) {
+    console.warn('[Certidão] pesquisa do cartório na web:', err?.message);
+    await db.certidaoRequest.updateMany({ where: { id, status: 'FIND_WEB' }, data: { status: 'FIND' } }).catch(() => {});
+  }
 }
 
 export async function listCertidoes(db: Db, p: { accountId: string; leadId?: string; limit?: number }) {
@@ -152,6 +172,7 @@ export async function listCertidoes(db: Db, p: { accountId: string; leadId?: str
 /** Pedidos que ficaram sem dono: o que já tem protocolo vira "aguardando pagamento" (a fase PIX acha o código); o que não tem NÃO é refeito sozinho (pode já existir no portal e cobrar de novo). */
 async function expireStuck(db: Db, accountId: string) {
   const agora = Date.now();
+  await db.certidaoRequest.updateMany({ where: { accountId, status: 'FIND_WEB', createdAt: { lt: new Date(agora - 5 * 60_000) } }, data: { status: 'FIND' } }).catch(() => {});
   // Achando o cartório há mais de 10 min (extensão fechada/travou): falha com motivo — dá pra pedir de novo.
   await db.certidaoRequest.updateMany({ where: { accountId, status: 'FINDING', startedAt: { lt: new Date(agora - 10 * 60_000) } }, data: { status: 'FAILED', finishedAt: new Date(), detail: 'A extensão não respondeu ao procurar o cartório no Mapa do ONR (10 min). Peça de novo.' } }).catch(() => {});
   const rodando = await db.certidaoRequest.findMany({ where: { accountId, status: 'RUNNING', startedAt: { lt: new Date(agora - RUNNING_TTL_MIN * 60_000) } }, select: { id: true, leadId: true, protocolo: true, matricula: true } });
@@ -288,9 +309,9 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
     // O cartório da escritura não fica na cidade dela no portal (DF: cada Ofício numa região): a extensão achou em outra cidade do estado e memorizou.
     const cidade = String(d.cidade || '').trim().slice(0, 80), cartorio = String(d.cartorio || '').trim().slice(0, 120);
     if (!cidade || !cartorio) throw new Error('cidade/cartório vazios');
-    const achando = r.status === 'FINDING' || r.status === 'FIND';
+    const achando = r.status === 'FINDING' || r.status === 'FIND' || r.status === 'FIND_WEB';
     out = await db.certidaoRequest.update({ where: { id: r.id }, data: { cidade, cartorio, ...(achando ? (r.source === 'MAPA' ? { status: 'LOOKUP_DONE', finishedAt: new Date() } : { status: 'REQUESTED', startedAt: null }) : {}), detail: achando ? (r.source === 'MAPA' ? `Só consulta: cartório ${cartorio} gravado no card.` : `Cartório achado no Mapa do ONR: ${cartorio}. Agora a extensão faz o pedido no RI Digital.`) : `Cartório achado no portal: ${cartorio} (${cidade}).` } });
-    const doMapa = /^Mapa do ONR/i.test(String(d.origem || ''));
+    const doMapa = /^(Mapa do ONR|Pesquisa na web)/i.test(String(d.origem || ''));
     if (doMapa) {
       // Achado pelo Mapa do ONR (endereço → cartório): o CRM grava NA HORA a região (CEP + bairro → cartório), sem esperar a certidão sair (Fabio 29/10: "esse conhecimento deve ir pro CRM também").
       const e = (r.endereco || {}) as any;
@@ -305,7 +326,7 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
           await db.lead.update({ where: { id: r.leadId }, data: { customFields: cf as any } });
         }
       } catch { /* o card é bônus */ }
-      await note(db, r.leadId, `🗺️ Certidão: o Mapa do ONR diz que o imóvel é do ${cartorio} (${String(d.origem).replace(/^Mapa do ONR\s*—\s*/i, '')}). O CRM guardou pra região (CEP ${String(e.cep || '').slice(0, 5)} / ${e.bairro || '—'}).`, r.requestedById);
+      await note(db, r.leadId, `🗺️ Certidão: ${/^Pesquisa/i.test(String(d.origem)) ? 'a pesquisa nas fontes oficiais' : 'o Mapa do ONR'} diz que o imóvel é do ${cartorio} (${String(d.origem).replace(/^(Mapa do ONR|Pesquisa na web)\s*—\s*/i, '')}). O CRM guardou pra região (CEP ${String(e.cep || '').slice(0, 5)} / ${e.bairro || '—'}).`, r.requestedById);
     } else await note(db, r.leadId, `🏛️ Certidão: o cartório "${String(d.origem || r.cartorio)}" fica no portal como ${cartorio} (cidade ${cidade}). A extensão memorizou pra próxima vez.`, r.requestedById);
   } else if (d.event === 'ordered') {
     const protocolo = String(d.protocolo || '').trim();
