@@ -138,6 +138,10 @@ function splitEmailContent(content: string): { subject: string; body: string; fr
   return { subject, body: rest.join('\n').replace(/^\n+/, ''), fromSiteForm };
 }
 
+/** "Nome <email>" (ou só o e-mail) — remetente/destinatário no balão de e-mail (Fabio 30/10). */
+const emailPessoa = (p?: { name?: string | null; address?: string | null } | null) =>
+  !p ? '' : p.name && p.address && p.name.trim().toLowerCase() !== p.address.toLowerCase() ? `${p.name.trim()} <${p.address}>` : (p.address || p.name || '').trim();
+
 function fillMetaTemplate(text: string, vars: Record<number, string>): string {
   return text.replace(/\{\{(\d+)\}\}/g, (_, n) => vars[parseInt(n, 10)] || `{{${n}}}`);
 }
@@ -1863,6 +1867,19 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                                 {isOut ? 'Enviado por e-mail' : e.fromSiteForm ? 'Recebido por e-mail · formulário do site' : 'Recebido por e-mail'}
                               </p>
                               {e.subject && <p className="text-[13px] font-semibold text-[#e9edef] mt-0.5 pr-6">{e.subject.replace(/^(📋|🔔)\s*/, '')}</p>}
+                              {msg.email && (msg.email.fromAddress || msg.email.to?.length) ? (
+                                <div className="mt-0.5 space-y-px text-[11px] leading-snug text-[#e9edef]/70 break-all">
+                                  {(msg.email.fromAddress || msg.email.fromName) && (
+                                    <p><span className="text-[#e9edef]/45">De:</span> {emailPessoa({ name: msg.email.fromName, address: msg.email.fromAddress })}</p>
+                                  )}
+                                  {!!msg.email.to?.length && (
+                                    <p><span className="text-[#e9edef]/45">Para:</span> {msg.email.to.map(emailPessoa).filter(Boolean).join(', ')}</p>
+                                  )}
+                                  {!!msg.email.cc?.length && (
+                                    <p><span className="text-[#e9edef]/45">Cc:</span> {msg.email.cc.map(emailPessoa).filter(Boolean).join(', ')}</p>
+                                  )}
+                                </div>
+                              ) : null}
                               {!e.fromSiteForm && msg.externalId && (
                                 <button
                                   type="button"
@@ -1932,6 +1949,20 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                             </div>
                           );
                         })()}
+                        {msg.channel === 'EMAIL' && !!msg.email?.attachments?.length && (
+                          // Anexos do e-mail (Fabio 30/10): abrem/baixam como os do WhatsApp, direto do e-mail original.
+                          <div className="flex flex-col gap-1.5 mb-1">
+                            {msg.email.attachments.map((a, i) => a.part ? (
+                              <AttachmentView
+                                key={`${msg.id}-${a.part}`}
+                                att={{ id: `${msg.id}-${a.part}`, fileName: a.filename, mimeType: a.contentType || 'application/octet-stream' }}
+                                src={`/api/email/conversation-attachment/${msg.id}/${encodeURIComponent(a.part)}`}
+                              />
+                            ) : (
+                              <p key={`${msg.id}-sem-${i}`} className="flex items-center gap-1.5 text-xs text-[#e9edef]/60"><Paperclip size={12} /> {a.filename}</p>
+                            ))}
+                          </div>
+                        )}
                         {/* Contato compartilhado no WhatsApp — card com ações rápidas */}
                         {(msg.sharedContactName || msg.sharedContactPhone) && (
                           <div className="min-w-[220px] mb-1">
@@ -1972,7 +2003,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                           const hasContactCard = !!(msg.sharedContactName || msg.sharedContactPhone);
                           if (hasContactCard) return null;
                           const text = msg.channel === 'EMAIL'
-                            ? splitEmailContent(msg.content).body
+                            ? (msg.email?.attachments?.length ? splitEmailContent(msg.content).body.replace(/\n*📎 [^\n]*\s*$/, '') : splitEmailContent(msg.content).body)
                             : hasAtt
                             ? (msg.content.includes(' — ') ? msg.content.split(' — ').slice(1).join(' — ') : '')
                             : msg.content;

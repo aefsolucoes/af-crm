@@ -208,6 +208,12 @@ export interface Message {
   whatsappNumberId?: string | null;
   attachments?: MessageAttachment[];
   createdAt: string;
+  /** Só canal EMAIL: quem mandou, pra quem e os anexos do e-mail original (Fabio 30/10). part null = anexo ainda sem endereço pra baixar. */
+  email?: {
+    fromName?: string | null; fromAddress?: string | null;
+    to?: { name?: string | null; address?: string }[]; cc?: { name?: string | null; address?: string }[];
+    attachments?: { part: string | null; filename: string; contentType?: string; size?: number }[];
+  };
   /** Preenchido quando esta mensagem foi encaminhada de outra conversa. */
   forwardedFromLeadId?: string | null;
   forwardedFromLeadName?: string | null;

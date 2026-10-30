@@ -349,6 +349,41 @@ async function findLeadFor(accountId: string, addresses: string[], inReplyTo: st
   return null;
 }
 
+/** Quem mandou, pra quem e os anexos de cada e-mail da CONVERSA do card (Fabio 30/10: "não está vindo o remetente nos e-mails vinculados ao card; precisa aparecer o anexo e quem enviou").
+ *  A mensagem da conversa guarda só assunto + texto; o resto está no e-mail original (EmailMessage, mesmo Message-ID). O mesmo e-mail pode estar em mais de uma caixa: vale o ligado a este card
+ *  e, entre eles, o que tem anexo pra baixar. */
+export type EmailMeta = { fromName: string | null; fromAddress: string | null; to: Addr[]; cc: Addr[]; attachments: { part: string | null; filename: string; contentType?: string; size?: number }[] };
+export async function emailMetaFor(accountId: string, leadId: string, messageIds: string[]): Promise<Map<string, EmailMeta>> {
+  const out = new Map<string, EmailMeta>();
+  const ids = [...new Set(messageIds.filter(Boolean))];
+  if (!ids.length) return out;
+  const rows = await prisma.emailMessage.findMany({
+    where: { messageId: { in: ids }, emailAccount: { accountId } },
+    select: { messageId: true, leadId: true, fromName: true, fromAddress: true, toList: true, ccList: true, attachments: true },
+  });
+  const nota = (r: (typeof rows)[number]) => (r.leadId === leadId ? 2 : 0) + (((r.attachments as any[] | null) || []).some((a) => a?.part) ? 1 : 0);
+  for (const r of rows.sort((a, b) => nota(b) - nota(a))) {
+    if (!r.messageId || out.has(r.messageId)) continue;
+    out.set(r.messageId, {
+      fromName: r.fromName, fromAddress: r.fromAddress,
+      to: ((r.toList as unknown as Addr[] | null) || []), cc: ((r.ccList as unknown as Addr[] | null) || []),
+      attachments: (((r.attachments as any[] | null) || []).filter((a) => a?.filename)).map((a) => ({ part: a.part || null, filename: String(a.filename), contentType: a.contentType, size: a.size })),
+    });
+  }
+  return out;
+}
+
+/** Anexo de um e-mail da CONVERSA do card (botão no balão da Inbox): acha o e-mail original pela mensagem e baixa a parte pelo IMAP. */
+export async function conversationEmailAttachment(accountId: string, messageId: string, part: string) {
+  const m = await prisma.message.findFirst({ where: { id: messageId, channel: 'EMAIL', lead: { accountId } }, select: { leadId: true, externalId: true } });
+  if (!m?.externalId) return null;
+  const rows = await prisma.emailMessage.findMany({ where: { messageId: m.externalId, emailAccount: { accountId } }, include: { emailAccount: true } });
+  const row = rows.sort((a, b) => (b.leadId === m.leadId ? 1 : 0) - (a.leadId === m.leadId ? 1 : 0)).find((r) => ((r.attachments as any[] | null) || []).some((a) => a?.part === part));
+  if (!row) return null;
+  const listed = ((row.attachments as any[]) || []).find((a) => a?.part === part);
+  return { acc: row.emailAccount, msg: row, listed };
+}
+
 /** Põe o e-mail na conversa do card (aparece na Inbox como "Recebido por e-mail"). Devolve a mensagem criada (ou undefined se já estava lá). `noPush`: quem chama já avisou por push. */
 export async function addToConversation(params: {
   accountId: string; leadId: string; direction: 'INBOUND' | 'OUTBOUND'; subject: string | null; body: string;
@@ -370,8 +405,10 @@ export async function addToConversation(params: {
     include: { sentBy: { select: { id: true, name: true } } },
   });
   if (!params.notify || !io) return message;
-  io.to(`lead:${leadId}`).emit('new_message', message);
-  io.to(`account_${accountId}`).emit('new_notification', { leadId, message });
+  const meta = messageId ? (await emailMetaFor(accountId, leadId, [messageId]).catch(() => null))?.get(messageId) : undefined;
+  const comMeta = meta ? { ...message, email: meta } : message;
+  io.to(`lead:${leadId}`).emit('new_message', comMeta);
+  io.to(`account_${accountId}`).emit('new_notification', { leadId, message: comMeta });
   if (direction === 'INBOUND' && !params.noPush) {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');

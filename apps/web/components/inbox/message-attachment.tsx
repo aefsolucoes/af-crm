@@ -232,7 +232,9 @@ async function renderPdfFirstPageThumbnail(bytes: ArrayBuffer, targetWidth = 220
   return canvas.toDataURL('image/jpeg', 0.82);
 }
 
-export function AttachmentView({ att }: { att: MessageAttachment }) {
+/** `src`: de onde baixar quando não é anexo de mensagem do WhatsApp (ex.: anexo de e-mail na conversa — /api/email/conversation-attachment/…). */
+export function AttachmentView({ att, src }: { att: MessageAttachment; src?: string }) {
+  const fonte = src || `/api/messages/attachment/${att.id}`;
   const isImage = att.mimeType.startsWith('image/');
   const isAudio = att.mimeType.startsWith('audio/');
   const isVideo = att.mimeType.startsWith('video/');
@@ -253,7 +255,7 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
     let revoked = false;
     let objUrl: string | null = null;
     setState('loading');
-    api.get(`/api/messages/attachment/${att.id}`, { responseType: 'blob' })
+    api.get(fonte, { responseType: 'blob' })
       .then(async (res) => {
         if (revoked) return;
         objUrl = URL.createObjectURL(res.data);
@@ -275,14 +277,14 @@ export function AttachmentView({ att }: { att: MessageAttachment }) {
         setState(err?.response?.status === 410 ? 'drive' : 'error');
       });
     return () => { revoked = true; if (objUrl) URL.revokeObjectURL(objUrl); };
-  }, [att.id, isImage, isAudio, isVideo, isPdf]);
+  }, [fonte, isImage, isAudio, isVideo, isPdf]);
 
   // Não muda `state` — usado dentro do preview em tela cheia (não pode
   // colapsar a imagem/modal aberta pra um spinner só porque o download
   // demorou um instante). O botão de baixar do documento genérico (sem
   // preview) usa a versão de baixo, que troca `state` de propósito.
   async function downloadSilently() {
-    const res = await api.get(`/api/messages/attachment/${att.id}`, { responseType: 'blob' });
+    const res = await api.get(fonte, { responseType: 'blob' });
     const objUrl = URL.createObjectURL(res.data);
     const a = document.createElement('a');
     a.href = objUrl;

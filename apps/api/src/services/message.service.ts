@@ -73,6 +73,13 @@ export async function getMessages(leadId: string, accountId: string, scopeDepart
       sentBy: { select: { id: true, name: true } },
     },
   });
+  // E-mail na conversa: quem mandou, pra quem e os anexos vêm do e-mail original (Fabio 30/10).
+  const emails = rows.filter((r) => r.channel === 'EMAIL' && r.externalId).map((r) => r.externalId!);
+  if (emails.length) {
+    const { emailMetaFor } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+    const meta = await emailMetaFor(accountId, leadId, emails).catch(() => null);
+    if (meta?.size) return rows.reverse().map((r) => (r.channel === 'EMAIL' && r.externalId && meta.get(r.externalId) ? { ...r, email: meta.get(r.externalId) } : r));
+  }
   return rows.reverse();
 }
 

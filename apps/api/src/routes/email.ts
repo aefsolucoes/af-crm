@@ -5,7 +5,7 @@ import {
   listVisibleEmailAccounts, getVisibleEmailAccount, connectPersonalMailbox, disconnectPersonalMailbox,
   syncEmailAccount, listEmailMessages, openEmailMessage, streamAttachment, sendEmailFrom,
   updateMailboxSignature, searchLeadsForEmail, linkEmailToLead,
-  moveEmail, deleteEmailForever, saveDraft, FOLDERS, Folder,
+  moveEmail, deleteEmailForever, saveDraft, FOLDERS, Folder, conversationEmailAttachment,
 } from '../services/email-inbox.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { PrismaClient } from '@prisma/client';
@@ -154,6 +154,26 @@ router.get('/accounts/:id/messages/:msgId', async (req: AuthRequest, res: Respon
   const msg = await openEmailMessage(acc, req.params.msgId);
   if (!msg) return res.status(404).json({ error: 'E-mail não encontrado' });
   res.json(msg);
+});
+
+// Anexo de um e-mail que está na CONVERSA do card (balão da Inbox) — :messageId é a mensagem da conversa, não o e-mail (Fabio 30/10).
+router.get('/conversation-attachment/:messageId/:part', async (req: AuthRequest, res: Response) => {
+  const found = await conversationEmailAttachment(req.user!.accountId, req.params.messageId, req.params.part).catch(() => null);
+  if (!found) return res.status(404).json({ error: 'Anexo não encontrado' });
+  try {
+    await streamAttachment(found.acc, found.msg, req.params.part, async (meta, content) => {
+      res.setHeader('Content-Type', found.listed?.contentType || meta.contentType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(found.listed?.filename || meta.filename || 'anexo')}`);
+      await new Promise<void>((resolve, reject) => {
+        content.on('error', reject);
+        res.on('finish', () => resolve());
+        res.on('close', () => resolve());
+        content.pipe(res);
+      });
+    });
+  } catch (err: any) {
+    if (!res.headersSent) res.status(502).json({ error: err?.message || 'Não consegui baixar o anexo' });
+  }
 });
 
 router.get('/accounts/:id/messages/:msgId/attachments/:part', async (req: AuthRequest, res: Response) => {
