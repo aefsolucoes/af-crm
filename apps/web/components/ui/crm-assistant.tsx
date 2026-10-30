@@ -368,8 +368,17 @@ export function CrmAssistant() {
       window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
     });
   }
+  /** Fala no máximo ~3 frases (Fabio 30/10: "fala demais"); o texto inteiro continua no balão. */
+  function encurta(t: string): string {
+    if (t.length <= 360) return t;
+    const frases = t.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [t];
+    let out = '';
+    for (const f of frases) { if (out && (out + f).length > 360) break; out += f; }
+    if (!out) out = t.slice(0, 340).replace(/\s+\S*$/, '') + '…';
+    return `${out.trim()} O resto está na tela.`;
+  }
   async function falar(frase: string): Promise<void> {
-    const t = paraFala(frase.replace(/[*_#`>⏰]/g, '').replace(/https?:\S+/g, '').trim());
+    const t = encurta(paraFala(frase.replace(/[*_#`>⏰]/g, '').replace(/https?:\S+/g, '').trim()));
     if (!t) return;
     setVoz('falando');
     try { audioRef.current?.pause(); } catch { /* */ }
@@ -399,15 +408,6 @@ export function CrmAssistant() {
     const norm = (x: string) => x.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
     const palavras = norm(falado);
     const dele = new Set(palavras);
-    // Fabio 30/10: "escolhi a opção e ela continuou falando" — o nome da opção ESTÁ na fala dela, então era descartado como eco. Eco é só o que ela está dizendo AGORA
-    // (as últimas palavras do áudio, o microfone ouve com ~1 s de atraso); a opção que ela já leu antes vale como escolha e corta a fala.
-    const posicao = (): number | null => {
-      const a = audioRef.current;
-      if (a && !a.paused && Number.isFinite(a.duration) && a.duration > 0) return Math.floor((a.currentTime / a.duration) * palavras.length);
-      if (typeof window !== 'undefined' && window.speechSynthesis?.speaking) return null; // voz do navegador: sem posição, toda a fala dela conta como eco
-      return -1; // ainda não começou a tocar: não há eco
-    };
-    const ESCOLHA = ['primeira', 'primeiro', 'segunda', 'segundo', 'terceira', 'terceiro', 'ultima', 'ultimo', 'opcao', 'essa', 'esse', 'isso'];
     let ativo = true;
     let rec: any;
     try {
@@ -418,23 +418,19 @@ export function CrmAssistant() {
         for (let i = e.resultIndex; i < e.results.length; i++) { txt += `${e.results[i][0].transcript} `; if (e.results[i].isFinal) final = true; }
         const ws = norm(txt);
         if (!ws.length) return;
-        // Fabio 29/10: ela parava sozinha — o microfone ouve a PRÓPRIA voz e o reconhecimento erra as palavras ("para" também está na fala dela). Agora só corta com:
-        //  1) palavra de parar que ela NÃO está dizendo (pare, espera, calma, chega, o nome da voz) ou
-        //  2) uma frase de verdade: 3+ palavras que não estão na fala dela, sendo a maioria do que foi ouvido (eco mal reconhecido mistura com as palavras dela).
+        // Fabio 29/10 e 30/10 (2ª vez): "eu nem falo nada, ele acha que eu estou falando e para" — o microfone ouve a PRÓPRIA voz (eco) com atraso e o reconhecimento
+        // devolve trechos inteiros já ditos; a regra de "escolha curta" (02bbe1e) cortava com isso. Agora só corta com o que NÃO pode ser eco:
+        //  1) palavra de parar que ela NÃO está dizendo nesta fala (pare, espera, calma, chega, o nome da voz);
+        //  2) frase de verdade, já fechada: 4+ palavras que não estão na fala dela, sendo quase tudo o que foi ouvido;
+        //  3) "sim/confirma" com ação esperando — só se essa palavra não está na fala dela (eco de "pode" nunca confirma nada).
+        // Escolher uma opção no meio da leitura: toque na bolinha (corta na hora) e fale.
         const nomeVoz = norm(vozNomeRef.current || '')[0];
         const pararCom = ['pare', 'espera', 'espere', 'calma', 'chega', 'jarvis', ...(nomeVoz ? [nomeVoz] : [])].filter((w) => !dele.has(w));
         const pediuParar = ws.some((w) => pararCom.includes(w));
         const novas = ws.filter((w) => w.length > 2 && !dele.has(w));
-        const frase = (final || ws.length >= 4) && novas.length >= 3 && novas.length / ws.length >= 0.6;
-        // "Confirma"/"sim" falado enquanto ela ainda lê a ação: vale na hora (Fabio 29/10: "tive que confirmar 2x").
-        const confirmou = (final || ws.length <= 3) && (cartaoRef.current?.pending || []).some((p) => p.estado === 'PENDENTE') && SIM.test(txt.trim());
-        // Escolha curta (1 a 5 palavras): uma opção que ela JÁ disse (fora da janela do eco) ou "a segunda", "essa", "opção 2".
-        const pos = posicao();
-        const eco = pos === null ? dele : pos < 0 ? new Set<string>() : new Set(palavras.slice(Math.max(0, pos - 5), pos + 2));
-        const curta = ws.length <= 5;
-        const jaDita = ws.filter((w) => (w.length >= 4 || /^\d+$/.test(w)) && dele.has(w) && !eco.has(w));
-        const escolheu = curta && (jaDita.length >= 1 || ws.some((w) => ESCOLHA.includes(w) && !eco.has(w)) || (pos !== null && pos < 0 && novas.length >= 1));
-        if (pediuParar || frase || confirmou || escolheu) { ativo = false; interrompidoRef.current = txt.trim(); cortouRef.current = true; try { rec.abort(); } catch { /* */ } calar(); }
+        const frase = final && novas.length >= 4 && novas.length / ws.length >= 0.75;
+        const confirmou = final && ws.length <= 3 && !dele.has(ws[0]) && (cartaoRef.current?.pending || []).some((p) => p.estado === 'PENDENTE') && SIM.test(txt.trim());
+        if (pediuParar || frase || confirmou) { ativo = false; interrompidoRef.current = frase || confirmou ? txt.trim() : ''; /* "pare"/"espera" sozinho: só cala e escuta */ cortouRef.current = true; try { rec.abort(); } catch { /* */ } calar(); }
       };
       rec.onend = () => { if (ativo) { try { rec.start(); } catch { /* */ } } };
       rec.onerror = () => { /* sem microfone livre: segue sem interromper */ };
@@ -454,21 +450,24 @@ export function CrmAssistant() {
       if (!SR) { resolve(''); return; }
       const rec = new SR(); rec.lang = 'pt-BR'; rec.interimResults = true; rec.continuous = true; rec.maxAlternatives = 1;
       recRef.current = rec;
-      let finais = '', parcial = '', falhou = false, acabou = false;
+      let finais = '', parcial = '', falhou = false, acabou = false, entregue = false;
       let calado: ReturnType<typeof setTimeout> | null = null;
-      const encerra = () => { if (acabou) return; acabou = true; if (calado) clearTimeout(calado); try { rec.stop(); } catch { /* */ } };
-      const semFala = setTimeout(() => { if (!finais && !parcial) encerra(); }, 8000); // ninguém falou: conta como silêncio
+      // Fabio 30/10: "trava quando não estou falando nada" — às vezes o Chrome não dispara o onend depois do stop(); sem resposta em 1,5 s, entrega assim mesmo.
+      const entrega = () => { if (entregue) return; entregue = true; clearTimeout(semFala); clearTimeout(teto); if (calado) clearTimeout(calado); resolve(falhou ? FALHA_MIC : numerosFalados(`${finais} ${parcial}`.replace(/\s+/g, ' ').trim())); };
+      const encerra = () => { if (acabou) return; acabou = true; if (calado) clearTimeout(calado); try { rec.stop(); } catch { /* */ } setTimeout(() => { try { rec.abort(); } catch { /* */ } entrega(); }, 1500); };
+      const semFala = setTimeout(() => { if (!finais && !parcial) encerra(); }, 10000); // ninguém falou: conta como silêncio
+      const teto = setTimeout(encerra, 60000); // fala sem fim (barulho contínuo): fecha o que ouviu
       rec.onresult = (e: any) => {
         finais = ''; parcial = '';
         for (let i = 0; i < e.results.length; i++) { const t = String(e.results[i][0]?.transcript || ''); if (e.results[i].isFinal) finais += ` ${t}`; else parcial += ` ${t}`; }
         if (calado) clearTimeout(calado);
         calado = setTimeout(encerra, 1800);
       };
-      rec.onend = () => { clearTimeout(semFala); if (calado) clearTimeout(calado); resolve(falhou ? FALHA_MIC : numerosFalados(`${finais} ${parcial}`.replace(/\s+/g, ' ').trim())); };
+      rec.onend = () => entrega();
       // 'no-speech' = silêncio de verdade; outro erro ('aborted', microfone ainda preso pelo vigia da interrupção) NÃO conta como silêncio — o loop tenta de novo (Fabio 29/10: "parava sem eu falar nada").
       rec.onerror = (ev: any) => { if (ev?.error !== 'no-speech' && ev?.error !== 'aborted') falhou = true; };
       setVoz('ouvindo');
-      try { rec.start(); } catch { clearTimeout(semFala); resolve(FALHA_MIC); }
+      try { rec.start(); } catch { falhou = true; entrega(); }
     });
   }
 
@@ -566,12 +565,16 @@ export function CrmAssistant() {
       const parcial = interrompidoRef.current; interrompidoRef.current = '';
       // se interrompeu, ainda pega o resto da frase (no máx. 2 s: o que ela já ouviu vale como pedido)
       const mais = primeira ? '' : parcial ? await Promise.race([escutar(), new Promise<string>((r) => setTimeout(() => { try { recRef.current?.stop(); } catch { /* */ } r(''); }, 2000))]) : await escutar();
-      if (mais === FALHA_MIC && !primeira && !parcial) { if (++falhasMic > 4) break; await new Promise((r) => setTimeout(r, 350)); continue; }
+      if (mais === FALHA_MIC && !primeira && !parcial) {
+        if (++falhasMic > 6) { toast('O microfone parou de responder — toque na bolinha pra recomeçar', 'warning'); break; }
+        await new Promise((r) => setTimeout(r, 400 * falhasMic)); continue;
+      }
       falhasMic = 0;
       const dito = primeira || [parcial, mais === FALHA_MIC ? '' : mais].filter(Boolean).join(' ').trim();
       primeira = '';
       if (!vozRef.current) break;
-      if (!dito) { if (++silencios >= 2) break; continue; }
+      // Silêncio não encerra de cara (Fabio 30/10: na revisão ele fica olhando a tela): segue ouvindo ~1 min; aí avisa que parou, pra não parecer travada.
+      if (!dito) { if (++silencios >= 6) { setCard(null); await falar('Vou ficar quieta. É só tocar na bolinha.'); break; } continue; }
       silencios = 0;
       if (PARAR.test(dito.trim())) { setCard(null); await falar('Até já.'); break; }
       if (/^(trocar|mudar|muda|troca)\s+(a\s+|de\s+)?voz/i.test(dito.trim())) { setCard({ escolherVoz: true }); await falar('Escolha a voz nova aqui no balão.'); break; }
@@ -724,7 +727,12 @@ export function CrmAssistant() {
 
       <button
         ref={orbRef}
-        onClick={() => { if (pressRef.current.abriu) { pressRef.current.abriu = false; return; } void conversar(); }}
+        onClick={() => {
+          if (pressRef.current.abriu) { pressRef.current.abriu = false; return; }
+          // Falando: o toque só corta a fala e ela passa a ouvir (Fabio 30/10: "não consigo interromper quando fala demais"). Ouvindo/pensando: o toque encerra.
+          if (vozRef.current && voz === 'falando') { cortouRef.current = true; interrompidoRef.current = ''; calar(); return; }
+          void conversar();
+        }}
         onTouchStart={() => { pressRef.current.abriu = false; pressRef.current.t = setTimeout(() => { pressRef.current.abriu = true; if (vozRef.current) parar(); setCard({ escolherVoz: true }); }, 650); }}
         onTouchEnd={() => { if (pressRef.current.t) clearTimeout(pressRef.current.t); }}
         onMouseEnter={segura}
@@ -734,7 +742,7 @@ export function CrmAssistant() {
         className={cn('fixed z-50 rounded-full focus:outline-none', escondeCelular && 'hidden md:block')}
         style={{ left: pos.x, top: pos.y, width: ORB, height: ORB, transition: anda }}
         aria-label="Assistente do CRM"
-        title={conversando ? 'Conversando — toque pra parar' : 'Assistente do CRM — toque e fale (botão direito ou segurar: escolher a voz)'}
+        title={voz === 'falando' ? 'Falando — toque pra cortar e falar' : conversando ? 'Conversando — toque pra encerrar' : 'Assistente do CRM — toque e fale (botão direito ou segurar: escolher a voz)'}
       >
         <Orb3D voz={voz} />
       </button>
