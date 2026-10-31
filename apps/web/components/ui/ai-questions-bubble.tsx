@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { MessageCircleQuestion, Bot, BookOpen, Send, X, Hand, Undo2, Loader2, Phone, Check, Clock, FileText, ExternalLink } from 'lucide-react';
+import { MessageCircleQuestion, Bot, BookOpen, Send, X, Hand, Undo2, Loader2, Phone, Check, Clock, FileText, ExternalLink, Trash2 } from 'lucide-react';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { playSoundOnce, SoundKey } from '@/lib/sounds';
@@ -182,7 +182,7 @@ export function AiQuestionsBubble() {
     };
   }, [queryClient]);
 
-  async function act(q: AiQuestion, action: 'answer' | 'dismiss' | 'forget' | 'confirm-call' | 'propose-call') {
+  async function act(q: AiQuestion, action: 'answer' | 'dismiss' | 'discard' | 'forget' | 'confirm-call' | 'propose-call') {
     const answer = (drafts[q.id] || '').trim();
     if ((action === 'answer' || action === 'propose-call') && !answer) return;
     setBusy(`${q.id}:${action}`);
@@ -190,6 +190,7 @@ export function AiQuestionsBubble() {
       await api.post(`/api/ai-questions/${q.id}/${action}`, action === 'answer' ? { answer } : action === 'propose-call' ? { time: answer } : {});
       if (action === 'answer' || action === 'propose-call') setDrafts((d) => ({ ...d, [q.id]: '' }));
       if (action === 'confirm-call') toast('Ligação confirmada com o cliente — tarefa criada pra Andreia.', 'success');
+      if (action === 'discard') toast('Dúvida descartada — não volta mais.', 'success');
       if (action === 'dismiss') {
         setOpen(false);
         router.push(`/inbox?leadId=${q.leadId}`);
@@ -322,7 +323,10 @@ export function AiQuestionsBubble() {
               {busy === `${q.id}:propose-call` ? <Loader2 size={12} className="animate-spin" /> : <Clock size={12} />} Propor
             </button>
           </div>
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <button onClick={() => act(q, 'discard')} disabled={!!busy} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100" title="Fecha o pedido de vez, sem responder e sem mexer na IA do card — não volta">
+              <Trash2 size={12} /> Descartar
+            </button>
             <button onClick={() => act(q, 'dismiss')} disabled={!!busy} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100" title="Fecha o pedido, desliga a IA nesse card e abre a conversa pra você falar direto">
               <Hand size={12} /> Eu assumo
             </button>
@@ -356,16 +360,15 @@ export function AiQuestionsBubble() {
             className="w-full text-sm rounded-lg border border-slate-200 px-2.5 py-1.5 resize-none focus:outline-none focus:border-[#2261a8] text-slate-800"
           />
           <div className="flex items-center justify-end gap-2 mt-1.5">
-            {q.kind === 'LEARN' && (
-              <button
-                onClick={() => act(q, 'dismiss')}
-                disabled={!!busy}
-                className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
-                title="Descarta o aprendizado (não mexe na IA do card)"
-              >
-                Descartar
-              </button>
-            )}
+            {/* Descartar (Fabio 31/10: "para que não volte novamente"): fecha de vez, sem responder e sem mexer na IA do card. */}
+            <button
+              onClick={() => act(q, 'discard')}
+              disabled={!!busy}
+              className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
+              title={q.kind === 'LEARN' ? 'Descarta o aprendizado (não mexe na IA do card)' : 'Fecha a dúvida de vez, sem responder e sem mexer na IA do card — não volta'}
+            >
+              <Trash2 size={12} /> Descartar
+            </button>
             {q.kind !== 'DOC_QUESTION' && q.kind !== 'EMAIL_QUESTION' && q.kind !== 'REJECTION_QUESTION' && q.kind !== 'BANK_EMAIL' && q.kind !== 'LEARN' && (
               <button
                 onClick={() => act(q, 'dismiss')}

@@ -67,6 +67,10 @@ export async function createAiTeamQuestion(params: {
   // já tem uma aberta pra esse card, soma o contexto novo nela em vez de
   // abrir outra (o colaborador responde uma vez só).
   const open = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, status: 'OPEN', kind: 'QUESTION' }, orderBy: { createdAt: 'desc' } });
+  if (!open && await descartadaRecente(accountId, leadId, 'QUESTION', 24)) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA quis perguntar à equipe de novo, mas a dúvida deste card foi descartada há menos de 24 h — não abri no balão: ${question.slice(0, 300)}` } }).catch(() => {});
+    return null;
+  }
   const saved = open
     ? await prisma.aiTeamQuestion.update({
         where: { id: open.id },
@@ -224,7 +228,7 @@ export async function createRejectionQuestion(params: { accountId: string; leadI
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, pipeline: { select: { departmentId: true } } } });
   if (!lead) return null;
   const ja = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, kind: 'REJECTION_QUESTION', status: 'OPEN' }, select: { id: true } });
-  if (ja) return null;
+  if (ja || await descartadaRecente(accountId, leadId, 'REJECTION_QUESTION', 30 * 24)) return null;
   const departmentId = lead.pipeline?.departmentId ?? null;
   const motivos = params.reasons.join('; ');
   const question = `📉 ${lead.name} foi reprovado pelos bancos por um motivo que pode ser TEMPORÁRIO: ${motivos}.\nPra onde vai o card? "Venda Futura" (a IA avisa a negativa, pergunta a melhor data pra tentar de novo e move o card) ou "Perdidos" (segue como hoje)?`.slice(0, 1000);
@@ -382,6 +386,7 @@ export async function requestBankEmail(params: { accountId: string; leadId: stri
   const { accountId, leadId, leadName, draft, io } = params;
   const aberta = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, kind: 'BANK_EMAIL', status: 'OPEN' }, select: { id: true, payload: true } });
   if (aberta && (aberta.payload as any)?.bank === draft.bank) return 'ja-perguntado';
+  if (await descartadaRecente(accountId, leadId, 'BANK_EMAIL', 7 * 24, (p) => p?.bank === draft.bank)) return 'ja-perguntado';
   await marcarCard(leadId, { [draft.flag]: new Date().toISOString() }); // marca já: não pergunta de novo a cada minuto
   const resumo = await resumoDoCliente(leadId);
   const regra = await regraDeEmailBanco(accountId, leadId, { empresa: draft.empresa, motivo: draft.motivo }, resumo).catch(() => null);
@@ -716,6 +721,31 @@ async function answerDocQuestion(q: { id: string; accountId: string; leadId: str
   return updated;
 }
 
+/** Dúvida deste tipo DESCARTADA neste card há pouco (botão "Descartar") — não abre de novo nem manda push (Fabio 31/10: "para que não volte novamente"). */
+async function descartadaRecente(accountId: string, leadId: string, kind: string, horas: number, mesma?: (payload: any) => boolean): Promise<boolean> {
+  const rows = await prisma.aiTeamQuestion.findMany({ where: { accountId, leadId, kind, status: 'DISMISSED', answeredAt: { gte: new Date(Date.now() - horas * 3600_000) } }, select: { payload: true }, take: 20 });
+  return rows.some((r) => (r.payload as any)?.descartada === true && (!mesma || mesma(r.payload)));
+}
+
+/** "Descartar" (Fabio 31/10: "preciso de um botão para descartar o push de dúvida, quando eu quiser descartar, para que não volte novamente"): fecha a dúvida
+ *  de qualquer tipo sem responder, sem mexer na IA do card e sem mandar nada a ninguém. Não volta: o balão/popup só mostram as abertas, e o mesmo tipo de
+ *  dúvida no mesmo card não reabre por um tempo (documento e e-mail já não reabriam — uma por arquivo/e-mail). */
+export async function discardAiTeamQuestion(params: { accountId: string; questionId: string; userId: string; io?: Io }) {
+  const { accountId, questionId, userId, io } = params;
+  const q = await prisma.aiTeamQuestion.findFirst({ where: { id: questionId, accountId } });
+  if (!q) throw new Error('Dúvida não encontrada');
+  if (q.status !== 'OPEN') throw new Error('Essa dúvida já foi respondida ou fechada');
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+  const updated = await prisma.aiTeamQuestion.update({
+    where: { id: q.id },
+    data: { status: 'DISMISSED', answeredByUserId: userId, answeredByName: user?.name || null, answeredAt: new Date(), payload: { ...((q.payload || {}) as Record<string, unknown>), descartada: true } as any },
+    select: SELECT,
+  });
+  await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `🗑️ ${user?.name || 'Alguém da equipe'} descartou a dúvida da IA (sem responder; a IA do card não mudou): ${q.question.slice(0, 300)}` } }).catch(() => {});
+  emitTo(io, await recipientsFor(accountId, q.departmentId, q.kind === 'LEARN'), 'ai_team_question_updated', { id: q.id });
+  return updated;
+}
+
 /** "Eu assumo": fecha a dúvida sem a IA responder e desliga a IA do card —
  *  o colaborador vai falar com o cliente direto pela Inbox. */
 export async function dismissAiTeamQuestion(params: { accountId: string; questionId: string; userId: string; io?: Io }) {
@@ -768,6 +798,10 @@ export async function createCallRequest(params: {
   const question = semHorario ? 'O cliente pediu ligação e ainda não tem horário. Qual horário a Andreia consegue ligar?' : `Quer receber ligação ${when}. A Andreia consegue ligar nesse horário?`;
   const callAt = params.callAt && !isNaN(params.callAt.getTime()) ? params.callAt : null;
   const open = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, status: 'OPEN', kind: 'CALL_REQUEST' } });
+  if (!open && await descartadaRecente(accountId, leadId, 'CALL_REQUEST', 24)) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📞 O cliente pediu ligação de novo (${when}), mas o pedido deste card foi descartado há menos de 24 h — não abri no balão.` } }).catch(() => {});
+    return null;
+  }
   const changed = !open || open.callWhen !== when;
   const saved = open
     ? await prisma.aiTeamQuestion.update({ where: { id: open.id }, data: { question, callWhen: when, callAt, clientMessage: params.clientMessage?.slice(0, 2000) || open.clientMessage }, select: SELECT })

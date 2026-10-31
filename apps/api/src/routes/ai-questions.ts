@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
 import {
-  listAiTeamQuestions, answerAiTeamQuestion, dismissAiTeamQuestion, forgetAiTeamKnowledge, AI_QUESTIONS_FOR_EVERYONE, confirmCallRequest, proposeCallTime } from '../services/ai-team-question.service';
+  listAiTeamQuestions, answerAiTeamQuestion, dismissAiTeamQuestion, discardAiTeamQuestion, forgetAiTeamKnowledge, AI_QUESTIONS_FOR_EVERYONE, confirmCallRequest, proposeCallTime } from '../services/ai-team-question.service';
 
 /** Balão "Dúvidas da IA" — ver ai-team-question.service.ts. */
 const router = Router();
@@ -28,6 +28,14 @@ router.post('/:id/answer', async (req: AuthRequest, res: Response) => {
     res.json(q);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Não deu pra responder' });
+  }
+});
+
+router.post('/:id/discard', async (req: AuthRequest, res: Response) => {
+  try {
+    res.json(await discardAiTeamQuestion({ accountId: req.user!.accountId, questionId: req.params.id, userId: req.user!.id, io: (req as any).app.get('io') }));
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Não deu pra descartar a dúvida' });
   }
 });
 
