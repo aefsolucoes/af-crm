@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { logActivity } from './activity.service';
+import { comRegrasCaixa, regrasRendaCaixa, rendaForaDoPrazo } from './caixa-cr016';
 
 /* Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar"). A extensão "Cadastro CAIXA (Caixa Aqui)" pergunta a fila a cada minuto.
  * Ordem da CAIXA (Fabio 29/10): (1) consultar o nome de cada participante em Oportunidades de Negócios; (2) limpo → cadastrar 1º e 2º participante (2º sem renda:
@@ -163,12 +164,14 @@ export function consultaSegura(textos: string[]): string | null {
   return null;
 }
 
-/** O que falta na ficha pro cadastro de um participante (CPF, identidade e o que a leitura apontou). Vazio = pronto. Pura. */
-export function faltaParaCadastro(p: any): string[] {
+/** O que falta na ficha pro cadastro de um participante (CPF, identidade, o que a leitura apontou e — CR016, Fabio 31/10 — comprovante de renda dentro dos
+ *  2 meses que a CAIXA aceita). Vazio = pronto. Pura. */
+export function faltaParaCadastro(p: any, agora = new Date()): string[] {
   return [
     ...(String(p?.cpf || '').replace(/\D/g, '').length === 11 ? [] : ['CPF']),
     ...(String(p?.identidade?.numero || '').trim() ? [] : ['documento de identidade']),
     ...(Array.isArray(p?.faltando) ? p.faltando.map(String) : []),
+    ...rendaForaDoPrazo(p, agora),
   ];
 }
 
@@ -217,10 +220,12 @@ export async function conferirCadastro(accountId: string, leadId: string, ordem:
   const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === Number(ordem));
   if (!p) return null;
   const { fontes, faltando, ...ficha } = p;
+  // Normativo CR016 da Base de Conhecimento (Fabio 31/10) pra conferir a renda da tela.
+  const system = comRegrasCaixa(SYSTEM_CONFERE, await regrasRendaCaixa(accountId), 'Use o normativo pra conferir a RENDA da tela — tipo de comprovante, competência/data de referência, fonte pagadora, ocupação, renda bruta/líquida e IR retido — no que a ficha e as regras da A&F não resolvem: renda lançada fora do normativo é divergência, citando a regra (ex.: "renda: data de referência 06/2026 — fora do prazo do normativo").');
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 8192, system: SYSTEM_CONFERE, messages: [{ role: 'user', content: [{ type: 'text', text: `FICHA:\n${JSON.stringify(ficha)}\n\nCAMPOS DA TELA:\n${JSON.stringify(campos.slice(0, 200))}` }] }] }),
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 8192, system, messages: [{ role: 'user', content: [{ type: 'text', text: `Hoje é ${new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}.\n\nFICHA:\n${JSON.stringify(ficha)}\n\nCAMPOS DA TELA:\n${JSON.stringify(campos.slice(0, 200))}` }] }] }),
   }).catch(() => null);
   if (!res || !res.ok) return null;
   const data = (await res.json()) as { content: { type: string; text?: string }[] };

@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { logActivity } from './activity.service';
+import { comRegrasCaixa, regrasRendaCaixa } from './caixa-cr016';
 
 /* FICHA DE CADASTRO (Fabio 29/10): "os dados devem vir dos documentos do cliente, o CRM deve gravar esses dados do cadastro em anotações para puxar de lá as
  * informações que deverá colocar no cadastro, ela puxa esses dados da pasta do cliente no Drive". Base do cadastro dos participantes na CAIXA (Caixa Aqui:
@@ -336,7 +337,9 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     // 2) Junta por participante.
     const participantesCard = [1, 2, 3].map((n) => ({ ordem: n, nome: cf[`participante_${n}`] || null, cpf: String(cf[`cpf_${n}`] || '').replace(/\D/g, '') || null })).filter((p) => p.nome || p.cpf);
     const usaFgts = /^(s|sim|true|1)/i.test(String(cf.usa_fgts ?? '').trim());
-    const ficha = await chamarIA(SYSTEM_JUNTA, [{ type: 'text', text: `Hoje é ${hoje()} (documento de 2026 não é "data futura").\nUSA FGTS: ${usaFgts ? 'sim' : 'não'}\n\nPARTICIPANTES DO CARD:\n${JSON.stringify(participantesCard)}\n\nLEITURAS DOS DOCUMENTOS:\n${JSON.stringify(pessoais).slice(0, 180_000)}` }], 16000);
+    // Normativo CR016 da Base de Conhecimento (Fabio 31/10): só aponta, não mexe na renda que as regras da A&F montam.
+    const juntaComCr016 = comRegrasCaixa(SYSTEM_JUNTA, await regrasRendaCaixa(accountId), 'Na FICHA as regras da A&F acima mandam na renda; o normativo serve pra apontar em "conflitos" (1 frase cada, começando com "CR016:") o comprovante de renda que a CAIXA não aceita e por quê, e a renda que só um comprovante fora de contracheque/IR/benefício comprova (extrato do FGTS, aluguel, aplicação, nota fiscal rural, conta salário), com o valor pela regra do normativo — essa a equipe lança à mão. Não mude "contracheques", "semRenda", "rendaInformal" nem "faltando" por causa do normativo.');
+    const ficha = await chamarIA(juntaComCr016, [{ type: 'text', text: `Hoje é ${hoje()} (documento de 2026 não é "data futura").\nUSA FGTS: ${usaFgts ? 'sim' : 'não'}\n\nPARTICIPANTES DO CARD:\n${JSON.stringify(participantesCard)}\n\nLEITURAS DOS DOCUMENTOS:\n${JSON.stringify(pessoais).slice(0, 180_000)}` }], 16000);
     if (!ficha || !Array.isArray(ficha.participantes) || !ficha.participantes.length) return 'Não consegui montar a ficha com as leituras';
     rendaDeSocio(ficha.participantes, pessoais);
     await completarSocios(ficha.participantes).catch((e) => console.error('[Ficha cadastral] sócio:', e?.message));
