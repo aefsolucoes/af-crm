@@ -78,10 +78,18 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
       if (!pc) {
         const av = c.avaliacao;
         const vez = av && (av.status === 'FILA' || (av.status === 'RODANDO' && av.inicio && Date.now() - Date.parse(av.inicio) > LEASE_MS && (av.tentativas || 0) < 3));
-        const p1 = ps.find((x) => x.ordem === 1);
-        if (!vez || !p1 || p1.cpf.length !== 11) continue;
+        if (!vez) continue;
+        const quem = participantesDaAvaliacao(ps);
+        if (quem.segurar) {
+          await salvar(id, (x) => { x.avaliacao = { ...x.avaliacao, status: `SEGURADO: ${quem.segurar}`, fim: new Date().toISOString() }; });
+          await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `⏸️ Avaliação de Risco CAIXA não rodou: ${quem.segurar}. Na CAIXA só entra participante com renda (Fabio 31/10). Corrija a ficha/o card e peça a avaliação de novo.` } }).catch(() => {});
+          const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+          sendPushToAccount(accountId, { title: `⏸️ ${l!.name}: Avaliação CAIXA segurada`, body: quem.segurar.slice(0, 120), leadId: id }).catch(() => {});
+          continue;
+        }
+        const p1 = quem.tomador;
         await salvar(id, (x) => { x.atual = { ordem: 1, desde: new Date().toISOString(), tipo: 'avaliar' }; x.avaliacao = { ...x.avaliacao, status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.avaliacao?.tentativas || 0) + 1 }; });
-        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x) };
+        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x), incluir: quem.incluir.map((x) => ({ ordem: x.ordem, nome: x.nome, cpf: x.cpf })), fora: quem.fora.map((x) => x.nome) };
       }
       await salvar(id, (x) => { x.atual = { ordem: pc.ordem, desde: new Date().toISOString(), tipo: 'cadastrar' }; x.cadastros[pc.ordem] = { ...x.cadastros[pc.ordem], status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.cadastros[pc.ordem]?.tentativas || 0) + 1 }; });
       const { fontes, faltando, ...participante } = pc;
@@ -153,6 +161,21 @@ export async function processFilaCaixa(accountId: string): Promise<void> {
         > (SELECT count(*) FROM jsonb_object_keys(COALESCE("customFields"->'_caixaCadastro'->'cadastros', '{}'::jsonb)))
     LIMIT 10`;
   for (const { id } of cands) await cadastroAutomatico(accountId, id).catch((e) => console.error('[CAIXA] cadastro automático:', e?.message));
+}
+
+/** Quem entra na Avaliação de Risco (Fabio 31/10: "PARTICIPANTE NA CAIXA SÓ ENTRA SE TIVER RENDA"): o 1º participante é o tomador; dos outros, só quem tem
+ *  renda na ficha (renda informal conta — semRenda false). O cadastro do cônjuge sem renda continua (não é desfeito), ele só não entra na avaliação. 1º sem
+ *  renda ou participante com renda sem CPF → `segurar` (a equipe decide, nada vai à CAIXA). Pura. */
+export function participantesDaAvaliacao(ps: any[]): { tomador: any | null; incluir: any[]; fora: any[]; segurar: string | null } {
+  const tem = (p: any) => p && p.semRenda !== true;
+  const tomador = ps.find((x) => x.ordem === 1) || null;
+  const outros = ps.filter((x) => x.ordem !== 1);
+  const incluir = outros.filter(tem), fora = outros.filter((x) => !tem(x));
+  const semCpf = [tomador, ...incluir].filter((x) => x && String(x.cpf || '').length !== 11);
+  const segurar = !tomador ? 'o card não tem o 1º participante na ficha'
+    : !tem(tomador) ? `o 1º participante (${tomador.nome || '—'}) está SEM RENDA na ficha — quem é o tomador?`
+    : semCpf.length ? `sem CPF: ${semCpf.map((x) => x.nome || `${x.ordem}º`).join(', ')}` : null;
+  return { tomador, incluir, fora, segurar };
 }
 
 /** Consulta da CAIXA que mostra proposta ou avaliação em andamento em OUTRO correspondente (CCA): o cadastro automático espera a equipe. Pura. */
@@ -302,10 +325,13 @@ export async function salvarFormularioCaixa(accountId: string, leadId: string, o
 export async function pedirAvaliacao(accountId: string, leadId: string, por: string): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return 'Lead não encontrado';
-  if (!participantesDa((l.customFields || {}) as Cf).length) return 'O card ainda não tem a ficha de cadastro';
+  const ps = participantesDa((l.customFields || {}) as Cf);
+  if (!ps.length) return 'O card ainda não tem a ficha de cadastro';
   const produto = /home|garantia/i.test(l.pipeline?.department?.name || '') ? '11 - empréstimo com garantia de imóvel' : '1 - crédito imobiliário';
+  const quem = participantesDaAvaliacao(ps);
   await salvar(leadId, (x) => { x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto }; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco na CAIXA pedida (${por}) — produto "${produto.toUpperCase()}". A extensão consulta o CPF, marca o produto e mostra a tela antes de enviar.` } }).catch(() => {});
+  const lista = [quem.tomador && `${quem.tomador.nome} (tomador)`, ...quem.incluir.map((x) => x.nome)].filter(Boolean).join(', ');
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco na CAIXA pedida (${por}) — produto "${produto.toUpperCase()}". Participantes: ${lista || '—'}${quem.fora.length ? `; fora por não ter renda: ${quem.fora.map((x) => x.nome).join(', ')} (o cadastro na CAIXA fica como está)` : ''}. A extensão consulta o CPF, marca o produto e mostra a tela antes de enviar.` } }).catch(() => {});
   return null;
 }
 export async function gravarAvaliacao(accountId: string, leadId: string, r: { status: string; texto: string }): Promise<void> {
