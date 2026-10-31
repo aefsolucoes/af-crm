@@ -5,6 +5,7 @@ import { logActivity } from './activity.service';
  * informações que deverá colocar no cadastro, ela puxa esses dados da pasta do cliente no Drive". Base do cadastro dos participantes na CAIXA (Caixa Aqui:
  * Oportunidades de Negócios → Cadastro de Clientes → análise) e no BRB (PCN).
  *  - Lê os documentos PESSOAIS da pasta do cliente no Drive (`link_pasta_drive`): COMPRADOR e soltos na raiz; IMÓVEL, VENDEDOR e MINUTA ficam de fora.
+ *    Sem pasta: os anexos que o cliente mandou na conversa (Fabio 31/10).
  *  - Cada arquivo é lido sozinho (o que está escrito, nunca inventado); depois uma consolidação junta por pessoa, aponta o que falta e o que diverge.
  *  - Grava `_fichaCadastral` no card (o que a extensão lê) e uma ANOTAÇÃO legível com os mesmos dados. Telefone/e-mail vêm do card (documento não tem).
  *  - Roda sozinho quando o card chega em "Documentação Recebida" (uma vez) e pelo botão/rota (POST /api/leads/:id/ficha-cadastral) quando chegar documento novo. */
@@ -84,6 +85,15 @@ function arquivosPessoais(todos: Arquivo[]): Arquivo[] {
     .filter((f) => !temComprador || !f.path || /comprador/.test(norm(f.path)))
     .filter((f) => !/matricula|iptu|escritura|onus|habite|simulac|minuta|boleto|evolucao|parcelas|proposta|^aef_/.test(norm(f.name)))
     .slice(0, MAX_ARQUIVOS);
+}
+
+/** Anexos (PDF/foto) que o cliente mandou na conversa e já subiram pro Drive — os mais recentes primeiro. */
+async function anexosDaConversa(leadId: string): Promise<Arquivo[]> {
+  const rows = await prisma.messageAttachment.findMany({
+    where: { leadId, driveFileId: { not: null }, message: { direction: 'INBOUND' } },
+    orderBy: { createdAt: 'desc' }, take: MAX_ARQUIVOS, select: { driveFileId: true, fileName: true, mimeType: true },
+  });
+  return rows.map((r) => ({ id: r.driveFileId as string, name: r.fileName, mimeType: r.mimeType, path: 'CONVERSA', size: 0 }));
 }
 
 async function lerArquivo(accountId: string, f: Arquivo): Promise<any | null> {
@@ -224,11 +234,13 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     if (!lead) return 'Lead não encontrado';
     const cf = (lead.customFields || {}) as Record<string, any>;
     const link = String(cf.link_pasta_drive || '').trim();
-    if (!link) return 'O card não tem a pasta do Drive';
     const google = await import('./google.service');
-    const todos = await google.listAllFilesInFolderTree(accountId, google.extractFolderId(link), 3);
+    // Com a pasta, os anexos da conversa já estão nela (organizados). Sem a pasta (Fabio 31/10: "o CRM deve coletar os dados para o cadastro através da
+    // documentação encaminhada na própria conversa"): os anexos que o cliente mandou na conversa, que ficam no Drive pelo driveFileId.
+    const todos: Arquivo[] = link ? await google.listAllFilesInFolderTree(accountId, google.extractFolderId(link), 3) : await anexosDaConversa(leadId);
     const arquivos = arquivosPessoais(todos);
-    if (!arquivos.length) return 'Não achei documento pessoal (PDF/foto) na pasta do Drive';
+    if (!arquivos.length) return link ? 'Não achei documento pessoal (PDF/foto) na pasta do Drive' : 'O card não tem a pasta do Drive nem documento (PDF/foto) na conversa';
+    const origem = link ? 'da pasta do Drive' : 'enviados na conversa';
 
     // 1) Cada arquivo sozinho, 4 de cada vez.
     const leituras: { arquivo: string; leitura: any }[] = [];
@@ -260,7 +272,7 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     const conflitos = registro.conflitos.length ? `\n\n⚠️ Divergências:\n${registro.conflitos.map((c: string) => `• ${c}`).join('\n')}` : '';
     const lidos = `\n\n📁 Lidos (${pessoais.length}): ${pessoais.map((x) => `${x.arquivo} (${x.leitura.tipo})`).join('; ')}${naoLidos.length ? `\n⛔ Não consegui ler: ${naoLidos.join('; ')}` : ''}`;
     // Uma anotação por banco: gerar de novo (documento novo na pasta) atualiza a mesma. A ficha do BRB é outra (Fabio 29/10) e só existe no Financiamento.
-    await gravarNota(leadId, ['📋 FICHA DE CADASTRO — CAIXA', '📋 FICHA DE CADASTRO — lida'], `📋 FICHA DE CADASTRO — CAIXA — lida dos documentos da pasta do Drive em ${quando}.\n\n${blocos.join('\n\n')}${conflitos}${lidos}`, opts.userId);
+    await gravarNota(leadId, ['📋 FICHA DE CADASTRO — CAIXA', '📋 FICHA DE CADASTRO — lida'], `📋 FICHA DE CADASTRO — CAIXA — lida dos documentos ${origem} em ${quando}.\n\n${blocos.join('\n\n')}${conflitos}${lidos}`, opts.userId);
     if (/habitacional|financiamento/i.test(lead.pipeline?.department?.name || '')) await gravarNota(leadId, ['📋 FICHA DE CADASTRO — BRB'], fichaBrb(ficha.participantes, cf, quando), opts.userId);
     opts.io?.to(`lead:${leadId}`).emit('lead_updated', { leadId });
     await pedirCnpjAoCliente(accountId, leadId, ficha.participantes, opts.io).catch((e) => console.error('[Ficha cadastral] pedido de CNPJ:', e?.message));
@@ -374,14 +386,16 @@ export async function processFichasCadastrais(accountId: string, io?: Io): Promi
   const ids = await prisma.$queryRaw<{ id: string }[]>`
     SELECT l.id FROM "Lead" l JOIN "Stage" s ON s.id = l."stageId" JOIN "Pipeline" p ON p.id = l."pipelineId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
-      AND p.name ILIKE 'Em contratação%'
-      AND COALESCE(l."customFields"->>'link_pasta_drive', '') LIKE 'http%'
-      AND ((s.name ILIKE '%Documentação Recebida%' AND l."customFields"->'_fichaCadastral' IS NULL)
-        -- Ficha com dado faltando + documento novo organizado na pasta depois dela → lê de novo, em qualquer etapa da contratação (Fabio 29/10: RG/CNH da Bianca chegando depois).
-        OR (l."customFields"->>'_driveOrganizedAt' > l."customFields"->'_fichaCadastral'->>'at'
-          AND jsonb_typeof(l."customFields"->'_fichaCadastral'->'participantes') = 'array'
-          AND EXISTS (SELECT 1 FROM jsonb_array_elements(l."customFields"->'_fichaCadastral'->'participantes') fp
-            WHERE jsonb_typeof(fp->'faltando') = 'array' AND jsonb_array_length(fp->'faltando') > 0)))
+      AND ((p.name ILIKE 'Em contratação%'
+        AND COALESCE(l."customFields"->>'link_pasta_drive', '') LIKE 'http%'
+        AND ((s.name ILIKE '%Documentação Recebida%' AND l."customFields"->'_fichaCadastral' IS NULL)
+          -- Ficha com dado faltando + documento novo organizado na pasta depois dela → lê de novo, em qualquer etapa da contratação (Fabio 29/10: RG/CNH da Bianca chegando depois).
+          OR (l."customFields"->>'_driveOrganizedAt' > l."customFields"->'_fichaCadastral'->>'at'
+            AND jsonb_typeof(l."customFields"->'_fichaCadastral'->'participantes') = 'array'
+            AND EXISTS (SELECT 1 FROM jsonb_array_elements(l."customFields"->'_fichaCadastral'->'participantes') fp
+              WHERE jsonb_typeof(fp->'faltando') = 'array' AND jsonb_array_length(fp->'faltando') > 0))))
+        -- Financiamento pela CAIXA/BRB com a documentação do comprador completa (antes da contratação, pode não ter pasta: lê da conversa) — Fabio 31/10.
+        OR (l."customFields"->>'_fhDocsCompradorAt' IS NOT NULL AND l."customFields"->'_fichaCadastral' IS NULL))
       AND COALESCE(l."customFields"->>'_fichaCadastralErro', '') < ${new Date(Date.now() - 6 * 3600_000).toISOString()}
     ORDER BY l."stageEnteredAt" ASC NULLS LAST LIMIT 1`;
   if (!ids[0] || emAndamento.has(ids[0].id)) return;

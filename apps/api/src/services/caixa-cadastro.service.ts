@@ -6,7 +6,8 @@ import { logActivity } from './activity.service';
  * "SEM RENDA" e salvar); (3) análise de crédito. Os dados vêm da ficha de cadastro (`_fichaCadastral`, lida dos documentos do Drive).
  * Estado no card: `_caixaCadastro` = { status: FILA | CONSULTADO, pedidoEm, por, consultas: { [ordem]: { at, texto } }, atual?: { ordem, desde } }.
  * Entra na fila: pela equipe (POST /api/leads/:id/caixa-cadastro) ou sozinho quando a ficha está pronta e o cliente vai pela CAIXA
- * (Financiamento: "Sim, quero" à CAIXA/BRB; Home Equity: reaberto pela CAIXA). */
+ * (Financiamento: todo cliente sem outro banco escolhido; Home Equity: optou pela CAIXA ou reaberto por ela). Consultado → o cadastro de quem está com a
+ * ficha completa sai sozinho (Fabio 31/10). */
 
 type Cf = Record<string, any>;
 const LEASE_MS = 10 * 60_000; // participante "em consulta" há mais que isso = a extensão largou; volta pra fila
@@ -111,7 +112,8 @@ export async function gravarConsulta(accountId: string, leadId: string, ordem: n
   if (!todos) return;
   await salvar(leadId, (x) => { x.status = 'CONSULTADO'; x.consultadoEm = new Date().toISOString(); });
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-  sendPushToAccount(accountId, { title: `🏦 ${l.name}: consulta da CAIXA pronta`, body: 'Confira o resultado nas anotações e, se estiver limpo, faça o cadastro (a extensão preenche).', leadId }).catch(() => {});
+  sendPushToAccount(accountId, { title: `🏦 ${l.name}: consulta da CAIXA pronta`, body: 'Resultado nas anotações. Quem está com a ficha completa já vai pro cadastro (a extensão preenche e o CRM confere).', leadId }).catch(() => {});
+  await cadastroAutomatico(accountId, leadId).catch((e) => console.error('[CAIXA] cadastro automático:', e?.message));
 }
 
 /** Cards prontos pro cadastro (consultados) — a extensão mostra pra escolher na hora de preencher. */
@@ -129,21 +131,82 @@ export async function prontosParaCadastro(accountId: string): Promise<any[]> {
   return out;
 }
 
-/** Entra sozinho na fila: ficha pronta + cliente vai pela CAIXA. Roda no poller. */
+/** Entra sozinho na fila: ficha pronta + cliente vai pela CAIXA. Roda no poller. Financiamento (Fabio 31/10, Fernanda): a CAIXA roda com a documentação
+ *  completa — entra todo cliente do FH com ficha, menos quem já escolheu outro banco. Depois da consulta, o cadastro sai sozinho (cadastroAutomatico). */
 export async function processFilaCaixa(accountId: string): Promise<void> {
   const ids = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND "isGroup" = false
-      AND "customFields"->'_fichaCadastral' IS NOT NULL AND "customFields"->'_caixaCadastro' IS NULL
-      AND ("customFields"->'_fhCaixaAnswer'->>'resposta' = 'SIM' OR "customFields"->>'_reentryCaixaAt' IS NOT NULL OR "customFields"->'_bancosCombinados'->>'caixa' = 'true')
+    SELECT l.id FROM "Lead" l LEFT JOIN "Pipeline" p ON p.id = l."pipelineId" LEFT JOIN "Department" d ON d.id = p."departmentId"
+    WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
+      AND l."customFields"->'_fichaCadastral' IS NOT NULL AND l."customFields"->'_caixaCadastro' IS NULL
+      AND (l."customFields"->'_fhCaixaAnswer'->>'resposta' = 'SIM' OR l."customFields"->>'_reentryCaixaAt' IS NOT NULL OR l."customFields"->'_bancosCombinados'->>'caixa' = 'true'
+        OR l."customFields"->'_optouCaixa'->>'banco' = 'CAIXA'
+        OR (d.name ~* 'habitacional|financiamento' AND COALESCE(UPPER(l."customFields"->'_fhChosen'->>'bank'), 'CAIXA') IN ('CAIXA', 'BRB')))
     LIMIT 5`;
   for (const { id } of ids) await pedirCadastroCaixa(accountId, id, 'automático (cliente vai pela CAIXA)').catch((e) => console.error('[CAIXA] fila:', e?.message));
+  // Ficha completa depois (documento novo, CNPJ respondido) → cadastro de quem ainda não foi.
+  const cands = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
+      AND jsonb_typeof("customFields"->'_fichaCadastral'->'participantes') = 'array'
+      AND ("customFields"->'_caixaCadastro'->>'status' = 'CONSULTADO' OR jsonb_typeof("customFields"->'_caixaCadastro'->'cadastros') = 'object')
+      AND jsonb_array_length("customFields"->'_fichaCadastral'->'participantes')
+        > (SELECT count(*) FROM jsonb_object_keys(COALESCE("customFields"->'_caixaCadastro'->'cadastros', '{}'::jsonb)))
+    LIMIT 10`;
+  for (const { id } of cands) await cadastroAutomatico(accountId, id).catch((e) => console.error('[CAIXA] cadastro automático:', e?.message));
+}
+
+/** Consulta da CAIXA que mostra proposta ou avaliação em andamento em OUTRO correspondente (CCA): o cadastro automático espera a equipe. Pura. */
+export function consultaSegura(textos: string[]): string | null {
+  for (const t of textos) {
+    if (/proposta solicitada em outro CCA/i.test(t) && !/n[aã]o possui proposta solicitada em outro CCA/i.test(t)) return 'proposta em outro correspondente (CCA)';
+    if (/avalia[cç][aã]o em andamento/i.test(t) && !/n[aã]o possui avalia[cç][aã]o em andamento/i.test(t)) return 'avaliação de risco em andamento';
+  }
+  return null;
+}
+
+/** O que falta na ficha pro cadastro de um participante (CPF, identidade e o que a leitura apontou). Vazio = pronto. Pura. */
+export function faltaParaCadastro(p: any): string[] {
+  return [
+    ...(String(p?.cpf || '').replace(/\D/g, '').length === 11 ? [] : ['CPF']),
+    ...(String(p?.identidade?.numero || '').trim() ? [] : ['documento de identidade']),
+    ...(Array.isArray(p?.faltando) ? p.faltando.map(String) : []),
+  ];
+}
+
+/** "Quando estiver tudo ok, a extensão da CAIXA ativa para fazer o cadastro do cliente" (Fabio 31/10): participante com a ficha completa e ainda sem cadastro →
+ *  fila da extensão (que preenche pela ficha e o CRM confere tela a tela). Faltando dado → anotação + push uma vez por participante; a ficha é refeita quando
+ *  chega documento novo e o cadastro sai na rodada seguinte. Consulta com proposta/avaliação em outro CCA → segura pra equipe. */
+export async function cadastroAutomatico(accountId: string, leadId: string): Promise<void> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!l) return;
+  const cf = (l.customFields || {}) as Cf;
+  const c = (cf._caixaCadastro || {}) as Cf;
+  const cads = (c.cadastros || {}) as Record<string, any>;
+  const pendentes = participantesDa(cf).filter((p) => !cads[p.ordem]);
+  if (!pendentes.length) return;
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  const motivo = consultaSegura(Object.values(c.consultas || {}).map((x: any) => String(x?.texto || '')));
+  if (motivo) {
+    if (c.autoSeguradoAt) return;
+    await salvar(leadId, (x) => { x.autoSeguradoAt = new Date().toISOString(); });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA NÃO saiu sozinho: a consulta mostra ${motivo}. Confira e, se for seguir, peça o cadastro pela tela.` } }).catch(() => {});
+    sendPushToAccount(accountId, { title: `🏦 ${l.name}: CAIXA segurada`, body: `Consulta com ${motivo} — cadastro automático parado.`, leadId }).catch(() => {});
+    return;
+  }
+  const prontos = pendentes.filter((p) => !faltaParaCadastro(p).length).map((p) => p.ordem);
+  if (prontos.length) await pedirCadastroParticipantes(accountId, leadId, prontos, 'CRM (ficha completa)');
+  const avisar = pendentes.filter((p) => faltaParaCadastro(p).length && !c.faltaAvisada?.[p.ordem]);
+  if (!avisar.length) return;
+  await salvar(leadId, (x) => { x.faltaAvisada = { ...(x.faltaAvisada || {}), ...Object.fromEntries(avisar.map((p) => [p.ordem, new Date().toISOString()])) }; });
+  const linhas = avisar.map((p) => `• ${p.nome || `${p.ordem}º participante`}: falta ${faltaParaCadastro(p).join(', ')}`);
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA esperando a ficha completa (lida dos documentos da conversa/pasta):\n${linhas.join('\n')}\nQuando chegar o documento com o dado, a ficha é refeita e o cadastro sai sozinho.` } }).catch(() => {});
+  sendPushToAccount(accountId, { title: `🏦 ${l.name}: cadastro CAIXA esperando dado`, body: linhas.join(' ').slice(0, 160), leadId }).catch(() => {});
 }
 
 /** Conferência do cadastro (Fabio 29/10: "orientar o CRM para que ele faça a conferência dos dados"): a extensão manda o que ficou em cada campo da tela
  *  do Caixa Aqui e a IA compara com a ficha do participante (lida dos documentos). Anotação no card + resposta pra extensão mostrar. */
 const SYSTEM_CONFERE = `Você confere um CADASTRO de cliente preenchido no portal da CAIXA (Caixa Aqui) contra a FICHA DE CADASTRO do participante (dados lidos dos documentos dele).
 Recebe a lista de campos da tela (rótulo e valor que ficou) e a ficha. Compare campo a campo o que existe nos dois: nome, CPF, nascimento, sexo, identidade (tipo, número, órgão, UF, emissão), naturalidade, nacionalidade, filiação, estado civil, regime, cônjuge, endereço/CEP, telefone, e-mail, trabalho e renda.
-Regras da A&F (Fabio 29/10 — NÃO são divergência): a identidade é a do documento apresentado (com CNH, vale o número de registro, órgão "ÓRGÃO DE TRÂNSITO" e UF/emissão da CNH); CNH vencida não é problema; participante SEM RENDA vai com Tipo de Ocupação FORMAL e Ocupação ADMINISTRADOR; bairro vale o do comprovante de residência (a consulta do CEP pode trazer outro nome — não é divergência se a tela tem o do comprovante); tipo de imóvel CASA e ocupação do imóvel PRÓPRIA QUITADA são padrão da A&F; a lista de ocupações da CAIXA não tem todos os cargos — a opção MAIS PARECIDA com o cargo da ficha vale (ex.: "Analista PCPM Sr" → ANALISTA DE SISTEMAS); RENDA LANÇADA (Fabio 30/10): de cada fonte vale o contracheque VÁLIDO (competência dos 2 últimos meses — a CAIXA recusa mais antigo) de MAIOR recebimento — não precisa ser o mais recente; o IMPOSTO DE RENDA RETIDO NA FONTE do contracheque (irRetido) TEM que estar no campo de IR retido — vazio/0,00 com desconto de IR no contracheque = "faltando"; aposentadoria vai com comprovante EXTRATO DE BENEFÍCIO PREVIDENCIÁRIO; MAIS DE UMA RENDA: a profissão/ocupação da 1ª tela é a da MAIOR renda, igual à ocupação lançada na renda dela, e cada renda leva a ocupação DELA; renda de aposentadoria (fundo de previdência/seguridade, INSS, "outrasRendas" aposentadoria) = APOSENTADO (EXCETO FUNCIONÁRIO PÚBLICO), sem a data de admissão do outro emprego — não é divergência ocupação APOSENTADO com o cargo de outro emprego na ficha; grau de instrução é sempre SUPERIOR COMPLETO; o nome reduzido abrevia os nomes do meio e nunca o último sobrenome; estado civil e regime vêm juntos ("CASADO (A) COM COMUNHÃO PARCIAL DE BENS"); Declaração de Propósitos = só Movimentação de Conta e Empréstimos/Financiamentos com Financiamento Habitacional SIM; formato diferente (maiúsculas, acento, pontuação, máscara de CPF/CEP/data) NÃO é divergência; campo que EXISTE na tela e ficou vazio, mas a ficha tem = "faltando"; campo que NÃO aparece nesta tela = ignore (o cadastro da CAIXA tem várias páginas: dados pessoais na 1ª, endereço/telefone/e-mail na 2ª — nunca cobre o que é de outra página); campo que a ficha não tem = ignore.
+Regras da A&F (Fabio 29/10 — NÃO são divergência): a identidade é a do documento apresentado (com CNH, vale o número de registro, órgão "ÓRGÃO DE TRÂNSITO" e UF/emissão da CNH; com RG — inclusive a identidade nova, CIN, cujo número é o próprio CPF —, subtipo CARTEIRA DE IDENTIDADE e o órgão emissor pela lista da CAIXA, que só tem SSP, Polícia Civil, Defesa Social, Casa Civil e Outro: Instituto de Identificação/Polícia Civil da UF (ex.: "INSTITUTO DE IDENTIFICAÇÃO PCDF", "PC/GO") = POLÍCIA CIVIL, SSP/SESP = SECRETARIA DE SEGURANÇA PÚBLICA, órgão fora da lista = OUTRO TIPO DE ÓRGÃO EMISSOR); CNH vencida não é problema; participante SEM RENDA vai com Tipo de Ocupação FORMAL e Ocupação ADMINISTRADOR; bairro vale o do comprovante de residência (a consulta do CEP pode trazer outro nome — não é divergência se a tela tem o do comprovante); tipo de imóvel CASA e ocupação do imóvel PRÓPRIA QUITADA são padrão da A&F; a lista de ocupações da CAIXA não tem todos os cargos — a opção MAIS PARECIDA com o cargo da ficha vale (ex.: "Analista PCPM Sr" → ANALISTA DE SISTEMAS); RENDA LANÇADA (Fabio 30/10): de cada fonte vale o contracheque VÁLIDO (competência dos 2 últimos meses — a CAIXA recusa mais antigo) de MAIOR recebimento — não precisa ser o mais recente; o IMPOSTO DE RENDA RETIDO NA FONTE do contracheque (irRetido) TEM que estar no campo de IR retido — vazio/0,00 com desconto de IR no contracheque = "faltando"; aposentadoria vai com comprovante EXTRATO DE BENEFÍCIO PREVIDENCIÁRIO; MAIS DE UMA RENDA: a profissão/ocupação da 1ª tela é a da MAIOR renda, igual à ocupação lançada na renda dela, e cada renda leva a ocupação DELA; renda de aposentadoria (fundo de previdência/seguridade, INSS, "outrasRendas" aposentadoria) = APOSENTADO (EXCETO FUNCIONÁRIO PÚBLICO), sem a data de admissão do outro emprego — não é divergência ocupação APOSENTADO com o cargo de outro emprego na ficha; grau de instrução é sempre SUPERIOR COMPLETO; o nome reduzido abrevia os nomes do meio e nunca o último sobrenome; estado civil e regime vêm juntos ("CASADO (A) COM COMUNHÃO PARCIAL DE BENS"); Declaração de Propósitos = só Movimentação de Conta e Empréstimos/Financiamentos com Financiamento Habitacional SIM; formato diferente (maiúsculas, acento, pontuação, máscara de CPF/CEP/data) NÃO é divergência; campo que EXISTE na tela e ficou vazio, mas a ficha tem = "faltando"; campo que NÃO aparece nesta tela = ignore (o cadastro da CAIXA tem várias páginas: dados pessoais na 1ª, endereço/telefone/e-mail na 2ª — nunca cobre o que é de outra página); campo que a ficha não tem = ignore.
 Responda SOMENTE com JSON: {"ok": true|false, "divergencias": ["<campo: na tela X, na ficha Y>"], "faltando": ["<campo que a ficha tem e a tela deixou vazio>"], "resumo": "<1 frase>"}`;
 
 export async function conferirCadastro(accountId: string, leadId: string, ordem: number, campos: { rotulo: string; valor: string }[]): Promise<{ ok: boolean; divergencias: string[]; faltando: string[]; resumo: string } | null> {
