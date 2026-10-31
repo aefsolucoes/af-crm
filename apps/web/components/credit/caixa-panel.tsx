@@ -41,6 +41,7 @@ export function CaixaPanel() {
   const cards = data?.cards || [];
   const rodando = cards.filter((c) => c.atual);
   const conferir = cards.filter((c) => c.conferencia?.status === 'PENDENTE');
+  const naFila = cards.filter((c) => !c.atual && (c.status === 'FILA' || c.participantes.some((p) => p.cadastro === 'FILA') || c.avaliacao?.status === 'FILA'));
   const avaliacoes = cards.filter((c) => c.avaliacao).sort((a, b) => (b.avaliacao!.fim || b.avaliacao!.pedidoEm || '').localeCompare(a.avaliacao!.fim || a.avaliacao!.pedidoEm || '')).slice(0, 8);
   // Cadastro que não saiu sozinho: participante sem GRAVADO e nada na fila — mais os cards com ficha que ainda não foram pra CAIXA.
   const parados = cards.filter((c) => !c.atual && c.status !== 'FILA' && c.participantes.some((p) => !gravado(p.cadastro) && !andando(p.cadastro)));
@@ -70,7 +71,7 @@ export function CaixaPanel() {
     acao(leadId, 'fazer-cadastro', 'Cadastro na fila da extensão da CAIXA');
   }
 
-  const estado = rodando.length ? { rotulo: 'Rodando', cls: 'bg-blue-50 text-blue-700', borda: 'border-l-blue-500', pulsa: true }
+  const estado = rodando.length ? { rotulo: naFila.length ? `Rodando · ${naFila.length} na fila` : 'Rodando', cls: 'bg-blue-50 text-blue-700', borda: 'border-l-blue-500', pulsa: true }
     : conferir.length ? { rotulo: `Conferir cadastro (${conferir.length})`, cls: 'bg-amber-50 text-amber-700', borda: 'border-l-amber-400' }
     : { rotulo: 'Livre', cls: 'bg-emerald-50 text-emerald-700', borda: 'border-l-emerald-500' };
   const botao = 'text-[11px] px-2 py-0.5 rounded-md border flex-shrink-0 disabled:opacity-50';
@@ -98,6 +99,21 @@ export function CaixaPanel() {
                 <div className="flex items-center gap-1.5 font-semibold text-slate-800">{nome(c.nome, c.leadId)}{tag(c.produto)}</div>
                 <p className="text-slate-500">{ACAO[c.atual!.tipo] || c.atual!.tipo}{c.atual!.tipo !== 'avaliar' ? ` · ${c.participantes.find((p) => p.ordem === c.atual!.ordem)?.nome || `${c.atual!.ordem}º`}` : ''}</p>
                 <p className="text-[11px] text-slate-400">começou {ago(c.atual!.desde)}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {naFila.length > 0 && (
+        <div className="mt-2.5">
+          <Titulo n={naFila.length}>Na fila</Titulo>
+          <ul className="space-y-0.5">
+            {naFila.map((c, i) => (
+              <li key={c.leadId} className="flex items-center gap-1.5 text-xs text-slate-700 min-w-0">
+                <span className="w-4 text-right text-[10px] text-slate-400 flex-shrink-0">{i + 1}.</span>
+                {nome(c.nome, c.leadId)}{tag(c.produto)}
+                <span className="text-[10px] text-slate-400 truncate">{c.status === 'FILA' ? 'consulta do nome' : c.avaliacao?.status === 'FILA' ? 'Avaliação de Risco' : `cadastro de ${c.participantes.filter((p) => p.cadastro === 'FILA').map((p) => p.nome.split(' ')[0]).join(', ')}`}</span>
               </li>
             ))}
           </ul>
@@ -158,7 +174,7 @@ export function CaixaPanel() {
         </div>
       )}
 
-      {data && !rodando.length && !conferir.length && !avaliacoes.length && !parados.length && !semCadastro.length && <p className="mt-2 text-xs text-slate-400">Nenhum cliente na CAIXA agora.</p>}
+      {data && !rodando.length && !naFila.length && !conferir.length && !avaliacoes.length && !parados.length && !semCadastro.length && <p className="mt-2 text-xs text-slate-400">Nenhum cliente na CAIXA agora.</p>}
     </div>
   );
 }
