@@ -138,18 +138,33 @@ async function completarSocios(participantes: any[]): Promise<void> {
     for (const c of Array.isArray(p?.contracheques) ? p.contracheques : []) {
       const cnpj = String(c?.cnpj || '').replace(/\D/g, '');
       if (!/lucro/i.test(String(c?.tipo || '')) || c.admissao || cnpj.length !== 14) continue;
-      const r = (await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, { signal: AbortSignal.timeout(8000) }).then((x) => (x.ok ? x.json() : null)).catch(() => null)) as any;
-      if (!r) continue;
+      const r = await dadosDoCnpj(cnpj);
+      if (!r) { console.warn(`[Ficha cadastral] sócio: CNPJ sem resposta das consultas públicas`); }
       const nome = norm(p.nome).split(/\s+/);
-      const socio = (Array.isArray(r.qsa) ? r.qsa : []).find((q: any) => { const n = norm(q?.nome_socio || '').split(/\s+/); return n[0] === nome[0] && n[n.length - 1] === nome[nome.length - 1]; });
-      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(socio?.data_entrada_sociedade || r.data_inicio_atividade || ''));
+      const socio = (r?.socios || []).find((q) => { const n = norm(q.nome).split(/\s+/); return n[0] === nome[0] && n[n.length - 1] === nome[nome.length - 1]; });
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(socio?.entrada || r?.abertura || ''));
       if (m) c.admissao = `${m[3]}/${m[2]}/${m[1]}`;
-      if (!c.empregador && r.razao_social) c.empregador = r.razao_social;
+      if (!c.empregador && r?.razao) c.empregador = r.razao;
       const t = p.trabalho || (p.trabalho = {});
       if (!t.cnpj || String(t.cnpj).replace(/\D/g, '') === cnpj) Object.assign(t, { cnpj: t.cnpj || cnpj, empregador: t.empregador || c.empregador, admissao: t.admissao || c.admissao, cargo: t.cargo || c.cargo });
       if (c.admissao) p.faltando = (Array.isArray(p.faltando) ? p.faltando : []).filter((f: unknown) => !/admiss|empregador|cargo/i.test(String(f)));
     }
+    // Sem a data (consultas fora do ar): fica no "faltando" — a CAIXA recusa renda sem admissão e o cadastro automático não pode sair assim.
+    for (const c of Array.isArray(p?.contracheques) ? p.contracheques : []) {
+      if (/lucro/i.test(String(c?.tipo || '')) && !c.admissao) p.faltando = [...(Array.isArray(p.faltando) ? p.faltando : []), `data de entrada na sociedade (${c.empregador || 'empresa do IR'})`];
+    }
   }
+}
+
+/** Dados públicos do CNPJ (Receita): BrasilAPI e, se não responder, publica.cnpj.ws. Datas em AAAA-MM-DD. */
+async function dadosDoCnpj(cnpj: string): Promise<{ razao: string; abertura: string; socios: { nome: string; entrada: string }[] } | null> {
+  const get = (url: string) => fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (AF CRM)', Accept: 'application/json' }, signal: AbortSignal.timeout(10000) })
+    .then((x) => (x.ok ? x.json() : null)).catch(() => null) as Promise<any>;
+  const b = await get(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`);
+  if (b?.data_inicio_atividade) return { razao: b.razao_social || '', abertura: b.data_inicio_atividade, socios: (b.qsa || []).map((q: any) => ({ nome: q?.nome_socio || '', entrada: q?.data_entrada_sociedade || '' })) };
+  const w = await get(`https://publica.cnpj.ws/cnpj/${cnpj}`);
+  if (w?.estabelecimento?.data_inicio_atividade) return { razao: w.razao_social || '', abertura: w.estabelecimento.data_inicio_atividade, socios: (w.socios || []).map((q: any) => ({ nome: q?.nome || '', entrada: q?.data_entrada || '' })) };
+  return null;
 }
 
 /** Anexos (PDF/foto) que o cliente mandou na conversa e já subiram pro Drive — os mais recentes primeiro. */
