@@ -87,6 +87,50 @@ function arquivosPessoais(todos: Arquivo[]): Arquivo[] {
     .slice(0, MAX_ARQUIVOS);
 }
 
+/** Renda do SÓCIO montada no código pela leitura do imposto de renda (Fabio 31/10: "pegar a distribuição de lucro e dividir por 12"; a junção por IA marcou o
+ *  João Pedro como SEM RENDA com o IR dele na pasta). Só pra quem não tem contracheque/aposentadoria: por empresa, o ano-calendário mais recente, valor ÷ 12.
+ *  IR da pessoa na pasta sem lucro lido e ela "sem renda" → vai pro "faltando" (o cadastro automático espera a equipe em vez de cadastrar SEM RENDA). */
+function rendaDeSocio(participantes: any[], leituras: { arquivo: string; leitura: any }[]): void {
+  const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '');
+  const pu = (s: unknown) => { const n = norm(String(s || '')).split(/\s+/).filter(Boolean); return n.length ? `${n[0]} ${n[n.length - 1]}` : ''; };
+  for (const p of participantes || []) {
+    const ccs = Array.isArray(p?.contracheques) ? p.contracheques : [];
+    if (ccs.some((c: any) => Number(c?.bruto) > 0 || Number(c?.liquido) > 0)) continue;
+    const lucros = new Map<string, { fonte: string; cnpj: string; valor: number; ano: number; arquivo: string }>();
+    let temIr = false;
+    for (const { arquivo, leitura } of leituras) {
+      if (!/IMPOSTO DE RENDA/i.test(String(leitura?.tipo || ''))) continue;
+      for (const pe of Array.isArray(leitura?.pessoas) ? leitura.pessoas : []) {
+        const mesmo = (dig(pe?.cpf).length === 11 && dig(pe.cpf) === dig(p.cpf)) || (!!pu(pe?.nome) && pu(pe.nome) === pu(p.nome));
+        if (!mesmo) continue;
+        temIr = true;
+        for (const ld of Array.isArray(pe.lucrosDividendos) ? pe.lucrosDividendos : []) {
+          const valor = Number(ld?.valorAnual);
+          if (!(valor > 0)) continue;
+          const k = dig(ld.cnpj) || norm(String(ld.fonte || ''));
+          const ano = Number(pe.anoCalendario || leitura.anoCalendario) || 0;
+          const atual = lucros.get(k);
+          if (!atual || ano > atual.ano) lucros.set(k, { fonte: String(ld.fonte || '').trim(), cnpj: dig(ld.cnpj), valor, ano, arquivo });
+        }
+      }
+    }
+    console.log(`[Ficha cadastral] sócio? ${pu(p.nome)}: IR ${temIr ? 'sim' : 'não'}, lucros ${[...lucros.values()].map((x) => `${x.ano}:${x.valor}`).join(',') || '—'}`);
+    if (!lucros.size) {
+      if (temIr && p.semRenda) p.faltando = [...(Array.isArray(p.faltando) ? p.faltando : []), 'renda: o imposto de renda está na pasta, mas nenhuma renda/lucro foi lido — conferir antes de cadastrar SEM RENDA'];
+      continue;
+    }
+    const fontes = [...lucros.values()].sort((a, b) => b.valor - a.valor);
+    const r2 = (n: number) => Math.round((n / 12) * 100) / 100;
+    p.contracheques = fontes.map((x) => ({ tipo: 'lucros', empregador: x.fonte || null, cnpj: x.cnpj || null, bruto: r2(x.valor), liquido: r2(x.valor), irRetido: null, cargo: 'DIRETOR DE EMPRESAS', admissao: null, competencia: x.ano ? `12/${x.ano}` : null }));
+    p.semRenda = false; p.rendaInformal = false;
+    p.rendaBrutaMensal = p.rendaLiquidaMensal = Math.round(fontes.reduce((s, x) => s + x.valor / 12, 0) * 100) / 100;
+    p.trabalho = { ...(p.trabalho || {}), vinculo: 'EMPRESARIO', empregador: fontes[0].fonte || null, cnpj: fontes[0].cnpj || null, cargo: 'DIRETOR DE EMPRESAS', admissao: null };
+    p.profissao = p.profissao || 'DIRETOR DE EMPRESAS';
+    p.fontes = { ...(p.fontes || {}), trabalho: fontes[0].arquivo, renda: fontes[0].arquivo };
+    p.faltando = [...(Array.isArray(p.faltando) ? p.faltando : []).filter((f: unknown) => !/empregador|cargo|admiss|renda/i.test(String(f))), ...fontes.filter((x) => x.cnpj.length !== 14).map((x) => `CNPJ de ${x.fonte || 'empresa do IR'}`)];
+  }
+}
+
 /** Sócio (renda = lucros ÷ 12 — Fabio 31/10): a CAIXA pede a "data de admissão" da renda — vale a entrada na sociedade, pelo quadro de sócios do CNPJ (BrasilAPI,
  *  dado público da Receita); sem o sócio no quadro, a abertura da empresa. Completa também o nome da empresa e tira a admissão do "faltando". */
 async function completarSocios(participantes: any[]): Promise<void> {
@@ -279,6 +323,7 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     const usaFgts = /^(s|sim|true|1)/i.test(String(cf.usa_fgts ?? '').trim());
     const ficha = await chamarIA(SYSTEM_JUNTA, [{ type: 'text', text: `Hoje é ${hoje()} (documento de 2026 não é "data futura").\nUSA FGTS: ${usaFgts ? 'sim' : 'não'}\n\nPARTICIPANTES DO CARD:\n${JSON.stringify(participantesCard)}\n\nLEITURAS DOS DOCUMENTOS:\n${JSON.stringify(pessoais).slice(0, 180_000)}` }], 16000);
     if (!ficha || !Array.isArray(ficha.participantes) || !ficha.participantes.length) return 'Não consegui montar a ficha com as leituras';
+    rendaDeSocio(ficha.participantes, pessoais);
     await completarSocios(ficha.participantes).catch((e) => console.error('[Ficha cadastral] sócio:', e?.message));
 
     const agora = new Date();
