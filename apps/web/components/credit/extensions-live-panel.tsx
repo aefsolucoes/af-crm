@@ -7,6 +7,7 @@ import { getSocket } from '@/lib/socket';
 import { cn } from '@/lib/utils';
 import { BANKS, STATUS, ago, type Bank } from './shared';
 import { BankLogo } from './bank-logo';
+import { CaixaPanel } from './caixa-panel';
 
 /* Painel do topo (Fabio 19/10): o logo de cada banco e o que a extensão dele está fazendo AGORA — quem está rodando (cliente e passo), quem está NA FILA e os últimos JÁ RODADOS.
  * Dados: GET /api/credit-analysis/live (extensionsLive). Atualiza a cada 5 s e na hora que o CRM avisa de mudança. */
@@ -94,7 +95,7 @@ export function ExtensionsLivePanel({ produto = 'he' }: { produto?: 'he' | 'fh' 
         </div>
       </div>
     )}
-    <div className={cn('grid grid-cols-1 gap-3', produto === 'fh' ? 'md:grid-cols-2 xl:grid-cols-4' : 'lg:grid-cols-3')}>
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
       {colunas.map((b) => {
         const l = data?.find((x) => x.bank === b.key);
         const e = l ? estadoDe(l, b.manual) : { rotulo: 'carregando…', cls: 'bg-slate-100 text-slate-400', borda: 'border-l-slate-200' };
@@ -188,6 +189,8 @@ export function ExtensionsLivePanel({ produto = 'he' }: { produto?: 'he' | 'fh' 
           </div>
         );
       })}
+      {/* Home Equity: a CAIXA é a 4ª coluna (Fabio 31/10) — cadastro, conferência e Avaliação de Risco. */}
+      {produto === 'he' && <CaixaPanel />}
     </div>
     </div>
   );

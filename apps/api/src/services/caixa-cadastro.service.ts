@@ -11,6 +11,10 @@ import { comRegrasCaixa, regrasRendaCaixa, rendaForaDoPrazo } from './caixa-cr01
  * ficha completa sai sozinho (Fabio 31/10). */
 
 type Cf = Record<string, any>;
+// Home Equity entra na CAIXA (Fabio 31/10: "INCLUA A CAIXA NAS AVALIAÇÕES DE HE"; "depois que a documentação chega: cadastro automático e em seguida a avaliação").
+// Vale para fichas geradas daqui pra frente — os HE que já estavam em contratação não começam a ser cadastrados de uma vez.
+const HE_CAIXA_DESDE = '2026-10-31T20:00:00.000Z';
+const ehHe = (dept: string | null | undefined) => /home|garantia/i.test(dept || '');
 const LEASE_MS = 10 * 60_000; // participante "em consulta" há mais que isso = a extensão largou; volta pra fila
 
 async function salvar(leadId: string, mut: (c: Cf) => void): Promise<Cf> {
@@ -87,9 +91,16 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
           sendPushToAccount(accountId, { title: `⏸️ ${l!.name}: Avaliação CAIXA segurada`, body: quem.segurar.slice(0, 120), leadId: id }).catch(() => {});
           continue;
         }
+        const ajuste = await prisma.creditOverride.findFirst({ where: { leadId: id, bank: 'CAIXA' }, select: { data: true } }).catch(() => null);
+        const operacao = operacaoDaAvaliacao(cf, [quem.tomador, ...quem.incluir], valorDe((ajuste?.data as Cf | null)?.prazo));
+        if (typeof operacao === 'string') {
+          await salvar(id, (x) => { x.avaliacao = { ...x.avaliacao, status: `SEGURADO: ${operacao}`, fim: new Date().toISOString() }; });
+          await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `⏸️ Avaliação de Risco CAIXA não rodou: ${operacao}. Corrija e peça de novo (painel CAIXA da Análise de Crédito).` } }).catch(() => {});
+          continue;
+        }
         const p1 = quem.tomador;
         await salvar(id, (x) => { x.atual = { ordem: 1, desde: new Date().toISOString(), tipo: 'avaliar' }; x.avaliacao = { ...x.avaliacao, status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.avaliacao?.tentativas || 0) + 1 }; });
-        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x), incluir: quem.incluir.map((x) => ({ ordem: x.ordem, nome: x.nome, cpf: x.cpf })), fora: quem.fora.map((x) => x.nome) };
+        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x), incluir: quem.incluir.map((x) => ({ ordem: x.ordem, nome: x.nome, cpf: x.cpf })), fora: quem.fora.map((x) => x.nome), operacao };
       }
       await salvar(id, (x) => { x.atual = { ordem: pc.ordem, desde: new Date().toISOString(), tipo: 'cadastrar' }; x.cadastros[pc.ordem] = { ...x.cadastros[pc.ordem], status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.cadastros[pc.ordem]?.tentativas || 0) + 1 }; });
       const { fontes, faltando, ...participante } = pc;
@@ -149,7 +160,8 @@ export async function processFilaCaixa(accountId: string): Promise<void> {
       AND l."customFields"->'_fichaCadastral' IS NOT NULL AND l."customFields"->'_caixaCadastro' IS NULL
       AND (l."customFields"->'_fhCaixaAnswer'->>'resposta' = 'SIM' OR l."customFields"->>'_reentryCaixaAt' IS NOT NULL OR l."customFields"->'_bancosCombinados'->>'caixa' = 'true'
         OR l."customFields"->'_optouCaixa'->>'banco' = 'CAIXA'
-        OR (d.name ~* 'habitacional|financiamento' AND COALESCE(UPPER(l."customFields"->'_fhChosen'->>'bank'), 'CAIXA') IN ('CAIXA', 'BRB')))
+        OR (d.name ~* 'habitacional|financiamento' AND COALESCE(UPPER(l."customFields"->'_fhChosen'->>'bank'), 'CAIXA') IN ('CAIXA', 'BRB'))
+        OR (d.name ~* 'home|garantia' AND l."customFields"->'_fichaCadastral'->>'at' >= ${HE_CAIXA_DESDE}))
     LIMIT 5`;
   for (const { id } of ids) await pedirCadastroCaixa(accountId, id, 'automático (cliente vai pela CAIXA)').catch((e) => console.error('[CAIXA] fila:', e?.message));
   // Ficha completa depois (documento novo, CNPJ respondido) → cadastro de quem ainda não foi.
@@ -352,4 +364,103 @@ export async function gravarCadastro(accountId: string, leadId: string, ordem: n
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA — ${ordem}º participante (${p?.nome || '—'}): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `🏦 ${l.name}: cadastro CAIXA (${p?.nome || `${ordem}º`})`, body: r.status, leadId }).catch(() => {});
+  if (/^GRAVADO/i.test(r.status)) await pedirConferencia(accountId, leadId).catch((e) => console.error('[CAIXA] conferência:', e?.message));
+}
+
+const gravado = (c: Cf, ordem: number) => /^GRAVADO/i.test(String(c.cadastros?.[ordem]?.status || ''));
+
+/** Todos os participantes da ficha com o cadastro GRAVADO → a equipe confere na CAIXA (Fabio 31/10: "depois que cadastrar chega um push no CRM para conferir
+ *  o cadastro; depois de o colaborador conferir é que ele roda [a avaliação]"). Uma vez por card; o botão fica no painel CAIXA da Análise de Crédito. */
+async function pedirConferencia(accountId: string, leadId: string): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const cf = (l?.customFields || {}) as Cf;
+  const c = cf._caixaCadastro || {};
+  const ps = participantesDa(cf);
+  if (!l || !ps.length || c.conferencia || !ps.every((p) => gravado(c, p.ordem))) return;
+  await salvar(leadId, (x) => { x.conferencia = { status: 'PENDENTE', desde: new Date().toISOString() }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔎 Cadastro na CAIXA gravado (${ps.map((p) => p.nome).join(', ')}): CONFIRA no Caixa Aqui. Estando certo, clique em "Cadastro conferido" no painel CAIXA da Análise de Crédito — no Home Equity a Avaliação de Risco roda em seguida.` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `🔎 ${l.name}: conferir o cadastro da CAIXA`, body: 'Cadastro gravado. Confira e clique em "Cadastro conferido" (Análise de Crédito → CAIXA).', leadId }).catch(() => {});
+}
+
+/** "Cadastro conferido" (botão do painel CAIXA): marca quem conferiu e, no Home Equity, pede a Avaliação de Risco. Erro em texto quando não dá. */
+export async function marcarConferido(accountId: string, leadId: string, por: string): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!l) return 'Lead não encontrado';
+  const cf = (l.customFields || {}) as Cf;
+  const c = cf._caixaCadastro || {};
+  const ps = participantesDa(cf);
+  if (!ps.length) return 'O card não tem a ficha de cadastro';
+  const falta = ps.filter((p) => !gravado(c, p.ordem));
+  if (falta.length) return `Cadastro ainda não gravado na CAIXA: ${falta.map((p) => p.nome || `${p.ordem}º`).join(', ')}`;
+  const he = ehHe(l.pipeline?.department?.name);
+  await salvar(leadId, (x) => { x.conferencia = { ...(x.conferencia || {}), status: 'CONFERIDO', por, em: new Date().toISOString() }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Cadastro na CAIXA conferido por ${por}.${he ? ' A Avaliação de Risco foi pra fila da extensão.' : ' No Financiamento a Avaliação de Risco não roda sozinha.'}` } }).catch(() => {});
+  return he ? pedirAvaliacao(accountId, leadId, `${por} (cadastro conferido)`) : null;
+}
+
+const valorDe = (v: any): number | null => {
+  if (typeof v === 'number') return v > 0 ? v : null;
+  let s = String(v ?? '').replace(/[^\d,.]/g, '');
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  else if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+  const n = Number(s);
+  return s && Number.isFinite(n) && n > 0 ? n : null;
+};
+
+/** Tela "Informações da Operação" da Avaliação de Risco (Fabio 31/10): PRICE, TR, garantia = alienação fiduciária, prazo máximo (240; outro só quando o
+ *  cliente pede — ajuste "prazo" da CAIXA), imóvel e crédito da proposta do card, prestação necessária = 30% da renda BRUTA de quem entra na avaliação. Pura. */
+export function operacaoDaAvaliacao(cf: Cf, pessoas: any[], prazoPedido?: number | null): Record<string, any> | string {
+  const imovel = valorDe(cf.valor_imovel), credito = valorDe(cf.valor_credito);
+  const renda = pessoas.reduce((t, p) => t + (valorDe(p?.rendaBrutaMensal) || valorDe(p?.contracheques?.[0]?.bruto) || 0), 0);
+  if (!imovel || !credito) return 'valor do imóvel ou do crédito vazio no card';
+  if (!renda) return 'renda bruta vazia na ficha';
+  return { portabilidade: 'NAO', origem: 'CAIXA', prazo: prazoPedido && prazoPedido > 0 ? Math.round(prazoPedido) : 240, valorImovel: imovel, valorFinanciamento: credito,
+    rendaBruta: Math.round(renda * 100) / 100, prestacao: Math.round(renda * 0.3 * 100) / 100, garantia: 'alienacao fiduciaria', amortizacao: 'PRICE', indexador: 'TR' };
+}
+
+/** Botão "Fazer cadastro" do painel CAIXA (Fabio 31/10: "preciso de um botão também para fazer o cadastro do cliente quando não rodar sozinho"):
+ *  sem nada na CAIXA → fila da consulta (o cadastro sai em seguida); já consultado → cadastro de quem ainda não está GRAVADO, mesmo com a ficha incompleta
+ *  (a extensão para e mostra o que faltou). */
+export async function fazerCadastroManual(accountId: string, leadId: string, por: string): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!l) return 'Lead não encontrado';
+  const cf = (l.customFields || {}) as Cf;
+  const c = cf._caixaCadastro;
+  const ps = participantesDa(cf);
+  if (!ps.length) return 'O card ainda não tem a ficha de cadastro (lida dos documentos da pasta ou da conversa)';
+  if (!c || (c.status !== 'FILA' && !ps.some((p) => c.consultas?.[p.ordem]))) return pedirCadastroCaixa(accountId, leadId, por);
+  if (c.status === 'FILA') return 'Já está na fila da CAIXA (consulta do nome em andamento)';
+  const ordens = ps.filter((p) => !gravado(c, p.ordem) && !['FILA', 'RODANDO'].includes(String(c.cadastros?.[p.ordem]?.status || ''))).map((p) => p.ordem);
+  if (!ordens.length) return ps.every((p) => gravado(c, p.ordem)) ? 'Todos os participantes já estão cadastrados (GRAVADO)' : 'O cadastro já está na fila/rodando';
+  return pedirCadastroParticipantes(accountId, leadId, ordens, por);
+}
+
+/** Painel CAIXA da Análise de Crédito: cards com cadastro na CAIXA (sem CPF) — rodando, conferir, avaliação — e os que têm ficha e ainda não foram pra CAIXA. */
+export async function painelCaixa(accountId: string): Promise<any[]> {
+  const rows = await prisma.$queryRaw<{ id: string; name: string; c: Cf; ps: any; dept: string | null }[]>`
+    SELECT l.id, l.name, l."customFields"->'_caixaCadastro' AS c, l."customFields"->'_fichaCadastral'->'participantes' AS ps, d.name AS dept
+    FROM "Lead" l LEFT JOIN "Pipeline" p ON p.id = l."pipelineId" LEFT JOIN "Department" d ON d.id = p."departmentId"
+    WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."customFields"->'_caixaCadastro' IS NOT NULL
+    ORDER BY l."updatedAt" DESC LIMIT 80`;
+  return rows.map((r) => {
+    const c = r.c || {};
+    const ps = (Array.isArray(r.ps) ? r.ps : []).map((p: any, i: number) => ({ ordem: Number(p.ordem) || i + 1, nome: p.nome || '', semRenda: p.semRenda === true }));
+    const atual = c.atual && Date.now() - Date.parse(c.atual.desde) < LEASE_MS ? { tipo: c.atual.tipo || 'consultar', ordem: c.atual.ordem, desde: c.atual.desde } : null;
+    return {
+      leadId: r.id, nome: r.name, produto: ehHe(r.dept) ? 'HE' : 'FH', status: c.status || null, atual,
+      participantes: ps.map((p: any) => ({ ...p, cadastro: c.cadastros?.[p.ordem]?.status || null, consultado: !!c.consultas?.[p.ordem] })),
+      conferencia: c.conferencia || null,
+      avaliacao: c.avaliacao ? { status: c.avaliacao.status, pedidoEm: c.avaliacao.pedidoEm || null, fim: c.avaliacao.fim || null } : null,
+    };
+  });
+}
+export async function semCadastroCaixa(accountId: string): Promise<any[]> {
+  const rows = await prisma.$queryRaw<{ id: string; name: string; ps: any; dept: string | null; at: string | null }[]>`
+    SELECT l.id, l.name, l."customFields"->'_fichaCadastral'->'participantes' AS ps, d.name AS dept, l."customFields"->'_fichaCadastral'->>'at' AS at
+    FROM "Lead" l LEFT JOIN "Pipeline" p ON p.id = l."pipelineId" LEFT JOIN "Department" d ON d.id = p."departmentId"
+    WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
+      AND jsonb_typeof(l."customFields"->'_fichaCadastral'->'participantes') = 'array' AND l."customFields"->'_caixaCadastro' IS NULL
+    ORDER BY l."customFields"->'_fichaCadastral'->>'at' DESC NULLS LAST LIMIT 30`;
+  return rows.map((r) => ({ leadId: r.id, nome: r.name, produto: ehHe(r.dept) ? 'HE' : 'FH', fichaEm: r.at, participantes: (Array.isArray(r.ps) ? r.ps : []).map((p: any) => p.nome || '').filter(Boolean) }));
 }

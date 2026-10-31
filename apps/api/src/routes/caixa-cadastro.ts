@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
-import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao } from '../services/caixa-cadastro.service';
+import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa } from '../services/caixa-cadastro.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -9,6 +9,22 @@ router.use(authMiddleware);
 
 router.get('/fila', async (req: AuthRequest, res: Response) => {
   try { res.json(await proximaConsulta(req.user!.accountId)); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro na fila da CAIXA' }); }
+});
+
+// Painel CAIXA da Análise de Crédito (Fabio 31/10): rodando, conferir cadastro, avaliação e quem tem ficha sem cadastro.
+router.get('/painel', async (req: AuthRequest, res: Response) => {
+  try { const [cards, semCadastro] = await Promise.all([painelCaixa(req.user!.accountId), semCadastroCaixa(req.user!.accountId)]); res.json({ cards, semCadastro }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+const nomeDe = async (req: AuthRequest) => (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+router.post('/:leadId/conferido', async (req: AuthRequest, res: Response) => {
+  const erro = await marcarConferido(req.user!.accountId, req.params.leadId, await nomeDe(req)).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+router.post('/:leadId/fazer-cadastro', async (req: AuthRequest, res: Response) => {
+  const erro = await fazerCadastroManual(req.user!.accountId, req.params.leadId, await nomeDe(req)).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
 });
 
 router.get('/prontos', async (req: AuthRequest, res: Response) => {
