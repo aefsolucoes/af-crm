@@ -33,7 +33,7 @@ export function CaixaPanel() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
-  const { data } = useQuery<{ cards: CardCaixa[]; semCadastro: SemCad[] }>({
+  const { data } = useQuery<{ cards: CardCaixa[]; semCadastro: SemCad[]; avaliacaoAposConferencia?: boolean }>({
     queryKey: ['caixa-painel'],
     queryFn: async () => (await api.get('/api/caixa-cadastro/painel')).data,
     refetchInterval: 10_000,
@@ -61,8 +61,9 @@ export function CaixaPanel() {
     } finally { setBusy(null); }
   }
   function conferido(c: CardCaixa) {
-    if (!window.confirm(`Você conferiu no Caixa Aqui o cadastro de ${c.participantes.map((p) => p.nome).join(' e ')}?\n\n${c.produto === 'HE' ? 'A Avaliação de Risco vai pra fila da extensão em seguida.' : 'No Financiamento a Avaliação de Risco não roda sozinha.'}`)) return;
-    acao(c.leadId, 'conferido', c.produto === 'HE' ? 'Cadastro conferido — Avaliação de Risco na fila' : 'Cadastro conferido');
+    const avalia = c.produto === 'HE' && !!data?.avaliacaoAposConferencia;
+    if (!window.confirm(`Você conferiu no Caixa Aqui o cadastro de ${c.participantes.map((p) => p.nome).join(' e ')}?\n\n${avalia ? 'A Avaliação de Risco vai pra fila da extensão em seguida.' : 'Só registra a conferência — a Avaliação de Risco não roda agora.'}`)) return;
+    acao(c.leadId, 'conferido', avalia ? 'Cadastro conferido — Avaliação de Risco na fila' : 'Cadastro conferido');
   }
   function fazerCadastro(leadId: string, quem: string) {
     if (!window.confirm(`Fazer o cadastro de ${quem} na CAIXA agora?\n\nA extensão consulta o nome (se ainda não consultou) e preenche o cadastro pela ficha.`)) return;
@@ -86,7 +87,7 @@ export function CaixaPanel() {
           </span>
         </div>
       </div>
-      <p className="mt-2 text-xs text-slate-400">Documentação recebida → cadastro no Caixa Aqui → a equipe confere → Avaliação de Risco.</p>
+      <p className="mt-2 text-xs text-slate-400">Documentação recebida → cadastro no Caixa Aqui → a equipe confere{data?.avaliacaoAposConferencia ? ' → Avaliação de Risco' : ' (Avaliação de Risco pausada)'}.</p>
 
       {rodando.length > 0 && (
         <div className="mt-2.5">

@@ -15,6 +15,8 @@ type Cf = Record<string, any>;
 // Vale para fichas geradas daqui pra frente — os HE que já estavam em contratação não começam a ser cadastrados de uma vez.
 const HE_CAIXA_DESDE = '2026-10-31T20:00:00.000Z';
 const ehHe = (dept: string | null | undefined) => /home|garantia/i.test(dept || '');
+// "Cadastro conferido" pede a Avaliação de Risco do HE sozinho? DESLIGADO — Fabio 31/10: "NÃO RODA NENHUM CRÉDITO, ACOMPANHA OS CADASTROS". Só ele libera.
+export const AVALIACAO_APOS_CONFERENCIA = false;
 const LEASE_MS = 10 * 60_000; // participante "em consulta" há mais que isso = a extensão largou; volta pra fila
 
 async function salvar(leadId: string, mut: (c: Cf) => void): Promise<Cf> {
@@ -378,7 +380,7 @@ async function pedirConferencia(accountId: string, leadId: string): Promise<void
   const ps = participantesDa(cf);
   if (!l || !ps.length || c.conferencia || !ps.every((p) => gravado(c, p.ordem))) return;
   await salvar(leadId, (x) => { x.conferencia = { status: 'PENDENTE', desde: new Date().toISOString() }; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔎 Cadastro na CAIXA gravado (${ps.map((p) => p.nome).join(', ')}): CONFIRA no Caixa Aqui. Estando certo, clique em "Cadastro conferido" no painel CAIXA da Análise de Crédito — no Home Equity a Avaliação de Risco roda em seguida.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔎 Cadastro na CAIXA gravado (${ps.map((p) => p.nome).join(', ')}): CONFIRA no Caixa Aqui. Estando certo, clique em "Cadastro conferido" no painel CAIXA da Análise de Crédito${AVALIACAO_APOS_CONFERENCIA ? ' — no Home Equity a Avaliação de Risco roda em seguida' : ''}.` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `🔎 ${l.name}: conferir o cadastro da CAIXA`, body: 'Cadastro gravado. Confira e clique em "Cadastro conferido" (Análise de Crédito → CAIXA).', leadId }).catch(() => {});
 }
@@ -395,8 +397,9 @@ export async function marcarConferido(accountId: string, leadId: string, por: st
   if (falta.length) return `Cadastro ainda não gravado na CAIXA: ${falta.map((p) => p.nome || `${p.ordem}º`).join(', ')}`;
   const he = ehHe(l.pipeline?.department?.name);
   await salvar(leadId, (x) => { x.conferencia = { ...(x.conferencia || {}), status: 'CONFERIDO', por, em: new Date().toISOString() }; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Cadastro na CAIXA conferido por ${por}.${he ? ' A Avaliação de Risco foi pra fila da extensão.' : ' No Financiamento a Avaliação de Risco não roda sozinha.'}` } }).catch(() => {});
-  return he ? pedirAvaliacao(accountId, leadId, `${por} (cadastro conferido)`) : null;
+  const avaliar = he && AVALIACAO_APOS_CONFERENCIA;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Cadastro na CAIXA conferido por ${por}.${avaliar ? ' A Avaliação de Risco foi pra fila da extensão.' : he ? ' A Avaliação de Risco NÃO roda agora (Fabio 31/10: nenhum crédito por enquanto).' : ' No Financiamento a Avaliação de Risco não roda sozinha.'}` } }).catch(() => {});
+  return avaliar ? pedirAvaliacao(accountId, leadId, `${por} (cadastro conferido)`) : null;
 }
 
 const valorDe = (v: any): number | null => {
