@@ -112,13 +112,15 @@ export interface LocationEvent {
 export async function listLocationEvents(accountId: string, opts: { from?: Date; to?: Date; userId?: string }): Promise<LocationEvent[]> {
   const when = { createdAt: { ...(opts.from ? { gte: opts.from } : {}), ...(opts.to ? { lte: opts.to } : {}) } };
   const who = opts.userId ? { userId: opts.userId } : {};
+  // 1 ponto por minuto com o app aberto: 1000 da equipe toda cobrem poucas horas; filtrado por uma pessoa vai até 3000 (Fabio 31/10)
+  const take = opts.userId ? 3000 : 1000;
   const [pings, sends] = await Promise.all([
-    prisma.userLocationPing.findMany({ where: { accountId, ...who, ...when }, orderBy: { createdAt: 'desc' }, take: 1000 }),
-    prisma.messageSendLocation.findMany({ where: { accountId, ...who, ...when }, orderBy: { createdAt: 'desc' }, take: 1000 }),
+    prisma.userLocationPing.findMany({ where: { accountId, ...who, ...when }, orderBy: { createdAt: 'desc' }, take }),
+    prisma.messageSendLocation.findMany({ where: { accountId, ...who, ...when }, orderBy: { createdAt: 'desc' }, take }),
   ]);
   const events: LocationEvent[] = [
     ...pings.map((p): LocationEvent => ({ id: p.id, kind: 'open', userId: p.userId, userName: p.userName, leadId: null, leadName: null, status: p.status, latitude: p.latitude, longitude: p.longitude, accuracy: p.accuracy, detail: p.detail, userAgent: p.userAgent, ip: p.ip, createdAt: p.createdAt })),
     ...sends.map((m): LocationEvent => ({ id: m.id, kind: 'send', userId: m.userId, userName: m.userName, leadId: m.leadId, leadName: m.leadName, status: m.status, latitude: m.latitude, longitude: m.longitude, accuracy: m.accuracy, detail: m.detail, userAgent: m.userAgent, ip: m.ip, createdAt: m.createdAt })),
   ];
-  return events.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 1000);
+  return events.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, take);
 }

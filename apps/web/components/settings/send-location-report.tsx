@@ -48,11 +48,17 @@ function StatusCell({ r }: { r: Row }) {
 }
 
 interface PromptCfg { promptEnabled: boolean; disabledUserIds: string[]; users: { id: string; name: string; role: string }[] }
+const fetchCfg = async (): Promise<PromptCfg> => (await api.get('/api/messages/send-location-settings')).data;
+
+const chip = (on: boolean) => `inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border transition-colors ${on ? 'bg-af-mid text-white border-af-mid' : 'border-af-border text-slate-500 hover:bg-slate-50'}`;
+
+// Igual ao listLocationEvents da API: 1000 pontos da equipe toda, 3000 de uma pessoa só.
+const limite = (userId: string) => (userId ? 3000 : 1000);
 
 /** Chave do pedido de permissão (pop-up) + por pessoa. Chave geral desligada = ninguém vê pedido (Fabio 28/10: "só não manda o pop up ainda"). */
 function PromptSettings() {
   const qc = useQueryClient();
-  const { data } = useQuery<PromptCfg>({ queryKey: ['send-location-settings'], queryFn: async () => (await api.get('/api/messages/send-location-settings')).data });
+  const { data } = useQuery<PromptCfg>({ queryKey: ['send-location-settings'], queryFn: fetchCfg });
   const [saving, setSaving] = useState(false);
   if (!data) return null;
 
@@ -99,8 +105,7 @@ function PromptSettings() {
           {data.users.map((u) => {
             const on = !data.disabledUserIds.includes(u.id);
             return (
-              <button key={u.id} type="button" onClick={() => toggleUser(u.id)} disabled={saving}
-                className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border transition-colors ${on ? 'bg-af-mid text-white border-af-mid' : 'border-af-border text-slate-500 hover:bg-slate-50'}`}>
+              <button key={u.id} type="button" onClick={() => toggleUser(u.id)} disabled={saving} className={chip(on)}>
                 {on && <Check size={11} />}{u.name}
               </button>
             );
@@ -115,13 +120,24 @@ export function SendLocationReport() {
   const [from, setFrom] = useState(diasAtras(7));
   const [to, setTo] = useState(hoje());
   const [userId, setUserId] = useState('');
+  const { data: cfg } = useQuery<PromptCfg>({ queryKey: ['send-location-settings'], queryFn: fetchCfg });
+  // Uma pessoa escolhida = o servidor filtra por ela (Fabio 31/10). Antes filtrava aqui dentro dos 1000 pontos mais recentes da equipe toda, e com
+  // 1 ponto por minuto quem não abriu o CRM nas últimas horas nem aparecia na lista.
   const { data, isLoading, isError, refetch, isFetching } = useQuery<Row[]>({
-    queryKey: ['location-events', from, to],
-    queryFn: async () => (await api.get('/api/messages/location-events', { params: { from: `${from}T00:00:00-03:00`, to: `${to}T23:59:59-03:00` } })).data,
+    queryKey: ['location-events', from, to, userId],
+    queryFn: async () => (await api.get('/api/messages/location-events', { params: { from: `${from}T00:00:00-03:00`, to: `${to}T23:59:59-03:00`, ...(userId ? { userId } : {}) } })).data,
   });
-  const pessoas = useMemo(() => Array.from(new Map((data || []).map((r) => [r.userId, r.userName])).entries()).sort((a, b) => a[1].localeCompare(b[1])), [data]);
-  const rows = (data || []).filter((r) => !userId || r.userId === userId);
+  // A equipe toda (mesmo quem não tem ponto no período) + quem só aparece nos pontos (ex.: usuário que saiu).
+  const pessoas = useMemo(() => {
+    const m = new Map<string, string>((cfg?.users || []).map((u) => [u.id, u.name]));
+    (data || []).forEach((r) => { if (!m.has(r.userId)) m.set(r.userId, r.userName); });
+    return Array.from(m.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [cfg, data]);
+  const rows = useMemo(() => (data || []).filter((r) => !userId || r.userId === userId), [data, userId]);
   const comLocal = rows.filter((r) => r.status === 'OK').length;
+  const nomeEscolhido = userId ? pessoas.find(([id]) => id === userId)?.[1] || 'essa pessoa' : '';
+  const ultimo = userId ? rows.find((r) => r.status === 'OK' && r.latitude !== null && r.longitude !== null) : undefined; // rows vem do mais recente
+  const cortado = (data || []).length >= limite(userId);
   // Mapa: só os pontos com localização. Liga os pontos (rota) quando está filtrado por uma pessoa.
   const pontos = useMemo<MapPoint[]>(() => rows
     .filter((r) => r.status === 'OK' && r.latitude !== null && r.longitude !== null)
@@ -149,15 +165,21 @@ export function SendLocationReport() {
         <div className="flex flex-wrap items-end gap-2">
           <label className="text-xs text-slate-500">De<input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} className="block mt-1 px-2 py-1.5 border border-af-border rounded-lg text-sm text-slate-700" /></label>
           <label className="text-xs text-slate-500">Até<input type="date" value={to} min={from} max={hoje()} onChange={(e) => setTo(e.target.value)} className="block mt-1 px-2 py-1.5 border border-af-border rounded-lg text-sm text-slate-700" /></label>
-          <label className="text-xs text-slate-500">Pessoa
-            <select value={userId} onChange={(e) => setUserId(e.target.value)} className="block mt-1 px-2 py-1.5 border border-af-border rounded-lg text-sm text-slate-700">
-              <option value="">Todas</option>
-              {pessoas.map(([id, nome]) => <option key={id} value={id}>{nome}</option>)}
-            </select>
-          </label>
           <button onClick={() => refetch()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-af-border rounded-lg hover:bg-slate-100 text-slate-600">
             <RefreshCw size={12} className={isFetching ? 'animate-spin' : ''} /> Atualizar
           </button>
+        </div>
+
+        <div>
+          <p className="text-xs text-slate-500 mb-1.5">Ver a localização de:</p>
+          <div className="flex flex-wrap gap-1.5">
+            <button type="button" onClick={() => setUserId('')} className={chip(!userId)}>{!userId && <Check size={11} />}Toda a equipe</button>
+            {pessoas.map(([id, nome]) => (
+              <button key={id} type="button" onClick={() => setUserId(userId === id ? '' : id)} className={chip(userId === id)}>
+                {userId === id && <Check size={11} />}{nome}
+              </button>
+            ))}
+          </div>
         </div>
 
         {isLoading ? (
@@ -165,14 +187,24 @@ export function SendLocationReport() {
         ) : isError ? (
           <p className="text-sm text-rose-500">Não consegui carregar o relatório.</p>
         ) : !rows.length ? (
-          <p className="text-sm text-slate-400">Nenhuma localização da equipe nesse período.</p>
+          <p className="text-sm text-slate-400">{userId ? <>Nenhuma localização de <strong>{nomeEscolhido}</strong> nesse período.</> : 'Nenhuma localização da equipe nesse período.'}</p>
         ) : (
           <>
+            {userId && (
+              <p className="text-sm text-slate-700">
+                {ultimo
+                  ? <>Última localização de <strong>{nomeEscolhido}</strong>: {quando(ultimo.createdAt)} · <a href={`https://www.google.com/maps?q=${ultimo.latitude},${ultimo.longitude}`} target="_blank" rel="noreferrer" className="text-af-blue hover:underline">Abrir no mapa do celular</a></>
+                  : <>Nenhum ponto de <strong>{nomeEscolhido}</strong> com localização nesse período.</>}
+              </p>
+            )}
             <p className="text-xs text-slate-500">{rows.length} ponto{rows.length > 1 ? 's' : ''} · {comLocal} com localização</p>
+            {cortado && (
+              <p className="text-[11px] text-amber-600">Período grande: mostrando só os {limite(userId)} pontos mais recentes{userId ? '. Diminua o período para ver os mais antigos.' : ' da equipe toda. Escolha uma pessoa ou diminua o período.'}</p>
+            )}
             {pontos.length > 0 && (
               <div className="space-y-1">
                 <LocationMap points={pontos} route={!!userId} />
-                <p className="text-[11px] text-slate-400">{userId ? 'A linha liga os pontos na ordem do dia; o ponto verde é o mais recente. Clique num ponto para ver a hora.' : 'Escolha uma pessoa no filtro acima para ver a rota (os pontos ligados na ordem do dia).'}</p>
+                <p className="text-[11px] text-slate-400">{userId ? 'A linha liga os pontos na ordem do dia; o ponto verde é o mais recente. Clique num ponto para ver a hora.' : 'Escolha uma pessoa acima para ver só ela no mapa e a rota (os pontos ligados na ordem do dia).'}</p>
               </div>
             )}
             <div className="overflow-x-auto -mx-6">
