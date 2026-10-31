@@ -20,7 +20,8 @@ type DriveF = { id: string; name: string; path: string; mimeType: string; size: 
  * automática desligada (pedido explícito); só o STOP do card (_autoPaused) e o horário 07–21h seguram a mensagem ao cliente.
  * Fluxo (customFields._interQuest): e-mail chega → PERGUNTAR → pergunta ao cliente (janela fechada: template de atualização 1×; a pergunta sai quando ele responder) → PERGUNTADO →
  * respostas lidas por IA (Haiku) 60 s depois da última mensagem → falta algo: pergunta só o que falta (1×) → completo: responde o e-mail do consultor no mesmo fio → ENVIADO.
- * Documento que não está na pasta (ex.: certidão de estado civil) é pedido ao cliente junto com as perguntas — e só ele (a Zeev vai precisar).
+ * Documento que não está na pasta (ex.: certidão de estado civil): o CRM NÃO pede ao cliente (Fabio 31/10: "não peça nenhum documento ao cliente antes de me
+ * perguntar") — anotação + push pra equipe decidir.
  */
 
 /** Responsável pelos documentos na Zeev (Fabio 30/10: Andreia). O CPF não fica no código: vem da variável INTER_ZEEV_RESPONSAVEL do Railway ("Nome;CPF;e-mail").
@@ -223,11 +224,13 @@ export async function perguntarQuestionario(accountId: string, leadId: string, i
     return false;
   }
   const d = dadosDoTitular(cf, lead.name, q);
-  const pedirCivil = !docsDoTitular(await arquivosDoDrive(accountId, cf)).civil.length; // só pede o que NÃO está na pasta (Fabio 30/10)
-  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoPergunta(nome, d, pedirCivil), io });
+  // Documento nunca vai no pedido ao cliente sem o Fabio (31/10) — falta da certidão vira aviso pra equipe.
+  const semCivil = !docsDoTitular(await arquivosDoDrive(accountId, cf)).civil.length;
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoPergunta(nome, d, false), io });
   if (!r.success) return false;
   await salva(leadId, { status: 'PERGUNTADO', askedAt: new Date().toISOString() });
-  await note(leadId, `📝 Questionário do Inter: perguntei ao cliente o dia do vencimento, se financia as despesas de registro${pedirCivil ? ', a certidão de estado civil' : ''} e confirmei profissão/e-mail/telefone. Assinatura digital, sem ICP-Brasil e registro eletrônico vão fixos. Com as respostas, o CRM responde o e-mail do Inter sozinho.`);
+  await note(leadId, `📝 Questionário do Inter: perguntei ao cliente o dia do vencimento, se financia as despesas de registro e confirmei profissão/e-mail/telefone. Assinatura digital, sem ICP-Brasil e registro eletrônico vão fixos. Com as respostas, o CRM responde o e-mail do Inter sozinho.${semCivil ? '\n⚠️ A certidão de estado civil não está na pasta (a Zeev vai precisar) — o CRM não pediu ao cliente; peça se quiser.' : ''}`);
+  if (semCivil) { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: '📝 Questionário Inter: falta certidão', body: 'A certidão de estado civil não está na pasta — pedir ao cliente?', leadId }).catch(() => {}); }
   return true;
 }
 
