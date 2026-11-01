@@ -30,6 +30,23 @@ async function salvar(leadId: string, mut: (c: Cf) => void): Promise<Cf> {
 /** A ficha de cadastro (lida dos documentos) já existe? Sem ela só dá pra CONSULTAR — o cadastro espera. */
 const temFicha = (cf: Cf): boolean => Array.isArray(cf._fichaCadastral?.participantes) && cf._fichaCadastral.participantes.length > 0;
 
+/** Crédito já rodado na CAIXA (Avaliação de Risco enviada/rodando ou resultado gravado). Daí em diante o CRM NÃO mexe sozinho no cadastro — mexer depois pede a
+ *  "2ª autorização do PV" (Fabio 01/11: "SE JÁ TIVER RODADO O CRÉDITO E O CLIENTE DESEJAR ALTERAR O CADASTRO, VERIFICAR COM A EQUIPE ANTES, NÃO MEXER NO CADASTRO";
+ *  antes disso "pode mexer tranquilo"). O botão da equipe continua valendo. Pura. */
+export const avaliacaoFeita = (cf: Cf): boolean => !!cf._caixaResultado || /ENVIAD|RODANDO/i.test(String(cf._caixaCadastro?.avaliacao?.status || ''));
+
+/** Cadastro automático segurado porque o crédito já rodou: nota + push pra equipe, uma vez por motivo. */
+async function segurarPosAvaliacao(leadId: string, motivo: string): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, accountId: true, customFields: true } });
+  if (!l) return;
+  const ja = ((l.customFields || {}) as Cf)._caixaCadastro?.seguradoPosAvaliacao || {};
+  if (ja[motivo]) return;
+  await salvar(leadId, (x) => { x.seguradoPosAvaliacao = { ...(x.seguradoPosAvaliacao || {}), [motivo]: new Date().toISOString() }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✋ CAIXA: ${motivo}, mas o crédito na CAIXA já foi rodado (Avaliação de Risco) — o CRM não mexe sozinho no cadastro (alterar depois pede a 2ª autorização do PV). A equipe decide; pra alterar, peça o cadastro pela tela.` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(l.accountId, { title: `✋ ${l.name}: alterar cadastro CAIXA?`, body: `${motivo} — crédito já rodado, a equipe decide`.slice(0, 160), leadId }).catch(() => {});
+}
+
 const participantesDa = (cf: Cf): any[] => {
   // Sem ficha ainda (Fabio 01/11: "a consulta ocorre assim que o cliente indicar querer fazer com a CAIXA e a pergunta dos requisitos saírem", antes dos documentos):
   // nomes e CPFs da proposta (participante_N / cpf_N), só pra consulta.
@@ -112,7 +129,8 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
       await salvar(id, (x) => { x.atual = { ordem: pc.ordem, desde: new Date().toISOString(), tipo: 'cadastrar' }; x.cadastros[pc.ordem] = { ...x.cadastros[pc.ordem], status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.cadastros[pc.ordem]?.tentativas || 0) + 1 }; });
       const { fontes, faltando, ...participante } = pc;
       const p1 = ps.find((x) => x.ordem === 1);
-      return { tipo: 'cadastrar', leadId: id, leadName: l!.name, ordem: pc.ordem, nome: pc.nome, cpf: pc.cpf, participante, primeiro: p1 ? { endereco: p1.endereco } : null };
+      // avaliacaoFeita: a extensão não relança renda só pra acertar o mês de referência depois do crédito rodado (Fabio 01/11).
+      return { tipo: 'cadastrar', leadId: id, leadName: l!.name, ordem: pc.ordem, nome: pc.nome, cpf: pc.cpf, participante: { ...participante, avaliacaoFeita: avaliacaoFeita(cf) }, primeiro: p1 ? { endereco: p1.endereco } : null };
     }
     const p = participantesDa(cf).find((x) => !c.consultas?.[x.ordem]);
     if (!p) continue;
@@ -239,6 +257,7 @@ export async function cadastroAutomatico(accountId: string, leadId: string): Pro
     return;
   }
   const prontos = pendentes.filter((p) => !faltaParaCadastro(p).length).map((p) => p.ordem);
+  if (prontos.length && avaliacaoFeita(cf)) { await segurarPosAvaliacao(leadId, `a ficha tem ${prontos.map((o) => participantesDa(cf).find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')} pronto(s) pro cadastro`); return; }
   if (prontos.length) await pedirCadastroParticipantes(accountId, leadId, prontos, 'CRM (ficha completa)');
   const avisar = pendentes.filter((p) => faltaParaCadastro(p).length && !c.faltaAvisada?.[p.ordem]);
   if (!avisar.length) return;
@@ -305,6 +324,7 @@ export async function reenfileirarComFichaNova(leadId: string, antes: any[]): Pr
     .filter(([o, v]) => v && !['GRAVADO', 'FILA', 'RODANDO'].includes(String(v.status)) && !temId(antes.find((p: any, i: number) => (Number(p.ordem) || i + 1) === Number(o))) && temId(ps.find((p) => p.ordem === Number(o))))
     .map(([o]) => Number(o));
   if (!voltar.length) return;
+  if (avaliacaoFeita(cf)) { await segurarPosAvaliacao(leadId, `chegou o documento de identidade de ${voltar.map((o) => ps.find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')}`); return; }
   await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of voltar) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por: 'CRM (documento novo)' }; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Chegou o documento de identidade de ${voltar.map((o) => ps.find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')} — a ficha foi refeita e o cadastro na CAIXA voltou pra fila da extensão.` } }).catch(() => {});
 }
@@ -315,6 +335,7 @@ export async function reenfileirarCadastrosPendentes(leadId: string, motivo: str
   const cads = (((l?.customFields || {}) as Cf)._caixaCadastro?.cadastros || {}) as Record<string, any>;
   const voltar = Object.entries(cads).filter(([, v]) => v && !['GRAVADO', 'FILA', 'RODANDO'].includes(String(v.status))).map(([o]) => Number(o));
   if (!voltar.length) return;
+  if (avaliacaoFeita((l?.customFields || {}) as Cf)) { await segurarPosAvaliacao(leadId, motivo); return; }
   await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of voltar) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por: `CRM (${motivo})` }; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA de volta pra fila da extensão (${motivo}).` } }).catch(() => {});
 }
