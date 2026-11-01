@@ -2,13 +2,28 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA } from '../services/caixa-cadastro.service';
+import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado } from '../services/caixa-resultado.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
 router.use(authMiddleware);
 
 router.get('/fila', async (req: AuthRequest, res: Response) => {
-  try { res.json(await proximaConsulta(req.user!.accountId)); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro na fila da CAIXA' }); }
+  // Sem consulta/cadastro/avaliação pendente → consulta do resultado de avaliação já enviada (Formulários Enviados).
+  try { res.json((await proximaConsulta(req.user!.accountId)) || (await proximaConsultaResultado(req.user!.accountId))); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro na fila da CAIXA' }); }
+});
+
+// Resultado da Avaliação de Risco (Fabio 01/11: "PARA CONSULTAR O RESULTADO, PRECISA VOLTAR NO MENU E IR EM FORMULÁRIOS ENVIADOS").
+router.post('/:leadId/consultar-resultado', async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const erro = await pedirConsultaResultado(req.user!.accountId, req.params.leadId, quem).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+router.post('/:leadId/resultado', async (req: AuthRequest, res: Response) => {
+  const { status, texto } = req.body as { status?: string; texto?: string };
+  if (!status) return res.status(400).json({ error: 'status obrigatório' });
+  try { await gravarConsultaResultado(req.user!.accountId, req.params.leadId, { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
 // Painel CAIXA da Análise de Crédito (Fabio 31/10): rodando, conferir cadastro, avaliação e quem tem ficha sem cadastro.
