@@ -102,7 +102,7 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
         }
         const p1 = quem.tomador;
         await salvar(id, (x) => { x.atual = { ordem: 1, desde: new Date().toISOString(), tipo: 'avaliar' }; x.avaliacao = { ...x.avaliacao, status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.avaliacao?.tentativas || 0) + 1 }; });
-        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x), incluir: quem.incluir.map((x) => ({ ordem: x.ordem, nome: x.nome, cpf: x.cpf })), fora: quem.fora.map((x) => x.nome), operacao };
+        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x), incluir: quem.incluir.map((x) => ({ ordem: x.ordem, nome: x.nome, cpf: x.cpf })), fora: quem.fora.map((x) => x.nome), operacao, enviar: av.enviar === true };
       }
       await salvar(id, (x) => { x.atual = { ordem: pc.ordem, desde: new Date().toISOString(), tipo: 'cadastrar' }; x.cadastros[pc.ordem] = { ...x.cadastros[pc.ordem], status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.cadastros[pc.ordem]?.tentativas || 0) + 1 }; });
       const { fontes, faltando, ...participante } = pc;
@@ -335,17 +335,22 @@ export async function salvarFormularioCaixa(accountId: string, leadId: string, o
 }
 
 /** Avaliação de Risco da CAIXA (passo 2, Fabio 30/10: "vamos rodar a análise de crédito do Jézer"). Produto pelo setor: Home Equity → "11 - Empréstimo com
- *  Garantia de Imóvel (EGI)"; Financiamento → "1 - Crédito Imobiliário". 1ª fase: a extensão abre, consulta o CPF, marca o produto e PARA mostrando a tela (mapa). */
-export async function pedirAvaliacao(accountId: string, leadId: string, por: string): Promise<string | null> {
+ *  Garantia de Imóvel (EGI)"; Financiamento → "1 - Crédito Imobiliário". A extensão abre, consulta o CPF, marca o produto, preenche a operação e PARA antes da
+ *  seta (Avançar) da tela 3. `enviar` (Fabio 01/11, Jézer: "PODE REFAZER") = a extensão clica na seta e grava a tela seguinte — a CAIXA não dá o resultado
+ *  nessa hora ("O RESULTADO NÃO SAI NESSA TELA, PRECISA CONSULTAR DEPOIS"). Só com o pedido explícito do Fabio; avaliação já ENVIADA não é pedida de novo. */
+export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return 'Lead não encontrado';
   const ps = participantesDa((l.customFields || {}) as Cf);
   if (!ps.length) return 'O card ainda não tem a ficha de cadastro';
+  const anterior = ((l.customFields || {}) as Cf)._caixaCadastro?.avaliacao;
+  if (/^ENVIADA/i.test(String(anterior?.status || ''))) return `A Avaliação de Risco já foi ENVIADA à CAIXA (${String(anterior.fim || '').slice(0, 10)}) — o resultado sai na consulta`;
   const produto = /home|garantia/i.test(l.pipeline?.department?.name || '') ? '11 - empréstimo com garantia de imóvel' : '1 - crédito imobiliário';
   const quem = participantesDaAvaliacao(ps);
-  await salvar(leadId, (x) => { x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto }; });
+  const enviar = opts.enviar === true;
+  await salvar(leadId, (x) => { x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}) }; });
   const lista = [quem.tomador && `${quem.tomador.nome} (tomador)`, ...quem.incluir.map((x) => x.nome)].filter(Boolean).join(', ');
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco na CAIXA pedida (${por}) — produto "${produto.toUpperCase()}". Participantes: ${lista || '—'}${quem.fora.length ? `; fora por não ter renda: ${quem.fora.map((x) => x.nome).join(', ')} (o cadastro na CAIXA fica como está)` : ''}. A extensão consulta o CPF, marca o produto e mostra a tela antes de enviar.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco na CAIXA pedida (${por}) — produto "${produto.toUpperCase()}". Participantes: ${lista || '—'}${quem.fora.length ? `; fora por não ter renda: ${quem.fora.map((x) => x.nome).join(', ')} (o cadastro na CAIXA fica como está)` : ''}. ${enviar ? 'A extensão preenche a operação, confere os valores e ENVIA (seta da tela 3); o resultado sai depois, na consulta da CAIXA.' : 'A extensão consulta o CPF, marca o produto e mostra a tela antes de enviar.'}` } }).catch(() => {});
   return null;
 }
 export async function gravarAvaliacao(accountId: string, leadId: string, r: { status: string; texto: string }): Promise<void> {

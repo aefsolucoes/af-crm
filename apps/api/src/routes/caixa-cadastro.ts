@@ -71,7 +71,7 @@ router.post('/:leadId/cadastro', async (req: AuthRequest, res: Response) => {
 // Avaliação de Risco (passo 2): equipe pede; extensão devolve o que viu/fez.
 router.post('/:leadId/avaliar', async (req: AuthRequest, res: Response) => {
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
-  const erro = await pedirAvaliacao(req.user!.accountId, req.params.leadId, quem).catch((e) => e?.message || 'erro');
+  const erro = await pedirAvaliacao(req.user!.accountId, req.params.leadId, quem, { enviar: req.body?.enviar === true }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
