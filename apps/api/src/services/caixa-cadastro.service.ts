@@ -30,6 +30,19 @@ async function salvar(leadId: string, mut: (c: Cf) => void): Promise<Cf> {
 /** A ficha de cadastro (lida dos documentos) já existe? Sem ela só dá pra CONSULTAR — o cadastro espera. */
 const temFicha = (cf: Cf): boolean => Array.isArray(cf._fichaCadastral?.participantes) && cf._fichaCadastral.participantes.length > 0;
 
+/** Órgão emissor da identidade no nome da lista da CAIXA — mesma regra da extensão (orgaoDaIdentidade): CNH = ÓRGÃO DE TRÂNSITO; Instituto de Identificação/Polícia
+ *  Civil da UF/SSP/SESP = SECRETARIA DE SEGURANÇA PÚBLICA (Fabio 01/11: "deveria ser SESP ou SSP"). Pura. */
+export function orgaoCaixa(id: { tipo?: string; orgao?: string } | null | undefined): string | undefined {
+  if (!id) return undefined;
+  if (String(id.tipo || '').toUpperCase() === 'CNH') return 'ÓRGÃO DE TRÂNSITO';
+  const o = String(id.orgao || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (!o.trim()) return id.orgao;
+  if (/defesa social|\bsds\b/.test(o)) return 'SECRETARIA DEFESA SOCIAL';
+  if (/casa civil/.test(o)) return 'SECRETARIA DE ESTADO DA CASA CIVIL';
+  if (/seguranca|\bssp|\bsesp|\bsejusp|\bigp\b|policia civil|instituto de identifica|\bpc[ /-]?[a-z]{2}\b|\bii[ /-]?[a-z]{2}\b|\bdgpc\b/.test(o)) return 'SECRETARIA DE SEGURANÇA PÚBLICA';
+  return 'OUTRO TIPO DE ÓRGÃO EMISSOR';
+}
+
 /** Crédito já rodado na CAIXA (Avaliação de Risco enviada/rodando ou resultado gravado). Daí em diante o CRM NÃO mexe sozinho no cadastro — mexer depois pede a
  *  "2ª autorização do PV" (Fabio 01/11: "SE JÁ TIVER RODADO O CRÉDITO E O CLIENTE DESEJAR ALTERAR O CADASTRO, VERIFICAR COM A EQUIPE ANTES, NÃO MEXER NO CADASTRO";
  *  antes disso "pode mexer tranquilo"). O botão da equipe continua valendo. Pura. */
@@ -281,7 +294,9 @@ export async function conferirCadastro(accountId: string, leadId: string, ordem:
   if (!l) return null;
   const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === Number(ordem));
   if (!p) return null;
-  const { fontes, faltando, ...ficha } = p;
+  const { fontes, faltando, ...fichaLida } = p;
+  // Órgão do RG já no nome da lista da CAIXA (Fabio 01/11, Fernanda): a ficha antiga diz "INSTITUTO DE IDENTIFICAÇÃO PCDF" e a conferência pedia "Outro" — vai como SSP.
+  const ficha = { ...fichaLida, identidade: fichaLida.identidade && { ...fichaLida.identidade, orgao: orgaoCaixa(fichaLida.identidade) } };
   // Normativo CR016 da Base de Conhecimento (Fabio 31/10) pra conferir a renda da tela.
   const system = comRegrasCaixa(SYSTEM_CONFERE, await regrasRendaCaixa(accountId), 'Use o normativo pra conferir a RENDA da tela — tipo de comprovante, competência/data de referência, fonte pagadora, ocupação, renda bruta/líquida e IR retido — no que a ficha e as regras da A&F não resolvem: renda lançada fora do normativo é divergência, citando a regra (ex.: "renda: data de referência 06/2026 — fora do prazo do normativo").');
   const res = await fetch('https://api.anthropic.com/v1/messages', {
