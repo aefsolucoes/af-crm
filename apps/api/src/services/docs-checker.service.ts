@@ -35,6 +35,13 @@ function norm(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
 
+/** Etapas em que a conferência roda: Aguardando Documentação e, pra quem PEDIU a CAIXA, a Pré-Análise (Fabio 01/11: "O CADASTRO NA CAIXA DEVE OCORRER EM PRÉ-ANÁLISE AINDA" —
+ *  o card volta pra lá e a documentação da CAIXA é conferida antes da análise dela; caixa-screening.entrarRotaCaixa). */
+function etapaConfere(stageName: string, cf: Record<string, any>): boolean {
+  const n = norm(stageName);
+  return n.includes('aguardando documentacao') || (!!cf?._caixaRota && /pre.?analise/.test(n));
+}
+
 type Io = Parameters<typeof moveLeadToContracting>[2];
 
 export async function scheduleDocsCheck(accountId: string, leadId: string, io: Io): Promise<void> {
@@ -42,7 +49,7 @@ export async function scheduleDocsCheck(accountId: string, leadId: string, io: I
   // documentos depois que ele respondeu pela Inbox — a IA estava desligada,
   // ninguém conferiu, o card não andou e a pasta no Drive não foi criada).
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } });
-  if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return;
+  if (!lead || !etapaConfere(lead.stage.name, (lead.customFields || {}) as Record<string, any>)) return;
   const cf: Record<string, unknown> = { ...((lead.customFields || {}) as Record<string, unknown>), _docsCheckDue: new Date(Date.now() + CHECK_DELAY_MS).toISOString() };
   delete cf._docsLater; // mandou documento: a cobrança do "te mando depois" não é mais necessária
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
@@ -242,15 +249,16 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   // Financiamento Habitacional tem fluxo de documentos PRÓPRIO (Fabio 29/10, Taynara: a conferência cobrou matrícula/ônus e IPTU, que são do Home Equity).
   // Sem banco privado escolhido (ou optou pela CAIXA/BRB): a documentação do comprador — RG, CPF, comprovante de endereço, último contracheque e certidão de estado civil.
   const ehFh = /habitacional/i.test(lead.pipeline.department?.name || '');
-  const fhSoComprador = ehFh && (!!cfAll._optouCaixa?.banco || !cfAll._fhChosen);
-  const listas = ehFh ? lists.filter((l) => !/home equity/i.test(l.name)) : lists;
+  const caixaRota = !!cfAll._caixaRota; // pediu a CAIXA (Fabio 01/11, HE e FH): lista enxuta do comprador, a mesma do FH
+  const fhSoComprador = caixaRota || (ehFh && (!!cfAll._optouCaixa?.banco || !cfAll._fhChosen));
+  const listas = ehFh || caixaRota ? lists.filter((l) => !/home equity/i.test(l.name)) : lists;
   if (!listas.length && !fhSoComprador) return null;
   // CAIXA (ou ainda sem banco): lista ENXUTA pra rodar na CAIXA. BRB: documentação COMPLETA pela profissão (lista do perfil) — Fabio 29/10.
   const { perfilTemplate } = require('./fh-approval.service') as typeof import('./fh-approval.service');
-  const blocoFh = !ehFh ? '' : fhSoComprador && cfAll._optouCaixa?.banco === 'BRB'
+  const blocoFh = !ehFh && !caixaRota ? '' : fhSoComprador && cfAll._optouCaixa?.banco === 'BRB'
     ? `FINANCIAMENTO HABITACIONAL — BRB (Fabio 29/10): o BRB analisa com a documentação COMPLETA do comprador pela profissão — a referência é a lista "${perfilTemplate(cfAll)}" abaixo (pessoais + renda). NÃO cobre nada do imóvel nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false.\n\n`
     : fhSoComprador
-    ? `FINANCIAMENTO HABITACIONAL — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10 — lista ENXUTA pra rodar na CAIXA): de cada comprador: RG, CPF (a CNH vale pelos dois), comprovante de endereço, último contracheque e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge. NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "Financiamento Habitacional — comprador".\n\n`
+    ? `${caixaRota && !ehFh ? 'CAIXA (o cliente pediu a CAIXA — Fabio 01/11)' : 'FINANCIAMENTO HABITACIONAL'} — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10 — lista ENXUTA pra rodar na CAIXA): de cada ${caixaRota && !ehFh ? 'participante' : 'comprador'}: RG, CPF (a CNH vale pelos dois), comprovante de endereço, último contracheque e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge. NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "${caixaRota && !ehFh ? 'CAIXA — participantes' : 'Financiamento Habitacional — comprador'}".\n\n`
     : `FINANCIAMENTO HABITACIONAL (banco ${cfAll._fhChosen?.bank || 'escolhido'}): a referência é a lista que o CRM mandou na conversa depois da escolha do banco. NUNCA use a lista "Documentos Home Equity".\n\n`;
   // Autorização da emissão da certidão: SEM campo (Fabio 15/10) — fica registrada numa ANOTAÇÃO do card (marcador abaixo) e o CRM mesmo lê.
   const jaAutorizou = !!(await prisma.note.findFirst({ where: { leadId, content: { startsWith: AUTORIZOU_EMISSAO } }, select: { id: true } }));
@@ -263,7 +271,7 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const comMetragens = Array.from(new Set(Object.values((cfAll._docReview || {}) as Record<string, any>).filter((r: any) => r && r.metragens === true).map((r: any) => String(r.tipo)))) as string[];
   // Imóvel com FINANCIAMENTO ATIVO (proposta "Imóvel quitado: Não"; Home Equity): o banco pede o DESCRITIVO DA PARCELA em PDF (Fabio 30/10). Só o PDF conta — a foto/print
   // vira problema na leitura (doc-review) e o cliente é avisado que precisa do PDF.
-  const precisaDescritivo = !ehFh && (await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).proposalFinancing(leadId).catch(() => null))?.quitado === false;
+  const precisaDescritivo = !ehFh && !caixaRota && (await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).proposalFinancing(leadId).catch(() => null))?.quitado === false;
   const temDescritivo = atts.some((a) => a.mimeType === 'application/pdf' && revAll[a.id]?.resultado !== 'PROBLEMA' && (isDescritivoParcela(info[a.id]?.type) || isDescritivoParcela(revAll[a.id]?.tipo)));
   const participants = [
     cf.participante_1 && `1) ${cf.participante_1}${cf.vinculo_1 ? ` — ${cf.vinculo_1}` : ''}`,
@@ -358,9 +366,11 @@ async function perguntarProtegidos(accountId: string, leadId: string, io: Io): P
 
 export async function checkDocsComplete(accountId: string, leadId: string, io: Io, opts: { force?: boolean } = {}): Promise<boolean> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
-  if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return false;
-  const cfLead = (lead.customFields || {}) as Record<string, any>;
-  const fhSoComprador = /habitacional/i.test(lead.pipeline?.department?.name || '') && (!!cfLead._optouCaixa?.banco || !cfLead._fhChosen);
+  const cfLead = (lead?.customFields || {}) as Record<string, any>;
+  if (!lead || !etapaConfere(lead.stage.name, cfLead)) return false;
+  // Pediu a CAIXA (Fabio 01/11, HE e FH): mesma lista enxuta do comprador do FH; completa → ficha e cadastro, o card não vai pra contratação.
+  const caixaRota = !!cfLead._caixaRota;
+  const fhSoComprador = caixaRota || (/habitacional/i.test(lead.pipeline?.department?.name || '') && (!!cfLead._optouCaixa?.banco || !cfLead._fhChosen));
   if ((lead.customFields as any)?._autoPaused) return false; // Stop total do cliente: não confere, não move, não avisa
 
   // Conferência de CONTEÚDO (Fabio 14/10): a IA LÊ cada arquivo e vê se está legível, atualizado e no nome certo (RG/CNH com frente e verso). Documento com
@@ -418,7 +428,8 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   }
 
   // Imóvel com financiamento ativo (gravame vigente na matrícula + proposta com saldo): pede o print do saldo devedor (1 vez). Se pediu, o "recebi tudo" vai junto nessa mensagem.
-  const pediuSaldo = await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).maybeAskSaldoDevedor(accountId, leadId, io, { docsReceived: true }).catch((e: any) => { console.error('[Saldo] pedido:', e?.message || e); return false; });
+  const pediuSaldo = caixaRota ? false // a CAIXA confere só a documentação pessoal agora (o saldo devedor fica pra depois do resultado dela)
+    : await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).maybeAskSaldoDevedor(accountId, leadId, io, { docsReceived: true }).catch((e: any) => { console.error('[Saldo] pedido:', e?.message || e); return false; });
 
   // Sem matrícula e sem cartório nos documentos: o CRM acha o cartório pelo endereço (Mapa do ONR) e grava no card (Fabio 29/10).
   // DESLIGADO 29/10 21h (Fabio: "para ela agora") — religar quando a consulta ao mapa/web estiver estável:
@@ -477,17 +488,20 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     return falouFalta;
   }
 
-  // Financiamento Habitacional só com a documentação do COMPRADOR (CAIXA/BRB ou sem banco escolhido): ainda não é contratação — é a vez da análise da CAIXA/BRB.
-  // O card fica onde está; o cliente é avisado e a equipe roda a análise (Fabio 29/10, Taynara).
+  // Só a documentação do COMPRADOR (FH com CAIXA/BRB ou sem banco escolhido; ou quem PEDIU a CAIXA, HE e FH — Fabio 01/11): ainda não é contratação — é a vez da análise da
+  // CAIXA/BRB. O card fica onde está (quem pediu a CAIXA: na Pré-Análise); o cliente é avisado e o CRM gera a ficha do cadastro (Fabio 29/10, Taynara).
   if (fhSoComprador) {
-    if (cfLead._fhDocsCompradorAt) return false;
-    const banco = cfLead._optouCaixa?.banco || 'CAIXA';
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfLead, _fhDocsCompradorAt: new Date().toISOString() } as any } });
+    if (caixaRota ? cfLead._caixaDocsAt : cfLead._fhDocsCompradorAt) return false;
+    const banco: string | null = cfLead._optouCaixa?.banco || (caixaRota ? 'CAIXA' : null);
+    const agora = new Date().toISOString();
+    // Só a chave (jsonb_set): regravar o card inteiro apaga o que outro processo gravou no meio (corrida no customFields, 29/10).
+    if (caixaRota) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaDocsAt}', ${JSON.stringify(agora)}::jsonb, true) WHERE id = ${leadId}`;
+    else await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_fhDocsCompradorAt}', ${JSON.stringify(agora)}::jsonb, true) WHERE id = ${leadId}`;
     const sentFh = lead.aiAutoReplyActive
-      ? await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi toda a documentação, obrigada! Já vou dar entrada na análise da ${banco} e te aviso por aqui assim que sair o resultado.`, io: io || undefined })
+      ? await sendOutboundWhatsApp({ accountId, leadId, content: banco ? `Recebi toda a documentação, obrigada! Já vou dar entrada na análise da ${banco} e te aviso por aqui assim que sair o resultado.` : 'Recebi toda a documentação, obrigada! Já vou dar andamento e te aviso por aqui assim que tiver novidade.', io: io || undefined })
       : { success: false };
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Documentação do comprador COMPLETA (Financiamento Habitacional — ${banco}):\n${verdict.receivedText}\n\n👉 Rodar a análise na ${banco} com esses documentos.${sentFh.success ? ' Cliente avisado.' : ' Cliente NÃO avisado (IA desligada).'}` } }).catch(() => {});
-    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: documentação completa`, body: `Rodar a análise na ${banco}`, leadId }).catch(() => {});
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Documentação do comprador COMPLETA (${caixaRota ? 'o cliente pediu a CAIXA' : `Financiamento Habitacional${banco ? ` — ${banco}` : ''}`}):\n${verdict.receivedText}\n\n👉 ${caixaRota ? 'O CRM gera a ficha e a extensão faz o cadastro na CAIXA.' : banco ? `Rodar a análise na ${banco} com esses documentos.` : 'Nenhum banco escolhido ainda.'}${sentFh.success ? ' Cliente avisado.' : ' Cliente NÃO avisado (IA desligada).'}` } }).catch(() => {});
+    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: documentação completa`, body: caixaRota ? 'Ficha e cadastro da CAIXA a caminho' : banco ? `Rodar a análise na ${banco}` : 'Documentação do comprador completa', leadId }).catch(() => {});
     return true;
   }
   const moved = await moveLeadToContracting(accountId, leadId, io, 'a IA conferiu que a documentação chegou completa');

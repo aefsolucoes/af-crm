@@ -474,7 +474,8 @@ export async function processFichasCadastrais(accountId: string, io?: Io): Promi
             AND EXISTS (SELECT 1 FROM jsonb_array_elements(l."customFields"->'_fichaCadastral'->'participantes') fp
               WHERE jsonb_typeof(fp->'faltando') = 'array' AND jsonb_array_length(fp->'faltando') > 0))))
         -- Financiamento pela CAIXA/BRB com a documentação do comprador completa (antes da contratação, pode não ter pasta: lê da conversa) — Fabio 31/10.
-        OR (l."customFields"->>'_fhDocsCompradorAt' IS NOT NULL AND l."customFields"->'_fichaCadastral' IS NULL))
+        -- Pediu a CAIXA (HE e FH) com a documentação conferida na Pré-Análise — Fabio 01/11.
+        OR ((l."customFields"->>'_fhDocsCompradorAt' IS NOT NULL OR l."customFields"->>'_caixaDocsAt' IS NOT NULL) AND l."customFields"->'_fichaCadastral' IS NULL))
       AND COALESCE(l."customFields"->>'_fichaCadastralErro', '') < ${new Date(Date.now() - 6 * 3600_000).toISOString()}
     ORDER BY l."stageEnteredAt" ASC NULLS LAST LIMIT 1`;
   if (!ids[0] || emAndamento.has(ids[0].id)) return;

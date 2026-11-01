@@ -1,70 +1,53 @@
 import { prisma } from '../lib/prisma';
-import { sendOutboundWhatsApp } from './message.service';
-import { contractingAutoOn, manualStep } from './contracting-auto.service';
+import { logActivity } from './activity.service';
 
-type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'];
+type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | undefined;
 
 /**
- * CAIXA DEPOIS DA APROVAÇÃO (Fabio 21/10). Quase toda proposta lista a CAIXA entre os "Bancos solicitados" (em 30 dias: 87 de 94, 83 com os cinco bancos — marcação padrão do formulário). Decisão dele:
- * DEPOIS de mostrar a aprovação ao cliente (e só se algum banco aprovou), o CRM pergunta a quem tem a CAIXA na proposta se REALMENTE quer seguir pela CAIXA. O resto da sequência é da IA da conversa
- * (regra da CAIXA em ai-shared.CORE_RULES): quer mesmo → nome limpo? imóvel tem Habite-se? → só então avisa da documentação ANTECIPADA; nome sujo ou sem Habite-se = "na CAIXA essas são as regras, os bancos
- * privados podem aprovar". Esta função faz só a 1ª pergunta, UMA vez por card, e só pra aprovações avisadas DEPOIS do início da regra (não manda pra cliente antigo).
+ * CAIXA SÓ A PEDIDO DO CLIENTE (Fabio 01/11 — substitui a pergunta "Vi que você marcou a CAIXA…" de 21/10, que saiu): "SE JÁ PASSAMOS AS APROVAÇÕES AO CLIENTE, NÃO TEM POR
+ * QUE OFERECERMOS CAIXA". A documentação da CAIXA só é pedida quando algum banco aprovou, o CLIENTE pediu a CAIXA e tem nome limpo e imóvel com Habite-se — a IA da conversa
+ * faz as perguntas (regra CAIXA em ai-shared.CORE_RULES) e marca "caixaRota". Aí o card VOLTA pra Pré-Análise do funil de Vendas do setor (HE e FH) e fica lá até o resultado da
+ * CAIXA ("O CADASTRO NA CAIXA DEVE OCORRER EM PRÉ-ANÁLISE AINDA"): a conferência dos documentos da CAIXA, a ficha e o cadastro rodam nessa etapa.
+ * Também param (Fabio 01/11): a documentação da CAIXA combinada antes da proposta e o reprovado que volta pela CAIXA.
  */
 
-export const CAIXA_ASK_FROM = new Date('2026-10-21T13:00:00Z');
-const MIN_AFTER_NOTICE_MS = 15 * 60_000; // dá tempo do cliente reagir ao aviso de aprovação antes de perguntar da CAIXA
-const MAX_AFTER_NOTICE_MS = 3 * 86_400_000; // depois de 3 dias o momento passou
-
-/** A proposta do site lista a CAIXA entre os bancos solicitados? Pura (testável). */
-export function listaCaixa(texto: string): boolean {
-  return /Bancos solicitados:[^\n]*\bCAIXA\b/i.test(String(texto || ''));
+/** Algum banco aprovou de verdade (não simulação), ou o aviso de aprovação do Financiamento já saiu. */
+export async function temAprovacao(leadId: string, cf: Record<string, any>): Promise<boolean> {
+  if (cf._fhNotice?.sentAt) return true;
+  return (await prisma.creditAnalysis.count({ where: { leadId, dryRun: false, source: { not: 'AI_SIM' }, status: { in: ['APPROVED', 'CONDITIONAL'] } } })) > 0;
 }
 
-export const caixaAskText = (): string => 'Vi que você marcou a CAIXA na sua proposta. Você realmente deseja seguir com a CAIXA?';
-
-export async function processCaixaAsk(accountId: string, io: Io): Promise<void> {
-  const ids = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT l.id FROM "Lead" l
-    WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false AND l."aiAutoReplyActive" = true
-      AND jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_autoNoticeAt') AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_caixaAsk')
-      AND (l."customFields"->>'_autoNoticeAt')::timestamptz >= ${CAIXA_ASK_FROM}
-      AND (l."customFields"->>'_autoNoticeAt')::timestamptz <= now() - interval '15 minutes'
-      AND (l."customFields"->>'_autoNoticeAt')::timestamptz >= now() - interval '3 days'
-    LIMIT 20`;
-  for (const { id } of ids) {
-    try { await askOne(accountId, id, io); } catch (e: any) { console.warn('[CAIXA] pergunta:', e?.message); }
-  }
-}
-
-async function marca(leadId: string, valor: Record<string, unknown>) {
-  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-  const cf = { ...((fresh?.customFields || {}) as Record<string, any>), _caixaAsk: valor };
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
-}
-
-async function askOne(accountId: string, leadId: string, io: Io): Promise<void> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
-  if (!lead || !lead.aiAutoReplyActive) return;
+/** O cliente pediu a CAIXA e passou nas regras dela: marca `_caixaRota` (+ `_optouCaixa`, que guarda as outras aprovações), volta o card pra Pré-Análise e agenda a
+ *  conferência dos documentos que já estão na conversa. true = entrou agora. */
+export async function entrarRotaCaixa(accountId: string, leadId: string, motivo: string | null, io?: Io): Promise<boolean> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { departmentId: true } } } });
+  if (!lead) return false;
   const cf = (lead.customFields || {}) as Record<string, any>;
-  if (cf._autoPaused || cf._caixaAsk) return;
-  if (cf._bancosCombinados?.caixa) { await marca(leadId, { skip: 'CAIXA combinada com o cliente antes da proposta (documentação já pedida)', at: new Date().toISOString() }); return; }
-  if (!/home equity/i.test(lead.pipeline?.department?.name || '')) { await marca(leadId, { skip: 'não é Home Equity', at: new Date().toISOString() }); return; }
-  const prop = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Bancos solicitados' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
-  if (!prop || !listaCaixa(prop.content)) { await marca(leadId, { skip: 'a proposta não lista a CAIXA', at: new Date().toISOString() }); return; }
-  // O cliente já falou da CAIXA por conta própria: a IA da conversa já está no assunto (não pergunta duas vezes).
-  const falou = await prisma.message.count({ where: { leadId, direction: 'INBOUND', content: { contains: 'caixa', mode: 'insensitive' }, NOT: { content: { contains: 'Bancos solicitados' } } } });
-  if (falou > 0) { await marca(leadId, { skip: 'o cliente já falou da CAIXA', at: new Date().toISOString() }); return; }
-  // Chave geral desligada (Fabio 22/10): a equipe faz a triagem da CAIXA à mão; o texto vai pronto na nota.
-  if (!(await contractingAutoOn(accountId))) {
-    await manualStep({ accountId, leadId, leadName: lead.name, step: 'caixa', pushTitle: '🏦 Proposta lista a CAIXA', pushBody: `${lead.name}: perguntar se quer mesmo seguir pela CAIXA`,
-      note: `🏦 A proposta lista a CAIXA e o cliente já foi avisado da aprovação: pergunte se ele quer mesmo seguir pela CAIXA. Passo manual (automação da contratação desligada). Texto pronto:\n“${caixaAskText().replace(/\n+/g, ' ')}”` });
-    await marca(leadId, { teamAt: new Date().toISOString(), por: 'equipe (automação da contratação desligada)' });
-    return;
+  if (cf._caixaRota) return false;
+  if (!(await temAprovacao(leadId, cf))) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏦 O cliente pediu a CAIXA, mas nenhum banco aprovou ainda: pela regra (Fabio 01/11) a documentação da CAIXA só é pedida depois de alguma aprovação. O card ficou onde estava.' } }).catch(() => {});
+    return false;
   }
-  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-  if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return; // tenta de novo no próximo minuto (até 3 dias depois do aviso)
-  const r = await sendOutboundWhatsApp({ accountId, leadId, content: caixaAskText(), io: io as any });
-  if (!r.success) return;
-  await marca(leadId, { askedAt: new Date().toISOString() });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏦 A proposta lista a CAIXA: depois do aviso de aprovação, perguntei ao cliente se realmente quer seguir pela CAIXA. A IA segue a sequência: quer mesmo? → nome limpo e Habite-se → documentação antecipada (ou: na CAIXA essas são as regras, os bancos privados podem aprovar).' } }).catch(() => {});
+  const agora = new Date().toISOString();
+  const rota = { at: agora, motivo: motivo || null, etapaAntes: lead.stage?.name || null };
+  // Só as duas chaves (jsonb_set): regravar o card inteiro apaga o que outro processo gravou no meio (corrida no customFields, 29/10).
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaRota}', ${JSON.stringify(rota)}::jsonb, true), '{_optouCaixa}', ${JSON.stringify({ banco: 'CAIXA', at: agora })}::jsonb, true) WHERE id = ${leadId}`;
+  const sales = lead.pipeline?.departmentId
+    ? await prisma.pipeline.findFirst({ where: { accountId, departmentId: lead.pipeline.departmentId, name: { contains: 'Vendas', mode: 'insensitive' } }, select: { name: true, stages: { select: { id: true, name: true } } } })
+    : null;
+  const pre = sales?.stages.find((s) => /^pr[eé].?an[aá]lise/i.test(s.name));
+  let movido = '';
+  if (pre && sales && lead.stage?.name !== pre.name) {
+    const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+    await updateLeadStage(leadId, accountId, pre.id);
+    movido = `${sales.name} / ${pre.name}`;
+    if (io) io.to(`lead:${leadId}`).emit('lead_moved', { leadId, stageId: pre.id });
+  }
+  // Documento que já está na conversa (RG, comprovante…) entra na conferência da CAIXA sem esperar arquivo novo.
+  const due = new Date(Date.now() + 5 * 60_000).toISOString();
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsCheckDue}', ${JSON.stringify(due)}::jsonb, true) WHERE id = ${leadId}`;
+  await prisma.note.create({ data: { leadId, type: movido ? 'STAGE_CHANGE' : 'COMMENT', content: `🏦 O cliente PEDIU a CAIXA (nome limpo, imóvel com Habite-se)${motivo ? ` — ${motivo}` : ''}. ${movido ? `Card voltou pra "${movido}"` : 'Card fica na Pré-Análise'} até o resultado da CAIXA. As aprovações dos outros bancos ficam GUARDADAS. A IA pediu a documentação da CAIXA; quando estiver completa, o CRM gera a ficha e a extensão faz o cadastro.` } }).catch(() => {});
+  (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: pediu a CAIXA`, body: `Card ${movido ? 'voltou pra Pré-Análise' : 'na Pré-Análise'}; documentação da CAIXA pedida`, leadId }).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId, leadName: lead.name, summary: `cliente pediu a CAIXA${movido ? ' — card voltou pra Pré-Análise' : ''}` });
+  return true;
 }

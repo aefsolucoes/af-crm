@@ -13,7 +13,6 @@ import { comRegrasCaixa, regrasRendaCaixa, rendaForaDoPrazo } from './caixa-cr01
 type Cf = Record<string, any>;
 // Home Equity entra na CAIXA (Fabio 31/10: "INCLUA A CAIXA NAS AVALIAÇÕES DE HE"; "depois que a documentação chega: cadastro automático e em seguida a avaliação").
 // Vale para fichas geradas daqui pra frente — os HE que já estavam em contratação não começam a ser cadastrados de uma vez.
-const HE_CAIXA_DESDE = '2026-10-31T20:00:00.000Z';
 const ehHe = (dept: string | null | undefined) => /home|garantia/i.test(dept || '');
 // "Cadastro conferido" pede a Avaliação de Risco do HE sozinho? DESLIGADO — Fabio 31/10: "NÃO RODA NENHUM CRÉDITO, ACOMPANHA OS CADASTROS". Só ele libera.
 export const AVALIACAO_APOS_CONFERENCIA = false;
@@ -153,17 +152,15 @@ export async function prontosParaCadastro(accountId: string): Promise<any[]> {
   return out;
 }
 
-/** Entra sozinho na fila: ficha pronta + cliente vai pela CAIXA. Roda no poller. Financiamento (Fabio 31/10, Fernanda): a CAIXA roda com a documentação
- *  completa — entra todo cliente do FH com ficha, menos quem já escolheu outro banco. Depois da consulta, o cadastro sai sozinho (cadastroAutomatico). */
+/** Entra sozinho na fila: ficha pronta + o cliente PEDIU a CAIXA (`_caixaRota`: já aprovado em algum banco, nome limpo e Habite-se; card na Pré-Análise — Fabio 01/11,
+ *  HE e FH). Saíram as entradas antigas: todo FH com ficha (31/10), toda ficha do HE (31/10), "quer CAIXA/BRB também?" do FH, CAIXA combinada antes da proposta,
+ *  reprovado que volta e o "optou pela CAIXA" sem as regras. Roda no poller. Depois da consulta, o cadastro sai sozinho (cadastroAutomatico). */
 export async function processFilaCaixa(accountId: string): Promise<void> {
   const ids = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT l.id FROM "Lead" l LEFT JOIN "Pipeline" p ON p.id = l."pipelineId" LEFT JOIN "Department" d ON d.id = p."departmentId"
+    SELECT l.id FROM "Lead" l
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
       AND l."customFields"->'_fichaCadastral' IS NOT NULL AND l."customFields"->'_caixaCadastro' IS NULL
-      AND (l."customFields"->'_fhCaixaAnswer'->>'resposta' = 'SIM' OR l."customFields"->>'_reentryCaixaAt' IS NOT NULL OR l."customFields"->'_bancosCombinados'->>'caixa' = 'true'
-        OR l."customFields"->'_optouCaixa'->>'banco' = 'CAIXA'
-        OR (d.name ~* 'habitacional|financiamento' AND COALESCE(UPPER(l."customFields"->'_fhChosen'->>'bank'), 'CAIXA') IN ('CAIXA', 'BRB'))
-        OR (d.name ~* 'home|garantia' AND l."customFields"->'_fichaCadastral'->>'at' >= ${HE_CAIXA_DESDE}))
+      AND l."customFields"->'_caixaRota' IS NOT NULL
     LIMIT 5`;
   for (const { id } of ids) await pedirCadastroCaixa(accountId, id, 'automático (cliente vai pela CAIXA)').catch((e) => console.error('[CAIXA] fila:', e?.message));
   // Ficha completa depois (documento novo, CNPJ respondido) → cadastro de quem ainda não foi.
@@ -469,6 +466,7 @@ export async function semCadastroCaixa(accountId: string): Promise<any[]> {
     FROM "Lead" l LEFT JOIN "Pipeline" p ON p.id = l."pipelineId" LEFT JOIN "Department" d ON d.id = p."departmentId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
       AND jsonb_typeof(l."customFields"->'_fichaCadastral'->'participantes') = 'array' AND l."customFields"->'_caixaCadastro' IS NULL
+      AND l."customFields"->'_caixaRota' IS NOT NULL -- só quem pediu a CAIXA (Fabio 01/11); a ficha também sai pra contratação dos outros bancos
     ORDER BY l."customFields"->'_fichaCadastral'->>'at' DESC NULLS LAST LIMIT 30`;
   return rows.map((r) => ({ leadId: r.id, nome: r.name, produto: ehHe(r.dept) ? 'HE' : 'FH', fichaEm: r.at, participantes: (Array.isArray(r.ps) ? r.ps : []).map((p: any) => p.nome || '').filter(Boolean) }));
 }
