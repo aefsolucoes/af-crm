@@ -93,7 +93,12 @@ router.post('/:leadId/avaliar', async (req: AuthRequest, res: Response) => {
 router.post('/:leadId/avaliacao', async (req: AuthRequest, res: Response) => {
   const { status, texto } = req.body as { status?: string; texto?: string };
   if (!status) return res.status(400).json({ error: 'status obrigatório' });
-  try { await gravarAvaliacao(req.user!.accountId, req.params.leadId, { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+  try {
+    await gravarAvaliacao(req.user!.accountId, req.params.leadId, { status: String(status), texto: String(texto || '') });
+    // Enviada → a extensão já consulta o resultado em Formulários Enviados (no Jézer o SIRIC respondeu no mesmo minuto do envio, 01/11).
+    if (/^ENVIADA: a CAIXA recebeu/i.test(String(status))) await pedirConsultaResultado(req.user!.accountId, req.params.leadId, 'automático (depois do envio)').catch(() => null);
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
 // PDF do "Imprimir Formulário" da tela final → pasta FORMULARIOS do cliente no Drive.
