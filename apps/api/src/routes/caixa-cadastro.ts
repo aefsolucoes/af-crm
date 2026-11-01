@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA } from '../services/caixa-cadastro.service';
-import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado } from '../services/caixa-resultado.service';
+import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado, pedirAvisoPv } from '../services/caixa-resultado.service';
 import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
@@ -25,6 +25,13 @@ router.post('/:leadId/resultado', async (req: AuthRequest, res: Response) => {
   const { status, texto } = req.body as { status?: string; texto?: string };
   if (!status) return res.status(400).json({ error: 'status obrigatório' });
   try { await gravarConsultaResultado(req.user!.accountId, req.params.leadId, { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+// Aviso do PV ao cliente pelo fluxo automático (conversa fechada → template; o texto sai quando ele responder).
+router.post('/:leadId/avisar-pv', async (req: AuthRequest, res: Response) => {
+  const erro = await pedirAvisoPv(req.user!.accountId, req.params.leadId, req.app.get('io')).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  const pv = ((await prisma.lead.findUnique({ where: { id: req.params.leadId }, select: { customFields: true } }))?.customFields as any)?._caixaResultado?.pvAviso;
+  res.json({ ok: true, pvAviso: pv?.status || null });
 });
 
 // Painel CAIXA da Análise de Crédito (Fabio 31/10): rodando, conferir cadastro, avaliação e quem tem ficha sem cadastro.

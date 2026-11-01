@@ -134,6 +134,20 @@ export async function processPvAvisos(accountId: string, io?: any): Promise<void
   for (const { id } of ids) await avisarPvCliente(accountId, id, io).catch((e) => console.error('[CAIXA PV]', e?.message));
 }
 
+/** A equipe põe o aviso do PV no fluxo automático (Fabio 01/11, Jézer: a mensagem manual falhou com a conversa fechada) — template agora, texto quando
+ *  ele responder. Devolve o erro, ou null. */
+export async function pedirAvisoPv(accountId: string, leadId: string, io?: any): Promise<string | null> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!lead) return 'Lead não encontrado';
+  const cr = ((lead.customFields || {}) as Cf)._caixaResultado || {};
+  if (!PV_RE.test(`${cr.status || ''}\n${cr.ultimaTela || ''}`)) return 'O último resultado da CAIXA não pede a autorização do PV';
+  if (['ENVIADO', 'TEMPLATE'].includes(cr.pvAviso?.status)) return `O aviso já está ${cr.pvAviso.status === 'ENVIADO' ? 'enviado' : 'esperando a resposta do template'}`;
+  const proposta = (/C[oó]digo Proposta\s*\t?\s*(\d{5,})/i.exec(cr.ultimaTela || '') || [])[1] || cr.pvAviso?.proposta || '?';
+  await salvar(leadId, (x) => { x.pvAviso = { status: 'PENDING', proposta, at: new Date().toISOString() }; });
+  await avisarPvCliente(accountId, leadId, io);
+  return null;
+}
+
 /** Bloco pra IA da conversa enquanto o aviso do PV está em aberto (3 dias depois do envio). '' se não houver. Pura. */
 export function aiPvContext(cf: Cf): string {
   const pv = cf._caixaResultado?.pvAviso as { status?: string; enviadoAt?: string } | undefined;
