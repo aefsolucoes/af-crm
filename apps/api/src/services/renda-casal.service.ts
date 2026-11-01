@@ -6,7 +6,7 @@ import { prisma } from '../lib/prisma';
  * Só fichas lidas a partir desta regra (sem pergunta retroativa); uma vez por casal. Estado em _rendaCasal. */
 
 type Cf = Record<string, any>;
-type Rc = { status: 'PENDING' | 'TEMPLATE' | 'ASKED' | 'SO_UM' | 'OS_DOIS' | 'EQUIPE' | 'NA'; fichaAt?: string; comRenda?: string; semRenda?: string; titularComRenda?: boolean; at?: string; templateAt?: string; askedAt?: string; respondidoAt?: string };
+type Rc = { status: 'PENDING' | 'TEMPLATE' | 'ASKED' | 'SO_UM' | 'OS_DOIS' | 'RENDA_RECEBIDA' | 'EXPIRADO' | 'EQUIPE' | 'NA'; fichaAt?: string; comRenda?: string; semRenda?: string; titularComRenda?: boolean; at?: string; templateAt?: string; askedAt?: string; respondidoAt?: string };
 const DESDE = '2026-11-01T16:00:00.000Z';
 const TEMPLATE = 'atualizacao_processo_credito';
 const WAIT_MAX_MS = 48 * 3600_000;
@@ -89,6 +89,31 @@ async function perguntar(accountId: string, leadId: string, io?: any): Promise<v
   }
 }
 
+/** "Os dois compõem": a ficha foi relida (a releitura da ficha pega o anexo novo enquanto o status é OS_DOIS — sessão da CAIXA, 58b5144). Renda do outro na
+ *  ficha → sai de OS_DOIS (senão cada anexo relê a ficha de novo); cônjuge já GRAVADO na CAIXA como SEM RENDA não é recadastrado sozinho (relançar renda
+ *  pode dar "Renda Alterada") → nota + push pra equipe decidir. 10 dias sem a renda chegar → para de esperar. */
+const OS_DOIS_MAX_MS = 10 * 86_400_000;
+async function esperandoRendaDoOutro(accountId: string, leadId: string, leadName: string, cf: Cf, rc: Rc): Promise<void> {
+  const ps: any[] = Array.isArray(cf._fichaCadastral?.participantes) ? cf._fichaCadastral.participantes : [];
+  const idx = ps.findIndex((p) => primeiro(p?.nome) && primeiro(p.nome) === primeiro(rc.semRenda));
+  const p = idx >= 0 ? ps[idx] : null;
+  const fichaAt = String(cf._fichaCadastral?.at || '');
+  if (p && p.semRenda !== true) {
+    await salva(leadId, { status: 'RENDA_RECEBIDA', fichaAt });
+    const ordem = Number(p.ordem) || idx + 1;
+    const gravado = /^GRAVADO/i.test(String(cf._caixaCadastro?.cadastros?.[ordem]?.status || ''));
+    await note(leadId, `👥 A renda de ${rc.semRenda} entrou na ficha de cadastro (os dois compõem a renda).${gravado ? ` Na CAIXA, ${bonito(rc.semRenda || '')} já está GRAVADO como SEM RENDA: o CRM não relança sozinho (trocar renda pode dar "Renda Alterada"). Se for pra lançar, peça o cadastro dele(a) de novo.` : ''}`);
+    push(accountId, `👥 ${leadName}: renda do casal completa`, gravado ? `${bonito(rc.semRenda || '')} está GRAVADO na CAIXA como sem renda: decidir se relança.` : `A renda de ${bonito(rc.semRenda || '')} entrou na ficha.`, leadId);
+    return;
+  }
+  if (rc.respondidoAt && Date.now() - Date.parse(rc.respondidoAt) > OS_DOIS_MAX_MS) {
+    await salva(leadId, { status: 'EXPIRADO', fichaAt });
+    await note(leadId, `👥 Renda do casal: o comprovante de renda de ${rc.semRenda} não chegou em 10 dias. Parei de esperar; confira com o cliente.`);
+    return;
+  }
+  await salva(leadId, { fichaAt }); // ficha relida sem a renda dele(a): segue esperando
+}
+
 /** Poller (a cada minuto, junto das ocorrências): ficha nova de casal com renda de só um → pergunta; pergunta que ficou pra depois → tenta de novo. */
 export async function processRendaCasal(accountId: string, io?: any): Promise<void> {
   const ids = await prisma.$queryRaw<{ id: string }[]>`
@@ -96,14 +121,16 @@ export async function processRendaCasal(accountId: string, io?: any): Promise<vo
       AND "customFields"->'_fichaCadastral'->>'at' > ${DESDE}
       AND ("customFields"->'_rendaCasal' IS NULL
         OR "customFields"->'_rendaCasal'->>'status' IN ('PENDING', 'TEMPLATE')
-        OR ("customFields"->'_rendaCasal'->>'status' = 'NA' AND "customFields"->'_rendaCasal'->>'fichaAt' IS DISTINCT FROM "customFields"->'_fichaCadastral'->>'at'))
+        OR ("customFields"->'_rendaCasal'->>'status' IN ('NA', 'OS_DOIS') AND "customFields"->'_rendaCasal'->>'fichaAt' IS DISTINCT FROM "customFields"->'_fichaCadastral'->>'at')
+        OR ("customFields"->'_rendaCasal'->>'status' = 'OS_DOIS' AND "customFields"->'_rendaCasal'->>'respondidoAt' < ${new Date(Date.now() - OS_DOIS_MAX_MS).toISOString()}))
     LIMIT 20`;
   for (const { id } of ids) {
     try {
-      const l = await prisma.lead.findUnique({ where: { id }, select: { customFields: true } });
+      const l = await prisma.lead.findUnique({ where: { id }, select: { name: true, customFields: true } });
       const cf = (l?.customFields || {}) as Cf;
       const rc = cf._rendaCasal as Rc | undefined;
       if (rc && (rc.status === 'PENDING' || rc.status === 'TEMPLATE')) { await perguntar(accountId, id, io); continue; }
+      if (rc?.status === 'OS_DOIS') { await esperandoRendaDoOutro(accountId, id, l!.name, cf, rc); continue; }
       const fichaAt = String(cf._fichaCadastral?.at || '');
       const c = casalComRendaDeUm(cf);
       if (!c) { await salva(id, { status: 'NA', fichaAt }); continue; }
