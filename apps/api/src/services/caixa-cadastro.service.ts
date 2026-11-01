@@ -27,8 +27,14 @@ async function salvar(leadId: string, mut: (c: Cf) => void): Promise<Cf> {
   return c;
 }
 
+/** A ficha de cadastro (lida dos documentos) já existe? Sem ela só dá pra CONSULTAR — o cadastro espera. */
+const temFicha = (cf: Cf): boolean => Array.isArray(cf._fichaCadastral?.participantes) && cf._fichaCadastral.participantes.length > 0;
+
 const participantesDa = (cf: Cf): any[] => {
-  const ps = Array.isArray(cf._fichaCadastral?.participantes) ? cf._fichaCadastral.participantes : [];
+  // Sem ficha ainda (Fabio 01/11: "a consulta ocorre assim que o cliente indicar querer fazer com a CAIXA e a pergunta dos requisitos saírem", antes dos documentos):
+  // nomes e CPFs da proposta (participante_N / cpf_N), só pra consulta.
+  const ps = temFicha(cf) ? cf._fichaCadastral.participantes
+    : [1, 2, 3, 4].filter((n) => String(cf[`participante_${n}`] || '').trim()).map((n) => ({ ordem: n, nome: String(cf[`participante_${n}`]).trim(), daProposta: true }));
   const base = ps.map((p: any, i: number) => {
     const n = Number(p.ordem) || i + 1;
     return { ...p, ordem: n, cpf: String(p.cpf || cf[`cpf_${n}`] || '').replace(/\D/g, ''), telefone: cf[`telefone_${n}`] || '', email: cf[`email_${n}`] || '' };
@@ -47,7 +53,7 @@ export async function pedirCadastroCaixa(accountId: string, leadId: string, por:
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
-  if (!participantesDa(cf).length) return 'O card ainda não tem a ficha de cadastro (anotação "📋 FICHA DE CADASTRO — CAIXA")';
+  if (!participantesDa(cf).length) return 'O card ainda não tem a ficha de cadastro (anotação "📋 FICHA DE CADASTRO — CAIXA") nem os participantes da proposta';
   await salvar(leadId, (c) => { c.status = 'FILA'; c.pedidoEm = new Date().toISOString(); c.por = por; c.consultas = {}; delete c.atual; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Card na fila da CAIXA (${por}): a extensão vai consultar o nome de cada participante em Oportunidades de Negócios e gravar o resultado aqui.` } }).catch(() => {});
   logActivity({ accountId, userId: null, userName: por, action: 'lead_edited', leadId, leadName: l.name, summary: 'colocou o card na fila do cadastro da CAIXA' } as any);
@@ -133,7 +139,7 @@ export async function gravarConsulta(accountId: string, leadId: string, ordem: n
   if (!todos) return;
   await salvar(leadId, (x) => { x.status = 'CONSULTADO'; x.consultadoEm = new Date().toISOString(); });
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-  sendPushToAccount(accountId, { title: `🏦 ${l.name}: consulta da CAIXA pronta`, body: 'Resultado nas anotações. Quem está com a ficha completa já vai pro cadastro (a extensão preenche e o CRM confere).', leadId }).catch(() => {});
+  sendPushToAccount(accountId, { title: `🏦 ${l.name}: consulta da CAIXA pronta`, body: temFicha((l.customFields || {}) as Cf) ? 'Resultado nas anotações. Quem está com a ficha completa já vai pro cadastro (a extensão preenche e o CRM confere).' : 'Resultado nas anotações. O cadastro sai quando a documentação da CAIXA for conferida.', leadId }).catch(() => {});
   await cadastroAutomatico(accountId, leadId).catch((e) => console.error('[CAIXA] cadastro automático:', e?.message));
 }
 
@@ -217,6 +223,9 @@ export async function cadastroAutomatico(accountId: string, leadId: string): Pro
   if (!l) return;
   const cf = (l.customFields || {}) as Cf;
   const c = (cf._caixaCadastro || {}) as Cf;
+  if (!temFicha(cf)) return; // consultado antes dos documentos (Fabio 01/11): o cadastro espera a ficha
+  // A ficha trouxe participante que a consulta (feita com a proposta) não pegou: consulta ele antes de cadastrar.
+  if (participantesDa(cf).some((p) => !c.consultas?.[p.ordem])) { if (c.status !== 'FILA') await salvar(leadId, (x) => { x.status = 'FILA'; }); return; }
   const cads = (c.cadastros || {}) as Record<string, any>;
   const pendentes = participantesDa(cf).filter((p) => !cads[p.ordem]);
   if (!pendentes.length) return;
@@ -276,6 +285,7 @@ export async function conferirCadastro(accountId: string, leadId: string, ordem:
 export async function pedirCadastroParticipantes(accountId: string, leadId: string, ordens: number[], por: string): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
+  if (!temFicha((l.customFields || {}) as Cf)) return 'O card ainda não tem a ficha de cadastro: o cadastro sai quando a documentação da CAIXA for conferida (a consulta já pode ter sido feita com a proposta)';
   const ps = participantesDa((l.customFields || {}) as Cf);
   const validos = ordens.filter((o) => ps.some((p) => p.ordem === o));
   if (!validos.length) return 'Participante não está na ficha';
@@ -433,7 +443,7 @@ export async function fazerCadastroManual(accountId: string, leadId: string, por
   const cf = (l.customFields || {}) as Cf;
   const c = cf._caixaCadastro;
   const ps = participantesDa(cf);
-  if (!ps.length) return 'O card ainda não tem a ficha de cadastro (lida dos documentos da pasta ou da conversa)';
+  if (!ps.length) return 'O card ainda não tem a ficha de cadastro (lida dos documentos da pasta ou da conversa) nem os participantes da proposta';
   if (!c || (c.status !== 'FILA' && !ps.some((p) => c.consultas?.[p.ordem]))) return pedirCadastroCaixa(accountId, leadId, por);
   if (c.status === 'FILA') return 'Já está na fila da CAIXA (consulta do nome em andamento)';
   const ordens = ps.filter((p) => !gravado(c, p.ordem) && !['FILA', 'RODANDO'].includes(String(c.cadastros?.[p.ordem]?.status || ''))).map((p) => p.ordem);

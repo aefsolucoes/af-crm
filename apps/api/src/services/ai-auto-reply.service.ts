@@ -398,7 +398,7 @@ export function parseResumeOn(raw: unknown, now = Date.now()): string | null {
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "caixaRota": <true ou false — só conforme a regra CAIXA (o cliente pediu a CAIXA, já aprovado, nome limpo e Habite-se)>, "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS", "BRADESCO", "ITAU" (Bradesco/Itaú só no Financiamento Habitacional), "BRB" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA; "BRB" quando o cliente disser CLARAMENTE que quer seguir pelo BRB — o CRM guarda as outras aprovações e avisa a equipe. A CAIXA NÃO vai aqui: é "caixaRota" (regra CAIXA)>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "caixaPedido": <true ou false — só conforme a regra CAIXA, passo (1): o cliente pediu a CAIXA, já aprovado, e você pergunta nome limpo e Habite-se nesta resposta>, "caixaRota": <true ou false — só conforme a regra CAIXA, passo (2): o cliente pediu a CAIXA, já aprovado, nome limpo e Habite-se>, "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS", "BRADESCO", "ITAU" (Bradesco/Itaú só no Financiamento Habitacional), "BRB" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA; "BRB" quando o cliente disser CLARAMENTE que quer seguir pelo BRB — o CRM guarda as outras aprovações e avisa a equipe. A CAIXA NÃO vai aqui: é "caixaRota" (regra CAIXA)>}`;
 
 /** "sendSimulation" vindo do JSON da IA: aceita só SANTANDER/INTER (lista ou texto); qualquer outra coisa = null. */
 /** "simulate" vindo do JSON da IA: {prazo?: meses (60 a 240), valor?: crédito em reais} (ou só o número do prazo); qualquer outra coisa = null. */
@@ -482,6 +482,8 @@ export interface AiAutoReplyResult {
   simulate?: { prazo?: number; valor?: number } | null;
   /** Banco aprovado que o cliente disse que vai seguir — aplicar via applyAiExtractedActions (marca a ⭐ e o Valor da venda). */
   chooseBank?: string | null;
+  /** O cliente pediu a CAIXA (já aprovado) e a IA fez a pergunta de nome limpo e Habite-se — aplicar via applyAiExtractedActions (consulta da CAIXA na hora; Fabio 01/11). */
+  caixaPedido?: boolean;
   /** O cliente pediu a CAIXA e passou nas regras dela — aplicar via applyAiExtractedActions (card volta pra Pré-Análise; Fabio 01/11). */
   caixaRota?: boolean;
 }
@@ -796,7 +798,7 @@ const DESPEDIDA_RX = /(fico [àa] disposi|estou [àa] disposi|qualquer (coisa|d[
 const RECUSA_RX = /(n[ãa]o (quero|tenho (mais )?interesse|vou (querer|seguir|fazer|continuar))|desist|n[ãa]o,? obrigad|deixa quieto|pode (cancelar|encerrar|parar)|n[ãa]o precis|esquece)/i;
 async function addSeguirAprovadoQuestion(leadId: string, incomingText: string, etapaTexto: string, result: AiAutoReplyResult): Promise<void> {
   try {
-    if (result.handoff || result.askTeam || result.resumeOn || result.sendApproval || result.chooseBank || result.caixaRota || result.moveToStage || result.simulate) return;
+    if (result.handoff || result.askTeam || result.resumeOn || result.sendApproval || result.chooseBank || result.caixaPedido || result.caixaRota || result.moveToStage || result.simulate) return;
     const reply = (result.reply || '').trim();
     if (!reply || reply.includes('?') || (!result.markLost && !DESPEDIDA_RX.test(reply))) return;
     const t = (incomingText || '').trim();
@@ -899,6 +901,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         sendApproval: parsed.sendApproval === true,
         simulate: parseSimulate(parsed.simulate),
         chooseBank: parseChooseBank(parsed.chooseBank),
+        caixaPedido: parsed.caixaPedido === true,
         caixaRota: parsed.caixaRota === true,
       };
     }
@@ -923,6 +926,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         sendApproval: parsed.sendApproval === true,
         simulate: parseSimulate(parsed.simulate),
         chooseBank: parseChooseBank(parsed.chooseBank),
+        caixaPedido: parsed.caixaPedido === true,
         caixaRota: parsed.caixaRota === true,
       };
     }

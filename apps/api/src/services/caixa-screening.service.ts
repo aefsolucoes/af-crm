@@ -17,6 +17,25 @@ export async function temAprovacao(leadId: string, cf: Record<string, any>): Pro
   return (await prisma.creditAnalysis.count({ where: { leadId, dryRun: false, source: { not: 'AI_SIM' }, status: { in: ['APPROVED', 'CONDITIONAL'] } } })) > 0;
 }
 
+/** O cliente pediu a CAIXA (já aprovado) e a pergunta de nome limpo e Habite-se saiu (Fabio 01/11: "a consulta ocorre assim que o cliente indicar querer fazer com
+ *  a CAIXA e a pergunta dos requisitos saírem"): põe a consulta do nome (Oportunidades de Negócios) na fila da extensão na hora, com os nomes e CPFs da proposta —
+ *  a ficha e o cadastro só depois da documentação. Uma vez por card. true = entrou na fila agora. */
+export async function pedirConsultaCaixa(accountId: string, leadId: string): Promise<boolean> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!lead) return false;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (cf._caixaCadastro || cf._caixaPedido) return false;
+  if (!(await temAprovacao(leadId, cf))) return false; // sem aprovação a CAIXA não entra (passo 0 da regra)
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaPedido}', ${JSON.stringify({ at: new Date().toISOString() })}::jsonb, true) WHERE id = ${leadId}`;
+  const { pedirCadastroCaixa } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  const erro = await pedirCadastroCaixa(accountId, leadId, 'automático — o cliente pediu a CAIXA');
+  if (erro) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 O cliente pediu a CAIXA, mas a consulta do nome não entrou na fila: ${erro}. Confira os participantes e o CPF no card.` } }).catch(() => {});
+    return false;
+  }
+  return true;
+}
+
 /** O cliente pediu a CAIXA e passou nas regras dela: marca `_caixaRota` (+ `_optouCaixa`, que guarda as outras aprovações), volta o card pra Pré-Análise e agenda a
  *  conferência dos documentos que já estão na conversa. true = entrou agora. */
 export async function entrarRotaCaixa(accountId: string, leadId: string, motivo: string | null, io?: Io): Promise<boolean> {
