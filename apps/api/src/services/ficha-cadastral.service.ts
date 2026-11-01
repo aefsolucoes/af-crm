@@ -475,7 +475,17 @@ export async function processFichasCadastrais(accountId: string, io?: Io): Promi
               WHERE jsonb_typeof(fp->'faltando') = 'array' AND jsonb_array_length(fp->'faltando') > 0))))
         -- Financiamento pela CAIXA/BRB com a documentação do comprador completa (antes da contratação, pode não ter pasta: lê da conversa) — Fabio 31/10.
         -- Pediu a CAIXA (HE e FH) com a documentação conferida na Pré-Análise — Fabio 01/11.
-        OR ((l."customFields"->>'_fhDocsCompradorAt' IS NOT NULL OR l."customFields"->>'_caixaDocsAt' IS NOT NULL) AND l."customFields"->'_fichaCadastral' IS NULL))
+        OR ((l."customFields"->>'_fhDocsCompradorAt' IS NOT NULL OR l."customFields"->>'_caixaDocsAt' IS NOT NULL) AND l."customFields"->'_fichaCadastral' IS NULL)
+        -- Fora da contratação não há pasta organizada: na rota da CAIXA (Pré-Análise) ou com a renda dos dois do casal pedida (renda-casal, OS_DOIS), arquivo novo na
+        -- conversa depois da ficha → lê de novo quando ela tem dado faltando ou falta a renda do outro (Fabio 01/11).
+        OR (l."customFields"->'_fichaCadastral'->>'at' IS NOT NULL
+          AND (l."customFields"->'_caixaRota' IS NOT NULL OR l."customFields"->'_rendaCasal'->>'status' = 'OS_DOIS')
+          AND EXISTS (SELECT 1 FROM "MessageAttachment" a JOIN "Message" m ON m.id = a."messageId"
+            WHERE a."leadId" = l.id AND m.direction = 'INBOUND' AND a."mimeType" !~ '^(audio|video)/' AND a."createdAt" > (l."customFields"->'_fichaCadastral'->>'at')::timestamptz)
+          AND (l."customFields"->'_rendaCasal'->>'status' = 'OS_DOIS'
+            OR (jsonb_typeof(l."customFields"->'_fichaCadastral'->'participantes') = 'array'
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(l."customFields"->'_fichaCadastral'->'participantes') fp
+                WHERE jsonb_typeof(fp->'faltando') = 'array' AND jsonb_array_length(fp->'faltando') > 0)))))
       AND COALESCE(l."customFields"->>'_fichaCadastralErro', '') < ${new Date(Date.now() - 6 * 3600_000).toISOString()}
     ORDER BY l."stageEnteredAt" ASC NULLS LAST LIMIT 1`;
   if (!ids[0] || emAndamento.has(ids[0].id)) return;
