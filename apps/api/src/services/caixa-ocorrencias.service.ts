@@ -126,12 +126,20 @@ export async function processOcorrencias(accountId: string, io?: any): Promise<v
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
       AND "customFields"->'_ocorrencias'->>'status' IN ('PENDING', 'TEMPLATE') LIMIT 20`;
   for (const { id } of ids) await enviarOrientacao(accountId, id, io).catch((e) => console.error('[Ocorrências]', e?.message));
+  // Aviso ao cliente da 2ª autorização do PV (caixa-resultado) roda no mesmo minuto.
+  await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).processPvAvisos(accountId, io).catch((e) => console.error('[CAIXA PV]', e?.message));
 }
 
-/** Bloco pro prompt da IA da conversa enquanto a orientação está em aberto. '' se não houver. */
+/** Blocos da CAIXA pro prompt da IA da conversa: restrição no nome (abaixo) e cadastro bloqueado pela 2ª autorização do PV. '' se não houver. */
 export async function aiOcorrenciasContext(leadId: string): Promise<string> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (l?.customFields || {}) as Cf;
+  const pv = (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).aiPvContext(cf);
+  const oc = blocoOcorrencias(cf);
+  return [oc, pv].filter(Boolean).join('\n\n');
+}
+
+function blocoOcorrencias(cf: Cf): string {
   const oc = cf._ocorrencias as Oc | undefined;
   if (!oc || (oc.status !== 'TEMPLATE' && oc.status !== 'ASKED')) return '';
   const nomes = (oc.nomes || []).join(' e ') || 'do cliente';

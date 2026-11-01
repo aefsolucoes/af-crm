@@ -61,10 +61,88 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Resultado da Avaliação de Risco CAIXA (Formulários Enviados): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   // "2ª autorização do PV" (Fabio 01/11): o cliente rodou crédito mais de uma vez, com correspondentes diferentes — o colaborador pede a autorização à agência.
-  if (/autoriza[cç][aã]o do PV/i.test(`${r.status}\n${r.texto}`)) {
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ A CAIXA pede a 2ª AUTORIZAÇÃO DO PV (agência): o cliente rodou crédito mais de uma vez, com correspondentes diferentes. Solicite a autorização à agência para seguir com a avaliação.' } }).catch(() => {});
+  if (PV_RE.test(`${r.status}\n${r.texto}`)) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ A CAIXA pede a 2ª AUTORIZAÇÃO DO PV (agência): o cliente rodou crédito mais de uma vez, com correspondentes diferentes (não é nome sujo). Solicite a autorização à agência para seguir com a avaliação. O CRM avisa o cliente e pergunta se ele encaminhou a documentação a outro correspondente.' } }).catch(() => {});
     sendPushToAccount(accountId, { title: `⚠️ ${l.name}: pedir autorização à agência (PV)`, body: 'A CAIXA pede a 2ª autorização do PV: solicite à agência para seguir com a avaliação.', leadId }).catch(() => {});
+    // Aviso ao cliente (Fabio 01/11: "Sim, mandar sozinho"), uma vez por proposta.
+    const proposta = (/C[oó]digo Proposta\s*\t?\s*(\d{5,})/i.exec(r.texto) || /Proposta\s+(\d{5,})/i.exec(r.texto) || [])[1] || '?';
+    const atual = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as Cf | null)?._caixaResultado?.pvAviso;
+    if (atual?.proposta !== proposta) {
+      await salvar(leadId, (x) => { x.pvAviso = { status: 'PENDING', proposta, at: new Date().toISOString() }; });
+      await avisarPvCliente(accountId, leadId).catch((e) => console.error('[CAIXA PV] aviso ao cliente:', e?.message));
+    }
     return;
   }
   sendPushToAccount(accountId, { title: `🏦 ${l.name}: resultado da avaliação CAIXA`, body: r.status.slice(0, 120), leadId }).catch(() => {});
+}
+
+// ─── 2ª autorização do PV → aviso ao cliente (Fabio 01/11, Jézer: "o dele não foi reprovado por nome sujo, foi apenas uma alteração no cadastro. Precisa
+// perguntar a ele se ele encaminhou essa documentação a outro correspondente — essa informação é apenas informativa para nós — explica a ele também que o
+// cadastro dele bloqueou porque ele rodou em outro correspondente e isso impacta na aprovação e pode acabar bloqueando o cadastro dele na CAIXA"; depois
+// "Sim, mandar sozinho"). 07h–21h; conversa fechada → template de atualização e o texto sai quando ele responder (poller); 48 h sem resposta → equipe.
+const PV_RE = /autoriza[cç][aã]o do PV/i;
+const PV_TEMPLATE = 'atualizacao_processo_credito';
+
+export function textoPv(saudacao: string): string {
+  return `Oi${saudacao ? ` ${saudacao}` : ''}, tudo bem? Uma atualização sobre a CAIXA: o seu cadastro lá ficou bloqueado porque consta que o seu crédito também foi rodado por outro correspondente. Isso impacta na aprovação e pode acabar bloqueando o seu cadastro na CAIXA. Só pra nossa informação: você chegou a encaminhar a sua documentação pra outro correspondente?`;
+}
+
+export async function avisarPvCliente(accountId: string, leadId: string, io?: any): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  const pv = cf._caixaResultado?.pvAviso as { status?: string; templateAt?: string } | undefined;
+  if (!lead || !pv || (pv.status !== 'PENDING' && pv.status !== 'TEMPLATE') || cf._autoPaused) return;
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const saudacao = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const texto = textoPv(saudacao);
+  const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow()) return;
+  const msg = require('./message.service') as typeof import('./message.service');
+  if (await whatsappWindowOpen(leadId)) {
+    const env = await msg.sendOutboundWhatsApp({ accountId, leadId, content: texto, io });
+    if (!env.success) return; // tenta no próximo minuto
+    await salvar(leadId, (x) => { x.pvAviso = { ...(x.pvAviso || {}), status: 'ENVIADO', enviadoAt: new Date().toISOString() }; });
+    await nota('📨 Avisei o cliente que o cadastro na CAIXA bloqueou porque o crédito também foi rodado por outro correspondente (impacta a aprovação e pode bloquear o cadastro) e perguntei, só pra nossa informação, se ele encaminhou a documentação a outro correspondente.');
+    return;
+  }
+  if (pv.status === 'PENDING') {
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: PV_TEMPLATE, language: 'pt_BR', bodyParams: [saudacao || 'cliente'], previewText: `Oi ${saudacao || 'cliente'}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io });
+    if (!t.success) {
+      await salvar(leadId, (x) => { x.pvAviso = { ...(x.pvAviso || {}), status: 'FALHOU' }; });
+      await nota(`⚠️ Autorização do PV: a conversa está fechada e o template de atualização não saiu (${t.error}). Avise você o cliente. Texto pronto:\n“${texto}”`);
+      sendPushToAccount(accountId, { title: `⚠️ ${lead.name}: avisar o cliente (PV)`, body: 'Conversa fechada e o template não saiu: texto pronto na anotação.', leadId }).catch(() => {});
+      return;
+    }
+    await salvar(leadId, (x) => { x.pvAviso = { ...(x.pvAviso || {}), status: 'TEMPLATE', templateAt: new Date().toISOString() }; });
+    await nota('📨 Autorização do PV: conversa fechada — mandei o template de atualização. O aviso ao cliente sai quando ele responder.');
+    return;
+  }
+  if (pv.templateAt && Date.now() - Date.parse(pv.templateAt) > 48 * 3600_000) {
+    await salvar(leadId, (x) => { x.pvAviso = { ...(x.pvAviso || {}), status: 'FALHOU' }; });
+    await nota(`⚠️ Autorização do PV: o cliente não respondeu ao template em 48 h. Avise você. Texto pronto:\n“${texto}”`);
+    sendPushToAccount(accountId, { title: `⚠️ ${lead.name}: avisar o cliente (PV)`, body: 'Sem resposta em 48 h: texto pronto na anotação.', leadId }).catch(() => {});
+  }
+}
+
+/** Poller (vai junto do das ocorrências, a cada minuto): aviso de PV que ficou pra depois. */
+export async function processPvAvisos(accountId: string, io?: any): Promise<void> {
+  const ids = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
+      AND "customFields"->'_caixaResultado'->'pvAviso'->>'status' IN ('PENDING', 'TEMPLATE') LIMIT 20`;
+  for (const { id } of ids) await avisarPvCliente(accountId, id, io).catch((e) => console.error('[CAIXA PV]', e?.message));
+}
+
+/** Bloco pra IA da conversa enquanto o aviso do PV está em aberto (3 dias depois do envio). '' se não houver. Pura. */
+export function aiPvContext(cf: Cf): string {
+  const pv = cf._caixaResultado?.pvAviso as { status?: string; enviadoAt?: string } | undefined;
+  if (pv?.status === 'TEMPLATE') {
+    return `--- CADASTRO DA CAIXA BLOQUEADO (aviso ainda não enviado) ---
+A conversa estava fechada e o CRM chamou o cliente pelo template de atualização: assim que ele responder, o CRM manda SOZINHO, logo em seguida, a atualização sobre a CAIXA. Agora responda só UMA frase curta de retorno (ex.: "Oi, tudo bem? Já te explico aqui embaixo."), sem falar da CAIXA.`;
+  }
+  if (pv?.status !== 'ENVIADO' || !pv.enviadoAt || Date.now() - Date.parse(pv.enviadoAt) > 3 * 86_400_000) return '';
+  return `--- CADASTRO DA CAIXA BLOQUEADO (aviso enviado ao cliente; Fabio 01/11) ---
+O CRM avisou o cliente que o cadastro na CAIXA ficou bloqueado porque o crédito também foi rodado por outro correspondente (a CAIXA pede a 2ª autorização da agência), que isso impacta na aprovação e pode bloquear o cadastro, e perguntou — só pra nossa informação — se ele encaminhou a documentação a outro correspondente. NÃO é restrição no nome nem reprovação: nunca diga isso.
+Quando ele responder a essa pergunta: agradeça em 1 frase e diga que a equipe está cuidando da autorização junto à CAIXA. Não prometa prazo nem aprovação, não peça documento por isso e não critique o outro correspondente.`;
 }
