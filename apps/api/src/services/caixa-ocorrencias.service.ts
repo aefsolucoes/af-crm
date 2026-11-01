@@ -31,7 +31,8 @@ export function comOcorrencia(cf: Cf): { nomes: string[]; titular: boolean } {
   for (const [ordem, c] of Object.entries(cons)) {
     if (!OCORRENCIA_RE.test(String(c?.texto || ''))) continue;
     const p = ps.find((x, i) => (Number(x?.ordem) || i + 1) === Number(ordem));
-    nomes.push(String(p?.nome || `${ordem}º participante`));
+    // A consulta sai antes da ficha (Fabio 01/11: "assim que o cliente indicar querer fazer com a CAIXA"): sem ficha, o nome vem da proposta do card.
+    nomes.push(String(p?.nome || String(cf[`participante_${ordem}`] || '').trim() || `${ordem}º participante`));
     if (Number(ordem) === 1) titular = true;
   }
   return { nomes, titular };
