@@ -8,7 +8,7 @@ import { prisma } from '../lib/prisma';
  * sem | com). Estado em _ocorrencias; uma vez por consulta (consultadoEm). */
 
 type Cf = Record<string, any>;
-type Oc = { status: 'PENDING' | 'TEMPLATE' | 'ASKED' | 'SEM' | 'COM' | 'EQUIPE'; consultadoEm?: string; nomes?: string[]; titular?: boolean; at?: string; templateAt?: string; askedAt?: string; respondidoAt?: string };
+type Oc = { status: 'PENDING' | 'TEMPLATE' | 'ASKED' | 'SEM' | 'COM' | 'EQUIPE'; consultadoEm?: string; nomes?: string[]; avisados?: string[]; titular?: boolean; at?: string; templateAt?: string; askedAt?: string; respondidoAt?: string };
 const WAIT_MAX_MS = 48 * 3600_000;
 const OCORRENCIA_RE = /constam ocorr[eê]ncias/i;
 const TEMPLATE = 'atualizacao_processo_credito';
@@ -59,10 +59,18 @@ export async function verificarOcorrencias(accountId: string, leadId: string, io
   const cf = (l.customFields || {}) as Cf;
   const consultadoEm = cf._caixaCadastro?.consultadoEm as string | undefined;
   if (!consultadoEm || Date.now() - Date.parse(consultadoEm) > 3600_000) return; // só a consulta que acabou de fechar (todos os participantes)
-  if ((cf._ocorrencias as Oc | undefined)?.consultadoEm === consultadoEm) return; // esta consulta já foi tratada
-  const oc = comOcorrencia(cf);
-  if (!oc.nomes.length) return;
-  await salva(leadId, { status: 'PENDING', consultadoEm, nomes: oc.nomes, titular: oc.titular, at: new Date().toISOString(), templateAt: undefined, askedAt: undefined, respondidoAt: undefined });
+  const atual = cf._ocorrencias as Oc | undefined;
+  if (atual?.consultadoEm === consultadoEm) return; // esta consulta já foi tratada
+  const todas = comOcorrencia(cf);
+  // A ficha que chega depois com um participante novo reabre a consulta (consultadoEm novo): só avisa quem ainda não foi avisado (sessão da CAIXA, 01/11).
+  const chave = (s: string) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().split(/\s+/).slice(0, 2).join(' ');
+  const jaAvisados = atual?.avisados || atual?.nomes || [];
+  const avisados = new Set(jaAvisados.map(chave));
+  const nomes = todas.nomes.filter((n) => !avisados.has(chave(n)));
+  if (!nomes.length) { if (atual && todas.nomes.length) await salva(leadId, { consultadoEm }); return; }
+  // comOcorrencia lista em ordem de participante: o titular, quando tem ocorrência, é o 1º nome
+  const oc = { nomes, titular: todas.titular && nomes.some((n) => chave(n) === chave(todas.nomes[0])) };
+  await salva(leadId, { status: 'PENDING', consultadoEm, nomes, avisados: [...jaAvisados, ...nomes], titular: oc.titular, at: new Date().toISOString(), templateAt: undefined, askedAt: undefined, respondidoAt: undefined });
   await note(leadId, `⚠️ CAIXA: constam ocorrências no nome de ${oc.nomes.join(' e ')} (Oportunidades de Negócios). Vou pedir ao cliente que confira no app da Serasa, no app do SCPC (Consumidor Positivo) e no pesquisaprotesto.com.br (Fabio 01/11).`);
   push(accountId, `⚠️ ${oc.nomes.map(primeiroNome).join(' e ')}: ocorrência no nome (CAIXA)`, 'O CRM vai pedir ao cliente que confira Serasa, SCPC e protesto.', leadId);
   await enviarOrientacao(accountId, leadId, io).catch((e) => console.error('[Ocorrências] envio:', e?.message));
