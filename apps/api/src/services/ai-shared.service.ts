@@ -504,6 +504,7 @@ const BUILTIN_LEAD_FIELDS: { key: string; label: string }[] = [
   { key: 'falando_com', label: 'Nome de QUEM ESTÁ FALANDO no WhatsApp quando NÃO é o titular do crédito (ex.: a esposa que preencheu a proposta) — deixe vazio se quem fala é o próprio titular' },
   { key: 'cadastro_confirmado', label: 'Cliente CONFIRMOU que nome, CPF e data de nascimento da proposta estão corretos — preencha "Sim" SÓ quando ele disser isso (resposta à pergunta de confirmação do cadastro)' },
   { key: 'ocorrencias_cliente', label: 'Resposta do cliente à orientação Serasa/SCPC/protesto (bloco RESTRIÇÃO NO NOME): "sem" quando ele disser que conferiu e NÃO há ocorrência; "com" quando confirmar ocorrência — só com esse bloco' },
+  { key: 'renda_composicao', label: 'Resposta do cliente à pergunta de quem compõe a renda do casal (bloco RENDA DO CASAL): "so_um" quando só quem mandou a renda compõe; "os_dois" quando o outro também vai compor — só com esse bloco' },
   { key: 'falando_com_relacao', label: 'Relação de quem está falando com o titular (Esposa, Marido, Filho(a), Pai/Mãe, Sócio(a), Contador(a), Outro)' },
   { key: 'participante_1', label: 'Nome do participante 1' },
   { key: 'participante_2', label: 'Nome do participante 2' },
@@ -865,6 +866,8 @@ export async function applyAiExtractedActions(
         (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).cadastroCorrigido(accountId, lead.id, Object.keys(patch), io as any).catch((e: any) => console.error('[Cadastro divergente] refazer análise:', e?.message));
         // Restrição no nome (CAIXA, Fabio 01/11): o cliente respondeu à orientação Serasa/SCPC/protesto.
         if (patch.ocorrencias_cliente) (require('./caixa-ocorrencias.service') as typeof import('./caixa-ocorrencias.service')).ocorrenciasRespondidas(accountId, lead.id, patch).catch((e: any) => console.error('[Ocorrências] resposta:', e?.message));
+        // Renda do casal (Fabio 01/11): o cliente disse se só um compõe a renda.
+        if (patch.renda_composicao) (require('./renda-casal.service') as typeof import('./renda-casal.service')).rendaCasalRespondida(accountId, lead.id, patch).catch((e: any) => console.error('[Renda do casal] resposta:', e?.message));
         if (renomear && lead.contactId) {
           await prisma.contact.update({ where: { id: lead.contactId }, data: { name: normalizeClientName(patch.participante_1) } }).catch(() => {});
           await prisma.note.create({ data: { leadId: lead.id, type: 'DATA_EDIT', content: `🤖 Nome do card corrigido pela IA: "${lead.name}" → "${normalizeClientName(patch.participante_1)}" (o cliente informou o nome).` } }).catch(() => {});

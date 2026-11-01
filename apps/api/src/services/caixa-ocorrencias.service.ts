@@ -128,6 +128,8 @@ export async function processOcorrencias(accountId: string, io?: any): Promise<v
   for (const { id } of ids) await enviarOrientacao(accountId, id, io).catch((e) => console.error('[Ocorrências]', e?.message));
   // Aviso ao cliente da 2ª autorização do PV (caixa-resultado) roda no mesmo minuto.
   await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).processPvAvisos(accountId, io).catch((e) => console.error('[CAIXA PV]', e?.message));
+  // Casal com renda de só um (Fabio 01/11) — mesmo minuto.
+  await (require('./renda-casal.service') as typeof import('./renda-casal.service')).processRendaCasal(accountId, io).catch((e) => console.error('[Renda do casal]', e?.message));
 }
 
 /** Blocos da CAIXA pro prompt da IA da conversa: restrição no nome (abaixo) e cadastro bloqueado pela 2ª autorização do PV. '' se não houver. */
@@ -135,8 +137,9 @@ export async function aiOcorrenciasContext(leadId: string): Promise<string> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (l?.customFields || {}) as Cf;
   const pv = (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).aiPvContext(cf);
+  const casal = (require('./renda-casal.service') as typeof import('./renda-casal.service')).aiRendaCasalContext(cf);
   const oc = blocoOcorrencias(cf);
-  return [oc, pv].filter(Boolean).join('\n\n');
+  return [oc, pv, casal].filter(Boolean).join('\n\n');
 }
 
 function blocoOcorrencias(cf: Cf): string {
