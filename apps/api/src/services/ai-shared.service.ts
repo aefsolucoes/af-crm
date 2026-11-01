@@ -503,6 +503,7 @@ ${ctx.historicoTexto}`;
 const BUILTIN_LEAD_FIELDS: { key: string; label: string }[] = [
   { key: 'falando_com', label: 'Nome de QUEM ESTÁ FALANDO no WhatsApp quando NÃO é o titular do crédito (ex.: a esposa que preencheu a proposta) — deixe vazio se quem fala é o próprio titular' },
   { key: 'cadastro_confirmado', label: 'Cliente CONFIRMOU que nome, CPF e data de nascimento da proposta estão corretos — preencha "Sim" SÓ quando ele disser isso (resposta à pergunta de confirmação do cadastro)' },
+  { key: 'ocorrencias_cliente', label: 'Resposta do cliente à orientação Serasa/SCPC/protesto (bloco RESTRIÇÃO NO NOME): "sem" quando ele disser que conferiu e NÃO há ocorrência; "com" quando confirmar ocorrência — só com esse bloco' },
   { key: 'falando_com_relacao', label: 'Relação de quem está falando com o titular (Esposa, Marido, Filho(a), Pai/Mãe, Sócio(a), Contador(a), Outro)' },
   { key: 'participante_1', label: 'Nome do participante 1' },
   { key: 'participante_2', label: 'Nome do participante 2' },
@@ -855,6 +856,8 @@ export async function applyAiExtractedActions(
         }
         // Cadastro divergente (Fabio 23/10): o cliente corrigiu nome/CPF/nascimento depois da pergunta → refaz a análise em TODOS os bancos com os dados certos.
         (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).cadastroCorrigido(accountId, lead.id, Object.keys(patch), io as any).catch((e: any) => console.error('[Cadastro divergente] refazer análise:', e?.message));
+        // Restrição no nome (CAIXA, Fabio 01/11): o cliente respondeu à orientação Serasa/SCPC/protesto.
+        if (patch.ocorrencias_cliente) (require('./caixa-ocorrencias.service') as typeof import('./caixa-ocorrencias.service')).ocorrenciasRespondidas(accountId, lead.id, patch).catch((e: any) => console.error('[Ocorrências] resposta:', e?.message));
         if (renomear && lead.contactId) {
           await prisma.contact.update({ where: { id: lead.contactId }, data: { name: normalizeClientName(patch.participante_1) } }).catch(() => {});
           await prisma.note.create({ data: { leadId: lead.id, type: 'DATA_EDIT', content: `🤖 Nome do card corrigido pela IA: "${lead.name}" → "${normalizeClientName(patch.participante_1)}" (o cliente informou o nome).` } }).catch(() => {});

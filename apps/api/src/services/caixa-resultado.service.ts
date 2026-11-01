@@ -60,5 +60,11 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
   await salvar(leadId, (x) => { x.status = r.status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 3000); });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Resultado da Avaliação de Risco CAIXA (Formulários Enviados): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  // "2ª autorização do PV" (Fabio 01/11): o cliente rodou crédito mais de uma vez, com correspondentes diferentes — o colaborador pede a autorização à agência.
+  if (/autoriza[cç][aã]o do PV/i.test(`${r.status}\n${r.texto}`)) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ A CAIXA pede a 2ª AUTORIZAÇÃO DO PV (agência): o cliente rodou crédito mais de uma vez, com correspondentes diferentes. Solicite a autorização à agência para seguir com a avaliação.' } }).catch(() => {});
+    sendPushToAccount(accountId, { title: `⚠️ ${l.name}: pedir autorização à agência (PV)`, body: 'A CAIXA pede a 2ª autorização do PV: solicite à agência para seguir com a avaliação.', leadId }).catch(() => {});
+    return;
+  }
   sendPushToAccount(accountId, { title: `🏦 ${l.name}: resultado da avaliação CAIXA`, body: r.status.slice(0, 120), leadId }).catch(() => {});
 }

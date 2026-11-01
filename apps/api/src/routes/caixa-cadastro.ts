@@ -3,6 +3,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA } from '../services/caixa-cadastro.service';
 import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado } from '../services/caixa-resultado.service';
+import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -49,7 +50,12 @@ router.get('/prontos', async (req: AuthRequest, res: Response) => {
 router.post('/:leadId/consulta', async (req: AuthRequest, res: Response) => {
   const { ordem, texto } = req.body as { ordem?: number; texto?: string };
   if (!ordem || !texto) return res.status(400).json({ error: 'ordem e texto obrigatórios' });
-  try { await gravarConsulta(req.user!.accountId, req.params.leadId, Number(ordem), String(texto)); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+  try {
+    await gravarConsulta(req.user!.accountId, req.params.leadId, Number(ordem), String(texto));
+    // "Constam Ocorrências" → orientação Serasa/SCPC/protesto ao cliente (Fabio 01/11).
+    await verificarOcorrencias(req.user!.accountId, req.params.leadId, (req as any).app.get('io')).catch((e) => console.error('[Ocorrências]', e?.message));
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
 router.post('/:leadId/pedir', async (req: AuthRequest, res: Response) => {
