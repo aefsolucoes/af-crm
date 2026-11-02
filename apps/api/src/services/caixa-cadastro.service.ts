@@ -129,10 +129,14 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
           continue;
         }
         const ajuste = await prisma.creditOverride.findFirst({ where: { leadId: id, bank: 'CAIXA' }, select: { data: true } }).catch(() => null);
-        const operacao = operacaoDaAvaliacao(cf, [quem.tomador, ...quem.incluir], valorDe((ajuste?.data as Cf | null)?.prazo));
+        const ehFh = !/empr[eé]stimo com garantia/i.test(String(av.produto || ''));
+        const pediuPrice = ehFh && !!(await prisma.message.findFirst({ where: { leadId: id, direction: 'INBOUND', deleted: false, content: { contains: 'price', mode: 'insensitive' } }, select: { id: true } }));
+        const operacao = operacaoDaAvaliacao(cf, [quem.tomador, ...quem.incluir], valorDe((ajuste?.data as Cf | null)?.prazo), ehFh ? { pediuPrice } : null);
         if (typeof operacao === 'string') {
           await salvar(id, (x) => { x.avaliacao = { ...x.avaliacao, status: `SEGURADO: ${operacao}`, fim: new Date().toISOString() }; });
           await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `⏸️ Avaliação de Risco CAIXA não rodou: ${operacao}. Corrija e peça de novo (painel CAIXA da Análise de Crédito).` } }).catch(() => {});
+          const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+          sendPushToAccount(accountId, { title: `⏸️ ${l!.name}: Avaliação CAIXA não rodou`, body: operacao.slice(0, 120), leadId: id }).catch(() => {});
           continue;
         }
         const p1 = quem.tomador;
@@ -216,8 +220,13 @@ export async function processFilaCaixa(accountId: string): Promise<void> {
  *  renda ou participante com renda sem CPF → `segurar` (a equipe decide, nada vai à CAIXA). Pura. */
 export function participantesDaAvaliacao(ps: any[]): { tomador: any | null; incluir: any[]; fora: any[]; segurar: string | null } {
   const tem = (p: any) => p && p.semRenda !== true;
-  const tomador = ps.find((x) => x.ordem === 1) || null;
-  const outros = ps.filter((x) => x.ordem !== 1);
+  // 1º proponente = quem tem a MAIOR renda (Fabio 02/11: "o primeiro proponente sempre será o que tem a maior renda"); empate ou sem renda lida → o 1º da ficha.
+  const renda = (p: any) => valorDe(p?.rendaBrutaMensal) || valorDe(p?.contracheques?.[0]?.bruto) || 0;
+  const comRenda = ps.filter(tem);
+  const maior = comRenda.reduce((m: any, p: any) => (!m || renda(p) > renda(m) ? p : m), null);
+  const primeiro = ps.find((x) => x.ordem === 1) || null;
+  const tomador = maior && primeiro && renda(maior) > renda(primeiro) ? maior : primeiro;
+  const outros = ps.filter((x) => x !== tomador);
   const incluir = outros.filter(tem), fora = outros.filter((x) => !tem(x));
   const semCpf = [tomador, ...incluir].filter((x) => x && String(x.cpf || '').length !== 11);
   const segurar = !tomador ? 'o card não tem o 1º participante na ficha'
@@ -461,13 +470,48 @@ const valorDe = (v: any): number | null => {
 
 /** Tela "Informações da Operação" da Avaliação de Risco (Fabio 31/10): PRICE, TR, garantia = alienação fiduciária, prazo máximo (240; outro só quando o
  *  cliente pede — ajuste "prazo" da CAIXA), imóvel e crédito da proposta do card, prestação necessária = 30% da renda BRUTA de quem entra na avaliação. Pura. */
-export function operacaoDaAvaliacao(cf: Cf, pessoas: any[], prazoPedido?: number | null): Record<string, any> | string {
+export function operacaoDaAvaliacao(cf: Cf, pessoas: any[], prazoPedido?: number | null, fh?: { pediuPrice?: boolean } | null): Record<string, any> | string {
   const imovel = valorDe(cf.valor_imovel), credito = valorDe(cf.valor_credito);
   const renda = pessoas.reduce((t, p) => t + (valorDe(p?.rendaBrutaMensal) || valorDe(p?.contracheques?.[0]?.bruto) || 0), 0);
   if (!imovel || !credito) return 'valor do imóvel ou do crédito vazio no card';
   if (!renda) return 'renda bruta vazia na ficha';
+  if (fh) return operacaoFh(cf, { imovel, credito, renda, prazoPedido, pediuPrice: !!fh.pediuPrice });
   return { portabilidade: 'NAO', origem: 'CAIXA', prazo: prazoPedido && prazoPedido > 0 ? Math.round(prazoPedido) : 240, valorImovel: imovel, valorFinanciamento: credito,
     rendaBruta: Math.round(renda * 100) / 100, prestacao: Math.round(renda * 0.3 * 100) / 100, garantia: 'alienacao fiduciaria', amortizacao: 'PRICE', indexador: 'TR' };
+}
+
+/** Imóvel NOVO no Financiamento (Fabio 02/11: "caso o imóvel seja novo, deverá gerar um push para a equipe e não rodar o crédito, apenas fazer o cadastro"):
+ *  card marcado como novo, ou vendedor pessoa jurídica (construtora/incorporadora) na ficha do vendedor. Sem ficha do vendedor = usado. Pura. */
+export function imovelNovo(cf: Cf): boolean {
+  if (/\bnovo|lancamento|na planta/.test(String(cf.condicao_imovel || cf.imovel_novo_usado || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())) return true;
+  const { ehPessoaJuridica } = require('./doc-review.service') as typeof import('./doc-review.service');
+  return (Array.isArray(cf._fichaVendedor?.pessoas) ? cf._fichaVendedor.pessoas : []).some((p: any) => ehPessoaJuridica(p?.nome) || String(p?.cnpj || '').replace(/\D/g, '').length === 14);
+}
+
+/** Enquadramento do imóvel USADO na CAIXA (Fabio 02/11, prints da Avaliação de Riscos): MCMV outras classes (FGTS, "NPMCMV- FS - Imóvel Usado Individual"),
+ *  MCMV Classe Média (FGTS, "PMCMV - Imóvel Usado Individual - Classe Média") ou SBPE ("CCSBPE SFH - TR - Aquisição de Imóvel Residencial Usado").
+ *  Limites do programa (renda bruta familiar / valor do imóvel) — CONFIRMAR com o Fabio; fora deles é SBPE. */
+export const MCMV_LIMITES = { outrasClasses: { renda: 8_600, imovel: 350_000 }, classeMedia: { renda: 12_000, imovel: 500_000 } };
+/** Taxa anual usada SÓ pra estimar a 1ª parcela da SAC e decidir SAC x PRICE (não vai pra CAIXA). */
+const TAXA_ESTIMADA = { SBPE: 0.12, MCMV_CM: 0.105, MCMV: 0.085 };
+export const PRAZO_MAX_FH = 420;
+
+/** Tela "Informações da Operação" do Financiamento Habitacional, imóvel usado. Amortização (Fabio 02/11): SAC é o padrão; PRICE quando a 1ª parcela da SAC
+ *  passa da prestação que a renda comporta (30% da renda bruta — cliente de renda mais baixa, pra alcançar o valor do financiamento) ou quando o cliente pediu PRICE. Pura. */
+function operacaoFh(cf: Cf, v: { imovel: number; credito: number; renda: number; prazoPedido?: number | null; pediuPrice: boolean }): Record<string, any> | string {
+  if (imovelNovo(cf)) return 'imóvel NOVO — no Financiamento a CAIXA fica só com o cadastro; a avaliação do imóvel novo é com a equipe (Fabio 02/11)';
+  const faixa = v.renda <= MCMV_LIMITES.outrasClasses.renda && v.imovel <= MCMV_LIMITES.outrasClasses.imovel ? 'MCMV'
+    : v.renda <= MCMV_LIMITES.classeMedia.renda && v.imovel <= MCMV_LIMITES.classeMedia.imovel ? 'MCMV_CM' : 'SBPE';
+  const prazo = v.prazoPedido && v.prazoPedido > 0 ? Math.min(Math.round(v.prazoPedido), PRAZO_MAX_FH) : (Number(String(cf.prazo_financ || '').match(/(\d+)\s*mes/)?.[1]) || PRAZO_MAX_FH);
+  const prestacao = Math.round(v.renda * 0.3 * 100) / 100;
+  const i = Math.pow(1 + TAXA_ESTIMADA[faixa], 1 / 12) - 1;
+  const sac1 = Math.round((v.credito / prazo + v.credito * i) * 100) / 100;
+  const amortizacao = v.pediuPrice || sac1 > prestacao ? 'PRICE' : 'SAC';
+  const porque = v.pediuPrice ? 'o cliente pediu PRICE' : sac1 > prestacao ? `a 1ª parcela estimada na SAC (R$ ${sac1.toLocaleString('pt-BR')}) passa dos 30% da renda (R$ ${prestacao.toLocaleString('pt-BR')})` : `SAC cabe na renda (1ª parcela estimada R$ ${sac1.toLocaleString('pt-BR')})`;
+  const base = { fh: true, portabilidade: 'NAO', prazo, valorImovel: v.imovel, valorFinanciamento: v.credito, rendaBruta: Math.round(v.renda * 100) / 100, prestacao, amortizacao, amortizacaoPorque: porque, indexador: 'TR', garantia: 'alien. fiduc. - imoveis residenciais urbanos' };
+  if (faixa === 'SBPE') return { ...base, enquadramento: 'SBPE', origem: 'SBPE', modalidade: 'aquisicao de imovel residencial usado - individual', produto: `ccsbpe ${v.imovel > 1_500_000 ? 'sfi' : 'sfh'} - tr - aquisicao de imovel residencial usado` };
+  if (faixa === 'MCMV_CM') return { ...base, enquadramento: 'MCMV Classe Média', origem: 'FGTS', modalidade: 'aquisicao de imovel usado', produto: 'pmcmv - imovel usado individual - classe media' };
+  return { ...base, enquadramento: 'MCMV (outras classes)', origem: 'FGTS', modalidade: 'aquisicao de imovel usado', produto: 'npmcmv- fs - imovel usado individual' };
 }
 
 /** Botão "Fazer cadastro" do painel CAIXA (Fabio 31/10: "preciso de um botão também para fazer o cadastro do cliente quando não rodar sozinho"):
