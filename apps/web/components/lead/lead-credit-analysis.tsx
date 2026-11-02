@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { ExternalLink, FileText, Landmark, Play, Square, Star } from 'lucide-react';
+import { ExternalLink, FileText, Landmark, Play, Send, Square, Star } from 'lucide-react';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
 import { toast } from '@/components/ui/toast';
@@ -25,6 +25,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   const [force, setForce] = useState(false);
   const [notify, setNotify] = useState(false);
   const [simBusy, setSimBusy] = useState<string | null>(null);
+  const [fwdId, setFwdId] = useState<string | null>(null);
   const { data: simDocs } = useQuery<SimDoc[]>({
     queryKey: ['sim-docs', leadId],
     queryFn: async () => (await api.get('/api/credit-analysis/simulation-docs', { params: { leadId } })).data,
@@ -94,6 +95,21 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao pedir a análise', 'error');
     } finally { setRerunKey(null); }
+  }
+
+  // "Encaminhar aprovação ao cliente" (Fabio 02/11): só os dados DESTA proposta, com o botão "Seguir com esta", + o PDF da simulação quando o banco tem.
+  async function forward(a: Analysis) {
+    const bank = BANKS.find((x) => x.key === a.bank)?.short || a.bank;
+    const temPdf = a.bank === 'INTER' || a.bank === 'CREDIMORAR';
+    if (fwdId || !window.confirm(`Encaminhar ao cliente, pelo WhatsApp, a aprovação do ${bank}${a.approvedValue ? ` (${formatCurrency(a.approvedValue)})` : ''}${temPdf ? ' e o PDF da simulação' : ''}?`)) return;
+    setFwdId(a.id);
+    try {
+      const { data: r } = await api.post(`/api/credit-analysis/${a.id}/forward`, { leadId });
+      toast(r.pdf === 'pedido' ? 'Aprovação enviada; o PDF da simulação sai em 1–2 min' : r.pdf === 'andamento' ? 'Aprovação enviada; o PDF da simulação já estava sendo gerado' : r.pdf === 'outra' ? 'Aprovação enviada (sem PDF: a extensão só baixa a proposta maior/escolhida desse banco)' : 'Aprovação enviada ao cliente', 'success');
+      refresh(); onChanged?.();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui encaminhar a proposta', 'error');
+    } finally { setFwdId(null); }
   }
 
   async function choose(a: Analysis) {
@@ -260,10 +276,15 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
                 </div>
               )}
               {(a?.status === 'APPROVED' || a?.status === 'CONDITIONAL') && (
-                <div className="mt-1">
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
                   {a.chosen
                     ? <span className="flex items-center gap-1 text-[11px] text-amber-600"><Star size={10} className="fill-amber-400" /> Proposta escolhida</span>
                     : <button onClick={() => choose(a)} className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded bg-af-mid text-white hover:bg-af-dark"><Star size={10} /> Escolher esta proposta</button>}
+                  {a.approvedValue != null && (
+                    <button onClick={() => forward(a)} disabled={!!fwdId} className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border border-emerald-600 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50" title="Manda ao cliente, pelo WhatsApp, os dados desta proposta (com o botão Seguir com esta) e o PDF da simulação quando o banco tem">
+                      <Send size={10} /> {fwdId === a.id ? 'Encaminhando…' : 'Encaminhar aprovação ao cliente'}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

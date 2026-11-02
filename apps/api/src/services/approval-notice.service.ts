@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type CreditAnalysis } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logActivity } from './activity.service';
 import { callableFirstName } from '../lib/text';
@@ -498,6 +498,31 @@ export function docsImovelDoInter(detail?: string | null): string[] {
   return out;
 }
 
+/** Uma análise aprovada → a opção do aviso (o texto que o cliente vê). */
+function optionFromRow(r: CreditAnalysis, interCondicional: boolean): ApprovalOption {
+  const label: Record<string, string> = { INTER: 'Banco Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+  return {
+    analysisId: r.id,
+    interCondicional,
+    aMenor: /aprovad[oa] a menor/i.test(r.detail || ''),
+    instituicao: label[r.bank] || r.bank,
+    // Creditas: o cliente vê só o valor LÍQUIDO (regra do Fabio) — o total (bruto) não aparece no aviso.
+    valor: money(r.netValue || r.approvedValue) as string,
+    liquido: !!r.netValue,
+    prazo: r.termMonths ? `${r.termMonths} meses` : undefined,
+    taxa: r.rate ? r.rate.replace(/(\d)\.(\d)/g, '$1,$2') : undefined, // 1.40% → 1,40%
+    primeiraParcela: money(r.firstInstallment),
+    ultimaParcela: money(r.lastInstallment),
+    pedido: /aprovad[oa] a menor/i.test(r.detail || '') ? (/pedido:?\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1] : undefined,
+    // Aprovado a menor SEM parcelas segura o aviso só onde a extensão refaz a simulação (Santander). No INTER as parcelas só existem depois que o cliente aceita a proposta no portal
+    // ("Seguir com proposta"): segurar o aviso por isso era um beco sem saída — o cliente nunca ficava sabendo da aprovação (Luiz Fernando e Jézer, 20/10; Fabio: "o CRM deveria dizer que houve aprovação a menor no Inter").
+    incompleta: /aprovad[oa] a menor/i.test(r.detail || '') && !r.firstInstallment && r.bank !== 'INTER',
+    // Fabio 19/10 (Jézer): aprovado a menor no Inter num prazo menor que o máximo → o aviso diz que NO PRAZO veio a menor e aconselha o prazo todo (aprovação melhor).
+    prazoTodo: r.bank === 'INTER' && /aprovad[oa] a menor/i.test(r.detail || '') && r.termMonths && r.termMonths < INTER_MAX_TERM ? `${INTER_MAX_TERM} meses` : undefined,
+    documentos: /aprovad[oa] a menor/i.test(r.detail || '') ? parseDocumentosExigidos(r.detail) || undefined : undefined,
+  };
+}
+
 async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | null> {
   const rows = await prisma.creditAnalysis.findMany({
     // Só os bancos do Home Equity: as linhas do Financiamento (CREDIMORAR_FH, INTER_FH…) têm o aviso próprio (fh-approval) — Pedro Paulo, 29/10.
@@ -525,26 +550,7 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
   const interCondicional = !byBank.has('INTER') && Array.from(ultimo.values()).some((r) => r.bank === 'INTER' && r.status === 'CONDITIONAL' && r.approvedValue == null);
   const options = Array.from(byBank.values())
     .sort((a, b) => (b.netValue || b.approvedValue || 0) - (a.netValue || a.approvedValue || 0))
-    .map((r): ApprovalOption => ({
-      analysisId: r.id,
-      interCondicional,
-      aMenor: /aprovad[oa] a menor/i.test(r.detail || ''),
-      instituicao: label[r.bank] || r.bank,
-      // Creditas: o cliente vê só o valor LÍQUIDO (regra do Fabio) — o total (bruto) não aparece no aviso.
-      valor: money(r.netValue || r.approvedValue) as string,
-      liquido: !!r.netValue,
-      prazo: r.termMonths ? `${r.termMonths} meses` : undefined,
-      taxa: r.rate ? r.rate.replace(/(\d)\.(\d)/g, '$1,$2') : undefined, // 1.40% → 1,40%
-      primeiraParcela: money(r.firstInstallment),
-      ultimaParcela: money(r.lastInstallment),
-      pedido: /aprovad[oa] a menor/i.test(r.detail || '') ? (/pedido:?\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1] : undefined,
-      // Aprovado a menor SEM parcelas segura o aviso só onde a extensão refaz a simulação (Santander). No INTER as parcelas só existem depois que o cliente aceita a proposta no portal
-      // ("Seguir com proposta"): segurar o aviso por isso era um beco sem saída — o cliente nunca ficava sabendo da aprovação (Luiz Fernando e Jézer, 20/10; Fabio: "o CRM deveria dizer que houve aprovação a menor no Inter").
-      incompleta: /aprovad[oa] a menor/i.test(r.detail || '') && !r.firstInstallment && r.bank !== 'INTER',
-      // Fabio 19/10 (Jézer): aprovado a menor no Inter num prazo menor que o máximo → o aviso diz que NO PRAZO veio a menor e aconselha o prazo todo (aprovação melhor).
-      prazoTodo: r.bank === 'INTER' && /aprovad[oa] a menor/i.test(r.detail || '') && r.termMonths && r.termMonths < INTER_MAX_TERM ? `${INTER_MAX_TERM} meses` : undefined,
-      documentos: /aprovad[oa] a menor/i.test(r.detail || '') ? parseDocumentosExigidos(r.detail) || undefined : undefined,
-    }));
+    .map((r) => optionFromRow(r, interCondicional));
   if (!options.length) {
     // Único resultado positivo é o Inter CONDICIONAL (sem valor até receber os documentos): o cliente é avisado do mesmo jeito (Fabio 23/10, Jeane: "o Inter também tem a mesma coisa que o Santander").
     const cond = Array.from(ultimo.values()).filter((r) => r.bank === 'INTER' && r.status === 'CONDITIONAL' && r.approvedValue == null).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
@@ -1042,6 +1048,35 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado das opções de crédito (${preview.options} opç${preview.options === 1 ? 'ão' : 'ões'}) — ${preview.mode === 'text' ? 'texto enviado' : 'template enviado; o texto completo sai quando ele tocar em "Sim, quero saber"'}${docsSent ? '; lista de documentos enviada' : ''}${moved ? `; card movido para ${moved}` : ''}.` } });
   return { ok: true, mode: preview.mode, options: preview.options, docsSent, moved };
+}
+
+/** Botão "Encaminhar aprovação ao cliente" de UMA proposta (Fabio 02/11: "encaminho os dados e simulação, quando houver, daquela proposta"): manda só os dados dela, com o botão
+ *  "Seguir com esta", e pede o PDF da simulação dela quando o banco tem. Não move o card nem manda a lista de documentos — é a equipe escolhendo o que encaminhar. */
+export async function forwardApprovalToClient(p: { accountId: string; leadId: string; analysisId: string; userId?: string; io?: any }): Promise<{ ok: boolean; error?: string; pdf?: 'pedido' | 'andamento' | 'outra' | null }> {
+  const r = await prisma.creditAnalysis.findFirst({ where: { id: p.analysisId, leadId: p.leadId, accountId: p.accountId } });
+  if (!r || r.dryRun || !['APPROVED', 'CONDITIONAL'].includes(r.status)) return { ok: false, error: 'Essa proposta não está aprovada.' };
+  if (r.approvedValue == null) return { ok: false, error: 'A proposta aprovou, mas ainda sem os números (a extensão está lendo): espere o valor aparecer.' };
+  const [opt] = await withPayoff(p.leadId, await withHolders(p.leadId, [optionFromRow(r, false)]));
+  if (opt.incompleta) return { ok: false, error: `${opt.instituicao}: aprovado a menor sem a 1ª e a última parcela. Clique em "Conferir" nesse banco antes de encaminhar.` };
+  if (!(await whatsappWindowOpen(p.leadId))) return { ok: false, error: 'A conversa está fechada (24 h sem mensagem do cliente) e o WhatsApp só aceita template: use o "Avisar cliente".' };
+  const sent = await sendApprovalSummary(p, renderApprovalText([opt]), renderApprovalParts([opt]));
+  if (!sent.success) return { ok: false, error: sent.error || 'Falha ao enviar' };
+  // PDF: só Santander e Inter têm (o da Creditas está desligado), e a extensão baixa a aprovada MAIOR do banco (⭐ primeiro) — se a encaminhada não é ela, não pede (o PDF seria de outra proposta).
+  let pdf: 'pedido' | 'andamento' | 'outra' | null = null;
+  const inst = r.bank === 'CREDIMORAR' ? 'SANTANDER' : r.bank === 'INTER' ? 'INTER' : '';
+  if (inst) {
+    const doBanco = await prisma.creditAnalysis.findMany({ where: { leadId: p.leadId, bank: r.bank, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, chosen: true, approvedValue: true, proposalNumber: true } });
+    const top = [...doBanco].sort((a, b) => Number(!!b.chosen) - Number(!!a.chosen) || (Number(b.approvedValue) || 0) - (Number(a.approvedValue) || 0))[0];
+    if (top && (top.id === r.id || (!!r.proposalNumber && top.proposalNumber === r.proposalNumber))) {
+      const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+      const s = await requestSimulationDocs(prisma, { accountId: p.accountId, leadId: p.leadId, institutions: [inst], userId: p.userId, source: 'USER' }).catch((e: any) => { console.error('[Encaminhar] PDF da simulação:', e?.message); return null; });
+      pdf = s?.created.length ? 'pedido' : s?.skipped.length ? 'andamento' : null;
+    } else pdf = 'outra';
+  }
+  await sendOutroCanalAviso(p);
+  // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Proposta ${opt.instituicao}${r.proposalNumber ? ` nº ${r.proposalNumber}` : ''} encaminhada ao cliente pela equipe${pdf === 'pedido' ? ', com o PDF da simulação pedido à extensão' : pdf === 'outra' ? ' (sem PDF: a extensão baixa a proposta maior/escolhida desse banco)' : ''}.` } }).catch(() => {});
+  return { ok: true, pdf };
 }
 
 // ─── Aviso de "não aprovado" (Fabio 14/10) ───────────────────────────────────────────────────────────────

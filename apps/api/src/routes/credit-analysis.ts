@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getScopeDepartmentIds } from '../services/department.service';
-import { previewApprovalNotice, sendApprovalNoticeNow } from '../services/approval-notice.service';
+import { previewApprovalNotice, sendApprovalNoticeNow, forwardApprovalToClient } from '../services/approval-notice.service';
 import { sendRejectionAndClose } from '../services/credit-auto.service';
 import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.service';
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
@@ -388,6 +388,17 @@ router.post('/:id/choose', async (req: AuthRequest, res: Response) => {
     emit(req);
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao escolher a proposta', 400); }
+});
+
+// Botão "Encaminhar aprovação ao cliente" de cada proposta aprovada (Fabio 02/11): só os dados dela + o PDF da simulação, quando o banco tem.
+router.post('/:id/forward', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || '');
+    const out = await forwardApprovalToClient({ accountId: req.user!.accountId, leadId, analysisId: req.params.id, userId: req.user!.id, io: io(req) });
+    if (!out.ok) return res.status(400).json({ error: out.error });
+    emit(req, { leadId });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao encaminhar a proposta ao cliente'); }
 });
 
 export default router;
