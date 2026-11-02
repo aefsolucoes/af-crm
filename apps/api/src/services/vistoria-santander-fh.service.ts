@@ -83,7 +83,7 @@ export function textoPedidoDados(nome: string, itens: string[], doisCompradores:
   if (itens.includes('contato')) l.push(`${++n}. O contato de quem vai receber o engenheiro no imóvel: se tiver corretor, o nome e o telefone do corretor; se não, o nome e o telefone do vendedor`);
   if (itens.includes('vendedor')) l.push(`${++n}. Do vendedor: e-mail, telefone e profissão`);
   if (itens.includes('conta')) l.push(`${++n}. A conta do vendedor pra receber o valor: banco, agência, conta (com dígito) e se é corrente ou poupança, e o nome do titular`);
-  if (itens.includes('contaComprador')) l.push(`${++n}. ${doisCompradores ? 'A conta de um dos compradores' : 'Sua conta'} no ${banco} (agência e conta com dígito): é nela que as parcelas são debitadas. Se ainda não tiver conta no ${banco}, abra pelo app do ${banco} e me mande os dados`);
+  if (itens.includes('contaComprador')) l.push(`${++n}. ${doisCompradores ? 'A conta de um dos compradores' : 'Sua conta'} no ${banco} (agência e conta com dígito): é nela que as parcelas são debitadas. Se ainda não tiver conta no ${banco}, abra pelo app do ${banco}${banco === 'Santander' ? ' (ou pelo link https://abrasuaconta.santander.com.br)' : ''} e me mande os dados`);
   if (itens.includes('comprador')) l.push(`${++n}. ${doisCompradores ? 'A profissão e o e-mail de cada comprador' : 'Sua profissão e seu e-mail'}`);
   if (itens.includes('imovel')) l.push(`${++n}. O endereço completo do imóvel (rua, número, complemento, bairro e CEP) e se é casa ou apartamento`);
   l.push('', 'Pode mandar tudo numa mensagem só, do jeito que for mais fácil. 🙂');
