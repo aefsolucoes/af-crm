@@ -21,11 +21,43 @@ import { buildSharedAiContext, buildContextBlocks, aiEmailsContext, EMAIL_RELAY_
 
 const ROLE_FRAMING = `Você é um coach de vendas ajudando um vendedor da A&F Soluções Financeiras a responder um cliente pelo WhatsApp. Sugira o que ELE deveria escrever agora — você não fala com o cliente, o vendedor vai revisar e decidir se manda.`;
 
+// Em JSON (02/11): em texto puro o modelo às vezes devolvia a ORIENTAÇÃO pro vendedor ("Já que … o cliente quer saber …, responda direto … sem entrar em detalhes que ele
+// não perguntou") colada na mensagem, e o balão mostrava isso como se fosse o texto a mandar. Fica no código (não é regra editável da Base) porque o parser depende dele.
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
-Responda SOMENTE com o texto da mensagem sugerida — sem aspas, sem explicação, sem markdown.`;
+Responda SOMENTE com um JSON, sem markdown: {"mensagem": "texto exato que o vendedor vai mandar ao cliente"}
+- "mensagem" é a mensagem PRONTA, na voz do vendedor, falando COM o cliente ("você"). Nunca escreva orientação pro vendedor ("responda…", "diga a ele…", "explique que…", "sem entrar em detalhes…"), nem fale DO cliente em 3ª pessoa ("o cliente quer…", "ela perguntou…"), nem o seu raciocínio. Nada fora do JSON.
+- Mensagens curtas do cliente em sequência formam UMA pergunta só: leia junto com o que a equipe acabou de responder antes de interpretar (uma pergunta do cliente não é uma afirmação).
+- Não afirme fato do processo (prazo, etapa, documento, quando algo "sai") que não esteja no material de referência ou no histórico. Na dúvida, diga que confirma e já retorna.`;
 
 export interface ReplySuggestion {
   suggestion: string;
+}
+
+/** Orientação pro VENDEDOR no lugar da mensagem ao cliente (02/11). Complementa `pareceRaciocinio` só aqui: a sugestão passa pela revisão de alguém, então barrar a mais
+ *  só custa uma nova tentativa. Pura (testável). true = não é mensagem pro cliente. */
+export function pareceOrientacaoAoVendedor(texto: string): boolean {
+  const t = String(texto || '');
+  return [
+    /\b(responda|diga|explique|pergunte|informe|oriente|avise)\b[^.!?\n]{0,40}\b(a ele|a ela|ao cliente|[àa] cliente|ao lead|pra ele|pra ela|para ele|para ela)\b/i,
+    /\bresponda (direto|diretamente|de forma|sobre|objetivamente)\b/i,
+    /\bque (ele|ela|o cliente|a cliente) n[aã]o perguntou\b/i,
+    /\b(sugiro|recomendo)\b[^.!?\n]{0,20}\b(responder|dizer|mandar|enviar|explicar|perguntar)\b/i,
+    /\bo vendedor\b/i,
+    /^\s*(j[aá] que|como|uma vez que)\b[^.!?\n]{0,80}\b(o|a) cliente\b/im,
+  ].some((re) => re.test(t));
+}
+
+/** Lê o JSON da sugestão. null = fora do formato (sem JSON, sem "mensagem", ou com cara de raciocínio/orientação) — nunca devolve o texto cru. Pura (testável). */
+export function parseSuggestion(raw: string): string | null {
+  const m = /\{[\s\S]*\}/.exec(String(raw || ''));
+  if (!m) return null;
+  let j: any;
+  try { j = JSON.parse(m[0]); } catch { return null; }
+  const msg = typeof j?.mensagem === 'string' ? j.mensagem.trim() : '';
+  if (!msg) return null;
+  const { pareceRaciocinio } = require('./ai-shared.service') as typeof import('./ai-shared.service');
+  if (pareceRaciocinio(msg) || pareceOrientacaoAoVendedor(msg)) return null;
+  return msg;
 }
 
 /** Gera 1 sugestão de resposta pro colaborador, com base no histórico recente
@@ -85,7 +117,7 @@ ${buildContextBlocks(ctx)}${emailsProcesso ? `\n\n${emailsProcesso}` : ''}`;
           // erro intermitente do "Sugerir resposta").
           max_tokens: 2048,
           system: systemPrompt,
-          messages: [{ role: 'user', content: 'Sugira a próxima resposta.' }],
+          messages: [{ role: 'user', content: attempt === 1 ? 'Sugira a próxima resposta.' : 'Sugira a próxima resposta. Lembrete: SOMENTE o JSON {"mensagem": "..."}, com a mensagem pronta falando COM o cliente — sem orientação pro vendedor e sem raciocínio.' }],
         }),
       });
       if (!response.ok) {
@@ -94,13 +126,20 @@ ${buildContextBlocks(ctx)}${emailsProcesso ? `\n\n${emailsProcesso}` : ''}`;
         continue;
       }
       const data = await response.json() as { content: { type: string; text?: string }[]; stop_reason?: string };
-      const raw = data.content?.find((b) => b.type === 'text')?.text?.trim() || '';
+      // Todos os blocos de texto (o JSON pode vir depois de um texto solto).
+      const raw = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').trim();
       if (!raw) {
         console.error(`[AI Suggest-reply] Resposta sem texto usável (tentativa ${attempt}/2): stop_reason=${data.stop_reason}, blocos=${JSON.stringify(data.content?.map((b) => b.type))}`);
         if (attempt === 2) return null;
         continue;
       }
-      return { suggestion: stripOpeningInterjection(raw) };
+      const msg = parseSuggestion(raw);
+      if (!msg) {
+        console.warn(`[AI Suggest-reply] fora do formato / orientação no lugar da mensagem (tentativa ${attempt}/2):`, raw.slice(0, 200));
+        if (attempt === 2) return null;
+        continue;
+      }
+      return { suggestion: stripOpeningInterjection(msg) };
     }
     return null;
   } catch (err) {

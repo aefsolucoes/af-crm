@@ -90,7 +90,7 @@ router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
   try {
     const result = await generateReplySuggestion(req.user!.accountId, leadId);
     if (!result) {
-      res.status(422).json({ error: 'Não consegui gerar uma sugestão agora (sem histórico de conversa, ou IA indisponível).' });
+      res.status(422).json({ error: 'Não consegui gerar uma sugestão agora (sem histórico de conversa, IA indisponível ou a resposta saiu fora do formato) — tente de novo.' });
       return;
     }
     res.json(result);
