@@ -68,15 +68,13 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
   if (PV_RE.test(`${r.status}\n${r.texto}`)) {
     // 1ª ou 2ª autorização, com o motivo da CAIXA ("Grupo Fam. Alt.", "Renda Alterada" — Fabio 02/11: a renda/o grupo familiar mudou desde a avaliação em outro correspondente).
     const motivoPv = ((/([^\n]*autoriza[cç][aã]o do PV[^\n]*)/i.exec(`${r.status}\n${r.texto}`) || [])[1] || '').replace(/^.*?(RESULTADO:[^—]*—\s*)/, '').trim();
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A CAIXA pede AUTORIZAÇÃO DO PV (agência)${motivoPv ? ` — "${motivoPv}"` : ''}: o cliente já rodou crédito em outro correspondente e os dados mudaram desde então (renda/grupo familiar) — não é nome sujo. Solicite a autorização à agência para seguir com a avaliação. O CRM avisa o cliente sozinho.` } }).catch(() => {});
-    sendPushToAccount(accountId, { title: `⚠️ ${l.name}: pedir autorização à agência (PV)`, body: (motivoPv || 'A CAIXA pede a autorização do PV').slice(0, 120), leadId }).catch(() => {});
-    // Aviso ao cliente (Fabio 01/11: "Sim, mandar sozinho"), uma vez por proposta.
+    // Fabio 02/11: com autorização do PV NÃO se avisa mais o cliente — só push pro COLABORADOR responsável pelo card (sem responsável, pra conta), uma vez por proposta.
     const proposta = (/C[oó]digo Proposta\s*\t?\s*(\d{5,})/i.exec(r.texto) || /Proposta\s+(\d{5,})/i.exec(r.texto) || [])[1] || '?';
-    const atual = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as Cf | null)?._caixaResultado?.pvAviso;
-    if (atual?.proposta !== proposta) {
-      await salvar(leadId, (x) => { x.pvAviso = { status: 'PENDING', proposta, at: new Date().toISOString() }; });
-      await avisarPvCliente(accountId, leadId).catch((e) => console.error('[CAIXA PV] aviso ao cliente:', e?.message));
-    }
+    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true, customFields: true } });
+    if ((lead?.customFields as Cf | null)?._caixaResultado?.pvAviso?.proposta === proposta) return;
+    await salvar(leadId, (x) => { x.pvAviso = { status: 'SO_EQUIPE', proposta, at: new Date().toISOString() }; });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A CAIXA pede AUTORIZAÇÃO DO PV (agência)${motivoPv ? ` — "${motivoPv}"` : ''} na proposta ${proposta}: o cliente já rodou crédito em outro correspondente e os dados mudaram desde então (renda/grupo familiar) — não é nome sujo. Solicite a autorização à agência para seguir com a avaliação. O cliente NÃO é avisado (Fabio 02/11).` } }).catch(() => {});
+    sendPushToAccount(accountId, { title: `⚠️ ${l.name}: pedir autorização à agência (PV)`, body: (motivoPv || 'A CAIXA pede a autorização do PV').slice(0, 120), leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
     return;
   }
   sendPushToAccount(accountId, { title: `🏦 ${l.name}: resultado da avaliação CAIXA`, body: r.status.slice(0, 120), leadId }).catch(() => {});
