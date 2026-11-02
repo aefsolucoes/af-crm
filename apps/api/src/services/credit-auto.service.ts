@@ -88,7 +88,7 @@ async function aiReadiness(leadId: string): Promise<{ ready: boolean; reason: st
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-sonnet-5', max_tokens: 2000,
-      system: `Você é a IA de um correspondente bancário (crédito com garantia de imóvel, Home Equity). Decida se a PROPOSTA do cliente já pode ir para a ANÁLISE DE CRÉDITO nos bancos. Está pronta quando: os dados essenciais estão completos (nome, CPF, nascimento, renda, e-mail, telefone, valor do imóvel, valor do crédito, prazo, endereço do imóvel) e fazem sentido juntos (valores plausíveis, crédito dentro do que o imóvel comporta, nada que pareça erro de preenchimento) e NÃO há pergunta nossa pendente ao cliente sobre o preenchimento, nem ele pediu pra esperar, corrigir ou cancelar. Pergunta pendente sobre a DOCUMENTAÇÃO do imóvel (habite-se, certidão de ônus, matrícula, escritura) ou qualquer dúvida que não muda os dados da proposta NÃO segura a análise: isso é da fase de documentação (Eva, 14/10: ficou 1 h parada esperando a resposta do habite-se). Regras dos bancos (quem recusa é a extensão, não você): crédito mínimo R$ 50 mil; imóvel mínimo R$ 150 mil (Creditas) / R$ 200 mil (Inter) / R$ 144 mil se for TERRENO no Santander; crédito até ~58–60% do valor do imóvel. Esses limites NÃO são motivo pra dizer que a proposta não está pronta: cada banco recusa só o seu limite e os outros seguem (Solange 14/10: a IA barrou a proposta toda por causa do mínimo de 2 bancos) — marque ready=false só por dado faltando, incoerente ou pergunta pendente. NÃO questione datas nem escolha de bancos. Responda SÓ com JSON: {"ready":true|false,"reason":"motivo curto em português"}.`,
+      system: `Você é a IA de um correspondente bancário (crédito com garantia de imóvel, Home Equity). Decida se a PROPOSTA do cliente já pode ir para a ANÁLISE DE CRÉDITO nos bancos. Está pronta quando: os dados essenciais estão completos (nome, CPF, nascimento, renda, e-mail, telefone, valor do imóvel, valor do crédito, prazo, endereço do imóvel) e fazem sentido juntos (valores plausíveis, crédito dentro do que o imóvel comporta, nada que pareça erro de preenchimento) e NÃO há pergunta nossa pendente ao cliente sobre o preenchimento, nem ele pediu pra esperar, corrigir ou cancelar. Pergunta pendente sobre a DOCUMENTAÇÃO do imóvel (habite-se, certidão de ônus, matrícula, escritura) ou qualquer dúvida que não muda os dados da proposta NÃO segura a análise: isso é da fase de documentação (Eva, 14/10: ficou 1 h parada esperando a resposta do habite-se). Pergunta nossa sobre o TROCO ou sobre o SALDO DEVEDOR (confirmar o troco, o cliente ainda vai ver o valor certinho que falta pra quitar) também NÃO segura: a pré-análise roda no valor da proposta, o saldo exato só é pedido depois da aprovação e, se o cliente corrigir o troco, o CRM refaz a análise sozinho (Fabio 02/11: 2 cards ficaram 1 dia parados por isso). Regras dos bancos (quem recusa é a extensão, não você): crédito mínimo R$ 50 mil; imóvel mínimo R$ 150 mil (Creditas) / R$ 200 mil (Inter) / R$ 144 mil se for TERRENO no Santander; crédito até ~58–60% do valor do imóvel. Esses limites NÃO são motivo pra dizer que a proposta não está pronta: cada banco recusa só o seu limite e os outros seguem (Solange 14/10: a IA barrou a proposta toda por causa do mínimo de 2 bancos) — marque ready=false só por dado faltando, incoerente ou pergunta pendente. NÃO questione datas nem escolha de bancos. Responda SÓ com JSON: {"ready":true|false,"reason":"motivo curto em português"}.`,
       messages: [{ role: 'user', content: `PROPOSTA:\n${proposal.content.slice(0, 3500)}\n\nCARD:\n${card}\n\nCONVERSA DEPOIS DA PROPOSTA:\n${recent.map((m) => `${m.direction === 'INBOUND' ? 'CLIENTE' : 'NÓS'}: ${String(m.content).slice(0, 220)}`).join('\n') || '(nada ainda)'}` }],
     }),
   }).catch(() => null);
@@ -127,6 +127,17 @@ async function descartarPorIdade(accountId: string, l: { id: string; name: strin
 /** Bancos do Home Equity que o automático roda neste card: tira os que ficaram de fora (`_bancosFora`: recusados pelo cliente ou não combinados com ele — Fabio 30/10). */
 export const bancosAuto = (cf: Cf): string[] => { const fora: string[] = Array.isArray(cf._bancosFora) ? cf._bancosFora : []; return BANKS.filter((b) => !fora.includes(b)); };
 
+/** Versão das regras da conferência (aiReadiness): subir quando a regra muda faz os cards que a IA desistiu de conferir serem reconferidos UMA vez. */
+const READINESS_V = 2;
+/** Card em que a IA desistiu (6 conferências "precisa de atenção") volta a ser conferido quando o cliente manda mensagem nova depois da última conferência
+ *  (Fabio 02/11: o cliente respondeu/corrigiu e a análise nunca saía) ou uma vez quando a regra da conferência muda. */
+async function reconferirDesistencia(leadId: string, cf: Cf): Promise<boolean> {
+  if (Number(cf._autoReadyV || 1) < READINESS_V) return true;
+  const desde = cf._autoCheckedAt ? new Date(cf._autoCheckedAt) : null;
+  if (!desde) return true;
+  return !!(await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', deleted: false, createdAt: { gt: desde } }, select: { id: true } }));
+}
+
 /** 1) Cards novos na Pré-Análise: a IA confere os dados e, estando certos, pede as análises nos 3 bancos. */
 async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
   const leads = await prisma.lead.findMany({
@@ -141,7 +152,8 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
     if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
-    if (cf._autoStartedAt || cf._autoGiveUp) continue;
+    if (cf._autoStartedAt) continue;
+    if (cf._autoGiveUp && !(await reconferirDesistencia(l.id, cf))) continue;
     if (await descartarImovelRural(accountId, l, cf, io).catch((e) => { console.error('[Imóvel rural]', e?.message); return false; })) continue;
     // TRIAGEM DE IDADE NA ENTRADA (Fabio 17/10, Admir de 75 anos: o CRM sabia que o Inter e o Santander barravam e deixou o card parado, com e-mails inúteis aos bancos).
     if (await descartarPorIdade(accountId, l, cf, io).catch((e) => { console.error('[Triagem de idade]', e?.message); return false; })) continue;
@@ -153,8 +165,9 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
     const verdict = await aiReadiness(l.id).catch(() => null);
     if (!verdict) { await saveCf(l.id, { _autoCheckedAt: new Date().toISOString() }); continue; }
     if (!verdict.ready) {
+      if (cf._autoGiveUp) { await saveCf(l.id, { _autoCheckedAt: new Date().toISOString(), _autoReadyV: READINESS_V }); continue; } // reconferência depois da desistência: sem nota nova
       if (checks >= AI_CHECK_MAX) {
-        await saveCf(l.id, { _autoChecks: checks, _autoCheckedAt: new Date().toISOString(), _autoGiveUp: true });
+        await saveCf(l.id, { _autoChecks: checks, _autoCheckedAt: new Date().toISOString(), _autoGiveUp: true, _autoReadyV: READINESS_V });
         await addNote(l.id, `🤖 Análise automática NÃO iniciada: a IA acha que a proposta precisa de atenção — ${verdict.reason}. Depois de acertar, rode a análise na aba Análise de Crédito.`);
       } else {
         await saveCf(l.id, { _autoChecks: checks, _autoCheckedAt: new Date().toISOString() });
@@ -167,7 +180,7 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
     if (combinado === 'ERRO') continue; // a leitura falhou: tenta de novo no próximo minuto
     const bancos = combinado ? BANKS.filter((b) => !combinado.fora.includes(b)) : BANKS;
     const out = bancos.length ? await createRequests(prisma, { accountId, leadIds: [l.id], banks: bancos, dryRun: false, force: false }) : { created: 0 };
-    await saveCf(l.id, { _autoStartedAt: new Date().toISOString(), _autoChecks: checks });
+    await saveCf(l.id, { _autoStartedAt: new Date().toISOString(), _autoChecks: checks, _autoGiveUp: false });
     const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
     await addNote(l.id, `🤖 Análise automática iniciada ${combinado ? (bancos.length ? `só no ${bancos.map((b) => label[b]).join(', ')} (bancos combinados com o cliente)` : 'sem banco automático (nenhum combinado com o cliente)') : 'nos 3 bancos'} (a IA conferiu que os dados da proposta estão certos: ${verdict.reason || 'ok'}). ${out.created} pedido(s) na fila pras extensões.`);
     if (combinado) await bc.aplicarCombinado(accountId, l.id, l.name, combinado, io).catch((e: any) => console.error('[Bancos combinados]', e?.message));
