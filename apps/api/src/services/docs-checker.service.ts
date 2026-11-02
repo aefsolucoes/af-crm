@@ -455,7 +455,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     const novos = review.problemas.filter((p) => !ditos.has(chave(p)));
     if (novos.length || opts.force) {
       const alvo = novos.length ? novos : review.problemas;
-      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docProblemsTold: Array.from(new Set([...ditos, ...alvo.map(chave)])) } as any } });
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docProblemsTold}', ${JSON.stringify(Array.from(new Set([...ditos, ...alvo.map(chave)])))}::jsonb, true) WHERE id = ${leadId}`;
       const texto = `${buildDocProblemsMessage({ ...review, problemas: alvo }).replace(/\n\nAssim que você reenviar, eu confiro de novo!$/, '')}${faltaTxt}\n\nAssim que você mandar, eu confiro de novo!`;
       const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA achou problema em documento: ${alvo.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}.${faltando.length ? ` Ainda falta: ${faltando.join('; ')}.` : ''} ${sent.success ? 'Cliente avisado do que corrigir.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: avise o cliente.'}` } }).catch(() => {});
@@ -472,7 +472,9 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       const resumo = verdict.faltando.join('; ');
       const cf = (lead.customFields || {}) as Record<string, unknown>;
       if (cf._docsFaltando !== resumo || opts.force) {
-        await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docsFaltando: resumo } as any } });
+        // Só a chave, por SQL: `cf` é de ANTES do pedido do saldo devedor lá em cima — regravar o card inteiro apagava o `_saldoDevedor` e o `troco` que ele acabou de gravar
+        // (01/11: o troco sumiu e o saldo foi somado de novo ao valor aprovado, que já incluía a quitação).
+        await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsFaltando}', ${JSON.stringify(resumo)}::jsonb, true) WHERE id = ${leadId}`;
         // IA ligada: cobra o que falta (uma vez por lista); desligada: quem conversa é a equipe — só nota no card.
         let cobrou = false;
         if (lead.aiAutoReplyActive) {
@@ -518,7 +520,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   const obsCertidao = ressalvas.length && !cfR._ressalvaCertidaoAt
     ? `\n\nSobre a matrícula/certidão do imóvel que você enviou: ela veio ${ressalvas.includes('CONSULTA') ? 'como "consulta" (não é a certidão oficial)' : 'com mais de 30 dias'}. A gente aceita, mas quem decide é o banco: se ele não aceitar essa versão, a gente emite uma nova pra você pelo cartório digital. Se isso acontecer, eu te aviso. 🙂`
     : '';
-  if (obsCertidao) await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfR, _ressalvaCertidaoAt: new Date().toISOString() } as any } });
+  if (obsCertidao) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_ressalvaCertidaoAt}', ${JSON.stringify(new Date().toISOString())}::jsonb, true) WHERE id = ${leadId}`;
   // Mais de um banco aprovado e nenhuma proposta escolhida: o "recebi tudo" vai junto da pergunta de com qual proposta seguir (Fabio 28/10).
   const perguntouEscolha = !pediuSaldo && lead.aiAutoReplyActive
     ? await (require('./approval-notice.service') as typeof import('./approval-notice.service')).askProposalChoice(accountId, leadId, io, `Recebi toda a documentação, obrigada!${obsCertidao ? obsCertidao.replace(/^\n\n/, ' ') : ''}`).catch((e: any) => { console.error('[Docs] escolha da proposta:', e?.message); return false; })

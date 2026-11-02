@@ -284,9 +284,12 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
     return;
   }
 
+  // Sem troco gravado, o crédito pedido que já é maior que o saldo declarado JÁ INCLUÍA a quitação (mesma regra do pedido lá em cima): o líquido é a diferença — nunca somar o saldo duas vezes.
+  const pedido = st.base || Number(cf2.valor_credito) || 0;
+  const liquidoDoPedido = st.declared > 0 && pedido > st.declared ? Math.round((pedido - st.declared) * 100) / 100 : pedido;
   // O cliente pode ter corrigido o TROCO na conversa depois da pergunta (Fabio 21/10: sempre confirmar o troco): lê as respostas dele em texto antes de somar.
-  const corrigido = await lerTrocoCorrigido(leadId, st.askedAt, st.liquido || st.base || 0).catch(() => null);
-  const base = corrigido?.novoTroco || Number(cf2.troco) || st.liquido || st.base || Number(cf2.valor_credito) || 0; // valor LÍQUIDO que o cliente precisa receber
+  const corrigido = await lerTrocoCorrigido(leadId, st.askedAt, Number(cf2.troco) || st.liquido || liquidoDoPedido || 0).catch(() => null);
+  const base = corrigido?.novoTroco || Number(cf2.troco) || st.liquido || liquidoDoPedido || 0; // valor LÍQUIDO que o cliente precisa receber
   // Aprovação A MENOR (Fabio 26/10): não adianta somar saldo + troco e refazer — o banco não aprova mais. O CRM só CALCULA o troco (aprovado − saldo do print) e passa ao cliente.
   const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(leadId);
   if (am.aMenor && am.valor > 0) {
