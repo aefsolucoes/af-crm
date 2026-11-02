@@ -60,7 +60,7 @@ async function segurarPosAvaliacao(leadId: string, motivo: string): Promise<void
   sendPushToAccount(l.accountId, { title: `✋ ${l.name}: alterar cadastro CAIXA?`, body: `${motivo} — crédito já rodado, a equipe decide`.slice(0, 160), leadId }).catch(() => {});
 }
 
-const participantesDa = (cf: Cf): any[] => {
+export const participantesDa = (cf: Cf): any[] => {
   // Sem ficha ainda (Fabio 01/11: "a consulta ocorre assim que o cliente indicar querer fazer com a CAIXA e a pergunta dos requisitos saírem", antes dos documentos):
   // nomes e CPFs da proposta (participante_N / cpf_N), só pra consulta.
   const ps = temFicha(cf) ? cf._fichaCadastral.participantes

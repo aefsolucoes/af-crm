@@ -131,11 +131,13 @@ function splitButtons(content: string): { text: string; buttons: string[] } {
  *  assunto (1ª linha "📧 ...", "📋 Proposta..." ou "🔔 Simulação...") do corpo,
  *  pra mostrar num balão próprio com a faixa "por e-mail" — pedido do Fabio
  *  (26/09): tem que dar pra saber de cara que foi por e-mail. */
-function splitEmailContent(content: string): { subject: string; body: string; fromSiteForm: boolean } {
+function splitEmailContent(content: string): { subject: string; body: string; fromSiteForm: boolean; montadaPeloCrm: boolean } {
   const [first, ...rest] = content.split('\n');
   const fromSiteForm = /^(📋|🔔)/.test(first);
   const subject = first.replace(/^📧\s*/, '').trim();
-  return { subject, body: rest.join('\n').replace(/^\n+/, ''), fromSiteForm };
+  // Proposta que o próprio CRM montou com os documentos e as respostas do cliente (proposta-documento.service, Fabio 02/11): entra no canal de e-mail, mas não veio do site.
+  const montadaPeloCrm = /Origem: proposta (montada|REFEITA) pelo CRM/.test(content);
+  return { subject, body: rest.join('\n').replace(/^\n+/, ''), fromSiteForm, montadaPeloCrm };
 }
 
 /** "Nome <email>" (ou só o e-mail) — remetente/destinatário no balão de e-mail (Fabio 30/10). */
@@ -1864,7 +1866,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                             <div className="-mx-3 -mt-2 mb-2 px-3 pt-2 pb-1.5 rounded-t-2xl bg-black/25 border-b border-white/10">
                               <p className="flex items-center gap-1.5 text-[11px] font-semibold text-sky-300">
                                 <Mail size={12} />
-                                {isOut ? 'Enviado por e-mail' : e.fromSiteForm ? 'Recebido por e-mail · formulário do site' : 'Recebido por e-mail'}
+                                {isOut ? 'Enviado por e-mail' : e.montadaPeloCrm ? 'Montada pelo CRM · documentos e respostas do cliente' : e.fromSiteForm ? 'Recebido por e-mail · formulário do site' : 'Recebido por e-mail'}
                               </p>
                               {e.subject && <p className="text-[13px] font-semibold text-[#e9edef] mt-0.5 pr-6">{e.subject.replace(/^(📋|🔔)\s*/, '')}</p>}
                               {msg.email && (msg.email.fromAddress || msg.email.to?.length) ? (
