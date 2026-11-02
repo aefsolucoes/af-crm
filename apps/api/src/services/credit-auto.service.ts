@@ -830,6 +830,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
     for (const s of settings) {
       await startNewLeads(s.accountId, s.enabledAt!, io).catch((e) => console.error('[Análise automática] início:', e?.message));
       await startNewFhLeads(s.accountId, s.enabledAt!).catch((e) => console.error('[Análise automática] Financiamento:', e?.message));
+      { const { processPropostasPorDocumento } = require('./proposta-documento.service') as typeof import('./proposta-documento.service'); await processPropostasPorDocumento(s.accountId, io).catch((e: any) => console.error('[Proposta por documento]', e?.message)); } // cliente que não preencheu: proposta montada com documento + comprovante + respostas (Fabio 02/11)
       { const { processFhNotices } = require('./fh-approval.service') as typeof import('./fh-approval.service'); await processFhNotices(s.accountId, io).catch((e: any) => console.error('[Financiamento] aviso de aprovação:', e?.message)); }
       { const { processFhRejections } = require('./fh-approval.service') as typeof import('./fh-approval.service'); await processFhRejections(s.accountId, io).catch((e: any) => console.error('[Financiamento] negativa:', e?.message)); }
       await cascadeToSecond(s.accountId).catch((e) => console.error('[Análise automática] 2º participante:', e?.message));

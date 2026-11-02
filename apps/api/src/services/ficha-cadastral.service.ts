@@ -177,6 +177,11 @@ async function anexosDaConversa(leadId: string): Promise<Arquivo[]> {
   return rows.map((r) => ({ id: r.driveFileId as string, name: r.fileName, mimeType: r.mimeType, path: 'CONVERSA', size: 0 }));
 }
 
+/** Lê UM documento pessoal (RG/CNH/comprovante…) que o cliente mandou na conversa, pelo arquivo no Drive — usado pela proposta montada com os documentos (proposta-documento.service). */
+export async function lerDocumentoPessoal(accountId: string, f: { driveFileId: string; fileName: string; mimeType: string }): Promise<any | null> {
+  return lerArquivo(accountId, { id: f.driveFileId, name: f.fileName, mimeType: f.mimeType, path: 'CONVERSA', size: 0 });
+}
+
 async function lerArquivo(accountId: string, f: Arquivo): Promise<any | null> {
   const google = await import('./google.service');
   const ehPdf = f.mimeType === 'application/pdf';
