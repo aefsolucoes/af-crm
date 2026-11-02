@@ -247,6 +247,12 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: info.type === 'PROTEGIDO' ? `🔒 "${att.fileName}" está protegido por senha e a IA não consegue abrir. Vou perguntar ao cliente o que é e o arquivo fica na pasta como "VERIFICAR - …" pra você conferir depois.` : `🔒 "${att.fileName}" não pôde ser aberto (protegido por senha ou ilegível). Pelo nome da operadora/concessionária contei como COMPROVANTE DE RESIDÊNCIA (regra do Fabio) — fica na pasta como "VERIFICAR - …": abra com a senha que o cliente mandou e confira a data (até 90 dias) e o titular.` } }).catch(() => {});
     }
   }
+  // A conferência (doc-review) já abriu e leu o arquivo marcado como protegido: não pedia senha — sai da lista (some o "VERIFICAR -" da pasta e o "aguardando verificação" da IA).
+  const revs = (cf._docReview || {}) as Record<string, { resultado?: string; tipo?: string }>;
+  for (const id of Object.keys(protAntes)) {
+    const r = revs[id];
+    if (!relidos.has(id) && r && r.tipo && (r.resultado === 'OK' || r.resultado === 'PROBLEMA')) { relidos.set(id, { type: r.tipo }); changed = true; }
+  }
   if (changed) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const next: Record<string, unknown> = { ...((fresh?.customFields as Record<string, unknown>) || {}), _docInfo: cache };
