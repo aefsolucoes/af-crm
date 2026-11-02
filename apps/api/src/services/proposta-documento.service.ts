@@ -5,8 +5,9 @@ import { prisma } from '../lib/prisma';
  * "me manda uma foto do seu documento pessoal e um comprovante de residência que eu sigo com a pré-análise" (FORM_FIRST_RULES). Antes nada montava a
  * proposta: o card ficava parado e o cliente ainda recebia o "não finalizou" no dia seguinte.
  *  1. Chegou documento com foto (RG/CNH) e comprovante de residência depois da oferta → o CRM lê os dois (lerDocumentoPessoal: nome, CPF, nascimento, endereço).
- *  2. Pergunta numa mensagem só o que falta pra proposta (estado civil — Fabio: "precisaria também do estado civil" —, renda, imóvel, valores, quitado, e-mail,
+ *  2. Pergunta numa mensagem só o que falta pra proposta (estado civil — Fabio: "precisaria também do estado civil" —, imóvel, valores, quitado, e-mail,
  *     cônjuge se casado). O que o card já tem da simulação do site não é perguntado. Prazo: o do card, senão 240 meses (1ª análise sempre no prazo máximo).
+ *     Renda: não pergunta — rendaPelaParcela (parcela do crédito pedido ÷ 30% + R$ 3 mil, Fabio 02/11).
  *  3. Lê as respostas (IA), e com tudo em mãos monta a proposta no MESMO texto da proposta manual do site (montarPropostaManual) e põe na conversa como
  *     as propostas do site por e-mail (INBOUND, canal EMAIL — não abre a janela de 24 h do WhatsApp): o card é preenchido, vai pra Pré-Análise e a análise
  *     automática roda nos bancos como numa proposta normal.
@@ -26,6 +27,15 @@ const ESPERA_RAJADA_MS = 2 * 60_000; // o cliente costuma mandar frente, verso e
 const ESPERA_RESPOSTA_MS = 5 * 60_000;
 const ESPERA_EQUIPE_MS = 30 * 60_000;
 const PRAZO_PADRAO = 240;
+/** Renda da proposta montada pelos documentos (Fabio 02/11): o CRM não pergunta — põe a renda que faz a parcela do crédito pedido caber em 30%, mais R$ 3 mil
+ *  (ex.: parcela de R$ 1.200 → R$ 4.000 de renda → R$ 7.000). Parcela estimada na PRICE (o Home Equity é PRICE), na taxa mais alta dos bancos do HE (Santander ~1,69% a.m.)
+ *  pra renda não ficar curta em nenhum. Pura. */
+const TAXA_HE_MES = 0.0169;
+export function rendaPelaParcela(credito: number, prazo: number): number {
+  if (!(credito > 0) || !(prazo > 0)) return 0;
+  const parcela = (credito * TAXA_HE_MES) / (1 - Math.pow(1 + TAXA_HE_MES, -prazo));
+  return Math.ceil(parcela / 0.3 / 100) * 100 + 3000;
+}
 export const PERGUNTA_PREFIXO = 'Pra eu montar sua proposta';
 const PROPOSTA_MARCAS = ['Proposta preenchida no site', 'PROPOSTA RECEBIDA', 'Preenchi a proposta', 'Proposta manual'];
 
@@ -61,7 +71,7 @@ async function lerRespostas(pergunta: string, falas: string[]): Promise<Cf | nul
     body: JSON.stringify({
       model: 'claude-sonnet-5', max_tokens: 4096,
       system: `Você lê as respostas de um cliente no WhatsApp às perguntas de um correspondente bancário pra montar a proposta de crédito com garantia de imóvel (Home Equity). Extraia SÓ o que o cliente disse — nunca deduza nem invente; o que ele não respondeu = null. Valores em reais como número (ex.: "250 mil" → 250000, "5.500" → 5500). Responda SÓ com JSON:
-{"estadoCivil":"Solteiro(a)|Casado(a)|União estável|Divorciado(a)|Viúvo(a)|null","renda":null,"valorImovel":null,"credito":null,"prazoMeses":null,"tipoImovel":"Casa|Apartamento|Terreno|Sala comercial|Outro|null","imovelMesmoEndereco":true|false|null,"imovelEndereco":{"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"cep":null},"quitado":"Sim|Não|null","saldoDevedor":null,"email":null,"conjuge":{"nome":null,"cpf":null,"nascimento":"dd/mm/aaaa|null"}}`,
+{"estadoCivil":"Solteiro(a)|Casado(a)|União estável|Divorciado(a)|Viúvo(a)|null","valorImovel":null,"credito":null,"prazoMeses":null,"tipoImovel":"Casa|Apartamento|Terreno|Sala comercial|Outro|null","imovelMesmoEndereco":true|false|null,"imovelEndereco":{"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"cep":null},"quitado":"Sim|Não|null","saldoDevedor":null,"email":null,"conjuge":{"nome":null,"cpf":null,"nascimento":"dd/mm/aaaa|null"}}`,
       messages: [{ role: 'user', content: `PERGUNTA QUE FIZEMOS:\n${pergunta}\n\nO QUE O CLIENTE RESPONDEU (em ordem):\n${falas.map((f) => `- ${f}`).join('\n')}` }],
     }),
   }).catch(() => null);
@@ -87,11 +97,11 @@ function juntar(st: Estado, cf: Cf, contato: { email?: string | null; telefone?:
     email: r.email || cf.email_1 || contato.email || '', celular: cf.telefone_1 || contato.telefone || '',
     genero: sexo === 'F' ? 'Feminino' : sexo === 'M' ? 'Masculino' : '', nacionalidade: id.nacionalidade || '',
     naturalidade: id.naturalidade?.cidade ? `${id.naturalidade.cidade}${id.naturalidade.uf ? `/${id.naturalidade.uf}` : ''}` : '',
-    renda: num(r.renda) || num(cf.renda_1) || 0,
     endereco: end,
     imovel: { tipo: r.tipoImovel || cf.tipo_imovel || '', mesmoEndereco: r.imovelMesmoEndereco === true, endereco: imEnd },
     valorImovel: num(r.valorImovel) || num(cf.valor_imovel), credito: num(r.credito) || num(cf.valor_credito),
     prazo: Number(r.prazoMeses) || Number(String(cf.prazo_financ || '').replace(/\D/g, '')) || PRAZO_PADRAO,
+    renda: 0,
     quitado, saldoDevedor: num(r.saldoDevedor) || num(cf.saldo_devedor),
     participante2: casado(r.estadoCivil || id.estadoCivil || cf.estado_civil_1) && r.conjuge?.nome ? { nome: r.conjuge.nome, cpf: r.conjuge.cpf || '', nascimento: r.conjuge.nascimento || '', relacao: 'Cônjuge', compoeRenda: false } : null,
   };
@@ -102,7 +112,6 @@ function faltando(d: ReturnType<typeof juntar>, respondeuImovelMesmo: boolean): 
   const f: string[] = [];
   if (!d.estadoCivil) f.push('estado civil');
   if (casado(d.estadoCivil) && !d.participante2) f.push('nome completo, CPF e data de nascimento do cônjuge');
-  if (!(d.renda > 0)) f.push('renda bruta mensal');
   if (!(d.valorImovel > 0)) f.push('valor aproximado do imóvel');
   if (!(d.credito > 0)) f.push('quanto você precisa de crédito');
   if (!d.imovel.tipo) f.push('se o imóvel é casa, apartamento ou terreno');
@@ -186,6 +195,7 @@ async function processarUm(accountId: string, l: { id: string; name: string; cus
 
   const contato = { email: l.contact?.email || null, telefone: cf.telefone_1 || l.contact?.phone || l.contact?.whatsappPhone || null };
   const dados = juntar(st, cf, contato);
+  dados.renda = rendaPelaParcela(dados.credito, dados.prazo);
   const respondeuImovel = st.respostas?.imovelMesmoEndereco === false && !!st.respostas?.imovelEndereco;
   const { montarPropostaManual } = require('./assistant-actions.service') as typeof import('./assistant-actions.service');
   let falta = faltando(dados, respondeuImovel);
