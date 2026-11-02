@@ -36,6 +36,7 @@ export interface Analysis {
 }
 export interface OverrideData {
   valorImovel?: string; valorEmprestimo?: string; renda?: string; prazo?: string; rendaParticipante?: string; inverter?: boolean;
+  soTitular?: boolean; // o CRM marca: o outro participante não alcança, pela idade, o mínimo do banco e fica fora (02/11)
 }
 /** 00000000000 / 000.000.000-00 → 000.000.000-00 (outro formato fica como está; vazio = ''). */
 /** Mesma pessoa? Nome no portal do banco costuma vir abreviado ("Rafaela Andrade" x "Rafaela Aparecida de Andrade"): igual se o 1º e o último nome batem (Fabio 15/10: aparecia "(2º participante)" sem existir 2º). */
@@ -77,6 +78,7 @@ export function overrideSummary(o?: OverrideData): string {
   return [
     o.valorImovel ? `imóvel ${o.valorImovel}` : '', o.valorEmprestimo ? `financ. ${o.valorEmprestimo}` : '', o.renda ? `renda ${o.renda}` : '',
     o.rendaParticipante ? `renda 2º ${o.rendaParticipante}` : '', o.prazo ? `prazo ${o.prazo}` : '', o.inverter ? 'participantes invertidos' : '',
+    o.soTitular ? 'só o titular (o outro fora pela idade)' : '',
   ].filter(Boolean).join(' · ');
 }
 

@@ -51,6 +51,7 @@ function onlyChanges(lead: BoardLead, form: OverrideData): OverrideData {
     out[k] = v;
   }
   if (form.inverter) out.inverter = true;
+  if (form.soTitular) out.soTitular = true; // marcado pelo CRM pela idade: salvar o ajuste não pode devolver quem ficou fora
   return out;
 }
 

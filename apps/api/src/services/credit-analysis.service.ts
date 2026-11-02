@@ -330,7 +330,8 @@ export function creditasAgeBlockText(people: AgePerson[]): string | null {
   // 27/10 (Ildefonso, cônjuge Odília com 75 anos e 10 meses): "75 anos" em anos inteiros passava aqui e o SERVIDOR da Creditas quebrava no "Continuar" (HTTP 500 "reading 'field'", sem aviso na tela).
   // Vale idade + prazo mínimo (60 meses) até 80 anos para CADA pessoa — quem já fez 75 não passa.
   const velhos = people.filter((x) => x.age !== null && (x.age > 75 || (x.max !== null && x.max < PRAZO_MINIMO_HOME_EQUITY)));
-  if (!velhos.length) return null;
+  // Fabio 02/11: com alguém dentro do limite, o mais velho sai da análise (alignHolderByAge → soTitular) e roda só o outro; barra só quando ninguém passa.
+  if (!velhos.length || velhos.length < people.length) return null;
   return `a Creditas não aceita participante com 75 anos ou mais (pagador e cônjuge: idade + prazo mínimo de ${PRAZO_MINIMO_HOME_EQUITY} meses passa de 80 anos): ${velhos.map((x) => `${x.name} (${x.age} anos)`).join(', ')}.`;
 }
 const creditasAgeBlock = async (db: Db, leadId: string) => { const people = await agePeople(db, leadId); return creditasAgeBlockText(people) || ageTermBlockText('Creditas', people); };
@@ -349,8 +350,13 @@ async function alignHolderByAge(db: Db, accountId: string, leadId: string, bank:
   const inverted = (ov?.data as any)?.inverter === true;
   const ok = (x: AgePerson) => bank === 'INTER' ? (x.age === null || (x.age >= 18 && x.age <= 69)) : (x.max === null || x.max >= PRAZO_MINIMO_HOME_EQUITY);
   const [first, second] = inverted ? [people[1], people[0]] : [people[0], people[1]];
-  if (!holderNeedsSwap(first, second, ok)) return;
-  await setOverrides(db, { accountId, leadId, banks: [bank], data: { inverter: !inverted }, merge: true, userName: 'Análise automática (idade)' }).catch(() => {});
+  // Fabio 02/11: quem não alcança o mínimo do banco pela idade SAI da análise (não fica nem como 2º participante — o portal confere a idade de cada um e recusa ou corta o prazo)
+  // e roda só no nome do outro. Os dois dentro (ou os dois fora, que o bloqueio por idade já barra) = os dois na análise.
+  const swap = holderNeedsSwap(first, second, ok);
+  const soTitular = swap || (ok(first) && !ok(second));
+  const querInvertido = swap ? !inverted : inverted;
+  if (querInvertido === inverted && soTitular === ((ov?.data as any)?.soTitular === true)) return;
+  await setOverrides(db, { accountId, leadId, banks: [bank], data: { inverter: querInvertido, soTitular }, merge: true, userName: 'Análise automática (idade)' }).catch(() => {});
 }
 
 /** SEMPRE TENTAR NO MESMO CPF QUE APROVOU O CLIENTE (Fabio 15/10): ao rodar de novo (valor novo, saldo devedor…), cada banco que já aprovou alguém usa de titular o MESMO CPF dessa aprovação —
@@ -1399,6 +1405,7 @@ export async function setLeadAutoPause(db: Db, p: { accountId: string; leadId: s
 // ─── Ajustes do cliente na análise (inverter titular, valores, renda, prazo) ───
 export interface OverrideData {
   valorImovel?: string; valorEmprestimo?: string; renda?: string; prazo?: string; rendaParticipante?: string; inverter?: boolean;
+  soTitular?: boolean; // roda só no nome do titular: o outro participante não alcança o mínimo do banco pela idade (Fabio 02/11)
 }
 const OVERRIDE_TEXT_KEYS = ['valorImovel', 'valorEmprestimo', 'renda', 'prazo', 'rendaParticipante'] as const;
 
@@ -1410,6 +1417,7 @@ export function cleanOverride(input: Record<string, any> | null | undefined): Ov
     if (v !== undefined && v !== null && String(v).trim() !== '') out[k] = String(v).trim().slice(0, 40);
   }
   if (input?.inverter === true) out.inverter = true;
+  if (input?.soTitular === true) out.soTitular = true;
   return out;
 }
 
@@ -1445,6 +1453,7 @@ export async function setOverrides(db: Db, p: { accountId: string; userId?: stri
   const parts = [
     ...OVERRIDE_TEXT_KEYS.filter((k) => d[k]).map((k) => `${OVERRIDE_LABEL[k]}: ${d[k]}`),
     d.inverter ? 'titular e 2º participante invertidos' : '',
+    d.soTitular ? 'só no nome do titular (o outro participante não alcança, pela idade, o mínimo do banco e fica fora da análise)' : '',
   ].filter(Boolean);
   const where = banks.map((b) => BANKS[b].label).join(', ');
   await db.note.create({
