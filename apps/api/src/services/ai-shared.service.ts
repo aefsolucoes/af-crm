@@ -779,6 +779,8 @@ export async function applyAiExtractedActions(
         const r = await requestProposalChangeForAi(prisma as any, accountId, leadId, action.simulate);
         await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? `🤖 A IA pediu uma NOVA PROPOSTA a pedido do cliente (${pedido}): ${r.detail}. O resultado segue pro cliente sozinho.` : `🤖 A IA quis rodar uma nova proposta (${pedido}), mas não deu: ${r.detail}. Resolva à mão.` } }).catch(() => {});
         if (r.ok) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `pediu nova proposta nos bancos (${pedido})` });
+        // Só a nota ninguém via (Claudia, 29/10 → 02/11: a IA prometeu a nova proposta e o cliente esperou 3 dias) — push pra equipe.
+        else (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `⚠️ ${lead.name}: nova proposta não foi pedida`, body: `Cliente pediu ${pedido}; o CRM não conseguiu: ${r.detail}. Rode à mão.`.slice(0, 180), leadId: lead.id }).catch(() => {});
       } catch (e: any) { console.error('[IA] nova proposta com outro prazo/valor falhou:', e?.message); }
     }
 

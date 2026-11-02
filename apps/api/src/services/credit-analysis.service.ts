@@ -1974,8 +1974,10 @@ export async function requestProposalChangeForAi(db: Db, accountId: string, lead
   if (prazo) data.prazo = String(prazo);
   if (valor) data.valorEmprestimo = fmtBRL(valor).replace('R$ ', '');
   await setOverrides(db, { accountId, leadId, banks: bancos, data, merge: true, userName: 'IA (pedido do cliente)' });
-  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: bancos, dryRun: false, kind: 'RUN', source: CHANGE_ROW_SOURCE, force: true, alignApproval: true });
-  if (!r.created) return { ok: false, detail: 'já havia análise em andamento' };
+  // queueIfBusy (Fabio 02/11, Claudia): a conferência que a própria IA pediu minutos antes ainda rodava e o pedido de R$ 60 mil foi descartado ("já havia análise em
+  // andamento") — a IA disse que ia rodar e ninguém rodou por 3 dias. Agora o pedido entra na fila e roda quando a extensão terminar.
+  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: bancos, dryRun: false, kind: 'RUN', source: CHANGE_ROW_SOURCE, force: true, alignApproval: true, queueIfBusy: true });
+  if (!r.created) return { ok: false, detail: 'já havia uma rodada esperando na fila' };
   const ped = [prazo && `${prazo} meses`, valor && fmtBRL(valor)].filter(Boolean).join(' e ');
   { // o que o cliente pediu, em palavras: entra no aviso ("rodei a nova proposta com o prazo de 180 meses…")
     const f = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
