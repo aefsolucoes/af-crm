@@ -66,8 +66,10 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   // "2ª autorização do PV" (Fabio 01/11): o cliente rodou crédito mais de uma vez, com correspondentes diferentes — o colaborador pede a autorização à agência.
   if (PV_RE.test(`${r.status}\n${r.texto}`)) {
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ A CAIXA pede a 2ª AUTORIZAÇÃO DO PV (agência): o cliente rodou crédito mais de uma vez, com correspondentes diferentes (não é nome sujo). Solicite a autorização à agência para seguir com a avaliação. O CRM avisa o cliente e pergunta se ele encaminhou a documentação a outro correspondente.' } }).catch(() => {});
-    sendPushToAccount(accountId, { title: `⚠️ ${l.name}: pedir autorização à agência (PV)`, body: 'A CAIXA pede a 2ª autorização do PV: solicite à agência para seguir com a avaliação.', leadId }).catch(() => {});
+    // 1ª ou 2ª autorização, com o motivo da CAIXA ("Grupo Fam. Alt.", "Renda Alterada" — Fabio 02/11: a renda/o grupo familiar mudou desde a avaliação em outro correspondente).
+    const motivoPv = ((/([^\n]*autoriza[cç][aã]o do PV[^\n]*)/i.exec(`${r.status}\n${r.texto}`) || [])[1] || '').replace(/^.*?(RESULTADO:[^—]*—\s*)/, '').trim();
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A CAIXA pede AUTORIZAÇÃO DO PV (agência)${motivoPv ? ` — "${motivoPv}"` : ''}: o cliente já rodou crédito em outro correspondente e os dados mudaram desde então (renda/grupo familiar) — não é nome sujo. Solicite a autorização à agência para seguir com a avaliação. O CRM avisa o cliente sozinho.` } }).catch(() => {});
+    sendPushToAccount(accountId, { title: `⚠️ ${l.name}: pedir autorização à agência (PV)`, body: (motivoPv || 'A CAIXA pede a autorização do PV').slice(0, 120), leadId }).catch(() => {});
     // Aviso ao cliente (Fabio 01/11: "Sim, mandar sozinho"), uma vez por proposta.
     const proposta = (/C[oó]digo Proposta\s*\t?\s*(\d{5,})/i.exec(r.texto) || /Proposta\s+(\d{5,})/i.exec(r.texto) || [])[1] || '?';
     const atual = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as Cf | null)?._caixaResultado?.pvAviso;
@@ -161,6 +163,6 @@ A conversa estava fechada e o CRM chamou o cliente pelo template de atualizaçã
   }
   if (pv?.status !== 'ENVIADO' || !pv.enviadoAt || Date.now() - Date.parse(pv.enviadoAt) > 3 * 86_400_000) return '';
   return `--- CADASTRO DA CAIXA BLOQUEADO (aviso enviado ao cliente; Fabio 01/11) ---
-O CRM avisou o cliente que o cadastro na CAIXA ficou bloqueado porque o crédito também foi rodado por outro correspondente (a CAIXA pede a 2ª autorização da agência), que isso impacta na aprovação e pode bloquear o cadastro, e perguntou — só pra nossa informação — se ele encaminhou a documentação a outro correspondente. NÃO é restrição no nome nem reprovação: nunca diga isso.
+O CRM avisou o cliente que o cadastro na CAIXA ficou bloqueado porque o crédito também foi rodado por outro correspondente (a CAIXA pede a autorização da agência), que isso impacta na aprovação e pode bloquear o cadastro, e perguntou — só pra nossa informação — se ele encaminhou a documentação a outro correspondente. NÃO é restrição no nome nem reprovação: nunca diga isso.
 Quando ele responder a essa pergunta: agradeça em 1 frase e diga que a equipe está cuidando da autorização junto à CAIXA. Não prometa prazo nem aprovação, não peça documento por isso e não critique o outro correspondente.`;
 }
