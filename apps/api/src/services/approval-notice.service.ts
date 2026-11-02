@@ -1109,6 +1109,27 @@ export function approvalPairs(text: string): { inst: string; val: string; nome: 
   })).filter((x) => x.inst && x.val);
 }
 
+/** Aprovações AVISADAS ao cliente que não têm análise aprovada no CRM com o mesmo banco e valor (Fabio 02/11, Ricardo: a equipe preencheu a Creditas à mão no card em 12/10 e mandou o aviso —
+ *  a aba Financiamento não mostrava nada). Uma por banco + valor, a mais recente primeiro. */
+export async function avisosSemAnalise(leadId: string, aprovadas: { bank: string; approvedValue: unknown; netValue: unknown }[]): Promise<{ inst: string; val: string; prazo: string; parcela: string; at: Date }[]> {
+  const msgs = await prisma.message.findMany({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' } }, orderBy: { createdAt: 'desc' }, take: 20, select: { content: true, createdAt: true } });
+  const bancoDe = (inst: string) => (/creditas/i.test(inst) ? 'CREDITAS' : /inter\b/i.test(inst) ? 'INTER' : /santander|credimorar/i.test(inst) ? 'CREDIMORAR' : '');
+  const num = (v: unknown) => Number(v) || 0;
+  const out: { inst: string; val: string; prazo: string; parcela: string; at: Date }[] = [];
+  for (const m of msgs) {
+    for (const b of flat(m.content || '').split('📋 Resumo da proposta:').slice(1)) {
+      const inst = (b.match(/🏦 Instituição: (.+?)(?= 👤| 💰| ✅| ℹ️| 📅|$)/)?.[1] || '').trim();
+      const val = (b.match(/💰 Valor (?:aprovado|líquido): (R\$ ?[\d.,]+)/)?.[1] || '').trim();
+      if (!inst || !val || out.some((o) => o.inst === inst && o.val === val)) continue;
+      const v = Number(val.replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+      const bank = bancoDe(inst);
+      if (bank && aprovadas.some((a) => a.bank === bank && (Math.abs(num(a.approvedValue) - v) < 1 || Math.abs(num(a.netValue) - v) < 1))) continue;
+      out.push({ inst, val, prazo: (b.match(/📅 Prazo: (\d+\s*(?:meses|anos))/i)?.[1] || '').trim(), parcela: (b.match(/1ª parcela: (R\$ ?[\d.,]+)/)?.[1] || '').trim(), at: m.createdAt });
+    }
+  }
+  return out;
+}
+
 /** TODAS as opções do aviso que ia sair (banco + valor + nome) já foram enviadas ao cliente numa mensagem de aprovação? (últimos 21 dias) */
 export async function approvalAlreadyInChat(leadId: string, text: string): Promise<{ at: Date; preliminar: boolean } | null> {
   const pairs = approvalPairs(text);

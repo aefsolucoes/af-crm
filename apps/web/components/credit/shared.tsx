@@ -91,6 +91,8 @@ export interface LeadAnalyses {
   chosenId: string | null;
   /** A proposta aprovada que o cliente vai seguir (escolhida ou única aprovada) e se a tela deve mostrar só ela (card já depois da aprovação). */
   followed?: Analysis | null; onlyFollowed?: boolean; autoPaused?: boolean;
+  /** Aprovações avisadas ao cliente sem análise aprovada no CRM com o mesmo banco e valor (lançadas à mão no card). */
+  avisosSemAnalise?: { inst: string; val: string; prazo: string; parcela: string; at: string }[];
   overrides?: Partial<Record<Bank, OverrideData>>;
   participants?: { name1: string; name2: string; inverted: boolean };
   extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null; loginNeeded?: boolean }>;

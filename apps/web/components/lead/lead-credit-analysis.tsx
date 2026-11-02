@@ -25,7 +25,6 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   const [force, setForce] = useState(false);
   const [notify, setNotify] = useState(false);
   const [simBusy, setSimBusy] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
   const { data: simDocs } = useQuery<SimDoc[]>({
     queryKey: ['sim-docs', leadId],
     queryFn: async () => (await api.get('/api/credit-analysis/simulation-docs', { params: { leadId } })).data,
@@ -39,7 +38,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     return () => { socket.off('credit_analysis_updated', on); };
   }, [leadId, queryClient]);
 
-  if (!data || (!data.eligible && data.history.length === 0)) return null;
+  if (!data || (!data.eligible && data.history.length === 0 && !data.avisosSemAnalise?.length)) return null;
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['credit-lead', leadId] });
@@ -189,31 +188,39 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
         </div>
       )}
 
-      {data.onlyFollowed && data.followed && (
-        <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
-          <span className="font-medium text-emerald-700">Proposta aprovada que o cliente vai seguir</span>
-          <button onClick={() => setShowAll((v) => !v)} className="text-af-mid hover:underline">{showAll ? 'Mostrar só a aprovada' : 'Ver todas as análises'}</button>
+      {!!data.avisosSemAnalise?.length && (
+        <div className="mb-2 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[11px] text-emerald-800">
+          <div className="font-medium">Aprovação avisada ao cliente sem análise registrada no CRM (lançada à mão no card)</div>
+          {data.avisosSemAnalise.map((v) => (
+            <div key={`${v.inst}-${v.val}`}>{v.inst} · {v.val}{v.prazo ? ` · ${v.prazo}` : ''}{v.parcela ? ` · 1ª parcela ${v.parcela}` : ''} · avisado em {new Date(v.at).toLocaleDateString('pt-BR')}</div>
+          ))}
         </div>
       )}
       <div className="space-y-2">
-        {(data.onlyFollowed && data.followed && !showAll
-          ? (() => {
-              const f = data.followed as Analysis;
-              const bk = BANKS.find((x) => x.key === f.bank);
-              const segundo = !!(f.holderName && data.participants?.name1 && !sameWho(f.holderName, data.participants.name1));
-              return bk ? [{ b: bk, a: f as Analysis | undefined, who: (segundo ? 'p2' : 'p1') as 'p1' | 'p2' }] : [];
-            })()
-          : BANKS.flatMap((b) => {
-              const a1 = data.latestP1?.[b.key], a2 = data.latestP2?.[b.key];
-              // Resultado dos dois participantes no mesmo banco: uma linha pra cada.
-              const itens = a1 && a2 ? [{ a: a1, who: 'p1' as const }, { a: a2, who: 'p2' as const }] : [{ a: data.latest[b.key], who: (a2 && !a1 ? 'p2' : 'p1') as 'p1' | 'p2' }];
-              return itens.map((it) => ({ b, ...it }));
-            })
-        ).map(({ b, a, who }) => {
+        {(() => {
+          // Todos os bancos, sempre (Fabio 02/11: "não apenas a aprovada, igual é hoje"): aprovação, reprovação ou desqualificação de cada um. A proposta que o cliente vai seguir
+          // fica marcada; se a rodada mais nova do banco dela não é ela (pediu outro valor e a nova foi recusada — caso Edson), ela aparece em cima, numa linha só dela.
+          const linhas = BANKS.flatMap((b) => {
+            const a1 = data.latestP1?.[b.key], a2 = data.latestP2?.[b.key];
+            // Resultado dos dois participantes no mesmo banco: uma linha pra cada.
+            const itens = a1 && a2 ? [{ a: a1, who: 'p1' as const }, { a: a2, who: 'p2' as const }] : [{ a: data.latest[b.key], who: (a2 && !a1 ? 'p2' : 'p1') as 'p1' | 'p2' }];
+            return itens.map((it) => ({ b, ...it, seguir: false }));
+          });
+          const f = data.followed;
+          const fb = f ? BANKS.find((x) => x.key === f.bank) : undefined;
+          if (!f || !fb || linhas.some((l) => l.a?.id === f.id)) return linhas;
+          const segundoF = !!(f.holderName && data.participants?.name1 && !sameWho(f.holderName, data.participants.name1));
+          return [{ b: fb, a: f as Analysis | undefined, who: (segundoF ? 'p2' : 'p1') as 'p1' | 'p2', seguir: true }, ...linhas];
+        })().map(({ b, a, who, seguir }) => {
           const hasP2 = Object.keys(data.latestP2 || {}).length > 0;
           const approved = a?.status === 'APPROVED' || a?.status === 'CONDITIONAL';
           const maxParcel = a ? (/parcela m[aá]xima\s*(R\$\s*[\d.]+,\d{2})/i.exec(a.detail || '') || [])[1] : '';
           const second = a?.holderName && data.participants?.name1 && !sameWho(a.holderName, data.participants.name1) ? a.holderName : '';
+          // Rodada nova na fila/rodando/no banco: o último resultado do banco (aprovado, reprovado ou desqualificado) continua à vista até o novo sair (Fabio 02/11).
+          const ehP1 = (h: Analysis) => !h.holderName || !data.participants?.name1 || sameWho(h.holderName, data.participants.name1);
+          const anterior = a && ['REQUESTED', 'RUNNING', 'SENT'].includes(a.status)
+            ? data.history.find((h) => h.bank === b.key && h.id !== a.id && !h.dryRun && h.source !== 'AI_SIM' && ['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED'].includes(h.status) && h.createdAt < a.createdAt && (!hasP2 || (who === 'p1') === ehP1(h)))
+            : undefined;
           // "Carta de aprovação": valor, prazo, taxa, parcelas, nº da proposta e em nome de quem saiu (substitui os campos soltos de Financiamento).
           const letter: [string, string][] = approved && a ? ([
             ['Valor aprovado', a.approvedValue ? formatCurrency(a.approvedValue) : ''],
@@ -226,13 +233,17 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
             ['Proposta nº', a.proposalNumber || ''],
           ] as [string, string][]).filter(([, v]) => v) : [];
           return (
-            <div key={`${b.key}-${who}`} className="text-xs">
+            <div key={`${b.key}-${who}${seguir ? '-seguir' : ''}`} className="text-xs">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-slate-600 font-medium">{b.short}{hasP2 && <span className="font-normal text-slate-400"> · {who === 'p2' ? '2º participante' : '1º participante'}</span>}</span>
                 <div className="flex items-center gap-1.5">
                   <Badge a={a} />
                 </div>
               </div>
+              {a && data.followed?.id === a.id && <div className="text-[11px] text-emerald-700 font-medium mt-0.5">Proposta aprovada que o cliente vai seguir{seguir ? ' — a rodada mais nova deste banco está abaixo' : ''}</div>}
+              {anterior && (
+                <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-500"><span>Resultado anterior</span><Badge a={anterior} /></div>
+              )}
               {second && <div className="text-[11px] text-amber-600 font-medium mt-0.5">{a && (a.status === 'APPROVED' || a.status === 'CONDITIONAL') ? 'Aprovado' : a && a.status === 'REJECTED' ? 'Reprovado' : 'Analisado'} no nome de {second} (2º participante)</div>}
               {letter.length > 0 && (
                 <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] rounded-md bg-white border border-af-border px-2 py-1.5">

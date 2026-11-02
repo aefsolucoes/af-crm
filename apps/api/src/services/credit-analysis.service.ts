@@ -1488,6 +1488,7 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
     overrides: Object.fromEntries(overrides.map((o) => [o.bank, o.data])),
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
     cardProposal: propostaDoCard(cf),
+    avisosSemAnalise: await (require('./approval-notice.service') as typeof import('./approval-notice.service')).avisosSemAnalise(p.leadId, aprovadas).catch(() => []),
   };
 }
 
