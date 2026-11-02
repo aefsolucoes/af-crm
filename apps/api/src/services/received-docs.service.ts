@@ -80,7 +80,26 @@ export function faturaDeOperadora(fileName: string): boolean {
   const n = String(fileName || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\.[a-z0-9]{2,4}$/, '');
   return OPERADORA_RX.test(n);
 }
-const pdfProtegido = (buf: Buffer) => buf.subarray(0, Math.min(buf.length, 4_000_000)).includes('/Encrypt');
+const pdfCriptografado = (buf: Buffer) => buf.includes('/Encrypt');
+const esmImport = new Function('s', 'return import(s)') as (s: string) => Promise<any>;
+/** PDF criptografado nem sempre pede senha: certidão de cartório (matrícula etc.) costuma vir só com a senha de DONO (bloqueia editar/imprimir) e abre normalmente.
+ *  O CRM tratava todo "/Encrypt" como protegido e a IA perguntava ao cliente (Fabio 02/11: "de onde o CRM viu que o arquivo tem senha?"). Abre com o pdf.js:
+ *  só pede senha se ele recusar sem ela. Devolve também o texto (a API da Anthropic pode recusar PDF criptografado — aí a leitura vai pelo texto). */
+async function abrirPdfCriptografado(buf: Buffer): Promise<{ pedeSenha: boolean; abriu: boolean; texto: string }> {
+  try {
+    const pdfjs = await esmImport('pdfjs-dist/legacy/build/pdf.mjs');
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(buf), isEvalSupported: false, useSystemFonts: false, verbosity: 0 }).promise;
+    const partes: string[] = [];
+    for (let i = 1; i <= Math.min(doc.numPages, 6); i++) {
+      const tc = await (await doc.getPage(i)).getTextContent();
+      partes.push(tc.items.map((it: any) => it.str || '').join(' '));
+    }
+    await doc.destroy();
+    return { pedeSenha: false, abriu: true, texto: partes.join('\n').replace(/[ \t]+/g, ' ').trim().slice(0, 15_000) };
+  } catch (e: any) {
+    return { pedeSenha: e?.name === 'PasswordException', abriu: false, texto: '' };
+  }
+}
 
 export async function classifyDocument(accountId: string, att: AttachmentForVision): Promise<DocInfo | null | undefined> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -100,13 +119,15 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
   }
   // PDF pode ter até ~20 MB (a API aceita; a matrícula do ONR do Luiz tinha 5 MB e ficava "não lida" com o teto de 4,5 MB); imagem segue no teto de 5 MB da API.
   if (buffer.length > (isPdf ? 20_000_000 : MAX_VISION_BYTES)) return undefined;
-  // PDF protegido por senha: a IA não abre. Fatura de operadora vale como comprovante de residência (regra do Fabio); o resto fica "não lido".
-  if (isPdf && pdfProtegido(buffer)) return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : { type: 'PROTEGIDO', protegido: true };
+  // PDF que pede senha: a IA não abre. Fatura de operadora vale como comprovante de residência (regra do Fabio); o resto fica "não lido".
+  const protegido = (): DocInfo => (faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : { type: 'PROTEGIDO', protegido: true });
+  const cripto = isPdf && pdfCriptografado(buffer) ? await abrirPdfCriptografado(buffer) : null;
+  if (cripto && cripto.pedeSenha) return protegido();
   const mediaType = isPdf ? 'application/pdf' : mimeType;
   if (!isPdf && !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mediaType)) return undefined;
 
   const source = { type: 'base64', media_type: mediaType, data: buffer.toString('base64') };
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const ler = (conteudo: unknown) => fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
@@ -114,14 +135,22 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
       // por semana (28 chamadas/7 dias) — vale o modelo mais forte. max_tokens folgado: o raciocínio do Sonnet 5 conta no limite e cortava a resposta.
       model: 'claude-sonnet-5',
       max_tokens: 2000,
-      messages: [{ role: 'user', content: [{ type: isPdf ? 'document' : 'image', source }, { type: 'text', text: DOC_PROMPT }] }],
+      messages: [{ role: 'user', content: [conteudo, { type: 'text', text: DOC_PROMPT }] }],
     }),
   });
+  let res = await ler({ type: isPdf ? 'document' : 'image', source });
   if (!res.ok) {
     const corpoErro = (await res.text()).slice(0, 400);
     console.error('[DocsRecebidos] Erro ao ler documento:', res.status, corpoErro.slice(0, 200));
-    if (res.status === 400 && /password/i.test(corpoErro)) return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : { type: 'PROTEGIDO', protegido: true }; // protegido por senha que o /Encrypt não pegou
-    return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : undefined;
+    // Abre sem senha (só senha de dono) mas a API recusou o PDF criptografado: lê pelo texto do arquivo. Sem texto (digitalizado) fica "não lido" — nunca "protegido".
+    if (cripto && cripto.abriu) {
+      if (cripto.texto.length < 80) return undefined;
+      res = await ler({ type: 'text', text: `Texto extraído do PDF "${att.fileName || 'documento'}" (o arquivo abre sem senha):\n${cripto.texto}` });
+      if (!res.ok) { console.error('[DocsRecebidos] Erro ao ler o texto do PDF:', res.status, (await res.text()).slice(0, 200)); return undefined; }
+    } else {
+      if (res.status === 400 && /password/i.test(corpoErro)) return protegido(); // pede senha e o pdf.js não chegou a abrir
+      return faturaDeOperadora(att.fileName || '') ? { type: 'COMPROVANTE DE RESIDENCIA', protegido: true } : undefined;
+    }
   }
   const data = (await res.json()) as { content: { type: string; text?: string }[] };
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').split('\n').map((l) => l.trim()).find((l) => l) || '';
@@ -194,10 +223,18 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = ((lead?.customFields as Record<string, unknown>) || {});
   const cache = { ...((cf._docInfo as Record<string, string>) || {}) };
+  const protAntes = (cf._docsProtegidos || {}) as Record<string, { fileName?: string; relido?: boolean }>;
+  const relidos = new Map<string, DocInfo | null>(); // "PROTEGIDO" de antes de 02/11 (todo PDF criptografado contava): relê 1x — null = segue protegido/não lido
   let changed = false;
   for (const att of atts) {
-    if (cache[att.id]) continue;
+    const relerProtegido = String(cache[att.id] || '').startsWith('PROTEGIDO|') && !!protAntes[att.id] && !protAntes[att.id].relido;
+    if (cache[att.id] && !relerProtegido) continue;
     const info = await classifyDocument(accountId, att).catch(() => undefined);
+    if (relerProtegido) {
+      relidos.set(att.id, info && !info.protegido ? info : null);
+      changed = true;
+      if (!info || info.protegido) continue;
+    }
     if (info === undefined) continue;
     cache[att.id] = info === null ? 'IGNORAR' : `${info.type}|${info.holder || ''}`;
     changed = true;
@@ -214,6 +251,16 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const next: Record<string, unknown> = { ...((fresh?.customFields as Record<string, unknown>) || {}), _docInfo: cache };
     delete next._docTypes;
+    if (relidos.size) {
+      const prot = { ...((next._docsProtegidos || {}) as Record<string, any>) };
+      for (const [id, info] of relidos) {
+        if (!prot[id]) continue;
+        if (!info) { prot[id] = { ...prot[id], relido: true }; continue; }
+        await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ "${prot[id].fileName || id}" abre sem senha (o PDF só bloqueia edição/impressão, comum em certidão de cartório): li como ${docLabel(info)}. O aviso de "protegido por senha" estava errado.` } }).catch(() => {});
+        delete prot[id];
+      }
+      next._docsProtegidos = prot;
+    }
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: next as any } });
   }
   const out: Record<string, DocInfo | null> = {};
