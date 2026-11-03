@@ -132,11 +132,12 @@ export async function processOcorrencias(accountId: string, io?: any): Promise<v
   await (require('./renda-casal.service') as typeof import('./renda-casal.service')).processRendaCasal(accountId, io).catch((e) => console.error('[Renda do casal]', e?.message));
 }
 
-/** Blocos da CAIXA pro prompt da IA da conversa: restrição no nome (abaixo) e cadastro bloqueado pela 2ª autorização do PV. '' se não houver. */
+/** Blocos da CAIXA pro prompt da IA da conversa: restrição no nome (abaixo), cadastro bloqueado pela 2ª autorização do PV e avaliação condicionada. '' se não houver. */
 export async function aiOcorrenciasContext(leadId: string): Promise<string> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (l?.customFields || {}) as Cf;
-  const pv = (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).aiPvContext(cf);
+  const res = require('./caixa-resultado.service') as typeof import('./caixa-resultado.service');
+  const pv = [res.aiPvContext(cf), res.aiCondicionadaContext(cf)].filter(Boolean).join('\n\n');
   const casal = (require('./renda-casal.service') as typeof import('./renda-casal.service')).aiRendaCasalContext(cf);
   const oc = blocoOcorrencias(cf);
   return [oc, pv, casal].filter(Boolean).join('\n\n');

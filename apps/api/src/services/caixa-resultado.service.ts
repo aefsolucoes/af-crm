@@ -87,6 +87,7 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
   if (PROCESSANDO_RE.test(r.status)) { await gravarProcessando(accountId, leadId, l.name, (l.customFields || {}) as Cf, r); return; }
   await salvar(leadId, (x) => { x.status = r.status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 3000); delete x.processando; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Resultado da Avaliação de Risco CAIXA (Formulários Enviados): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
+  if (CONDICIONADA_RE.test(r.status)) await tratarCondicionada(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA condicionada]', e?.message));
   // "2ª autorização do PV" (Fabio 01/11): o cliente rodou crédito mais de uma vez, com correspondentes diferentes — o colaborador pede a autorização à agência.
   if (PV_RE.test(`${r.status}\n${r.texto}`)) {
     // 1ª ou 2ª autorização, com o motivo da CAIXA ("Grupo Fam. Alt.", "Renda Alterada" — Fabio 02/11: a renda/o grupo familiar mudou desde a avaliação em outro correspondente).
@@ -101,6 +102,107 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
     return;
   }
   sendPushToAccount(accountId, { title: `🏦 ${l.name}: resultado da avaliação CAIXA`, body: r.status.slice(0, 120), leadId }).catch(() => {});
+}
+
+// ─── "Avaliação Condicionada" (Fabio 03/11) ───
+// A CAIXA aprova só uma parcela menor ("Valor da prestação Possível"). O CRM calcula o crédito máximo com essa parcela pela conta do simulador do site
+// (HE: taxa da CAIXA por faixa — 20,75% a.a. até R$ 150 mil, 16,2012% acima — com o IOF de 3,4813% somado à base; FH: 10,92% a.a., sem IOF), no cenário
+// mais generoso (Price no prazo máximo: 240 meses no HE, 360 no FH, sem olhar a idade). Abaixo do mínimo (HE R$ 50 mil, FH R$ 100 mil) → avisa o cliente
+// que a parcela aprovada não dá o mínimo (mesmo caminho do aviso do PV: 07h–21h, conversa fechada → template e o texto quando ele responder). No mínimo ou
+// acima → só nota + push pra equipe (alterar a avaliação pra esse valor fica com a equipe).
+const CONDICIONADA_RE = /condicionad/i;
+const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+/** Crédito máximo (líquido) que a parcela paga, no cenário mais generoso. Pura. */
+export function creditoMaximoPelaParcela(parcela: number, he: boolean): number {
+  const price = (taxaAnual: number, n: number) => { const i = taxaAnual / 12 / 100; return (parcela * (1 - Math.pow(1 + i, -n))) / i; };
+  if (!he) return price(10.92, 360);
+  const liquido = (taxaAnual: number) => price(taxaAnual, 240) / (1 + 3.4813 / 100);
+  const faixaCheia = liquido(20.75);
+  return faixaCheia > 150_000 ? liquido(16.2012) : faixaCheia;
+}
+
+export function textoCondicionada(saudacao: string, c: { parcela: number; minimo: number; he: boolean; motivo: boolean }): string {
+  return `Oi${saudacao ? ` ${saudacao}` : ''}, tudo bem? Saiu a resposta da CAIXA: ela aprovou uma parcela de no máximo ${brl(c.parcela)} por mês${c.motivo ? ', por causa de outros compromissos financeiros no seu nome (na CAIXA ou em outros bancos)' : ''}. Com essa parcela, o ${c.he ? 'crédito' : 'financiamento'} ficaria bem abaixo do mínimo de R$ ${c.minimo / 1000} mil, então não conseguimos seguir pela CAIXA neste momento.`;
+}
+
+async function tratarCondicionada(accountId: string, leadId: string, nome: string, texto: string): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  const proposta = (/C[oó]digo Proposta\s*\t?\s*(\d{5,})/i.exec(texto) || /Proposta\s+(\d{5,})/i.exec(texto) || [])[1] || '?';
+  const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  const m = /presta[cç][aã]o\s+poss[ií]vel\s*\t?\s*(?:R\$\s*)?([\d.]+,\d{2})/i.exec(texto);
+  if (!m) {
+    await nota(`🟡 CAIXA condicionada (proposta ${proposta}), mas não achei o "Valor da prestação Possível" na tela. Confira no Caixa Aqui. O cliente NÃO foi avisado.`);
+    return;
+  }
+  const parcela = Number(m[1].replace(/\./g, '').replace(',', '.'));
+  const ant = cf._caixaResultado?.condicionada as Cf | undefined;
+  if (ant?.proposta === proposta && ant?.parcela === parcela) return; // a mesma resposta já foi tratada (consulta repetida)
+  const he = /garantia|EGI/i.test(`${cf._caixaCadastro?.avaliacao?.produto || ''} ${texto}`);
+  const minimo = he ? 50_000 : 100_000;
+  const credito = creditoMaximoPelaParcela(parcela, he);
+  const conta = `a parcela possível de ${brl(parcela)} paga no máximo uns ${brl(Math.floor(credito / 100) * 100)} de ${he ? 'crédito' : 'financiamento'} (Price em ${he ? 240 : 360} meses, com a taxa da CAIXA do simulador do site${he ? ' e o IOF' : ''}; sem contar o limite de idade)`;
+  const base = { proposta, parcela, credito: Math.round(credito), minimo, he, motivo: /compromissos financeiros/i.test(texto), at: new Date().toISOString() };
+  if (credito >= minimo) {
+    await salvar(leadId, (x) => { x.condicionada = { ...base, status: 'SO_EQUIPE' }; });
+    await nota(`🟡 CAIXA condicionada (proposta ${proposta}): ${conta}. Dá o mínimo de R$ ${minimo / 1000} mil, então dá pra alterar a avaliação pra esse valor. O cliente NÃO foi avisado.`);
+    sendPushToAccount(accountId, { title: `🟡 ${nome}: CAIXA condicionada`, body: `Parcela ${brl(parcela)} → até uns ${brl(Math.floor(credito / 1000) * 1000)}. Dá pra alterar a avaliação.`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
+    return;
+  }
+  await salvar(leadId, (x) => { x.condicionada = { ...base, status: 'PENDING' }; });
+  await nota(`🟡 CAIXA condicionada (proposta ${proposta}): ${conta}, abaixo do mínimo de R$ ${minimo / 1000} mil. O CRM avisa o cliente que a parcela aprovada não dá o mínimo.`);
+}
+
+/** Aviso da condicionada ao cliente (poller de 1 min, junto do aviso do PV). STOP total → texto pronto pra equipe. */
+export async function avisarCondicionadaCliente(accountId: string, leadId: string, io?: any): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  const c = cf._caixaResultado?.condicionada as Cf | undefined;
+  if (!lead || !c || (c.status !== 'PENDING' && c.status !== 'TEMPLATE')) return;
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const saudacao = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const texto = textoCondicionada(saudacao, { parcela: Number(c.parcela), minimo: Number(c.minimo), he: !!c.he, motivo: !!c.motivo });
+  const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  const falhou = async (porque: string, titulo: string) => {
+    await salvar(leadId, (x) => { x.condicionada = { ...(x.condicionada || {}), status: 'FALHOU' }; });
+    await nota(`⚠️ CAIXA condicionada: ${porque}. Avise você o cliente. Texto pronto:\n“${texto}”`);
+    sendPushToAccount(accountId, { title: `⚠️ ${lead.name}: ${titulo}`, body: 'Texto pronto na anotação.', leadId }).catch(() => {});
+  };
+  if (cf._autoPaused) return falhou('o card está em STOP TOTAL, então o CRM não mandou sozinho', 'avisar o cliente (CAIXA condicionada)');
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow()) return;
+  const msg = require('./message.service') as typeof import('./message.service');
+  if (await whatsappWindowOpen(leadId)) {
+    const env = await msg.sendOutboundWhatsApp({ accountId, leadId, content: texto, io });
+    if (!env.success) return; // tenta no próximo minuto
+    await salvar(leadId, (x) => { x.condicionada = { ...(x.condicionada || {}), status: 'ENVIADO', enviadoAt: new Date().toISOString() }; });
+    await nota('📨 Avisei o cliente que a CAIXA aprovou uma parcela pequena demais, que não dá o mínimo, e que não dá pra seguir pela CAIXA agora.');
+    return;
+  }
+  if (c.status === 'PENDING') {
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: PV_TEMPLATE, language: 'pt_BR', bodyParams: [saudacao || 'cliente'], previewText: `Oi ${saudacao || 'cliente'}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io });
+    if (!t.success) return falhou(`a conversa está fechada e o template de atualização não saiu (${t.error})`, 'avisar o cliente (CAIXA condicionada)');
+    await salvar(leadId, (x) => { x.condicionada = { ...(x.condicionada || {}), status: 'TEMPLATE', templateAt: new Date().toISOString() }; });
+    await nota('📨 CAIXA condicionada: conversa fechada, mandei o template de atualização. O aviso ao cliente sai quando ele responder.');
+    return;
+  }
+  if (c.templateAt && Date.now() - Date.parse(c.templateAt) > 48 * 3600_000) return falhou('o cliente não respondeu ao template em 48 h', 'avisar o cliente (CAIXA condicionada)');
+}
+
+/** Bloco pra IA da conversa: aviso da condicionada esperando o template, ou enviado há até 3 dias. '' se não houver. Pura. */
+export function aiCondicionadaContext(cf: Cf): string {
+  const c = cf._caixaResultado?.condicionada as Cf | undefined;
+  if (c?.status === 'TEMPLATE') {
+    return `--- CAIXA CONDICIONADA (aviso ainda não enviado) ---
+A conversa estava fechada e o CRM chamou o cliente pelo template de atualização: assim que ele responder, o CRM manda SOZINHO, logo em seguida, a resposta da CAIXA. Agora responda só UMA frase curta de retorno (ex.: "Oi, tudo bem? Já te explico aqui embaixo."), sem falar da CAIXA.`;
+  }
+  if (c?.status !== 'ENVIADO' || !c.enviadoAt || Date.now() - Date.parse(c.enviadoAt) > 3 * 86_400_000) return '';
+  return `--- CAIXA CONDICIONADA (aviso enviado ao cliente; Fabio 03/11) ---
+O CRM avisou o cliente que a CAIXA aprovou uma parcela de no máximo ${brl(Number(c.parcela))} por mês${c.motivo ? ' (por outros compromissos financeiros no nome dele)' : ''} e que, com essa parcela, o ${c.he ? 'crédito' : 'financiamento'} ficaria abaixo do mínimo de R$ ${Number(c.minimo) / 1000} mil, então não dá pra seguir pela CAIXA agora. NÃO é restrição no nome: nunca diga isso.
+Quando ele responder: tire dúvidas sobre o que foi dito em 1–2 frases. Se ele perguntar o que dá pra fazer (quitar dívidas, nova análise, outro banco, outro valor), não prometa nada e use "askTeam" com a pergunta dele.`;
 }
 
 /** "Em Processamento": agenda a próxima reconsulta (RECONSULTA_MIN) e, passadas 24 h do envio nesse status, avisa a equipe por push. Só a 1ª vez de cada
@@ -174,12 +276,16 @@ export async function avisarPvCliente(accountId: string, leadId: string, io?: an
   }
 }
 
-/** Poller (vai junto do das ocorrências, a cada minuto): aviso de PV que ficou pra depois. */
+/** Poller (vai junto do das ocorrências, a cada minuto): aviso de PV ou da condicionada que ficou pra depois. */
 export async function processPvAvisos(accountId: string, io?: any): Promise<void> {
   const ids = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
-      AND "customFields"->'_caixaResultado'->'pvAviso'->>'status' IN ('PENDING', 'TEMPLATE') LIMIT 20`;
-  for (const { id } of ids) await avisarPvCliente(accountId, id, io).catch((e) => console.error('[CAIXA PV]', e?.message));
+      AND ("customFields"->'_caixaResultado'->'pvAviso'->>'status' IN ('PENDING', 'TEMPLATE')
+        OR "customFields"->'_caixaResultado'->'condicionada'->>'status' IN ('PENDING', 'TEMPLATE')) LIMIT 20`;
+  for (const { id } of ids) {
+    await avisarPvCliente(accountId, id, io).catch((e) => console.error('[CAIXA PV]', e?.message));
+    await avisarCondicionadaCliente(accountId, id, io).catch((e) => console.error('[CAIXA condicionada]', e?.message));
+  }
 }
 
 /** A equipe põe o aviso do PV no fluxo automático (Fabio 01/11, Jézer: a mensagem manual falhou com a conversa fechada) — template agora, texto quando
