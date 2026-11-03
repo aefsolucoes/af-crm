@@ -433,7 +433,7 @@ export const EMAIL_RELAY_RULES = `E-MAILS DO PROCESSO (Fabio 22/10): abaixo est�
 - NÃO copie o e-mail, NÃO cite nome de consultor/funcionário do banco, nem termos internos do banco, protocolo, número de proposta ou e-mail de engajamento. Se o cliente já foi avisado do mesmo assunto na conversa (veja o histórico), não repita.
 - NÃO repasse por aqui resultado de crédito (aprovado, reprovado, condições): isso segue a regra de aprovação do CRM. E-mail que é só da A&F pro banco (envio de documentos, solicitação de vistoria) não é pro cliente.
 - Se o e-mail pedir algo que você não entendeu bem ou que muda o processo, deixe a equipe resolver (pergunte à equipe) em vez de arriscar.
-- SÓ O BANCO QUE O CLIENTE ESTÁ SEGUINDO (Fabio 03/11: o cliente seguia com o Inter e a IA repassou o "não conseguimos contato pra vistoria" da Creditas): e-mail de outro banco (proposta que ele não escolheu) NUNCA vai pro cliente — nem vistoria, nem pedido de contato ou documento. A equipe resolve com esse banco.`;
+- CADA BANCO NO SEU PROCESSO (Fabio 03/11: a Creditas pediu contato pra vistoria com o laudo DIGITAL do Inter correndo junto e a IA se confundiu): cada e-mail recebido vem marcado com o banco ([INTER], [CREDITAS], [SANTANDER]) pra VOCÊ saber de qual processo é. A equipe pode seguir com mais de um banco ao mesmo tempo, por conta própria. NUNCA misture os processos — o que um banco pede vale só pro processo dele (ex.: a vistoria da Creditas é presencial, com contato pra agendar; o laudo do apartamento no Inter é digital, sem visita). Mas NÃO conte ao cliente de qual banco é nem que estamos seguindo com mais de um banco: repasse só o que ele precisa fazer.`;
 
 /** Texto limpo de um e-mail (corpo sem assinatura, aviso de confidencialidade, citações e imagens), curto. Pura (testável). */
 export function cleanEmailForAi(content: string, max = 750): { subject: string; body: string } {
@@ -460,19 +460,16 @@ export async function aiEmailsContext(leadId: string, opts: { dias?: number; max
     take: Math.max(12, max * 2),
     select: { direction: true, content: true, createdAt: true, externalId: true },
   });
-  // E-mail de OUTRO banco (Fabio 03/11: o cliente segue com o Inter e a IA repassou o "não conseguimos contato pra vistoria" da Creditas): fica de fora do que a IA repassa.
-  const seguido = await bancoSeguidoPeloCliente(leadId).catch(() => null);
+  // Cada e-mail recebido leva o BANCO de onde veio (Fabio 03/11: a Creditas pediu contato pra vistoria e a IA disse só "o banco", com o laudo do Inter — digital — correndo
+  // junto). A equipe pode seguir com mais de um banco ao mesmo tempo: nenhum fica de fora, a IA só não mistura um processo com o outro (EMAIL_RELAY_RULES).
   const remetentes = new Map((await prisma.emailMessage.findMany({ where: { messageId: { in: rows.map((r) => r.externalId).filter((x): x is string => !!x) } }, select: { messageId: true, fromAddress: true } }).catch(() => [])).map((e) => [e.messageId, e.fromAddress || '']));
-  const outros = new Set<string>();
-  const doOutroBanco = (m: { direction: string; content: string; externalId: string | null }) => {
-    if (!seguido || m.direction !== 'INBOUND') return false;
+  const rotuloBanco = (m: { direction: string; content: string; externalId: string | null }) => {
+    if (m.direction !== 'INBOUND') return '';
     const b = bancoDoEmail(`${remetentes.get(m.externalId || '') || ''}\n${m.content}`);
-    if (b && b !== seguido) { outros.add(NOME_BANCO[b]); return true; }
-    return false;
+    return b ? ` [${NOME_BANCO[b]}]` : '';
   };
   const itens = rows
     .filter((m) => /^📧/.test(m.content) && (comEngajamento || !/Engajamento Autom[aá]tico/i.test(m.content.split('\n')[0])))
-    .filter((m) => !doOutroBanco(m))
     // Questionário da contratação do Inter: quem pergunta ao cliente é o inter-questionario.service (Fabio 30/10, Pedro: a IA repassou solto e perguntou "física ou digital", que é sempre digital).
     .filter((m) => !(/question[aá]rio/i.test(m.content) && /vencimento/i.test(m.content) && /im[oó]ve(l|is)\s+(foi\s+|foram\s+)?aprovad|vistoria\s+(foi\s+)?conclu[ií]da|laudo\s+(foi\s+)?conclu[ií]do/i.test(m.content)))
     .slice(0, max)
@@ -481,14 +478,13 @@ export async function aiEmailsContext(leadId: string, opts: { dias?: number; max
       const { subject, body } = cleanEmailForAi(m.content, chars);
       if (!body) return '';
       const quando = m.createdAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-      return `- ${m.direction === 'INBOUND' ? 'RECEBIDO (do banco/consultor)' : 'ENVIADO pela A&F'} em ${quando} — assunto "${subject.slice(0, 90)}": ${body}`;
+      return `- ${m.direction === 'INBOUND' ? 'RECEBIDO (do banco/consultor)' : 'ENVIADO pela A&F'}${rotuloBanco(m)} em ${quando} — assunto "${subject.slice(0, 90)}": ${body}`;
     })
     .filter(Boolean);
-  const aviso = outros.size && seguido ? `(Há e-mail de ${[...outros].join('/')} sobre este cliente, mas ele segue com ${NOME_BANCO[seguido]}: NÃO fale desse e-mail nem desse banco com o cliente — a equipe resolve.)` : '';
-  return itens.length || aviso ? `--- E-MAILS RECENTES DO PROCESSO ---\n${[...itens, aviso].filter(Boolean).join('\n')}` : '';
+  return itens.length ? `--- E-MAILS RECENTES DO PROCESSO ---\n${itens.join('\n')}` : '';
 }
 
-const NOME_BANCO: Record<string, string> = { INTER: 'o Inter', CREDITAS: 'a Creditas', CREDIMORAR: 'o Santander' };
+const NOME_BANCO: Record<string, string> = { INTER: 'INTER', CREDITAS: 'CREDITAS', CREDIMORAR: 'SANTANDER' };
 
 /** De que banco é o e-mail (remetente + texto). null = não dá pra dizer (ex.: e-mail do próprio cliente). Pura (testável). */
 export function bancoDoEmail(texto: string): 'INTER' | 'CREDITAS' | 'CREDIMORAR' | null {
@@ -500,18 +496,6 @@ export function bancoDoEmail(texto: string): 'INTER' | 'CREDITAS' | 'CREDIMORAR'
   return achados.size === 1 ? [...achados][0] : null;
 }
 
-/** Banco com que o cliente está seguindo: a proposta escolhida (⭐); sem escolha, a vistoria/laudo do Inter em andamento; ou o único banco aprovado. */
-export async function bancoSeguidoPeloCliente(leadId: string): Promise<'INTER' | 'CREDITAS' | 'CREDIMORAR' | null> {
-  const aprovadas = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, select: { bank: true, chosen: true } });
-  const escolhida = aprovadas.find((a) => a.chosen);
-  const ok = (b: string | undefined) => (b === 'INTER' || b === 'CREDITAS' || b === 'CREDIMORAR' ? b : null);
-  if (escolhida) return ok(escolhida.bank);
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-  const cf = (lead?.customFields || {}) as Record<string, any>;
-  if (cf.link_laudo_inter || cf._vistoriaRequestedAt || ['AGUARDA_ENGAJAMENTO', 'ENVIADA'].includes(String(cf._vistoriaAi?.status || ''))) return 'INTER';
-  const bancos = [...new Set(aprovadas.map((a) => a.bank))];
-  return bancos.length === 1 ? ok(bancos[0]) : null;
-}
 
 export function buildContextBlocks(ctx: SharedAiContext): string {
   return `--- ${todayContextLine()} ---
