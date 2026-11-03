@@ -131,11 +131,20 @@ export function EmailComposer({
   const [iaDocs, setIaDocs] = useState<PickedFile[]>([]);
   const [criando, setCriando] = useState(false);
   const iaFileInput = useRef<HTMLInputElement>(null);
+  // De qual dia da conversa sai o e-mail (Fabio 03/11: "deve ser a conversa da data atual ou sugerir uma data da conversa"): hoje, se teve conversa; senão o último dia com conversa.
+  const [dias, setDias] = useState<{ date: string; count: number }[] | null>(null);
+  const [diaConversa, setDiaConversa] = useState('');
+  useEffect(() => {
+    if (!iaAberta || !leadId || dias) return;
+    api.get('/api/email/lead-conversation-days', { params: { leadId } })
+      .then(({ data }) => { setDias(data || []); setDiaConversa((data || [])[0]?.date || ''); })
+      .catch(() => setDias([]));
+  }, [iaAberta, leadId, dias]);
   async function criarComIa() {
     setCriando(true);
     try {
       const { data } = await api.post('/api/email/compose-ai', {
-        replyToId, leadId, instruction: iaPedido, to: toValue, subject: subjectValue, draft: body,
+        replyToId, leadId, instruction: iaPedido, to: toValue, subject: subjectValue, draft: body, conversationDate: diaConversa || undefined,
         docs: iaDocs.map((d) => (d.attachmentId ? { attachmentId: d.attachmentId, name: d.name } : d.driveFileId ? { driveFileId: d.driveFileId, name: d.name, type: d.type } : { name: d.name, type: d.type, dataBase64: d.dataBase64 })),
       });
       if (data.to && !toValue.trim()) setToValue(data.to);
@@ -336,6 +345,18 @@ export function EmailComposer({
               <span className="text-[11px] text-violet-500 truncate">{leadId ? 'lê a conversa inteira' : replyToId ? 'lê o e-mail respondido' : ''}{iaDocs.length ? ` + ${iaDocs.length} documento${iaDocs.length > 1 ? 's' : ''}` : ''}</span>
               <button onClick={() => setIaAberta(false)} className="ml-auto text-slate-400 hover:text-slate-600" title="Fechar"><X size={14} /></button>
             </div>
+            {leadId && dias && dias.length > 0 && (
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] text-slate-500 flex-shrink-0">Conversa de</label>
+                <select value={diaConversa} onChange={(e) => setDiaConversa(e.target.value)} className="text-xs px-2 py-1.5 border border-af-border rounded-lg bg-white text-slate-700">
+                  {dias.map((d) => {
+                    const hoje = new Date(Date.now() - 3 * 3_600_000).toISOString().slice(0, 10);
+                    return <option key={d.date} value={d.date}>{d.date === hoje ? 'Hoje' : d.date.split('-').reverse().join('/')} ({d.count} mensage{d.count > 1 ? 'ns' : 'm'})</option>;
+                  })}
+                  <option value="">A conversa inteira</option>
+                </select>
+              </div>
+            )}
             <textarea
               value={iaPedido}
               onChange={(e) => setIaPedido(e.target.value)}

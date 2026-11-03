@@ -456,7 +456,41 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
   }
   // "Resumo" (Fabio 03/11: "preguiça de ler a conversa toda"): a IA lê a conversa inteira + o card e mostra um resumo curto. Pode copiar ou salvar nas anotações.
   const [resumo, setResumo] = useState<null | { loading: boolean; text: string; saved?: boolean }>(null);
-  useEffect(() => { setResumo(null); }, [leadId]);
+  useEffect(() => { setResumo(null); setPapo([]); setPergunta(''); }, [leadId]);
+  // "Converse sobre este cliente" dentro do Resumo (Fabio 03/11): a IA responde com tudo que o CRM sabe dele (conversa, card, análises, documentos, e-mails, anotações)
+  // e pode sugerir a mensagem pro cliente — "Usar na conversa" põe no campo e o envio NÃO desliga a IA do card.
+  const [papo, setPapo] = useState<{ role: 'user' | 'assistant'; text: string; mensagem?: string | null; template?: boolean }[]>([]);
+  const [pergunta, setPergunta] = useState('');
+  const [perguntando, setPerguntando] = useState(false);
+  async function perguntarIa() {
+    const q = pergunta.trim();
+    if (!q || perguntando) return;
+    const historico = papo.map(({ role, text }) => ({ role, text }));
+    setPapo((p) => [...p, { role: 'user', text: q }]);
+    setPergunta('');
+    setPerguntando(true);
+    try {
+      const { data } = await api.post('/api/ai/client-chat', { leadId, pergunta: q, historico });
+      setPapo((p) => [...p, { role: 'assistant', text: data.resposta, mensagem: data.mensagem || null, template: !!data.template }]);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'A IA não respondeu agora — tente de novo', 'error');
+      setPapo((p) => p.slice(0, -1));
+      setPergunta(q);
+    } finally {
+      setPerguntando(false);
+    }
+  }
+  function usarMensagemDoPapo(texto: string) {
+    setContent(texto);
+    setVeioDaIa(true);
+    setResumo(null);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+  function abrirTemplateDoPapo() {
+    setResumo(null);
+    setShowTemplates(true);
+    if (!tplSuggestion && !tplSuggesting) loadTemplateSuggestion();
+  }
   async function abrirResumo() {
     setResumo({ loading: true, text: '' });
     try {
@@ -575,9 +609,15 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
   function useSuggestion() {
     if (!suggestion) return;
     setContent(suggestion);
+    setVeioDaIa(true);
     setSuggestion(null);
     inputRef.current?.focus();
   }
+  // Texto/template que veio de uma SUGESTÃO da IA (Sugerir resposta / chat do Resumo): mandar não desliga a IA do card (Fabio 03/11). Campo esvaziado = volta a ser texto da pessoa.
+  const [veioDaIa, setVeioDaIa] = useState(false);
+  const [tplDaIa, setTplDaIa] = useState(false);
+  useEffect(() => { if (!content.trim()) setVeioDaIa(false); }, [content]);
+  useEffect(() => { setVeioDaIa(false); setTplDaIa(false); }, [leadId]);
 
   // Sugestão de resposta SÓ no clique (Fabio 20/10): antes disparava sozinha a cada mensagem do cliente e ao abrir a conversa — custo de IA à toa. Só o botão "Sugerir resposta" gera.
 
@@ -1019,6 +1059,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
       return;
     }
     const quotedMsg = replyingTo;     // guarda pra restaurar se o envio falhar
+    const manterIa = veioDaIa;
     setSending(true);
     setContent('');                 // feedback imediato: o campo esvazia na hora
     setReplyingTo(null);
@@ -1029,6 +1070,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
         direction: 'OUTBOUND',
         channel,
         leadId,
+        ...(manterIa ? { keepAi: true } : {}),
         ...(quotedMsg
           ? {
               replyToExternalId: quotedMsg.externalId || undefined,
@@ -1254,6 +1296,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     if (!t) return;
     const nums = extractMetaVariables(t.components.find((c) => c.type === 'BODY')?.text || '');
     setPendingMetaTemplate(t);
+    setTplDaIa(true);
     setMetaTemplateVars(Object.fromEntries(nums.map((n) => [n, tplSuggestion.vars[String(n)] || (n === 1 ? (greetingName || leadName) : '')])));
   }
 
@@ -1327,6 +1370,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     const body = template.components.find((c) => c.type === 'BODY')?.text || '';
     const vars = extractMetaVariables(body);
     setPendingMetaTemplate(template);
+    setTplDaIa(false);
     // {{1}} é sempre o nome do cliente por convenção em todos os templates
     // daqui — já vem preenchido pra não esquecer (foi exatamente isso que
     // rejeitou o envio: Meta exige o parâmetro, campo vazio dá erro 131008).
@@ -1352,7 +1396,9 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
         language: pendingMetaTemplate.language,
         bodyParams,
         previewText,
+        ...(tplDaIa ? { keepAi: true } : {}),
       });
+      setTplDaIa(false);
       onNewMessage(data);
       loc([data?.id]);
       setPendingMetaTemplate(null);
@@ -2432,11 +2478,52 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
           cadastra na hora e reenvia sozinho, sem mandar caçar o campo certo. */}
       {resumo && !resumo.loading && (
         <Modal title="Resumo da conversa" onClose={() => setResumo(null)} size="lg">
-          <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed max-h-[60vh] overflow-y-auto">{resumo.text}</p>
-          <div className="flex flex-wrap items-center justify-end gap-2 pt-3">
-            <span className="mr-auto text-[11px] text-slate-400">Feito pela IA — confira o que for decidir.</span>
-            <button onClick={() => { navigator.clipboard.writeText(resumo.text).then(() => toast('Resumo copiado')).catch(() => toast('Não consegui copiar', 'error')); }} className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><Copy size={14} /> Copiar</button>
-            <button onClick={salvarResumo} disabled={!!resumo.saved} className="text-sm px-3 py-2 rounded-lg text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#2261a8' }}>{resumo.saved ? 'Salvo nas anotações' : 'Salvar nas anotações'}</button>
+          <div className="max-h-[70vh] overflow-y-auto space-y-3 pr-1">
+            <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{resumo.text}</p>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span className="mr-auto text-[11px] text-slate-400">Feito pela IA — confira o que for decidir.</span>
+              <button onClick={() => { navigator.clipboard.writeText(resumo.text).then(() => toast('Resumo copiado')).catch(() => toast('Não consegui copiar', 'error')); }} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><Copy size={13} /> Copiar</button>
+              <button onClick={salvarResumo} disabled={!!resumo.saved} className="text-xs px-2.5 py-1.5 rounded-lg text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#2261a8' }}>{resumo.saved ? 'Salvo nas anotações' : 'Salvar nas anotações'}</button>
+            </div>
+            <div className="border-t border-af-border pt-3 space-y-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Pergunte sobre este cliente</p>
+              {papo.map((t, i) => (
+                <div key={i} className={t.role === 'user' ? 'flex justify-end' : ''}>
+                  <div className={`text-sm rounded-lg px-3 py-2 whitespace-pre-wrap ${t.role === 'user' ? 'bg-[#2261a8] text-white max-w-[85%]' : 'bg-slate-100 text-slate-700'}`}>
+                    {t.text}
+                    {t.role === 'assistant' && t.mensagem && (
+                      <div className="mt-2 rounded-md border border-emerald-200 bg-white p-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 mb-1">Mensagem sugerida pro cliente</p>
+                        <p className="text-sm text-slate-700">{t.mensagem}</p>
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {!t.template && <button onClick={() => usarMensagemDoPapo(t.mensagem!)} className="text-xs px-2.5 py-1 rounded-md text-white font-medium bg-emerald-600 hover:bg-emerald-700">Usar na conversa</button>}
+                          {t.template && <button onClick={abrirTemplateDoPapo} className="text-xs px-2.5 py-1 rounded-md text-white font-medium bg-emerald-600 hover:bg-emerald-700">Conversa fechada — sugerir template</button>}
+                          <button onClick={() => { navigator.clipboard.writeText(t.mensagem!).then(() => toast('Mensagem copiada')).catch(() => {}); }} className="text-xs px-2.5 py-1 rounded-md border border-af-border text-slate-600 hover:bg-slate-50">Copiar</button>
+                        </div>
+                      </div>
+                    )}
+                    {t.role === 'assistant' && !t.mensagem && t.template && (
+                      <div className="mt-2"><button onClick={abrirTemplateDoPapo} className="text-xs px-2.5 py-1 rounded-md text-white font-medium bg-emerald-600 hover:bg-emerald-700">Sugerir template pra abrir a conversa</button></div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {perguntando && <div className="flex items-center gap-2 text-xs text-slate-500"><Loader2 size={12} className="animate-spin" /> A IA está olhando tudo do cliente...</div>}
+              <div className="flex items-end gap-2">
+                <textarea
+                  value={pergunta}
+                  onChange={(e) => setPergunta(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); perguntarIa(); } }}
+                  rows={2}
+                  placeholder='Ex.: "Por que esse cliente demorou pra finalizar?" ou "O que mando pra ele agora?"'
+                  className="flex-1 text-sm px-3 py-2 border border-af-border rounded-lg focus:outline-none focus:ring-2 focus:ring-af-accent text-slate-800 resize-none"
+                />
+                <button onClick={perguntarIa} disabled={perguntando || !pergunta.trim()} className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#2261a8' }}>
+                  <Send size={14} /> Perguntar
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400">A IA lê a conversa, o card, as análises, os documentos, os e-mails e as anotações. Ela só responde e sugere — nada vai pro cliente sem você.</p>
+            </div>
           </div>
         </Modal>
       )}
