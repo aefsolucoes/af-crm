@@ -247,7 +247,7 @@ export async function disconnectPersonalMailbox(accountId: string, userId: strin
 
 // ─── Conteúdo ─────────────────────────────────────────────────────────────
 
-function walkStructure(node: MessageStructureObject | undefined, out: { text?: string; html?: string; attachments: { part: string; filename: string; contentType: string; size: number }[] }) {
+function walkStructure(node: MessageStructureObject | undefined, out: { text?: string; html?: string; attachments: { part: string; filename: string; contentType: string; size: number; inline?: boolean }[] }) {
   if (!node) return out;
   if (node.childNodes?.length) {
     for (const child of node.childNodes) walkStructure(child, out);
@@ -258,7 +258,9 @@ function walkStructure(node: MessageStructureObject | undefined, out: { text?: s
   const filename = node.dispositionParameters?.filename || node.parameters?.name;
   const isAttachment = node.disposition === 'attachment' || (!!filename && !type.startsWith('text/'));
   if (isAttachment) {
-    out.attachments.push({ part, filename: filename || 'anexo', contentType: type, size: node.size || 0 });
+    // Imagem embutida no corpo (cid: — assinatura, banner do banco): marca `inline` pra conversa não mostrar como anexo (Fabio 03/11, Rodrigo: os banners da assinatura repetiam a cada resposta).
+    const inline = node.disposition !== 'attachment' && (node.disposition === 'inline' || !!node.id);
+    out.attachments.push({ part, filename: filename || 'anexo', contentType: type, size: node.size || 0, ...(inline ? { inline: true } : {}) });
   } else if (type === 'text/plain' && !out.text) {
     out.text = part;
   } else if (type === 'text/html' && !out.html) {
@@ -352,6 +354,22 @@ async function findLeadFor(accountId: string, addresses: string[], inReplyTo: st
 /** Quem mandou, pra quem e os anexos de cada e-mail da CONVERSA do card (Fabio 30/10: "não está vindo o remetente nos e-mails vinculados ao card; precisa aparecer o anexo e quem enviou").
  *  A mensagem da conversa guarda só assunto + texto; o resto está no e-mail original (EmailMessage, mesmo Message-ID). O mesmo e-mail pode estar em mais de uma caixa: vale o ligado a este card
  *  e, entre eles, o que tem anexo pra baixar. */
+/** Anexos que aparecem no balão da conversa: sem as imagens da assinatura/corpo do e-mail (banners que se repetem a cada resposta — Fabio 03/11) e sem repetidos.
+ *  Imagem pequena (< 300 KB) embutida no corpo (`inline`) ou com nome de imagem embutida do Outlook ("image001.png", leituras antigas sem a marca) fica de fora; foto grande continua. */
+export function anexosDeVerdade<T extends { filename?: string; contentType?: string; size?: number; inline?: boolean }>(lista: T[]): T[] {
+  const vistos = new Set<string>();
+  return lista.filter((a) => {
+    if (!a?.filename) return false;
+    const img = /^image\//i.test(a.contentType || '') || /\.(png|jpe?g|gif|bmp|webp)$/i.test(a.filename);
+    const pequena = !a.size || a.size < 300 * 1024;
+    if (img && pequena && (a.inline || /^(image\d{3,}|outlook-[\w-]+|~wrl\d+)\.(png|jpe?g|gif|bmp)$/i.test(a.filename))) return false;
+    const k = `${a.filename.toLowerCase()}|${a.size || 0}`;
+    if (vistos.has(k)) return false;
+    vistos.add(k);
+    return true;
+  });
+}
+
 export type EmailMeta = { fromName: string | null; fromAddress: string | null; to: Addr[]; cc: Addr[]; attachments: { part: string | null; filename: string; contentType?: string; size?: number }[] };
 export async function emailMetaFor(accountId: string, leadId: string, messageIds: string[]): Promise<Map<string, EmailMeta>> {
   const out = new Map<string, EmailMeta>();
@@ -367,7 +385,7 @@ export async function emailMetaFor(accountId: string, leadId: string, messageIds
     out.set(r.messageId, {
       fromName: r.fromName, fromAddress: r.fromAddress,
       to: ((r.toList as unknown as Addr[] | null) || []), cc: ((r.ccList as unknown as Addr[] | null) || []),
-      attachments: (((r.attachments as any[] | null) || []).filter((a) => a?.filename)).map((a) => ({ part: a.part || null, filename: String(a.filename), contentType: a.contentType, size: a.size })),
+      attachments: anexosDeVerdade((r.attachments as any[] | null) || []).map((a) => ({ part: a.part || null, filename: String(a.filename), contentType: a.contentType, size: a.size })),
     });
   }
   return out;
