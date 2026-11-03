@@ -79,7 +79,7 @@ export interface ReentryVerdict { verdict: 'ANDAMENTO' | 'SEGURAR'; motivo: stri
 const RULES = `REGRA DO FABIO (dono do correspondente bancário): este cliente foi REPROVADO há pouco (últimos 30 dias) e voltou a preencher a proposta. Só vale dar andamento (analisar de novo nos bancos) se a proposta nova mudou algo que possa ALTERAR O RESULTADO.
 - AUMENTAR o valor do crédito NÃO adianta: se o banco não aprovou o valor menor, não aprova o maior.
 - NÃO adianta: mesma proposta de novo, mesmos dados, só mudar prazo, telefone, e-mail, corrigir data de nascimento, número/complemento do endereço do MESMO imóvel, ou renda só um pouco maior.
-- Pode adiantar: crédito MENOR que o da proposta reprovada; OUTRO imóvel (outro endereço/CEP/cidade/tipo); valor do imóvel que agora passe a atender o MÍNIMO dos bancos (Creditas R$ 150 mil; Inter R$ 200 mil — o CRM sobe imóvel de R$ 180 mil a R$ 199.999 pro mínimo; crédito costuma ir até 58–60% do valor do imóvel) quando antes não atendia; SEGUNDO participante com CPF/renda novos; imóvel que tinha financiamento/dívida e foi quitado/regularizado; motivo da reprovação conhecido que foi corrigido.
+- Pode adiantar: crédito MENOR que o da proposta reprovada — MAS NÃO quando o motivo foi o IMÓVEL (valor abaixo do mínimo dos bancos, terreno, cessão, irregular): aí crédito menor no mesmo imóvel NÃO adianta (Fabio 03/11); OUTRO imóvel (outro endereço/CEP/cidade/tipo); valor do imóvel que agora passe a atender o MÍNIMO dos bancos (Creditas R$ 150 mil; Inter R$ 200 mil — o CRM sobe imóvel de R$ 180 mil a R$ 199.999 pro mínimo; crédito costuma ir até 58–60% do valor do imóvel) quando antes não atendia; SEGUNDO participante com CPF/renda novos; imóvel que tinha financiamento/dívida e foi quitado/regularizado; motivo da reprovação conhecido que foi corrigido.
 - Se o motivo foi DESQUALIFICADO por IDADE (participante acima do limite do banco: Inter 69, Creditas 75), só adianta se a proposta nova tirou ou trocou esse participante (ou o prazo/idade deixou de ser problema); a mesma proposta de novo NÃO adianta.
 - Na dúvida: SEGURAR (a equipe decide).`;
 
@@ -162,7 +162,7 @@ export async function aiReentryContext(leadId: string): Promise<string> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stageEnteredAt: true } });
   const cf = (l?.customFields || {}) as Cf;
   const h = cf._reentryHold as { at?: string; priorAt?: string; motivo?: string; mudancas?: string[] } | undefined;
-  if (!h?.at) return '';
+  if (!h?.at) return reprovadoConversandoContext(leadId).catch(() => '');
   if (l?.stageEnteredAt && l.stageEnteredAt > new Date(h.at)) return ''; // a equipe moveu o card depois: decisão humana
   const priorLeadId = String((cf._reentryCheck as { priorLeadId?: string } | undefined)?.priorLeadId || leadId);
   const priorAt = h.priorAt ? new Date(h.priorAt) : new Date(h.at);
@@ -183,6 +183,25 @@ ${equipe}` : ''}
 NADA está em análise agora: nenhum banco está rodando e ninguém está "revisando" a proposta. NUNCA diga que a equipe está revisando/avaliando/olhando a proposta, nem que algum banco (Caixa, Creditas, Inter…) está sendo avaliado ou analisado — o cliente fica esperando um retorno que não vem.
 O que fazer: explique com educação e de forma direta POR QUE a proposta nova não muda o resultado, usando o motivo de verdade acima (ex.: imóvel de cessão de direitos/sem matrícula registrada não serve de garantia em nenhum banco — trocar valor, prazo ou banco não resolve), e diga o que mudaria, só o que fizer sentido pro motivo (ex.: certidão de matrícula do imóvel registrada em cartório, outro imóvel com matrícula, crédito menor, mais um participante com renda). Se ele citar um banco, diga que a mesma regra vale pra esse banco quando o motivo é o imóvel. Se no histórico ainda não foi dito, pode dizer UMA vez que a equipe foi avisada da proposta nova; não repita. Se ele contar algo que mudou de verdade, registre e passe pra equipe (handoff). NÃO prometa pré-análise, NÃO diga "recebi sua proposta, vou analisar", NÃO peça a lista de documentos (fora o caminho da CAIXA abaixo). Não ofereça "outras possibilidades".
 CAIXA NÃO É SAÍDA PRA REPROVADO (Fabio 01/11 — revoga o "CAIXA é o caminho que sobra" de 28/10: a documentação da CAIXA só é pedida depois de aprovar em algum banco): NÃO ofereça a CAIXA, não siga a sequência dela e não peça documento. Se o cliente pedir a CAIXA, explique com educação, sem prometer, que como os bancos não aprovaram não tem como seguir pela CAIXA agora, e diga o que precisaria mudar (só o que fizer sentido pro motivo).`;
+}
+
+/** Cliente REPROVADO que só voltou a CONVERSAR (sem proposta nova — o bloco de cima só existe quando ele preenche de novo). Fabio 03/11 (Maria Joanice: Perdida por imóvel abaixo
+ *  do mínimo + crédito reprovado; a IA viu a simulação de R$ 50 mil que ela mandou e sugeriu "se quiser tentar com esse valor, é só preencher a proposta de novo", depois ofereceu
+ *  montar a proposta pelos documentos e prometeu a pré-análise): "CLIENTE REPROVADA, POR QUE A IA ESTÁ DANDO IDEIA PARA A CLIENTE PARA TENTAR RODAR DE NOVO?".
+ *  Vale com o próprio card Perdido por reprovação, ou com reprovação recente da mesma pessoa em outro card enquanto este ainda não passou da Prospecção/Follow Up. */
+async function reprovadoConversandoContext(leadId: string): Promise<string> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true, status: true, customFields: true, stage: { select: { name: true } } } });
+  if (!l) return '';
+  const prior = await findRecentRejection(l.accountId, leadId);
+  if (!prior) return '';
+  if (!prior.self && (l.status !== 'OPEN' || !/prospec|follow|sem retorno|caixa de entrada|^entrada/i.test(l.stage?.name || ''))) return '';
+  const chk = (l.customFields as Cf | null)?._reentryCheck as { at?: string; hold?: boolean } | undefined;
+  if (chk?.at && chk.hold === false && new Date(chk.at) > prior.at) return ''; // proposta nova com mudança real: o CRM deu andamento
+  return `CLIENTE REPROVADO (Fabio 03/11): este cliente foi REPROVADO nos bancos em ${dia(prior.at)} (motivo registrado: ${prior.reason.slice(0, 220)}) e nada está em análise agora.
+- NUNCA dê ideia de tentar de novo: não sugira outro valor de crédito (nem o de uma simulação que ele mandou), outro prazo, nova simulação, preencher a proposta de novo, mandar documento pra "seguir com a pré-análise" nem a CAIXA, e não prometa análise, resultado ou retorno. Isso vale também pra regra "NÃO CONSEGUE PREENCHER AGORA": com cliente reprovado, NÃO ofereça montar a proposta pelos documentos.
+- Se ele perguntar ou pedir pra tentar de novo sem nada novo: diga com educação, em 1–2 frases, que a análise foi feita e os bancos não aprovaram, e que por enquanto não dá pra seguir. Só diga o que mudaria se fizer sentido pro motivo (motivo IMÓVEL abaixo do mínimo/irregular → só outro imóvel que atenda os bancos, ou um parente de 1º grau com imóvel assim — mudar o valor do crédito NÃO resolve).
+- Se ELE trouxer uma mudança real (outro imóvel, outra pessoa com imóvel), aí sim mande o link da proposta pra preencher com os dados novos — o CRM confere antes de rodar. Na dúvida, "askTeam".
+- Mandou foto/print de simulação ou documento: não trate como proposta nova nem diga que vai analisar.`;
 }
 
 /** Imóvel de CESSÃO DE DIREITOS já identificado (Fabio 28/10: "a gente não faz de jeito nenhum" — se já apareceu na conversa, perguntar por OUTRO imóvel com
