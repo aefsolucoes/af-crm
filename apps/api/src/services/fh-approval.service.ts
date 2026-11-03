@@ -3,7 +3,7 @@ import { logActivity } from './activity.service';
 
 /**
  * Financiamento Habitacional — aviso de aprovação e próximos passos (Fabio 27/10).
- * 1) Os bancos do Credimorar (Bradesco, Itaú, Santander, Inter) aprovam → o cliente recebe as propostas aprovadas, uma mensagem por banco com o botão
+ * 1) Os bancos do Financiamento (Bradesco e Santander pelo Credimorar; Inter no nosso portal; Itaú no portal Itaú Imóveis — 03/11) aprovam → o cliente recebe as propostas aprovadas, uma mensagem por banco com o botão
  *    "Seguir com esta" (SEM a simulação: ela só vai depois da escolha).
  * 2) O cliente escolhe → na hora vão a simulação (PDF "Evolução das parcelas" do Credimorar, baixado pela extensão) daquele banco, a LISTA DE DOCUMENTOS
  *    (aprovado no automático e sem pedido de renda = só RG/CNH e comprovante de residência + imóvel + vendedor; senão também a renda), os PRÓXIMOS PASSOS e
@@ -24,6 +24,10 @@ const CAIXA_ASK_MARK = 'aprovar também no *BRB*';
 const CAIXA_ASK_MARK_ANTIGA = 'aprovar também na *CAIXA* e no *BRB*'; // resposta a pergunta mandada antes de 01/11
 /** Banco do Credimorar → pedido de PDF da simulação (simulation-doc.service, SIM_INSTITUTIONS). */
 const PDF_INST: Record<string, string> = { Bradesco: 'FH_BRADESCO', 'Itaú': 'FH_ITAU', Santander: 'FH_SANTANDER', Inter: 'FH_INTER' };
+// TODO (Fabio 03/11): o Itaú passou a rodar no portal Itaú Imóveis (ITAU_FH), não mais no Credimorar — o PDF 'FH_ITAU' continua saindo do Credimorar (só existe pra cliente antigo com Itaú aprovado por lá);
+// pra cliente novo ainda não há PDF da simulação do Itaú (ver SIM_INSTITUTIONS em simulation-doc.service.ts).
+/** Bancos do Financiamento que rodam no NOSSO portal (extensão própria): nome no resumo (_fhResumo) → chave da fila. */
+const PORTAL_PROPRIO: Record<string, string> = { Inter: 'INTER_FH', 'Itaú': 'ITAU_FH' };
 /** Primeiro banco aprovou e os outros ainda analisam: espera no máximo isso pra mandar só o que já saiu (Bradesco às vezes leva um dia). */
 const MAX_WAIT_OTHERS_MS = 12 * 3_600_000;
 
@@ -93,11 +97,13 @@ async function enriquecer(leadId: string, cf: Cf, ops: FhOption[]): Promise<FhOp
   const brl = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const num = (t: string) => Number(String(t || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
   const pedido = Number(String(cf.valor_credito || '').replace(/[^\d.]/g, '')) || 0;
-  const inter = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
+  // Inter (nosso portal, INTER_FH) e Itaú (portal Itaú Imóveis, ITAU_FH — 03/11): a linha da análise tem o texto inteiro do portal (o resumo do card corta).
+  const portais = await prisma.creditAnalysis.findMany({ where: { leadId, bank: { in: Object.values(PORTAL_PROPRIO) }, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { createdAt: 'desc' }, select: { bank: true, detail: true } });
   return ops.map((o) => {
     const x = { ...o };
-    if (o.banco === 'Inter' && inter?.detail) {
-      const d = inter.detail;
+    const portal = PORTAL_PROPRIO[o.banco] ? portais.find((p) => p.bank === PORTAL_PROPRIO[o.banco]) : null;
+    if (portal?.detail) {
+      const d = portal.detail;
       if (!x.taxa) x.taxa = (/juros\s*([\d.,]+%\s*a\.\s*[am]\.(?:\s*\+\s*[A-Z]+)?)/i.exec(d) || [])[1] || '';
       if (!x.cet) x.cet = (/CET\s*([\d.,]+)%/i.exec(d) || [])[1] || '';
       if (!x.valor) { const v = (/valor aprovado\s*R\$\s*([\d.,]+)/i.exec(d) || [])[1]; if (v) x.valor = `R$ ${v}`; }
@@ -241,9 +247,9 @@ export async function processFhRejections(accountId: string, io?: any): Promise<
     where: {
       accountId, status: 'OPEN', archived: false, isGroup: false, stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
       pipeline: { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } },
-      creditAnalyses: { some: { bank: { in: [FH_BANK, 'INTER_FH'] }, dryRun: false, updatedAt: { gte: new Date(Date.now() - 20 * 86_400_000) } } },
+      creditAnalyses: { some: { bank: { in: [FH_BANK, 'INTER_FH', 'ITAU_FH'] }, dryRun: false, updatedAt: { gte: new Date(Date.now() - 20 * 86_400_000) } } },
     },
-    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { bank: { in: [FH_BANK, 'INTER_FH'] }, dryRun: false }, orderBy: { updatedAt: 'desc' }, take: 20, select: { status: true, kind: true, updatedAt: true } } },
+    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { bank: { in: [FH_BANK, 'INTER_FH', 'ITAU_FH'] }, dryRun: false }, orderBy: { updatedAt: 'desc' }, take: 20, select: { status: true, kind: true, updatedAt: true } } },
     take: 50,
   });
   const NEG = /reprov|rejeit|recus|negad|n[aã]o aprovad/i;
@@ -327,9 +333,9 @@ export async function preencherEscolhaFh(accountId: string, leadId: string, banc
   const cf = (lead?.customFields || {}) as Cf;
   const run = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: FH_BANK, kind: 'RUN', dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
   const [o] = await enriquecer(leadId, cf, fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`).aprovadas.filter((x) => x.banco === banco));
-  // Inter: a linha do nosso portal tem os números estruturados — ⭐ nela pelo mesmo caminho do HE.
-  if (banco === 'Inter') {
-    const row = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, orderBy: { approvedValue: 'desc' }, select: { id: true } });
+  // Inter e Itaú (03/11): a linha do nosso portal tem os números estruturados — ⭐ nela pelo mesmo caminho do HE.
+  if (PORTAL_PROPRIO[banco]) {
+    const row = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: PORTAL_PROPRIO[banco], dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, orderBy: { approvedValue: 'desc' }, select: { id: true } });
     if (row) { await chooseAnalysis(prisma as any, { accountId, id: row.id, userName: 'Cliente — "Seguir com esta" no Financiamento' }); return; }
   }
   if (!o) return;

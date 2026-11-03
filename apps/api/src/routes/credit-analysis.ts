@@ -9,7 +9,7 @@ import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.ser
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
-  BANK_KEYS, EXT_BANK_KEYS, FH_BANK, fhBoard, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
+  BANK_KEYS, EXT_BANK_KEYS, FH_BANK, FH_RUN_BANKS, FH_ITAU_BANK, fhBoard, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
 } from '../services/credit-analysis.service';
 
@@ -57,7 +57,7 @@ router.get('/approved-by-lead', async (req: AuthRequest, res: Response) => {
 router.get('/fh-board', async (req: AuthRequest, res: Response) => {
   try {
     const scope = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
-    res.json({ leads: await fhBoard(prisma, { accountId: req.user!.accountId, scopeDepartmentIds: scope }), extension: extensionStatus(req.user!.accountId)[FH_BANK] || null });
+    res.json({ leads: await fhBoard(prisma, { accountId: req.user!.accountId, scopeDepartmentIds: scope }), extension: extensionStatus(req.user!.accountId)[FH_BANK] || null, extensions: extensionStatus(req.user!.accountId) });
   } catch (err) { fail(res, err, 'Erro ao carregar o Financiamento'); }
 });
 // Financiamento de UM card (bloco do card, aba Financiamento — Fabio 29/10: o card do Jaime mostrava os bancos do Home Equity com "—").
@@ -73,7 +73,7 @@ router.post('/fh-request', async (req: AuthRequest, res: Response) => {
     const leadId = String(req.body?.leadId || '');
     const kind = req.body?.kind === 'CHECK' ? 'CHECK' : 'RUN';
     if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
-    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds: [leadId], banks: Array.isArray(req.body?.banks) && req.body.banks.length ? [FH_BANK, 'INTER_FH'].filter((b) => req.body.banks.includes(b)) : [FH_BANK, 'INTER_FH'], dryRun: req.body?.dryRun === true, kind, force: kind === 'RUN', queueIfBusy: kind === 'RUN' }); // Credimorar (Bradesco/Itaú/Santander) + Inter no nosso portal
+    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds: [leadId], banks: Array.isArray(req.body?.banks) && req.body.banks.length ? FH_RUN_BANKS.filter((b) => req.body.banks.includes(b)) : FH_RUN_BANKS, dryRun: req.body?.dryRun === true, kind, force: kind === 'RUN', queueIfBusy: kind === 'RUN' }); // Credimorar (Bradesco/Santander) + Inter no nosso portal + Itaú no portal Itaú Imóveis (03/11)
     emit(req, { leadId });
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao pedir a análise do Financiamento'); }
@@ -117,7 +117,7 @@ router.get('/lead/:leadId', async (req: AuthRequest, res: Response) => {
 router.get('/overrides', async (req: AuthRequest, res: Response) => {
   const bank = String(req.query.bank || '').toUpperCase();
   const leadId = String(req.query.leadId || '');
-  if (!leadId || !BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'leadId e bank são obrigatórios' });
+  if (!leadId || !(BANK_KEYS.includes(bank) || bank === FH_ITAU_BANK)) return res.status(400).json({ error: 'leadId e bank são obrigatórios' }); // só leitura: ITAU_FH nunca tem ajuste gravado (devolve data:null), mas a extensão do Itaú pode perguntar
   try {
     res.json({ data: await getOverride(prisma, { accountId: req.user!.accountId, leadId, bank }) });
   } catch (err) { fail(res, err, 'Erro ao buscar o ajuste'); }
@@ -175,7 +175,7 @@ router.get('/metrics', async (req: AuthRequest, res: Response) => {
 // Uma extensão por vez usa o navegador: pede a vez (ok:false = outra está rodando, tente de novo) e devolve quando termina.
 router.post('/lock', (req: AuthRequest, res: Response) => {
   const bank = String(req.body?.bank || '').toUpperCase();
-  if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
+  if (!BANK_KEYS.includes(bank) && bank !== FH_ITAU_BANK) return res.status(400).json({ error: 'banco inválido' }); // ITAU_FH: extensão própria do Itaú Imóveis (03/11) pede a vez com a própria chave
   res.json(acquireLock(req.user!.accountId, bank));
 });
 // A extensão acabou de iniciar (carregou/recarregou/reiniciou): o que estava "rodando" nela se perdeu — falha na hora, com o motivo.
@@ -189,7 +189,7 @@ router.post('/release', async (req: AuthRequest, res: Response) => {
 
 router.post('/unlock', (req: AuthRequest, res: Response) => {
   const bank = String(req.body?.bank || '').toUpperCase();
-  if (!BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'banco inválido' });
+  if (!BANK_KEYS.includes(bank) && bank !== FH_ITAU_BANK) return res.status(400).json({ error: 'banco inválido' });
   releaseLock(req.user!.accountId, bank);
   res.json({ ok: true });
 });

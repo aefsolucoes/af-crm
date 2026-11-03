@@ -33,8 +33,8 @@ interface KanbanColumnProps {
   approvedByLead?: Record<string, { banks: Record<string, number>; chosen?: string }>;
 }
 
-const BANK_SHORT: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar' };
-const BANK_ORDER = ['INTER', 'CREDITAS', 'CREDIMORAR', 'CREDIMORAR_FH'];
+const BANK_SHORT: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar', INTER_FH: 'Inter', ITAU_FH: 'Itaú' };
+const BANK_ORDER = ['INTER', 'CREDITAS', 'CREDIMORAR', 'CREDIMORAR_FH', 'INTER_FH', 'ITAU_FH'];
 
 const STAGE_DESCRIPTIONS: Record<string, string> = {
   // Pipeline Principal — Financiamento Habitacional

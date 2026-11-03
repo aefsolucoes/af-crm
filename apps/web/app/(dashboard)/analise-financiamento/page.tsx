@@ -16,20 +16,23 @@ import { ChevronDown, ChevronRight, MessageSquare, Play, RefreshCw, AlertTriangl
 import api from '@/lib/api';
 
 /* Análise de Crédito — Financiamento Imobiliário (Fabio 27/10; tela igual à do Home Equity em 29/10).
- * Bradesco, Itaú e Santander rodam juntos numa simulação do Credimorar (extensão do Credimorar, fila CREDIMORAR_FH);
- * o Inter roda no NOSSO portal do Inter (extensão do Inter, fila INTER_FH); CAIXA (Caixa Aqui) e BRB (PCN) rodam só com a documentação completa.
+ * Bradesco e Santander rodam juntos numa simulação do Credimorar (extensão do Credimorar, fila CREDIMORAR_FH);
+ * o Inter roda no NOSSO portal do Inter (extensão do Inter, fila INTER_FH); o Itaú roda no portal "Plataforma Itaú Imóveis" (extensão própria do Itaú, fila ITAU_FH — Fabio 03/11,
+ * saiu do Credimorar); CAIXA (Caixa Aqui) e BRB (PCN) rodam só com a documentação completa.
  * Ver fhBoard em apps/api/src/services/credit-analysis.service.ts. */
 
 const BANCOS = ['Bradesco', 'Itaú', 'Santander', 'Inter', 'CAIXA', 'BRB'] as const;
 const SO_COM_DOCUMENTACAO = new Set<string>(['CAIXA', 'BRB']);
 // Banco → tipo do PDF de simulação que o CRM manda ao cliente
 const PDF: Record<string, string> = { Bradesco: 'FH_BRADESCO', 'Itaú': 'FH_ITAU', Santander: 'FH_SANTANDER', Inter: 'FH_INTER' };
-// Fila de cada extensão (checkbox "Rodar nos bancos")
-const FILAS = [
-  { key: 'CREDIMORAR_FH', label: 'Credimorar (Bradesco, Itaú, Santander)', short: 'Credimorar', ext: 'CREDIMORAR' as Bank },
-  { key: 'INTER_FH', label: 'Inter (nosso portal)', short: 'Inter', ext: 'INTER' as Bank },
+// Fila de cada extensão (checkbox "Rodar nos bancos"). `ext` = de onde vem o sinal da extensão; o Itaú tem extensão PRÓPRIA (chave ITAU_FH).
+type ExtFila = Bank | 'ITAU_FH';
+const FILAS: { key: string; label: string; short: string; ext: ExtFila }[] = [
+  { key: 'CREDIMORAR_FH', label: 'Credimorar (Bradesco, Santander)', short: 'Credimorar', ext: 'CREDIMORAR' },
+  { key: 'INTER_FH', label: 'Inter (nosso portal)', short: 'Inter', ext: 'INTER' },
+  { key: 'ITAU_FH', label: 'Itaú (portal Itaú Imóveis)', short: 'Itaú', ext: 'ITAU_FH' },
 ];
-const ROTULO_FILA: Record<string, string> = { CREDIMORAR_FH: 'Credimorar', INTER_FH: 'Inter', CAIXA_FH: 'CAIXA', BRB_FH: 'BRB' };
+const ROTULO_FILA: Record<string, string> = { CREDIMORAR_FH: 'Credimorar', INTER_FH: 'Inter', ITAU_FH: 'Itaú', CAIXA_FH: 'CAIXA', BRB_FH: 'BRB' };
 
 interface FhHistorico { id: string; bank: string; kind: string; status: string; detail: string | null; createdAt: string; proposalNumber: string | null; dryRun: boolean }
 interface FhLead {
@@ -46,7 +49,8 @@ interface FhLead {
   inPre: boolean;
   history: FhHistorico[];
 }
-interface FhBoard { leads: FhLead[]; extension: { lastSeenAt: string | null; online: boolean; extId?: string | null; loginNeeded?: boolean } | null }
+type FhExt = { lastSeenAt: string | null; online: boolean; extId?: string | null; loginNeeded?: boolean };
+interface FhBoard { leads: FhLead[]; extension: FhExt | null; extensions?: Record<string, FhExt> }
 
 /** Cor do status de cada banco (texto que o banco mostra). */
 function tom(status: string): string {
@@ -91,7 +95,7 @@ export default function AnaliseFinanciamentoPage() {
     refetchIntervalInBackground: true, // aba em segundo plano (o Fabio fica no portal do banco) também atualiza
   });
   const [selected, setSelected] = useState<string[]>([]);
-  const [filas, setFilas] = useState<string[]>(['CREDIMORAR_FH', 'INTER_FH']);
+  const [filas, setFilas] = useState<string[]>(['CREDIMORAR_FH', 'INTER_FH', 'ITAU_FH']);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -145,14 +149,15 @@ export default function AnaliseFinanciamentoPage() {
   // Extensão sem sinal nas filas marcadas (Inter vem do quadro do Home Equity, se já estiver no cache)
   const offline = useMemo(() => {
     const board = queryClient.getQueryData<{ extensions?: Record<string, { online: boolean }> }>(['credit-board']);
-    return FILAS.filter((f) => filas.includes(f.key) && !(f.ext === 'CREDIMORAR' ? ext?.online : board?.extensions?.[f.ext]?.online ?? true));
+    // O Itaú tem extensão própria: o sinal dela vem do próprio fh-board (data.extensions.ITAU_FH).
+    return FILAS.filter((f) => filas.includes(f.key) && !(f.ext === 'CREDIMORAR' ? ext?.online : f.ext === 'ITAU_FH' ? data?.extensions?.ITAU_FH?.online : board?.extensions?.[f.ext]?.online ?? true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filas, ext, dataUpdatedAt]);
 
   /** Avisa as extensões que há pedido novo (sem esperar o alarme de 1 minuto). */
   function avisarExtensoes(keys: string[]) {
     const board = queryClient.getQueryData<{ extensions?: Record<string, { extId?: string | null }> }>(['credit-board']);
-    const mapa: Partial<Record<Bank, { extId?: string | null }>> = { CREDIMORAR: ext || undefined, INTER: board?.extensions?.INTER };
+    const mapa: Partial<Record<string, { extId?: string | null }>> = { CREDIMORAR: ext || undefined, INTER: board?.extensions?.INTER, ITAU_FH: data?.extensions?.ITAU_FH };
     pingExtensions(mapa, FILAS.filter((f) => keys.includes(f.key)).map((f) => f.ext));
   }
 
@@ -210,7 +215,7 @@ export default function AnaliseFinanciamentoPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Topbar title="Análise de Crédito — Financiamento Imobiliário" subtitle="Bradesco, Itaú e Santander pelo Credimorar · Inter pelo nosso portal · CAIXA e BRB com a documentação completa" />
+      <Topbar title="Análise de Crédito — Financiamento Imobiliário" subtitle="Bradesco e Santander pelo Credimorar · Inter pelo nosso portal · Itaú pelo portal Itaú Imóveis · CAIXA e BRB com a documentação completa" />
       <div className="flex-1 overflow-auto px-4 md:px-6 py-4 space-y-4 scrollbar-thin">
         {/* Extensões: logo de cada banco e o cliente que a extensão está rodando agora */}
         <ExtensionsLivePanel produto="fh" />

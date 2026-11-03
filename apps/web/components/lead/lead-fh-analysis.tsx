@@ -9,7 +9,7 @@ import { pingExtensions } from '@/lib/credit-extensions';
 import { cn } from '@/lib/utils';
 
 /* Bloco "Financiamento" dentro do card (aba Financiamento) dos cards do Financiamento Habitacional (Fabio 29/10, Jaime: o bloco mostrava os bancos do
- * Home Equity com "—"). Situação de cada banco (Credimorar: Bradesco, Itaú, Santander; nosso portal: Inter; CAIXA/BRB), rodar/conferir e o PDF da simulação. */
+ * Home Equity com "—"). Situação de cada banco (Credimorar: Bradesco, Santander; nosso portal: Inter; portal Itaú Imóveis: Itaú; CAIXA/BRB), rodar/conferir e o PDF da simulação. */
 
 type Banco = { status: string; texto: string };
 type FhLead = {
@@ -43,11 +43,11 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
   const recarregar = () => qc.invalidateQueries({ queryKey: ['fh-lead', leadId] });
 
   async function pedir(kind: 'RUN' | 'CHECK') {
-    if (kind === 'RUN' && !window.confirm('Rodar o Financiamento de novo? Cria proposta NOVA no Credimorar (Bradesco, Itaú, Santander) e no nosso portal do Inter, com os valores do card.')) return;
+    if (kind === 'RUN' && !window.confirm('Rodar o Financiamento de novo? Cria proposta NOVA no Credimorar (Bradesco, Santander), no nosso portal do Inter e no portal Itaú Imóveis (Itaú), com os valores do card.')) return;
     setBusy(kind);
     try {
       await api.post('/api/credit-analysis/fh-request', { leadId, kind });
-      pingExtensions(data?.extensions as any, ['CREDIMORAR', 'INTER'] as any);
+      pingExtensions(data?.extensions, ['CREDIMORAR', 'INTER', 'ITAU_FH']);
       toast(kind === 'RUN' ? 'Financiamento pedido: as extensões rodam em seguida' : 'Conferência pedida: o resultado entra em alguns minutos', 'success');
       recarregar();
     } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao pedir', 'error'); } finally { setBusy(null); }

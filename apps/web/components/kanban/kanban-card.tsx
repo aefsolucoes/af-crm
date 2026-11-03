@@ -51,7 +51,7 @@ function bancoDoTexto(t: unknown): string | null {
 /** Selos do card: o banco escolhido (⭐); sem escolha, os que aprovaram. Sem aprovação, nenhum — o "instituicao" do card pode ser o banco do
  *  financiamento atual do imóvel (Home Equity), não o banco do processo; ele só serve pra dizer qual banco do Credimorar (Financiamento) aprovou. */
 function selosDoCard(banks: KanbanCardProps['banks'], instituicao: unknown): { key: string; chosen: boolean }[] {
-  const daAnalise = (b: string) => (b === 'CREDIMORAR' ? 'SANTANDER' : b === 'CREDIMORAR_FH' ? bancoDoTexto(instituicao) || 'CREDIMORAR' : b);
+  const daAnalise = (b: string) => (b === 'CREDIMORAR' ? 'SANTANDER' : b === 'CREDIMORAR_FH' ? bancoDoTexto(instituicao) || 'CREDIMORAR' : b === 'ITAU_FH' ? 'ITAU' : b === 'INTER_FH' ? 'INTER' : b); // ITAU_FH/INTER_FH: Financiamento rodado no portal do próprio banco
   if (banks?.chosen) return [{ key: daAnalise(banks.chosen), chosen: true }];
   const aprovados = Array.from(new Set(Object.keys(banks?.banks || {}).map(daAnalise)));
   return aprovados.slice(0, 3).map((key) => ({ key, chosen: aprovados.length === 1 }));

@@ -21,6 +21,8 @@ export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMO
   // Financiamento Habitacional (Fabio 27/10): "Evolução das parcelas" do Crédito imobiliário do Credimorar (/Simulacao/ImprimirSimulacao), id do banco no portal.
   FH_BRADESCO: { label: 'Bradesco', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 1 },
   FH_SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 2 },
+  // TODO (Fabio 03/11): o Itaú do Financiamento passou a rodar no portal Itaú Imóveis (fila ITAU_FH), fora do Credimorar. Este PDF continua vindo do Credimorar (id 3) e só existe pra cliente ANTIGO com Itaú aprovado por lá;
+  // pra cliente novo (aprovação só em ITAU_FH) o pedido sai sem PDF — cai no aviso "O PDF da simulação do Itaú pedido pela IA NÃO saiu… Mande à mão". Falta o PDF novo (a extensão do Itaú ler a proposta, como o Inter em 'data').
   FH_ITAU: { label: 'Itaú', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 3 },
   FH_INTER: { label: 'Inter', extBank: 'INTER_FH', mode: 'data' },
   // Inter aprovado PELO CREDIMORAR (antes de 29/10) com valor MAIOR que o do nosso portal: o PDF sai do Credimorar (Evolução Teórica do Inter, id 6).

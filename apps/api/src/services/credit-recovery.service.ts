@@ -15,8 +15,8 @@ import { OBJECTIVE_FAIL, DADO_PARA_CORRIGIR, semRuidoDeSimulacao } from './credi
 type Cf = Record<string, any>;
 
 const BANKS = ['CREDIMORAR', 'CREDITAS', 'INTER'];
-const LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar (Financiamento)', INTER_FH: 'Inter (Financiamento)' };
-const BANKS_FH = ['CREDIMORAR_FH', 'INTER_FH'];
+const LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar (Financiamento)', INTER_FH: 'Inter (Financiamento)', ITAU_FH: 'Itaú (Financiamento)' };
+const BANKS_FH = ['CREDIMORAR_FH', 'INTER_FH', 'ITAU_FH'];
 
 const NAO_ACHEI = /n[aã]o achei o cliente na lista|ainda n[aã]o apareceu na lista|proposta aberta pelo n[uú]mero n[aã]o traz/i;
 const SO_SIMULACAO = /SIMULA[ÇC][ÃA]O[^\n]*Ainda sem resultado/i;
@@ -48,7 +48,7 @@ export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?:
   // Pedido vivo: mexido nos últimos 25 min OU conferência marcada (notBefore) que ainda vai rodar / acabou de vencer. Antes só valia o updatedAt e a conferência da Creditas
   // marcada de 30 em 30 min (ou pras 7h do dia seguinte) parecia parada — a retomada das 7h abria uma 2ª cadeia em paralelo (Alziro 28/10: 48ª e 19ª conferências ao mesmo tempo).
   const vivo = (r: RecRow) => (r.status === 'REQUESTED' || r.status === 'RUNNING') && (now - r.updatedAt.getTime() < 25 * 60_000 || (r.status === 'REQUESTED' && !!r.notBefore && now - new Date(r.notBefore).getTime() < 25 * 60_000));
-  // Financiamento (Fabio 29/10: migrar o HE pro FH): Credimorar FH + Inter FH. Proposta enviada sem resposta é sempre CONFERIDA (a conferência do Credimorar FH já reenvia
+  // Financiamento (Fabio 29/10: migrar o HE pro FH): Credimorar FH + Inter FH + Itaú FH (03/11). Proposta enviada sem resposta é sempre CONFERIDA (a conferência do Credimorar FH já reenvia
   // os bancos que ficaram em Simulação) — rodar de novo criaria outra simulação no portal.
   for (const bank of opts.fh ? BANKS_FH : BANKS) {
     const mine = rows.filter((r) => r.bank === bank && semRuidoDeSimulacao(r)).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
@@ -129,7 +129,7 @@ export async function recoverStuckAnalyses(accountId: string, leadId: string, wh
   // Conferência já marcada pra daqui a pouco (3–10 min): cliente cobrando adianta pra agora.
   if (why === 'cobranca') await prisma.creditAnalysis.updateMany({ where: { leadId, dryRun: false, kind: 'CHECK', status: 'REQUESTED', notBefore: { gt: new Date() } }, data: { notBefore: null } }).catch(() => {});
   const fh = /habitacional/i.test(lead.pipeline?.department?.name || '');
-  const plan = planRecovery(lead.creditAnalyses as RecRow[], { fh, loginNeeded: (b) => loginNeededFor(accountId, b.replace(/_FH$/, '')) });
+  const plan = planRecovery(lead.creditAnalyses as RecRow[], { fh, loginNeeded: (b) => loginNeededFor(accountId, b === 'ITAU_FH' ? b : b.replace(/_FH$/, '')) });
   if (!plan.length) return [];
 
   const hoje = dayBrt();

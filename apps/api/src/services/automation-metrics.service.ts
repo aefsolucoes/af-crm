@@ -10,7 +10,7 @@ import { extensionStatus } from './credit-analysis.service';
 
 /** Falha OBJETIVA (regra do banco/imóvel/idade) = o cliente "não passa": não é erro da automação. Mesmo critério do credit-auto.service (OBJECTIVE_FAIL). */
 const OBJETIVA = 'N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas';
-const BANK_LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
+const BANK_LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', ITAU_FH: 'Itaú Imóveis' }; // ITAU_FH: extensão própria do Financiamento (03/11)
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const round1 = (v: unknown): number | null => (v == null || Number.isNaN(Number(v)) ? null : Math.round(Number(v) * 10) / 10);

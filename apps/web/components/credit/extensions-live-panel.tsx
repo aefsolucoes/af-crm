@@ -1,5 +1,5 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
@@ -39,17 +39,21 @@ function Titulo({ children, n }: { children: React.ReactNode; n?: number }) {
   return <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{children}{n != null && <span className="ml-1 text-slate-500 normal-case font-medium">({n})</span>}</p>;
 }
 
-/** Colunas do painel. Financiamento (Fabio 29/10: "cadê os outros bancos?"): Credimorar (Bradesco, Itaú, Santander), Inter no nosso portal, CAIXA e BRB (à mão). */
-type Coluna = { key: string; short: string; sub?: string; logo?: Bank; sigla?: string; cor?: string; manual?: boolean };
+/** Colunas do painel. Financiamento (Fabio 29/10: "cadê os outros bancos?"): Credimorar (Bradesco, Santander), Inter no nosso portal, Itaú no portal Itaú Imóveis (03/11), CAIXA e BRB (à mão). */
+type Coluna = { key: string; short: string; sub?: string; logo?: Bank; img?: string; sigla?: string; cor?: string; manual?: boolean };
 const COLUNAS_FH: Coluna[] = [
-  { key: 'CREDIMORAR_FH', short: 'Credimorar', sub: 'Bradesco · Itaú · Santander', sigla: 'CM', cor: '#1F3A93' },
+  { key: 'CREDIMORAR_FH', short: 'Credimorar', sub: 'Bradesco · Santander', sigla: 'CM', cor: '#1F3A93' },
   { key: 'INTER_FH', short: 'Inter', sub: 'nosso portal', logo: 'INTER' },
+  { key: 'ITAU_FH', short: 'Itaú', sub: 'portal Itaú Imóveis', img: '/banks/itau.png', sigla: 'IT', cor: '#EC7000' },
   { key: 'CAIXA_FH', short: 'CAIXA', sub: 'roda com a documentação enxuta', sigla: 'CX', cor: '#005CA9', manual: true },
   { key: 'BRB_FH', short: 'BRB', sub: 'roda com a documentação completa', sigla: 'BRB', cor: '#00529B', manual: true },
 ];
 
 function Emblema({ c }: { c: Coluna }) {
+  const [semImagem, setSemImagem] = useState(false);
   if (c.logo) return <BankLogo bank={c.logo} size={40} />;
+  // eslint-disable-next-line @next/next/no-img-element
+  if (c.img && !semImagem) return <img src={c.img} alt={c.short} width={40} height={40} className="h-10 w-10 flex-shrink-0 rounded-lg object-cover" style={{ background: c.cor }} onError={() => setSemImagem(true)} />;
   return <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg text-[11px] font-bold text-white" style={{ background: c.cor }}>{c.sigla}</span>;
 }
 
@@ -95,7 +99,7 @@ export function ExtensionsLivePanel({ produto = 'he' }: { produto?: 'he' | 'fh' 
         </div>
       </div>
     )}
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+    <div className={cn('grid grid-cols-1 gap-3 md:grid-cols-2', produto === 'fh' ? 'xl:grid-cols-5' : 'xl:grid-cols-4')}>
       {colunas.map((b) => {
         const l = data?.find((x) => x.bank === b.key);
         const e = l ? estadoDe(l, b.manual) : { rotulo: 'carregando…', cls: 'bg-slate-100 text-slate-400', borda: 'border-l-slate-200' };

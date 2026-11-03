@@ -26,13 +26,16 @@ export const BANKS: Record<string, { label: string; instituicao: string }> = {
   CREDIMORAR_FH: { label: 'Financiamento (Credimorar)', instituicao: 'Credimorar' },
   // Fabio 29/10: o Inter do Financiamento roda no NOSSO portal do Inter (extensão do Inter, simulador "Financiamento Imobiliário"), não pelo Credimorar.
   INTER_FH: { label: 'Financiamento (Inter)', instituicao: 'Inter' },
+  // Fabio 03/11: o Itaú do Financiamento roda no portal "Plataforma Itaú Imóveis" por uma extensão PRÓPRIA (sai do Credimorar, que fica só com Bradesco e Santander).
+  ITAU_FH: { label: 'Financiamento (Itaú)', instituicao: 'Itaú' },
 };
 /** Bancos do Home Equity. */
 export const BANK_KEYS = ['INTER', 'CREDITAS', 'CREDIMORAR'];
 export const FH_BANK = 'CREDIMORAR_FH';
 export const FH_INTER_BANK = 'INTER_FH';
-/** Bancos do Financiamento Habitacional rodados pelas extensões (Credimorar: Bradesco/Itaú/Santander; nosso portal do Inter). */
-export const FH_RUN_BANKS = [FH_BANK, FH_INTER_BANK];
+export const FH_ITAU_BANK = 'ITAU_FH';
+/** Bancos do Financiamento Habitacional rodados pelas extensões (Credimorar: Bradesco/Santander; nosso portal do Inter; portal Itaú Imóveis). */
+export const FH_RUN_BANKS = [FH_BANK, FH_INTER_BANK, FH_ITAU_BANK];
 /** O que uma extensão pode pegar/relatar na fila: Home Equity + Financiamento Habitacional. */
 export const EXT_BANK_KEYS = [...BANK_KEYS, ...FH_RUN_BANKS];
 
@@ -45,7 +48,7 @@ const ALL_STATUS = new Set(['REQUESTED', 'RUNNING', 'SENT', 'APPROVED', 'CONDITI
 const FINAL = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
 const ACTIVE = ['REQUESTED', 'RUNNING'];
 /** Bancos cuja extensão sabe só CONFERIR uma proposta já enviada (sem criar outra). */
-export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS', FH_BANK, 'INTER_FH'];
+export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS', FH_BANK, FH_INTER_BANK, FH_ITAU_BANK];
 const CREDITAS_MAX_AGE_MS = 60 * 3_600_000; // e desiste de conferir sozinho 60 h depois da 1ª conferência (cobre 2 noites sem leitura)
 const BRT_MS = 3 * 3_600_000; // Brasília = UTC-3 (sem horário de verão)
 const CHECK_MAX_TRIES = 18; // 18 conferências de 10 min = ~3 h; passou disso, fica pra conferir à mão
@@ -912,7 +915,7 @@ export function pushOutOfQuiet(ms: number): Date {
  *  depois o Inter segue de 10 em 10 min e o Creditas "aumenta": 10 min, 20 min e de 30 em 30 min (aprovação real do Creditas leva horas). Santander: 10 em 10. Pura (testável). */
 export function checkGapMin(bank: string, n: number): number {
   if (bank === FH_BANK) return n <= 3 ? 10 : 30; // Financiamento: os 4 bancos levam horas/dias pra analisar
-  if ((bank === 'INTER' || bank === 'INTER_FH' || bank === 'CREDITAS') && n <= 3) return 3;
+  if ((bank === 'INTER' || bank === 'INTER_FH' || bank === 'ITAU_FH' || bank === 'CREDITAS') && n <= 3) return 3; // Itaú Imóveis (03/11): a proposta fica horas em análise, como o Inter
   if (bank === 'CREDITAS') return n === 4 ? 10 : n === 5 ? 20 : 30;
   return 10;
 }
@@ -967,7 +970,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     const open = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'CHECK', status: { in: ACTIVE } }, select: { id: true } });
     if (!open) {
       await db.creditAnalysis.create({
-        data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'CHECK', attempt: 1, notBefore: nextCheckAt(row.bank, 1), proposalNumber: row.proposalNumber, dryRun: false, source: 'EXTENSION', holderName: row.holderName, holderCpf: row.holderCpf, detail: `Conferindo — 1ª conferência em ${checkGapMin(row.bank, 1)} min (depois ${row.bank === 'CREDITAS' ? '3 em 3 min nas 3 primeiras, 10 min, 20 min e de 30 em 30 min' : row.bank === 'INTER' ? '3 em 3 min nas 3 primeiras e de 10 em 10 min' : 'de 10 em 10 min'}; só das 7h às 21h).` },
+        data: { accountId: row.accountId, leadId: row.leadId, bank: row.bank, status: 'REQUESTED', kind: 'CHECK', attempt: 1, notBefore: nextCheckAt(row.bank, 1), proposalNumber: row.proposalNumber, dryRun: false, source: 'EXTENSION', holderName: row.holderName, holderCpf: row.holderCpf, detail: `Conferindo — 1ª conferência em ${checkGapMin(row.bank, 1)} min (depois ${row.bank === 'CREDITAS' ? '3 em 3 min nas 3 primeiras, 10 min, 20 min e de 30 em 30 min' : row.bank === 'INTER' || row.bank === FH_INTER_BANK || row.bank === FH_ITAU_BANK ? '3 em 3 min nas 3 primeiras e de 10 em 10 min' : 'de 10 em 10 min'}; só das 7h às 21h).` },
       });
     }
   }
@@ -1012,12 +1015,13 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   for (const k of Object.keys(numbers) as (keyof ResultFields)[]) if (vindo[k] == null) delete vindo[k];
   const { row: updated } = await applyUpdate(db, row, { status, detail: detail ?? null, holderName, ...numbers, ...vindo });
   if (p.bank === FH_BANK && !updated.dryRun) await notaFinanciamento(db, p.accountId, updated).catch((e: any) => console.error('[Financiamento] nota:', e?.message));
-  if (p.bank === FH_INTER_BANK && !updated.dryRun) await notaFinanciamentoInter(db, p.accountId, updated).catch((e: any) => console.error('[Financiamento Inter] nota:', e?.message));
+  if (p.bank === FH_INTER_BANK && !updated.dryRun) await notaFinanciamentoBanco(db, p.accountId, updated, 'Inter').catch((e: any) => console.error('[Financiamento Inter] nota:', e?.message));
+  if (p.bank === FH_ITAU_BANK && !updated.dryRun) await notaFinanciamentoBanco(db, p.accountId, updated, 'Itaú').catch((e: any) => console.error('[Financiamento Itaú] nota:', e?.message));
   return afterReport(db, updated);
 }
 
 // ─── Aba "Análise de Crédito — Financiamento Imobiliário" (Fabio 27/10) ───
-/** Os 6 bancos do Financiamento: os 4 do Credimorar (uma simulação só) + CAIXA (Caixa Aqui) e BRB (PCN), que rodam só com a documentação completa. */
+/** Os 6 bancos do Financiamento: Bradesco e Santander no Credimorar (uma simulação só), Inter (nosso portal) e Itaú (portal Itaú Imóveis, desde 03/11) + CAIXA (Caixa Aqui) e BRB (PCN), que rodam só com a documentação completa. */
 export const FH_TABLE_BANKS = ['Bradesco', 'Itaú', 'Santander', 'Inter', 'CAIXA', 'BRB'] as const;
 /** Bancos (chave da fila) da CAIXA e do BRB no Financiamento — extensões ainda não feitas. */
 export const FH_DOC_BANKS: Record<string, string> = { CAIXA_FH: 'CAIXA', BRB_FH: 'BRB' };
@@ -1095,20 +1099,37 @@ export function resumoFinanciamento(detail?: string | null): string | null {
   return m ? m[1].replace(/\s+/g, ' ').trim() : null;
 }
 
-/** Troca (ou põe) o trecho "Inter: …" do resumo do Financiamento. `interTexto` null = mantém o que o Credimorar trouxe. Pura. */
-export function juntarInterNoResumo(resumo: string, interTexto: string | null): string {
-  const partes = String(resumo || '').split('|').map((x) => x.trim()).filter(Boolean);
-  const semInter = partes.filter((x) => !/^Inter\s*:/i.test(x));
-  const doCredimorar = partes.find((x) => /^Inter\s*:/i.test(x));
-  if (!interTexto) return partes.join(' | ');
-  // Só o Inter do Credimorar com resultado de verdade (não "não enviado") ganha do nosso, e ainda assim o nosso portal vale mais.
-  void doCredimorar;
-  return [...semInter, `Inter: ${interTexto}`].join(' | ');
+/** Bancos do Financiamento que rodam no NOSSO portal (extensão própria) e cujo trecho do resumo o Credimorar não pode apagar: Inter (29/10) e Itaú (03/11). */
+export type BancoPortalProprio = 'Inter' | 'Itaú';
+const RX_TRECHO_BANCO: Record<BancoPortalProprio, RegExp> = { Inter: /^Inter\s*:/i, 'Itaú': /^Ita[uú]\s*:/i }; // o Credimorar escreve "Itaú:" (às vezes sem acento)
+
+/** Texto do trecho "Banco: …" do resumo do Financiamento ('' = o resumo não tem esse banco). Pura. */
+export function trechoDoBancoNoResumo(resumo: string | null | undefined, banco: BancoPortalProprio): string {
+  const parte = String(resumo || '').split('|').map((x) => x.trim()).find((x) => RX_TRECHO_BANCO[banco].test(x));
+  return parte ? parte.replace(/^[^:]+:\s*/, '').trim() : '';
 }
 
-/** Resultado do Inter (nosso portal) → trecho "Inter: Aprovado, proposta N, R$ X, M meses — …" no resumo do Financiamento + nota/push quando muda. */
-async function notaFinanciamentoInter(db: Db, accountId: string, row: AnalysisRow): Promise<void> {
+/** Troca (ou põe) o trecho "Inter: …" / "Itaú: …" do resumo do Financiamento. `texto` null = mantém o que o Credimorar trouxe. O trecho entra NO LUGAR do que já existe (ordem estável: senão cada
+ *  relato do Credimorar reordenaria o resumo e a nota/push de "mudou" sairia à toa); se o banco não está no resumo, vai pro fim. Pura. */
+export function juntarBancoNoResumo(resumo: string, banco: BancoPortalProprio, texto: string | null): string {
+  const partes = String(resumo || '').split('|').map((x) => x.trim()).filter(Boolean);
+  if (!texto) return partes.join(' | ');
+  const novo = `${banco}: ${texto}`;
+  const i = partes.findIndex((x) => RX_TRECHO_BANCO[banco].test(x));
+  const resto = partes.filter((x, j) => j === i || !RX_TRECHO_BANCO[banco].test(x)); // some trecho repetido do mesmo banco (mantém só o 1º, que é substituído)
+  if (i < 0) return [...resto, novo].join(' | ');
+  return resto.map((x) => (RX_TRECHO_BANCO[banco].test(x) ? novo : x)).join(' | ');
+}
+
+/** Atalho do Inter (nosso portal, INTER_FH). `interTexto` null = mantém o que o Credimorar trouxe. Pura. */
+export function juntarInterNoResumo(resumo: string, interTexto: string | null): string {
+  return juntarBancoNoResumo(resumo, 'Inter', interTexto);
+}
+
+/** Resultado do Inter (nosso portal, INTER_FH) ou do Itaú (portal Itaú Imóveis, ITAU_FH) → trecho "Inter: Aprovado, proposta N, R$ X, M meses — …" no resumo do Financiamento + nota/push quando muda. */
+async function notaFinanciamentoBanco(db: Db, accountId: string, row: AnalysisRow, banco: BancoPortalProprio): Promise<void> {
   if (['REQUESTED', 'RUNNING'].includes(row.status)) return;
+  const origem = banco === 'Itaú' ? 'Itaú (portal Itaú Imóveis)' : 'Inter (nosso portal)';
   const label: Record<string, string> = { APPROVED: 'Aprovado', CONDITIONAL: 'Aprovado condicional', REJECTED: 'Rejeitado', SENT: 'Em análise', CHECK: 'Em análise', FAILED: 'Falhou', INCOMPLETE: 'Incompleto' };
   const st = label[row.status];
   if (!st) return;
@@ -1119,21 +1140,21 @@ async function notaFinanciamentoInter(db: Db, accountId: string, row: AnalysisRo
   const texto = [st, row.proposalNumber ? `proposta ${row.proposalNumber}` : '', row.approvedValue ? brl(Number(row.approvedValue)) : '', row.termMonths ? `${row.termMonths} meses` : ''].filter(Boolean).join(', ') + (motivo ? ` — ${motivo}` : '');
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { name: true, customFields: true } });
   const cf = { ...((lead?.customFields || {}) as Record<string, any>) };
-  // "Sempre seguir com a proposta MAIOR" (Fabio 29/10): se o resumo já tem um Inter APROVADO maior (ex.: aprovado pelo Credimorar), ele continua valendo.
+  // "Sempre seguir com a proposta MAIOR" (Fabio 29/10): se o resumo já tem um Inter/Itaú APROVADO maior (ex.: aprovado pelo Credimorar), ele continua valendo.
   const valorDe = (t: string) => { const m = /R\$\s*([\d.]+,\d{2})/.exec(t || ''); return m ? Number(m[1].replace(/\./g, '').replace(',', '.')) : 0; };
-  const atual = parseBancosFinanciamento(cf._fhResumo).Inter?.texto || '';
+  const atual = trechoDoBancoNoResumo(cf._fhResumo, banco);
   const atualAprovado = /aprovad/i.test(atual) && !/n[aã]o aprovad/i.test(atual);
   const novoAprovado = ['APPROVED', 'CONDITIONAL'].includes(row.status);
   const mantem = atualAprovado && (!novoAprovado || valorDe(atual) > (Number(row.approvedValue) || valorDe(texto)));
-  const resumo = mantem ? cf._fhResumo : juntarInterNoResumo(cf._fhResumo || '', texto.replace(/\|/g, '/'));
+  const resumo = mantem ? cf._fhResumo : juntarBancoNoResumo(cf._fhResumo || '', banco, texto.replace(/\|/g, '/'));
   if (cf._fhResumo === resumo && !mantem) return;
-  const jaAnotado = await db.note.findFirst({ where: { leadId: row.leadId, content: { contains: `Inter: ${texto.slice(0, 60)}` } }, select: { id: true } });
+  const jaAnotado = await db.note.findFirst({ where: { leadId: row.leadId, content: { contains: `${banco}: ${texto.slice(0, 60)}` } }, select: { id: true } });
   if (mantem && jaAnotado) return;
   cf._fhResumo = resumo;
   await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });
-  await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🏠 Financiamento — Inter (nosso portal)${row.proposalNumber ? ` — proposta nº ${row.proposalNumber}` : ''}:\n• Inter: ${texto}${mantem ? `\nContinua valendo a proposta MAIOR do Inter: ${atual}` : ''}\nO cliente NÃO foi avisado por esta nota.` } });
+  await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🏠 Financiamento — ${origem}${row.proposalNumber ? ` — proposta nº ${row.proposalNumber}` : ''}:\n• ${banco}: ${texto}${mantem ? `\nContinua valendo a proposta MAIOR do ${banco}: ${atual}` : ''}\nO cliente NÃO foi avisado por esta nota.` } });
   try {
-    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 Financiamento Inter: ${lead?.name || 'cliente'}`, body: `Inter: ${texto}`.slice(0, 180), leadId: row.leadId }).catch(() => {});
+    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 Financiamento ${banco}: ${lead?.name || 'cliente'}`, body: `${banco}: ${texto}`.slice(0, 180), leadId: row.leadId }).catch(() => {});
   } catch { /* push é só aviso */ }
 }
 
@@ -1145,7 +1166,10 @@ async function notaFinanciamento(db: Db, accountId: string, row: AnalysisRow): P
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { name: true, customFields: true } });
   const cf = { ...((lead?.customFields || {}) as Record<string, any>) };
   // O Inter agora roda no nosso portal (INTER_FH): o "Inter: não enviado" do Credimorar não apaga a situação que veio de lá.
-  resumo = juntarInterNoResumo(resumo, parseBancosFinanciamento(cf._fhResumo).Inter?.texto || null);
+  resumo = juntarInterNoResumo(resumo, trechoDoBancoNoResumo(cf._fhResumo, 'Inter') || null);
+  // Itaú (Fabio 03/11): idem, mas só nos cards que têm análise do Itaú no nosso portal (ITAU_FH). Card antigo, sem nenhuma, segue lendo o Itaú do Credimorar normalmente.
+  const itauNosso = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: FH_ITAU_BANK, dryRun: false }, select: { id: true } });
+  if (itauNosso) resumo = juntarBancoNoResumo(resumo, 'Itaú', trechoDoBancoNoResumo(cf._fhResumo, 'Itaú') || null);
   if (cf._fhResumo === resumo) return;
   cf._fhResumo = resumo;
   await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });
@@ -1229,7 +1253,7 @@ function orphanDetail(why: string, lastDetail?: string | null): string {
 // Teto de duração de UMA análise de rodar (Fabio 14/10: "não podemos deixar esse tanto de tempo com um cliente"): a Maria Antônia ficou 27 min no Inter repetindo
 // "preencher CPF" — a extensão seguia mandando passos, então o limite de "sem passo novo" nunca disparava. Tempos reais (5 dias): Inter p90 8 min, Creditas p50 4,5 min,
 // Santander p90 15 min / máx. 21 min (inclui esperar o navegador compartilhado). Estourou: vira falha e a retentativa automática refaz (como CONFERIR se a proposta já foi enviada).
-const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 6, CREDIMORAR_FH: 20, INTER_FH: 15 }; // Santander 6 min por ordem do Fabio (14/10); 4 de 13 rodadas boas dos últimos 5 dias passaram disso
+const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 6, CREDIMORAR_FH: 20, INTER_FH: 15, ITAU_FH: 15 }; // Santander 6 min por ordem do Fabio (14/10); 4 de 13 rodadas boas dos últimos 5 dias passaram disso
 
 async function expireStuck(db: Db, where: { accountId: string; leadId?: string }) {
   const rows = await db.creditAnalysis.findMany({ where: { ...where, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } }, select: { id: true, detail: true } });
@@ -1660,7 +1684,8 @@ export function touchExtension(accountId: string, bank: string, extId?: string |
 }
 export function extensionStatus(accountId: string): Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null; loginNeeded: boolean }> {
   const out: Record<string, { lastSeenAt: string | null; online: boolean; extId: string | null; loginNeeded: boolean }> = {};
-  for (const bank of BANK_KEYS) {
+  // ITAU_FH: extensão PRÓPRIA do Itaú Imóveis (Fabio 03/11) — consulta a fila com bank=ITAU_FH, então o sinal dela é a chave ITAU_FH (as do Financiamento no Credimorar/Inter usam o sinal das extensões deles).
+  for (const bank of [...BANK_KEYS, FH_ITAU_BANK]) {
     const seen = lastSeen.get(`${accountId}:${bank}`);
     out[bank] = { lastSeenAt: seen ? new Date(seen.at).toISOString() : null, online: !!seen && Date.now() - seen.at < 3 * 60 * 1000, extId: seen?.extId || null, loginNeeded: loginNeeded.has(`${accountId}:${bank}`) };
   }
@@ -1671,13 +1696,13 @@ export function extensionStatus(accountId: string): Record<string, { lastSeenAt:
  *  na fila também, os que estão rodando e os que foram rodados"). Só leitura. */
 export async function extensionsLive(db: Db, accountId: string, produto: 'HE' | 'FH' = 'HE') {
   const ext0 = extensionStatus(accountId);
-  // Financiamento (Fabio 29/10: "cadê os outros bancos?" — a tela do FH mostrava o painel do Home Equity): Credimorar FH e Inter FH usam as extensões do Credimorar e do Inter;
-  // CAIXA e BRB ainda são à mão (sem extensão: aparecem só com o que foi registrado).
+  // Financiamento (Fabio 29/10: "cadê os outros bancos?" — a tela do FH mostrava o painel do Home Equity): Credimorar FH e Inter FH usam as extensões do Credimorar e do Inter; Itaú FH tem a extensão
+  // PRÓPRIA do Itaú Imóveis (03/11); CAIXA e BRB ainda são à mão (sem extensão: aparecem só com o que foi registrado).
   const semExt = { online: false, loginNeeded: false, lastSeenAt: null };
   const ext: Record<string, { online: boolean; loginNeeded: boolean; lastSeenAt: any }> = produto === 'FH'
-    ? { CREDIMORAR_FH: ext0.CREDIMORAR, INTER_FH: ext0.INTER, CAIXA_FH: semExt, BRB_FH: semExt }
+    ? { CREDIMORAR_FH: ext0.CREDIMORAR, INTER_FH: ext0.INTER, ITAU_FH: ext0.ITAU_FH, CAIXA_FH: semExt, BRB_FH: semExt }
     : ext0 as any;
-  const bancosDoPainel = produto === 'FH' ? [FH_BANK, 'INTER_FH', 'CAIXA_FH', 'BRB_FH'] : BANK_KEYS;
+  const bancosDoPainel = produto === 'FH' ? [FH_BANK, 'INTER_FH', 'ITAU_FH', 'CAIXA_FH', 'BRB_FH'] : BANK_KEYS;
   const out: any[] = [];
   const agora = new Date();
   const passoDe = (steps: unknown) => {
@@ -1720,7 +1745,7 @@ export async function extensionsLive(db: Db, accountId: string, produto: 'HE' | 
 const loginNeeded = new Map<string, number>(); // `${accountId}:${bank}` → início do episódio
 const lastLoginAlert = new Map<string, number>();
 const LOGIN_ALERT_GAP_MS = 45 * 60_000;
-const BANK_LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander (Credimorar)' };
+const BANK_LABEL: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander (Credimorar)', ITAU_FH: 'Itaú (Plataforma Itaú Imóveis)' };
 export const loginNeededFor = (accountId: string, bank: string) => loginNeeded.has(`${accountId}:${bank}`);
 /** Liga/desliga o estado "preciso de login" do banco. Devolve true quando um episódio NOVO começou. */
 export function setLoginNeeded(accountId: string, bank: string, needed: boolean): boolean {
@@ -1854,7 +1879,7 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   if (cf._fhResumo) {
     const fh = parseBancosFinanciamento(cf._fhResumo);
     for (const [banco, b] of Object.entries(fh)) linhas.push(`- ${banco} (Financiamento Habitacional): ${b.texto.slice(0, 260)}`);
-    linhas.push(`- NOVA PROPOSTA NO FINANCIAMENTO: se o cliente pedir OUTRO prazo (60 a 420 meses) ou OUTRO valor financiado, use "simulate" ({"prazo": N} e/ou {"valor": N}) — o CRM roda uma simulação nova no Credimorar e no Inter e o aviso com o resultado sai sozinho. Nunca invente parcela.${cf._fhPrazo ? ` Última simulação pedida com ${cf._fhPrazo} meses.` : ''}`);
+    linhas.push(`- NOVA PROPOSTA NO FINANCIAMENTO: se o cliente pedir OUTRO prazo (60 a 420 meses) ou OUTRO valor financiado, use "simulate" ({"prazo": N} e/ou {"valor": N}) — o CRM roda uma simulação nova no Credimorar, no Inter e no Itaú e o aviso com o resultado sai sozinho. Nunca invente parcela.${cf._fhPrazo ? ` Última simulação pedida com ${cf._fhPrazo} meses.` : ''}`);
   }
   linhas.push(...(await caixaBrbContext(db, leadId, cf)));
   if (!linhas.length) return '';
@@ -1866,10 +1891,10 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };
 
-/** Bancos que "rodar de novo" usa pra este card: Financiamento Habitacional → Credimorar FH + Inter FH (nosso portal); Home Equity → os 3 do HE (Fabio 29/10: "todo o processo do HE deve migrar pro FH"). */
+/** Bancos que "rodar de novo" usa pra este card: Financiamento Habitacional → Credimorar FH + Inter FH (nosso portal) + Itaú FH (portal Itaú Imóveis); Home Equity → os 3 do HE (Fabio 29/10: "todo o processo do HE deve migrar pro FH"). */
 export async function bancosDoProduto(db: Db, leadId: string): Promise<string[]> {
   const l = await db.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { department: { select: { name: true } } } } } });
-  return /habitacional/i.test(l?.pipeline?.department?.name || '') ? [FH_BANK, 'INTER_FH'] : [...BANK_KEYS];
+  return /habitacional/i.test(l?.pipeline?.department?.name || '') ? [FH_BANK, FH_INTER_BANK, FH_ITAU_BANK] : [...BANK_KEYS];
 }
 
 /** "CAIXA: 1ª parcela R$ 4.446,10 | Taxa 10,65% a.a. | CET 12,18% a.a." da proposta do site → simulação por banco. Pura (testável). */
@@ -1964,9 +1989,9 @@ async function novaPropostaFh(db: Db, accountId: string, leadId: string, p: { pr
   for (const k of ['_fhNotice', '_fhFirstApprovalAt', '_fhChosen', '_fhNoticeTeamAt']) delete novo[k];
   novo._changeAsk = [p.prazo && `o prazo de ${p.prazo} meses`, p.valor && `o valor de ${fmtBRL(p.valor)}`].filter(Boolean).join(' e ');
   await db.lead.update({ where: { id: leadId }, data: { customFields: novo as any, ...(p.valor ? { value: p.valor } : {}) } });
-  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: [FH_BANK, FH_INTER_BANK], dryRun: false, kind: 'RUN', source: 'AI', force: true, queueIfBusy: true });
+  const r = await createRequests(db, { accountId, leadIds: [leadId], banks: [FH_BANK, FH_INTER_BANK, FH_ITAU_BANK], dryRun: false, kind: 'RUN', source: 'AI', force: true, queueIfBusy: true });
   if (!r.created) return { ok: false, detail: 'já havia análise do Financiamento em andamento' };
-  return { ok: true, detail: `simulação NOVA do Financiamento pedida (Credimorar e Inter) com ${novo._changeAsk}` };
+  return { ok: true, detail: `simulação NOVA do Financiamento pedida (Credimorar, Inter e Itaú) com ${novo._changeAsk}` };
 }
 
 export async function requestProposalChangeForAi(db: Db, accountId: string, leadId: string, p: { prazo?: number; valor?: number }): Promise<{ ok: boolean; detail: string }> {

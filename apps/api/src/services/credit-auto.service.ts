@@ -213,8 +213,8 @@ async function descartarImovelRural(accountId: string, l: { id: string; name: st
   return true;
 }
 
-/** 1b) Financiamento Habitacional (Fabio 27/10): card novo na Pré-Análise com a proposta do site → a extensão do Credimorar roda Bradesco, Itaú, Santander e Inter numa
- *  simulação só. Sem a conferência da IA do Home Equity (aiReadiness é de Home Equity); a extensão recusa sozinha se faltar dado. CAIXA e BRB só com a documentação completa (depois). */
+/** 1b) Financiamento Habitacional (Fabio 27/10): card novo na Pré-Análise com a proposta do site → a extensão do Credimorar roda Bradesco e Santander numa simulação só
+ *  (o Inter roda no nosso portal desde 29/10 e o Itaú no portal Itaú Imóveis desde 03/11). Sem a conferência da IA do Home Equity (aiReadiness é de Home Equity); a extensão recusa sozinha se faltar dado. CAIXA e BRB só com a documentação completa (depois). */
 async function startNewFhLeads(accountId: string, enabledAt: Date) {
   const { FH_BANK } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   const leads = await prisma.lead.findMany({
@@ -239,9 +239,10 @@ async function startNewFhLeads(accountId: string, enabledAt: Date) {
       continue;
     }
     // Inter do Financiamento roda no NOSSO portal (Fabio 29/10: "os financiamentos habitacionais devem ser feitos no nosso Inter"; a extensão do Credimorar desmarca o Inter de lá).
-    const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [FH_BANK, 'INTER_FH'], dryRun: false, force: false });
+    // Itaú do Financiamento roda no portal Itaú Imóveis, por extensão própria (Fabio 03/11; a extensão do Credimorar passa a marcar só Bradesco e Santander).
+    const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [FH_BANK, 'INTER_FH', 'ITAU_FH'], dryRun: false, force: false });
     await saveCf(l.id, { _fhAutoStartedAt: new Date().toISOString() });
-    await addNote(l.id, `🤖 Análise do Financiamento pedida: Credimorar (Bradesco, Itaú e Santander numa simulação só) e Inter no nosso portal. ${out.created} pedido(s) na fila das extensões. Quando os bancos responderem, o cliente recebe o aviso padrão.`);
+    await addNote(l.id, `🤖 Análise do Financiamento pedida: Credimorar (Bradesco e Santander numa simulação só), Inter no nosso portal e Itaú no portal Itaú Imóveis. ${out.created} pedido(s) na fila das extensões. Quando os bancos responderem, o cliente recebe o aviso padrão.`);
   }
 }
 
@@ -565,10 +566,10 @@ const RETRY_GAP_MS = 15 * 60_000;
 /** 5) Falha TÉCNICA (extensão travou, tela não carregou, dado faltando) não deixa o cliente parado na Pré-Análise: refaz sozinho o banco que falhou, até 3 vezes, de 15 em
  *  15 min (Fabio 14/10: "como faz pros clientes que falhou rodar sozinha depois?"). Falha OBJETIVA (regra do banco/imóvel) e "rodada anulada" não entram — essas são decisão. */
 /** Refaz sozinha (até RETRY_MAX vezes, com intervalo) a análise que falhou por problema técnico. `produto` = 'FH' faz o mesmo no Financiamento Habitacional
- *  (Credimorar FH + Inter FH) — Fabio 29/10: "todo o processo do HE deve migrar pro FH". */
+ *  (Credimorar FH + Inter FH + Itaú FH) — Fabio 29/10: "todo o processo do HE deve migrar pro FH". */
 async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 'HE') {
   const fh = produto === 'FH';
-  const BANCOS = fh ? ['CREDIMORAR_FH', 'INTER_FH'] : BANKS;
+  const BANCOS = fh ? ['CREDIMORAR_FH', 'INTER_FH', 'ITAU_FH'] : BANKS;
   const leads = await prisma.lead.findMany({
     where: {
       accountId, status: 'OPEN', archived: false, isGroup: false,
@@ -610,7 +611,7 @@ async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 
       // Falha de um RODAR que já tinha ENVIADO a proposta ao banco (teto de tempo/extensão travada depois do envio): refazer como RODAR criaria proposta DUPLICADA no portal.
       if (r.kind === 'CHECK' || r.proposalNumber || /proposta (j[aá] )?enviada|lendo o resultado/i.test(r.detail || '')) redoCheck.add(b);
     }
-    const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar (Financiamento)', INTER_FH: 'Inter (Financiamento)' };
+    const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar (Financiamento)', INTER_FH: 'Inter (Financiamento)', ITAU_FH: 'Itaú (Financiamento)' };
     if (redo.length) {
       const runBanks = redo.filter((b) => !redoCheck.has(b));
       if (runBanks.length) await createRequests(prisma, { accountId, leadIds: [l.id], banks: runBanks, dryRun: false, force: true });
