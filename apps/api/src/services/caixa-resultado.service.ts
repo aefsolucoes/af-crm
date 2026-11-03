@@ -110,7 +110,9 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
 // (HE: taxa da CAIXA por faixa — 20,75% a.a. até R$ 150 mil, 16,2012% acima — com o IOF de 3,4813% somado à base; FH: 10,92% a.a., sem IOF), na Price no
 // prazo máximo (240 meses no HE, 360 no FH, sem olhar a idade).
 // - Abaixo do mínimo (HE R$ 50 mil, FH R$ 100 mil): avisa o cliente que a parcela aprovada não dá o mínimo (mesmo caminho do aviso do PV: 07h–21h, conversa
-//   fechada → template e o texto quando ele responder) e o card vai pra Perdidos (Jézer) — com aprovação em outro banco, a equipe decide.
+//   fechada → template e o texto quando ele responder). Sem outra aprovação → Perdidos. Com aprovação em outro banco (Fabio 03/11, Jézer: "primeiro pergunta
+//   se ele deseja seguir com as outras aprovações; se ele não quiser, aí move para perdido") → o aviso termina com "Você deseja seguir com o crédito aprovado?"
+//   e o "não" dele leva pra Perdidos (IA da conversa).
 // - No mínimo ou acima: "SEMPRE QUE RETORNAR CONDICIONADA … RODE NA PRICE … ALTERAR APENAS O VALOR DA PARCELA E DEPOIS COLOCA PARA APROVAR" — a extensão
 //   reabre a proposta, troca a prestação pela possível e a amortização pra PRICE e envia; a consulta do resultado roda sozinha. Aprovou → avisa o cliente só
 //   do valor liberado ("NÃO ENTRO EM DETALHES, APENAS SE O CLIENTE QUESTIONAR"). Voltou condicionada de novo → equipe.
@@ -131,8 +133,9 @@ export function creditoMaximoPelaParcela(parcela: number, he: boolean, prazo?: n
   return faixaCheia > 150_000 ? liquido(16.2012) : faixaCheia;
 }
 
-export function textoCondicionada(saudacao: string, c: { parcela: number; minimo: number; he: boolean; motivo: boolean }): string {
-  return `Oi${saudacao ? ` ${saudacao}` : ''}, tudo bem? Saiu a resposta da CAIXA: ela aprovou uma parcela de no máximo ${brl(c.parcela)} por mês${c.motivo ? ', por causa de outros compromissos financeiros no seu nome (na CAIXA ou em outros bancos)' : ''}. Com essa parcela, o ${c.he ? 'crédito' : 'financiamento'} ficaria bem abaixo do mínimo de R$ ${c.minimo / 1000} mil, então não conseguimos seguir pela CAIXA neste momento.`;
+export function textoCondicionada(saudacao: string, c: { parcela: number; minimo: number; he: boolean; motivo: boolean; seguir?: boolean }): string {
+  const { SEGUIR_APROVADO_Q } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
+  return `Oi${saudacao ? ` ${saudacao}` : ''}, tudo bem? Saiu a resposta da CAIXA: ela aprovou uma parcela de no máximo ${brl(c.parcela)} por mês${c.motivo ? ', por causa de outros compromissos financeiros no seu nome (na CAIXA ou em outros bancos)' : ''}. Com essa parcela, o ${c.he ? 'crédito' : 'financiamento'} ficaria bem abaixo do mínimo de R$ ${c.minimo / 1000} mil, então não conseguimos seguir pela CAIXA neste momento.${c.seguir ? `\n\nMas as outras aprovações que conseguimos pra você continuam valendo. ${SEGUIR_APROVADO_Q}` : ''}`;
 }
 
 export function textoLiberado(saudacao: string, c: { valor: number; he: boolean }): string {
@@ -161,11 +164,11 @@ async function tratarCondicionada(accountId: string, leadId: string, nome: strin
   const conta = `a parcela possível de ${brl(parcela)} paga no máximo uns ${brl(Math.floor(credito / 100) * 100)} de ${he ? 'crédito' : 'financiamento'} (Price em ${he ? 240 : 360} meses, com a taxa da CAIXA do simulador do site${he ? ' e o IOF' : ''}; sem contar o limite de idade)`;
   const base = { proposta, parcela, credito: Math.round(credito), minimo, he, motivo: /compromissos financeiros/i.test(texto), at: new Date().toISOString() };
   if (credito < minimo) {
-    await salvar(leadId, (x) => { x.condicionada = { ...base, status: 'PENDING' }; });
-    await nota(`🟡 CAIXA condicionada (proposta ${proposta}): ${conta}, abaixo do mínimo de R$ ${minimo / 1000} mil. O CRM avisa o cliente que a parcela aprovada não dá o mínimo.`);
-    if (lead?.status !== 'OPEN') return;
     const { temAprovacao } = require('./caixa-screening.service') as typeof import('./caixa-screening.service');
-    if (await temAprovacao(leadId, cf)) { await nota('↪️ Tem aprovação em outro banco: NÃO movi pra Perdidos — a equipe decide com o cliente.'); return; }
+    const seguir = await temAprovacao(leadId, cf);
+    await salvar(leadId, (x) => { x.condicionada = { ...base, status: 'PENDING', ...(seguir ? { seguir: true } : {}) }; });
+    await nota(`🟡 CAIXA condicionada (proposta ${proposta}): ${conta}, abaixo do mínimo de R$ ${minimo / 1000} mil. O CRM avisa o cliente que a parcela aprovada não dá o mínimo${seguir ? ' e, como ele tem aprovação em outro banco, pergunta se deseja seguir com o crédito aprovado (o "não" leva pra Perdidos)' : ' e o card vai pra Perdidos'}.`);
+    if (seguir || lead?.status !== 'OPEN') return;
     const motivo = `CAIXA condicionada: a parcela aprovada (${brl(parcela)}) não alcança o mínimo de R$ ${minimo / 1000} mil`;
     const { updateLead } = require('./lead.service') as typeof import('./lead.service');
     const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
@@ -236,7 +239,7 @@ export async function avisarCondicionadaCliente(accountId: string, leadId: strin
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const saudacao = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
   const liberado = c.tipo === 'liberado';
-  const texto = liberado ? textoLiberado(saudacao, { valor: Number(c.valor), he: !!c.he }) : textoCondicionada(saudacao, { parcela: Number(c.parcela), minimo: Number(c.minimo), he: !!c.he, motivo: !!c.motivo });
+  const texto = liberado ? textoLiberado(saudacao, { valor: Number(c.valor), he: !!c.he }) : textoCondicionada(saudacao, { parcela: Number(c.parcela), minimo: Number(c.minimo), he: !!c.he, motivo: !!c.motivo, seguir: !!c.seguir });
   const rotulo = liberado ? 'CAIXA aprovada na PRICE' : 'CAIXA condicionada';
   const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
@@ -280,7 +283,10 @@ O CRM avisou o cliente que a CAIXA aprovou o ${c.he ? 'crédito' : 'financiament
   }
   return `--- CAIXA CONDICIONADA (aviso enviado ao cliente; Fabio 03/11) ---
 O CRM avisou o cliente que a CAIXA aprovou uma parcela de no máximo ${brl(Number(c.parcela))} por mês${c.motivo ? ' (por outros compromissos financeiros no nome dele)' : ''} e que, com essa parcela, o ${c.he ? 'crédito' : 'financiamento'} ficaria abaixo do mínimo de R$ ${Number(c.minimo) / 1000} mil, então não dá pra seguir pela CAIXA agora. NÃO é restrição no nome: nunca diga isso.
-Quando ele responder: tire dúvidas sobre o que foi dito em 1–2 frases. Se ele perguntar o que dá pra fazer (quitar dívidas, nova análise, outro banco, outro valor), não prometa nada e use "askTeam" com a pergunta dele.`;
+${c.seguir ? `O aviso terminou perguntando se ele deseja seguir com o crédito aprovado em outro banco (as outras aprovações continuam valendo).
+- Respondeu que NÃO quer seguir: agradeça em 1 frase e marque "markLost": "Não quis seguir com as outras aprovações (CAIXA condicionada não alcançou o mínimo)".
+- Respondeu que SIM: diga em 1 frase que vamos seguir com o crédito aprovado e que a equipe já dá sequência (sem prometer prazo).
+` : ''}Quando ele responder: tire dúvidas sobre o que foi dito em 1–2 frases. Se ele perguntar o que dá pra fazer (quitar dívidas, nova análise, outro banco, outro valor), não prometa nada e use "askTeam" com a pergunta dele.`;
 }
 
 /** "Em Processamento": agenda a próxima reconsulta (RECONSULTA_MIN) e, passadas 24 h do envio nesse status, avisa a equipe por push. Só a 1ª vez de cada
