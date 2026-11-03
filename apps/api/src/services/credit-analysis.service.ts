@@ -392,7 +392,7 @@ export function propostaDoCard(cf: Record<string, any>): { bank: string; numero:
 export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; alignApproval?: boolean; queueIfBusy?: boolean }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => EXT_BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
-  const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true } });
+  const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true, name: true } });
   let created = 0, skipped = 0, queuedBehind = 0;
   const consulted: string[] = [];
   for (const l of leads) {
@@ -442,6 +442,20 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
         const idade = bank === 'CREDITAS' ? await creditasAgeBlock(db, l.id) : await ageTermBlock(db, l.id, 'Santander');
         if (idade) {
           await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail: `NÃO RODEI: ${idade}`, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
+          created++;
+          continue;
+        }
+      }
+      // Santander não faz Home Equity com imóvel em nome de terceiro (Fabio 03/11): rodada AUTOMÁTICA nem abre. Clique de uma pessoa roda (ela decide — ex.: o dono entrou na proposta).
+      if (bank === 'CREDIMORAR' && kind === 'RUN' && !p.dryRun && !p.userId) {
+        const { santanderTerceiro, textoNaoRodei } = require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service');
+        const terc = santanderTerceiro(cfPedido, l.name);
+        if (terc) {
+          const detail = `NÃO RODEI: ${textoNaoRodei(terc)}`;
+          await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail, dryRun: false, source: p.source || 'EXTENSION', requestedById: null, finishedAt: new Date() } });
+          const conteudo = `🚫 Santander NÃO analisa este cliente: ${detail.replace(/^NÃO RODEI:\s*/, '')}`;
+          const ja = await db.note.findFirst({ where: { leadId: l.id, content: conteudo, createdAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
+          if (!ja) await db.note.create({ data: { leadId: l.id, type: 'COMMENT', content: conteudo } }).catch(() => {});
           created++;
           continue;
         }
@@ -813,6 +827,8 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun && !FH_RUN_BANKS.includes(row.bank) && (next === 'APPROVED' || next === 'CONDITIONAL' || next === 'REJECTED')) { // Financiamento: a nota é por banco (notaFinanciamento)
     const holder = await holderIfSecond(db, row.leadId, updated.holderName);
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: analysisNote({ ...updated, status: next, holder }) } });
+    // Santander aprovou com o imóvel no nome de quem não participa da proposta (Fabio 03/11): a equipe fica sabendo.
+    if (row.bank === 'CREDIMORAR' && next !== 'REJECTED') void (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).avisarSantanderTerceiro(row.accountId, row.leadId).catch(() => {});
   }
   // PROBLEMA que pede a atenção da equipe (Fabio 17/10, Mauricio no Inter: "Simulação — Requer ação — Encontramos um problema. Entre em contato com seu consultor"): vai pro card, uma vez por
   // problema (mesmo banco e mesmo texto) a cada 12 h — antes só aparecia dentro da aba Análise de Crédito.
@@ -1845,6 +1861,8 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   // Fabio 20/10: a IA precisa saber que renda só vale quando Santander/Creditas estão em jogo (o Inter não pede).
   const jogo = await bancosEmJogo(db, leadId).catch(() => null);
   if (jogo && !jogo.rendaNecessaria) linhas.push('- DOCUMENTOS DE RENDA: a equipe DISPENSOU a renda deste cliente (ele não vai seguir pelo banco que pedia). NÃO peça nem cobre renda e, se ele já mandou, não aponte problema nela.');
+  const santanderFora = (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).aiSantanderTerceiroLinha(cf); // Fabio 03/11
+  if (santanderFora) linhas.push(santanderFora);
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };
 

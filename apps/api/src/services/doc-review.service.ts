@@ -209,6 +209,7 @@ export async function resolveDocDoubt(accountId: string, leadId: string, attachm
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cache = { ...((((fresh?.customFields || {}) as any)._docReview as Record<string, DocReview>) || {}), [attachmentId]: r };
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _docReview: cache, _docProblemSig: null } } });
+  await (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).avisarSantanderTerceiro(accountId, leadId).catch(() => {});
   return r;
 }
 
@@ -379,6 +380,8 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
       }
     }
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshCf, ...matCampos, ...marcador, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
+    // Matrícula no nome de quem não participa da proposta: o Santander sai (Fabio 03/11).
+    await (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).avisarSantanderTerceiro(accountId, leadId).catch((e: any) => console.error('[Santander terceiro]', e?.message || e));
   }
 
   // Situação atual: a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some); RG/CNH somam os lados.

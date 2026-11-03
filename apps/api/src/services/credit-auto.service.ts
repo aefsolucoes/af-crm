@@ -178,11 +178,14 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
     const bc = require('./bancos-combinados.service') as typeof import('./bancos-combinados.service');
     const combinado = await bc.detectarBancosCombinados(l.id, PROPOSAL_MARKERS).catch((e: any) => { console.error('[Bancos combinados]', e?.message); return 'ERRO' as const; });
     if (combinado === 'ERRO') continue; // a leitura falhou: tenta de novo no próximo minuto
+    // Imóvel no nome de quem não participa da proposta, dito na conversa (Fabio 03/11): o Santander não roda (createRequests grava o "NÃO RODEI").
+    const terceiro = await (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).detectarDonoNaConversa(l.id, PROPOSAL_MARKERS).catch((e: any) => { console.error('[Santander terceiro]', e?.message); return 'ERRO' as const; });
+    if (terceiro === 'ERRO') continue;
     const bancos = combinado ? BANKS.filter((b) => !combinado.fora.includes(b)) : BANKS;
     const out = bancos.length ? await createRequests(prisma, { accountId, leadIds: [l.id], banks: bancos, dryRun: false, force: false }) : { created: 0 };
     await saveCf(l.id, { _autoStartedAt: new Date().toISOString(), _autoChecks: checks, _autoGiveUp: false });
     const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
-    await addNote(l.id, `🤖 Análise automática iniciada ${combinado ? (bancos.length ? `só no ${bancos.map((b) => label[b]).join(', ')} (bancos combinados com o cliente)` : 'sem banco automático (nenhum combinado com o cliente)') : 'nos 3 bancos'} (a IA conferiu que os dados da proposta estão certos: ${verdict.reason || 'ok'}). ${out.created} pedido(s) na fila pras extensões.`);
+    await addNote(l.id, `🤖 Análise automática iniciada ${combinado ? (bancos.length ? `só no ${bancos.map((b) => label[b]).join(', ')} (bancos combinados com o cliente)` : 'sem banco automático (nenhum combinado com o cliente)') : terceiro ? 'no Inter e na Creditas (o Santander não faz Home Equity com imóvel em nome de terceiro)' : 'nos 3 bancos'} (a IA conferiu que os dados da proposta estão certos: ${verdict.reason || 'ok'}). ${out.created} pedido(s) na fila pras extensões.`);
     if (combinado) await bc.aplicarCombinado(accountId, l.id, l.name, combinado, io).catch((e: any) => console.error('[Bancos combinados]', e?.message));
   }
 }
