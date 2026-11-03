@@ -1207,6 +1207,11 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         autoUploadAttachmentToDrive(accountId, leadId, att.id).catch((err: any) =>
           console.error('[Drive] Auto-upload do anexo falhou:', err?.message));
       }
+      // Arquivo mandado por LINK de compartilhamento (Adobe, Google Drive, Dropbox — Fabio 03/11): o CRM baixa e anexa nesta mensagem, como um anexo comum.
+      if (text && /https?:\/\//i.test(text)) {
+        const { importShareLinks } = require('./share-link.service') as typeof import('./share-link.service');
+        importShareLinks({ accountId, leadId, messageId: message.id, text, io }).catch((err: any) => console.error('[Link compartilhado] falhou:', err?.message));
+      }
 
       // ── Emit via Socket.io ──────────────────────────────────────────────
       if (io) {

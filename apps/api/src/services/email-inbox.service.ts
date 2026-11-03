@@ -532,11 +532,17 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   }
 
   if (leadId) {
-    await addToConversation({
+    const conv = await addToConversation({
       accountId: acc.accountId, leadId, direction: folder === 'INBOX' ? 'INBOUND' : 'OUTBOUND',
       subject: env.subject || null, body: `${fresh}${attachedNote}`, messageId, date,
       notify: !opts.initial && folder === 'INBOX', io: opts.io, fromLabel: from?.name || from?.address,
     });
+    // Cliente mandou o documento por LINK de compartilhamento no e-mail (Fabio 03/11): o CRM baixa e anexa na mensagem do e-mail (vai pra pasta como anexo comum).
+    if (conv && folder === 'INBOX' && !opts.initial && from && !isInstitutionalSender(from.address)) {
+      const { importShareLinks, textoDoEmail } = require('./share-link.service') as typeof import('./share-link.service');
+      textoDoEmail(messageId, conv.content).then((texto) => importShareLinks({ accountId: acc.accountId, leadId, messageId: conv.id, text: texto, io: opts.io }))
+        .catch((err: any) => console.warn('[Link compartilhado e-mail] falhou:', err?.message));
+    }
   }
   // Cliente diz POR E-MAIL que não tem interesse → Perdido (Fabio 15/10). Só e-mail novo (não a primeira sincronização) e nunca de banco/sistema.
   if (leadId && row && folder === 'INBOX' && !opts.initial && from && !isInstitutionalSender(from.address) && Date.now() - date.getTime() < 48 * 3_600_000) {

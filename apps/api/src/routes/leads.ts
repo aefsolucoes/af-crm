@@ -940,6 +940,20 @@ router.post('/merge-same-contact', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /api/leads/:id/import-share-links — baixa os arquivos que o cliente mandou por link de compartilhamento (Adobe, Google Drive, Dropbox) nas mensagens
+// já recebidas e anexa na própria mensagem (Fabio 03/11). Mensagem nova já faz isso sozinha; aqui é pra conversa antiga.
+router.post('/:id/import-share-links', async (req: AuthRequest, res: Response) => {
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
+    if (!lead) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
+    const { importShareLinksForLead } = require('../services/share-link.service') as typeof import('../services/share-link.service');
+    res.json(await importShareLinksForLead(req.user!.accountId, lead.id, req.app.get('io'), Number(req.body?.dias) || 60));
+  } catch (err: any) {
+    console.error('[Link compartilhado]', err);
+    res.status(500).json({ error: 'Erro ao baixar os arquivos dos links' });
+  }
+});
+
 // PATCH /api/leads/:id/custom-fields
 router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
   try {
