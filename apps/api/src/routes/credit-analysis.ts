@@ -127,7 +127,7 @@ router.get('/overrides', async (req: AuthRequest, res: Response) => {
 router.post('/check-now', async (req: AuthRequest, res: Response) => {
   const b = req.body || {};
   const bank = String(b.bank || '').toUpperCase();
-  if (!b.leadId || !BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'leadId e banco são obrigatórios' });
+  if (!b.leadId || !EXT_BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'leadId e banco são obrigatórios' }); // Financiamento também (03/11): conferência do Itaú/Inter/Credimorar FH de card em STOP só anda pedida por pessoa
   try {
     const out = await expediteCheck(prisma, { accountId: req.user!.accountId, leadId: String(b.leadId), bank, userId: req.user!.id });
     emit(req, { leadId: String(b.leadId) });
