@@ -227,6 +227,71 @@ router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
   }
 });
 
+/** Bytes de um arquivo que a conversa recebeu/mandou (MessageAttachment): no banco ou já arquivado no Drive. */
+async function conversationFileBuffer(accountId: string, attachmentId: string): Promise<{ name: string; mimeType: string; buffer: Buffer } | null> {
+  const { getAttachment } = await import('../services/message.service');
+  const att = await getAttachment(attachmentId, accountId);
+  if (!att) return null;
+  if (att.data) return { name: att.fileName, mimeType: att.mimeType, buffer: Buffer.from(att.data as any) };
+  if (!att.driveFileId) return null;
+  const { downloadDriveFile } = await import('../services/google.service');
+  return { name: att.fileName, mimeType: att.mimeType, buffer: await downloadDriveFile(accountId, att.driveFileId, att.mimeType) };
+}
+
+// POST /api/email/compose-ai — "Criar com IA" (Fabio 03/11, exemplo do gerente do BRB que pediu um e-mail pra plataforma): a IA lê a conversa inteira do card e os
+// documentos que a pessoa deu pra ela LER (computador, conversa ou Drive do cliente — não vão anexados) e devolve para/assunto/corpo. A pessoa revisa e envia.
+router.post('/compose-ai', async (req: AuthRequest, res: Response) => {
+  const { replyToId, leadId, instruction, to, subject, draft, docs } = (req.body || {}) as { replyToId?: string; leadId?: string; instruction?: string; to?: string; subject?: string; draft?: string; docs?: any[] };
+  let replyTo: any = null;
+  if (replyToId) {
+    replyTo = await prisma.emailMessage.findUnique({
+      where: { id: replyToId },
+      select: { emailAccountId: true, fromName: true, fromAddress: true, subject: true, date: true, textBody: true, htmlBody: true, leadId: true },
+    });
+    if (!replyTo || !(await getVisibleEmailAccount(req.user!.accountId, req.user!.id, replyTo.emailAccountId))) return res.status(404).json({ error: 'E-mail não encontrado' });
+  }
+  if (leadId && !(await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true } }))) return res.status(404).json({ error: 'Card não encontrado' });
+  if (!leadId && !replyTo && !String(instruction || '').trim() && !(Array.isArray(docs) && docs.length)) return res.status(400).json({ error: 'Escreva o que o e-mail precisa dizer ou escolha um documento pra IA ler' });
+  try {
+    const lista = (Array.isArray(docs) ? docs : []).slice(0, 10);
+    const { downloadDriveFileForVision } = await import('../services/google.service');
+    const lidos: { name: string; mimeType: string; buffer: Buffer }[] = [];
+    const pulados: string[] = [];
+    for (const d of lista) {
+      const name = String(d?.name || 'documento').slice(0, 200);
+      try {
+        let f: { name: string; mimeType: string; buffer: Buffer } | null = null;
+        if (d?.attachmentId) f = await conversationFileBuffer(req.user!.accountId, String(d.attachmentId));
+        else if (d?.driveFileId) { const r = await downloadDriveFileForVision(req.user!.accountId, String(d.driveFileId), String(d?.type || '')); f = { name, mimeType: r.mimeType, buffer: r.buffer }; }
+        else if (d?.dataBase64) f = { name, mimeType: String(d?.type || ''), buffer: Buffer.from(String(d.dataBase64), 'base64') };
+        const ok = f && (f.mimeType === 'application/pdf' || ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(f.mimeType));
+        if (f && ok) lidos.push(f); else pulados.push(name);
+      } catch { pulados.push(name); }
+    }
+    if (lidos.reduce((t, f) => t + f.buffer.length, 0) > 25 * 1024 * 1024) return res.status(400).json({ error: 'Os documentos pra IA ler passam de 25 MB — escolha menos arquivos' });
+    const { generateEmailFromConversation } = require('../services/ai-email-suggestion.service') as typeof import('../services/ai-email-suggestion.service');
+    const r = await generateEmailFromConversation({ accountId: req.user!.accountId, leadId, replyTo, instruction, to, subject, draft, docs: lidos });
+    if (!r) return res.status(422).json({ error: 'Não consegui montar o e-mail agora — tente de novo.' });
+    res.json({ ...r, pulados });
+  } catch (err: any) {
+    console.error('[E-mail] Erro ao criar com IA:', err?.message);
+    res.status(500).json({ error: 'Erro ao montar o e-mail' });
+  }
+});
+
+// Arquivos que chegaram/saíram na conversa do card (pra IA ler ou pra anexar no e-mail).
+router.get('/lead-conversation-files', async (req: AuthRequest, res: Response) => {
+  const leadId = String(req.query.leadId || '');
+  if (!leadId || !(await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true } }))) return res.status(404).json({ error: 'Cliente não encontrado' });
+  const atts = await prisma.messageAttachment.findMany({
+    where: { leadId, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
+    orderBy: { createdAt: 'desc' }, take: 80,
+    select: { id: true, fileName: true, mimeType: true, createdAt: true, message: { select: { direction: true } } },
+  });
+  const { isStickerAttachment } = await import('../services/google.service');
+  res.json(atts.filter((a) => !isStickerAttachment(a as any)).map((a) => ({ id: a.id, name: a.fileName, mimeType: a.mimeType, createdAt: a.createdAt, recebido: a.message?.direction === 'INBOUND' })));
+});
+
 // Arquivos da pasta do cliente no Drive (Fabio 27/10: "a resposta do e-mail deve ter opção de buscar documentos dentro da pasta do cliente no Drive").
 // A pasta é a do card ("link_pasta_drive"); sem ela, procura uma pasta com o nome do cliente dentro da raiz do Drive.
 router.get('/lead-drive-files', async (req: AuthRequest, res: Response) => {
@@ -288,11 +353,14 @@ router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: 
   try {
     // Anexo escolhido na pasta do cliente no Drive: vem só o id; o servidor baixa.
     const { downloadDriveFile } = await import('../services/google.service');
+    // Arquivo da conversa do card (attachmentId): o servidor busca no banco ou no Drive (Fabio 03/11).
     const attachments = await Promise.all((Array.isArray(b.attachments) ? b.attachments : []).map(async (a: any) => ({
       filename: String(a?.filename || 'anexo').slice(0, 200),
       contentType: String(a?.contentType || 'application/octet-stream'),
-      content: a?.driveFileId ? await downloadDriveFile(req.user!.accountId, String(a.driveFileId), String(a?.contentType || '')) : Buffer.from(String(a?.dataBase64 || ''), 'base64'),
+      content: a?.attachmentId ? ((await conversationFileBuffer(req.user!.accountId, String(a.attachmentId)))?.buffer || Buffer.alloc(0))
+        : a?.driveFileId ? await downloadDriveFile(req.user!.accountId, String(a.driveFileId), String(a?.contentType || '')) : Buffer.from(String(a?.dataBase64 || ''), 'base64'),
     })));
+    if (attachments.some((a) => !a.content.length)) return res.status(400).json({ error: 'Não consegui buscar um dos arquivos da conversa — tire e anexe de novo' });
     if (attachments.reduce((t, a) => t + a.content.length, 0) > 20 * 1024 * 1024) return res.status(400).json({ error: 'Os anexos passam de 20 MB — mande em mais de um e-mail' });
     const saved = await sendEmailFrom({
       acc, userId: req.user!.id, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''),

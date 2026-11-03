@@ -4,10 +4,11 @@ import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
 import { cn, formatDateTime } from '@/lib/utils';
-import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed, Bot, Mail } from 'lucide-react';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed, Bot, Mail, ScrollText, Copy } from 'lucide-react';
 import api from '@/lib/api';
 import { startSendLocation } from '@/lib/send-location';
 import { toast } from '@/components/ui/toast';
+import { Modal } from '@/components/ui/modal';
 import { getSocket } from '@/lib/socket';
 import { Avatar } from '@/components/ui/avatar';
 import { AttachmentView } from '@/components/inbox/message-attachment';
@@ -451,6 +452,29 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
       toast(err?.response?.data?.error || 'Não consegui abrir a resposta do e-mail', 'error');
     } finally {
       setOpeningEmail(false);
+    }
+  }
+  // "Resumo" (Fabio 03/11: "preguiça de ler a conversa toda"): a IA lê a conversa inteira + o card e mostra um resumo curto. Pode copiar ou salvar nas anotações.
+  const [resumo, setResumo] = useState<null | { loading: boolean; text: string; saved?: boolean }>(null);
+  useEffect(() => { setResumo(null); }, [leadId]);
+  async function abrirResumo() {
+    setResumo({ loading: true, text: '' });
+    try {
+      const { data } = await api.post('/api/ai/conversation-summary', { leadId });
+      setResumo({ loading: false, text: data.summary || '' });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Não consegui resumir agora', 'error');
+      setResumo(null);
+    }
+  }
+  async function salvarResumo() {
+    if (!resumo?.text) return;
+    try {
+      await api.post('/api/notes', { leadId, content: `📝 Resumo da conversa (IA):\n${resumo.text}`, type: 'COMMENT' });
+      setResumo({ ...resumo, saved: true });
+      toast('Resumo salvo nas anotações do card');
+    } catch {
+      toast('Não consegui salvar nas anotações', 'error');
     }
   }
   const [openingEmail, setOpeningEmail] = useState(false);
@@ -1554,6 +1578,15 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
             <span className="hidden md:inline">E-mail</span>
           </button>
           <button
+            onClick={abrirResumo}
+            disabled={!!resumo?.loading}
+            title="Resumo da conversa pela IA — quem é, onde está, o que foi combinado e o que falta"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
+          >
+            {resumo?.loading ? <Loader2 size={13} className="animate-spin" /> : <ScrollText size={13} />}
+            <span className="hidden md:inline">Resumo</span>
+          </button>
+          <button
             onClick={handleCopyLink}
             title="Copiar link direto pra essa conversa — quem abrir (logado no CRM) cai direto aqui"
             className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
@@ -2397,6 +2430,16 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
 
       {/* Aviso: envio falhou por falta de telefone real (contato só tem @lid) —
           cadastra na hora e reenvia sozinho, sem mandar caçar o campo certo. */}
+      {resumo && !resumo.loading && (
+        <Modal title="Resumo da conversa" onClose={() => setResumo(null)} size="lg">
+          <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed max-h-[60vh] overflow-y-auto">{resumo.text}</p>
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-3">
+            <span className="mr-auto text-[11px] text-slate-400">Feito pela IA — confira o que for decidir.</span>
+            <button onClick={() => { navigator.clipboard.writeText(resumo.text).then(() => toast('Resumo copiado')).catch(() => toast('Não consegui copiar', 'error')); }} className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><Copy size={14} /> Copiar</button>
+            <button onClick={salvarResumo} disabled={!!resumo.saved} className="text-sm px-3 py-2 rounded-lg text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#2261a8' }}>{resumo.saved ? 'Salvo nas anotações' : 'Salvar nas anotações'}</button>
+          </div>
+        </Modal>
+      )}
       {emailDraft && (
         <EmailComposer
           mailboxes={emailDraft.mailboxes}

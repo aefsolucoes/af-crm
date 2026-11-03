@@ -100,6 +100,21 @@ router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Botão "Resumo" da conversa (Fabio 03/11) — ver conversation-summary.service.ts. Só devolve o texto.
+router.post('/conversation-summary', async (req: AuthRequest, res: Response) => {
+  const { leadId } = req.body as { leadId?: string };
+  if (!leadId) { res.status(400).json({ error: 'leadId obrigatório' }); return; }
+  try {
+    const { summarizeConversation } = require('../services/conversation-summary.service') as typeof import('../services/conversation-summary.service');
+    const summary = await summarizeConversation(req.user!.accountId, leadId);
+    if (!summary) { res.status(422).json({ error: 'Não consegui resumir agora (conversa vazia ou IA indisponível) — tente de novo.' }); return; }
+    res.json({ summary });
+  } catch (err) {
+    console.error('[AI] Erro ao resumir a conversa:', err);
+    res.status(500).json({ error: 'Erro interno ao resumir' });
+  }
+});
+
 // Sugestão de TEMPLATE pra conversa fechada (janela de 24 h do WhatsApp) — Inbox → "Sugerir resposta" quando a janela está fechada. Nunca envia: devolve o template (com a categoria) pro balão.
 router.post('/suggest-template', async (req: AuthRequest, res: Response) => {
   const { leadId } = req.body as { leadId?: string };

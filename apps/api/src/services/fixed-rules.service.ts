@@ -32,6 +32,7 @@ export const FIXED_RULE_TITLES: Record<string, string> = {
   EMAIL_RELAY_RULES: '[REGRA FIXA] IA — e-mails do processo (EMAIL_RELAY_RULES)',
   DOCS_CHECKER_RULES: '[REGRA FIXA] Conferência de documentos (DOCS_CHECKER_RULES) — não mude o formato JSON',
   EMAIL_SUGGESTION_RULES: '[REGRA FIXA] Sugestão de e-mail (EMAIL_SUGGESTION_RULES)',
+  EMAIL_COMPOSE_RULES: '[REGRA FIXA] E-mail criado pela conversa (EMAIL_COMPOSE_RULES)',
   SUGGESTION_ROLE_FRAMING: '[REGRA FIXA] Sugestão de resposta — quem ela é (SUGGESTION_ROLE_FRAMING)',
   TEMPLATE_ROLE: '[REGRA FIXA] Sugestão de template (TEMPLATE_ROLE)',
 };
