@@ -996,7 +996,8 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
     const aprov = await prisma.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, select: { bank: true, updatedAt: true, source: true } });
     const maisNova = Math.max(0, ...aprov.map((a) => a.updatedAt.getTime()));
     // Segura quando TODAS as aprovações são pré-aprovação de e-mail antiga (nunca conferida no portal) ou a Creditas pôs a proposta em stand-by.
-    const standBy = !!cf._creditasStandBy && aprov.every((a) => a.bank === 'CREDITAS');
+    // Stand-by só vale se veio DEPOIS da aprovação (proposta resgatada e aprovada de novo segue normal).
+    const standBy = !!cf._creditasStandBy && aprov.every((a) => a.bank === 'CREDITAS' && a.updatedAt.getTime() < new Date(cf._creditasStandBy.at).getTime());
     if (aprov.length && (standBy || (aprov.every((a) => a.source === 'EMAIL') && Date.now() - maisNova > APROVACAO_VELHA_MS))) {
       const bancos = [...new Set(aprov.map((a) => a.bank))];
       await createRequests(prisma, { accountId: p.accountId, leadIds: [p.leadId], banks: bancos, dryRun: false, kind: 'CHECK' }).catch(() => {});
