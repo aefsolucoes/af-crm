@@ -78,7 +78,7 @@ async function lerRespostas(pergunta: string, falas: string[], enderecoComprovan
     body: JSON.stringify({
       model: 'claude-sonnet-5', max_tokens: 4096,
       system: `Você lê as respostas de um cliente no WhatsApp às perguntas de um correspondente bancário pra montar a proposta de crédito com garantia de imóvel (Home Equity). Extraia SÓ o que o cliente disse — nunca deduza nem invente; o que ele não respondeu = null. Valores em reais como número (ex.: "250 mil" → 250000, "5.500" → 5500). Responda SÓ com JSON:
-{"estadoCivil":"Solteiro(a)|Casado(a)|União estável|Divorciado(a)|Viúvo(a)|null","valorImovel":null,"credito":null,"prazoMeses":null,"tipoImovel":"Casa|Apartamento|Terreno|Sala comercial|Outro|null","matricula":"Sim|Não|null","imovelMesmoEndereco":true|false|null,"imovelEndereco":{"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"cep":null},"quitado":"Sim|Não|null","saldoDevedor":null,"email":null,"conjuge":{"nome":null,"cpf":null,"nascimento":"dd/mm/aaaa|null"}}`,
+{"estadoCivil":"Solteiro(a)|Casado(a)|União estável|Divorciado(a)|Viúvo(a)|null","valorImovel":null,"credito":null,"prazoMeses":null,"tipoImovel":"Casa|Apartamento|Terreno|Sala comercial|Outro|null","imovelMesmoEndereco":true|false|null,"imovelEndereco":{"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"cep":null},"quitado":"Sim|Não|null","saldoDevedor":null,"email":null,"conjuge":{"nome":null,"cpf":null,"nascimento":"dd/mm/aaaa|null"}}`,
       messages: [{ role: 'user', content: `PERGUNTA QUE FIZEMOS:\n${pergunta}\n\nENDEREÇO DO COMPROVANTE DE RESIDÊNCIA (onde o cliente mora): ${enderecoComprovante || '—'}\nimovelMesmoEndereco = true SÓ se o imóvel da garantia fica nesse endereço; se ele disse que o imóvel fica em outro lugar, false e o endereço em imovelEndereco.\n\nO QUE O CLIENTE RESPONDEU (em ordem):\n${falas.map((f) => `- ${f}`).join('\n')}` }],
     }),
   }).catch(() => null);
@@ -118,9 +118,8 @@ function juntar(st: Estado, cf: Cf, contato: { email?: string | null; telefone?:
     imovel: { tipo: r.tipoImovel || cf.tipo_imovel || '', mesmoEndereco: r.imovelMesmoEndereco === true && !outroLugar, endereco: imEnd },
     valorImovel: num(r.valorImovel) || num(cf.valor_imovel), credito: num(r.credito) || num(cf.valor_credito),
     prazo: prazoDoFormulario(Number(r.prazoMeses) || Number(String(cf.prazo_financ || '').replace(/\D/g, '')) || PRAZO_PADRAO),
-    // "O imóvel possui certidão de ônus/matrícula?" do formulário é Sim/Não (o Creditas lê esse campo): o que o cliente disse, ou Sim se a matrícula/ônus já chegou.
-    certidao: r.matricula === 'Sim' || r.matricula === 'Não' ? r.matricula
-      : Object.values((cf._docReview || {}) as Record<string, any>).some((x) => /MATRICULA|ONUS/.test(String(x?.tipo || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) ? 'Sim' : '',
+    // "O imóvel possui certidão de ônus/matrícula?" do formulário (o Creditas lê como "imóvel regularizado"): sempre Sim (Fabio 03/11).
+    certidao: 'Sim',
     renda: num(r.renda) || num(cf._propostaDoc?.rendaInformada) || 0,
     quitado, saldoDevedor: num(r.saldoDevedor) || num(cf.saldo_devedor),
     participante2: casado(r.estadoCivil || id.estadoCivil || cf.estado_civil_1) && r.conjuge?.nome ? { nome: r.conjuge.nome, cpf: r.conjuge.cpf || '', nascimento: r.conjuge.nascimento || '', relacao: 'Cônjuge', compoeRenda: false } : null,
@@ -138,7 +137,6 @@ function faltando(d: ReturnType<typeof juntar>, respondeuImovelMesmo: boolean): 
   if (!d.imovel.tipo) f.push('se o imóvel é casa, apartamento ou terreno');
   if (!respondeuImovelMesmo && !d.imovel.mesmoEndereco && !d.imovel.endereco) f.push('se o imóvel fica no mesmo endereço do comprovante (se não, o endereço do imóvel com CEP)');
   if (!d.quitado) f.push('se o imóvel está quitado (se não, quanto falta pagar)');
-  if (!d.certidao) f.push('se o imóvel tem matrícula (escritura registrada em cartório)');
   else if (d.quitado === 'Não' && !(d.saldoDevedor > 0)) f.push('quanto falta pagar do financiamento do imóvel');
   if (!d.email) f.push('seu e-mail');
   if (!d.endereco || !String(d.endereco.cep || '').replace(/\D/g, '')) f.push('o CEP do seu endereço');
