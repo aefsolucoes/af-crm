@@ -123,6 +123,38 @@ async function findLeadByName(accountId: string, name: string): Promise<{ id: st
   return iguais.length === 1 ? iguais[0] : null;
 }
 
+const STANDBY_RX = /descontinuad[ao] por falta de movimenta/i;
+
+/** Proposta da Creditas DESCONTINUADA por falta de movimentação (Fabio 03/11, Lucas: a IA confirmou "R$ 18 mil aprovados" de uma proposta parada): é stand-by — se o cliente
+ *  voltar com a documentação, a Creditas resgata pelo grupo do WhatsApp, sem novo cadastro. Marca o card (_creditasStandBy), nota + push. Idempotente por e-mail. */
+async function marcarStandByCreditas(accountId: string, lead: { id: string; name: string; customFields: any }, row: EmailMessage, c: { creditasId?: string }, avisar: boolean): Promise<boolean> {
+  const fresh = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
+  const cf = (fresh?.customFields || {}) as Record<string, any>;
+  if (cf._creditasStandBy?.emailId === row.id) return false;
+  await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, _creditasStandBy: { at: row.date.toISOString(), emailId: row.id, creditasId: c.creditasId || null } } } });
+  const dia = row.date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' });
+  await addNote(lead.id, `⏸️ Creditas: proposta${c.creditasId ? ` ${c.creditasId}` : ''} DESCONTINUADA por falta de movimentação (e-mail de ${dia}) — é STAND-BY, não reprovação. Se o cliente mandar a documentação, avise a Creditas no grupo do WhatsApp que eles resgatam a operação (não precisa novo cadastro).`);
+  if (avisar) pushTeam(accountId, lead.id, lead.name, 'Creditas descontinuou a proposta por falta de movimentação (stand-by) — resgata quando o cliente mandar os documentos');
+  return true;
+}
+
+/** Varre os e-mails da Creditas dos últimos `dias` e marca o stand-by nos cards (os que chegaram antes desta regra). */
+export async function scanCreditasStandBy(accountId: string, dias = 30): Promise<{ emails: number; marcados: string[]; semCard: number }> {
+  const { htmlToText } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+  const rows = await prisma.emailMessage.findMany({ where: { emailAccount: { accountId }, date: { gte: new Date(Date.now() - dias * 86_400_000) }, fromAddress: { contains: 'creditas' } }, orderBy: { date: 'asc' } });
+  let emails = 0, semCard = 0; const marcados: string[] = [];
+  for (const row of rows) {
+    const text = row.textBody || (row.htmlBody ? htmlToText(row.htmlBody) : '');
+    if (!STANDBY_RX.test(text)) continue;
+    emails++;
+    const c = citedClients(row.subject, text)[0];
+    const lead = c ? (c.cpf ? await findLeadByCpf(accountId, c.cpf) : await findLeadByName(accountId, c.name)) : null;
+    if (!lead || !c) { semCard++; continue; }
+    if (await marcarStandByCreditas(accountId, lead, row, c, false)) marcados.push(lead.name);
+  }
+  return { emails, marcados, semCard };
+}
+
 /** 1º pedido de SCR desse cliente: marca como pendente (ou só anota, fora da Pré-Análise) e avisa a equipe. */
 async function openScr(acc: EmailAccount, lead: { id: string; name: string; customFields: any }, row: EmailMessage, c: { name: string; creditasId?: string; cpf?: string }): Promise<void> {
   // 1º pedido de SCR desse cliente: marca como pendente e avisa a equipe.
@@ -154,6 +186,8 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
       try { await linkEmailToLead(acc, row.id, lead.id, io); } catch (e: any) { console.warn('[Creditas e-mail] não liguei o e-mail ao card:', e?.message); }
       if (!scr && fresh) { try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(acc.accountId, { title: `📧 Creditas — ${lead.name}`, body: row.subject || 'Novo e-mail da Creditas', leadId: lead.id }).catch(() => {}); } catch { /* push é extra */ } }
     }
+    // "Essa proposta foi descontinuada por falta de movimentação" (Fabio 03/11): STAND-BY, não reprovação — o card fica sabendo e a IA não confirma a aprovação.
+    if (!scr && STANDBY_RX.test(text)) { await marcarStandByCreditas(acc.accountId, lead, row, c, fresh); continue; }
     // E-mail "Crédito Pré Aprovado" (Fabio 19/10): vira a aprovação da Creditas no card, com os números do banco.
     if (!scr) { try { const { registerPreApproval } = require('./creditas-preapproval.service') as typeof import('./creditas-preapproval.service'); await registerPreApproval({ accountId: acc.accountId, leadId: lead.id, leadName: lead.name, row, io }); } catch (e: any) { console.warn('[Creditas e-mail] pré-aprovação:', e?.message); } }
     if (!scr && JONATAS.test(String(row.fromAddress).trim())) { if (await handleSuporteReply(acc, lead, row, text, io).catch((e: any) => { console.warn('[Creditas e-mail] resposta do Jonatas:', e?.message); return false; })) continue; }

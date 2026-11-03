@@ -244,6 +244,10 @@ router.put('/auto', async (req: AuthRequest, res: Response) => {
 });
 
 router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));
+// Varre os e-mails da Creditas "descontinuada por falta de movimentação" já recebidos e marca o stand-by nos cards (Fabio 03/11).
+router.post('/creditas-standby-scan', async (req: AuthRequest, res: Response) => {
+  try { const { scanCreditasStandBy } = require('../services/creditas-scr.service') as typeof import('../services/creditas-scr.service'); res.json(await scanCreditasStandBy(req.user!.accountId, Number(req.body?.dias) || 30)); } catch (err) { fail(res, err, 'Erro ao varrer os e-mails da Creditas'); }
+});
 // Painel do topo: o que cada extensão está fazendo agora (cliente, passo, fila).
 router.get('/live', async (req: AuthRequest, res: Response) => {
   try { res.json(await extensionsLive(prisma, req.user!.accountId, req.query.produto === 'fh' ? 'FH' : 'HE')); } catch (err) { fail(res, err, 'Erro ao ler as extensões'); }

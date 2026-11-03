@@ -988,9 +988,11 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   // nada sai sem uma conferência recente no portal — pede a conferência e avisa a equipe. Clique de uma pessoa ("Avisar cliente") passa.
   if (!p.userId) {
     const { APROVACAO_VELHA_MS, createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-    const aprov = await prisma.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, select: { bank: true, updatedAt: true } });
+    const aprov = await prisma.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, select: { bank: true, updatedAt: true, source: true } });
     const maisNova = Math.max(0, ...aprov.map((a) => a.updatedAt.getTime()));
-    if (aprov.length && Date.now() - maisNova > APROVACAO_VELHA_MS) {
+    // Segura quando TODAS as aprovações são pré-aprovação de e-mail antiga (nunca conferida no portal) ou a Creditas pôs a proposta em stand-by.
+    const standBy = !!cf._creditasStandBy && aprov.every((a) => a.bank === 'CREDITAS');
+    if (aprov.length && (standBy || (aprov.every((a) => a.source === 'EMAIL') && Date.now() - maisNova > APROVACAO_VELHA_MS))) {
       const bancos = [...new Set(aprov.map((a) => a.bank))];
       await createRequests(prisma, { accountId: p.accountId, leadIds: [p.leadId], banks: bancos, dryRun: false, kind: 'CHECK' }).catch(() => {});
       const dias = Math.round((Date.now() - maisNova) / 86_400_000);

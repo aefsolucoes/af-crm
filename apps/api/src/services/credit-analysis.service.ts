@@ -1906,8 +1906,14 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
     for (const bank of ['CREDIMORAR', 'CREDITAS', 'INTER']) {
       const r = bucket[bank];
       // Aprovação ANTIGA (Fabio 03/11, Lucas: pré-aprovação da Creditas lida de e-mail em 19/10, reprovada depois no portal — a IA confirmou "R$ 18 mil aprovados" 15 dias depois).
-      const velha = r && (r.status === 'APPROVED' || r.status === 'CONDITIONAL') && agora - new Date(r.updatedAt).getTime() > APROVACAO_VELHA_MS;
-      if (r) linhas.push(`- ${BANK_LABEL_IA[bank]}${quem}: ${descreve(r)} (lido há ${ha(r.updatedAt)})${velha ? ' ⚠️ LEITURA ANTIGA, sem conferência recente no portal: o banco pode ter mudado o resultado. NÃO confirme aprovação, valor nem parcela ao cliente e NÃO marque sendApproval; diga só que está conferindo a proposta com o banco e já retorna' : ''}`);
+      // Só a pré-aprovação lida de E-MAIL (nunca conferida no portal) envelhece assim; a da leitura do portal segue com as conferências da extensão.
+      const aprovada = r && (r.status === 'APPROVED' || r.status === 'CONDITIONAL');
+      const standBy = aprovada && bank === 'CREDITAS' && cf._creditasStandBy && new Date(cf._creditasStandBy.at).getTime() > new Date(r.updatedAt).getTime();
+      const velha = aprovada && !standBy && r.source === 'EMAIL' && agora - new Date(r.updatedAt).getTime() > APROVACAO_VELHA_MS;
+      const aviso = standBy
+        ? ' ⏸️ STAND-BY: a Creditas DESCONTINUOU essa proposta por falta de movimentação — ela volta a valer quando o cliente mandar a documentação (a equipe pede o resgate à Creditas). NÃO diga que foi reprovado nem confirme valor/parcela como se estivesse liberado e NÃO marque sendApproval; diga que, pra seguir com essa proposta, precisamos dos documentos dele'
+        : velha ? ' ⚠️ LEITURA ANTIGA (pré-aprovação de e-mail, sem conferência no portal): o banco pode ter mudado o resultado. NÃO confirme aprovação, valor nem parcela ao cliente e NÃO marque sendApproval; diga só que está conferindo a proposta com o banco e já retorna' : '';
+      if (r) linhas.push(`- ${BANK_LABEL_IA[bank]}${quem}: ${descreve(r)} (lido há ${ha(r.updatedAt)})${aviso}`);
     }
   }
   const aprovados = Object.entries(p1).filter(([, r]: [string, any]) => r && (r.status === 'APPROVED' || r.status === 'CONDITIONAL') && r.approvedValue != null).map(([bank, r]: [string, any]) => ({ bank, rate: r.rate, chosen: r.chosen, firstInstallment: r.firstInstallment }));
