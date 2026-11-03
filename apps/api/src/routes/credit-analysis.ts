@@ -7,7 +7,7 @@ import { previewApprovalNotice, sendApprovalNoticeNow, forwardApprovalToClient }
 import { sendRejectionAndClose } from '../services/credit-auto.service';
 import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.service';
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
-import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
+import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, finishItauDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
   BANK_KEYS, EXT_BANK_KEYS, FH_BANK, FH_RUN_BANKS, FH_ITAU_BANK, fhBoard, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
@@ -364,6 +364,16 @@ router.post('/simulation-docs/:id/creditas', async (req: AuthRequest, res: Respo
     emit(req);
     res.status(out.ok ? 200 : 422).json(out);
   } catch (err) { fail(res, err, 'Erro ao montar a simulação da Creditas', 400); }
+});
+// Itaú (Financiamento, 03/11): a extensão manda o resumo e a tabela mês a mês que o simulador do portal Itaú Imóveis devolveu pela proposta aprovada.
+router.post('/simulation-docs/:id/itau', async (req: AuthRequest, res: Response) => {
+  try {
+    const b = req.body || {};
+    if (!b.resumo || !Array.isArray(b.parcelas)) return res.status(400).json({ error: 'resumo e parcelas são obrigatórios' });
+    const out = await finishItauDoc(prisma, { accountId: req.user!.accountId, id: req.params.id, data: { resumo: b.resumo, parcelas: b.parcelas }, io: io(req) });
+    emit(req);
+    res.status(out.ok ? 200 : 422).json(out);
+  } catch (err) { fail(res, err, 'Erro ao montar a simulação do Itaú', 400); }
 });
 router.post('/simulation-docs/:id/fail', async (req: AuthRequest, res: Response) => {
   try {

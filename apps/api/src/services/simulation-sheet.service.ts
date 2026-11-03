@@ -10,7 +10,7 @@ import { BANK_LOGOS_BASE64, SELAWIK_BOLD_BASE64, SELAWIK_REGULAR_BASE64 } from '
  * a tabela usa Helvetica como o original, e o cabeçalho usa Selawik (mesmas métricas da Segoe UI do portal).
  */
 
-export type SheetBank = 'INTER' | 'SANTANDER' | 'CREDITAS';
+export type SheetBank = 'INTER' | 'SANTANDER' | 'CREDITAS' | 'ITAU';
 
 export interface SheetRow {
   n: number;
@@ -30,8 +30,10 @@ export interface SimulationSheet {
   /** Momento da simulação (padrão: agora, horário de Brasília). */
   when?: Date;
   bank: SheetBank;
-  /** Nome mostrado ao lado do ícone (padrão: Inter / Santander / Creditas). */
+  /** Nome mostrado ao lado do ícone (padrão: Inter / Santander / Creditas / Itaú). */
   bankLabel?: string;
+  /** Título da faixa azul (padrão "Home Equity | Evolução das parcelas"; o Financiamento usa "Financiamento Imobiliário | Evolução das parcelas"). */
+  titulo?: string;
   /** PADRÃO DA SIMULAÇÃO DE HOME EQUITY (Fabio 26/10) — só estes 8 campos, em 2 linhas de 4: tipo de imóvel, prazo, sistema, valor do imóvel / valor do empréstimo,
    *  taxa mensal, taxa nominal, taxa efetiva. Saíram CET, CESH, renda e entrada (Home Equity não tem entrada). Taxas já formatadas (ver `taxasDe`). */
   summary: {
@@ -117,7 +119,7 @@ function justify(page: PDFPage, text: string, font: PDFFont, size: number, x: nu
 function drawFirstPageHeader(ctx: Ctx, page: PDFPage, s: SimulationSheet) {
   const { reg, bold } = ctx;
   page.drawRectangle({ x: 0, y: 496, width: 843, height: 99, color: NAVY });
-  page.drawText('Home Equity | Evolução das parcelas', { x: 30, y: 555.39, size: 17.25, font: reg, color: WHITE });
+  page.drawText(s.titulo || 'Home Equity | Evolução das parcelas', { x: 30, y: 555.39, size: 17.25, font: reg, color: WHITE });
   page.drawLine({ start: { x: 30, y: 543.5 }, end: { x: 376, y: 543.5 }, thickness: 1, color: BLUE });
   page.drawText(s.clientName.toUpperCase(), { x: 30, y: 519.05, size: 12, font: reg, color: WHITE });
   const when = `Data da simulação: ${brasiliaParts(s.when || new Date())}`;
@@ -126,7 +128,7 @@ function drawFirstPageHeader(ctx: Ctx, page: PDFPage, s: SimulationSheet) {
 
   // Banco + aviso
   if (ctx.bankLogo) page.drawImage(ctx.bankLogo, { x: 63, y: 437, width: 30, height: 30 });
-  const label = s.bankLabel || { INTER: 'Inter', SANTANDER: 'Santander', CREDITAS: 'Creditas' }[s.bank];
+  const label = s.bankLabel || { INTER: 'Inter', SANTANDER: 'Santander', CREDITAS: 'Creditas', ITAU: 'Itaú' }[s.bank];
   page.drawText(label, { x: 102, y: 447.67, size: 10.5, font: bold, color: rgb(0.141, 0.141, 0.141) });
   page.drawText(DISCLAIMER_TITLE, { x: 158.62, y: 473.29, size: 9, font: bold, color: NOTE });
   justify(page, DISCLAIMER_LINES[0], reg, 9, 158.63, 451.29, 814 - 158.63);

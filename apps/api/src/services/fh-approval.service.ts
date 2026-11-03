@@ -124,7 +124,9 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
     where: {
       accountId, status: 'OPEN', archived: false, isGroup: false,
       pipeline: { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } },
-      creditAnalyses: { some: { bank: FH_BANK, status: { in: ['APPROVED', 'CONDITIONAL', 'SENT', 'CHECK', 'REQUESTED'] }, updatedAt: { gte: new Date(Date.now() - 20 * 86_400_000) } } },
+      // Todos os bancos do Financiamento (Fabio 03/11: "encaminhar todas as propostas aprovadas pro cliente escolher"): antes só a linha do Credimorar contava — Bradesco e
+      // Santander reprovados + Inter/Itaú aprovados nos nossos portais = cliente sem aviso.
+      creditAnalyses: { some: { bank: { in: [FH_BANK, ...Object.values(PORTAL_PROPRIO)] }, status: { in: ['APPROVED', 'CONDITIONAL', 'SENT', 'CHECK', 'REQUESTED'] }, updatedAt: { gte: new Date(Date.now() - 20 * 86_400_000) } } },
     },
     select: { id: true, name: true, customFields: true, aiAutoReplyActive: true },
     take: 50,

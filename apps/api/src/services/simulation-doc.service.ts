@@ -14,16 +14,17 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
  * (sendOutboundMedia, grátis dentro da janela de 24h). Nunca vai PDF cru de portal: se não der pra montar, o pedido falha com o motivo.
  */
 
-export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMORAR' | 'INTER' | 'CREDITAS' | 'CREDIMORAR_FH' | 'INTER_FH'; mode: 'pdf' | 'data'; credimorarId?: number }> = {
+export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMORAR' | 'INTER' | 'CREDITAS' | 'CREDIMORAR_FH' | 'INTER_FH' | 'ITAU_FH'; mode: 'pdf' | 'data'; credimorarId?: number }> = {
   SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR', mode: 'pdf', credimorarId: 2 }, // coluna Santander do Credimorar
   INTER: { label: 'Inter', extBank: 'INTER', mode: 'data' },
   CREDITAS: { label: 'Creditas', extBank: 'CREDITAS', mode: 'data' },
   // Financiamento Habitacional (Fabio 27/10): "Evolução das parcelas" do Crédito imobiliário do Credimorar (/Simulacao/ImprimirSimulacao), id do banco no portal.
   FH_BRADESCO: { label: 'Bradesco', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 1 },
   FH_SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 2 },
-  // TODO (Fabio 03/11): o Itaú do Financiamento passou a rodar no portal Itaú Imóveis (fila ITAU_FH), fora do Credimorar. Este PDF continua vindo do Credimorar (id 3) e só existe pra cliente ANTIGO com Itaú aprovado por lá;
-  // pra cliente novo (aprovação só em ITAU_FH) o pedido sai sem PDF — cai no aviso "O PDF da simulação do Itaú pedido pela IA NÃO saiu… Mande à mão". Falta o PDF novo (a extensão do Itaú ler a proposta, como o Inter em 'data').
-  FH_ITAU: { label: 'Itaú', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 3 },
+  // Itaú (Fabio 03/11): roda no portal Itaú Imóveis (fila ITAU_FH) — a extensão do Itaú abre o simulador do portal pela proposta aprovada ("Simulação a partir de uma
+  // proposta"), lê a tabela mês a mês e o CRM desenha no modelo A&F (finishItauDoc). Cliente ANTIGO, aprovado no Itaú pelo Credimorar (sem ITAU_FH aprovado): PDF do Credimorar (id 3).
+  FH_ITAU: { label: 'Itaú', extBank: 'ITAU_FH', mode: 'data' },
+  FH_ITAU_CM: { label: 'Itaú', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 3 },
   FH_INTER: { label: 'Inter', extBank: 'INTER_FH', mode: 'data' },
   // Inter aprovado PELO CREDIMORAR (antes de 29/10) com valor MAIOR que o do nosso portal: o PDF sai do Credimorar (Evolução Teórica do Inter, id 6).
   FH_INTER_CM: { label: 'Inter', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 6 }, // 29/10: Inter do Financiamento é no nosso portal → a extensão do Inter lê a proposta e o Evolução Teórica
@@ -88,6 +89,7 @@ export async function requestSimulationDocs(db: Db, p: { accountId: string; lead
   const skipped: string[] = [];
   for (let inst of parseInstitutions(p.institutions)) {
     if (inst === 'FH_INTER' && (await interFhMaiorNoCredimorar(db, p.leadId))) inst = 'FH_INTER_CM'; // proposta MAIOR é a do Inter via Credimorar
+    if (inst === 'FH_ITAU' && !(await db.creditAnalysis.findFirst({ where: { leadId: p.leadId, bank: 'ITAU_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, select: { id: true } }))) inst = 'FH_ITAU_CM'; // Itaú aprovado só pelo Credimorar (antes de 03/11)
     // PDF do CREDITAS DESATIVADO (Fabio 15/10, João Henrique): ele era montado pela API do SIMULADOR do portal (faixa "a partir de": taxa 1,09% a.m., CET 1,271%) e NÃO tem nada a ver com a
     // proposta aprovada do cliente (juros 1,50% a.m., CET 1,64%, 1ª parcela R$ 4.798,15). Até sair do que a proposta aprovada traz, não gera.
     if (inst === 'CREDITAS') { skipped.push(inst); continue; }
@@ -382,6 +384,57 @@ export async function finishCreditasDoc(db: Db, p: { accountId: string; id: stri
   const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
   let pdf: Buffer;
   try { pdf = await renderSimulationSheet(sheetFromCreditas({ clientName: lead?.name || 'Cliente', data: p.data })); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
+  return deliver(db, r, pdf, p.io);
+}
+
+// ── Itaú (Financiamento, portal Itaú Imóveis — Fabio 03/11): simulação do próprio portal pela proposta aprovada → modelo A&F ──────────────────
+// A extensão abre o simulador ("Simulação a partir de uma proposta": nº + CPF), confere que o valor/prazo são os aprovados, clica Simular e manda o que o portal devolveu.
+export interface ItauData {
+  resumo: { valorImovel: number; valorFinanciado: number; prazo: number; sistema: string; taxaAnual: number; tipoImovel?: string; proposta?: string };
+  parcelas: Array<{ number: number; amortization: number; interest: number; insurerMip: number; insurerDfi: number; tac: number; totalValue: number; endingBalance: number }>;
+}
+
+export function sheetFromItau(p: { clientName: string; data: ItauData; when?: Date }): SimulationSheet {
+  const { resumo, parcelas } = p.data;
+  const rows: SheetRow[] = parcelas.map((x) => ({
+    n: num(x.number), amort: num(x.amortization), juros: num(x.interest), mip: num(x.insurerMip), dfi: num(x.insurerDfi), tsa: num(x.tac),
+    // Parcela 0 do portal (carência, só seguros): o próprio simulador mostra MIP + DFI no total.
+    parcela: num(x.number) === 0 ? num(x.insurerMip) + num(x.insurerDfi) : num(x.totalValue),
+    saldo: num(x.endingBalance),
+  }));
+  return {
+    clientName: p.clientName,
+    when: p.when,
+    bank: 'ITAU',
+    titulo: 'Financiamento Imobiliário | Evolução das parcelas',
+    summary: {
+      tipoImovel: /comerc/i.test(resumo.tipoImovel || '') ? 'Comercial' : 'Residencial',
+      prazoMeses: num(resumo.prazo) || rows.filter((r) => r.n > 0).length,
+      sistema: /hybrid|mix/i.test(resumo.sistema || '') ? 'MIX' : 'SAC',
+      valorImovel: num(resumo.valorImovel),
+      valorEmprestimo: num(resumo.valorFinanciado),
+      // A taxa do Itaú é anual efetiva, pré-fixada (o simulador diz "Simulação sem TR"): mensal e nominal saem dela (padrão 26/10).
+      ...taxasDe({ efetivaAA: num(resumo.taxaAnual) || null }),
+    },
+    rows,
+  };
+}
+
+export async function finishItauDoc(db: Db, p: { accountId: string; id: string; data: ItauData; io?: Io }) {
+  const r = await loadOpen(db, p.accountId, p.id);
+  if (r.status === 'DONE') return { ok: true as const, already: true, messageId: r.messageId };
+  const fail = async (reason: string) => { await failSimulationDoc(db, { accountId: p.accountId, id: r.id, reason }); return { ok: false as const, error: reason }; };
+  const parcelas = Array.isArray(p.data?.parcelas) ? p.data.parcelas : [];
+  if (!parcelas.length || !p.data?.resumo) return fail('Os dados do Itaú vieram incompletos. Não enviei.');
+  // Conferência: a tabela tem que fechar (saldo final ~0) e ser do valor APROVADO (a extensão confere antes; aqui é a última barreira).
+  const ultima = parcelas[parcelas.length - 1];
+  if (Math.abs(num(ultima?.endingBalance)) > 1) return fail(`A tabela do Itaú não fecha (saldo final ${num(ultima?.endingBalance).toFixed(2)}). Não enviei.`);
+  const aprovada = await db.creditAnalysis.findFirst({ where: { leadId: r.leadId, bank: 'ITAU_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: [{ chosen: 'desc' }, { approvedValue: 'desc' }], select: { approvedValue: true } });
+  const ap = Number(aprovada?.approvedValue) || 0;
+  if (ap && Math.abs(num(p.data.resumo.valorFinanciado) - ap) / ap > 0.01) return fail(`A simulação do Itaú saiu com R$ ${num(p.data.resumo.valorFinanciado).toLocaleString('pt-BR')}, mas o aprovado é R$ ${ap.toLocaleString('pt-BR')}. Não enviei.`);
+  const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
+  let pdf: Buffer;
+  try { pdf = await renderSimulationSheet(sheetFromItau({ clientName: lead?.name || 'Cliente', data: p.data })); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
   return deliver(db, r, pdf, p.io);
 }
 
