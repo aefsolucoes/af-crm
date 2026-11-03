@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { vistoriaPreview, solicitarVistoria, laudoPreview, claimLaudo, reportLaudo, seguirPreview, requestSeguir, claimSeguir, reportSeguir } from '../services/vistoria-inter.service';
 import { santanderPreview, executarVistoriaSantander } from '../services/vistoria-santander.service';
-import { vistoriaCreditasStatus, vistoriaCreditasPreview, solicitarVistoriaCreditas } from '../services/vistoria-creditas.service';
+import { vistoriaCreditasStatus, vistoriaCreditasPreview, solicitarVistoriaCreditas, pedirContatoVistoria } from '../services/vistoria-creditas.service';
 import { pedirLaudoPeloBotao } from '../services/laudo-ask.service';
 
 /** Botão "Solicitar vistoria" do card — ver vistoria-inter.service.ts. */
@@ -34,6 +34,10 @@ router.get('/creditas/status', async (req: AuthRequest, res: Response) => {
 });
 router.get('/creditas/preview', async (req: AuthRequest, res: Response) => {
   try { res.json(await vistoriaCreditasPreview(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao montar o e-mail da vistoria da Creditas'); }
+});
+// "Contato vistoria" vazio no clique (Fabio 03/11): pergunta ao cliente quem acompanha a vistoria (mensagem; conversa fechada = template antes).
+router.post('/creditas/ask-contato', async (req: AuthRequest, res: Response) => {
+  try { res.json({ asked: await pedirContatoVistoria(req.user!.accountId, String(req.body?.leadId || ''), req.user!.id, (req as any).app.get('io')) }); } catch (err) { fail(res, err, 'Erro ao perguntar o contato da vistoria'); }
 });
 router.post('/creditas/request', async (req: AuthRequest, res: Response) => {
   const b = req.body || {};

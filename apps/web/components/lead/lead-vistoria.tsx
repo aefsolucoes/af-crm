@@ -291,11 +291,12 @@ export function LeadVistoriaSantander({ leadId }: { leadId: string }) {
 type CreditasPreview = {
   to: string; cc: string; subject: string; body: string; replyToId: string | null;
   anexos: { id: string; name: string; path: string; size: number; checked: boolean }[];
-  jaSolicitadaEm: string | null; temCreditas: boolean; avisos: string[];
+  jaSolicitadaEm: string | null; temCreditas: boolean; contatoVazio: boolean; avisos: string[];
 };
+type CreditasStatus = { aplicavel: boolean; jaSolicitadaEm: string | null; contatoVazio: boolean; contatoPerguntadoEm: string | null };
 
 export function LeadVistoriaCreditas({ leadId }: { leadId: string }) {
-  const [st, setSt] = useState<{ aplicavel: boolean; jaSolicitadaEm: string | null } | null>(null);
+  const [st, setSt] = useState<CreditasStatus | null>(null);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -305,12 +306,21 @@ export function LeadVistoriaCreditas({ leadId }: { leadId: string }) {
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [sel, setSel] = useState<string[]>([]);
-  useEffect(() => { api.get<{ aplicavel: boolean; jaSolicitadaEm: string | null }>('/api/vistorias/creditas/status', { params: { leadId } }).then((r) => setSt(r.data)).catch(() => {}); }, [leadId]);
+  useEffect(() => { api.get<CreditasStatus>('/api/vistorias/creditas/status', { params: { leadId } }).then((r) => setSt(r.data)).catch(() => {}); }, [leadId]);
   if (!st || !st.aplicavel) return null;
 
   async function abrir() {
     setLoading(true);
     try {
+      // Sem "Contato vistoria" no card (Fabio 03/11): o CRM pergunta ao cliente quem acompanha a vistoria — sem citar o banco. Conversa fechada: template "Olá, tudo bem?" antes.
+      const perguntadoHa = st?.contatoPerguntadoEm ? Date.now() - new Date(st.contatoPerguntadoEm).getTime() : Infinity;
+      if (st?.contatoVazio && perguntadoHa > 3 * 86_400_000 && window.confirm('O card não tem o "Contato vistoria".\n\nO CRM vai perguntar ao cliente quem acompanha a vistoria do imóvel (nome e telefone) — se a conversa estiver fechada, manda antes o template "Olá, tudo bem?". A resposta vai pro card.\n\nPerguntar agora? (Cancelar = só abrir o e-mail)')) {
+        try {
+          const { data } = await api.post<{ asked: string }>('/api/vistorias/creditas/ask-contato', { leadId });
+          toast(data.asked === 'template' ? 'Conversa fechada: mandei o template "Olá, tudo bem?". A pergunta do contato sai quando o cliente responder.' : data.asked === 'mensagem' ? 'Perguntei ao cliente o contato da vistoria.' : data.asked === 'aguardando' ? 'A pergunta do contato já está esperando o cliente.' : 'O card já tem o contato da vistoria.', 'success');
+          setSt((cur) => (cur ? { ...cur, contatoPerguntadoEm: new Date().toISOString() } : cur));
+        } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao perguntar o contato da vistoria', 'error'); }
+      }
       const { data } = await api.get<CreditasPreview>('/api/vistorias/creditas/preview', { params: { leadId } });
       setP(data); setTo(data.to); setCc(data.cc); setSubject(data.subject); setBody(data.body); setSel(data.anexos.filter((a) => a.checked).map((a) => a.id));
       setOpen(true);
@@ -326,7 +336,7 @@ export function LeadVistoriaCreditas({ leadId }: { leadId: string }) {
     try {
       await api.post('/api/vistorias/creditas/request', { leadId, to, cc, subject, body, replyToId: p.replyToId, attachDriveFileIds: sel });
       toast('Vistoria solicitada à Creditas', 'success');
-      setSt({ aplicavel: true, jaSolicitadaEm: new Date().toISOString() });
+      setSt((cur) => (cur ? { ...cur, jaSolicitadaEm: new Date().toISOString() } : cur));
       setOpen(false);
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao enviar à Creditas', 'error');

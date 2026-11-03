@@ -120,6 +120,22 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   };
 }
 
+/** Card vai pra etapa de VISTORIA do funil dele quando uma vistoria é SOLICITADA — e-mail ao banco ou extensão acionada (Fabio 03/11: "sempre que qualquer extensão for acionada e seja
+ *  de solicitar vistoria, o card deve mudar de etapa"). Não volta card que já está adiante da vistoria (Análise Jurídica, contrato…). Devolve se moveu. */
+export async function moverParaVistoria(accountId: string, leadId: string, motivo: string, io?: Io): Promise<boolean> {
+  try {
+    const card = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { pipelineId: true, stageId: true, stage: { select: { name: true, order: true } } } });
+    if (!card) return false;
+    const vist = await prisma.stage.findFirst({ where: { pipelineId: card.pipelineId, name: { contains: 'Vistoria', mode: 'insensitive' } }, select: { id: true, name: true, order: true } });
+    if (!vist || vist.id === card.stageId || (card.stage && card.stage.order > vist.order)) return false;
+    const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+    await updateLeadStage(leadId, accountId, vist.id);
+    await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `Estágio: "${card.stage?.name || '—'}" → "${vist.name}" — ${motivo}` } }).catch(() => {});
+    io?.to?.(`account_${accountId}`)?.emit?.('new_conversation', { leadId });
+    return true;
+  } catch (e: any) { console.warn('[Vistoria] não consegui mover o card:', e?.message); return false; }
+}
+
 export async function solicitarVistoria(p: { accountId: string; userId: string; leadId: string; to: string; cc?: string; subject: string; body: string; replyToId?: string | null; attachDriveFileIds?: string[]; io?: Io }) {
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { name: true, customFields: true, pipelineId: true, stageId: true, stage: { select: { name: true } } } });
   if (!lead) throw new Error('Card não encontrado');
@@ -227,6 +243,7 @@ export async function requestLaudo(accountId: string, leadId: string, userId: st
   if (cf._laudoStatus === 'REQUESTED' || cf._laudoStatus === 'RUNNING') throw new Error('O laudo já está na fila da extensão.');
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'REQUESTED', _laudoRequestedAt: new Date().toISOString(), _laudoFilledAt: null } } });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', userId, content: '📝 Laudo digital do Inter na fila: a extensão "Vistoria Inter" vai preencher o formulário, marcar "me responsabilizo" e enviar ao Inter (Fabio 03/11).' } }).catch(() => {});
+  await moverParaVistoria(accountId, leadId, 'extensão do laudo digital do Inter acionada');
   return { ok: true };
 }
 

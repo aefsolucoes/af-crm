@@ -540,6 +540,7 @@ ${ctx.historicoTexto}`;
  *  FieldDefinition, por isso ficam hardcoded aqui (mesmo critério já usado
  *  em site-lead.service.ts pros campos conhecidos). */
 const BUILTIN_LEAD_FIELDS: { key: string; label: string }[] = [
+  { key: 'contato_vistoria', label: 'Contato de quem vai ACOMPANHAR A VISTORIA do imóvel — nome, relação se disser e telefone (ex.: "Maria, inquilina — (11) 99999-0000"; "o próprio cliente — (11) 98888-0000"). Preencha quando o cliente responder quem acompanha a vistoria (pode ser outra pessoa que não é proponente)' },
   { key: 'falando_com', label: 'Nome de QUEM ESTÁ FALANDO no WhatsApp quando NÃO é o titular do crédito (ex.: a esposa que preencheu a proposta) — deixe vazio se quem fala é o próprio titular' },
   { key: 'cadastro_confirmado', label: 'Cliente CONFIRMOU que nome, CPF e data de nascimento da proposta estão corretos — preencha "Sim" SÓ quando ele disser isso (resposta à pergunta de confirmação do cadastro)' },
   { key: 'ocorrencias_cliente', label: 'Resposta do cliente à orientação Serasa/SCPC/protesto (bloco RESTRIÇÃO NO NOME): "sem" quando ele disser que conferiu e NÃO há ocorrência; "com" quando confirmar ocorrência — só com esse bloco' },
@@ -577,7 +578,8 @@ const NUMBER_FIELD_KEYS = new Set([
 export async function buildFillableFieldsText(accountId: string): Promise<string> {
   const defs = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }] });
   const builtinText = BUILTIN_LEAD_FIELDS.map((f) => `- "${f.key}": ${f.label}`).join('\n');
-  const customText = defs.map((d) => `- "${d.key}" (aba ${d.tab}): ${d.name}`).join('\n');
+  const builtinKeys = new Set(BUILTIN_LEAD_FIELDS.map((f) => f.key));
+  const customText = defs.filter((d) => !builtinKeys.has(d.key)).map((d) => `- "${d.key}" (aba ${d.tab}): ${d.name}`).join('\n');
   return [builtinText, customText].filter(Boolean).join('\n');
 }
 
@@ -586,7 +588,7 @@ export async function fillableFieldLabels(accountId: string): Promise<Map<string
   const defs = await prisma.fieldDefinition.findMany({ where: { accountId }, select: { key: true, name: true } });
   return new Map([
     ...BUILTIN_LEAD_FIELDS.map((f) => [f.key, f.label.split(/ \(| — /)[0]] as [string, string]),
-    ...defs.map((d) => [d.key, d.name] as [string, string]),
+    ...defs.map((d) => [d.key, d.name] as [string, string]), // campo criado na tela com a mesma chave (ex.: "Contato vistoria") fica com o nome da tela
   ]);
 }
 

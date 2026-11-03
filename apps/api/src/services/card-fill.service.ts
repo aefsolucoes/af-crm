@@ -60,7 +60,7 @@ export async function fillCardFromConversation(accountId: string, leadId: string
 REGRAS
 - Só valores que o CLIENTE disse CLARAMENTE nas MENSAGENS NOVAS (pode ser a resposta a uma pergunta do atendente que está no histórico). Nunca invente, deduza, estime nem arredonde.
 - Nunca use o que o ATENDENTE escreveu como dado do cliente.
-- Participante 1 é o titular do crédito; participante 2 é o outro proponente (cônjuge, sócio). Dado de outra pessoa (vendedor, corretor, parente que não é proponente) não entra.
+- Participante 1 é o titular do crédito; participante 2 é o outro proponente (cônjuge, sócio). Dado de outra pessoa (vendedor, corretor, parente que não é proponente) não entra — EXCETO "contato_vistoria": quem vai acompanhar a vistoria do imóvel (nome e telefone), que pode ser outra pessoa (inquilino, parente, corretor).
 - CPF só com os números. Data no formato DD/MM/AAAA. Valores em reais como número puro (ex.: 5000 ou 350000).
 - Não devolva campo cujo valor já é o mesmo que está no card.
 - Use SÓ as chaves da lista. Se nada novo, devolva {}.
