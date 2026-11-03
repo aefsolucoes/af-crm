@@ -120,6 +120,18 @@ export async function processVendaFutura(io: Io): Promise<void> {
       enviados++;
       if (result.success) {
         await saveCf(l.id, (c) => { c._vendaFuturaSentAt = new Date().toISOString(); delete c._vendaFuturaAt; c._vendaFuturaCount = Number(c._vendaFuturaCount || 0) + 1; c._vendaFuturaFails = 0; }, { aiAutoReplyActive: true });
+        // Sem aprovação (card em Lead Sem Retorno): depois do template, segue o fluxo do Follow Up (Fabio 03/11: "senão o cliente fica empacado naquele estágio") —
+        // o card vai pra Follow Up e o loop continua do Follow Up 2, 3 dias depois (esse template conta como o 1º).
+        if (!/venda futura/i.test(l.stage?.name || '')) {
+          const fu = (await prisma.stage.findMany({ where: { pipeline: { leads: { some: { id: l.id } } } }, orderBy: { order: 'asc' }, select: { id: true, name: true } })).find((s) => /^follow up/i.test(s.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim()));
+          if (fu) {
+            const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+            await updateLeadStage(l.id, l.accountId, fu.id);
+            await saveCf(l.id, (c) => { c._followLoop = { passo: 1, ultimoAt: new Date().toISOString() }; });
+            await prisma.note.create({ data: { leadId: l.id, type: 'STAGE_CHANGE', content: `🔁 Card movido pra "${fu.name}" — mandei a retomada (sem aprovação) e o card segue o fluxo do Follow Up (próximo lembrete em 3 dias).` } }).catch(() => {});
+            if (io) io.to(`lead:${l.id}`).emit('lead_moved', { leadId: l.id, stageId: fu.id });
+          }
+        }
         await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `📅 Venda Futura: mandei a mensagem de retomada (${aberta ? 'texto livre, janela aberta' : `template ${VENDA_FUTURA_TEMPLATE}`}) — ${due === 'DATA' ? 'chegou o dia combinado com o cliente' : '30 dias desde o último contato'}. Repete de 30 em 30 dias até o cliente responder.` } }).catch(() => {});
         logActivity({ accountId: l.accountId, userId: null, userName: 'Venda Futura', action: 'lead_edited', leadId: l.id, leadName: l.name, summary: 'mandou a mensagem de retomada (Venda Futura)' } as any);
         // Aviso da equipe (Fabio 22/10: "agendamentos em push"): a retomada combinada saiu — a conversa volta a andar e alguém precisa acompanhar.

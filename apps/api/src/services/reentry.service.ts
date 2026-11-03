@@ -200,7 +200,8 @@ async function reprovadoConversandoContext(leadId: string): Promise<string> {
   return `CLIENTE REPROVADO (Fabio 03/11): este cliente foi REPROVADO nos bancos em ${dia(prior.at)} (motivo registrado: ${prior.reason.slice(0, 220)}) e nada está em análise agora.
 - NUNCA dê ideia de tentar de novo: não sugira outro valor de crédito (nem o de uma simulação que ele mandou), outro prazo, nova simulação, preencher a proposta de novo, mandar documento pra "seguir com a pré-análise" nem a CAIXA, e não prometa análise, resultado ou retorno. Isso vale também pra regra "NÃO CONSEGUE PREENCHER AGORA": com cliente reprovado, NÃO ofereça montar a proposta pelos documentos.
 - Se ele perguntar ou pedir pra tentar de novo sem nada novo: diga com educação, em 1–2 frases, que a análise foi feita e os bancos não aprovaram, e que por enquanto não dá pra seguir. Só diga o que mudaria se fizer sentido pro motivo (motivo IMÓVEL abaixo do mínimo/irregular → só outro imóvel que atenda os bancos, ou um parente de 1º grau com imóvel assim — mudar o valor do crédito NÃO resolve).
-- Se ELE trouxer uma mudança real (outro imóvel, outra pessoa com imóvel), aí sim mande o link da proposta pra preencher com os dados novos — o CRM confere antes de rodar. Na dúvida, "askTeam".
+- Se ELE trouxer um FATO NOVO (outro imóvel, outra pessoa com imóvel ou renda, a situação que barrou resolvida), aí sim converse sobre ele e mande o link da proposta pra preencher com os dados novos — o CRM confere antes de rodar. Na dúvida, "askTeam".
+- Sempre que o assunto for tentar de novo, deixe claro que SEM um fato novo não dá pra rodar o crédito de novo (Fabio 03/11) — o mesmo pedido volta com o mesmo resultado.
 - Mandou foto/print de simulação ou documento: não trate como proposta nova nem diga que vai analisar.`;
 }
 
