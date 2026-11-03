@@ -455,7 +455,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     }
   }
   // "Resumo" (Fabio 03/11: "preguiça de ler a conversa toda"): a IA lê a conversa inteira + o card e mostra um resumo curto. Pode copiar ou salvar nas anotações.
-  const [resumo, setResumo] = useState<null | { loading: boolean; text: string; saved?: boolean }>(null);
+  const [resumo, setResumo] = useState<null | { loading: boolean; text: string; saved?: boolean; erro?: string }>(null);
   useEffect(() => { setResumo(null); setPapo([]); setPergunta(''); }, [leadId]);
   // "Converse sobre este cliente" dentro do Resumo (Fabio 03/11): a IA responde com tudo que o CRM sabe dele (conversa, card, análises, documentos, e-mails, anotações)
   // e pode sugerir a mensagem pro cliente — "Usar na conversa" põe no campo e o envio NÃO desliga a IA do card.
@@ -495,10 +495,10 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     setResumo({ loading: true, text: '' });
     try {
       const { data } = await api.post('/api/ai/conversation-summary', { leadId });
-      setResumo({ loading: false, text: data.summary || '' });
+      setResumo((r) => (r ? { loading: false, text: data.summary || '' } : r));
     } catch (err: any) {
-      toast(err?.response?.data?.error || 'Não consegui resumir agora', 'error');
-      setResumo(null);
+      // A janela fica aberta mesmo sem resumo — o "Sugerir resposta" e o papo sobre o cliente moram nela.
+      setResumo((r) => (r ? { loading: false, text: '', erro: err?.response?.data?.error || 'Não consegui resumir agora — tente de novo.' } : r));
     }
   }
   async function salvarResumo() {
@@ -1626,7 +1626,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
           <button
             onClick={abrirResumo}
             disabled={!!resumo?.loading}
-            title="Resumo da conversa pela IA — quem é, onde está, o que foi combinado e o que falta"
+            title="Resumo da conversa pela IA + Sugerir resposta + perguntas sobre o cliente"
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
           >
             {resumo?.loading ? <Loader2 size={13} className="animate-spin" /> : <ScrollText size={13} />}
@@ -2467,15 +2467,22 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
 
       {/* Aviso: envio falhou por falta de telefone real (contato só tem @lid) —
           cadastra na hora e reenvia sozinho, sem mandar caçar o campo certo. */}
-      {resumo && !resumo.loading && (
+      {/* Abre na hora (Fabio 03/11: "não tô achando o Sugerir resposta") — o resumo carrega dentro, e o Sugerir resposta já fica clicável. */}
+      {resumo && (
         <Modal title="Resumo da conversa" onClose={() => setResumo(null)} size="lg">
           <div className="max-h-[70vh] overflow-y-auto space-y-3 pr-1">
-            <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{resumo.text}</p>
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            {resumo.loading ? (
+              <p className="flex items-center gap-2 text-sm text-slate-500"><Loader2 size={14} className="animate-spin" /> Resumindo a conversa…</p>
+            ) : resumo.erro ? (
+              <p className="text-sm text-red-600">{resumo.erro}</p>
+            ) : (
+              <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{resumo.text}</p>
+            )}
+            {!!resumo.text && <div className="flex flex-wrap items-center justify-end gap-2">
               <span className="mr-auto text-[11px] text-slate-400">Feito pela IA — confira o que for decidir.</span>
               <button onClick={() => { navigator.clipboard.writeText(resumo.text).then(() => toast('Resumo copiado')).catch(() => toast('Não consegui copiar', 'error')); }} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><Copy size={13} /> Copiar</button>
               <button onClick={salvarResumo} disabled={!!resumo.saved} className="text-xs px-2.5 py-1.5 rounded-lg text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#2261a8' }}>{resumo.saved ? 'Salvo nas anotações' : 'Salvar nas anotações'}</button>
-            </div>
+            </div>}
             {/* "Sugerir resposta" mora dentro do Resumo (Fabio 03/11) — mesmo motor da IA da conversa; conversa fechada → sugestão de template no painel de Templates. */}
             <div className="border-t border-af-border pt-3 space-y-2">
               <div className="flex items-center gap-2">
