@@ -43,6 +43,9 @@ export interface SimulationSheet {
     valorImovel: number;
     valorEmprestimo: number;
     taxaMensal: string; // "1,40% a.m. + IPCA"
+    /** Só no Financiamento: indexador do contrato (TR, IPCA…; pré-fixado = vazio) e entrada (padrão: imóvel − financiado). */
+    indexador?: string;
+    valorEntrada?: number;
     taxaNominal: string; // "16,80% a.a. + IPCA"
     taxaEfetiva: string; // "18,16% a.a. + IPCA"
   };
@@ -139,18 +142,28 @@ function drawFirstPageHeader(ctx: Ctx, page: PDFPage, s: SimulationSheet) {
   const m = s.summary;
   const W = (814 - 29) / 4;
   const caixa = (i: number, label: string, value: string) => ({ x: 29 + W * i, w: W, label, cx: 29 + W * (i + 0.5), value });
+  // PADRÃO DO FINANCIAMENTO (Fabio 03/11: "não precisa aparecer taxa mensal" + "pode colocar a sua sugestão"): tipo de imóvel, prazo, sistema e indexador,
+  // valor do imóvel / valor de entrada, valor financiado, taxa nominal, taxa efetiva. O Home Equity segue o padrão de 26/10 (sem entrada, com taxa mensal).
+  const fh = /^Financiamento/i.test(s.titulo || '');
   const row1 = [
     caixa(0, 'Tipo de imóvel', m.tipoImovel),
     caixa(1, 'Prazo', `${m.prazoMeses} meses`),
-    caixa(2, 'Sistema de amortização', m.sistema),
+    fh ? caixa(2, 'Sistema e indexador', m.indexador ? `${m.sistema} / ${m.indexador}` : m.sistema) : caixa(2, 'Sistema de amortização', m.sistema),
     caixa(3, 'Valor do imóvel', brl(m.valorImovel)),
   ];
-  const row2 = [
-    caixa(0, 'Valor do empréstimo', brl(m.valorEmprestimo)),
-    caixa(1, 'Taxa mensal', m.taxaMensal),
-    caixa(2, 'Taxa nominal', m.taxaNominal),
-    caixa(3, 'Taxa efetiva', m.taxaEfetiva),
-  ];
+  const row2 = fh
+    ? [
+      caixa(0, 'Valor de entrada', brl(m.valorEntrada ?? Math.max(m.valorImovel - m.valorEmprestimo, 0))),
+      caixa(1, 'Valor financiado', brl(m.valorEmprestimo)),
+      caixa(2, 'Taxa nominal', m.taxaNominal),
+      caixa(3, 'Taxa efetiva', m.taxaEfetiva),
+    ]
+    : [
+      caixa(0, 'Valor do empréstimo', brl(m.valorEmprestimo)),
+      caixa(1, 'Taxa mensal', m.taxaMensal),
+      caixa(2, 'Taxa nominal', m.taxaNominal),
+      caixa(3, 'Taxa efetiva', m.taxaEfetiva),
+    ];
   // As caixas do modelo são recortadas: 39,2 pt de altura e nunca passam de x=814.
   const BOX_H = 39.2;
   for (const b of row1) page.drawRectangle({ x: b.x, y: 374, width: Math.min(b.w, 814 - b.x), height: BOX_H, color: BOX });

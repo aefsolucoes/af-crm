@@ -317,6 +317,7 @@ export function sheetFromInter(p: { clientName: string; proposal: InterProposalD
         efetivaAA: num(String(f.jurosAnualEfetivo || p.theory.header['Taxa efetiva anual de juros'] || '').replace(/[^\d.,]/g, '').replace(',', '.')) || null,
         indexador: String(f.indexador || 'IPCA').toUpperCase(),
       }),
+      indexador: String(f.indexador || 'IPCA').toUpperCase(), // só aparece no padrão do Financiamento ("Sistema e indexador")
     },
     rows,
   };
@@ -338,7 +339,8 @@ export async function finishInterDoc(db: Db, p: { accountId: string; id: string;
   }
   const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
   let pdf: Buffer;
-  try { pdf = await renderSimulationSheet(sheetFromInter({ clientName: lead?.name || 'Cliente', proposal: p.proposal, theory })); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
+  // Inter do Financiamento (FH_INTER) usa o mesmo leitor do Home Equity: o título (e o resumo sem taxa mensal) é o do Financiamento.
+  try { pdf = await renderSimulationSheet({ ...sheetFromInter({ clientName: lead?.name || 'Cliente', proposal: p.proposal, theory }), ...(r.institution.startsWith('FH_') ? { titulo: 'Financiamento Imobiliário | Evolução das parcelas' } : {}) }); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
   return deliver(db, r, pdf, p.io);
 }
 
