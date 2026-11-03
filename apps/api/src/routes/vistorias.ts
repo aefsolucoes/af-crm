@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { vistoriaPreview, solicitarVistoria, laudoPreview, claimLaudo, reportLaudo, seguirPreview, requestSeguir, claimSeguir, reportSeguir } from '../services/vistoria-inter.service';
 import { santanderPreview, executarVistoriaSantander } from '../services/vistoria-santander.service';
+import { vistoriaCreditasStatus, vistoriaCreditasPreview, solicitarVistoriaCreditas } from '../services/vistoria-creditas.service';
 import { pedirLaudoPeloBotao } from '../services/laudo-ask.service';
 
 /** Botão "Solicitar vistoria" do card — ver vistoria-inter.service.ts. */
@@ -25,6 +26,24 @@ router.post('/request', async (req: AuthRequest, res: Response) => {
       io: (req as any).app.get('io'),
     }));
   } catch (err) { fail(res, err, 'Erro ao solicitar a vistoria'); }
+});
+
+// ── Vistoria da Creditas (Fabio 03/11): e-mail ao Jonatas com nome/telefone do cliente + certidão de ônus e capa do IPTU. Monta pra revisar; só envia no clique. ──
+router.get('/creditas/status', async (req: AuthRequest, res: Response) => {
+  try { res.json(await vistoriaCreditasStatus(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao ler a vistoria da Creditas'); }
+});
+router.get('/creditas/preview', async (req: AuthRequest, res: Response) => {
+  try { res.json(await vistoriaCreditasPreview(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao montar o e-mail da vistoria da Creditas'); }
+});
+router.post('/creditas/request', async (req: AuthRequest, res: Response) => {
+  const b = req.body || {};
+  try {
+    res.json(await solicitarVistoriaCreditas({
+      accountId: req.user!.accountId, userId: req.user!.id, leadId: String(b.leadId || ''), to: String(b.to || ''), cc: typeof b.cc === 'string' ? b.cc : '',
+      subject: String(b.subject || ''), body: String(b.body || ''), replyToId: b.replyToId ? String(b.replyToId) : null, attachDriveFileIds: Array.isArray(b.attachDriveFileIds) ? b.attachDriveFileIds.map(String) : [],
+      io: (req as any).app.get('io'),
+    }));
+  } catch (err) { fail(res, err, 'Erro ao solicitar a vistoria à Creditas'); }
 });
 
 // ── Laudo digital do Inter (apartamento) — a extensão "Vistoria Inter" preenche e para antes de enviar ──

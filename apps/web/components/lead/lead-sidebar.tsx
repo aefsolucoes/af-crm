@@ -9,7 +9,7 @@ import { LeadCreditAnalysis } from './lead-credit-analysis';
 import { LeadFhAnalysis } from './lead-fh-analysis';
 import { LeadCertidoes } from './lead-certidoes';
 import { LeadItbi } from './lead-itbi';
-import { LeadVistoria, LeadVistoriaSantander } from './lead-vistoria';
+import { LeadVistoria, LeadVistoriaSantander, LeadVistoriaCreditas } from './lead-vistoria';
 import { CaixaCardButtons } from './caixa-card-buttons';
 import { useLeadAnalyses, FIELDS_FROM_ANALYSES } from '@/components/credit/shared';
 
@@ -547,6 +547,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
           {expanded && activeTab === 'Financiamento' && <LeadItbi leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoria leadId={lead.id} proposta={customValues.num_proposta} instituicao={customValues.instituicao} solicitadaEm={(lead as any).customFields?._vistoriaRequestedAt} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoriaSantander leadId={lead.id} />}
+          {expanded && activeTab === 'Financiamento' && <LeadVistoriaCreditas leadId={lead.id} />}
 
           {/* Custom fields for this tab (ocultos no modo compacto) */}
           {expanded && fieldsForTab.map(field => (

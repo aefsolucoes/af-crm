@@ -285,3 +285,111 @@ export function LeadVistoriaSantander({ leadId }: { leadId: string }) {
     </div>
   );
 }
+
+/* Vistoria da Creditas (Fabio 03/11: "já temos base que é por e-mail para o Jonatas"). Aparece quando o card tem aprovação da Creditas. O clique monta o e-mail ao Jonatas
+ * (nome e telefone do cliente + certidão de ônus e capa do IPTU da pasta IMOVEL) pra revisar; só sai quando alguém clica em "Enviar à Creditas". Ver vistoria-creditas.service.ts. */
+type CreditasPreview = {
+  to: string; cc: string; subject: string; body: string; replyToId: string | null;
+  anexos: { id: string; name: string; path: string; size: number; checked: boolean }[];
+  jaSolicitadaEm: string | null; temCreditas: boolean; avisos: string[];
+};
+
+export function LeadVistoriaCreditas({ leadId }: { leadId: string }) {
+  const [st, setSt] = useState<{ aplicavel: boolean; jaSolicitadaEm: string | null } | null>(null);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [p, setP] = useState<CreditasPreview | null>(null);
+  const [to, setTo] = useState('');
+  const [cc, setCc] = useState('');
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [sel, setSel] = useState<string[]>([]);
+  useEffect(() => { api.get<{ aplicavel: boolean; jaSolicitadaEm: string | null }>('/api/vistorias/creditas/status', { params: { leadId } }).then((r) => setSt(r.data)).catch(() => {}); }, [leadId]);
+  if (!st || !st.aplicavel) return null;
+
+  async function abrir() {
+    setLoading(true);
+    try {
+      const { data } = await api.get<CreditasPreview>('/api/vistorias/creditas/preview', { params: { leadId } });
+      setP(data); setTo(data.to); setCc(data.cc); setSubject(data.subject); setBody(data.body); setSel(data.anexos.filter((a) => a.checked).map((a) => a.id));
+      setOpen(true);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao montar o e-mail da vistoria', 'error');
+    } finally { setLoading(false); }
+  }
+
+  async function enviar() {
+    if (!p) return;
+    if (!window.confirm(`Enviar o pedido de vistoria à Creditas (${to})?`)) return;
+    setSending(true);
+    try {
+      await api.post('/api/vistorias/creditas/request', { leadId, to, cc, subject, body, replyToId: p.replyToId, attachDriveFileIds: sel });
+      toast('Vistoria solicitada à Creditas', 'success');
+      setSt({ aplicavel: true, jaSolicitadaEm: new Date().toISOString() });
+      setOpen(false);
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao enviar à Creditas', 'error');
+    } finally { setSending(false); }
+  }
+
+  const quando = st.jaSolicitadaEm ? new Date(st.jaSolicitadaEm).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : null;
+
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <ClipboardCheck className="h-3.5 w-3.5" /> Vistoria do imóvel (Creditas)
+      </div>
+      {quando
+        ? <div className="mb-2 text-xs text-emerald-700">Vistoria solicitada em {quando}.</div>
+        : <div className="mb-2 text-xs text-slate-500">A vistoria da Creditas sai por e-mail ao Jonatas: nome e telefone do cliente, certidão de ônus e capa do IPTU da pasta do cliente.</div>}
+      <button onClick={abrir} disabled={loading} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">
+        {loading ? 'Montando o e-mail…' : quando ? 'Solicitar de novo' : 'Solicitar vistoria Creditas'}
+      </button>
+
+      {open && p && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !sending && setOpen(false)}>
+          <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-800">Solicitar vistoria à Creditas</h3>
+              <button onClick={() => !sending && setOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
+            </div>
+            {p.avisos.length > 0 && (
+              <ul className="mb-3 space-y-1 rounded-md bg-amber-50 p-2 text-xs text-amber-800">
+                {p.avisos.map((a, i) => <li key={i}>• {a}</li>)}
+              </ul>
+            )}
+            <label className="mb-2 block text-xs text-slate-600">Para
+              <input value={to} onChange={(e) => setTo(e.target.value)} className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" />
+            </label>
+            <label className="mb-2 block text-xs text-slate-600">Cópia (opcional)
+              <input value={cc} onChange={(e) => setCc(e.target.value)} className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" />
+            </label>
+            <label className="mb-2 block text-xs text-slate-600">Assunto
+              <input value={subject} onChange={(e) => setSubject(e.target.value)} className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" />
+            </label>
+            <label className="mb-2 block text-xs text-slate-600">Mensagem
+              <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={12} className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm" />
+            </label>
+            <div className="mb-3 rounded border border-slate-200 p-2">
+              <div className="mb-1 text-xs font-medium text-slate-600">Anexos (documentos do imóvel do cliente)</div>
+              {p.anexos.length === 0 && <div className="text-xs text-red-600">Nenhum documento do imóvel encontrado para este cliente.</div>}
+              {p.anexos.map((a) => (
+                <label key={a.id} className="flex items-center gap-2 py-0.5 text-xs text-slate-600">
+                  <input type="checkbox" checked={sel.includes(a.id)} onChange={(e) => setSel((cur) => (e.target.checked ? [...cur, a.id] : cur.filter((x) => x !== a.id)))} />
+                  <span>{a.name}{a.size ? <span className="text-slate-400"> ({Math.max(1, Math.round(a.size / 1024))} KB)</span> : null}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setOpen(false)} disabled={sending} className="rounded border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50">Cancelar</button>
+              <button onClick={enviar} disabled={sending || !to.trim() || !body.trim()} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">
+                {sending ? 'Enviando…' : 'Enviar à Creditas'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
