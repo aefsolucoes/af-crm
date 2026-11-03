@@ -115,6 +115,22 @@ router.post('/conversation-summary', async (req: AuthRequest, res: Response) => 
   }
 });
 
+// "Converse sobre este cliente" no Resumo (Fabio 03/11) — ver client-chat.service.ts. Só responde/sugere; nada vai pro cliente.
+router.post('/client-chat', async (req: AuthRequest, res: Response) => {
+  const { leadId, pergunta, historico } = req.body as { leadId?: string; pergunta?: string; historico?: { role: 'user' | 'assistant'; text: string }[] };
+  if (!leadId || !String(pergunta || '').trim()) { res.status(400).json({ error: 'leadId e pergunta obrigatórios' }); return; }
+  try {
+    const { perguntarSobreCliente } = require('../services/client-chat.service') as typeof import('../services/client-chat.service');
+    const hist = (Array.isArray(historico) ? historico : []).filter((t) => t && (t.role === 'user' || t.role === 'assistant') && typeof t.text === 'string');
+    const r = await perguntarSobreCliente(req.user!.accountId, leadId, String(pergunta), hist);
+    if (!r) { res.status(422).json({ error: 'Não consegui responder agora — tente de novo.' }); return; }
+    res.json(r);
+  } catch (err) {
+    console.error('[AI] Erro no chat do cliente:', err);
+    res.status(500).json({ error: 'Erro interno no chat do cliente' });
+  }
+});
+
 // Sugestão de TEMPLATE pra conversa fechada (janela de 24 h do WhatsApp) — Inbox → "Sugerir resposta" quando a janela está fechada. Nunca envia: devolve o template (com a categoria) pro balão.
 router.post('/suggest-template', async (req: AuthRequest, res: Response) => {
   const { leadId } = req.body as { leadId?: string };

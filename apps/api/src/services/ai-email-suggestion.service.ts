@@ -121,6 +121,8 @@ export async function generateEmailFromConversation(params: {
   subject?: string;
   draft?: string;
   docs?: DocParaLer[];
+  /** Dia da conversa que o e-mail resolve (AAAA-MM-DD, Brasília) — Fabio 03/11: "deve ser a conversa da data atual ou sugerir uma data da conversa". */
+  conversationDate?: string | null;
 }): Promise<{ to: string; subject: string; body: string } | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
@@ -151,6 +153,13 @@ ${ctx.contextoTexto}
 ${ctx.historicoTexto}`;
     }
   }
+  // A conversa DO DIA escolhido é o foco do e-mail; o resto da conversa fica de fundo.
+  let foco = '';
+  if (leadId && /^\d{4}-\d{2}-\d{2}$/.test(params.conversationDate || '')) {
+    const ini = new Date(`${params.conversationDate}T00:00:00-03:00`);
+    const msgs = await prisma.message.findMany({ where: { leadId, channel: { not: 'EMAIL' }, deleted: false, createdAt: { gte: ini, lt: new Date(ini.getTime() + 86_400_000) } }, orderBy: { createdAt: 'asc' }, take: 300, select: { direction: true, content: true, createdAt: true } });
+    if (msgs.length) foco = msgs.map((m) => `[${new Date(m.createdAt.getTime() - 3 * 3_600_000).toISOString().slice(11, 16)}] ${m.direction === 'INBOUND' ? (contato || 'Contato') : 'A&F (nós)'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 1500)}`).join('\n');
+  }
   const original = replyTo ? (replyTo.textBody?.trim() || (replyTo.htmlBody ? htmlToText(replyTo.htmlBody) : '') || '').slice(0, 8000) : '';
   const emailBlock = replyTo
     ? `\n\n--- E-MAIL QUE ESTÁ SENDO RESPONDIDO ---
@@ -169,7 +178,7 @@ ${original || '(sem texto)'}`
   const rules = await fixedRule(accountId, 'EMAIL_COMPOSE_RULES', EMAIL_COMPOSE_RULES);
   const system = `${rules}
 
-${blocos || '(e-mail sem conversa vinculada)'}${emailBlock}${jaEscrito ? `\n\n--- O QUE JÁ ESTÁ NA JANELA DO E-MAIL ---\n${jaEscrito}` : ''}
+${blocos || '(e-mail sem conversa vinculada)'}${foco ? `\n\n--- CONVERSA DO DIA ${params.conversationDate!.split('-').reverse().join('/')} — É DELA QUE SAI O E-MAIL (o resto da conversa é só contexto) ---\n${foco}` : ''}${emailBlock}${jaEscrito ? `\n\n--- O QUE JÁ ESTÁ NA JANELA DO E-MAIL ---\n${jaEscrito}` : ''}
 
 FORMATO: responda SOMENTE com um JSON: {"para": "endereço ou vazio", "assunto": "...", "corpo": "texto do e-mail, com \\n entre parágrafos"}`;
 

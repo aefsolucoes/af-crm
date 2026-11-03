@@ -65,6 +65,27 @@ export function parseSuggestion(raw: string): string | null {
  *  (mesmo material que o auto-reply usa). Retorna null se faltar configuração,
  *  não houver histórico, ou algo der errado. */
 export async function generateReplySuggestion(accountId: string, leadId: string): Promise<ReplySuggestion | null> {
+  // MESMO CÉREBRO da IA da conversa (Fabio 03/11: "essa IA de sugerir resposta seja a mesma da conversa, pra que ela tenha ciência de tudo que está acontecendo com esse cliente"):
+  // a sugestão sai do generateAiAutoReply em modo sugestão — mesmas regras, Base, estado do card, análises, documentos, e-mails do processo. O caminho antigo fica de reserva.
+  try {
+    const recent = await prisma.message.findMany({ where: { leadId, channel: { not: 'EMAIL' }, deleted: false, callWaCallId: null }, orderBy: { createdAt: 'desc' }, take: 30, select: { direction: true, content: true } });
+    if (!recent.length) return null;
+    const rajada: string[] = [];
+    for (const m of recent) { if (m.direction !== 'INBOUND') break; if (m.content?.trim()) rajada.push(m.content.trim()); }
+    const texto = rajada.length
+      ? rajada.reverse().join('\n')
+      : '[O cliente não escreveu nada depois da nossa última mensagem. A equipe quer mandar a próxima mensagem agora: sugira a melhor mensagem pra seguir com este cliente, de acordo com a conversa e o momento do card.]';
+    const { generateAiAutoReply } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
+    const r = await generateAiAutoReply(accountId, leadId, texto, [], { sugestao: true });
+    if (r?.reply?.trim()) return { suggestion: stripOpeningInterjection(r.reply.trim()) };
+    console.warn(`[AI Suggest-reply] ${leadId}: o motor da conversa não devolveu texto — usando a sugestão clássica`);
+  } catch (err: any) {
+    console.error('[AI Suggest-reply] motor da conversa falhou — usando a sugestão clássica:', err?.message);
+  }
+  return generateReplySuggestionClassica(accountId, leadId);
+}
+
+async function generateReplySuggestionClassica(accountId: string, leadId: string): Promise<ReplySuggestion | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
 

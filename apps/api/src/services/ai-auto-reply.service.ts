@@ -527,6 +527,9 @@ export async function generateAiAutoReply(
   // Fotos/prints que o cliente mandou junto (Fabio 08/10, Marta: print do
   // simulador e a IA não via nada).
   images: { type: 'base64'; media_type: string; data: string }[] = [],
+  // sugestao (Fabio 03/11: "essa IA de sugerir resposta seja a mesma da conversa"): o botão "Sugerir resposta" usa ESTE motor, com o mesmo contexto e as mesmas regras —
+  // só não fica quieta (sempre escreve), não grava nada no card e as ações do JSON não são aplicadas por quem chama.
+  opts: { sugestao?: boolean } = {},
 ): Promise<AiAutoReplyResult | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !incomingText.trim()) return null;
@@ -536,7 +539,7 @@ export async function generateAiAutoReply(
     // usufruto, sem matrícula, parcela atrasada…): não é só confirmação — a
     // IA precisa ver pra marcar Perdido (Fabio 08/10, Marcelo).
     const NOT_VIABLE_RE = /n[aã]o (é|e|seria|fica) (aceit|poss[ií]vel|vi[aá]vel)|n[aã]o d[aá] (pra|para) (seguir|fazer)|n[aã]o (conseguimos|consegue|vai dar)|precisa(ria)? (estar|ser) [^.]{0,40}(quitad|em dia|regulari|sem usufruto)|sem (matr[ií]cula|registro)/i;
-    const closing = farewellReply(incomingText);
+    const closing = opts.sugestao ? null : farewellReply(incomingText);
     if (closing) {
       const lastOut = await prisma.message.findFirst({
         where: { leadId, direction: 'OUTBOUND', callWaCallId: null, deleted: false },
@@ -553,7 +556,7 @@ export async function generateAiAutoReply(
         return { reply: espera ? `${closing} ${FICO_NO_AGUARDO}` : closing, handoff: false };
       }
     }
-    if (isAcknowledgmentOnly(incomingText)) {
+    if (!opts.sugestao && isAcknowledgmentOnly(incomingText)) {
       const lastOut = await prisma.message.findFirst({
         where: { leadId, direction: 'OUTBOUND', callWaCallId: null, deleted: false },
         orderBy: { createdAt: 'desc' },
@@ -569,7 +572,7 @@ export async function generateAiAutoReply(
 
     // Cliente ainda mandando documento: legenda/aviso solto ("comprovante de endereço", "tá aí") não recebe resposta; dúvida de verdade (com "?") é respondida SEM listar o que chegou/falta.
     const chegando = await docsStillArriving(leadId).catch(() => false);
-    if (chegando && !incomingText.includes('?')) {
+    if (chegando && !opts.sugestao && !incomingText.includes('?')) {
       console.log(`[AI Auto-reply] cliente ainda mandando documentos ("${incomingText.trim().slice(0, 40)}") — sem resposta, a conferência avisa depois`);
       return { reply: '', handoff: false, noReply: true };
     }
@@ -641,7 +644,7 @@ ${R.CREDIT_ANALYSIS_RULES}
 ${R.NO_RECEIPT_LIST_RULES}
 
 ${R.NO_REPLY_RULES}`;
-    const systemDynamic = `${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura, vfAprovado)}
+    const systemDynamic = `${opts.sugestao ? 'MODO SUGESTÃO: a equipe pediu uma sugestão de resposta pra mandar à mão. Escreva SEMPRE a "reply" com a melhor mensagem pro cliente agora ("noReply": false), mesmo que normalmente você ficasse quieta ou levasse a dúvida pra equipe — nesse caso escreva o que a equipe pode responder. As ações do JSON não serão aplicadas.\n\n' : ''}${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura, vfAprovado)}
 
 ${chegando ? R.DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildFillFieldsRules(camposTexto)}
 
@@ -719,6 +722,7 @@ ${conversasPorTelefone}` : ''}`;
       console.warn('[AI Auto-reply] resposta fora do formato/raciocínio — tentativa', tentativa + 1, raw.slice(0, 200));
     }
     if (!result) {
+      if (opts.sugestao) return null;
       // As 2 tentativas falharam: o cliente não recebe nada; a equipe é avisada pra responder à mão.
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A IA respondeu fora do formato 2 vezes (texto que não podia ir ao cliente) — não mandei nada. Responda o cliente à mão.\nO que veio: "${rawFalho.replace(/\s+/g, ' ').slice(0, 400)}"` } }).catch(() => {});
       try {
@@ -753,7 +757,7 @@ ${conversasPorTelefone}` : ''}`;
     if (!aprovado && result.reply) result.reply = stripApprovalClaims(result.reply);
     await addDocsDoubtQuestions(leadId, incomingText, ctx.etapaTexto, result);
     await addFollowPrazoQuestion(leadId, incomingText, ctx.etapaTexto, result);
-    await addSeguirAprovadoQuestion(leadId, incomingText, ctx.etapaTexto, result);
+    if (!opts.sugestao) await addSeguirAprovadoQuestion(leadId, incomingText, ctx.etapaTexto, result);
     return result;
   } catch (err) {
     console.error('[AI Auto-reply] Erro ao gerar resposta:', err);

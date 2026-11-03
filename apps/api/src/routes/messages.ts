@@ -28,7 +28,8 @@ function logClientReply(req: AuthRequest, leadId: string) {
     summary: 'respondeu o cliente',
     channel: 'WHATSAPP',
   });
-  turnOffAiOnHumanReply(req, leadId).catch((err) => console.error('[IA] Falha ao desligar a IA após resposta humana:', err));
+  // Mandou o que a IA sugeriu (keepAi — Fabio 03/11: "isso sem desativar a IA do card do cliente"): a IA segue ligada.
+  if (!req.body?.keepAi) turnOffAiOnHumanReply(req, leadId).catch((err) => console.error('[IA] Falha ao desligar a IA após resposta humana:', err));
 }
 
 async function turnOffAiOnHumanReply(req: AuthRequest, leadId: string) {
@@ -153,6 +154,8 @@ const messageSchema = z.object({
   // sendOutboundWhatsApp). Vem da tela de Templates → Respostas rápidas.
   buttons: z.array(z.string().min(1).max(20)).max(3).optional(),
   ctaButton: z.object({ text: z.string().min(1).max(20), url: z.string().min(1) }).optional(),
+  // Mensagem/template que veio de uma SUGESTÃO da IA (Sugerir resposta / chat do Resumo): a IA do card continua ligada (Fabio 03/11).
+  keepAi: z.boolean().optional(),
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {

@@ -241,7 +241,7 @@ async function conversationFileBuffer(accountId: string, attachmentId: string): 
 // POST /api/email/compose-ai — "Criar com IA" (Fabio 03/11, exemplo do gerente do BRB que pediu um e-mail pra plataforma): a IA lê a conversa inteira do card e os
 // documentos que a pessoa deu pra ela LER (computador, conversa ou Drive do cliente — não vão anexados) e devolve para/assunto/corpo. A pessoa revisa e envia.
 router.post('/compose-ai', async (req: AuthRequest, res: Response) => {
-  const { replyToId, leadId, instruction, to, subject, draft, docs } = (req.body || {}) as { replyToId?: string; leadId?: string; instruction?: string; to?: string; subject?: string; draft?: string; docs?: any[] };
+  const { replyToId, leadId, instruction, to, subject, draft, docs, conversationDate } = (req.body || {}) as { replyToId?: string; leadId?: string; instruction?: string; to?: string; subject?: string; draft?: string; docs?: any[]; conversationDate?: string };
   let replyTo: any = null;
   if (replyToId) {
     replyTo = await prisma.emailMessage.findUnique({
@@ -270,13 +270,21 @@ router.post('/compose-ai', async (req: AuthRequest, res: Response) => {
     }
     if (lidos.reduce((t, f) => t + f.buffer.length, 0) > 25 * 1024 * 1024) return res.status(400).json({ error: 'Os documentos pra IA ler passam de 25 MB — escolha menos arquivos' });
     const { generateEmailFromConversation } = require('../services/ai-email-suggestion.service') as typeof import('../services/ai-email-suggestion.service');
-    const r = await generateEmailFromConversation({ accountId: req.user!.accountId, leadId, replyTo, instruction, to, subject, draft, docs: lidos });
+    const r = await generateEmailFromConversation({ accountId: req.user!.accountId, leadId, replyTo, instruction, to, subject, draft, docs: lidos, conversationDate });
     if (!r) return res.status(422).json({ error: 'Não consegui montar o e-mail agora — tente de novo.' });
     res.json({ ...r, pulados });
   } catch (err: any) {
     console.error('[E-mail] Erro ao criar com IA:', err?.message);
     res.status(500).json({ error: 'Erro ao montar o e-mail' });
   }
+});
+
+// Dias que têm conversa no card (pro "Criar com IA" escolher de qual conversa sai o e-mail — Fabio 03/11). Mais recentes primeiro, horário de Brasília.
+router.get('/lead-conversation-days', async (req: AuthRequest, res: Response) => {
+  const leadId = String(req.query.leadId || '');
+  if (!leadId || !(await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true } }))) return res.status(404).json({ error: 'Cliente não encontrado' });
+  const dias = await prisma.$queryRaw<{ dia: string; n: bigint }[]>`SELECT to_char(("createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS dia, count(*) AS n FROM "Message" WHERE "leadId" = ${leadId} AND channel <> 'EMAIL' AND deleted = false GROUP BY 1 ORDER BY 1 DESC LIMIT 60`;
+  res.json(dias.map((d) => ({ date: d.dia, count: Number(d.n) })));
 });
 
 // Arquivos que chegaram/saíram na conversa do card (pra IA ler ou pra anexar no e-mail).
