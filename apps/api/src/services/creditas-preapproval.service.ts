@@ -36,7 +36,7 @@ export function parsePreApproval(subject: string | null | undefined, text: strin
   const par = /1[ªa]\/2[ªa] parcelas:+\s*(R\$\s*[\d.,]+)\s*\/\s*(R\$\s*[\d.,]+)/i.exec(flat);
   const caso = parseScrCases(`${subject || ''}\n${flat}`)[0];
   return {
-    creditasId: caso?.creditasId, cpf: caso?.cpf, name: caso?.name?.replace(/^Cr[eé]dito Pr[eé][-\s]?Aprovado\s*-?\s*/i, '').trim(),
+    creditasId: caso?.creditasId, cpf: caso?.cpf, name: caso?.name?.replace(/^(?:(?:re|res|enc|fw|fwd)\s*:\s*)*/i, '').replace(/^Cr[eé]dito Pr[eé][-\s]?Aprovado\s*-?\s*/i, '').trim(), // "Re: Crédito Pré Aprovado - NOME" virava o nome do titular (Fabio 03/11)
     total: brl(line(/Valor total do financiamento:\s*([^\n]*)/i)), liquido, prazo,
     taxaMes: taxa?.[1]?.replace(/a\.m\.?$/i, 'a.m.'), taxaAno: taxa?.[2]?.replace(/a\.a\.?$/i, 'a.a.'), cet: cet?.[1]?.replace(/a\.m\.?$/i, 'a.m.'),
     indexador: line(/Indexador:\s*([^\n]*)/i), sistema: line(/Sistema de Amortiza[cç][aã]o:\s*([^\n]*)/i), carencia: line(/Per[ií]odo de car[eê]ncia:\s*([^\n]*)/i), tipoTaxa: line(/Tipo de taxa:\s*([^\n]*)/i),

@@ -1843,6 +1843,9 @@ export function pickSimulationBank(all: Array<{ bank: string; rate?: string | nu
 const BANK_LABEL_IA: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
 const PERGUNTA_DE_STATUS = /(anali[sz]|aprov|resultad|retorno|saiu|sair|reprov|negad|deu certo|j[aá] sai|como (est|t[aá])|novidade|andamento|cr[eé]dito|propost|simula|banco|parcela|liberad|taxa|prazo)/i;
 
+/** Aprovação lida há mais que isso (sem conferência nova no portal) não é confirmada ao cliente nem vira aviso automático (Fabio 03/11). */
+export const APROVACAO_VELHA_MS = 3 * 86_400_000;
+
 /** Texto pra IA da conversa: a leitura MAIS RECENTE de cada banco (por participante), com "lido há N min". Vazio se o cliente nunca foi rodado. */
 export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
@@ -1902,7 +1905,9 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   for (const [bucket, quem] of [[p1, ''], [p2, ' [análise no nome do 2º participante]']] as [Record<string, any>, string][]) {
     for (const bank of ['CREDIMORAR', 'CREDITAS', 'INTER']) {
       const r = bucket[bank];
-      if (r) linhas.push(`- ${BANK_LABEL_IA[bank]}${quem}: ${descreve(r)} (lido há ${ha(r.updatedAt)})`);
+      // Aprovação ANTIGA (Fabio 03/11, Lucas: pré-aprovação da Creditas lida de e-mail em 19/10, reprovada depois no portal — a IA confirmou "R$ 18 mil aprovados" 15 dias depois).
+      const velha = r && (r.status === 'APPROVED' || r.status === 'CONDITIONAL') && agora - new Date(r.updatedAt).getTime() > APROVACAO_VELHA_MS;
+      if (r) linhas.push(`- ${BANK_LABEL_IA[bank]}${quem}: ${descreve(r)} (lido há ${ha(r.updatedAt)})${velha ? ' ⚠️ LEITURA ANTIGA, sem conferência recente no portal: o banco pode ter mudado o resultado. NÃO confirme aprovação, valor nem parcela ao cliente e NÃO marque sendApproval; diga só que está conferindo a proposta com o banco e já retorna' : ''}`);
     }
   }
   const aprovados = Object.entries(p1).filter(([, r]: [string, any]) => r && (r.status === 'APPROVED' || r.status === 'CONDITIONAL') && r.approvedValue != null).map(([bank, r]: [string, any]) => ({ bank, rate: r.rate, chosen: r.chosen, firstInstallment: r.firstInstallment }));

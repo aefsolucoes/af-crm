@@ -984,6 +984,24 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true } } } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
+  // Aviso AUTOMÁTICO (IA/CRM) com aprovação ANTIGA (Fabio 03/11, Lucas: pré-aprovação da Creditas de 19/10, reprovada depois no portal, virou aviso "Crédito aprovado!" 15 dias depois):
+  // nada sai sem uma conferência recente no portal — pede a conferência e avisa a equipe. Clique de uma pessoa ("Avisar cliente") passa.
+  if (!p.userId) {
+    const { APROVACAO_VELHA_MS, createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    const aprov = await prisma.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, select: { bank: true, updatedAt: true } });
+    const maisNova = Math.max(0, ...aprov.map((a) => a.updatedAt.getTime()));
+    if (aprov.length && Date.now() - maisNova > APROVACAO_VELHA_MS) {
+      const bancos = [...new Set(aprov.map((a) => a.bank))];
+      await createRequests(prisma, { accountId: p.accountId, leadIds: [p.leadId], banks: bancos, dryRun: false, kind: 'CHECK' }).catch(() => {});
+      const dias = Math.round((Date.now() - maisNova) / 86_400_000);
+      const ja = await prisma.note.findFirst({ where: { leadId: p.leadId, content: { startsWith: '⏸️ Aviso de aprovação segurado' }, createdAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
+      if (!ja) {
+        await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `⏸️ Aviso de aprovação segurado: a aprovação foi lida há ${dias} dia(s) e não há conferência recente no portal (o banco pode ter mudado o resultado). Pedi a conferência; se continuar aprovada, use "Avisar cliente".` } }).catch(() => {});
+        try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(p.accountId, { title: `⏸️ ${lead.name}: aviso de aprovação segurado`, body: `Aprovação de ${dias} dia(s) atrás — conferindo no portal antes de avisar`, leadId: p.leadId }).catch(() => {}); } catch { /* aviso */ }
+      }
+      return { ok: false, error: `Aprovação lida há ${dias} dia(s), sem conferência recente — pedi a conferência no portal antes de avisar o cliente.` };
+    }
+  }
   // Já está na conversa? (qualquer remetente) Aviso com texto: todas as opções (banco + valor + nome) já foram enviadas; com template: o cliente recebeu e ainda não respondeu.
   // Template (janela fechada): além do "template já espera resposta", confere se o RESUMO da aprovação já foi dito antes na conversa — senão, 24 h depois, o cliente que já recebeu
   // a aprovação (e os documentos) ganhava o "Temos uma ótima notícia…" de novo (Maria Antônia, 15/10).
