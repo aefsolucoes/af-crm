@@ -1641,15 +1641,6 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
             Copiar link
           </button>
           <button
-            onClick={() => handleSuggestReply()}
-            disabled={suggesting}
-            title="Sugerir uma resposta pra você usar — nunca envia sozinha"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex-shrink-0 bg-white/10 text-[#8696a0] hover:text-[#e9edef] hover:bg-white/15"
-          >
-            {suggesting ? <Loader2 size={13} className="animate-spin" /> : <Lightbulb size={13} />}
-            <span className="hidden md:inline">Sugerir resposta</span>
-          </button>
-          <button
             onClick={handleToggleAi}
             disabled={togglingAi}
             title={aiActive ? 'IA está respondendo esse cliente sozinha — clique para desligar' : 'Ativar a IA para responder esse cliente sozinha'}
@@ -2484,6 +2475,29 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
               <span className="mr-auto text-[11px] text-slate-400">Feito pela IA — confira o que for decidir.</span>
               <button onClick={() => { navigator.clipboard.writeText(resumo.text).then(() => toast('Resumo copiado')).catch(() => toast('Não consegui copiar', 'error')); }} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><Copy size={13} /> Copiar</button>
               <button onClick={salvarResumo} disabled={!!resumo.saved} className="text-xs px-2.5 py-1.5 rounded-lg text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#2261a8' }}>{resumo.saved ? 'Salvo nas anotações' : 'Salvar nas anotações'}</button>
+            </div>
+            {/* "Sugerir resposta" mora dentro do Resumo (Fabio 03/11) — mesmo motor da IA da conversa; conversa fechada → sugestão de template no painel de Templates. */}
+            <div className="border-t border-af-border pt-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Sugerir resposta</p>
+                <button
+                  onClick={() => { if (windowClosedForApi) setResumo(null); handleSuggestReply(); }}
+                  disabled={suggesting}
+                  title={windowClosedForApi ? 'Conversa fechada (24 h): a IA sugere um template' : 'A IA sugere a próxima mensagem — nunca envia sozinha'}
+                  className="ml-auto flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                >
+                  {suggesting ? <Loader2 size={13} className="animate-spin" /> : <Lightbulb size={13} />} {windowClosedForApi ? 'Sugerir template' : 'Sugerir resposta'}
+                </button>
+              </div>
+              {suggestion && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-2.5 space-y-2">
+                  <p className="text-sm text-slate-700 whitespace-pre-wrap">{suggestion}</p>
+                  <div className="flex gap-1.5">
+                    <button onClick={() => { useSuggestion(); setResumo(null); }} className="text-xs px-2.5 py-1 rounded-md text-white font-medium bg-emerald-600 hover:bg-emerald-700">Usar na conversa</button>
+                    <button onClick={() => setSuggestion(null)} className="text-xs px-2.5 py-1 rounded-md border border-af-border text-slate-600 hover:bg-white">Descartar</button>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="border-t border-af-border pt-3 space-y-2">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Pergunte sobre este cliente</p>
