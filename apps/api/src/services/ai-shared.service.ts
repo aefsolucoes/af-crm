@@ -63,6 +63,7 @@ export const CORE_RULES = `REGRAS OBRIGATÓRIAS:
 - CADASTRO DA CAIXA DEPOIS DO CRÉDITO RODADO (Fabio 01/11): se o ESTADO DO CARD diz "CRÉDITO JÁ RODADO na CAIXA" e o cliente quer alterar algum dado do cadastro (renda, contracheque novo, participante, endereço, estado civil…), NÃO diga que vai alterar e não peça documento pra isso — diga só que vai verificar com a equipe e use "askTeam" ("Cliente quer alterar <o quê> no cadastro da CAIXA, mas o crédito já foi rodado: pode alterar?"). Alterar o cadastro depois do crédito rodado pede nova autorização da agência. Antes do crédito rodado, ajustar o cadastro é normal.
 - VALOR MÍNIMO DA A&F (Fabio 02/11: "menos que isso a gente não trabalha"): HOME EQUITY — crédito mínimo de R$ 50 mil; FINANCIAMENTO HABITACIONAL — valor FINANCIADO (valor do imóvel − entrada) mínimo de R$ 100 mil. Não é limite do simulador, é regra da A&F (a cliente queria financiar R$ 60 mil, o simulador barrou e a IA disse que era só limite do simulador e mandou a proposta manual pra pôr o valor menor — errado). Quando o cliente quer MENOS que o mínimo do produto dele: NUNCA diga que dá pra pôr o valor menor na proposta, que o simulador é só uma referência ou que a proposta aceita qualquer valor, e não mande o link da proposta pra esse valor; diga em 1 frase, com educação, que o valor mínimo é esse e que, se um dia precisar a partir dele, é só chamar. Se o card está em PROSPECÇÃO, FOLLOW UP ou LEAD SEM RETORNO (qualquer funil — Fabio 02/11: só nessas etapas), marque também "markLost": "Lead desqualificado — valor abaixo do mínimo (<Home Equity: crédito a partir de R$ 50 mil | Financiamento Habitacional: financiamento a partir de R$ 100 mil>)". Em qualquer outra etapa (Pré-Análise em diante) NÃO marque Perdido: explique o mínimo e, se for a proposta recebida com valor abaixo dele, pergunte se o preenchimento está correto, citando o mínimo. Vale também antes da proposta (exceção ao "não avalie viabilidade antes do formulário").
 - SIMULAÇÃO NÃO É PROPOSTA (Fabio 02/11: o cliente disse "já preenchi" depois de fazer só a simulação, a IA respondeu "vou verificar e já sigo com a pré-análise" e ele ficou uma semana sem resposta): se o cliente diz que já preencheu, mas a conversa só tem a SIMULAÇÃO do site ("Simulação no site (ainda sem proposta)") e nenhuma proposta recebida ("Proposta preenchida no site", "[PROPOSTA RECEBIDA]", "Proposta manual"), NÃO diga que vai verificar nem que já segue com a pré-análise e NÃO mova o card pra Pré-Análise: explique em 1 frase que o que chegou foi a simulação e que pra análise falta preencher a proposta, e mande o link da proposta (exceção ao "não mande o link de novo").
+- LINK NÃO É PROPOSTA ENVIADA (Fabio 03/11: a IA perguntou "conseguiu dar uma olhada na proposta que te mandei?" pra quem só tinha recebido o link do formulário, e o cliente perguntou "onde você enviou a proposta"): o link que mandamos é pra ELE preencher a proposta — nunca diga "a proposta que te mandei/enviei"; diga "o link da proposta" ou "o formulário". E nunca afirme uma situação do cliente que ele não disse (ex.: "como seu financiamento está em dia", sem ele ter falado): se importa pra resposta, pergunte.
 - PROPOSTA MONTADA PELO CRM COM OS DOCUMENTOS (Fabio 02/11): o cliente do Home Equity que não conseguiu preencher e mandou o documento com foto (RG/CNH) e o comprovante de residência tem a proposta montada pelo CRM — ele lê os dois e pergunta numa mensagem só o que falta (a mensagem começa com "Pra eu montar sua proposta"); com as respostas, monta a proposta e leva pra pré-análise sozinho. Depois dessa pergunta do CRM, NÃO repita as perguntas, NÃO peça outro dado nem documento e NÃO mande o link da proposta: se o cliente responder, agradeça em 1 frase curta (ou noReply). Se ele mandou só um dos dois documentos, diga só qual falta.
 - CONTA NO BANCO / LINK PRA ABRIR A CONTA (Fabio 02/11: a cliente sem conta no Santander perguntou se a gente "consegue enviar link" e a IA respondeu que os documentos não precisam de link — ela queria o link pra abrir a conta): quando a conversa está na conta do cliente no banco (pra receber o crédito ou debitar as parcelas) e ele pede "link", é o link pra ABRIR A CONTA, não pra mandar documento. No Santander, mande o link oficial de abertura de conta (https://abrasuaconta.santander.com.br) ou oriente baixar o app "Santander Brasil" na loja do celular (App Store ou Google Play) e abrir a conta por lá; os documentos do processo continuam vindo por aqui. Em outro banco, oriente abrir pelo app oficial do banco, sem inventar link. Se não der pra saber que link o cliente quer, pergunte em 1 frase.
 - SANTANDER × IMÓVEL DE TERCEIRO (Fabio 03/11): o Santander NÃO faz Home Equity com imóvel em nome de quem não participa da proposta — nem de pai, mãe ou outro parente. Inter e Creditas continuam aceitando o imóvel no nome de parente de 1º grau. Quando o imóvel for de outra pessoa, não ofereça, não prometa e não confirme seguir pelo Santander; fale só dos outros bancos. Se o cliente insistir no Santander, diga que vai confirmar com a equipe (askTeam).
@@ -687,6 +688,15 @@ export async function applyAiExtractedActions(
       && await (require('./prosseguir.service') as typeof import('./prosseguir.service')).reopenSeguirAprovado(accountId, lead.id, action.moveReason || null, io).catch(() => false);
     if (action.moveToStage && !reabriuSeguir && !(action.markLost && action.markLost.trim())) {
       const ALLOWED = ['prospeccao', 'follow up', 'lead sem retorno', 'pre-analise', 'pre analise', 'venda futura', 'aguardando doc'];
+      // "Venda Futura" é só pra quem já tem aprovação (Fabio 03/11): sem aprovação vira "Lead Sem Retorno" com o template de retomada em 15 dias (se a IA não deu data).
+      if (/venda futura/.test(normalize(action.moveToStage))) {
+        const { temAprovacao } = require('./caixa-screening.service') as typeof import('./caixa-screening.service');
+        const cfAtual = ((await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+        if (!(await temAprovacao(lead.id, cfAtual).catch(() => true))) {
+          action.moveToStage = 'Lead Sem Retorno';
+          if (!action.resumeOn) action.resumeOn = new Date(Date.now() - 3 * 3_600_000 + 15 * 86_400_000).toISOString().slice(0, 10);
+        }
+      }
       const target = normalize(action.moveToStage);
       const isAllowed = ALLOWED.some((a) => target.includes(a) || a.includes(target));
       // Cliente JÁ aprovado e esperando documento não volta pra Follow Up / Sem Retorno / Pré-Análise só porque disse que ainda não tem um papel
@@ -736,7 +746,19 @@ export async function applyAiExtractedActions(
         const cfv: Record<string, any> = { ...((atual?.customFields || {}) as Record<string, any>), _vendaFuturaAt: action.resumeOn };
         delete cfv._vendaFuturaSentAt; delete cfv._vendaFuturaFailAt; cfv._vendaFuturaCount = 0;
         await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cfv as any } });
-        if (!/venda futura/i.test(atual?.stage?.name || '') && atual?.pipelineId) {
+        // Sem aprovação (Fabio 03/11): a retomada fica em "Lead Sem Retorno" (o template sai no dia marcado) — não vai pra Venda Futura.
+        const { temAprovacao } = require('./caixa-screening.service') as typeof import('./caixa-screening.service');
+        const semAprovacao = !/venda futura/i.test(atual?.stage?.name || '') && !(await temAprovacao(lead.id, cfv).catch(() => true));
+        if (semAprovacao && atual?.pipelineId && !/sem retorno/i.test(atual?.stage?.name || '')) {
+          const sr = await prisma.stage.findFirst({ where: { pipelineId: atual.pipelineId, name: { contains: 'Sem Retorno', mode: 'insensitive' } }, select: { id: true, name: true } });
+          if (sr) {
+            const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+            await updateLeadStage(lead.id, accountId, sr.id);
+            await prisma.lead.update({ where: { id: lead.id }, data: { stageEnteredAt: new Date() } }).catch(() => {});
+            await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `🤖 IA moveu o card pra "${sr.name}" — quer o crédito mais pra frente e ainda não tem aprovação` } }).catch(() => {});
+          }
+        }
+        if (!semAprovacao && !/venda futura/i.test(atual?.stage?.name || '') && atual?.pipelineId) {
           let vf = await prisma.stage.findFirst({ where: { pipelineId: atual.pipelineId, name: { contains: 'Venda Futura', mode: 'insensitive' } }, select: { id: true } });
           // Card em "Perdidos" (ou em funil sem a etapa): a retomada combinada leva pro funil de VENDAS do setor e REABRE o card — senão o disparo nunca sai, porque o poller só olha cards abertos em
           // "Venda Futura" (Fábio Roberto 21/10: disse "no início do ano eu vejo", a IA combinou 10/01/2027 e o card ficou Perdido).

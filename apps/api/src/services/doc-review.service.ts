@@ -29,6 +29,8 @@ export interface DocReview {
    *  EMPRESA = dono é pessoa jurídica (loteadora, construtora, empresa…): nunca vira pergunta de parentesco — a conferência pergunta se ele tem a matrícula individual no nome dele (Fabio 27/10, Diego). */
   dono?: string;
   donoSituacao?: 'PARTICIPANTE' | 'OUTRO_SEM_RELACAO' | 'PARENTE_1GRAU' | 'EMPRESA';
+  /** A leitura já viu o que o cliente disse sobre o dono na conversa inteira (donoDitoNaConversa) — não relê de novo por isso. */
+  leuDonoDito?: boolean;
   /** Só MATRICULA/CERTIDAO DE ONUS aceita COM RESSALVA: CONSULTA (marca "para simples consulta", não é certidão oficial) ou ANTIGA (emissão há mais de 30 dias) — o banco pode não aceitar; o cliente recebe uma observação. */
   ressalva?: 'CONSULTA' | 'ANTIGA';
   /** Documento do imóvel: número da matrícula e cartório de registro como aparecem (vão pro card — servem pra emitir a certidão). */
@@ -176,6 +178,16 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
 }
 
 /** Conversa recente (cliente/atendente) — só entra quando a conferência já perguntou ao cliente de quem é o imóvel, pra o leitor ver a resposta. */
+const DONO_DITO_RX = /\b(m[aã]e|pai|sogr[oa]|espos[oa]|marido|mulher|c[oô]njuge|companheir[oa]|filh[oa]|irm[aã]o?|av[oóô]|ti[oa]|herdeir|heran[cç]a|invent[aá]rio|esp[oó]lio|falecid)/i;
+const DONO_IMOVEL_RX = /\b(casa|im[oó]vel|apartamento|apto|terreno|lote|matr[ií]cula|escritura|iptu|documento d[ao] (casa|im[oó]vel))\b|\bno nome d/i;
+
+/** Frases do CLIENTE, na conversa inteira, que falam de quem é o imóvel (parente, herança…) — vão pro leitor de documentos decidir o vínculo do dono. */
+async function donoDitoNaConversa(leadId: string): Promise<string> {
+  const msgs = await prisma.message.findMany({ where: { leadId, direction: 'INBOUND', callWaCallId: null, content: { not: '' } }, orderBy: { createdAt: 'desc' }, take: 400, select: { content: true, createdAt: true } });
+  const hits = msgs.filter((m) => m.content.length < 800 && !/^(🔔|📋|📎)/.test(m.content) && DONO_DITO_RX.test(m.content) && DONO_IMOVEL_RX.test(m.content)).slice(0, 6).reverse();
+  return hits.map((m) => `- ${m.createdAt.toISOString().slice(8, 10)}/${m.createdAt.toISOString().slice(5, 7)}: "${m.content.replace(/\s+/g, ' ').slice(0, 300)}"`).join('\n');
+}
+
 async function recentConversation(leadId: string): Promise<string> {
   const msgs = await prisma.message.findMany({ where: { leadId, callWaCallId: null }, orderBy: { createdAt: 'desc' }, take: 14, select: { direction: true, content: true } });
   return msgs.reverse().map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Atendente'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 220)}`).join('\n');
@@ -305,6 +317,10 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     releDono = (await prisma.message.count({ where: { leadId, direction: 'INBOUND', createdAt: { gt: new Date(donoPerguntadoEm) }, content: { not: '' }, attachments: { none: {} } } })) > 0;
     context = `${context}\n\nCONVERSA RECENTE:\n${await recentConversation(leadId)}`;
   }
+  // O que o cliente JÁ DISSE sobre o dono do imóvel em qualquer ponto da conversa (Fabio 03/11, Eva: disse em 15/10 "a casa está no nome da minha mãe" e a conferência de 02/11,
+  // que só via as 14 últimas mensagens, perguntou "quem é essa pessoa pra você"). Leitura antiga de dono "sem vínculo" que não viu essas frases é refeita 1x.
+  const donoDito = await donoDitoNaConversa(leadId).catch(() => '');
+  if (donoDito) context = `${context}\n\nO QUE O CLIENTE JÁ DISSE SOBRE O DONO DO IMÓVEL (conversa inteira):\n${donoDito}`;
   const learned = await learnedDocRules(accountId).catch(() => '');
   const novas: ReviewSummary['novas'] = [];
   const leituraFalhou: { id: string; nome: string }[] = [];
@@ -312,7 +328,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   // (capa de IPTU lida como "comprovante de residência" em nome de empresa — Maria Antônia, 15/10) passa a valer pelo que o leitor disse.
   const infoFix: Record<string, string> = {};
   for (const a of atts) {
-    const reler = releDono && (cache[a.id]?.donoSituacao === 'OUTRO_SEM_RELACAO' || cache[a.id]?.donoSituacao === 'EMPRESA');
+    const reler = (releDono || (!!donoDito && !cache[a.id]?.leuDonoDito)) && (cache[a.id]?.donoSituacao === 'OUTRO_SEM_RELACAO' || cache[a.id]?.donoSituacao === 'EMPRESA');
     // Leitura antiga de documento da PREFEITURA (IPTU/cadastro) sem o campo "metragens": relê uma vez pra saber se ele mostra as metragens (Fabio 20/10).
     const semMetragens = !!cache[a.id] && /IPTU|CADASTRO IMOBILIARIO/.test(String(cache[a.id].tipo || '')) && cache[a.id].metragens === undefined;
     if ((cache[a.id] && !reler && !semMetragens) || info[a.id] === null || info[a.id] === undefined) continue;
@@ -322,6 +338,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     if (cf0._rendaDispensada && /EXTRATO BANC|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA/.test(String(r.tipo || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')) && (r.resultado === 'DUVIDA' || r.resultado === 'PROBLEMA')) {
       r = { ...r, resultado: 'OK', problemas: [], duvida: '', observacao: `${r.observacao ? r.observacao + ' ' : ''}(renda dispensada neste card)`.trim() };
     }
+    if (donoDito && r.dono) r.leuDonoDito = true;
     cache[a.id] = r;
     novas.push({ arquivo: a.fileName || a.id, r, attId: a.id });
     const tipoLido = r.tipo.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]/g, '').trim().toUpperCase();

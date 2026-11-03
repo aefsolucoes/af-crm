@@ -73,9 +73,11 @@ export async function processVendaFutura(io: Io): Promise<void> {
     await processVfSilencio(io).catch((e: any) => console.error('[Venda Futura] silêncio:', e?.message || e));
     const hh = new Date(Date.now() - BRT_MS).getUTCHours();
     if (hh < 7 || hh >= 21) return; // horário da A&F (07h–21h)
+    // + cards em "Lead Sem Retorno" com retomada marcada (sem aprovação — Fabio 03/11): só no dia marcado, sem o ciclo de 30 dias.
+    const semRetorno = (await prisma.$queryRaw<{ id: string }[]>`SELECT l.id FROM "Lead" l JOIN "Stage" s ON s.id = l."stageId" WHERE l.status = 'OPEN' AND l.archived = false AND s.name ILIKE '%sem retorno%' AND (l."customFields"->>'_vendaFuturaAt') IS NOT NULL LIMIT 300`).map((r) => r.id);
     const leads = await prisma.lead.findMany({
-      where: { status: 'OPEN', archived: false, isGroup: false, stage: { name: { contains: 'Venda Futura', mode: 'insensitive' } }, messages: { some: {} }, NOT: { tags: { has: STOP_TAG } } },
-      select: { id: true, accountId: true, name: true, aiAutoReplyActive: true, stageEnteredAt: true, customFields: true, contact: { select: { name: true, whatsappPhone: true, phone: true } } },
+      where: { status: 'OPEN', archived: false, isGroup: false, OR: [{ stage: { name: { contains: 'Venda Futura', mode: 'insensitive' } } }, { id: { in: semRetorno } }], messages: { some: {} }, NOT: { tags: { has: STOP_TAG } } },
+      select: { id: true, accountId: true, name: true, aiAutoReplyActive: true, stageEnteredAt: true, customFields: true, stage: { select: { name: true } }, contact: { select: { name: true, whatsappPhone: true, phone: true } } },
       take: 300,
     });
     let enviados = 0;
@@ -84,7 +86,7 @@ export async function processVendaFutura(io: Io): Promise<void> {
       const cf = (l.customFields || {}) as Cf;
       const lastIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
       const due = vendaFuturaDue({ cf, stageEnteredAt: l.stageEnteredAt, lastInboundAt: lastIn?.createdAt || null });
-      if (!due) continue;
+      if (!due || (due === 'CICLO' && !/venda futura/i.test(l.stage?.name || ''))) continue;
       if (!hasPhone(l.contact)) continue;
       if (cf._vendaFuturaFailAt && Date.now() - new Date(cf._vendaFuturaFailAt).getTime() < 10 * 60_000) continue; // falhou há pouco: tenta de novo em 10 min
       const hoje = new Date(Date.now() - BRT_MS).toISOString().slice(0, 10);
@@ -148,6 +150,14 @@ export function diasDepois(n: number, from = Date.now()): string {
   return new Date(from - BRT_MS + n * 86_400_000).toISOString().slice(0, 10);
 }
 
+/** Etapa da retomada (Fabio 03/11): cliente COM aprovação → "Venda Futura"; SEM aprovação → "Lead Sem Retorno", com o template de retomada no dia marcado (sem o ciclo de 30 dias). */
+export async function etapaDaRetomada(lead: { id: string; pipelineId: string; customFields: unknown }): Promise<{ stage: { id: string; name: string } | null; aprovado: boolean }> {
+  const { temAprovacao } = require('./caixa-screening.service') as typeof import('./caixa-screening.service');
+  const aprovado = await temAprovacao(lead.id, (lead.customFields || {}) as Cf).catch(() => true);
+  const stage = await prisma.stage.findFirst({ where: { pipelineId: lead.pipelineId, name: { contains: aprovado ? 'Venda Futura' : 'Sem Retorno', mode: 'insensitive' } }, select: { id: true, name: true } });
+  return { stage, aprovado };
+}
+
 // ─── Cliente CALADO depois da pergunta da data (Fabio 03/11: "caso o cliente não informe nada e permaneça calado, a IA deverá mandar para Venda Futura e colocar pra falar com ele 15 dias após") ───
 // Nós (IA ou equipe) perguntamos a melhor data pra retomar e o cliente não respondeu em 24 h: o card vai pra Venda Futura com a retomada 15 dias depois da pergunta. Uma vez por pergunta.
 const RX_PERGUNTA_DATA = /melhor data (pra|para) (a gente |gente |n[oó]s )?(retomar|tratar|voltar)|data (pra|para) (o |a gente )?(retorno|retomar|retomarmos|voltarmos)|agendar uma data (pra|para) (o )?retorno/i;
@@ -173,16 +183,18 @@ export async function processVfSilencio(io: Io): Promise<void> {
     const cf = (lead.customFields || {}) as Cf;
     if (cf._vfSilencio === q.createdAt.toISOString() || String(cf._vendaFuturaAt || '') >= diasDepois(0)) continue; // já tratado / já tem retomada marcada
     if (await prisma.message.count({ where: { leadId: lead.id, direction: 'INBOUND', createdAt: { gt: q.createdAt } } })) continue; // respondeu: a IA cuida
-    const vf = await prisma.stage.findFirst({ where: { pipelineId: lead.pipelineId, name: { contains: 'Venda Futura', mode: 'insensitive' } }, select: { id: true, name: true } });
+    const { stage: vf, aprovado } = await etapaDaRetomada(lead);
     const data = diasDepois(15, q.createdAt.getTime());
     await saveCf(lead.id, (c) => { c._vfSilencio = q.createdAt.toISOString(); if (vf) { c._vendaFuturaAt = data; delete c._vendaFuturaBaseAt; delete c._vendaFuturaSentAt; delete c._vendaFuturaFailAt; c._vendaFuturaCount = 0; } });
-    if (!vf) { await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: '📅 O cliente não respondeu a pergunta da data de retomada, mas este funil não tem a etapa Venda Futura: mova à mão.' } }).catch(() => {}); continue; }
-    const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
-    await updateLeadStage(lead.id, lead.accountId, vf.id);
-    await prisma.lead.update({ where: { id: lead.id }, data: { stageEnteredAt: new Date() } }).catch(() => {});
+    if (!vf) { await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `📅 O cliente não respondeu a pergunta da data de retomada, mas este funil não tem a etapa ${aprovado ? 'Venda Futura' : 'Lead Sem Retorno'}: mova à mão.` } }).catch(() => {}); continue; }
     const dd = (s: string) => s.split('-').reverse().join('/');
-    await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${vf.name}" — o cliente não respondeu a pergunta da data de retomada (${dd(diasDepois(0, q.createdAt.getTime()))}). Retomada marcada pra ${dd(data)}, 15 dias depois (Fabio 03/11).` } }).catch(() => {});
-    logActivity({ accountId: lead.accountId, userId: null, userName: 'Venda Futura', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: `sem resposta da data → Venda Futura, retomada ${dd(data)}` } as any);
+    if (vf.name !== lead.stage?.name) {
+      const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+      await updateLeadStage(lead.id, lead.accountId, vf.id);
+      await prisma.lead.update({ where: { id: lead.id }, data: { stageEnteredAt: new Date() } }).catch(() => {});
+    }
+    await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${vf.name}" — o cliente não respondeu a pergunta da data de retomada (${dd(diasDepois(0, q.createdAt.getTime()))})${aprovado ? '' : ' e ainda não tem aprovação'}. ${aprovado ? 'Retomada' : 'Template de retomada'} marcado pra ${dd(data)}, 15 dias depois (Fabio 03/11).` } }).catch(() => {});
+    logActivity({ accountId: lead.accountId, userId: null, userName: 'Venda Futura', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: `sem resposta da data → ${vf.name}, retomada ${dd(data)}` } as any);
     if (io) io.to(`lead:${lead.id}`).emit('lead_moved', { leadId: lead.id, stageId: vf.id });
   }
 }

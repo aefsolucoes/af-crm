@@ -269,7 +269,13 @@ const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um mo
 
 /** VENDA FUTURA COM DATA (Fabio 16/10): o cliente que NÃO pode fazer agora fica com uma data de retomada; o CRM agenda o disparo pra ela. A IA pergunta a data; resposta vaga → ela sugere
  *  um mês/dia dentro do que ele falou e agenda; silêncio → o CRM manda pra Venda Futura com retomada em 15 dias (Fabio 03/11, processVfSilencio). */
-function ventaFuturaRules(hoje: string, retomadaAgendada: string | null, naEtapa: boolean): string {
+function ventaFuturaRules(hoje: string, retomadaAgendada: string | null, naEtapa: boolean, aprovado = true): string {
+  // Sem aprovação (Fabio 03/11): quem quer deixar pra depois e ainda não tem crédito aprovado NÃO vai pra Venda Futura — vai pra "Lead Sem Retorno" com o template de retomada em 15 dias.
+  if (!aprovado && !naEtapa) return `RETOMADA DE QUEM NÃO TEM APROVAÇÃO — Hoje é ${hoje}. ${retomadaAgendada ? `Este card JÁ tem retomada marcada para ${retomadaAgendada}.` : ''}
+- Este cliente AINDA NÃO TEM crédito aprovado. Se ele quer o crédito mas não agora (ou diz "mais pra frente", "ano que vem", "sem previsão"), NÃO use "Venda Futura" e NÃO pergunte a data (Fabio 03/11): use "moveToStage": "Lead Sem Retorno" + "moveReason" + "resumeOn" = 15 dias a partir de hoje (AAAA-MM-DD), e na "reply" responda curto que fica à disposição e que você volta a falar com ele mais pra frente (ex.: "Sem problema! Daqui uns dias eu te chamo pra ver como estão os planos. 😊"). O CRM manda o template de retomada nesse dia.
+- Se ele mesmo der uma data ou mês, use essa data no "resumeOn" (só o mês → dia 10) em vez dos 15 dias.
+- Cliente que responde "quero retomar" (ou equivalente) à mensagem de retomada: "moveToStage": "Prospecção" e siga o atendimento normal (formulário primeiro).
+- "resumeOn" é null em todos os outros casos.`;
   return `VENDA FUTURA COM DATA — Hoje é ${hoje}. ${retomadaAgendada ? `Este card JÁ tem retomada combinada para ${retomadaAgendada}.` : naEtapa ? 'Este card está em "Venda Futura" mas SEM data de retomada combinada.' : ''}
 - Venda Futura é pra cliente QUALIFICADO que por algum motivo NÃO consegue fazer o crédito agora (ex.: precisa quitar o saldo devedor do imóvel, regularizar documentação, esperar um evento ou data, o valor/condição do imóvel ainda não permite) — NÃO é pra quem não quer ou desistiu (esse é "markLost"). Quando for o caso: se ele JÁ disse quando, use "moveToStage": "Venda Futura" e preencha "resumeOn" com a data (AAAA-MM-DD) em que devemos voltar a falar com ele: dia exato se ele deu; só o mês → dia 10 desse mês; "daqui N meses/semanas" → some a partir de hoje. A data tem que ser futura (e no máximo 3 anos).
 - Se ele NÃO falou nada de quando: NÃO mova ainda (moveToStage null) e na "reply" pergunte, curto e simpático, qual seria a melhor data pra gente retomar ("Sem problema! Qual seria a melhor data pra gente retomar o seu crédito? Pode ser um mês ou uma data certinha."). Se ele ficar calado, o CRM manda o card pra Venda Futura sozinho e marca a retomada pra 15 dias depois da pergunta (Fabio 03/11).
@@ -596,6 +602,7 @@ export async function generateAiAutoReply(
     const vfAt = String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaAt || '');
     const retomadaTxt = /^\d{4}-\d{2}-\d{2}$/.test(vfAt) ? vfAt.split('-').reverse().join('/') : null;
     const naVendaFutura = /venda futura/i.test(vfLead?.stage?.name || '');
+    const vfAprovado = await (require('./caixa-screening.service') as typeof import('./caixa-screening.service')).temAprovacao(leadId, (vfLead?.customFields || {}) as Record<string, any>).catch(() => true);
     // Parte FIXA (igual pra todos os clientes: vai pro CACHE de prompt — nas chamadas seguintes, em até 5 min, as ~14 mil tokens de regras custam ~10%) e parte que muda por cliente/momento.
     // As regras condicionais (venda futura, documentos chegando/lidos, campos do card) e o formato de saída ficam na parte que muda, logo antes do contexto.
     const coreRules = await fixedRule(accountId, 'CORE_RULES', CORE_RULES);
@@ -634,7 +641,7 @@ ${R.CREDIT_ANALYSIS_RULES}
 ${R.NO_RECEIPT_LIST_RULES}
 
 ${R.NO_REPLY_RULES}`;
-    const systemDynamic = `${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura)}
+    const systemDynamic = `${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura, vfAprovado)}
 
 ${chegando ? R.DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildFillFieldsRules(camposTexto)}
 
