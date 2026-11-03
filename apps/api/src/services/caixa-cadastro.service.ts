@@ -147,7 +147,7 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
         }
         const p1 = quem.tomador;
         await salvar(id, (x) => { x.atual = { ordem: 1, desde: new Date().toISOString(), tipo: 'avaliar' }; x.avaliacao = { ...x.avaliacao, status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.avaliacao?.tentativas || 0) + 1 }; });
-        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x), incluir: quem.incluir.map((x) => ({ ordem: x.ordem, nome: x.nome, cpf: x.cpf })), fora: quem.fora.map((x) => x.nome), operacao, enviar: av.enviar === true, denovo: av.denovo === true, refazer: av.refazer || null }; // denovo/refazer (Fabio 03/11): reabre a avaliação que deu erro e clica em Avançar lá
+        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x), incluir: quem.incluir.map((x) => ({ ordem: x.ordem, nome: x.nome, cpf: x.cpf })), fora: quem.fora.map((x) => x.nome), operacao, enviar: av.enviar === true, denovo: av.denovo === true, refazer: av.refazer || null, ajuste: av.ajuste || null }; // denovo/refazer (Fabio 03/11): reabre a avaliação que deu erro e clica em Avançar lá
       }
       await salvar(id, (x) => { x.atual = { ordem: pc.ordem, desde: new Date().toISOString(), tipo: 'cadastrar' }; x.cadastros[pc.ordem] = { ...x.cadastros[pc.ordem], status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.cadastros[pc.ordem]?.tentativas || 0) + 1 }; });
       const { fontes, faltando, ...participante } = pc;
@@ -437,7 +437,7 @@ export function avaliacaoParaRefazer(historico: Cf[], produto: string): Cf | nul
  *  nessa hora ("O RESULTADO NÃO SAI NESSA TELA, PRECISA CONSULTAR DEPOIS"). Só com o pedido explícito do Fabio; avaliação já ENVIADA não é pedida de novo —
  *  salvo `denovo` (Fabio 03/11, Jézer/Fernanda: "JÁ FORAM AUTORIZADAS PELO PV … RODE A AVALIAÇÃO NOVAMENTE"): a anterior vai pro histórico (`avaliacao.anteriores`),
  *  o resultado dela sai de `_caixaResultado` (a consulta de Formulários Enviados roda de novo depois do novo envio) e a extensão refaz o mesmo roteiro. */
-export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean; autorizacao?: Record<string, unknown>; denovo?: boolean } = {}): Promise<string | null> {
+export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean; autorizacao?: Record<string, unknown>; denovo?: boolean; ajuste?: Record<string, unknown> } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -456,12 +456,14 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   // Nenhuma chegou à CAIXA (a anterior parou antes de enviar) → roda do começo, como a 1ª.
   const refazer = denovo ? avaliacaoParaRefazer(anteriores, produto) : null;
   await salvar(leadId, (x) => {
-    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(anteriores.length ? { anteriores } : {}) };
+    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(anteriores.length ? { anteriores } : {}) };
     if (x.atual?.tipo === 'avaliar') delete x.atual;
   });
   if (refazer && cf._caixaResultado) await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).reiniciarResultado(leadId);
   const lista = [quem.tomador && `${quem.tomador.nome} (tomador)`, ...quem.incluir.map((x) => x.nome)].filter(Boolean).join(', ');
-  const comoRefaz = refazer
+  const comoRefaz = refazer && opts.ajuste
+    ? ` CONDICIONADA (Fabio 03/11): a extensão reabre a proposta ${refazer.proposta || '(a mais recente)'} em Formulários Enviados, troca só a prestação pela possível (R$ ${Number(opts.ajuste.prestacao).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}) e a amortização pra PRICE, e envia de novo. O resultado sai na consulta.`
+    : refazer
     ? ` A extensão REABRE em Formulários Enviados a avaliação que deu erro (${refazer.proposta ? `proposta ${refazer.proposta}${refazer.data ? ` de ${refazer.data}` : ''}` : 'a mais recente do produto — o nº da proposta não estava no card'}), clica em Avançar e segue com os dados que já estão nela (não preenche avaliação nova). Tela que ela não conhece ou botão que não achar: para sem clicar e anota aqui o que viu. A anterior foi pro histórico; o resultado é consultado de novo depois do envio.`
     : denovo ? ' A anterior parou antes de chegar à CAIXA — roda do começo, como a 1ª.' : '';
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco na CAIXA pedida${denovo ? ' DE NOVO' : ''} (${por}) — produto "${produto.toUpperCase()}".${comoRefaz} Participantes: ${lista || '—'}${quem.fora.length ? `; fora por não ter renda: ${quem.fora.map((x) => x.nome).join(', ')} (o cadastro na CAIXA fica como está)` : ''}. ${enviar ? 'A extensão preenche a operação, confere os valores e ENVIA (seta da tela 3); o resultado sai depois, na consulta da CAIXA.' : 'A extensão consulta o CPF, marca o produto e mostra a tela antes de enviar.'}` } }).catch(() => {});
