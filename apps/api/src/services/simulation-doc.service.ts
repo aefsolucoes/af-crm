@@ -21,8 +21,9 @@ export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMO
   // Financiamento Habitacional (Fabio 27/10): "Evolução das parcelas" do Crédito imobiliário do Credimorar (/Simulacao/ImprimirSimulacao), id do banco no portal.
   FH_BRADESCO: { label: 'Bradesco', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 1 },
   FH_SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 2 },
-  // Itaú (Fabio 03/11): roda no portal Itaú Imóveis (fila ITAU_FH) — a extensão do Itaú abre o simulador do portal pela proposta aprovada ("Simulação a partir de uma
-  // proposta"), lê a tabela mês a mês e o CRM desenha no modelo A&F (finishItauDoc). Cliente ANTIGO, aprovado no Itaú pelo Credimorar (sem ITAU_FH aprovado): PDF do Credimorar (id 3).
+  // Itaú (Fabio 03/11: "a extensão puxar a simulação na própria plataforma"): sempre pelo portal Itaú Imóveis (fila ITAU_FH) — a extensão abre o simulador pela proposta
+  // aprovada ("Simulação a partir de uma proposta"), lê a tabela mês a mês e o CRM desenha no modelo A&F (finishItauDoc). Vale também pra proposta que o Credimorar mandou ao Itaú
+  // (aparece no nosso portal): o número vem do resumo do card. FH_ITAU_CM (PDF do Credimorar, id 3) fica só pra pedido explícito.
   FH_ITAU: { label: 'Itaú', extBank: 'ITAU_FH', mode: 'data' },
   FH_ITAU_CM: { label: 'Itaú', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 3 },
   FH_INTER: { label: 'Inter', extBank: 'INTER_FH', mode: 'data' },
@@ -89,7 +90,6 @@ export async function requestSimulationDocs(db: Db, p: { accountId: string; lead
   const skipped: string[] = [];
   for (let inst of parseInstitutions(p.institutions)) {
     if (inst === 'FH_INTER' && (await interFhMaiorNoCredimorar(db, p.leadId))) inst = 'FH_INTER_CM'; // proposta MAIOR é a do Inter via Credimorar
-    if (inst === 'FH_ITAU' && !(await db.creditAnalysis.findFirst({ where: { leadId: p.leadId, bank: 'ITAU_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, select: { id: true } }))) inst = 'FH_ITAU_CM'; // Itaú aprovado só pelo Credimorar (antes de 03/11)
     // PDF do CREDITAS DESATIVADO (Fabio 15/10, João Henrique): ele era montado pela API do SIMULADOR do portal (faixa "a partir de": taxa 1,09% a.m., CET 1,271%) e NÃO tem nada a ver com a
     // proposta aprovada do cliente (juros 1,50% a.m., CET 1,64%, 1ª parcela R$ 4.798,15). Até sair do que a proposta aprovada traz, não gera.
     if (inst === 'CREDITAS') { skipped.push(inst); continue; }
@@ -134,6 +134,12 @@ export async function claimSimulationDocs(db: Db, p: { accountId: string; extBan
       const { propostaDoCard } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
       const pc = propostaDoCard(cfl);
       if (pc && pc.bank === bankKey) { numero = pc.numero; cpfFinal = cpfFinal || String(cfl.cpf_1 || '').replace(/\D/g, '') || null; }
+      // Itaú sem análise no nosso portal (proposta mandada pelo Credimorar, antes de 03/11): o nº vem do trecho "Itaú: Aprovado, proposta N…" do resumo do Financiamento.
+      if (!numero && bankKey === 'ITAU_FH') {
+        const { trechoDoBancoNoResumo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+        const n = (/proposta\s*(\d{6,})/i.exec(trechoDoBancoNoResumo(cfl._fhResumo, 'Itaú')) || [])[1];
+        if (n) { numero = n; cpfFinal = cpfFinal || String(cfl.cpf_1 || '').replace(/\D/g, '') || null; }
+      }
     }
     out.push({ id: r.id, leadId: r.leadId, leadName: lead?.name || 'Sem nome', institution: r.institution, mode: meta.mode, institutionId: meta.credimorarId ?? 0, proposalNumber: numero, cpf: cpfFinal });
   }

@@ -325,7 +325,8 @@ router.post('/simulation-docs', async (req: AuthRequest, res: Response) => {
     const leadId = String(req.body?.leadId || '');
     const institutions = parseInstitutions(req.body?.institutions ?? req.body?.institution);
     if (!leadId || !institutions.length) return res.status(400).json({ error: 'leadId e pelo menos uma instituição (SANTANDER ou INTER) são obrigatórios' });
-    const out = await requestSimulationDocs(prisma, { accountId: req.user!.accountId, leadId, institutions, userId: req.user!.id, source: 'USER', caption: typeof req.body?.caption === 'string' ? req.body.caption : undefined });
+    // `privado: true` (03/11): o PDF fica só pra equipe (status PRIVATE, baixa em /api/assistant/simulation/:id/pdf) — nunca vai ao cliente; serve pra conferir antes.
+    const out = await requestSimulationDocs(prisma, { accountId: req.user!.accountId, leadId, institutions, userId: req.user!.id, source: req.body?.privado === true ? 'ASSISTANT' : 'USER', caption: typeof req.body?.caption === 'string' ? req.body.caption : undefined });
     emit(req, { leadId });
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao pedir o PDF da simulação', 400); }
