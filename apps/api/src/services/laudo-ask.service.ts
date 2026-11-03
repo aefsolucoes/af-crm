@@ -1,7 +1,8 @@
 import { prisma } from '../lib/prisma';
-import { sendOutboundWhatsApp } from './message.service';
+import { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate } from './message.service';
 import { contractingAutoOn, manualStep } from './contracting-auto.service';
 import { buildLaudoJob, requestLaudo, arquivosDoImovel } from './vistoria-inter.service';
+import { queueOnReply } from './reply-pending.service';
 import { downloadDriveFileForVision } from './google.service';
 import { isPropertyDocType } from './received-docs.service';
 
@@ -69,6 +70,11 @@ export function dadosDoApartamentoNaMensagem(texto: string): Record<string, stri
   if (v) out.imovel_vagas_exclusivas = v;
   if (a) out.imovel_area_util = a;
   if (ano) out.imovel_ano_construcao = ano;
+  // CEP e número do prédio só com o rótulo (a pergunta do botão "Preencher laudo" pede assim — Fabio 03/11).
+  const cep = /\bcep\s*(?:do\s+imovel)?\s*[:=\-–]?\s*(\d{5})[-.\s]?(\d{3})\b/.exec(t);
+  if (cep) out.imovel_cep = `${cep[1]}-${cep[2]}`;
+  const num = /\bnumero\s*(?:do\s+predio)?\s*[:=\-–]\s*(\d{1,6}[a-z]?)\b/.exec(t);
+  if (num) out.imovel_numero = num[1].toUpperCase();
   return out;
 }
 
@@ -91,7 +97,8 @@ export function imovelDaProposta(texto: string): { cep?: string; numero?: string
 }
 
 const DOC_IMOVEL_SYSTEM = `Você lê um documento de IMÓVEL (matrícula/certidão de ônus, IPTU, cadastro imobiliário, escritura, habite-se) pra preencher o laudo digital de um APARTAMENTO no banco. Responda SOMENTE com JSON:
-{"cep":"<CEP do imóvel, 8 dígitos; vazio se não aparecer>","numero":"<número do prédio no logradouro; vazio se não aparecer>","complemento":"<apto/bloco/torre da unidade, ex.: APTO 201 BLOCO B; vazio se não aparecer>","areaPrivativa":"<área PRIVATIVA (ou útil) da UNIDADE em m², só o número com vírgula, ex.: 98,45; vazio se não aparecer>","anoConstrucao":"<AAAA: ano de construção do IPTU/cadastro, ou do habite-se/averbação da construção/conclusão da obra; vazio se não aparecer>","tipo":"APARTAMENTO|CASA|OUTRO|"}
+{"cep":"<CEP do imóvel, 8 dígitos; vazio se não aparecer>","numero":"<número do prédio no logradouro; vazio se não aparecer>","complemento":"<apto/bloco/torre da unidade, ex.: APTO 201 BLOCO B; vazio se não aparecer>","areaPrivativa":"<área PRIVATIVA (ou útil) da UNIDADE em m², só o número com vírgula, ex.: 98,45; vazio se não aparecer>","anoConstrucao":"<AAAA: ano de construção — veja a ordem abaixo; vazio se nada disso aparecer>","anoFonte":"CONSTRUCAO|ABERTURA_MATRICULA|PRIMEIRA_AVERBACAO|","tipo":"APARTAMENTO|CASA|OUTRO|"}
+Ano de construção, nesta ordem (Fabio 03/11): (1) o que o documento diz da construção — IPTU/cadastro, habite-se, averbação da construção/conclusão da obra → anoFonte "CONSTRUCAO"; (2) se for a MATRÍCULA (ou certidão de inteiro teor/ônus) e não houver isso, o ano da DATA DE ABERTURA da matrícula (a data do cabeçalho/abertura da matrícula) → "ABERTURA_MATRICULA"; (3) sem a data de abertura, o ano da PRIMEIRA averbação/registro (AV-1, R-1) → "PRIMEIRA_AVERBACAO".
 Regras: área privativa NÃO é a área total, a área comum, a área do terreno nem a fração ideal — se só houver essas, deixe vazio. Não invente nada: o que não estiver escrito no documento fica vazio.`;
 
 /** Lê UM documento do imóvel (PDF/imagem do Drive) e devolve os campos do laudo que achou. undefined = não deu pra ler. */
@@ -126,7 +133,11 @@ async function lerDocumentoDoImovel(accountId: string, driveFileId: string, mime
     const area = parseFloat(String(j.areaPrivativa || '').replace(/\./g, '').replace(',', '.'));
     if (Number.isFinite(area) && area >= 15 && area <= 2000) out.imovel_area_util = String(j.areaPrivativa).trim();
     const ano = parseInt(String(j.anoConstrucao || ''), 10);
-    if (ano >= 1900 && ano <= new Date().getFullYear()) out.imovel_ano_construcao = String(ano);
+    if (ano >= 1900 && ano <= new Date().getFullYear()) {
+      out.imovel_ano_construcao = String(ano);
+      const fonte = ({ ABERTURA_MATRICULA: 'data de abertura da matrícula', PRIMEIRA_AVERBACAO: '1ª averbação da matrícula' } as Record<string, string>)[String(j.anoFonte || '')];
+      if (fonte) out.__anoFonte = fonte;
+    }
     if (j.tipo === 'APARTAMENTO') out.imovel_tipo = 'Apartamento';
     return out;
   } catch { return undefined; }
@@ -163,15 +174,16 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
     const emails = await prisma.emailMessage.findMany({ where: { leadId, subject: { contains: 'Engajamento', mode: 'insensitive' } }, orderBy: { date: 'desc' }, take: 5, select: { textBody: true, htmlBody: true } });
     if (emails.some((e) => engajamentoDizApartamento(`${e.textBody || ''} ${e.htmlBody || ''}`))) poe('imovel_tipo', 'Apartamento', 'e-mail de engajamento do Inter');
   }
-  if ([...CAMPOS_REGRINHAS, 'imovel_area_util', 'imovel_ano_construcao'].some(falta)) {
+  if ([...CAMPOS_REGRINHAS, 'imovel_area_util', 'imovel_ano_construcao', 'imovel_cep', 'imovel_numero'].some(falta)) {
     const msgs = await prisma.message.findMany({ where: { leadId, direction: 'INBOUND', createdAt: { gte: new Date(Date.now() - 20 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 80, select: { content: true } });
     for (const m of msgs) {
       if (/^(📧|📋)/u.test(m.content || '')) continue; // e-mail do banco (traz as regrinhas em texto) e proposta do site
       for (const [k, v] of Object.entries(dadosDoApartamentoNaMensagem(m.content || ''))) poe(k, v, 'mensagem do cliente');
     }
   }
-  // Documentos do imóvel: só pra apartamento e só arquivo ainda não lido.
-  const lidos: string[] = Array.isArray(cf._laudoDocsLidos) ? cf._laudoDocsLidos : [];
+  // Documentos do imóvel: só pra apartamento e só arquivo ainda não lido. _laudoDocsLidos2 (03/11): a leitura passou a tirar o ano da abertura/1ª averbação da
+  // matrícula — os arquivos lidos com a regra antiga (_laudoDocsLidos) são lidos de novo uma vez.
+  const lidos: string[] = Array.isArray(cf._laudoDocsLidos2) ? cf._laudoDocsLidos2 : [];
   const novosLidos: string[] = [];
   if (/apart/i.test(String(patch.imovel_tipo || cf.imovel_tipo || '')) && ['imovel_cep', 'imovel_numero', 'imovel_area_util', 'imovel_ano_construcao'].some(falta)) {
     const arquivos = new Map<string, { mimeType: string; nome: string }>();
@@ -183,14 +195,15 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
       const r = await lerDocumentoDoImovel(accountId, id, f.mimeType);
       if (r === undefined) continue; // erro de leitura: tenta no próximo ciclo
       novosLidos.push(id);
-      for (const [k, v] of Object.entries(r)) poe(k, v, `documento "${f.nome}"`);
+      const { __anoFonte, ...campos } = r;
+      for (const [k, v] of Object.entries(campos)) poe(k, v, k === 'imovel_ano_construcao' && __anoFonte ? `${__anoFonte} — documento "${f.nome}"` : `documento "${f.nome}"`);
     }
   }
   if (!Object.keys(patch).length) {
-    if (novosLidos.length) await marca(leadId, { _laudoDocsLidos: [...lidos, ...novosLidos] });
+    if (novosLidos.length) await marca(leadId, { _laudoDocsLidos2: [...lidos, ...novosLidos] });
     return;
   }
-  await marca(leadId, { ...patch, ...(novosLidos.length ? { _laudoDocsLidos: [...lidos, ...novosLidos] } : {}) });
+  await marca(leadId, { ...patch, ...(novosLidos.length ? { _laudoDocsLidos2: [...lidos, ...novosLidos] } : {}) });
   const depois = { ...cf, ...patch };
   const ainda = CAMPOS_LAUDO.filter((k) => vazio(depois[k])).map((k) => ROTULO[k].toLowerCase());
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: [
@@ -292,6 +305,82 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏢 Apartamento + vistoria do Inter: perguntei ao cliente as 4 informações do laudo digital (dormitórios, banheiros, suítes, vagas com uso exclusivo). A IA registra a resposta nos campos do card; com o card completo e o link do laudo, o laudo entra sozinho na fila da extensão "Vistoria Inter".' } }).catch(() => {});
 }
 
+/** O que o CLIENTE sabe responder pro laudo (o resto — link, proposta, tipo — vem do Inter/equipe), com o rótulo que o CRM lê na resposta (dadosDoApartamentoNaMensagem). */
+const PERGUNTA_LAUDO: Record<string, { pergunta: string; exemplo: string }> = {
+  imovel_dormitorios: { pergunta: 'Dormitórios: quantos no total (quartos + suítes), sem contar o quarto de empregada', exemplo: 'Dormitórios: 2' },
+  imovel_banheiros: { pergunta: 'Banheiros: quantos no total (suítes + sociais + lavabo, e o de empregada se houver)', exemplo: 'Banheiros: 2' },
+  imovel_suites: { pergunta: 'Suítes: quantas (semisuíte não conta)', exemplo: 'Suítes: 1' },
+  imovel_vagas_exclusivas: { pergunta: 'Vagas de garagem: quantas de uso exclusivo (0 se não tiver)', exemplo: 'Vagas: 1' },
+  imovel_area_util: { pergunta: 'Área privativa do apartamento, em m² (está na matrícula ou no IPTU)', exemplo: 'Área: 65 m²' },
+  imovel_ano_construcao: { pergunta: 'Ano de construção do prédio (aproximado, se não souber o exato)', exemplo: 'Ano de construção: 2010' },
+  imovel_cep: { pergunta: 'CEP do imóvel', exemplo: 'CEP: 00000-000' },
+  imovel_numero: { pergunta: 'Número do prédio na rua', exemplo: 'Número: 123' },
+};
+/** Mesmo critério do buildLaudoJob: o campo ainda não serve pro laudo. Pura (testável). */
+export function faltaProLaudo(cf: Record<string, any>, k: string): boolean {
+  const v = String(cf[k] ?? '').trim();
+  if (k === 'imovel_vagas_exclusivas') return !v;
+  if (k === 'imovel_ano_construcao') return !/\d{4}/.test(v);
+  if (k === 'imovel_cep') return v.replace(/\D/g, '').length !== 8;
+  if (k === 'imovel_numero') return !v;
+  if (k === 'imovel_area_util') { const a = parseFloat(v.replace(/\./g, '').replace(',', '.')); return !Number.isFinite(a) || a <= 0; }
+  return !/\d/.test(v);
+}
+/** A pergunta do botão: só o que falta, com o jeito de responder que o CRM lê sozinho. Pura (testável). */
+export function laudoPerguntaText(campos: string[]): string {
+  const cs = campos.filter((k) => PERGUNTA_LAUDO[k]);
+  return [
+    `Pra eu preencher a avaliação do seu apartamento junto ao banco, preciso só ${cs.length === 1 ? 'desta informação' : 'destas informações'}:`,
+    '',
+    ...cs.map((k, i) => `${i + 1}. ${PERGUNTA_LAUDO[k].pergunta}`),
+    '',
+    `Pode responder assim: ${cs.map((k) => PERGUNTA_LAUDO[k].exemplo).join(', ')}`,
+  ].join('\n');
+}
+const LAUDO_PERGUNTA_LABEL = 'dados do laudo do apartamento';
+
+/** Botão "Preencher laudo" do card (Fabio 03/11): primeiro o CRM completa o card com o que já tem (proposta, respostas, documentos — o ano de construção sai da
+ *  matrícula: abertura ou 1ª averbação). Card completo → fila da extensão. Faltando dado que o CLIENTE sabe → pergunta só isso: conversa aberta = mensagem; fechada =
+ *  template "Olá, tudo bem?" e a pergunta sai quando ele responder (reply-pending). Quando a resposta completar o card, o laudo entra na fila sozinho (queueIfReady),
+ *  mesmo com a automação da contratação desligada — o clique já foi a ordem. É clique de pessoa: vale com a IA do card desligada. */
+export async function pedirLaudoPeloBotao(accountId: string, leadId: string, userId: string, io?: Io): Promise<{ queued: boolean; asked: 'mensagem' | 'template' | 'aguardando' | null; faltando: string[] }> {
+  const existe = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!existe) throw new Error('Card não encontrado');
+  const st = String(((existe.customFields || {}) as Record<string, any>)._laudoStatus || '');
+  if (st === 'REQUESTED' || st === 'RUNNING') throw new Error('O laudo já está na fila da extensão.');
+  await preencherDadosDoLaudo(accountId, leadId).catch((e: any) => console.warn('[Laudo] preencher no clique:', e?.message));
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  let cf = (lead?.customFields || {}) as Record<string, any>;
+  if (vazio(cf.num_proposta)) {
+    const n = propostaDoLink(String(cf.link_laudo_inter || ''));
+    if (n) { await marca(leadId, { num_proposta: n }); cf = { ...cf, num_proposta: n }; }
+  }
+  const { job, faltando } = buildLaudoJob(leadId, lead!.name, cf);
+  if (job) { await requestLaudo(accountId, leadId, userId); return { queued: true, asked: null, faltando: [] }; }
+  // Sem proposta/link/tipo apartamento o cliente não resolve: segue o aviso de antes.
+  const internos = faltando.filter((f) => /proposta|tipo do im[oó]vel|link do laudo/i.test(f));
+  if (internos.length) throw new Error(`Faltam dados no card: ${internos.join(', ')}.`);
+  const doCliente = Object.keys(PERGUNTA_LAUDO).filter((k) => faltaProLaudo(cf, k));
+  if (!doCliente.length) throw new Error(`Faltam dados no card: ${faltando.join(', ')}.`);
+  const agora = new Date().toISOString();
+  await marca(leadId, { _laudoPedidoAt: agora, _laudoPedidoPor: userId, ...(cf._laudoAsk ? {} : { _laudoAsk: { askedAt: agora, por: 'botão Preencher laudo' } }) });
+  // Pergunta já guardada esperando o cliente responder ao template: não manda outro template.
+  if (Array.isArray(cf._replyPending) && cf._replyPending.some((x: any) => x?.label === LAUDO_PERGUNTA_LABEL)) return { queued: false, asked: 'aguardando', faltando };
+  const texto = laudoPerguntaText(doCliente);
+  const faltamTxt = doCliente.map((k) => ROTULO[k].toLowerCase()).join(', ');
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (await whatsappWindowOpen(leadId)) {
+    const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, userId, io: io as any });
+    if (!r.success) throw new Error(`Não consegui mandar a pergunta ao cliente: ${(r as any).error || 'erro'}`);
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', userId, content: `🏢 Laudo digital do Inter: perguntei ao cliente ${faltamTxt}. Quando ele responder, o CRM preenche o card e o laudo entra sozinho na fila da extensão.` } }).catch(() => {});
+    return { queued: false, asked: 'mensagem', faltando };
+  }
+  const t = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: 'ola_tudo_bem', language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem?', userId, io: io as any });
+  if (!t.success) throw new Error(`A conversa está fechada e o template "Olá, tudo bem?" falhou: ${t.error}`);
+  await queueOnReply(prisma, { leadId, label: LAUDO_PERGUNTA_LABEL, text: texto, noteText: `🏢 Laudo digital do Inter: a janela de 24 h estava fechada — mandei o template "Olá, tudo bem?". Quando o cliente responder, sai a pergunta de ${faltamTxt}; com a resposta, o CRM preenche o card e o laudo entra na fila da extensão.` });
+  return { queued: false, asked: 'template', faltando };
+}
+
 /** Card com o link do laudo e todos os dados: coloca na fila da extensão (ela preenche e para na conferência). Também completa o número da proposta a partir do link. */
 async function queueIfReady(accountId: string, leadId: string): Promise<void> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, customFields: true } });
@@ -304,13 +393,15 @@ async function queueIfReady(accountId: string, leadId: string): Promise<void> {
   }
   const { job } = buildLaudoJob(leadId, lead.name, cf);
   if (!job) return;
-  // Chave geral desligada: a equipe aciona o preenchimento do laudo no botão do card (uma nota avisa que já está pronto).
-  if (!(await contractingAutoOn(accountId))) {
+  // Chave geral desligada: a equipe aciona o preenchimento do laudo no botão do card (uma nota avisa que já está pronto) — exceto quando já clicaram no botão
+  // e o CRM estava só esperando a resposta do cliente (_laudoPedidoAt, Fabio 03/11).
+  if (!cf._laudoPedidoAt && !(await contractingAutoOn(accountId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: 'laudo-fila', pushTitle: '🏢 Laudo pronto pra preencher', pushBody: `${lead.name}: card completo, falta acionar o laudo`,
       note: '🏢 O card já tem o link do laudo e todos os dados: clique em preencher o laudo (a extensão preenche e para na conferência). Passo manual (automação da contratação desligada).' });
     return;
   }
-  const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+  const dono = (cf._laudoPedidoPor && await prisma.user.findFirst({ where: { id: String(cf._laudoPedidoPor), accountId }, select: { id: true } }))
+    || await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
   if (!dono) return;
   await marca(leadId, { _laudoAutoQueuedAt: new Date().toISOString() });
   await requestLaudo(accountId, leadId, dono.id);

@@ -43,10 +43,20 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
 
   async function pedirLaudo() {
     if (!laudo) return;
-    if (laudo.faltando.length) { toast(`Faltam no card: ${laudo.faltando.join(', ')}`, 'error'); return; }
-    if (!window.confirm('A extensão "Vistoria Inter" vai preencher o laudo digital do apartamento no site do Inter e PARAR na tela de conferência. Você confere e envia. Pedir agora?')) return;
+    // Faltando dado (Fabio 03/11): o CRM lê a matrícula (ano de construção) e pergunta ao cliente só o que faltar — template se a conversa estiver fechada.
+    const msg = laudo.faltando.length
+      ? `Faltam no card: ${laudo.faltando.join(', ')}.\n\nO CRM vai ler os documentos do imóvel (o ano de construção sai da matrícula) e perguntar ao cliente só o que ainda faltar — se a conversa estiver fechada, manda antes o template "Olá, tudo bem?". Com a resposta, o laudo entra sozinho na fila da extensão. Seguir?`
+      : 'A extensão "Vistoria Inter" vai preencher o laudo digital do apartamento no site do Inter e PARAR na tela de conferência. Você confere e envia. Pedir agora?';
+    if (!window.confirm(msg)) return;
     setLaudoBusy(true);
-    try { await api.post('/api/vistorias/laudo/request', { leadId }); toast('Na fila: a extensão preenche em até 1 minuto (Chrome aberto, 07h–22h)', 'success'); await carregarLaudo(); }
+    try {
+      const { data } = await api.post<{ queued: boolean; asked: 'mensagem' | 'template' | 'aguardando' | null; faltando: string[] }>('/api/vistorias/laudo/request', { leadId }, { timeout: 120_000 });
+      if (data.queued) toast('Na fila: a extensão preenche em até 1 minuto (Chrome aberto, 07h–22h)', 'success');
+      else if (data.asked === 'mensagem') toast('Perguntei ao cliente o que faltava. Com a resposta, o laudo entra na fila sozinho.', 'success');
+      else if (data.asked === 'template') toast('Conversa fechada: mandei o template "Olá, tudo bem?". A pergunta sai quando o cliente responder.', 'success');
+      else if (data.asked === 'aguardando') toast('A pergunta já está esperando o cliente responder ao template.', 'success');
+      await carregarLaudo();
+    }
     catch (err: any) { toast(err?.response?.data?.error || 'Erro ao pedir o laudo', 'error'); }
     finally { setLaudoBusy(false); }
   }

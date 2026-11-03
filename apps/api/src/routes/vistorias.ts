@@ -1,7 +1,8 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { vistoriaPreview, solicitarVistoria, laudoPreview, requestLaudo, claimLaudo, reportLaudo, seguirPreview, requestSeguir, claimSeguir, reportSeguir } from '../services/vistoria-inter.service';
+import { vistoriaPreview, solicitarVistoria, laudoPreview, claimLaudo, reportLaudo, seguirPreview, requestSeguir, claimSeguir, reportSeguir } from '../services/vistoria-inter.service';
 import { santanderPreview, executarVistoriaSantander } from '../services/vistoria-santander.service';
+import { pedirLaudoPeloBotao } from '../services/laudo-ask.service';
 
 /** Botão "Solicitar vistoria" do card — ver vistoria-inter.service.ts. */
 const router = Router();
@@ -31,7 +32,8 @@ router.get('/laudo/preview', async (req: AuthRequest, res: Response) => {
   try { res.json(await laudoPreview(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao montar o laudo'); }
 });
 router.post('/laudo/request', async (req: AuthRequest, res: Response) => {
-  try { res.json(await requestLaudo(req.user!.accountId, String(req.body?.leadId || ''), req.user!.id)); } catch (err) { fail(res, err, 'Erro ao pedir o preenchimento do laudo'); }
+  // Botão "Preencher laudo" (Fabio 03/11): completa o card (ano de construção pela matrícula) e, se faltar dado do cliente, pergunta a ele (template se a conversa estiver fechada).
+  try { res.json(await pedirLaudoPeloBotao(req.user!.accountId, String(req.body?.leadId || ''), req.user!.id, (req as any).app.get('io'))); } catch (err) { fail(res, err, 'Erro ao pedir o preenchimento do laudo'); }
 });
 router.get('/laudo/queue', async (req: AuthRequest, res: Response) => {
   try { res.json({ job: await claimLaudo(req.user!.accountId) }); } catch (err) { fail(res, err, 'Erro ao buscar a fila do laudo', 500); }
