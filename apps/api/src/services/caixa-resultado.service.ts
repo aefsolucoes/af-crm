@@ -37,6 +37,21 @@ export async function pedirConsultaResultado(accountId: string, leadId: string, 
   return null;
 }
 
+/** Avaliação de Risco rodada DE NOVO (Fabio 03/11, Jézer/Fernanda depois da autorização do PV): o resultado da anterior sai de cena — já foi pro histórico da
+ *  avaliação (`_caixaCadastro.avaliacao.anteriores`, pedirAvaliacao) — e a consulta de Formulários Enviados volta a rodar depois do novo envio (rota /avaliacao →
+ *  pedirConsultaResultado). A chave continua no card (o "crédito já rodado" segue valendo) e o pvAviso fica (histórico do aviso ao cliente). Sem resultado → nada. */
+export async function reiniciarResultado(leadId: string): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  if (!((l?.customFields || {}) as Cf)._caixaResultado) return;
+  await salvar(leadId, (r) => {
+    const anterior = r.status && r.status !== 'AGUARDANDO_NOVA_AVALIACAO' ? { status: String(r.status).slice(0, 300), fim: r.fim || null } : r.anterior || null;
+    for (const k of Object.keys(r)) if (k !== 'pvAviso') delete r[k];
+    r.status = 'AGUARDANDO_NOVA_AVALIACAO';
+    r.desde = new Date().toISOString();
+    if (anterior) r.anterior = anterior;
+  });
+}
+
 /** Próxima consulta de resultado pra extensão (a fila da CAIXA chama quando não há consulta/cadastro/avaliação). FILA, ou RODANDO largada há mais de 10 min
  *  (até 3 tentativas). */
 export async function proximaConsultaResultado(accountId: string) {

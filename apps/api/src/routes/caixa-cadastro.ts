@@ -1,7 +1,8 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
-import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA } from '../services/caixa-cadastro.service';
+import { requirePermission } from '../middleware/permission';
+import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA, estadoCaixaDoCard, cadastroCaixaPeloCard, analiseCaixaPeloCard } from '../services/caixa-cadastro.service';
 import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado, pedirAvisoPv } from '../services/caixa-resultado.service';
 import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
 
@@ -48,6 +49,31 @@ router.post('/:leadId/fazer-cadastro', async (req: AuthRequest, res: Response) =
   const erro = await fazerCadastroManual(req.user!.accountId, req.params.leadId, await nomeDe(req)).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
+});
+
+// Botões "Cadastro CAIXA" e "Análise CAIXA" no topo do card (Fabio 03/11: "NÃO ACHEI O BOTÃO PARA RODAR CADASTRO NA CAIXA…") — mesma fila da extensão; quem clica fica na anotação.
+router.get('/:leadId/card', async (req: AuthRequest, res: Response) => {
+  try {
+    const estado = await estadoCaixaDoCard(req.user!.accountId, req.params.leadId);
+    if (!estado) return res.status(404).json({ error: 'Lead não encontrado' });
+    res.json(estado);
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+router.post('/:leadId/card/cadastro', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await cadastroCaixaPeloCard(req.user!.accountId, req.params.leadId, { id: req.user!.id, nome: await nomeDe(req) }, req.app.get('io'));
+    if ('erro' in r) return res.status(400).json({ error: r.erro });
+    res.json({ ok: true, mensagem: r.mensagem });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir o cadastro na CAIXA' }); }
+});
+// O clique é a autorização da Avaliação de Risco pra este cliente (Fabio 31/10: só com o OK dele) — registrada no card (avaliacao.autorizacao + anotação).
+// `denovo` (Fabio 03/11, Jézer/Fernanda depois da autorização do PV): roda a Avaliação de Risco de novo — a anterior vai pro histórico e o resultado é consultado de novo.
+router.post('/:leadId/card/analise', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await analiseCaixaPeloCard(req.user!.accountId, req.params.leadId, { id: req.user!.id, nome: await nomeDe(req) }, { enviar: req.body?.enviar === true, conferido: req.body?.conferido === true, denovo: req.body?.denovo === true });
+    if ('erro' in r) return res.status(400).json({ error: r.erro });
+    res.json({ ok: true, mensagem: r.mensagem });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir a análise na CAIXA' }); }
 });
 
 router.get('/prontos', async (req: AuthRequest, res: Response) => {

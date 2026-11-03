@@ -10,6 +10,7 @@ import { LeadFhAnalysis } from './lead-fh-analysis';
 import { LeadCertidoes } from './lead-certidoes';
 import { LeadItbi } from './lead-itbi';
 import { LeadVistoria, LeadVistoriaSantander } from './lead-vistoria';
+import { CaixaCardButtons } from './caixa-card-buttons';
 import { useLeadAnalyses, FIELDS_FROM_ANALYSES } from '@/components/credit/shared';
 
 interface LeadSidebarProps {
@@ -539,6 +540,8 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
 
           {/* Análises de crédito dos bancos (extensões) — só na aba Financiamento */}
           {/* Financiamento Habitacional tem os seus bancos (Credimorar + nosso Inter); o bloco do Home Equity mostrava Santander/Creditas/Inter com "—" (Fabio 29/10, Jaime). */}
+          {/* CAIXA (Fabio 03/11: "OS BOTÕES DEVEM FICAR DENTRO DA ABA DE FINANCIAMENTO, ONDE FICA A PARTE DA CAIXA") — cadastro e Avaliação de Risco pela extensão; some sem nada da CAIXA */}
+          {expanded && activeTab === 'Financiamento' && <CaixaCardButtons leadId={lead.id} onDone={onRefresh} />}
           {expanded && activeTab === 'Financiamento' && (/habitacional/i.test(lead.pipeline?.department?.name || '') ? <LeadFhAnalysis leadId={lead.id} /> : <LeadCreditAnalysis leadId={lead.id} onChanged={onRefresh} />)}
           {expanded && activeTab === 'Financiamento' && <LeadCertidoes leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadItbi leadId={lead.id} />}

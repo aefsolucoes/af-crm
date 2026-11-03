@@ -46,7 +46,8 @@ export function orgaoCaixa(id: { tipo?: string; orgao?: string } | null | undefi
 /** Crédito já rodado na CAIXA (Avaliação de Risco enviada/rodando ou resultado gravado). Daí em diante o CRM NÃO mexe sozinho no cadastro — mexer depois pede a
  *  "2ª autorização do PV" (Fabio 01/11: "SE JÁ TIVER RODADO O CRÉDITO E O CLIENTE DESEJAR ALTERAR O CADASTRO, VERIFICAR COM A EQUIPE ANTES, NÃO MEXER NO CADASTRO";
  *  antes disso "pode mexer tranquilo"). O botão da equipe continua valendo. Pura. */
-export const avaliacaoFeita = (cf: Cf): boolean => !!cf._caixaResultado || /ENVIAD|RODANDO/i.test(String(cf._caixaCadastro?.avaliacao?.status || ''));
+export const avaliacaoFeita = (cf: Cf): boolean => !!cf._caixaResultado || /ENVIAD|RODANDO/i.test(String(cf._caixaCadastro?.avaliacao?.status || ''))
+  || (Array.isArray(cf._caixaCadastro?.avaliacao?.anteriores) && cf._caixaCadastro.avaliacao.anteriores.some((a: any) => a?.chegouNaCaixa)); // rodada de novo (Fabio 03/11): a anterior que chegou à CAIXA conta
 
 /** Cadastro automático segurado porque o crédito já rodou: nota + push pra equipe, uma vez por motivo. */
 async function segurarPosAvaliacao(leadId: string, motivo: string): Promise<void> {
@@ -79,14 +80,14 @@ export const participantesDa = (cf: Cf): any[] => {
 };
 
 /** Coloca o card na fila. Erro em texto quando não dá. */
-export async function pedirCadastroCaixa(accountId: string, leadId: string, por: string): Promise<string | null> {
+export async function pedirCadastroCaixa(accountId: string, leadId: string, por: string, userId: string | null = null): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
   if (!participantesDa(cf).length) return 'O card ainda não tem a ficha de cadastro (anotação "📋 FICHA DE CADASTRO — CAIXA") nem os participantes da proposta';
   await salvar(leadId, (c) => { c.status = 'FILA'; c.pedidoEm = new Date().toISOString(); c.por = por; c.consultas = {}; delete c.atual; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Card na fila da CAIXA (${por}): a extensão vai consultar o nome de cada participante em Oportunidades de Negócios e gravar o resultado aqui.` } }).catch(() => {});
-  logActivity({ accountId, userId: null, userName: por, action: 'lead_edited', leadId, leadName: l.name, summary: 'colocou o card na fila do cadastro da CAIXA' } as any);
+  logActivity({ accountId, userId, userName: por, action: 'lead_edited', leadId, leadName: l.name, summary: 'colocou o card na fila do cadastro da CAIXA' } as any);
   return null;
 }
 
@@ -146,7 +147,7 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
         }
         const p1 = quem.tomador;
         await salvar(id, (x) => { x.atual = { ordem: 1, desde: new Date().toISOString(), tipo: 'avaliar' }; x.avaliacao = { ...x.avaliacao, status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.avaliacao?.tentativas || 0) + 1 }; });
-        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x), incluir: quem.incluir.map((x) => ({ ordem: x.ordem, nome: x.nome, cpf: x.cpf })), fora: quem.fora.map((x) => x.nome), operacao, enviar: av.enviar === true };
+        return { tipo: 'avaliar', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, produto: av.produto, participantes: ps.map(({ fontes, faltando, ...x }: any) => x), incluir: quem.incluir.map((x) => ({ ordem: x.ordem, nome: x.nome, cpf: x.cpf })), fora: quem.fora.map((x) => x.nome), operacao, enviar: av.enviar === true, denovo: av.denovo === true, refazer: av.refazer || null }; // denovo/refazer (Fabio 03/11): reabre a avaliação que deu erro e clica em Avançar lá
       }
       await salvar(id, (x) => { x.atual = { ordem: pc.ordem, desde: new Date().toISOString(), tipo: 'cadastrar' }; x.cadastros[pc.ordem] = { ...x.cadastros[pc.ordem], status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.cadastros[pc.ordem]?.tentativas || 0) + 1 }; });
       const { fontes, faltando, ...participante } = pc;
@@ -391,32 +392,94 @@ export async function salvarFormularioCaixa(accountId: string, leadId: string, o
   return null;
 }
 
+/** Avaliação de Risco que já terminou (enviada, com resultado, parada, segurada ou recusada pelo portal) — pode rodar de novo. Na fila ou rodando (a extensão com ela
+ *  na mão, até 3 tentativas) → null: nunca reenfileira por cima. Pura. */
+export function avaliacaoTerminada(cf: Cf): Cf | null {
+  const av = cf._caixaCadastro?.avaliacao as Cf | undefined;
+  if (!av?.status || av.status === 'FILA') return null;
+  if (av.status === 'RODANDO' && !(av.inicio && Date.now() - Date.parse(av.inicio) > LEASE_MS && (av.tentativas || 0) >= 3)) return null;
+  return av;
+}
+
+/** O que fica no histórico (`avaliacao.anteriores`) quando a Avaliação de Risco roda de novo: status, datas, quem autorizou e o resultado da consulta (com o nº da
+ *  proposta e a data de Formulários Enviados — é por eles que a extensão reabre a avaliação que deu erro). Pura. */
+export function resumoAvaliacaoAnterior(av: Cf, resultado: Cf | null | undefined): Cf {
+  const st = String(av?.status || '');
+  const res = resultado?.status && resultado.status !== 'AGUARDANDO_NOVA_AVALIACAO' ? resultado : null;
+  const tela = String(res?.ultimaTela || '');
+  // "Proposta 118223323 (enviada 02/11/2026) — …" (resumo da consulta) ou "Código Proposta 118223323" (detalhe).
+  const linha = /Proposta\s+(\d{5,})\s*\(enviada\s+(\d{2}\/\d{2}\/\d{4})/i.exec(tela);
+  const proposta = linha?.[1] || (/C[oó]digo Proposta\s*\t?\s*(\d{5,})/i.exec(tela) || [])[1] || res?.pvAviso?.proposta || resultado?.pvAviso?.proposta || null;
+  return {
+    status: st.slice(0, 300), pedidoEm: av?.pedidoEm || null, por: av?.por || null, inicio: av?.inicio || null, fim: av?.fim || null, produto: av?.produto || null,
+    enviar: av?.enviar === true, tentativas: av?.tentativas || 0, autorizacao: av?.autorizacao || null, refazer: av?.refazer || null,
+    resultado: res ? { status: String(res.status).slice(0, 300), fim: res.fim || null, proposta: proposta && proposta !== '?' ? proposta : null, data: linha?.[2] || null } : null,
+    chegouNaCaixa: /^ENVIAD|RODANDO/i.test(st) || !!res, arquivadaEm: new Date().toISOString(),
+  };
+}
+
+/** Avaliação que deu erro e vai ser refeita (Fabio 03/11: "O RODAR DE NOVO NÃO É IGUAL A ANTES, PRECISA USAR A APROVAÇÃO/AVALIAÇÃO QUE DEU ERRO" + "E CLICAR EM
+ *  AVANÇAR POR LÁ"): a última do histórico que chegou à CAIXA, com a proposta/data lidas em Formulários Enviados (a mais recente que tem proposta). Uma rodada de novo
+ *  que parou herda o alvo da anterior. null = nenhuma chegou à CAIXA (aí roda do começo, como a 1ª). Pura. */
+export function avaliacaoParaRefazer(historico: Cf[], produto: string): Cf | null {
+  const foram = (historico || []).filter((a) => a?.chegouNaCaixa || a?.refazer);
+  if (!foram.length) return null;
+  const comProposta = [...foram].reverse().find((a) => a?.resultado?.proposta || a?.refazer?.proposta);
+  const base = comProposta || foram[foram.length - 1];
+  if (base?.resultado?.proposta) return { proposta: base.resultado.proposta, data: base.resultado.data || null, produto: base.produto || produto, resultado: base.resultado.status || null };
+  if (base?.refazer) return { ...base.refazer };
+  return { proposta: null, data: null, produto: base?.produto || produto, resultado: base?.resultado?.status || null };
+}
+
 /** Avaliação de Risco da CAIXA (passo 2, Fabio 30/10: "vamos rodar a análise de crédito do Jézer"). Produto pelo setor: Home Equity → "11 - Empréstimo com
  *  Garantia de Imóvel (EGI)"; Financiamento → "1 - Crédito Imobiliário". A extensão abre, consulta o CPF, marca o produto, preenche a operação e PARA antes da
  *  seta (Avançar) da tela 3. `enviar` (Fabio 01/11, Jézer: "PODE REFAZER") = a extensão clica na seta e grava a tela seguinte — a CAIXA não dá o resultado
- *  nessa hora ("O RESULTADO NÃO SAI NESSA TELA, PRECISA CONSULTAR DEPOIS"). Só com o pedido explícito do Fabio; avaliação já ENVIADA não é pedida de novo. */
-export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean } = {}): Promise<string | null> {
+ *  nessa hora ("O RESULTADO NÃO SAI NESSA TELA, PRECISA CONSULTAR DEPOIS"). Só com o pedido explícito do Fabio; avaliação já ENVIADA não é pedida de novo —
+ *  salvo `denovo` (Fabio 03/11, Jézer/Fernanda: "JÁ FORAM AUTORIZADAS PELO PV … RODE A AVALIAÇÃO NOVAMENTE"): a anterior vai pro histórico (`avaliacao.anteriores`),
+ *  o resultado dela sai de `_caixaResultado` (a consulta de Formulários Enviados roda de novo depois do novo envio) e a extensão refaz o mesmo roteiro. */
+export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean; autorizacao?: Record<string, unknown>; denovo?: boolean } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return 'Lead não encontrado';
-  const ps = participantesDa((l.customFields || {}) as Cf);
+  const cf = (l.customFields || {}) as Cf;
+  const ps = participantesDa(cf);
   if (!ps.length) return 'O card ainda não tem a ficha de cadastro';
-  const anterior = ((l.customFields || {}) as Cf)._caixaCadastro?.avaliacao;
-  if (/^ENVIADA/i.test(String(anterior?.status || ''))) return `A Avaliação de Risco já foi ENVIADA à CAIXA (${String(anterior.fim || '').slice(0, 10)}) — o resultado sai na consulta`;
+  const anterior = cf._caixaCadastro?.avaliacao;
+  const denovo = opts.denovo === true;
+  if (!denovo && /^ENVIADA/i.test(String(anterior?.status || ''))) return `A Avaliação de Risco já foi ENVIADA à CAIXA (${String(anterior.fim || '').slice(0, 10)}) — o resultado sai na consulta`;
+  if (denovo && !avaliacaoTerminada(cf)) return 'A Avaliação de Risco deste card está na fila/rodando agora — espere terminar pra rodar de novo';
   const produto = /home|garantia/i.test(l.pipeline?.department?.name || '') ? '11 - empréstimo com garantia de imóvel' : '1 - crédito imobiliário';
   const quem = participantesDaAvaliacao(ps);
   const enviar = opts.enviar === true;
-  await salvar(leadId, (x) => { x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}) }; });
+  // autorizacao = quem deu o OK pra este cliente e quando (botão "Análise CAIXA" do card, Fabio 03/11). A avaliação anterior (com o resultado dela) vai pro histórico.
+  const anteriores = [...(Array.isArray(anterior?.anteriores) ? anterior.anteriores : []), ...(anterior?.status ? [resumoAvaliacaoAnterior(anterior, cf._caixaResultado)] : [])].slice(-10);
+  // Rodar de novo (Fabio 03/11): a extensão REABRE a avaliação que deu erro (Formulários Enviados → proposta) e clica em Avançar lá — não preenche avaliação nova.
+  // Nenhuma chegou à CAIXA (a anterior parou antes de enviar) → roda do começo, como a 1ª.
+  const refazer = denovo ? avaliacaoParaRefazer(anteriores, produto) : null;
+  await salvar(leadId, (x) => {
+    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(anteriores.length ? { anteriores } : {}) };
+    if (x.atual?.tipo === 'avaliar') delete x.atual;
+  });
+  if (refazer && cf._caixaResultado) await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).reiniciarResultado(leadId);
   const lista = [quem.tomador && `${quem.tomador.nome} (tomador)`, ...quem.incluir.map((x) => x.nome)].filter(Boolean).join(', ');
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco na CAIXA pedida (${por}) — produto "${produto.toUpperCase()}". Participantes: ${lista || '—'}${quem.fora.length ? `; fora por não ter renda: ${quem.fora.map((x) => x.nome).join(', ')} (o cadastro na CAIXA fica como está)` : ''}. ${enviar ? 'A extensão preenche a operação, confere os valores e ENVIA (seta da tela 3); o resultado sai depois, na consulta da CAIXA.' : 'A extensão consulta o CPF, marca o produto e mostra a tela antes de enviar.'}` } }).catch(() => {});
+  const comoRefaz = refazer
+    ? ` A extensão REABRE em Formulários Enviados a avaliação que deu erro (${refazer.proposta ? `proposta ${refazer.proposta}${refazer.data ? ` de ${refazer.data}` : ''}` : 'a mais recente do produto — o nº da proposta não estava no card'}), clica em Avançar e segue com os dados que já estão nela (não preenche avaliação nova). Tela que ela não conhece ou botão que não achar: para sem clicar e anota aqui o que viu. A anterior foi pro histórico; o resultado é consultado de novo depois do envio.`
+    : denovo ? ' A anterior parou antes de chegar à CAIXA — roda do começo, como a 1ª.' : '';
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco na CAIXA pedida${denovo ? ' DE NOVO' : ''} (${por}) — produto "${produto.toUpperCase()}".${comoRefaz} Participantes: ${lista || '—'}${quem.fora.length ? `; fora por não ter renda: ${quem.fora.map((x) => x.nome).join(', ')} (o cadastro na CAIXA fica como está)` : ''}. ${enviar ? 'A extensão preenche a operação, confere os valores e ENVIA (seta da tela 3); o resultado sai depois, na consulta da CAIXA.' : 'A extensão consulta o CPF, marca o produto e mostra a tela antes de enviar.'}` } }).catch(() => {});
   return null;
 }
 export async function gravarAvaliacao(accountId: string, leadId: string, r: { status: string; texto: string }): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true } });
   if (!l) return;
   await salvar(leadId, (x) => { x.avaliacao = { ...(x.avaliacao || {}), status: r.status, fim: new Date().toISOString() }; delete x.atual; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Avaliação de Risco CAIXA: ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
+  // PORTAL_BLOQUEOU (rodada de novo, Fabio 03/11): a CAIXA não deixou refazer — o texto da tela vai na anotação pra equipe ver com a agência (PV).
+  const barrou = /^PORTAL_BLOQUEOU/i.test(r.status);
+  const roteiro = /^AGUARDANDO_ROTEIRO/i.test(r.status); // rodar de novo: tela/botão que a extensão não conhece — parou sem clicar
+  const cab = barrou ? '⛔ Avaliação de Risco CAIXA (rodar de novo) — o portal da CAIXA não deixou: ' : roteiro ? '🧭 Avaliação de Risco CAIXA (rodar de novo) — a extensão parou SEM CLICAR: ' : '🏦 Avaliação de Risco CAIXA: ';
+  const pe = barrou ? '\nNada foi enviado de novo. Confira no Caixa Aqui / com a agência (PV) e, liberado, clique em "Rodar análise CAIXA de novo" no card.'
+    : roteiro ? '\nNada foi enviado. Diga qual botão/caminho usar nessa tela (o roteiro da extensão é ajustado) ou faça à mão no Caixa Aqui.' : '';
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `${cab}${r.status}${pe}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-  sendPushToAccount(accountId, { title: `🏦 ${l.name}: Avaliação de Risco CAIXA`, body: r.status.slice(0, 120), leadId }).catch(() => {});
+  sendPushToAccount(accountId, { title: `${barrou ? '⛔' : roteiro ? '🧭' : '🏦'} ${l.name}: Avaliação de Risco CAIXA${barrou ? ' barrada no portal' : roteiro ? ' parou (tela nova)' : ''}`, body: r.status.slice(0, 120), leadId }).catch(() => {});
 }
 
 /** Resultado do cadastro vindo da extensão (preenchido + conferência; salvo ou parado antes de salvar). */
@@ -525,14 +588,14 @@ function operacaoFh(cf: Cf, v: { imovel: number; credito: number; renda: number;
 /** Botão "Fazer cadastro" do painel CAIXA (Fabio 31/10: "preciso de um botão também para fazer o cadastro do cliente quando não rodar sozinho"):
  *  sem nada na CAIXA → fila da consulta (o cadastro sai em seguida); já consultado → cadastro de quem ainda não está GRAVADO, mesmo com a ficha incompleta
  *  (a extensão para e mostra o que faltou). */
-export async function fazerCadastroManual(accountId: string, leadId: string, por: string): Promise<string | null> {
+export async function fazerCadastroManual(accountId: string, leadId: string, por: string, userId: string | null = null): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
   const c = cf._caixaCadastro;
   const ps = participantesDa(cf);
   if (!ps.length) return 'O card ainda não tem a ficha de cadastro (lida dos documentos da pasta ou da conversa) nem os participantes da proposta';
-  if (!c || (c.status !== 'FILA' && !ps.some((p) => c.consultas?.[p.ordem]))) return pedirCadastroCaixa(accountId, leadId, por);
+  if (!c || (c.status !== 'FILA' && !ps.some((p) => c.consultas?.[p.ordem]))) return pedirCadastroCaixa(accountId, leadId, por, userId);
   if (c.status === 'FILA') return 'Já está na fila da CAIXA (consulta do nome em andamento)';
   const ordens = ps.filter((p) => !gravado(c, p.ordem) && !['FILA', 'RODANDO'].includes(String(c.cadastros?.[p.ordem]?.status || ''))).map((p) => p.ordem);
   if (!ordens.length) return ps.every((p) => gravado(c, p.ordem)) ? 'Todos os participantes já estão cadastrados (GRAVADO)' : 'O cadastro já está na fila/rodando';
@@ -567,4 +630,187 @@ export async function semCadastroCaixa(accountId: string): Promise<any[]> {
       AND l."customFields"->'_caixaRota' IS NOT NULL -- só quem pediu a CAIXA (Fabio 01/11); a ficha também sai pra contratação dos outros bancos
     ORDER BY l."customFields"->'_fichaCadastral'->>'at' DESC NULLS LAST LIMIT 30`;
   return rows.map((r) => ({ leadId: r.id, nome: r.name, produto: ehHe(r.dept) ? 'HE' : 'FH', fichaEm: r.at, participantes: (Array.isArray(r.ps) ? r.ps : []).map((p: any) => p.nome || '').filter(Boolean) }));
+}
+
+/* ── Botões "Cadastro CAIXA" e "Análise CAIXA" no topo do card (Fabio 03/11: "NÃO ACHEI O BOTÃO PARA RODAR CADASTRO NA CAIXA E TBM OUTRO BOTÃO ESCRITO, RODAR ANÁLISE DE
+ * CRÉDITO NA CAIXA"). Mesma fila da extensão "Cadastro CAIXA" (fazerCadastroManual / pedirAvaliacao) — nada paralelo. O clique no "Análise CAIXA" É o OK do Fabio pra
+ * AQUELE cliente (31/10: a Avaliação de Risco só roda com o pedido explícito): quem/quando ficam em _caixaCadastro.avaliacao.autorizacao + anotação. ── */
+
+type Trava = { tipo: 'andamento' | 'feito' | 'falta'; msg: string } | null;
+type Quem = { id: string; nome: string };
+type IoLike = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
+const quando = (iso?: string | null): string => (iso ? new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
+const nomeP = (p: any) => p?.nome || `${p?.ordem}º participante`;
+
+/** A fila da CAIXA só pega card aberto e não arquivado (proximaConsulta). Pura. */
+function cardFechado(l: { status: string; archived: boolean }): string | null {
+  if (l.archived) return 'O card está arquivado — a fila da CAIXA só roda card aberto. Restaure o card antes.';
+  if (l.status !== 'OPEN') return `O card está como ${l.status === 'WON' ? 'Ganho' : 'Perdido'} — a fila da CAIXA só roda card aberto. Reabra o card antes.`;
+  return null;
+}
+
+/** Cadastro: já na fila/rodando ou todos GRAVADO (botão desabilitado). Sem ficha não trava — o botão manda ler os documentos. Pura. */
+export function travaCadastroCaixa(cf: Cf): Trava {
+  const c = cf._caixaCadastro as Cf | undefined;
+  const ps = participantesDa(cf);
+  const atual = c?.atual && Date.now() - Date.parse(c.atual.desde) < LEASE_MS ? c.atual : null;
+  if (atual && atual.tipo !== 'avaliar') return { tipo: 'andamento', msg: `A extensão está ${atual.tipo === 'cadastrar' ? 'cadastrando' : 'consultando o nome de'} ${nomeP(ps.find((p) => p.ordem === atual.ordem) || { ordem: atual.ordem })} na CAIXA agora (desde ${quando(atual.desde)})` };
+  if (c?.status === 'FILA') return { tipo: 'andamento', msg: `Já na fila da CAIXA desde ${quando(c.pedidoEm)}${c.por ? ` (${c.por})` : ''}: consulta do nome em Oportunidades de Negócios; o cadastro sai em seguida` };
+  if (!c || !ps.length || !ps.some((p) => c.consultas?.[p.ordem])) return null;
+  if (ps.every((p) => gravado(c, p.ordem))) return { tipo: 'feito', msg: `Já cadastrado na CAIXA (GRAVADO): ${ps.map(nomeP).join(', ')}` };
+  const pend = ps.filter((p) => !gravado(c, p.ordem));
+  const naFila = pend.filter((p) => ['FILA', 'RODANDO'].includes(String(c.cadastros?.[p.ordem]?.status || '')));
+  if (naFila.length === pend.length) return { tipo: 'andamento', msg: `Cadastro na fila da extensão desde ${quando(c.cadastros?.[naFila[0].ordem]?.pedidoEm)}: ${naFila.map(nomeP).join(', ')}` };
+  return null;
+}
+
+/** Análise (Avaliação de Risco): na fila/rodando (desabilitado) ou o que falta pra rodar — as mesmas regras que a fila aplica na hora (participantesDaAvaliacao,
+ *  operacaoDaAvaliacao), pra o erro sair no clique e não virar "SEGURADO" depois. Cadastro GRAVADO de quem entra é pré-requisito (ordem da CAIXA, Fabio 29/10).
+ *  Já ENVIADA/terminada NÃO trava mais (Fabio 03/11): o botão vira "Rodar análise CAIXA de novo" (avaliacaoTerminada). Pura. */
+export function travaAnaliseCaixa(cf: Cf, fh: boolean): Trava {
+  const c = (cf._caixaCadastro || {}) as Cf;
+  const av = c.avaliacao as Cf | undefined;
+  const st = String(av?.status || '');
+  const quem = av?.autorizacao?.por || av?.por;
+  if (st === 'FILA') return { tipo: 'andamento', msg: `Análise de crédito na fila da extensão da CAIXA desde ${quando(av!.pedidoEm)}${quem ? ` (autorizada por ${quem})` : ''}` };
+  if (av?.status && !avaliacaoTerminada(cf)) return { tipo: 'andamento', msg: `A extensão está rodando a Avaliação de Risco na CAIXA (desde ${quando(av.inicio)})` };
+  // Consulta do resultado em andamento: a extensão gravaria o resultado antigo por cima do "aguardando a nova" — espera ela terminar.
+  const res = cf._caixaResultado as Cf | undefined;
+  if (res?.status === 'RODANDO' && res.inicio && Date.now() - Date.parse(res.inicio) < LEASE_MS) return { tipo: 'andamento', msg: `A extensão está consultando o resultado da avaliação em Formulários Enviados (desde ${quando(res.inicio)}) — espere terminar` };
+  if (!temFicha(cf)) return { tipo: 'falta', msg: 'O card ainda não tem a ficha de cadastro (dados lidos dos documentos) — rode o "Cadastro CAIXA" primeiro' };
+  const q = participantesDaAvaliacao(participantesDa(cf));
+  if (q.segurar) return { tipo: 'falta', msg: `Não dá pra rodar a análise: ${q.segurar}` };
+  const semCadastro = [q.tomador, ...q.incluir].filter((p) => !gravado(c, p.ordem));
+  if (semCadastro.length) return { tipo: 'falta', msg: `Falta o cadastro GRAVADO na CAIXA de ${semCadastro.map(nomeP).join(', ')} — rode o "Cadastro CAIXA" primeiro` };
+  const op = operacaoDaAvaliacao(cf, [q.tomador, ...q.incluir], null, fh ? { pediuPrice: false, compraVenda: null } : null, fh ? null : { pediuSac: false });
+  if (typeof op === 'string') return { tipo: 'falta', msg: `Não dá pra rodar a análise: ${op}` };
+  return null;
+}
+
+/** Estado dos dois botões (GET /api/caixa-cadastro/:leadId/card). Sem CPF. `mostrar`: a CAIXA faz sentido no card — já tem algo da CAIXA (fila, rota, pedido,
+ *  opção, resultado, ficha de cadastro), é Financiamento Habitacional (a CAIXA é um dos bancos dele) ou é Home Equity com alguma aprovação (Fabio 01/11: CAIXA só
+ *  depois de aprovar). */
+export async function estadoCaixaDoCard(accountId: string, leadId: string): Promise<Record<string, any> | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { status: true, archived: true, isGroup: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!l) return null;
+  const cf = (l.customFields || {}) as Cf;
+  const c = (cf._caixaCadastro || {}) as Cf;
+  const dept = l.pipeline?.department?.name || '';
+  const he = ehHe(dept);
+  const ficha = temFicha(cf);
+  const temCaixa = !!(cf._caixaCadastro || cf._caixaRota || cf._caixaPedido || cf._caixaResultado || ficha || /caixa/i.test(String(cf._optouCaixa?.banco || '')));
+  const { temAprovacao } = require('./caixa-screening.service') as typeof import('./caixa-screening.service');
+  const mostrar = !l.isGroup && (temCaixa || /habitacional/i.test(dept) || (he && (await temAprovacao(leadId, cf).catch(() => false))));
+  if (!mostrar) return { mostrar: false };
+  const ps = participantesDa(cf);
+  const q = ficha ? participantesDaAvaliacao(ps) : null;
+  const av = c.avaliacao as Cf | undefined;
+  const terminada = avaliacaoTerminada(cf);
+  const anteriores = Array.isArray(av?.anteriores) ? av!.anteriores : [];
+  const res = cf._caixaResultado as Cf | undefined;
+  return {
+    mostrar: true,
+    produto: he ? 'HE' : 'FH',
+    fechado: cardFechado(l),
+    temFicha: ficha,
+    rotaCaixa: !!cf._caixaRota,
+    avaliacaoFeita: avaliacaoFeita(cf),
+    participantes: ps.map((p) => ({ ordem: p.ordem, nome: p.nome || '', semRenda: p.semRenda === true, consultado: !!c.consultas?.[p.ordem], cadastro: c.cadastros?.[p.ordem]?.status ? String(c.cadastros[p.ordem].status).slice(0, 90) : null, falta: ficha ? faltaParaCadastro(p) : [] })),
+    cadastro: { trava: travaCadastroCaixa(cf) },
+    analise: {
+      trava: travaAnaliseCaixa(cf, !he),
+      // Rodada anterior chegou à CAIXA → o cadastro já foi usado lá; a conferência só é pedida antes da 1ª avaliação.
+      precisaConferir: c.conferencia?.status === 'PENDENTE' && !(terminada && avaliacaoFeita(cf)),
+      produto: he ? '11 - Empréstimo com Garantia de Imóvel (EGI)' : '1 - Crédito Imobiliário',
+      tomador: q?.tomador?.nome || null, incluir: (q?.incluir || []).map((x) => x.nome), fora: (q?.fora || []).map((x) => x.nome),
+      valorImovel: cf.valor_imovel ?? null, valorCredito: cf.valor_credito ?? null,
+      avaliacao: av ? { status: String(av.status || '').slice(0, 160), pedidoEm: av.pedidoEm || null, inicio: av.inicio || null, fim: av.fim || null, por: av.por || null, enviar: av.enviar === true, denovo: av.denovo === true, autorizacao: av.autorizacao || null, vezes: anteriores.length + 1 } : null,
+      // Já rodou (enviada, com resultado, parada…) → "Rodar análise CAIXA de novo".
+      // refazer = a avaliação que deu erro e vai ser REABERTA (proposta/data de Formulários Enviados); null = nenhuma chegou à CAIXA, roda do começo.
+      denovo: terminada ? { status: String(terminada.status || '').slice(0, 160), fim: terminada.fim || terminada.pedidoEm || null, resultado: res?.status && res.status !== 'AGUARDANDO_NOVA_AVALIACAO' ? String(res.status).slice(0, 200) : null, refazer: avaliacaoParaRefazer([...anteriores, resumoAvaliacaoAnterior(terminada, res)], he ? '11 - empréstimo com garantia de imóvel' : '1 - crédito imobiliário') } : null,
+      resultado: res?.status ? String(res.status).slice(0, 200) : null,
+    },
+  };
+}
+
+/** Botão "Cadastro CAIXA": reaproveita o "Fazer cadastro" do painel CAIXA (consulta do nome se ainda não consultou; senão o cadastro de quem não está GRAVADO). Sem a
+ *  ficha de cadastro, manda ler os documentos (pasta do Drive ou conversa — gerarFichaCadastral, 1–3 min) e, com ela pronta, a consulta/o cadastro vão pra fila sozinhos. */
+export async function cadastroCaixaPeloCard(accountId: string, leadId: string, quem: Quem, io?: IoLike): Promise<{ erro: string } | { mensagem: string }> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, status: true, archived: true, customFields: true } });
+  if (!l) return { erro: 'Lead não encontrado' };
+  const fechado = cardFechado(l);
+  if (fechado) return { erro: fechado };
+  const cf = (l.customFields || {}) as Cf;
+  const trava = travaCadastroCaixa(cf);
+  if (trava) return { erro: trava.msg };
+  const c = cf._caixaCadastro as Cf | undefined;
+  const ps = participantesDa(cf);
+  const ficha = temFicha(cf);
+  const consulta = ps.length > 0 && (!c || (c.status !== 'FILA' && !ps.some((p) => c.consultas?.[p.ordem])));
+  let mensagem: string;
+  if (consulta || ficha) {
+    const erro = await fazerCadastroManual(accountId, leadId, quem.nome, quem.id);
+    if (erro) return { erro };
+  }
+  if (ficha && consulta) mensagem = 'Na fila da CAIXA: a extensão consulta o nome de cada participante e, em seguida, faz o cadastro pela ficha.';
+  else if (ficha) {
+    const cads = ((((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Cf)._caixaCadastro?.cadastros || {}) as Cf;
+    const foram = ps.filter((p) => cads[p.ordem]?.status === 'FILA' && cads[p.ordem]?.por === quem.nome);
+    const faltas = foram.filter((p) => faltaParaCadastro(p).length).map((p) => `${nomeP(p)}: ${faltaParaCadastro(p).join(', ')}`);
+    mensagem = `Cadastro de ${foram.map(nomeP).join(', ') || 'quem falta'} na fila da extensão da CAIXA (preenche pela ficha e o CRM confere).${faltas.length ? ` Atenção, falta na ficha — ${faltas.join('; ')}: a extensão para e mostra o que faltou.` : ''}`;
+  } else {
+    // Sem ficha: lê os documentos em segundo plano (igual ao POST /api/leads/:id/ficha-cadastral) e, pronta, encaminha pra fila.
+    const { gerarFichaCadastral } = require('./ficha-cadastral.service') as typeof import('./ficha-cadastral.service');
+    gerarFichaCadastral(accountId, leadId, { userId: quem.id, io })
+      .then(async (erro) => {
+        if (erro) {
+          if (!/sendo lida/.test(erro)) await prisma.note.create({ data: { leadId, userId: quem.id, type: 'COMMENT', content: `📋 Ficha de cadastro não gerada (botão "Cadastro CAIXA"): ${erro}. Sem a ficha o cadastro na CAIXA não sai.` } }).catch(() => {});
+          return;
+        }
+        const depois = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
+        if (!depois._caixaCadastro) await pedirCadastroCaixa(accountId, leadId, quem.nome, quem.id);
+        else await cadastroAutomatico(accountId, leadId);
+      })
+      .catch((e) => console.error('[CAIXA] ficha pelo botão do card:', e?.message));
+    mensagem = consulta
+      ? 'Consulta do nome na fila da CAIXA. Lendo os documentos pra montar a ficha de cadastro (1–3 min) — com ela pronta, o cadastro vai pra fila sozinho.'
+      : 'Lendo os documentos do cliente pra montar a ficha de cadastro (1–3 min) — com ela pronta, a consulta e o cadastro na CAIXA vão pra fila sozinhos. Se faltar documento, aparece nas anotações.';
+  }
+  await prisma.note.create({ data: { leadId, userId: quem.id, type: 'COMMENT', content: `🏦 ${quem.nome} pediu o cadastro na CAIXA (botão "Cadastro CAIXA" do card). ${mensagem}` } }).catch(() => {});
+  // Consulta: pedirCadastroCaixa já registrou a atividade (com quem clicou).
+  if (!consulta) logActivity({ accountId, userId: quem.id, userName: quem.nome, action: 'lead_edited', leadId, leadName: l.name, summary: 'pediu o cadastro na CAIXA' });
+  return { mensagem };
+}
+
+/** Botão "Análise CAIXA": o clique é o OK pra este cliente. Cadastro gravado e ainda não conferido → pede a confirmação "já conferi" (Fabio 31/10: "depois de o
+ *  colaborador conferir é que ele roda"). `enviar` = a extensão clica na seta da tela 3 (sem ele, preenche e para antes de enviar). Avaliação que já rodou → só com
+ *  `denovo` (botão "Rodar análise CAIXA de novo", Fabio 03/11 — Jézer/Fernanda depois da autorização do PV): o clique é a nova autorização. */
+export async function analiseCaixaPeloCard(accountId: string, leadId: string, quem: Quem, opts: { enviar?: boolean; conferido?: boolean; denovo?: boolean } = {}): Promise<{ erro: string } | { mensagem: string }> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, status: true, archived: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!l) return { erro: 'Lead não encontrado' };
+  const fechado = cardFechado(l);
+  if (fechado) return { erro: fechado };
+  const cf = (l.customFields || {}) as Cf;
+  const trava = travaAnaliseCaixa(cf, !ehHe(l.pipeline?.department?.name));
+  if (trava) return { erro: trava.msg };
+  const anterior = avaliacaoTerminada(cf);
+  if (anterior && !opts.denovo) return { erro: `A Avaliação de Risco deste card já rodou (${String(anterior.status || '').slice(0, 120)}, ${quando(anterior.fim || anterior.pedidoEm)}). Pra rodar de novo, use "Rodar análise CAIXA de novo".` };
+  const agora = new Date().toISOString();
+  const enviar = opts.enviar === true;
+  const denovo = !!anterior;
+  const conferir = ((cf._caixaCadastro || {}) as Cf).conferencia?.status === 'PENDENTE' && !(denovo && avaliacaoFeita(cf));
+  if (conferir && !opts.conferido) return { erro: 'O cadastro gravado na CAIXA ainda não foi conferido: confira no Caixa Aqui e marque "Já conferi o cadastro" na confirmação.' };
+  if (conferir) await salvar(leadId, (x) => { x.conferencia = { ...(x.conferencia || {}), status: 'CONFERIDO', por: quem.nome, em: agora }; });
+  const via = denovo ? 'botão Rodar análise CAIXA de novo do card' : 'botão Análise CAIXA do card';
+  const erro = await pedirAvaliacao(accountId, leadId, quem.nome, { enviar, denovo, autorizacao: { por: quem.nome, userId: quem.id, em: agora, enviar, denovo, via } });
+  if (erro) return { erro };
+  const oQue = enviar ? 'A extensão preenche a operação e ENVIA à CAIXA; o resultado sai depois, na consulta de Formulários Enviados.' : 'A extensão preenche a operação e PARA antes de enviar (tela 3), pra conferir.';
+  const ant = denovo ? ` Avaliação anterior: ${String(anterior!.status || '—').slice(0, 120)} (${quando(anterior!.fim || anterior!.pedidoEm)})${cf._caixaResultado?.status ? ` — resultado: ${String(cf._caixaResultado.status).slice(0, 140)}` : ''}; foi pro histórico.` : '';
+  await prisma.note.create({ data: { leadId, userId: quem.id, type: 'COMMENT', content: `🏦 ${quem.nome} autorizou a análise de crédito na CAIXA${denovo ? ' DE NOVO' : ''} (Avaliação de Risco) em ${quando(agora)} — ${via}.${ant}${conferir ? ` Cadastro no Caixa Aqui conferido por ${quem.nome}.` : ''} ${oQue}` } }).catch(() => {});
+  logActivity({ accountId, userId: quem.id, userName: quem.nome, action: 'lead_edited', leadId, leadName: l.name, summary: `autorizou a análise de crédito na CAIXA${denovo ? ' de novo' : ''}${enviar ? '' : ' (sem enviar)'}` });
+  // Rodar de novo com avaliação que chegou à CAIXA: a extensão reabre aquela (Formulários Enviados) e clica em Avançar — não preenche outra (Fabio 03/11).
+  const alvo = denovo ? avaliacaoParaRefazer([...(Array.isArray(anterior!.anteriores) ? anterior!.anteriores : []), resumoAvaliacaoAnterior(anterior!, cf._caixaResultado)], '') : null;
+  if (alvo) return { mensagem: `Na fila da extensão da CAIXA: ela reabre a avaliação que deu erro (${alvo.proposta ? `proposta ${alvo.proposta}` : 'a mais recente do produto'}), clica em Avançar e segue com os dados dela${enviar ? ' até o Solicitar Avaliação' : ', parando antes de enviar'}. O resultado é consultado de novo depois.` };
+  const fila = denovo ? 'Avaliação de Risco de novo na fila da extensão da CAIXA (a anterior não chegou à CAIXA: roda do começo)' : 'Análise de crédito na fila da extensão da CAIXA';
+  return { mensagem: enviar ? `${fila} — ela preenche e envia; o resultado sai depois.` : `${fila} — ela preenche e para antes de enviar.` };
 }
