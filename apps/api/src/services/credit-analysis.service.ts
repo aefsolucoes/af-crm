@@ -596,31 +596,35 @@ async function noteVerdictFlip(db: Db, row: { id: string; leadId: string; bank: 
   await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🔁 ${banco}${quem}: o resultado MUDOU. Antes: ${rotulo(ant)} (pedido ${brlN(ant.requestedValue)}, ${dia(ant.createdAt)}) → agora: ${rotulo(row)} (pedido ${brlN(row.requestedValue)}, ${dia(row.createdAt)}). O resultado anterior continua registrado na aba Análise de Crédito (Resultados anteriores).` } });
 }
 
-/** Nova proposta com OUTRO valor/prazo rodada fora da rodada da IA — a equipe pela tela (Fabio 03/11, Claudia: aprovada em 80 mil, pediu 60 mil, o Santander rejeitou os 60 e ninguém avisou;
- *  a IA seguia dizendo "aguardando o banco"). Mesmo aviso da rodada da IA (sendChangeRefusalNow): a negativa + a aprovação que continua valendo. Uma vez por proposta. */
-async function avisarNovaPropostaRecusada(db: Db, row: { id: string; leadId: string; bank: string; status: string; dryRun: boolean; proposalNumber?: string | null; requestedValue?: number | null; termMonths?: number | null; createdAt: Date }): Promise<void> {
-  if (row.dryRun || row.status !== 'REJECTED' || FH_RUN_BANKS.includes(row.bank)) return;
+/** Nova proposta com OUTRO valor/prazo RECUSADA quando o card já tem aprovação (Fabio 03/11, Claudia: aprovada em 80 mil, pediu 60 mil, a equipe rodou pela tela, o Santander rejeitou
+ *  os 60 e ninguém avisou; a IA seguia dizendo "aguardando o banco"). (1) A linha vira `AI_CHANGE` — o mesmo tratamento da rodada da IA: não conta como veredito do banco e não apaga a
+ *  aprovação anterior (optionsFromAnalyses, semRuidoDeSimulacao…). Vale também pra conferência (CHECK) de proposta que a rodada da IA mandou ao Inter/Creditas. (2) Fora da rodada da IA
+ *  (`_changeRound` tem o aviso do finishProposalChange), avisa o cliente uma vez por proposta: a negativa + a aprovação que continua valendo. Roda ANTES do finishProposalChange. */
+async function marcarNovaPropostaRecusada(db: Db, row: { id: string; leadId: string; bank: string; status: string; source?: string; dryRun: boolean; proposalNumber?: string | null; requestedValue?: number | null; termMonths?: number | null; createdAt: Date }): Promise<void> {
+  if (row.dryRun || row.status !== 'REJECTED' || row.source === CHANGE_ROW_SOURCE || FH_RUN_BANKS.includes(row.bank)) return;
+  const mesma = row.proposalNumber ? await db.creditAnalysis.findMany({ where: { leadId: row.leadId, proposalNumber: row.proposalNumber, id: { not: row.id }, createdAt: { lt: row.createdAt } }, select: { id: true, status: true, source: true } }) : [];
+  const daRodadaDaIa = mesma.some((r) => r.source === CHANGE_ROW_SOURCE);
+  const aprov = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, dryRun: false, id: { not: row.id }, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { lt: row.createdAt } }, orderBy: { createdAt: 'desc' }, select: { requestedValue: true, termMonths: true, proposalNumber: true } });
+  const outra = !!aprov && !(aprov.proposalNumber && aprov.proposalNumber === row.proposalNumber);
+  const valor = outra && row.requestedValue && aprov!.requestedValue && row.requestedValue !== aprov!.requestedValue ? row.requestedValue : null;
+  const prazo = outra && row.termMonths && aprov!.termMonths && row.termMonths !== aprov!.termMonths ? row.termMonths : null;
+  if (!daRodadaDaIa && !valor && !prazo) return; // mesmo pedido em outro banco: é a rodada normal (noticeClients)
+  await db.creditAnalysis.updateMany({ where: { id: { in: [row.id, ...mesma.filter((r) => r.status === 'REJECTED').map((r) => r.id)] } }, data: { source: CHANGE_ROW_SOURCE } });
+  row.source = CHANGE_ROW_SOURCE;
+  if (daRodadaDaIa || mesma.some((r) => r.status === 'REJECTED')) return; // aviso da rodada da IA, ou conferência repetida de proposta já recusada
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { accountId: true, status: true, aiAutoReplyActive: true, customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
-  if (!lead || lead.status !== 'OPEN' || cf._changeRound || cf._autoPaused) return; // rodada da IA: o aviso é do finishProposalChange
-  if (row.proposalNumber && await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, proposalNumber: row.proposalNumber, status: 'REJECTED', id: { not: row.id }, createdAt: { lt: row.createdAt } }, select: { id: true } })) return; // conferência repetida de proposta já recusada
-  const aprov = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, dryRun: false, id: { not: row.id }, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { lt: row.createdAt } }, orderBy: { createdAt: 'desc' }, select: { requestedValue: true, termMonths: true, proposalNumber: true } });
-  if (!aprov || (aprov.proposalNumber && aprov.proposalNumber === row.proposalNumber)) return;
-  const valor = row.requestedValue && aprov.requestedValue && row.requestedValue !== aprov.requestedValue ? row.requestedValue : null;
-  const prazo = row.termMonths && aprov.termMonths && row.termMonths !== aprov.termMonths ? row.termMonths : null;
-  if (!valor && !prazo) return; // mesmo pedido em outro banco: é a rodada normal (noticeClients)
-  const f = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } }); // relê: grava só o pedido (o texto do aviso usa)
-  const c: Record<string, any> = { ...((f?.customFields || {}) as Record<string, any>) };
-  c._changeAsk = [prazo && `o prazo de ${prazo} meses`, valor && `o valor de ${fmtBRL(valor)}`].filter(Boolean).join(' e ');
-  await db.lead.update({ where: { id: row.leadId }, data: { customFields: c as any } });
+  if (!lead || lead.status !== 'OPEN' || cf._changeRound || cf._autoPaused) return;
+  const pedido = [prazo && `o prazo de ${prazo} meses`, valor && `o valor de ${fmtBRL(valor)}`].filter(Boolean).join(' e ');
+  await db.lead.update({ where: { id: row.leadId }, data: { customFields: { ...cf, _changeAsk: pedido } as any } }); // o texto do aviso usa
   const nota = (content: string) => db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content } }).catch(() => {});
   const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (lead.aiAutoReplyActive) {
     const out = await an.sendChangeRefusalNow({ accountId: lead.accountId, leadId: row.leadId });
-    if (!out.ok && out.error !== 'janela de 24 h fechada') await nota(`⚠️ Não consegui avisar o cliente da nova proposta recusada (${c._changeAsk}): ${out.error}. Avise à mão — a aprovação anterior continua valendo.`);
+    if (!out.ok && out.error !== 'janela de 24 h fechada') await nota(`⚠️ Não consegui avisar o cliente da nova proposta recusada (${pedido}): ${out.error}. Avise à mão — a aprovação anterior continua valendo.`);
   } else {
     const texto = await an.buildChangeRefusalText(row.leadId).catch(() => null);
-    await nota(`✋ A nova proposta (${c._changeAsk}) foi recusada, mas o aviso NÃO saiu sozinho: a IA deste card está desligada.${texto ? ` Texto pronto pra você mandar:\n\n${texto}` : ''}`);
+    await nota(`✋ A nova proposta (${pedido}) foi recusada, mas o aviso NÃO saiu sozinho: a IA deste card está desligada.${texto ? ` Texto pronto pra você mandar:\n\n${texto}` : ''}`);
   }
 }
 
@@ -885,9 +889,9 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun && /acionar manualmente o gestor/i.test(updated.detail || '')) {
     await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Creditas: este CPF já possui uma proposta ativa que NÃO está na nossa conta — precisa acionar manualmente o gestor da Creditas (contato executivo Home).' } });
   }
+  if (becameFinal) await marcarNovaPropostaRecusada(db, updated as any).catch((e: any) => console.error('[Nova proposta recusada]', e?.message || e));
   if (becameFinal && !updated.dryRun) await finishProposalChange(db, updated.leadId).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
   if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
-  if (becameFinal) await avisarNovaPropostaRecusada(db, updated as any).catch((e: any) => console.error('[Nova proposta recusada]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
   if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL')) await reabrirSeAprovouDepoisDaNegativa(db, updated as any).catch((e: any) => console.error('[Reabrir ao aprovar]', e?.message || e));
   await santanderManualFlow(db, updated as any).catch((e: any) => console.error('[Santander manual]', e?.message || e));
