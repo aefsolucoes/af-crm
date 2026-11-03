@@ -472,7 +472,12 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
 export async function gravarAvaliacao(accountId: string, leadId: string, r: { status: string; texto: string }): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true } });
   if (!l) return;
-  await salvar(leadId, (x) => { x.avaliacao = { ...(x.avaliacao || {}), status: r.status, fim: new Date().toISOString() }; delete x.atual; });
+  await salvar(leadId, (x) => {
+    x.avaliacao = { ...(x.avaliacao || {}), status: r.status, fim: new Date().toISOString() };
+    // Condicionada → PRICE: a extensão só marca "condicionada na PRICE" quando trocou mesmo a prestação e a amortização na tela (o status final sobrescreve).
+    if (x.avaliacao.ajuste && /condicionada na PRICE/i.test(r.status)) x.avaliacao.ajuste = { ...x.avaliacao.ajuste, aplicado: true };
+    delete x.atual;
+  });
   // PORTAL_BLOQUEOU (rodada de novo, Fabio 03/11): a CAIXA não deixou refazer — o texto da tela vai na anotação pra equipe ver com a agência (PV).
   const barrou = /^PORTAL_BLOQUEOU/i.test(r.status);
   const roteiro = /^AGUARDANDO_ROTEIRO/i.test(r.status); // rodar de novo: tela/botão que a extensão não conhece — parou sem clicar

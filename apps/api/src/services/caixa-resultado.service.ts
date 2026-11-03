@@ -176,16 +176,21 @@ async function tratarCondicionada(accountId: string, leadId: string, nome: strin
     await moveLeadToPerdidos({ accountId, leadId, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo });
     return;
   }
-  if (av.ajuste && String(av.ajuste.de || '') === proposta) {
+  // Já refeita na PRICE pra esta proposta: só conta se a extensão confirmou a troca (ajuste.aplicado); sem a confirmação, refaz mais 1 vez e depois é com a equipe.
+  const mesmaProposta = !!av.ajuste && String(av.ajuste.de || '') === proposta;
+  const tentativa = mesmaProposta ? Number(av.ajuste.tentativa) || 1 : 0;
+  if (mesmaProposta && (av.ajuste.aplicado || tentativa >= 2)) {
     await salvar(leadId, (x) => { x.condicionada = { ...base, status: 'SO_EQUIPE' }; });
-    await nota(`🟡 CAIXA voltou CONDICIONADA de novo (proposta ${proposta}), mesmo refeita na PRICE com a prestação de ${brl(Number(av.ajuste.prestacao))}: agora a parcela possível é ${brl(parcela)}. O CRM não refaz de novo sozinho — veja com a agência. O cliente NÃO foi avisado.`);
-    pushEquipe(`🟡 ${nome}: CAIXA condicionada de novo`, `Mesmo na PRICE: parcela possível ${brl(parcela)}. Ver com a agência.`);
+    await nota(av.ajuste.aplicado
+      ? `🟡 CAIXA voltou CONDICIONADA de novo (proposta ${proposta}), mesmo refeita na PRICE com a prestação de ${brl(Number(av.ajuste.prestacao))}: agora a parcela possível é ${brl(parcela)}. O CRM não refaz de novo sozinho — veja com a agência. O cliente NÃO foi avisado.`
+      : `🟡 CAIXA condicionada (proposta ${proposta}): pedi 2 vezes pra extensão refazer na PRICE com a prestação de ${brl(Number(av.ajuste.prestacao))} e ela não confirmou a troca na tela. Refaça você no Caixa Aqui. O cliente NÃO foi avisado.`);
+    pushEquipe(`🟡 ${nome}: CAIXA condicionada de novo`, av.ajuste.aplicado ? `Mesmo na PRICE: parcela possível ${brl(parcela)}. Ver com a agência.` : 'A extensão não trocou a prestação: refazer à mão.');
     return;
   }
   const { pedirAvaliacao } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
   const em = new Date().toISOString();
   const via = 'regra do Fabio 03/11: condicionada → refaz na PRICE com a prestação possível';
-  const erro = await pedirAvaliacao(accountId, leadId, 'automático (condicionada → PRICE)', { enviar: true, denovo: true, ajuste: { prestacao: parcela, amortizacao: 'PRICE', de: proposta, credito: Math.round(credito) }, autorizacao: { por: 'automático', em, enviar: true, denovo: true, via } });
+  const erro = await pedirAvaliacao(accountId, leadId, 'automático (condicionada → PRICE)', { enviar: true, denovo: true, ajuste: { prestacao: parcela, amortizacao: 'PRICE', de: proposta, credito: Math.round(credito), tentativa: tentativa + 1 }, autorizacao: { por: 'automático', em, enviar: true, denovo: true, via } });
   if (erro) {
     await salvar(leadId, (x) => { x.condicionada = { ...base, status: 'SO_EQUIPE' }; });
     await nota(`🟡 CAIXA condicionada (proposta ${proposta}): ${conta}. Não consegui pedir a avaliação de novo na PRICE: ${erro}. O cliente NÃO foi avisado.`);
