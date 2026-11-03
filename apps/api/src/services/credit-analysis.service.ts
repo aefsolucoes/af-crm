@@ -596,6 +596,34 @@ async function noteVerdictFlip(db: Db, row: { id: string; leadId: string; bank: 
   await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🔁 ${banco}${quem}: o resultado MUDOU. Antes: ${rotulo(ant)} (pedido ${brlN(ant.requestedValue)}, ${dia(ant.createdAt)}) → agora: ${rotulo(row)} (pedido ${brlN(row.requestedValue)}, ${dia(row.createdAt)}). O resultado anterior continua registrado na aba Análise de Crédito (Resultados anteriores).` } });
 }
 
+/** Nova proposta com OUTRO valor/prazo rodada fora da rodada da IA — a equipe pela tela (Fabio 03/11, Claudia: aprovada em 80 mil, pediu 60 mil, o Santander rejeitou os 60 e ninguém avisou;
+ *  a IA seguia dizendo "aguardando o banco"). Mesmo aviso da rodada da IA (sendChangeRefusalNow): a negativa + a aprovação que continua valendo. Uma vez por proposta. */
+async function avisarNovaPropostaRecusada(db: Db, row: { id: string; leadId: string; bank: string; status: string; dryRun: boolean; proposalNumber?: string | null; requestedValue?: number | null; termMonths?: number | null; createdAt: Date }): Promise<void> {
+  if (row.dryRun || row.status !== 'REJECTED' || FH_RUN_BANKS.includes(row.bank)) return;
+  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { accountId: true, status: true, aiAutoReplyActive: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  if (!lead || lead.status !== 'OPEN' || cf._changeRound || cf._autoPaused) return; // rodada da IA: o aviso é do finishProposalChange
+  if (row.proposalNumber && await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, proposalNumber: row.proposalNumber, status: 'REJECTED', id: { not: row.id }, createdAt: { lt: row.createdAt } }, select: { id: true } })) return; // conferência repetida de proposta já recusada
+  const aprov = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, dryRun: false, id: { not: row.id }, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { lt: row.createdAt } }, orderBy: { createdAt: 'desc' }, select: { requestedValue: true, termMonths: true, proposalNumber: true } });
+  if (!aprov || (aprov.proposalNumber && aprov.proposalNumber === row.proposalNumber)) return;
+  const valor = row.requestedValue && aprov.requestedValue && row.requestedValue !== aprov.requestedValue ? row.requestedValue : null;
+  const prazo = row.termMonths && aprov.termMonths && row.termMonths !== aprov.termMonths ? row.termMonths : null;
+  if (!valor && !prazo) return; // mesmo pedido em outro banco: é a rodada normal (noticeClients)
+  const f = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } }); // relê: grava só o pedido (o texto do aviso usa)
+  const c: Record<string, any> = { ...((f?.customFields || {}) as Record<string, any>) };
+  c._changeAsk = [prazo && `o prazo de ${prazo} meses`, valor && `o valor de ${fmtBRL(valor)}`].filter(Boolean).join(' e ');
+  await db.lead.update({ where: { id: row.leadId }, data: { customFields: c as any } });
+  const nota = (content: string) => db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content } }).catch(() => {});
+  const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (lead.aiAutoReplyActive) {
+    const out = await an.sendChangeRefusalNow({ accountId: lead.accountId, leadId: row.leadId });
+    if (!out.ok && out.error !== 'janela de 24 h fechada') await nota(`⚠️ Não consegui avisar o cliente da nova proposta recusada (${c._changeAsk}): ${out.error}. Avise à mão — a aprovação anterior continua valendo.`);
+  } else {
+    const texto = await an.buildChangeRefusalText(row.leadId).catch(() => null);
+    await nota(`✋ A nova proposta (${c._changeAsk}) foi recusada, mas o aviso NÃO saiu sozinho: a IA deste card está desligada.${texto ? ` Texto pronto pra você mandar:\n\n${texto}` : ''}`);
+  }
+}
+
 
 /** Card que a própria análise FECHOU como reprovado/desqualificado (Perdidos) e depois um banco APROVOU (rodada refeita — prazo máximo, novo valor, troco…): reabre sozinho (Fabio 21/10, Paulino:
  *  "se o cliente aprovar, o CRM precisa alterar o card pra Aguardando Documentação e encaminhar a proposta de aprovação"). Volta pra Pré-Análise do funil de vendas do setor e deixa o fluxo normal fazer o resto:
@@ -859,6 +887,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   }
   if (becameFinal && !updated.dryRun) await finishProposalChange(db, updated.leadId).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
   if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
+  if (becameFinal) await avisarNovaPropostaRecusada(db, updated as any).catch((e: any) => console.error('[Nova proposta recusada]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
   if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL')) await reabrirSeAprovouDepoisDaNegativa(db, updated as any).catch((e: any) => console.error('[Reabrir ao aprovar]', e?.message || e));
   await santanderManualFlow(db, updated as any).catch((e: any) => console.error('[Santander manual]', e?.message || e));
