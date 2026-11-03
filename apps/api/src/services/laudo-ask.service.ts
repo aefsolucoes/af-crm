@@ -460,7 +460,7 @@ async function queueIfReady(accountId: string, leadId: string): Promise<void> {
   // e o CRM estava só esperando a resposta do cliente (_laudoPedidoAt, Fabio 03/11).
   if (!cf._laudoPedidoAt && !(await contractingAutoOn(accountId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: 'laudo-fila', pushTitle: '🏢 Laudo pronto pra preencher', pushBody: `${lead.name}: card completo, falta acionar o laudo`,
-      note: '🏢 O card já tem o link do laudo e todos os dados: clique em preencher o laudo (a extensão preenche e para na conferência). Passo manual (automação da contratação desligada).' });
+      note: '🏢 O card já tem o link do laudo e todos os dados: clique em preencher o laudo (a extensão preenche e envia ao Inter). Passo manual (automação da contratação desligada).' });
     return;
   }
   const dono = (cf._laudoPedidoPor && await prisma.user.findFirst({ where: { id: String(cf._laudoPedidoPor), accountId }, select: { id: true } }))

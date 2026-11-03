@@ -60,7 +60,7 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
     catch (err: any) { toast(err?.response?.data?.error || 'Erro ao pedir o laudo', 'error'); }
     finally { setLaudoBusy(false); }
   }
-  const stTxt: Record<string, string> = { REQUESTED: 'Na fila da extensão…', RUNNING: 'A extensão está preenchendo…', FILLED: 'Preenchido — falta conferir e ENVIAR no site do Inter', FAILED: 'A extensão não conseguiu preencher (veja a nota do card)' };
+  const stTxt: Record<string, string> = { REQUESTED: 'Na fila da extensão…', RUNNING: 'A extensão está preenchendo…', FILLED: 'Preenchido — enviando ao Inter…', SENT: 'Laudo enviado ao Inter ✅', FAILED: 'A extensão não conseguiu preencher (veja a nota do card)' };
 
   async function pedirSeguir() {
     if (!window.confirm('A extensão "Vistoria Inter" vai, SOZINHA, abrir a proposta no portal do Inter, ir em Detalhes, clicar em "Seguir com proposta" e CONFIRMAR o aceite ("Aprovar").\n\nIsso é o aceite do cliente no Inter e NÃO dá pra desfazer. Confirme que o cliente quer seguir com o Inter.\n\nSe algo estiver ambíguo na tela do portal, ela para e avisa a equipe. Pedir agora?')) return;
@@ -151,11 +151,11 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
               <button onClick={() => { navigator.clipboard.writeText(laudo.link!).then(() => toast('Link copiado', 'success')).catch(() => {}); }} title="Copiar o link" className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><Copy className="h-3 w-3" /></button>
             </div>
           )}
-          {laudo.status && <div className={`mb-1 text-xs ${laudo.status === 'FILLED' ? 'text-emerald-700' : laudo.status === 'FAILED' ? 'text-red-600' : 'text-slate-500'}`}>{stTxt[laudo.status] || laudo.status}</div>}
+          {laudo.status && <div className={`mb-1 text-xs ${laudo.status === 'FILLED' || laudo.status === 'SENT' ? 'text-emerald-700' : laudo.status === 'FAILED' ? 'text-red-600' : 'text-slate-500'}`}>{stTxt[laudo.status] || laudo.status}</div>}
           {laudo.faltando.length > 0 && <div className="mb-1 text-xs text-amber-700">Faltam no card: {laudo.faltando.join(', ')}</div>}
           <div className="flex flex-wrap gap-2">
             <button onClick={pedirLaudo} disabled={laudoBusy || laudo.status === 'REQUESTED' || laudo.status === 'RUNNING'} className="rounded bg-slate-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50">
-              {laudo.status === 'FILLED' || laudo.status === 'FAILED' ? 'Preencher de novo' : 'Preencher laudo (extensão)'}
+              {laudo.status === 'FILLED' || laudo.status === 'FAILED' || laudo.status === 'SENT' ? 'Preencher de novo' : 'Preencher laudo (extensão)'}
             </button>
             {laudo.link && <a href={laudo.link} target="_blank" rel="noreferrer" className="rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50">Abrir formulário do Inter</a>}
           </div>
