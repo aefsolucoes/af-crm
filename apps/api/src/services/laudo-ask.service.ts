@@ -54,7 +54,8 @@ const semAcento = (s: string) => String(s || '').normalize('NFD').replace(/[̀-�
 /** Resposta do cliente às regrinhas ("Dormitórios: 3 • Banheiros: 2 • Suítes: 1 • Vagas de garagem: 1"), lida pelo CRM com ou sem a IA da conversa
  *  ligada (Fabio 27/10, Luiz Fernando: respondeu à equipe e nada foi pro card). Também pega área útil e ano de construção se ele mandar. Pura (testável). */
 export function dadosDoApartamentoNaMensagem(texto: string): Record<string, string> {
-  const t = semAcento(texto);
+  const EXTENSO: Record<string, string> = { um: '1', uma: '1', dois: '2', duas: '2', tres: '3', quatro: '4', cinco: '5', seis: '6' };
+  const t = semAcento(texto).replace(/\b(um|uma|dois|duas|tres|quatro|cinco|seis)\b/g, (w) => EXTENSO[w]); // "dois quartos", "uma vaga" (Fabio 03/11)
   const um = (...res: RegExp[]) => { for (const re of res) { const m = re.exec(t); if (m) return m[1]; } return null; };
   const zero = (v: string | null) => (v === null ? null : /^(nenhum|nao|sem|zero)/.test(v) ? '0' : v);
   const out: Record<string, string> = {};
@@ -143,6 +144,45 @@ async function lerDocumentoDoImovel(accountId: string, driveFileId: string, mime
   } catch { return undefined; }
 }
 
+/** ANTES DE PERGUNTAR (Fabio 03/11: "essa pergunta apenas sai se o cliente não tiver informado isso antes"): a IA lê a conversa inteira (respostas a perguntas nossas,
+ *  "dois quartos", áudio transcrito) e grava no card o que o CLIENTE já disse dos `campos`. Devolve os que achou. Só roda quando o CRM ia perguntar. */
+async function dadosJaDitosNaConversa(leadId: string, campos: string[]): Promise<Record<string, string>> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !campos.length) return {};
+  const msgs = (await prisma.message.findMany({ where: { leadId, deleted: false, channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, take: 200, select: { direction: true, content: true, createdAt: true } })).reverse();
+  if (!msgs.some((m) => m.direction === 'INBOUND')) return {};
+  const conversa = msgs.map((m) => `[${m.createdAt.toISOString().slice(0, 10)}] ${m.direction === 'INBOUND' ? 'CLIENTE' : 'NÓS'}: ${String(m.content || '').replace(/\s+/g, ' ').slice(0, 500)}`).join('\n');
+  const chaves: Record<string, string> = { imovel_dormitorios: 'dormitorios', imovel_banheiros: 'banheiros', imovel_suites: 'suites', imovel_vagas_exclusivas: 'vagas', imovel_area_util: 'areaPrivativa', imovel_ano_construcao: 'anoConstrucao' };
+  const pedidos = campos.filter((k) => chaves[k]);
+  if (!pedidos.length) return {};
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5', max_tokens: 400,
+      system: `Você lê a conversa de WhatsApp de um cliente com a correspondente bancária e diz o que o CLIENTE já informou sobre o APARTAMENTO dado em garantia. Responda SOMENTE com JSON com estas chaves: ${pedidos.map((k) => `"${chaves[k]}"`).join(', ')}. Valor = só o número que o CLIENTE disse (dormitórios/quartos, banheiros, suítes, vagas de garagem — "0" se ele disse que não tem; área privativa em m² com vírgula; ano de construção AAAA), ou "" se ele não disse. Vale resposta curta a pergunta nossa (NÓS: "quantos quartos?" → CLIENTE: "2"). Não deduza, não some, não use o que NÓS escrevemos nem exemplos de formulário; se ele se corrigiu, vale a última informação.`,
+      messages: [{ role: 'user', content: conversa.slice(-30000) }],
+    }),
+  }).catch(() => null);
+  if (!res || !res.ok) return {};
+  const data = (await res.json().catch(() => null)) as { content?: { type: string; text?: string }[] } | null;
+  let j: Record<string, unknown> = {};
+  try { j = JSON.parse((data?.content?.find((c) => c.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch { return {}; }
+  const out: Record<string, string> = {};
+  for (const k of pedidos) {
+    const v = String(j[chaves[k]] ?? '').trim();
+    if (!v) continue;
+    if (k === 'imovel_ano_construcao') { const a = parseInt(v, 10); if (a >= 1900 && a <= new Date().getFullYear()) out[k] = String(a); continue; }
+    if (k === 'imovel_area_util') { const a = parseFloat(v.replace(/\./g, '').replace(',', '.')); if (Number.isFinite(a) && a >= 15 && a <= 2000) out[k] = v; continue; }
+    if (/^\d{1,2}$/.test(v)) out[k] = v;
+  }
+  if (Object.keys(out).length) {
+    await marca(leadId, out);
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: ['🏢 Laudo do apartamento: o cliente já tinha informado na conversa — preenchido no card sem perguntar de novo:', ...Object.keys(out).map((k) => `• ${ROTULO[k] || k}: ${out[k]}`)].join('\n') } }).catch(() => {});
+  }
+  return out;
+}
+
 const ROTULO: Record<string, string> = {
   imovel_tipo: 'Tipo do imóvel', imovel_cep: 'CEP', imovel_numero: 'Número', imovel_complemento: 'Complemento', imovel_dormitorios: 'Dormitórios', imovel_banheiros: 'Banheiros',
   imovel_suites: 'Suítes', imovel_vagas_exclusivas: 'Vagas de garagem', imovel_area_util: 'Área útil (m²)', imovel_ano_construcao: 'Ano de construção',
@@ -175,7 +215,7 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
     if (emails.some((e) => engajamentoDizApartamento(`${e.textBody || ''} ${e.htmlBody || ''}`))) poe('imovel_tipo', 'Apartamento', 'e-mail de engajamento do Inter');
   }
   if ([...CAMPOS_REGRINHAS, 'imovel_area_util', 'imovel_ano_construcao', 'imovel_cep', 'imovel_numero'].some(falta)) {
-    const msgs = await prisma.message.findMany({ where: { leadId, direction: 'INBOUND', createdAt: { gte: new Date(Date.now() - 20 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 80, select: { content: true } });
+    const msgs = await prisma.message.findMany({ where: { leadId, direction: 'INBOUND', deleted: false }, orderBy: { createdAt: 'desc' }, take: 300, select: { content: true } }); // a conversa toda: o cliente pode ter dito antes (Fabio 03/11)
     for (const m of msgs) {
       if (/^(📧|📋)/u.test(m.content || '')) continue; // e-mail do banco (traz as regrinhas em texto) e proposta do site
       for (const [k, v] of Object.entries(dadosDoApartamentoNaMensagem(m.content || ''))) poe(k, v, 'mensagem do cliente');
@@ -185,7 +225,9 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
   // matrícula — os arquivos lidos com a regra antiga (_laudoDocsLidos) são lidos de novo uma vez.
   const lidos: string[] = Array.isArray(cf._laudoDocsLidos2) ? cf._laudoDocsLidos2 : [];
   const novosLidos: string[] = [];
-  if (/apart/i.test(String(patch.imovel_tipo || cf.imovel_tipo || '')) && ['imovel_cep', 'imovel_numero', 'imovel_area_util', 'imovel_ano_construcao'].some(falta)) {
+  // Tipo ainda desconhecido também lê: a certidão de ônus/matrícula diz se é APARTAMENTO, e com isso a pergunta sai logo depois do engajamento (Fabio 03/11).
+  const tipoAgora = String(patch.imovel_tipo || cf.imovel_tipo || '');
+  if ((/apart/i.test(tipoAgora) && ['imovel_cep', 'imovel_numero', 'imovel_area_util', 'imovel_ano_construcao'].some(falta)) || (!tipoAgora.trim() && !vazio(cf.link_laudo_inter))) {
     const arquivos = new Map<string, { mimeType: string; nome: string }>();
     for (const f of await arquivosDoImovel(accountId, cf)) arquivos.set(f.id, { mimeType: f.mimeType, nome: f.name });
     const tipos = (cf._docInfo || {}) as Record<string, string>;
@@ -270,6 +312,9 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
   if (!tipo) return; // sem saber se é casa ou apartamento: a IA da conversa descobre (regra APARTMENT_APPRAISAL_RULES)
   if (tipo === 'Casa') { await marca(leadId, { _laudoAsk: { skip: 'casa: a avaliação é com visita do engenheiro', at: new Date().toISOString() } }); return; }
   if (CAMPOS_REGRINHAS.every((k) => !vazio(cf[k]))) { await marca(leadId, { _laudoAsk: { skip: 'campos já preenchidos', at: new Date().toISOString() } }); return; }
+  // O cliente já disse na conversa? Preenche e não pergunta (Fabio 03/11).
+  Object.assign(cf, await dadosJaDitosNaConversa(leadId, CAMPOS_REGRINHAS.filter((k) => vazio(cf[k]))).catch(() => ({})));
+  if (CAMPOS_REGRINHAS.every((k) => !vazio(cf[k]))) { await marca(leadId, { _laudoAsk: { skip: 'o cliente já tinha informado na conversa', at: new Date().toISOString() } }); return; }
   // a IA da conversa (ou a equipe) já fez essas perguntas
   const jaPerguntou = await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', AND: [{ content: { contains: 'suíte', mode: 'insensitive' } }, { content: { contains: 'dormit', mode: 'insensitive' } }] } });
   if (jaPerguntou > 0) { await marca(leadId, { _laudoAsk: { skip: 'já perguntado na conversa', at: new Date().toISOString() } }); return; }
@@ -290,19 +335,28 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
   }
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return; // fora das 07h–21h: tenta de novo no próximo minuto
+  // Só o que falta e que o cliente sabe responder (com o link do laudo, também CEP/número/área/ano se nem a proposta nem a matrícula trouxeram).
+  const doCliente = Object.keys(PERGUNTA_LAUDO).filter((k) => faltaProLaudo(cf, k) && (CAMPOS_REGRINHAS.includes(k) || !vazio(cf.link_laudo_inter)));
+  if (!doCliente.length) { await marca(leadId, { _laudoAsk: { skip: 'nada a perguntar', at: new Date().toISOString() } }); return; }
+  const faltamTxt = doCliente.map((k) => ROTULO[k].toLowerCase()).join(', ');
   if (!(await whatsappWindowOpen(leadId))) {
-    // Janela de 24 h fechada (sem resposta do cliente): sem template aprovado pra isso, avisa a equipe UMA vez e manda sozinho quando o cliente falar.
-    if (!cf._laudoAskWait) {
-      await marca(leadId, { _laudoAskWait: new Date().toISOString() });
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏢 Apartamento + vistoria do Inter: preciso perguntar ao cliente dormitórios, banheiros, suítes e vagas com uso exclusivo (laudo digital), mas a janela de 24 h do WhatsApp está fechada. A IA manda a pergunta assim que ele responder qualquer mensagem; se preferir, peça por um template/ligação.' } }).catch(() => {});
-      try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏢 Laudo do apartamento', body: `${lead.name}: preciso perguntar dormitórios/banheiros/suítes/vagas (janela fechada)`, leadId }).catch(() => {}); } catch { /* aviso */ }
+    // Janela de 24 h fechada (Fabio 03/11): template "Olá, tudo bem?" e a pergunta sai quando o cliente responder — não fica esperando ele falar por conta própria.
+    const t = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: 'ola_tudo_bem', language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem?', io: io as any });
+    if (!t.success) {
+      if (!cf._laudoAskWait) {
+        await marca(leadId, { _laudoAskWait: new Date().toISOString() });
+        await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏢 Apartamento + vistoria do Inter: preciso perguntar ao cliente ${faltamTxt} (laudo digital), mas a janela de 24 h está fechada e o template "Olá, tudo bem?" falhou (${t.error || 'erro'}). A pergunta sai assim que ele responder qualquer mensagem.` } }).catch(() => {});
+      }
+      return;
     }
+    await queueOnReply(prisma, { leadId, label: LAUDO_PERGUNTA_LABEL, text: laudoPerguntaText(doCliente), noteText: `🏢 Apartamento + vistoria do Inter: a janela de 24 h estava fechada — mandei o template "Olá, tudo bem?". Quando o cliente responder, sai a pergunta de ${faltamTxt}; com a resposta, o CRM preenche o card e o laudo entra na fila da extensão.` });
+    await marca(leadId, { _laudoAsk: { templateAt: new Date().toISOString() } });
     return;
   }
-  const r = await sendOutboundWhatsApp({ accountId, leadId, content: laudoAskText(), io: io as any });
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: laudoPerguntaText(doCliente), io: io as any });
   if (!r.success) return;
   await marca(leadId, { _laudoAsk: { askedAt: new Date().toISOString() } });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏢 Apartamento + vistoria do Inter: perguntei ao cliente as 4 informações do laudo digital (dormitórios, banheiros, suítes, vagas com uso exclusivo). A IA registra a resposta nos campos do card; com o card completo e o link do laudo, o laudo entra sozinho na fila da extensão "Vistoria Inter".' } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏢 Apartamento + vistoria do Inter: perguntei ao cliente ${faltamTxt} (laudo digital). O CRM lê a resposta e preenche o card; com o card completo e o link do laudo, o laudo entra sozinho na fila da extensão "Vistoria Inter".` } }).catch(() => {});
 }
 
 /** O que o CLIENTE sabe responder pro laudo (o resto — link, proposta, tipo — vem do Inter/equipe), com o rótulo que o CRM lê na resposta (dadosDoApartamentoNaMensagem). */
@@ -360,8 +414,17 @@ export async function pedirLaudoPeloBotao(accountId: string, leadId: string, use
   // Sem proposta/link/tipo apartamento o cliente não resolve: segue o aviso de antes.
   const internos = faltando.filter((f) => /proposta|tipo do im[oó]vel|link do laudo/i.test(f));
   if (internos.length) throw new Error(`Faltam dados no card: ${internos.join(', ')}.`);
-  const doCliente = Object.keys(PERGUNTA_LAUDO).filter((k) => faltaProLaudo(cf, k));
+  let doCliente = Object.keys(PERGUNTA_LAUDO).filter((k) => faltaProLaudo(cf, k));
   if (!doCliente.length) throw new Error(`Faltam dados no card: ${faltando.join(', ')}.`);
+  // Só pergunta o que o cliente ainda NÃO disse na conversa (Fabio 03/11).
+  const jaDito = await dadosJaDitosNaConversa(leadId, doCliente).catch(() => ({} as Record<string, string>));
+  if (Object.keys(jaDito).length) {
+    cf = { ...cf, ...jaDito };
+    const refeito = buildLaudoJob(leadId, lead!.name, cf);
+    if (refeito.job) { await requestLaudo(accountId, leadId, userId); return { queued: true, asked: null, faltando: [] }; }
+    doCliente = doCliente.filter((k) => faltaProLaudo(cf, k));
+    if (!doCliente.length) throw new Error(`Faltam dados no card: ${refeito.faltando.join(', ')}.`);
+  }
   const agora = new Date().toISOString();
   await marca(leadId, { _laudoPedidoAt: agora, _laudoPedidoPor: userId, ...(cf._laudoAsk ? {} : { _laudoAsk: { askedAt: agora, por: 'botão Preencher laudo' } }) });
   // Pergunta já guardada esperando o cliente responder ao template: não manda outro template.
