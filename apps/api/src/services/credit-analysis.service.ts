@@ -1400,7 +1400,7 @@ function buildVerdicts(rows: Array<{ id: string; bank: string; status: string; d
 /** "Conferir resultado" (Fabio 15/10): a extensão lê AGORA o resultado de uma proposta já enviada (cliente "Em análise"), sem esperar os 10 min da conferência automática e sem criar proposta nova.
  *  Adianta a conferência que já está na fila (notBefore = agora) ou cria uma; fica como pedido de PESSOA, então vale até com pausa geral ou cliente parado. */
 export async function expediteCheck(db: Db, p: { accountId: string; leadId: string; bank: string; userId?: string }): Promise<{ mode: 'adiantada' | 'criada' | 'lendo'; detail: string }> {
-  if (!BANK_KEYS.includes(p.bank) || !CHECK_BANKS.includes(p.bank)) throw new Error('banco inválido');
+  if (!CHECK_BANKS.includes(p.bank)) throw new Error('banco inválido'); // inclui o Financiamento (CREDIMORAR_FH, INTER_FH, ITAU_FH — 03/11)
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
   if (!lead) throw new Error('card não encontrado');
   const abertas = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, bank: p.bank, status: { in: ACTIVE } }, select: { id: true, kind: true, status: true } });
