@@ -7,6 +7,10 @@ import { prisma } from '../lib/prisma';
 
 type Cf = Record<string, any>;
 const LEASE_MS = 10 * 60_000;
+// "Avaliação em Processamento" (Fabio 03/11): costuma virar resultado em 3–5 min — reconsulta em 3, 5, 10, 15 e 30 min e depois a cada 2 h; passou de 24 h
+// nesse status, push pra equipe (uma vez por envio).
+const PROCESSANDO_RE = /em processamento/i;
+const RECONSULTA_MIN = [3, 5, 10, 15, 30, 120];
 
 async function salvar(leadId: string, mut: (r: Cf) => void): Promise<void> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
@@ -52,12 +56,15 @@ export async function reiniciarResultado(leadId: string): Promise<void> {
   });
 }
 
-/** Próxima consulta de resultado pra extensão (a fila da CAIXA chama quando não há consulta/cadastro/avaliação). FILA, ou RODANDO largada há mais de 10 min
- *  (até 3 tentativas). */
+/** Próxima consulta de resultado pra extensão (a fila da CAIXA chama quando não há consulta/cadastro/avaliação). FILA, RODANDO largada há mais de 10 min
+ *  (até 3 tentativas), ou "Em Processamento" com a reconsulta vencida (sem `processando` = de antes da regra: reconsulta já). */
 export async function proximaConsultaResultado(accountId: string) {
+  const agora = new Date().toISOString();
   const ids = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
-      AND "customFields"->'_caixaResultado'->>'status' IN ('FILA', 'RODANDO')
+      AND ("customFields"->'_caixaResultado'->>'status' IN ('FILA', 'RODANDO')
+        OR ("customFields"->'_caixaResultado'->>'status' ILIKE '%em processamento%'
+          AND COALESCE("customFields"->'_caixaResultado'->'processando'->>'proximaEm', "customFields"->'_caixaResultado'->>'fim', '') <= ${agora}))
     ORDER BY "customFields"->'_caixaResultado'->>'pedidoEm' ASC LIMIT 10`;
   for (const { id } of ids) {
     const l = await prisma.lead.findUnique({ where: { id }, select: { name: true, customFields: true } });
@@ -74,11 +81,12 @@ export async function proximaConsultaResultado(accountId: string) {
 
 /** Tela da Consulta de Formulários Enviados que a extensão devolveu: guarda, anota no card e avisa por push. */
 export async function gravarConsultaResultado(accountId: string, leadId: string, r: { status: string; texto: string }): Promise<void> {
-  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true } });
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
-  await salvar(leadId, (x) => { x.status = r.status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 3000); });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Resultado da Avaliação de Risco CAIXA (Formulários Enviados): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  if (PROCESSANDO_RE.test(r.status)) { await gravarProcessando(accountId, leadId, l.name, (l.customFields || {}) as Cf, r); return; }
+  await salvar(leadId, (x) => { x.status = r.status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 3000); delete x.processando; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Resultado da Avaliação de Risco CAIXA (Formulários Enviados): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
   // "2ª autorização do PV" (Fabio 01/11): o cliente rodou crédito mais de uma vez, com correspondentes diferentes — o colaborador pede a autorização à agência.
   if (PV_RE.test(`${r.status}\n${r.texto}`)) {
     // 1ª ou 2ª autorização, com o motivo da CAIXA ("Grupo Fam. Alt.", "Renda Alterada" — Fabio 02/11: a renda/o grupo familiar mudou desde a avaliação em outro correspondente).
@@ -93,6 +101,27 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
     return;
   }
   sendPushToAccount(accountId, { title: `🏦 ${l.name}: resultado da avaliação CAIXA`, body: r.status.slice(0, 120), leadId }).catch(() => {});
+}
+
+/** "Em Processamento": agenda a próxima reconsulta (RECONSULTA_MIN) e, passadas 24 h do envio nesse status, avisa a equipe por push. Só a 1ª vez de cada
+ *  envio vira anotação — as reconsultas são silenciosas. O ciclo é por envio (`_caixaCadastro.avaliacao.fim`): rodar de novo recomeça a contagem. */
+async function gravarProcessando(accountId: string, leadId: string, nome: string, cf: Cf, r: { status: string; texto: string }): Promise<void> {
+  const agora = new Date().toISOString();
+  const envio = String(cf._caixaCadastro?.avaliacao?.fim || '');
+  const ant = cf._caixaResultado?.processando as Cf | undefined;
+  const mesmo = !!ant && ant.envio === envio;
+  const consultas = mesmo ? (Number(ant!.consultas) || 1) + 1 : 1;
+  const desde = mesmo && ant!.desde ? String(ant!.desde) : envio || agora;
+  const espera = RECONSULTA_MIN[Math.min(consultas - 1, RECONSULTA_MIN.length - 1)];
+  const avisar = !(mesmo && ant!.avisado24h) && Date.now() - Date.parse(desde) > 24 * 3600_000;
+  const proc = { envio, desde, consultas, proximaEm: new Date(Date.now() + espera * 60_000).toISOString(), avisado24h: avisar ? agora : (mesmo && ant!.avisado24h) || null };
+  await salvar(leadId, (x) => { x.status = r.status; x.fim = agora; x.ultimaTela = String(r.texto || '').slice(0, 3000); x.tentativas = 0; x.processando = proc; });
+  const proposta = (/C[oó]digo Proposta\s*\t?\s*(\d{5,})/i.exec(r.texto) || /Proposta\s+(\d{5,})/i.exec(r.texto) || [])[1];
+  if (consultas === 1) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⏳ Avaliação de Risco CAIXA em processamento${proposta ? ` (proposta ${proposta})` : ''}. O CRM consulta de novo sozinho em 3, 5, 10, 15 e 30 min e depois a cada 2 h; se passar de 24 h assim, avisa a equipe.` } }).catch(() => {});
+  if (!avisar) return;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A Avaliação de Risco CAIXA${proposta ? ` (proposta ${proposta})` : ''} está "em processamento" há mais de 24 h. Vale olhar no Caixa Aqui ou falar com a agência. O CRM segue consultando a cada 2 h.` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `⚠️ ${nome}: CAIXA em processamento há +24 h`, body: 'A avaliação de risco não saiu. Vale olhar no Caixa Aqui ou falar com a agência.', leadId }).catch(() => {});
 }
 
 // ─── 2ª autorização do PV → aviso ao cliente (Fabio 01/11, Jézer: "o dele não foi reprovado por nome sujo, foi apenas uma alteração no cadastro. Precisa
