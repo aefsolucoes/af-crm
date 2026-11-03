@@ -21,11 +21,13 @@ export async function temAprovacao(leadId: string, cf: Record<string, any>): Pro
  *  a CAIXA e a pergunta dos requisitos saírem"): põe a consulta do nome (Oportunidades de Negócios) na fila da extensão na hora, com os nomes e CPFs da proposta —
  *  a ficha e o cadastro só depois da documentação. Uma vez por card. true = entrou na fila agora. */
 export async function pedirConsultaCaixa(accountId: string, leadId: string): Promise<boolean> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) return false;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._caixaCadastro || cf._caixaPedido) return false;
-  if (!(await temAprovacao(leadId, cf))) return false; // sem aprovação a CAIXA não entra (passo 0 da regra)
+  // Financiamento Habitacional: taxa/parcela alta → CAIXA mesmo sem aprovação (Fabio 03/11 — a IA só marca a CAIXA nos casos da regra).
+  const fh = /habitacional/i.test(lead.pipeline?.department?.name || '');
+  if (!fh && !(await temAprovacao(leadId, cf))) return false; // sem aprovação a CAIXA não entra (passo 0 da regra)
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaPedido}', ${JSON.stringify({ at: new Date().toISOString() })}::jsonb, true) WHERE id = ${leadId}`;
   const { pedirCadastroCaixa } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
   const erro = await pedirCadastroCaixa(accountId, leadId, 'automático — o cliente pediu a CAIXA');
@@ -39,11 +41,13 @@ export async function pedirConsultaCaixa(accountId: string, leadId: string): Pro
 /** O cliente pediu a CAIXA e passou nas regras dela: marca `_caixaRota` (+ `_optouCaixa`, que guarda as outras aprovações), volta o card pra Pré-Análise e agenda a
  *  conferência dos documentos que já estão na conversa. true = entrou agora. */
 export async function entrarRotaCaixa(accountId: string, leadId: string, motivo: string | null, io?: Io): Promise<boolean> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { departmentId: true } } } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } } });
   if (!lead) return false;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._caixaRota) return false;
-  if (!(await temAprovacao(leadId, cf))) {
+  // Financiamento Habitacional: taxa/parcela alta → CAIXA mesmo sem aprovação (Fabio 03/11 — regra FINANCIAMENTO HABITACIONAL × TAXA/PARCELA ALTA).
+  const fh = /habitacional/i.test(lead.pipeline?.department?.name || '');
+  if (!fh && !(await temAprovacao(leadId, cf))) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏦 O cliente pediu a CAIXA, mas nenhum banco aprovou ainda: pela regra (Fabio 01/11) a documentação da CAIXA só é pedida depois de alguma aprovação. O card ficou onde estava.' } }).catch(() => {});
     return false;
   }
