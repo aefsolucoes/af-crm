@@ -217,7 +217,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
 /** Prazo máximo do Inter (meses): o simulador vai de 60 a 240. */
 export const INTER_MAX_TERM = 240;
 
-interface ApprovalOption { /** análise de crédito de onde a opção veio (botão "Seguir com esta") */ analysisId?: string; condicionalSemNumeros?: boolean; docsImovelExtra?: string[]; interCondicional?: boolean; quitacao?: string; troco?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean; prazoTodo?: string }
+interface ApprovalOption { /** análise de crédito de onde a opção veio (botão "Seguir com esta") */ analysisId?: string; condicionalSemNumeros?: boolean; docsImovelExtra?: string[]; interCondicional?: boolean; quitacao?: string; troco?: string; /** Creditas: dívidas que o crédito quita ("Valor das Dívidas à quitar" do e-mail de pré-aprovação — Fabio 03/11) */ dividas?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean; prazoTodo?: string }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -340,7 +340,9 @@ function approvalBlock(o: ApprovalOption): string {
     '📋 Resumo da proposta:',
     `🏦 Instituição: ${o.instituicao}`,
     o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
-    o.liquido ? `💰 Valor líquido: ${o.valor}` : `💰 Valor aprovado: ${o.valor}`, // Fabio 15/10: sem o "(já descontados IOF, tarifa de cadastro e custas)"
+    // Creditas com dívidas a quitar (Fabio 03/11, Lucas: o aviso mostrou só "R$ 18 mil líquidos" e não disse que R$ 45 mil iam pra quitar as dívidas).
+    o.dividas && `💳 Quitação das dívidas: ${o.dividas} (o banco paga direto)`,
+    o.liquido ? `💰 Valor líquido${o.dividas ? ' pra você (depois de quitar as dívidas)' : ''}: ${o.valor}` : `💰 Valor aprovado: ${o.valor}`, // Fabio 15/10: sem o "(já descontados IOF, tarifa de cadastro e custas)"
     o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
     // Qualquer banco: diz EM QUE PRAZO veio a menor (Fabio 19/10); no Inter, com prazo menor que o máximo, aconselha o prazo todo.
     o.aMenor && o.prazo && `💡 No prazo de ${o.prazo} a aprovação veio a menor.${o.prazoTodo ? ` Aconselho pegar o prazo todo (${o.prazoTodo}) para conseguir uma aprovação melhor.` : ''}`,
@@ -420,7 +422,9 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
   }
   const imovelFinal = [...imovel];
   for (const o of options) for (const d of o.docsImovelExtra || []) if (!imovelFinal.some((x) => normN(x) === normN(d))) imovelFinal.push(d); // + o que o Inter pediu do imóvel e a lista padrão não cobre (ex.: quitação do condomínio)
-  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}${renda.length ? `\n\n*Comprovação de renda*\n${listaRenda}` : ''}${conjuge}\n\n*Imóvel:*\n${imovelFinal.map((d) => `• ${d}`).join('\n')}${semCertidao ? '\n_Se você não tiver a certidão de ônus/matrícula, me conta o que você tem do imóvel (escritura, matrícula, IPTU ou qualquer documento com o número da matrícula) que eu te ajudo._' : ''}`;
+  // Dívidas que o crédito vai quitar (Creditas, Fabio 03/11): o banco precisa do saldo atualizado de cada uma.
+  const dividasTxt = options.some((o) => o.dividas) ? '\n\n*Dívidas que serão quitadas:*\n• Print ou descritivo do saldo devedor atualizado de cada dívida (com o nome do credor e o valor pra quitação)' : '';
+  return `${DOCS_HEADER}\n\n*Documentos pessoais*\n${lista}${renda.length ? `\n\n*Comprovação de renda*\n${listaRenda}` : ''}${conjuge}${dividasTxt}\n\n*Imóvel:*\n${imovelFinal.map((d) => `• ${d}`).join('\n')}${semCertidao ? '\n_Se você não tiver a certidão de ônus/matrícula, me conta o que você tem do imóvel (escritura, matrícula, IPTU ou qualquer documento com o número da matrícula) que eu te ajudo._' : ''}`;
 }
 
 /** Texto de aprovação montado pro card (notas primeiro, aba Financiamento
@@ -520,6 +524,7 @@ function optionFromRow(r: CreditAnalysis, interCondicional: boolean): ApprovalOp
     // Fabio 19/10 (Jézer): aprovado a menor no Inter num prazo menor que o máximo → o aviso diz que NO PRAZO veio a menor e aconselha o prazo todo (aprovação melhor).
     prazoTodo: r.bank === 'INTER' && /aprovad[oa] a menor/i.test(r.detail || '') && r.termMonths && r.termMonths < INTER_MAX_TERM ? `${INTER_MAX_TERM} meses` : undefined,
     documentos: /aprovad[oa] a menor/i.test(r.detail || '') ? parseDocumentosExigidos(r.detail) || undefined : undefined,
+    dividas: (/d[ií]vidas a quitar\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1],
   };
 }
 

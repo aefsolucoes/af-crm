@@ -1885,7 +1885,10 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
         const prazoTxt = aMenor && r.bank === 'INTER' && r.termMonths && r.termMonths < 240
           ? `. ORIENTE o cliente: no prazo de ${r.termMonths} meses a aprovação veio a menor que o pedido e você aconselha pegar o PRAZO TODO (240 meses) para conseguir uma aprovação melhor; se ele aceitar o prazo todo, peça a nova proposta com "simulate" {"prazo": 240}`
           : '';
-        return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}${docsTxt}${prazoTxt}`;
+        // Creditas com dívidas a quitar (Fabio 03/11, Lucas): o crédito paga as dívidas e o líquido é o que sobra — a IA explica e pede o saldo atualizado de cada dívida.
+        const div = (/d[ií]vidas a quitar\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1];
+        const divTxt = div ? `. ATENÇÃO: esse crédito QUITA dívidas do cliente (${div}, o banco paga direto) e o valor líquido acima é o que sobra pra ele DEPOIS da quitação — explique isso e peça o print ou descritivo do saldo devedor atualizado de cada dívida (credor e valor pra quitação)` : '';
+        return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}${docsTxt}${prazoTxt}${divTxt}`;
       }
       case 'CONDITIONAL': return 'APROVADO COM CONDIÇÃO — o banco pede documentos para seguir';
       case 'REJECTED': return 'REPROVADO';

@@ -20,6 +20,8 @@ export interface PreApproval {
   total: number | null; liquido: number; prazo: number;
   taxaMes?: string; taxaAno?: string; cet?: string; indexador?: string; sistema?: string; carencia?: string; tipoTaxa?: string;
   primeira: number | null; segunda: number | null;
+  /** "Valor das Dívidas à quitar" — o crédito quita as dívidas do cliente e o líquido é o que sobra (Fabio 03/11) */
+  dividas?: number | null;
 }
 
 /** Lê o e-mail "Crédito Pré Aprovado". null = não é esse e-mail (ou faltam os números essenciais: líquido e prazo). Pura. */
@@ -41,6 +43,7 @@ export function parsePreApproval(subject: string | null | undefined, text: strin
     taxaMes: taxa?.[1]?.replace(/a\.m\.?$/i, 'a.m.'), taxaAno: taxa?.[2]?.replace(/a\.a\.?$/i, 'a.a.'), cet: cet?.[1]?.replace(/a\.m\.?$/i, 'a.m.'),
     indexador: line(/Indexador:\s*([^\n]*)/i), sistema: line(/Sistema de Amortiza[cç][aã]o:\s*([^\n]*)/i), carencia: line(/Per[ií]odo de car[eê]ncia:\s*([^\n]*)/i), tipoTaxa: line(/Tipo de taxa:\s*([^\n]*)/i),
     primeira: brl(par?.[1]), segunda: brl(par?.[2]),
+    dividas: brl(line(/Valor das D[ií]vidas [àa] quitar:\s*([^\n]*)/i)),
   };
 }
 
@@ -57,7 +60,8 @@ export async function registerPreApproval(p: { accountId: string; leadId: string
   const taxa = pre.taxaMes ? `${pre.taxaMes}${pre.indexador ? ` + ${pre.indexador}` : ''}${pre.tipoTaxa ? `, ${pre.tipoTaxa.toLowerCase()}` : ''}` : '';
   const conditions = [
     `Creditas (pré-aprovação enviada por e-mail em ${dia}): crédito aprovado ${fmt(pre.total)}`.replace('aprovado ', 'aprovado '),
-    `valor líquido do contrato ${fmt(pre.liquido)} (já descontados IOF, tarifa de cadastro e custas)`,
+    pre.dividas ? `dívidas a quitar ${fmt(pre.dividas)}` : '',
+    `valor líquido do contrato ${fmt(pre.liquido)} (já descontados IOF, tarifa de cadastro e custas${pre.dividas ? ' e depois de quitar as dívidas' : ''})`,
     `prazo ${pre.prazo} meses`,
     pre.primeira ? `1ª parcela ${fmt(pre.primeira)}` : '',
     taxa ? `juros ${taxa}` : '',
