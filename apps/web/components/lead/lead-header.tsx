@@ -4,6 +4,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Modal } from '@/components/ui/modal';
 import { LeadRevertBar } from '@/components/lead/lead-revert-bar';
+import { LeadDocsPanel } from '@/components/lead/lead-docs-panel';
 import { formatCurrency } from '@/lib/utils';
 import { Building2, DollarSign, Trophy, XCircle, ThumbsDown, RotateCcw, X, Plus, Archive, ArchiveRestore, Landmark, FileCheck2 } from 'lucide-react';
 import api from '@/lib/api';
@@ -82,19 +83,9 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectReasonInput, setRejectReasonInput] = useState('');
   const [savingReject, setSavingReject] = useState(false);
-  // "Conferir documentos" (Fabio 28/10): a conferência roda no servidor, em qualquer etapa, sem mensagem ao cliente e sem mover o card — o resultado vira anotação.
-  const [checkingDocs, setCheckingDocs] = useState(false);
-  async function handleDocsCheck() {
-    setCheckingDocs(true);
-    try {
-      const { data } = await api.post(`/api/leads/${lead.id}/docs-check`);
-      toast(data?.jaRodando ? 'A conferência deste card já está rodando' : 'Conferindo os documentos — o resultado aparece nas anotações do card em alguns minutos');
-    } catch {
-      toast('Erro ao conferir os documentos', 'error');
-    } finally {
-      setCheckingDocs(false);
-    }
-  }
+  // "Docs" (Fabio 03/11): abre o painel de documentos — o que já chegou (a leitura da IA, que a equipe pode corrigir) e o que falta. O "Conferir de novo" do painel é o
+  // antigo "Conferir documentos" (Fabio 28/10): roda no servidor, sem mensagem ao cliente e sem mover o card.
+  const [showDocs, setShowDocs] = useState(false);
 
   async function handleArchive(archive: boolean) {
     if (archive && !confirm('Arquivar este lead? Ele não aparecerá mais no funil, mas pode ser restaurado depois.')) return;
@@ -218,13 +209,13 @@ export function LeadHeaderActions({ lead, onStageChange, onArchived, showTags = 
           <Landmark size={icon} /> Análise
         </button>
         <button
-          onClick={handleDocsCheck}
-          disabled={checkingDocs}
-          title="Ler os arquivos que o cliente mandou e conferir com a lista do banco. Não manda mensagem ao cliente nem move o card: o resultado vira anotação."
+          onClick={() => setShowDocs(true)}
+          title="Documentos do cliente: o que já chegou (e corrigir a leitura da IA) e o que falta. Conferir não manda mensagem ao cliente nem move o card."
           className={`${btn} bg-sky-50 text-sky-700 hover:bg-sky-100 border-sky-200 disabled:opacity-60`}
         >
-          <FileCheck2 size={icon} /> {compact ? 'Docs' : 'Conferir documentos'}
+          <FileCheck2 size={icon} /> {compact ? 'Docs' : 'Documentos'}
         </button>
+        {showDocs && <LeadDocsPanel leadId={lead.id} onClose={() => setShowDocs(false)} />}
         {lead.status !== 'WON' && !lead.archived && (
           <button
             onClick={() => handleStatusChange('WON')}

@@ -44,6 +44,22 @@ function etapaConfere(stageName: string, cf: Record<string, any>): boolean {
 
 type Io = Parameters<typeof moveLeadToContracting>[2];
 
+/** Só a documentação do COMPRADOR (lista enxuta da CAIXA): pediu a CAIXA (Fabio 01/11, HE e FH) ou Financiamento Habitacional que optou pela CAIXA/BRB ou ainda sem banco escolhido (Fabio 29/10). */
+export function soDocsDoComprador(cf: Record<string, any>, departmentName: string | null | undefined): boolean {
+  return !!cf?._caixaRota || (/habitacional/i.test(departmentName || '') && (!!cf?._optouCaixa?.banco || !cf?._fhChosen));
+}
+
+/** Renda dispensada neste card (nenhum banco pediu renda; fora da lista do comprador): problema/dúvida em documento de RENDA não segura o card nem gera cobrança (Fabio 20/10, caso Luiz). Tira da lista. */
+export async function filtrarRendaDispensada(leadId: string, fhSoComprador: boolean, review: { problemas: { doc: string }[]; duvidas: { doc: string }[] }): Promise<void> {
+  const { bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const jogo = await bancosEmJogo(prisma, leadId).catch(() => null);
+  if (jogo && !jogo.rendaNecessaria && !fhSoComprador) {
+    const RENDA_RX = /EXTRATO BANCARIO|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA|PRO.?LABORE|DECORE/;
+    review.problemas = review.problemas.filter((p) => !RENDA_RX.test(String(p.doc).toUpperCase()));
+    review.duvidas = review.duvidas.filter((d) => !RENDA_RX.test(String(d.doc).toUpperCase()));
+  }
+}
+
 export async function scheduleDocsCheck(accountId: string, leadId: string, io: Io): Promise<void> {
   // Roda com a IA ligada OU desligada (Fabio 29/09: o Ângelo mandou os
   // documentos depois que ele respondeu pela Inbox — a IA estava desligada,
@@ -250,7 +266,7 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   // Sem banco privado escolhido (ou optou pela CAIXA/BRB): a documentação do comprador — RG, CPF, comprovante de endereço, último contracheque e certidão de estado civil.
   const ehFh = /habitacional/i.test(lead.pipeline.department?.name || '');
   const caixaRota = !!cfAll._caixaRota; // pediu a CAIXA (Fabio 01/11, HE e FH): lista enxuta do comprador, a mesma do FH
-  const fhSoComprador = caixaRota || (ehFh && (!!cfAll._optouCaixa?.banco || !cfAll._fhChosen));
+  const fhSoComprador = soDocsDoComprador(cfAll, lead.pipeline.department?.name);
   const listas = ehFh || caixaRota ? lists.filter((l) => !/home equity/i.test(l.name)) : lists;
   if (!listas.length && !fhSoComprador) return null;
   // CAIXA (ou ainda sem banco): lista ENXUTA pra rodar na CAIXA. BRB: documentação COMPLETA pela profissão (lista do perfil) — Fabio 29/10.
@@ -334,7 +350,11 @@ ${history}`;
   // Sem matrícula (Fabio 30/10): com o endereço completo do imóvel a IA também se oferece (pelo endereço) em vez de cobrar a certidão do cliente.
   const ofertavel = !autorizou && emitirBruto.length > 0 && (!!certidaoFromDocs(cfAll) || !!(await enderecoDoImovel(leadId, cfAll).catch(() => null)));
   const faltandoFinal = [...(verdict.faltando || []), ...(autorizou || ofertavel ? [] : emitirBruto)];
-  return { leadName: lead.name, complete: verdict.complete === true && (autorizou || !emitirBruto.length), listaUsada: verdict.listaUsada, faltando: faltandoFinal, emitir: autorizou ? emitirBruto : [], emitirPendente: ofertavel ? emitirBruto : [], receivedText };
+  const out = { leadName: lead.name, complete: verdict.complete === true && (autorizou || !emitirBruto.length), listaUsada: verdict.listaUsada, faltando: faltandoFinal, emitir: autorizou ? emitirBruto : [], emitirPendente: ofertavel ? emitirBruto : [], receivedText };
+  // Painel de documentos do card (Fabio 03/11): guarda o resultado desta conferência (só a chave, jsonb_set) — o painel mostra o que falta sem chamar a IA de novo.
+  const snap = { em: new Date().toISOString(), listaUsada: out.listaUsada || '', completo: out.complete, faltando: out.faltando, emitir: out.emitir, emitirPendente: out.emitirPendente };
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsConferencia}', ${JSON.stringify(snap)}::jsonb, true) WHERE id = ${leadId}`.catch(() => {});
+  return out;
 }
 
 /** O cliente AVISOU que já mandou os documentos (botão "Já enviei os documentos" do lembrete, ou texto equivalente)? */
@@ -370,22 +390,14 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   if (!lead || !etapaConfere(lead.stage.name, cfLead)) return false;
   // Pediu a CAIXA (Fabio 01/11, HE e FH): mesma lista enxuta do comprador do FH; completa → ficha e cadastro, o card não vai pra contratação.
   const caixaRota = !!cfLead._caixaRota;
-  const fhSoComprador = caixaRota || (/habitacional/i.test(lead.pipeline?.department?.name || '') && (!!cfLead._optouCaixa?.banco || !cfLead._fhChosen));
+  const fhSoComprador = soDocsDoComprador(cfLead, lead.pipeline?.department?.name);
   if ((lead.customFields as any)?._autoPaused) return false; // Stop total do cliente: não confere, não move, não avisa
 
   // Conferência de CONTEÚDO (Fabio 14/10): a IA LÊ cada arquivo e vê se está legível, atualizado e no nome certo (RG/CNH com frente e verso). Documento com
   // problema NÃO deixa o card avançar, mesmo que "chegou tudo": o cliente é avisado do que corrigir (uma vez por conjunto de problemas).
   const review = await reviewReceivedDocs(accountId, leadId).catch((err) => { console.error(`[Docs] leitura dos documentos falhou (${leadId}):`, err?.message || err); return null; });
   // Renda dispensada PELA EQUIPE neste card (marca _rendaDispensada; Fabio 20/10, caso Luiz): problema/dúvida em documento de RENDA não segura o card nem gera cobrança.
-  if (review) {
-    const { bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-    const jogo = await bancosEmJogo(prisma, leadId).catch(() => null);
-    if (jogo && !jogo.rendaNecessaria && !fhSoComprador) {
-      const RENDA_RX = /EXTRATO BANCARIO|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA|PRO.?LABORE|DECORE/;
-      review.problemas = review.problemas.filter((p) => !RENDA_RX.test(String(p.doc).toUpperCase()));
-      review.duvidas = review.duvidas.filter((d) => !RENDA_RX.test(String(d.doc).toUpperCase()));
-    }
-  }
+  if (review) await filtrarRendaDispensada(leadId, fhSoComprador, review);
   if (review?.novas.length) {
     const linhas = review.novas.map(({ arquivo, r }) => `${r.resultado === 'OK' ? '✅' : r.resultado === 'PROBLEMA' ? '⚠️' : r.resultado === 'DUVIDA' ? '❓' : '•'} ${r.tipo}${r.titular ? ` (${r.titular})` : ''}${r.resultado === 'PROBLEMA' ? ` — ${r.problemas.join('; ')}` : ''}${r.observacao ? ` [${r.observacao}]` : ''} — ${arquivo}`);
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA leu ${review.novas.length > 1 ? 'os documentos novos' : 'o documento novo'}:\n${linhas.join('\n')}` } }).catch(() => {});
@@ -579,9 +591,9 @@ export async function conferirDocumentosAgora(accountId: string, leadId: string,
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📄 Conferência de documentos (botão${quem}): ${atts.length ? 'não consegui conferir — nenhum arquivo foi lido ou não há lista "Documentos …" pro setor do card.' : 'o cliente não mandou nenhum arquivo.'}${naoLidos.length ? `\nSem leitura: ${naoLidos.join('; ')}` : ''}` } }).catch(() => {});
       return null;
     }
-    if (verdict.complete) delete cf._docsFaltando;
-    else if (verdict.faltando.length) cf._docsFaltando = verdict.faltando.join('; ');
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
+    // Só a chave (Fabio 03/11): regravar o card inteiro apagava o que outro processo gravou no meio — inclusive a correção que a equipe fez no painel de documentos (corrida no customFields, 29/10).
+    if (verdict.complete) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) - '_docsFaltando' WHERE id = ${leadId}`;
+    else if (verdict.faltando.length) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsFaltando}', ${JSON.stringify(verdict.faltando.join('; '))}::jsonb, true) WHERE id = ${leadId}`;
     const problemas = (review?.problemas || []).map((p) => `${p.doc} — ${p.texto.join('; ')}`);
     const duvidas = (review?.duvidas || []).map((d) => `${d.doc} (${d.arquivo})`);
     await prisma.note.create({

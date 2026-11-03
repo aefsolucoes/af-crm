@@ -53,6 +53,11 @@ export interface DocReview {
   regra?: string;
   /** Só DESCRITIVO DA PARCELA: parcela do financiamento vencida sem pagamento / com mora — com parcela em atraso não fazemos Home Equity (a equipe é avisada). */
   atraso?: string;
+  /** A EQUIPE corrigiu esta leitura no painel de documentos do card (Fabio 03/11): quem e quando. Leitura corrigida NUNCA é relida pela IA — a correção vale. */
+  corrigidoPor?: string;
+  corrigidoEm?: string;
+  /** O que a IA tinha lido antes da 1ª correção (pra conferir depois). */
+  antesDaCorrecao?: { tipo?: string; titular?: string; resultado?: string; donoSituacao?: string; dono?: string; lado?: string };
 }
 
 const SYSTEM = `Você é a conferente de documentos de um correspondente bancário (crédito com garantia de imóvel e financiamento habitacional). Olhe o ARQUIVO que o cliente mandou pelo WhatsApp e diga se ele está CORRETO para seguir ao banco. Responda SOMENTE com JSON:
@@ -295,113 +300,9 @@ export function iptuDeOutroImovel(docs: DocReview[]): Map<DocReview, string> {
   return out;
 }
 
-/** Lê os documentos que ainda não foram lidos e devolve a situação atual de cada um. */
-export async function reviewReceivedDocs(accountId: string, leadId: string): Promise<ReviewSummary | null> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
-  if (!lead) return null;
-  const atts = (await prisma.messageAttachment.findMany({
-    where: { leadId, message: { direction: 'INBOUND' } },
-    orderBy: { createdAt: 'asc' },
-    select: { id: true, driveFileId: true, data: true, mimeType: true, fileName: true, createdAt: true },
-  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && !isScreenshotAttachment(a));
-  if (!atts.length) return null;
-
-  const info = await getDocInfo(accountId, leadId, atts); // classificação barata: pula o que não é documento
-  const cf0 = (lead.customFields || {}) as Record<string, any>;
-  const cache: Record<string, DocReview> = { ...((cf0._docReview as Record<string, DocReview>) || {}) };
-  let context = participantsContext(cf0, lead.name, lead.pipeline?.department?.name || '');
-  // Já perguntamos de quem é o imóvel: com texto novo do cliente depois da pergunta, relê o documento com a conversa (a resposta dele decide).
-  const donoPerguntadoEm: string | undefined = cf0._donoAskedAt;
-  let releDono = false;
-  if (donoPerguntadoEm) {
-    releDono = (await prisma.message.count({ where: { leadId, direction: 'INBOUND', createdAt: { gt: new Date(donoPerguntadoEm) }, content: { not: '' }, attachments: { none: {} } } })) > 0;
-    context = `${context}\n\nCONVERSA RECENTE:\n${await recentConversation(leadId)}`;
-  }
-  // O que o cliente JÁ DISSE sobre o dono do imóvel em qualquer ponto da conversa (Fabio 03/11, Eva: disse em 15/10 "a casa está no nome da minha mãe" e a conferência de 02/11,
-  // que só via as 14 últimas mensagens, perguntou "quem é essa pessoa pra você"). Leitura antiga de dono "sem vínculo" que não viu essas frases é refeita 1x.
-  const donoDito = await donoDitoNaConversa(leadId).catch(() => '');
-  if (donoDito) context = `${context}\n\nO QUE O CLIENTE JÁ DISSE SOBRE O DONO DO IMÓVEL (conversa inteira):\n${donoDito}`;
-  const learned = await learnedDocRules(accountId).catch(() => '');
-  const novas: ReviewSummary['novas'] = [];
-  const leituraFalhou: { id: string; nome: string }[] = [];
-  // O leitor completo (com raciocínio) acerta mais que o classificador barato: documento do IMÓVEL que o classificador tratou como pessoal
-  // (capa de IPTU lida como "comprovante de residência" em nome de empresa — Maria Antônia, 15/10) passa a valer pelo que o leitor disse.
-  const infoFix: Record<string, string> = {};
-  for (const a of atts) {
-    const reler = (releDono || (!!donoDito && !cache[a.id]?.leuDonoDito)) && (cache[a.id]?.donoSituacao === 'OUTRO_SEM_RELACAO' || cache[a.id]?.donoSituacao === 'EMPRESA');
-    // Leitura antiga de documento da PREFEITURA (IPTU/cadastro) sem o campo "metragens": relê uma vez pra saber se ele mostra as metragens (Fabio 20/10).
-    const semMetragens = !!cache[a.id] && /IPTU|CADASTRO IMOBILIARIO/.test(String(cache[a.id].tipo || '')) && cache[a.id].metragens === undefined;
-    if ((cache[a.id] && !reler && !semMetragens) || info[a.id] === null || info[a.id] === undefined) continue;
-    let r = await reviewAttachment(accountId, a, context, { learned });
-    if (!r) { leituraFalhou.push({ id: a.id, nome: a.fileName || a.id }); continue; } // a leitura não saiu: conta a falha (3 seguidas viram aviso à equipe — antes ficava em silêncio e a matrícula do Edson ficou sem leitura)
-    // Renda DISPENSADA neste card (marca _rendaDispensada, Fabio 21/10 — Luiz): documento de renda não tem o que conferir — sem problema e sem pergunta à equipe (o extrato de abril virou "dúvida" à toa).
-    if (cf0._rendaDispensada && /EXTRATO BANC|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA/.test(String(r.tipo || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')) && (r.resultado === 'DUVIDA' || r.resultado === 'PROBLEMA')) {
-      r = { ...r, resultado: 'OK', problemas: [], duvida: '', observacao: `${r.observacao ? r.observacao + ' ' : ''}(renda dispensada neste card)`.trim() };
-    }
-    if (donoDito && r.dono) r.leuDonoDito = true;
-    cache[a.id] = r;
-    novas.push({ arquivo: a.fileName || a.id, r, attId: a.id });
-    const tipoLido = r.tipo.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]/g, '').trim().toUpperCase();
-    if (tipoLido && r.resultado !== 'NAO_DOCUMENTO' && isPropertyDocType(tipoLido) && !isPropertyDocType(info[a.id]!.type)) infoFix[a.id] = `${tipoLido}|`;
-    if (r.resultado === 'DUVIDA') {
-      // Não chuta: leva o documento e a pergunta pra equipe (balão "Dúvidas da IA"); uma pergunta por arquivo.
-      const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
-      await createDocQuestion({ accountId, leadId, attachmentId: a.id, fileName: a.fileName || 'documento', docType: r.tipo, question: r.duvida || 'Não tenho segurança se este documento serve.' }).catch((e) => console.error('[DocReview] não abriu a dúvida:', e?.message || e));
-    }
-  }
-  if (leituraFalhou.length) {
-    try {
-      const fresh0 = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-      const cf1 = { ...((fresh0?.customFields || {}) as Record<string, any>) };
-      const falhas: Record<string, number> = { ...(cf1._docLeituraFalhas || {}) };
-      for (const f of leituraFalhou) {
-        falhas[f.id] = (falhas[f.id] || 0) + 1;
-        if (falhas[f.id] === 3) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A IA tentou ler "${f.nome}" 3 vezes e não conseguiu (arquivo muito grande, ilegível ou erro de leitura). Confira o documento à mão: ele fica sem conferência até alguém olhar.` } }).catch(() => {});
-      }
-      cf1._docLeituraFalhas = falhas;
-      await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf1 as any } });
-    } catch { /* contagem é só aviso */ }
-  }
-  if (novas.length) {
-    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-    const freshCf = (fresh?.customFields || {}) as any;
-    // Número da matrícula e cartório lidos no documento vão pro card (se ainda não estiverem preenchidos) — é o que a A&F precisa pra emitir a certidão.
-    const mat = novas.map((n) => n.r).find((r) => r.matricula);
-    const matCampos = mat && !String(freshCf.numero_matricula || '').trim() ? { numero_matricula: mat.matricula, ...(mat.cartorio && !String(freshCf.cartorio_registro || '').trim() ? { cartorio_registro: mat.cartorio } : {}) } : {};
-    // MATRÍCULA ENCERRADA (16/10, Pedro: a certidão do cliente era da matrícula 383.297, encerrada na véspera; o apartamento ganhou a 438.308): marca no card pra IA e a conferência
-    // saberem que a certidão NÃO vale e que a A&F precisa emitir a da matrícula nova — antes de pedir vistoria.
-    const enc = novas.map((n) => n.r).find((r) => r.encerrada);
-    let marcador: Record<string, unknown> = {};
-    if (enc?.encerrada && !freshCf._matriculaEncerrada) {
-      marcador = { _matriculaEncerrada: { antiga: enc.matricula || '', quando: enc.encerrada.quando || '', novas: enc.encerrada.novas, at: new Date().toISOString() } };
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏛️ MATRÍCULA ENCERRADA: a certidão que o cliente enviou é da matrícula${enc.matricula ? ` nº ${enc.matricula}` : ''}, encerrada${enc.encerrada.quando ? ` em ${enc.encerrada.quando}` : ''}${enc.encerrada.novas.length ? `; o imóvel agora tem ${enc.encerrada.novas.join('; ')}` : ''}. Essa certidão NÃO serve: a A&F precisa emitir a certidão da matrícula NOVA (ONR) antes de solicitar a vistoria.` } }).catch(() => {});
-    }
-    // PARCELA EM ATRASO no descritivo da parcela (Fabio 26/10: com parcela do financiamento em atraso não fazemos Home Equity): avisa a equipe UMA vez — o cliente não recebe nada
-    // automático (a leitura pode errar; quem fala com ele é a equipe).
-    const atr = novas.find((n) => n.r.atraso);
-    if (atr && !freshCf._parcelaAtrasoAt) {
-      marcador = { ...marcador, _parcelaAtrasoAt: new Date().toISOString() };
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ PARCELA EM ATRASO no descritivo da parcela do financiamento ("${atr.arquivo}"): ${atr.r.atraso}. Com parcela em atraso não fazemos Home Equity — confira o documento e fale com o cliente (ele precisa regularizar antes de seguir).` } }).catch(() => {});
-      (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `⚠️ ${lead.name}`, body: 'Descritivo da parcela mostra parcela em atraso — conferir', leadId }).catch(() => {});
-    }
-    // CONFERE O NÚMERO (Fabio 16/10): a matrícula/certidão lida tem que bater com a que o CLIENTE mandou (ou ser a mesma renumerada). Se não bate, o erro pode ser NOSSO (pedimos o número errado):
-    // NÃO avisa o cliente — leva a pergunta pra equipe.
-    const soDig = (x: string) => String(x || '').replace(/\D/g, '');
-    const jaTinha = soDig(String(freshCf.numero_matricula || ''));
-    const lida = novas.find((n) => n.r.matricula && n.r.tipo.startsWith('MATRIC'));
-    if (jaTinha && lida && lida.attId) {
-      const numeros = [lida.r.matricula!, ...(lida.r.anteriores || []), ...((lida.r.encerrada?.novas || []).map((x) => x.split(' ')[0]))].map(soDig).filter(Boolean);
-      if (!numeros.includes(jaTinha)) {
-        const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
-        await createDocQuestion({ accountId, leadId, attachmentId: lida.attId || '', fileName: lida.arquivo || 'matrícula', docType: 'MATRÍCULA', question: `O número desta matrícula (${lida.r.matricula}${(lida.r.anteriores || []).length ? `, antiga ${(lida.r.anteriores || []).join('/')}` : ''}) NÃO bate com o que o cliente mandou (${freshCf.numero_matricula}). Pode ter sido erro nosso ao pedir a certidão: confira qual é o número certo. Não avisei o cliente.` }).catch(() => {});
-      }
-    }
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshCf, ...matCampos, ...marcador, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
-    // Matrícula no nome de quem não participa da proposta: o Santander sai (Fabio 03/11).
-    await (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).avisarSantanderTerceiro(accountId, leadId).catch((e: any) => console.error('[Santander terceiro]', e?.message || e));
-  }
-
-  // Situação atual: a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some); RG/CNH somam os lados.
+/** Situação ATUAL da documentação a partir das leituras guardadas (sem IA): a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some), RG/CNH somando
+ *  os lados, IPTU de outro imóvel, dúvidas com a equipe e dono do imóvel a esclarecer. Usada pela conferência (reviewReceivedDocs) e pelo painel de documentos do card (Fabio 03/11). Pura (testável). */
+export function situacaoDosDocumentos(atts: { id: string; fileName?: string | null }[], cache: Record<string, DocReview>, cf: Record<string, any>): Pick<ReviewSummary, 'problemas' | 'duvidas' | 'donoPendente' | 'ok'> & { ordered: DocReview[] } {
   const ordered = atts.map((a) => cache[a.id]).filter((r): r is DocReview => !!r && r.resultado !== 'NAO_DOCUMENTO' && r.resultado !== 'DUVIDA').flatMap(porTitular);
   const latest = new Map<string, DocReview>();
   const lados = new Map<string, Set<string>>();
@@ -451,7 +352,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
   const vistos = new Set<string>();
   // Matrícula/escritura já no nome do cliente (ou de parente) chegou: a da empresa (loteadora/construtora, matrícula-mãe) fica pra trás — não pergunta mais.
   const temNoNomeDele = atts.some((a) => { const r = cache[a.id]; return !!r && (r.donoSituacao === 'PARTICIPANTE' || r.donoSituacao === 'PARENTE_1GRAU') && /^(MATRICULA|CERTIDAO DE ONUS|ESCRITURA)/.test(r.tipo.normalize('NFD').replace(/[\u0300-\u036f]/g, '')); });
-  for (const a of (cf0._transferenciaPendente ? [] : [...atts].reverse())) { // cliente já disse que não transferiu a escritura: não pergunta de quem é o imóvel
+  for (const a of (cf._transferenciaPendente ? [] : [...atts].reverse())) { // cliente já disse que não transferiu a escritura: não pergunta de quem é o imóvel
     const r = cache[a.id];
     if (!r || !r.dono || vistos.has(r.dono.toUpperCase())) continue;
     const empresa = r.donoSituacao === 'EMPRESA' || (r.donoSituacao === 'OUTRO_SEM_RELACAO' && ehPessoaJuridica(r.dono)); // leituras antigas (antes de 27/10) vieram como OUTRO_SEM_RELACAO
@@ -460,6 +361,121 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     vistos.add(r.dono.toUpperCase());
     donoPendente.push({ attachmentId: a.id, doc: r.tipo, dono: r.dono, ...(empresa ? { empresa: true } : {}) });
   }
+  return { ordered, problemas, ok, duvidas, donoPendente };
+}
+
+/** Lê os documentos que ainda não foram lidos e devolve a situação atual de cada um. */
+export async function reviewReceivedDocs(accountId: string, leadId: string): Promise<ReviewSummary | null> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!lead) return null;
+  const atts = (await prisma.messageAttachment.findMany({
+    where: { leadId, message: { direction: 'INBOUND' } },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, driveFileId: true, data: true, mimeType: true, fileName: true, createdAt: true },
+  })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && !isScreenshotAttachment(a));
+  if (!atts.length) return null;
+
+  const info = await getDocInfo(accountId, leadId, atts); // classificação barata: pula o que não é documento
+  const cf0 = (lead.customFields || {}) as Record<string, any>;
+  const cache: Record<string, DocReview> = { ...((cf0._docReview as Record<string, DocReview>) || {}) };
+  let context = participantsContext(cf0, lead.name, lead.pipeline?.department?.name || '');
+  // Já perguntamos de quem é o imóvel: com texto novo do cliente depois da pergunta, relê o documento com a conversa (a resposta dele decide).
+  const donoPerguntadoEm: string | undefined = cf0._donoAskedAt;
+  let releDono = false;
+  if (donoPerguntadoEm) {
+    releDono = (await prisma.message.count({ where: { leadId, direction: 'INBOUND', createdAt: { gt: new Date(donoPerguntadoEm) }, content: { not: '' }, attachments: { none: {} } } })) > 0;
+    context = `${context}\n\nCONVERSA RECENTE:\n${await recentConversation(leadId)}`;
+  }
+  // O que o cliente JÁ DISSE sobre o dono do imóvel em qualquer ponto da conversa (Fabio 03/11, Eva: disse em 15/10 "a casa está no nome da minha mãe" e a conferência de 02/11,
+  // que só via as 14 últimas mensagens, perguntou "quem é essa pessoa pra você"). Leitura antiga de dono "sem vínculo" que não viu essas frases é refeita 1x.
+  const donoDito = await donoDitoNaConversa(leadId).catch(() => '');
+  if (donoDito) context = `${context}\n\nO QUE O CLIENTE JÁ DISSE SOBRE O DONO DO IMÓVEL (conversa inteira):\n${donoDito}`;
+  const learned = await learnedDocRules(accountId).catch(() => '');
+  const novas: ReviewSummary['novas'] = [];
+  const leituraFalhou: { id: string; nome: string }[] = [];
+  // O leitor completo (com raciocínio) acerta mais que o classificador barato: documento do IMÓVEL que o classificador tratou como pessoal
+  // (capa de IPTU lida como "comprovante de residência" em nome de empresa — Maria Antônia, 15/10) passa a valer pelo que o leitor disse.
+  const infoFix: Record<string, string> = {};
+  for (const a of atts) {
+    // Leitura CORRIGIDA pela equipe no painel de documentos (Fabio 03/11): nunca relê — nem pelo dono dito na conversa, nem pelas metragens.
+    const corrigida = !!cache[a.id]?.corrigidoPor;
+    const reler = !corrigida && (releDono || (!!donoDito && !cache[a.id]?.leuDonoDito)) && (cache[a.id]?.donoSituacao === 'OUTRO_SEM_RELACAO' || cache[a.id]?.donoSituacao === 'EMPRESA');
+    // Leitura antiga de documento da PREFEITURA (IPTU/cadastro) sem o campo "metragens": relê uma vez pra saber se ele mostra as metragens (Fabio 20/10).
+    const semMetragens = !corrigida && !!cache[a.id] && /IPTU|CADASTRO IMOBILIARIO/.test(String(cache[a.id].tipo || '')) && cache[a.id].metragens === undefined;
+    if ((cache[a.id] && !reler && !semMetragens) || info[a.id] === null || info[a.id] === undefined) continue;
+    let r = await reviewAttachment(accountId, a, context, { learned });
+    if (!r) { leituraFalhou.push({ id: a.id, nome: a.fileName || a.id }); continue; } // a leitura não saiu: conta a falha (3 seguidas viram aviso à equipe — antes ficava em silêncio e a matrícula do Edson ficou sem leitura)
+    // Renda DISPENSADA neste card (marca _rendaDispensada, Fabio 21/10 — Luiz): documento de renda não tem o que conferir — sem problema e sem pergunta à equipe (o extrato de abril virou "dúvida" à toa).
+    if (cf0._rendaDispensada && /EXTRATO BANC|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA/.test(String(r.tipo || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')) && (r.resultado === 'DUVIDA' || r.resultado === 'PROBLEMA')) {
+      r = { ...r, resultado: 'OK', problemas: [], duvida: '', observacao: `${r.observacao ? r.observacao + ' ' : ''}(renda dispensada neste card)`.trim() };
+    }
+    if (donoDito && r.dono) r.leuDonoDito = true;
+    cache[a.id] = r;
+    novas.push({ arquivo: a.fileName || a.id, r, attId: a.id });
+    const tipoLido = r.tipo.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]/g, '').trim().toUpperCase();
+    if (tipoLido && r.resultado !== 'NAO_DOCUMENTO' && isPropertyDocType(tipoLido) && !isPropertyDocType(info[a.id]!.type)) infoFix[a.id] = `${tipoLido}|`;
+    if (r.resultado === 'DUVIDA') {
+      // Não chuta: leva o documento e a pergunta pra equipe (balão "Dúvidas da IA"); uma pergunta por arquivo.
+      const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+      await createDocQuestion({ accountId, leadId, attachmentId: a.id, fileName: a.fileName || 'documento', docType: r.tipo, question: r.duvida || 'Não tenho segurança se este documento serve.' }).catch((e) => console.error('[DocReview] não abriu a dúvida:', e?.message || e));
+    }
+  }
+  if (leituraFalhou.length) {
+    try {
+      const fresh0 = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+      const cf1 = { ...((fresh0?.customFields || {}) as Record<string, any>) };
+      const falhas: Record<string, number> = { ...(cf1._docLeituraFalhas || {}) };
+      for (const f of leituraFalhou) {
+        falhas[f.id] = (falhas[f.id] || 0) + 1;
+        if (falhas[f.id] === 3) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A IA tentou ler "${f.nome}" 3 vezes e não conseguiu (arquivo muito grande, ilegível ou erro de leitura). Confira o documento à mão: ele fica sem conferência até alguém olhar.` } }).catch(() => {});
+      }
+      cf1._docLeituraFalhas = falhas;
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf1 as any } });
+    } catch { /* contagem é só aviso */ }
+  }
+  if (novas.length) {
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const freshCf = (fresh?.customFields || {}) as any;
+    // Correção que a equipe fez no painel ENQUANTO a IA lia (12 PDFs levam minutos): vale a da equipe — o `cache` é de antes e regravaria a leitura velha por cima.
+    for (const [id, r] of Object.entries((freshCf._docReview || {}) as Record<string, DocReview>)) if (r?.corrigidoPor) { cache[id] = r; delete infoFix[id]; }
+    // Número da matrícula e cartório lidos no documento vão pro card (se ainda não estiverem preenchidos) — é o que a A&F precisa pra emitir a certidão.
+    const mat = novas.map((n) => n.r).find((r) => r.matricula);
+    const matCampos = mat && !String(freshCf.numero_matricula || '').trim() ? { numero_matricula: mat.matricula, ...(mat.cartorio && !String(freshCf.cartorio_registro || '').trim() ? { cartorio_registro: mat.cartorio } : {}) } : {};
+    // MATRÍCULA ENCERRADA (16/10, Pedro: a certidão do cliente era da matrícula 383.297, encerrada na véspera; o apartamento ganhou a 438.308): marca no card pra IA e a conferência
+    // saberem que a certidão NÃO vale e que a A&F precisa emitir a da matrícula nova — antes de pedir vistoria.
+    const enc = novas.map((n) => n.r).find((r) => r.encerrada);
+    let marcador: Record<string, unknown> = {};
+    if (enc?.encerrada && !freshCf._matriculaEncerrada) {
+      marcador = { _matriculaEncerrada: { antiga: enc.matricula || '', quando: enc.encerrada.quando || '', novas: enc.encerrada.novas, at: new Date().toISOString() } };
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏛️ MATRÍCULA ENCERRADA: a certidão que o cliente enviou é da matrícula${enc.matricula ? ` nº ${enc.matricula}` : ''}, encerrada${enc.encerrada.quando ? ` em ${enc.encerrada.quando}` : ''}${enc.encerrada.novas.length ? `; o imóvel agora tem ${enc.encerrada.novas.join('; ')}` : ''}. Essa certidão NÃO serve: a A&F precisa emitir a certidão da matrícula NOVA (ONR) antes de solicitar a vistoria.` } }).catch(() => {});
+    }
+    // PARCELA EM ATRASO no descritivo da parcela (Fabio 26/10: com parcela do financiamento em atraso não fazemos Home Equity): avisa a equipe UMA vez — o cliente não recebe nada
+    // automático (a leitura pode errar; quem fala com ele é a equipe).
+    const atr = novas.find((n) => n.r.atraso);
+    if (atr && !freshCf._parcelaAtrasoAt) {
+      marcador = { ...marcador, _parcelaAtrasoAt: new Date().toISOString() };
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ PARCELA EM ATRASO no descritivo da parcela do financiamento ("${atr.arquivo}"): ${atr.r.atraso}. Com parcela em atraso não fazemos Home Equity — confira o documento e fale com o cliente (ele precisa regularizar antes de seguir).` } }).catch(() => {});
+      (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `⚠️ ${lead.name}`, body: 'Descritivo da parcela mostra parcela em atraso — conferir', leadId }).catch(() => {});
+    }
+    // CONFERE O NÚMERO (Fabio 16/10): a matrícula/certidão lida tem que bater com a que o CLIENTE mandou (ou ser a mesma renumerada). Se não bate, o erro pode ser NOSSO (pedimos o número errado):
+    // NÃO avisa o cliente — leva a pergunta pra equipe.
+    const soDig = (x: string) => String(x || '').replace(/\D/g, '');
+    const jaTinha = soDig(String(freshCf.numero_matricula || ''));
+    const lida = novas.find((n) => n.r.matricula && n.r.tipo.startsWith('MATRIC'));
+    if (jaTinha && lida && lida.attId) {
+      const numeros = [lida.r.matricula!, ...(lida.r.anteriores || []), ...((lida.r.encerrada?.novas || []).map((x) => x.split(' ')[0]))].map(soDig).filter(Boolean);
+      if (!numeros.includes(jaTinha)) {
+        const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+        await createDocQuestion({ accountId, leadId, attachmentId: lida.attId || '', fileName: lida.arquivo || 'matrícula', docType: 'MATRÍCULA', question: `O número desta matrícula (${lida.r.matricula}${(lida.r.anteriores || []).length ? `, antiga ${(lida.r.anteriores || []).join('/')}` : ''}) NÃO bate com o que o cliente mandou (${freshCf.numero_matricula}). Pode ter sido erro nosso ao pedir a certidão: confira qual é o número certo. Não avisei o cliente.` }).catch(() => {});
+      }
+    }
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshCf, ...matCampos, ...marcador, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
+    // Matrícula no nome de quem não participa da proposta: o Santander sai (Fabio 03/11).
+    await (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).avisarSantanderTerceiro(accountId, leadId).catch((e: any) => console.error('[Santander terceiro]', e?.message || e));
+  }
+
+  // Situação atual: a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some); RG/CNH somam os lados.
+  const { ordered, problemas, ok, duvidas, donoPendente } = situacaoDosDocumentos(atts, cache, cf0);
   // OLHA A DOCUMENTAÇÃO TODA antes de pedir (Fabio 27/10: "o CRM está vendo apenas uma imagem e já definindo resposta; precisa olhar toda a documentação antes de pedir de novo").
   // Cada pedido nasceu da leitura de UM arquivo; aqui confere se OUTRO arquivo já atende (ex.: o extrato só com prestações pagas, mas chegou a simulação de quitação com o saldo devedor).
   const atendidos = problemas.length ? await consolidarPedidos(ordered, problemas).catch((e) => { console.error('[DocReview] consolidação:', e?.message || e); return []; }) : [];
@@ -470,6 +486,9 @@ export async function reviewReceivedDocs(accountId: string, leadId: string): Pro
     }
     for (let i = problemas.length - 1; i >= 0; i--) if (!problemas[i].texto.length) { ok.push(problemas[i].doc); problemas.splice(i, 1); }
   }
+  // Painel de documentos do card (Fabio 03/11): guarda os pedidos que outro arquivo já atende (só a chave) — o painel mostra o mesmo "o que falta" sem chamar a IA.
+  const atendidosKey = atendidos.map((a) => ({ doc: a.doc, texto: a.texto, por: a.por }));
+  if (JSON.stringify(atendidosKey) !== JSON.stringify(cf0._docsAtendidos || [])) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsAtendidos}', ${JSON.stringify(atendidosKey)}::jsonb, true) WHERE id = ${leadId}`.catch(() => {});
   return { novas, problemas, duvidas, donoPendente, ok, atendidos };
 }
 

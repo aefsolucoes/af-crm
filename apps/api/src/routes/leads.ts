@@ -1111,6 +1111,34 @@ router.post('/:id/docs-check', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /api/leads/:id/docs-panel — painel de documentos do card (Fabio 03/11): o que a IA já leu de cada arquivo (RECEBIDOS) e o que falta (mesma regra da conferência), sem chamar a IA.
+router.get('/:id/docs-panel', async (req: AuthRequest, res: Response) => {
+  try {
+    const { painelDocumentos } = require('../services/docs-panel.service') as typeof import('../services/docs-panel.service');
+    const painel = await painelDocumentos(req.user!.accountId, req.params.id);
+    if (!painel) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
+    res.json(painel);
+  } catch (err) {
+    console.error('[Leads] Erro no painel de documentos:', err);
+    res.status(500).json({ error: 'Erro ao carregar os documentos' });
+  }
+});
+
+// PATCH /api/leads/:id/docs/:attachmentId — a equipe corrige a leitura de um documento (tipo, titular, situação, lado do RG/CNH, dono do imóvel). Grava só a chave daquele arquivo;
+// a conferência passa a usar a correção (a IA não relê). Sem mensagem ao cliente e sem mover o card.
+router.patch('/:id/docs/:attachmentId', async (req: AuthRequest, res: Response) => {
+  const { corrigirLeituraDocumento, PainelErro } = require('../services/docs-panel.service') as typeof import('../services/docs-panel.service');
+  try {
+    const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário';
+    const out = await corrigirLeituraDocumento({ accountId: req.user!.accountId, leadId: req.params.id, attachmentId: req.params.attachmentId, userId: req.user!.id, userName, body: req.body || {}, io: (req as any).app.get('io') });
+    res.json(out);
+  } catch (err: any) {
+    if (err instanceof PainelErro) { res.status(err.status).json({ error: err.message }); return; }
+    console.error('[Leads] Erro ao corrigir a leitura do documento:', err);
+    res.status(500).json({ error: 'Erro ao salvar a correção' });
+  }
+});
+
 // Ficha de cadastro lida dos documentos da pasta do Drive (Fabio 29/10) — base do cadastro na CAIXA/BRB; a extensão lê pelo GET.
 router.post('/:id/ficha-cadastral', async (req: AuthRequest, res: Response) => {
   const { gerarFichaCadastral } = require('../services/ficha-cadastral.service') as typeof import('../services/ficha-cadastral.service');

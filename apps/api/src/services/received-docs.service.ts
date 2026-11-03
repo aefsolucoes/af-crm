@@ -255,7 +255,10 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
   }
   if (changed) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-    const next: Record<string, unknown> = { ...((fresh?.customFields as Record<string, unknown>) || {}), _docInfo: cache };
+    const freshCf = ((fresh?.customFields as Record<string, any>) || {});
+    // Classificação que a equipe corrigiu no painel de documentos ENQUANTO este lia (Fabio 03/11): vale a da equipe — o `cache` é de antes.
+    for (const [id, r] of Object.entries((freshCf._docReview || {}) as Record<string, any>)) if (r?.corrigidoPor && typeof freshCf._docInfo?.[id] === 'string') cache[id] = freshCf._docInfo[id];
+    const next: Record<string, unknown> = { ...freshCf, _docInfo: cache };
     delete next._docTypes;
     if (relidos.size) {
       const prot = { ...((next._docsProtegidos || {}) as Record<string, any>) };
