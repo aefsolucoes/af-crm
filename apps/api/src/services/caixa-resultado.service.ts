@@ -121,7 +121,7 @@ const APROVADA_RE = /aprovad/i;
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const numeroBr = (v: unknown) => { const t = String(v ?? '').replace(/[^\d.,]/g, ''); return Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t) || 0; };
 const propostaDa = (texto: string) => (/C[oó]digo Proposta\s*\t?\s*(\d{5,})/i.exec(texto) || /Proposta\s+(\d{5,})/i.exec(texto) || [])[1] || '';
-const AVISO_NO_CARD: Record<string, string> = { PENDING: 'aviso ao cliente na fila', TEMPLATE: 'template enviado, o aviso sai quando ele responder', ENVIADO: 'cliente avisado', FALHOU: 'aviso não saiu, texto pronto nas anotações' };
+const AVISO_NO_CARD: Record<string, string> = { SEGURADO: 'aviso ao cliente segurado até a simulação', PENDING: 'aviso ao cliente na fila', TEMPLATE: 'template enviado, o aviso sai quando ele responder', ENVIADO: 'cliente avisado', FALHOU: 'aviso não saiu, texto pronto nas anotações' };
 
 /** Crédito (líquido) que a parcela paga na Price — prazo da tela da CAIXA quando houver, senão o máximo. Pura. */
 export function creditoMaximoPelaParcela(parcela: number, he: boolean, prazo?: number | null): number {
@@ -217,10 +217,11 @@ async function tratarAprovadaNaPrice(accountId: string, leadId: string, nome: st
   const desejado = numeroBr(cf.valor_credito);
   const estimado = creditoMaximoPelaParcela(parcela, he, prazo);
   const valor = Math.floor(Math.min(estimado, desejado > 0 ? desejado : Infinity) / 1000) * 1000;
-  await salvar(leadId, (x) => { x.condicionada = { tipo: 'liberado', status: 'PENDING', proposta, parcela, valor, prazo, he, desejado: desejado || null, at: new Date().toISOString() }; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA APROVOU na PRICE com a prestação de ${brl(parcela)} (proposta ${proposta}). Pela simulação (Price em ${prazo} meses, taxa da CAIXA do simulador do site${he ? ' e IOF' : ''}), libera uns ${brl(valor)}${desejado > valor ? ` — o pedido era ${brl(desejado)}` : ''}. O CRM avisa o cliente só do valor liberado; detalhes só se ele perguntar (Fabio 03/11). Confira o valor no Caixa Aqui.` } }).catch(() => {});
+  // Fabio 03/11 (Fernanda): "PRECISAMOS DA SIMULAÇÃO ANTES DE PASSAR O RESULTADO" — o aviso fica SEGURADO até a simulação; a estimativa é só pra equipe.
+  await salvar(leadId, (x) => { x.condicionada = { tipo: 'liberado', status: 'SEGURADO', proposta, parcela, valor, prazo, he, desejado: desejado || null, at: new Date().toISOString() }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA APROVOU na PRICE com a prestação de ${brl(parcela)} (proposta ${proposta}). Pela simulação (Price em ${prazo} meses, taxa da CAIXA do simulador do site${he ? ' e IOF' : ''}), libera uns ${brl(valor)}${desejado > valor ? ` — o pedido era ${brl(desejado)}` : ''} (estimativa). O cliente ainda NÃO foi avisado: falta a simulação antes de passar o resultado (Fabio 03/11).` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-  sendPushToAccount(accountId, { title: `✅ ${nome}: CAIXA aprovou na PRICE`, body: `Libera uns ${brl(valor)} · o cliente vai ser avisado`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
+  sendPushToAccount(accountId, { title: `✅ ${nome}: CAIXA aprovou na PRICE`, body: `Estimativa: uns ${brl(valor)} · falta a simulação antes de avisar o cliente`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
 }
 
 /** Linha do resultado no bloco CAIXA do card (Fabio 03/11: "registrar no card, colocar condicionado e o valor da parcela"): a parcela possível, se dá o
