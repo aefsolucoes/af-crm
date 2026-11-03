@@ -70,6 +70,7 @@ export async function processVendaFutura(io: Io): Promise<void> {
   if (running) return;
   running = true;
   try {
+    await processVfSilencio(io).catch((e: any) => console.error('[Venda Futura] silêncio:', e?.message || e));
     const hh = new Date(Date.now() - BRT_MS).getUTCHours();
     if (hh < 7 || hh >= 21) return; // horário da A&F (07h–21h)
     const leads = await prisma.lead.findMany({
@@ -139,15 +140,51 @@ export async function processVendaFutura(io: Io): Promise<void> {
   }
 }
 
-/** Card REPROVADO por motivo temporário que a equipe mandou pra Venda Futura (balão "Dúvidas da IA" → `_rejDecision`): vai pra etapa Venda Futura (em vez de Perdidos), a IA fica ligada e a
- *  retomada já fica marcada pra daqui 2 meses (dia 10) — o CRM SUGERE o mês em vez de perguntar a data (Fabio 03/11). Com a janela aberta o cliente já recebe a sugestão; se não responder,
- *  o CRM o chama nesse mês; se ele pedir outro mês, a IA troca a data. */
-const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
-/** Mês que o CRM sugere quando o cliente não deu data: daqui 2 meses, dia 10 (horário de Brasília). Pura. */
-export function mesSugerido(now = Date.now(), meses = 2): { data: string; mes: string } {
-  const b = new Date(now - 3 * 3_600_000);
-  const alvo = new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth() + meses, 10));
-  return { data: alvo.toISOString().slice(0, 10), mes: MESES[alvo.getUTCMonth()] };
+/** Card REPROVADO por motivo temporário que a equipe mandou pra Venda Futura (balão "Dúvidas da IA" → `_rejDecision`): vai pra etapa Venda Futura (em vez de Perdidos), a IA fica ligada e,
+ *  com a janela aberta, o cliente já recebe a pergunta da melhor data pra tentar de novo. A retomada fica marcada pra daqui 15 dias (Fabio 03/11: cliente calado → falar com ele 15 dias
+ *  depois); se ele responder uma data, a IA troca. */
+/** Data (AAAA-MM-DD, Brasília) N dias depois de `from`. Pura. */
+export function diasDepois(n: number, from = Date.now()): string {
+  return new Date(from - BRT_MS + n * 86_400_000).toISOString().slice(0, 10);
+}
+
+// ─── Cliente CALADO depois da pergunta da data (Fabio 03/11: "caso o cliente não informe nada e permaneça calado, a IA deverá mandar para Venda Futura e colocar pra falar com ele 15 dias após") ───
+// Nós (IA ou equipe) perguntamos a melhor data pra retomar e o cliente não respondeu em 24 h: o card vai pra Venda Futura com a retomada 15 dias depois da pergunta. Uma vez por pergunta.
+const RX_PERGUNTA_DATA = /melhor data (pra|para) (a gente |gente |n[oó]s )?(retomar|tratar|voltar)|data (pra|para) (o |a gente )?(retorno|retomar|retomarmos|voltarmos)|agendar uma data (pra|para) (o )?retorno/i;
+const SILENCIO_MS = 24 * 3_600_000;
+let ultimaVoltaSilencio = 0;
+export async function processVfSilencio(io: Io): Promise<void> {
+  if (Date.now() - ultimaVoltaSilencio < 10 * 60_000) return;
+  ultimaVoltaSilencio = Date.now();
+  const perguntas = await prisma.message.findMany({
+    where: {
+      direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 7 * 86_400_000), lte: new Date(Date.now() - SILENCIO_MS) },
+      OR: ['melhor data pra', 'melhor data para', 'data para retorno', 'data pra retorno', 'data para retomar', 'data pra retomar'].map((t) => ({ content: { contains: t, mode: 'insensitive' as const } })),
+      lead: { status: 'OPEN', archived: false, isGroup: false },
+    },
+    orderBy: { createdAt: 'desc' }, take: 200, select: { leadId: true, createdAt: true, content: true },
+  });
+  const vistos = new Set<string>();
+  for (const q of perguntas) {
+    if (!q.leadId || vistos.has(q.leadId) || !RX_PERGUNTA_DATA.test(q.content || '') || /vencimento|vistoria/i.test(q.content || '')) continue;
+    vistos.add(q.leadId); // só a pergunta mais recente de cada card
+    const lead = await prisma.lead.findUnique({ where: { id: q.leadId }, select: { id: true, accountId: true, name: true, pipelineId: true, customFields: true, stage: { select: { name: true } } } });
+    if (!lead || /venda futura/i.test(lead.stage?.name || '')) continue;
+    const cf = (lead.customFields || {}) as Cf;
+    if (cf._vfSilencio === q.createdAt.toISOString() || String(cf._vendaFuturaAt || '') >= diasDepois(0)) continue; // já tratado / já tem retomada marcada
+    if (await prisma.message.count({ where: { leadId: lead.id, direction: 'INBOUND', createdAt: { gt: q.createdAt } } })) continue; // respondeu: a IA cuida
+    const vf = await prisma.stage.findFirst({ where: { pipelineId: lead.pipelineId, name: { contains: 'Venda Futura', mode: 'insensitive' } }, select: { id: true, name: true } });
+    const data = diasDepois(15, q.createdAt.getTime());
+    await saveCf(lead.id, (c) => { c._vfSilencio = q.createdAt.toISOString(); if (vf) { c._vendaFuturaAt = data; delete c._vendaFuturaBaseAt; delete c._vendaFuturaSentAt; delete c._vendaFuturaFailAt; c._vendaFuturaCount = 0; } });
+    if (!vf) { await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: '📅 O cliente não respondeu a pergunta da data de retomada, mas este funil não tem a etapa Venda Futura: mova à mão.' } }).catch(() => {}); continue; }
+    const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
+    await updateLeadStage(lead.id, lead.accountId, vf.id);
+    await prisma.lead.update({ where: { id: lead.id }, data: { stageEnteredAt: new Date() } }).catch(() => {});
+    const dd = (s: string) => s.split('-').reverse().join('/');
+    await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${vf.name}" — o cliente não respondeu a pergunta da data de retomada (${dd(diasDepois(0, q.createdAt.getTime()))}). Retomada marcada pra ${dd(data)}, 15 dias depois (Fabio 03/11).` } }).catch(() => {});
+    logActivity({ accountId: lead.accountId, userId: null, userName: 'Venda Futura', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: `sem resposta da data → Venda Futura, retomada ${dd(data)}` } as any);
+    if (io) io.to(`lead:${lead.id}`).emit('lead_moved', { leadId: lead.id, stageId: vf.id });
+  }
 }
 
 export async function rejectedToVendaFutura(p: { accountId: string; leadId: string; reasons?: string[]; io?: Io }): Promise<boolean> {
@@ -157,16 +194,16 @@ export async function rejectedToVendaFutura(p: { accountId: string; leadId: stri
   if (!vf) { await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: '⚠️ A equipe mandou pra Venda Futura, mas este funil não tem a etapa. Mova à mão.' } }).catch(() => {}); return false; }
   const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
   await updateLeadStage(lead.id, p.accountId, vf.id);
-  const sug = mesSugerido();
-  await saveCf(lead.id, (c) => { c._vendaFuturaAt = sug.data; delete c._vendaFuturaBaseAt; delete c._vendaFuturaSentAt; delete c._vendaFuturaFailAt; c._vendaFuturaCount = 0; delete c._rejQuestionAt; delete c._autoCloseAfterNotice; }, { aiAutoReplyActive: true });
+  const sug = diasDepois(15);
+  await saveCf(lead.id, (c) => { c._vendaFuturaAt = sug; delete c._vendaFuturaBaseAt; delete c._vendaFuturaSentAt; delete c._vendaFuturaFailAt; c._vendaFuturaCount = 0; delete c._rejQuestionAt; delete c._autoCloseAfterNotice; }, { aiAutoReplyActive: true });
   const motivos = (p.reasons || []).join('; ');
-  await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${vf.name}" — reprovado por motivo temporário${motivos ? ` (${motivos})` : ''}; a equipe decidiu Venda Futura. Retomada marcada pra ${sug.data.split('-').reverse().join('/')} (sugerida pelo CRM; se o cliente pedir outro mês, a IA troca).` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${vf.name}" — reprovado por motivo temporário${motivos ? ` (${motivos})` : ''}; a equipe decidiu Venda Futura. A IA pergunta ao cliente a melhor data pra tentar de novo; sem resposta, a retomada fica pra ${sug.split('-').reverse().join('/')} (15 dias).` } }).catch(() => {});
   logActivity({ accountId: p.accountId, userId: null, userName: 'Análise automática', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: 'reprovado por motivo temporário → Venda Futura' } as any);
   const last = await prisma.message.findFirst({ where: { leadId: lead.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
   if (last && Date.now() - last.createdAt.getTime() < WINDOW_MS) {
     const saldo = /saldo devedor/i.test(motivos), minimo = /abaixo do m[ií]nimo/i.test(motivos);
     const ex = saldo && minimo ? 'quitando o saldo devedor do imóvel ou com outro valor de imóvel' : saldo ? 'quitando o saldo devedor do imóvel' : minimo ? 'com outro valor de imóvel' : 'se a sua situação mudar';
-    const texto = `Se a situação mudar (por exemplo ${ex}), a gente consegue tentar de novo. Vou te chamar em ${sug.mes} pra ver como está — se preferir outro mês, é só me falar.`;
+    const texto = `Se a situação mudar (por exemplo ${ex}), a gente consegue tentar de novo. Qual seria a melhor data pra gente tratar o seu crédito novamente? Pode ser um mês ou uma data certinha.`;
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     await sendOutboundWhatsApp({ accountId: p.accountId, leadId: lead.id, content: texto, io: (p.io || undefined) as any }).catch(() => {});
   }
