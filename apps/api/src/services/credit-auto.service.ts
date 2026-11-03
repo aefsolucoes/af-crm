@@ -169,6 +169,8 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
       if (checks >= AI_CHECK_MAX) {
         await saveCf(l.id, { _autoChecks: checks, _autoCheckedAt: new Date().toISOString(), _autoGiveUp: true, _autoReadyV: READINESS_V });
         await addNote(l.id, `🤖 Análise automática NÃO iniciada: a IA acha que a proposta precisa de atenção — ${verdict.reason}. Depois de acertar, rode a análise na aba Análise de Crédito.`);
+        // Só a nota ficava no card e ninguém via (Fabio 03/11: 2 clientes esperaram 8 dias — proposta que nunca chegou e 2º participante duplicado).
+        (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `⚠️ ${l.name}: análise não começou`, body: verdict.reason.slice(0, 140), leadId: l.id }).catch(() => {});
       } else {
         await saveCf(l.id, { _autoChecks: checks, _autoCheckedAt: new Date().toISOString() });
       }
