@@ -139,6 +139,8 @@ export async function claimSimulationDocs(db: Db, p: { accountId: string; extBan
         const { trechoDoBancoNoResumo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
         const n = (/proposta\s*(\d{6,})/i.exec(trechoDoBancoNoResumo(cfl._fhResumo, 'Itaú')) || [])[1];
         if (n) { numero = n; cpfFinal = cpfFinal || String(cfl.cpf_1 || '').replace(/\D/g, '') || null; }
+        // Nem o resumo tem o nº (Tarcisio 03/11: o card dizia "Itaú: não enviado" e o portal tinha a proposta aprovada): a extensão acha pelo CPF do titular do card.
+        if (!numero && !cpfFinal) cpfFinal = String(cfl.cpf_1 || '').replace(/\D/g, '') || null;
       }
     }
     out.push({ id: r.id, leadId: r.leadId, leadName: lead?.name || 'Sem nome', institution: r.institution, mode: meta.mode, institutionId: meta.credimorarId ?? 0, proposalNumber: numero, cpf: cpfFinal });
