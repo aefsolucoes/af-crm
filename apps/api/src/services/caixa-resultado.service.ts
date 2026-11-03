@@ -80,7 +80,10 @@ export async function proximaConsultaResultado(accountId: string) {
 }
 
 /** Tela da Consulta de Formulários Enviados que a extensão devolveu: guarda, anota no card e avisa por push. */
-export async function gravarConsultaResultado(accountId: string, leadId: string, r: { status: string; texto: string }): Promise<void> {
+export async function gravarConsultaResultado(accountId: string, leadId: string, bruto: { status: string; texto: string }): Promise<void> {
+  // "Aprovada e Não Propagada" é só "Aprovada" (Fabio 03/11: "não é para mandar aprovada e não propagada, apenas aprovada") — no card, na nota, no push e nos avisos.
+  const soAprovada = (t: string) => String(t || '').replace(/aprovada e n[aã]o propagada/gi, 'Aprovada');
+  const r = { status: soAprovada(bruto.status), texto: soAprovada(bruto.texto) };
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
@@ -228,6 +231,7 @@ async function tratarAprovadaNaPrice(accountId: string, leadId: string, nome: st
  *  mínimo, o valor liberado depois da PRICE e como está o aviso ao cliente. Condicionada é resultado final: não volta pra fila de consulta. Pura. */
 export function resultadoNoCard(res: Cf | null | undefined): string | null {
   if (!res?.status) return null;
+  res = { ...res, status: String(res.status).replace(/aprovada e n[aã]o propagada/gi, 'Aprovada') };
   const c = res.condicionada as Cf | undefined;
   const aviso = c ? AVISO_NO_CARD[c.status] : '';
   if (c?.tipo === 'liberado') return `Aprovada na PRICE (parcela de ${brl(Number(c.parcela))}): libera uns ${brl(Number(c.valor))}${aviso ? ` · ${aviso}` : ''}`;
