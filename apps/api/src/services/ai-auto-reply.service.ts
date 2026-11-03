@@ -498,9 +498,11 @@ async function docsStillArriving(leadId: string): Promise<boolean> {
   if (!lead) return false;
   const stage = lead.stage.name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   if (!stage.includes('aguardando documentacao')) return false;
-  if ((lead.customFields as any)?._docsCheckDue) return true;
+  // A conferência também é reagendada por TEXTO (resposta de "de quem é o imóvel" — maybeRecheckOwnerAnswer): conferência agendada sem arquivo recente não é cliente mandando
+  // documento (Fabio 03/11, Eva: com a pergunta do dono em aberto, todo texto dela reagendava a conferência e a IA ficava muda — "acho que ano que vem" ficou sem resposta).
+  const janelaMin = (lead.customFields as any)?._docsCheckDue ? 15 : 5;
   const recent = await prisma.messageAttachment.findMany({
-    where: { leadId, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(Date.now() - 5 * 60_000) }, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
+    where: { leadId, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(Date.now() - janelaMin * 60_000) }, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
     select: { fileName: true, mimeType: true }, take: 10,
   });
   const { isStickerAttachment } = require('./google.service') as typeof import('./google.service');
