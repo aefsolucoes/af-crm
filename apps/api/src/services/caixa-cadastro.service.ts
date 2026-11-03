@@ -728,7 +728,7 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
       // Já rodou (enviada, com resultado, parada…) → "Rodar análise CAIXA de novo".
       // refazer = a avaliação que deu erro e vai ser REABERTA (proposta/data de Formulários Enviados); null = nenhuma chegou à CAIXA, roda do começo.
       denovo: terminada ? { status: String(terminada.status || '').slice(0, 160), fim: terminada.fim || terminada.pedidoEm || null, resultado: res?.status && res.status !== 'AGUARDANDO_NOVA_AVALIACAO' ? String(res.status).slice(0, 200) : null, refazer: avaliacaoParaRefazer([...anteriores, resumoAvaliacaoAnterior(terminada, res)], he ? '11 - empréstimo com garantia de imóvel' : '1 - crédito imobiliário') } : null,
-      resultado: res?.status ? String(res.status).slice(0, 200) : null,
+      resultado: (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).resultadoNoCard(res),
     },
   };
 }

@@ -155,6 +155,17 @@ async function tratarCondicionada(accountId: string, leadId: string, nome: strin
   await nota(`🟡 CAIXA condicionada (proposta ${proposta}): ${conta}, abaixo do mínimo de R$ ${minimo / 1000} mil. O CRM avisa o cliente que a parcela aprovada não dá o mínimo.`);
 }
 
+/** Linha do resultado no bloco CAIXA do card. Na condicionada (Fabio 03/11: "registrar no card, colocar condicionado e o valor da parcela"): a parcela possível,
+ *  se dá o mínimo e como está o aviso ao cliente. Condicionada é resultado final: não volta pra fila de consulta. Pura. */
+export function resultadoNoCard(res: Cf | null | undefined): string | null {
+  if (!res?.status) return null;
+  const c = res.condicionada as Cf | undefined;
+  if (!c || !CONDICIONADA_RE.test(String(res.status))) return String(res.status).slice(0, 200);
+  if (c.credito >= c.minimo) return `Condicionada: parcela de ${brl(Number(c.parcela))} (dá até uns ${brl(Math.floor(c.credito / 1000) * 1000)}; dá pra alterar a avaliação)`;
+  const aviso = ({ PENDING: 'aviso ao cliente na fila', TEMPLATE: 'template enviado, o aviso sai quando ele responder', ENVIADO: 'cliente avisado', FALHOU: 'aviso não saiu, texto pronto nas anotações' } as Record<string, string>)[c.status];
+  return `Condicionada: parcela de ${brl(Number(c.parcela))}, não dá o mínimo de R$ ${Number(c.minimo) / 1000} mil${aviso ? ` · ${aviso}` : ''}`;
+}
+
 /** Aviso da condicionada ao cliente (poller de 1 min, junto do aviso do PV). STOP total → texto pronto pra equipe. */
 export async function avisarCondicionadaCliente(accountId: string, leadId: string, io?: any): Promise<void> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
