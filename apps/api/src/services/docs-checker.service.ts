@@ -89,7 +89,7 @@ export async function processDocsChecks(accountId: string, io: Io): Promise<void
 
 const WINDOW_MS = 23 * 3_600_000;
 const BRT = -3 * 3_600_000; // Brasília = UTC−3 (sem horário de verão)
-export const TIME_RX = /(\bdia \d{1,2}\b|\b\d{1,2}\/\d{1,2}\b|fim d[oa] m[êe]s|final d[oa] m[êe]s|amanh[ãa]|mais tarde|\bdepois\b|hoje (à|a) noite|[àa] noite|daqui (a )?(pouco|uns?|\d+)|logo mais|\bsegunda\b|\bter[çc]a\b|\bquarta\b|\bquinta\b|\bsexta\b|s[áa]bado|domingo|semana que vem|fim de semana|quando (chegar|sair|puder|conseguir|tiver)|assim que (puder|conseguir|chegar|sair|tiver)|estou no trabalho|n[ãa]o (tenho como|consigo|posso) (enviar|mandar|encaminhar)( agora)?|agora n[ãa]o|depois do (trabalho|expediente)|quando eu (chegar|sair|puder))/i;
+export const TIME_RX = /((?<![a-zà-ú])[àa]s \d{1,2}(?:\s*(?:h|hs|hrs?|horas?)\b|:\d{2}\b|(?=\s*(?:$|[.,!?)]|pra |para |eu |e |que |da (?:tarde|manh[ãa]|noite)|hoje|amanh)))|\b\d{1,2}\s?(?:h|hs|hrs|horas)\b|\b\d{1,2}:\d{2}\b|(?<!bo)[àa] tarde|\bdia \d{1,2}\b|\b\d{1,2}\/\d{1,2}\b|fim d[oa] m[êe]s|final d[oa] m[êe]s|amanh[ãa]|mais tarde|\bdepois\b|hoje (à|a) noite|(?<!bo)[àa] noite|daqui (a )?(pouco|uns?|\d+)|logo mais|\bsegunda\b|\bter[çc]a\b|\bquarta\b|\bquinta\b|\bsexta\b|s[áa]bado|domingo|semana que vem|fim de semana|quando (chegar|sair|puder|conseguir|tiver)|assim que (puder|conseguir|chegar|sair|tiver)|estou no trabalho|n[ãa]o (tenho como|consigo|posso) (enviar|mandar|encaminhar)( agora)?|agora n[ãa]o|depois do (trabalho|expediente)|quando eu (chegar|sair|puder))/i;
 const SEND_RX = /(mand|envi|encaminh|pass(o|ar)|trag|junt|separ|entreg|forne|te dou|consigo|tir(o|ar)|escane|fotograf)/i;
 const NEGATIVE_RX = /(n[ãa]o (tenho|quero|vou) (mais )?(interesse|seguir|continuar)|desist|cancel)/i;
 
@@ -97,7 +97,20 @@ const NEGATIVE_RX = /(n[ãa]o (tenho|quero|vou) (mais )?(interesse|seguir|contin
 export function promisedAt(text: string, now: Date): Date {
   const t = text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const local = new Date(now.getTime() + BRT); // "relógio de parede" de Brasília lido com getUTC*
-  const at = (days: number, hour: number) => { const d = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + days, hour, 0, 0)); return new Date(d.getTime() - BRT); };
+  // Horário dito pelo cliente (Fabio 04/11, Milena: "me manda msg às 16 pra eu me lembrar" — a IA respondeu "te chamo às 16h" e ninguém chamou):
+  // vale no dia combinado; sem dia, hoje (ou amanhã, se a hora já passou). "às 2" sem "da manhã" = 14h.
+  const hm = /\bas (\d{1,2})(?::(\d{2}))?(?:\s*(?:h|hs|hrs?|horas?)\b|(?=\s*(?:$|[.,!?)]|pra |para |eu |e |que |da (?:tarde|manha|noite)|hoje|amanh)))|\b(\d{1,2})(?::(\d{2}))?\s?(?:h|hs|hrs|horas)\b|\b(\d{1,2}):(\d{2})\b/.exec(t);
+  // "daqui a 2h", "em 3 horas": é prazo, não horário.
+  const dur = /\b(?:daqui|em|dentro de)\s*(?:a\s*|umas?\s*|uns\s*)?(\d{1,2})\s?(?:h|hs|hrs|horas)\b/.exec(t);
+  let hora: number | null = null, minuto = 0;
+  if (hm && !dur) {
+    let h = Number(hm[1] ?? hm[3] ?? hm[5]);
+    minuto = Number(hm[2] ?? hm[4] ?? hm[6] ?? 0) || 0;
+    if (/da (tarde|noite)/.test(t) && h < 12) h += 12;
+    else if (h >= 1 && h <= 6 && !/da manha|madrugada/.test(t)) h += 12;
+    if (h >= 0 && h <= 23 && minuto < 60) hora = h;
+  }
+  const at = (days: number, hour: number) => { const d = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + days, hora ?? hour, hora === null ? 0 : minuto, 0)); return new Date(d.getTime() - BRT); };
   const wd = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'].findIndex((w) => new RegExp(`\\b${w}\\b`).test(t));
   // Data dita pelo cliente (Fabio 28/10: o CRM pergunta o prazo e espera até essa data): "dia 5", "05/11", "fim do mês".
   const dm = /\b(\d{1,2})\/(\d{1,2})\b/.exec(t);
@@ -109,7 +122,10 @@ export function promisedAt(text: string, now: Date): Date {
   if (/amanha/.test(t)) return at(1, 11);
   if (wd >= 0) { const diff = ((wd - local.getUTCDay()) + 7) % 7 || 7; return at(diff, 11); }
   if (/semana que vem|proxima semana/.test(t)) return at(5, 11);
-  if (/hoje a noite|a noite/.test(t)) return at(local.getUTCHours() >= 18 ? 1 : 0, local.getUTCHours() >= 18 ? 11 : 19);
+  if (dur && Number(dur[1]) <= 12) return new Date(now.getTime() + Number(dur[1]) * 3_600_000);
+  if (/hoje a noite|(?<!bo)a noite/.test(t)) return at(local.getUTCHours() >= 18 ? 1 : 0, local.getUTCHours() >= 18 ? 11 : 19);
+  if (hora !== null) { const hoje = at(0, hora); return hoje.getTime() > now.getTime() ? hoje : at(1, hora); }
+  if (/(?<!bo)a tarde/.test(t)) return local.getUTCHours() < 14 ? at(0, 15) : new Date(now.getTime() + 2 * 3_600_000);
   // "estou no trabalho", "não tenho como enviar agora", "assim que puder" (Vicente Paulo 21/10): à noite do mesmo dia (19h); depois das 17h, amanhã de manhã.
   if (/trabalho|expediente|servico|agora nao|assim que (puder|conseguir|chegar|sair|tiver)|nao (tenho como|consigo|posso)/.test(t)) return at(local.getUTCHours() >= 17 ? 1 : 0, local.getUTCHours() >= 17 ? 11 : 19);
   if (/mais tarde|logo mais|daqui/.test(t)) return new Date(now.getTime() + 3 * 3_600_000);
@@ -177,8 +193,11 @@ export async function processDocsFollowUps(accountId: string, io: Io): Promise<v
     const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
     const nome = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
     const oi = (await conversationActive(id)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
+    const pediuLembrete = /lembr/i.test(st.said);
     const texto = st.beyond
       ? `${oi}Só pra manter nossa conversa aberta: continua tudo certo pra você me mandar a documentação? Me responde por aqui.`
+      : pediuLembrete
+      ? `${oi}Passando pra te lembrar da documentação, como você pediu. 😊 Quando tiver, pode mandar por aqui mesmo.`
       : `${oi}Conseguiu separar a documentação? Se já tiver, pode mandar por aqui mesmo.`;
     const sent = await sendOutboundWhatsApp({ accountId, leadId: id, content: texto, io: io || undefined });
     await limpa();
@@ -578,7 +597,7 @@ export async function conferirDocumentosAgora(accountId: string, leadId: string,
   if (conferindoAgora.has(leadId)) return null;
   conferindoAgora.add(leadId);
   try {
-    const review = await reviewReceivedDocs(accountId, leadId).catch((e) => { console.error(`[Docs] botão — leitura falhou (${leadId}):`, e?.message || e); return null; });
+    const review = await reviewReceivedDocs(accountId, leadId, { releCertidao: true }).catch((e) => { console.error(`[Docs] botão — leitura falhou (${leadId}):`, e?.message || e); return null; });
     const verdict = await evaluateDocs(accountId, leadId).catch((e) => { console.error(`[Docs] botão — conferência falhou (${leadId}):`, e?.message || e); return null; });
     // Arquivos que continuam sem leitura (protegido, grande demais, erro): ficam listados pra alguém olhar.
     const atts = (await prisma.messageAttachment.findMany({ where: { leadId, message: { direction: 'INBOUND' } }, select: { id: true, fileName: true, mimeType: true, driveFileId: true, data: true } }))
