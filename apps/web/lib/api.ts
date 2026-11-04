@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { loginUrlWithNext } from './login-redirect';
+import { apiBase, firstProbe, probeApiBase } from './api-base';
 
 /** Renova o token de acesso com o refresh token (na API, mesmo baseURL das demais chamadas — antes ia para /api/auth/refresh relativo
  *  ao site e dava 404, derrubando a sessão após ~1h). Uma renovação por vez: chamadas simultâneas esperam a mesma. Usado também pelo
@@ -12,7 +13,8 @@ export function refreshAccessToken(): Promise<string | null> {
       const refreshToken = localStorage.getItem('af_refresh_token');
       if (!refreshToken) return null;
       try {
-        const { data } = await axios.post(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/auth/refresh`, { refreshToken });
+        if (firstProbe) await firstProbe;
+        const { data } = await axios.post(`${apiBase()}/api/auth/refresh`, { refreshToken });
         if (!data?.accessToken) return null;
         localStorage.setItem('af_access_token', data.accessToken);
         if (data.refreshToken) localStorage.setItem('af_refresh_token', data.refreshToken);
@@ -24,11 +26,14 @@ export function refreshAccessToken(): Promise<string | null> {
 }
 
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || '',
+  baseURL: apiBase(),
   withCredentials: false,
 });
 
-api.interceptors.request.use((config) => {
+// Cada chamada sai pelo caminho que está respondendo agora (direto ou ponte — ver api-base.ts).
+api.interceptors.request.use(async (config) => {
+  if (firstProbe) await firstProbe;
+  config.baseURL = apiBase();
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('af_access_token');
     if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -40,6 +45,14 @@ api.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error.config;
+    // Sem resposta nenhuma (caminho fora do ar): reconfere os caminhos; se trocou, repete a leitura pelo outro. Só GET/HEAD repetem
+    // sozinhos — um POST pode ter chegado ao servidor antes da queda (ex.: mensagem ao cliente) e não pode sair duas vezes.
+    if (original && !error.response && error.code !== 'ERR_CANCELED' && !original._baseRetry) {
+      original._baseRetry = true;
+      const before = original.baseURL;
+      const now = await probeApiBase();
+      if (now !== before && /^(get|head)$/i.test(original.method || 'get')) return api(original);
+    }
     if (error.response?.status === 401 && !original._retry) {
       original._retry = true;
       try {

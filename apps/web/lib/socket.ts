@@ -1,10 +1,11 @@
 import { io, Socket } from 'socket.io-client';
+import { apiBase, onApiBaseChange, probeApiBase } from './api-base';
 
 let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001', {
+    socket = io(apiBase() || 'http://localhost:3001', {
       autoConnect: false,
       // Função (não objeto) pra reler o token do localStorage a cada (re)conexão
       // — sem isso, um token trocado depois do refresh ou um reconnect após
@@ -21,9 +22,15 @@ export function getSocket(): Socket {
     // depois de qualquer queda (deploy reiniciando o servidor, Wi-Fi, celular em segundo plano), o servidor RECUSA a reconexão com o token velho
     // ("Token inválido ou expirado") — e o socket.io NÃO tenta de novo sozinho nesse caso. A tela só atualizava pelo "a cada 60 s" de segurança.
     // Agora: recusa por token → renova o token e reconecta; servidor derrubou → reconecta; voltou pra aba/app → reconecta se estiver caído.
+    // Caminho trocou (direto ↔ ponte, ver api-base.ts): o mesmo socket reconecta pelo endereço novo — as telas não perdem os .on(...).
+    // O Manager do socket.io relê o uri a cada abertura; o campo é "private" só no tipo.
+    onApiBaseChange((base) => {
+      (s.io as unknown as { uri: string }).uri = base;
+      if (s.connected || s.active) { s.disconnect(); setTimeout(() => s.connect(), 200); }
+    });
     let lastRefresh = 0;
     s.on('connect_error', async (err) => {
-      if (!/token|expirad|inv[aá]lid|auth/i.test(String(err?.message || ''))) return; // queda de rede: o próprio socket.io tenta de novo
+      if (!/token|expirad|inv[aá]lid|auth/i.test(String(err?.message || ''))) { probeApiBase(); return; } // queda de rede: reconfere o caminho; o socket.io tenta de novo sozinho
       if (Date.now() - lastRefresh < 15_000) return;
       lastRefresh = Date.now();
       const { refreshAccessToken } = await import('./api');
