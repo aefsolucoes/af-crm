@@ -89,7 +89,7 @@ export async function avisaCndSeFalta(accountId: string, leadId: string, opts: {
   if (opts.force || faz(st.cndNoteAt) > AVISO_REPETIR_MS) {
     await salva(leadId, { cndNoteAt: new Date().toISOString() });
     const insc = String((cf._docReview && Object.values(cf._docReview as Record<string, any>).map((r: any) => r?.inscricao).find(Boolean)) || '').trim();
-    await note(leadId, `🏦 Santander: falta a CND de IPTU na pasta do Drive. É a A&F que emite: solicitar/emitir no site da prefeitura do município do imóvel (certidão negativa de débitos imobiliários/IPTU)${insc ? `, inscrição ${insc}` : ''}, e subir na subpasta IMOVEL do Drive com o nome "CND IPTU". Sem ela o pedido de vistoria não vai à Letícia.`);
+    await note(leadId, `🏦 Santander: falta a CND de IPTU na pasta do Drive. É a A&F que emite: solicitar/emitir no site da prefeitura do município do imóvel (certidão negativa de débitos imobiliários/IPTU)${insc ? `, inscrição ${insc}` : ''}, e subir na subpasta IMOVEL do Drive com o nome "CND IPTU" — ou pelo botão "Emitir certidões" do card (aba Financiamento): a extensão "Certidões" emite e guarda sozinha (DF pronto; outro município vira link pra emitir à mão). Sem ela o pedido de vistoria não vai à Letícia.`);
     await pushDono(accountId, leadId, '🏦 Falta a CND de IPTU (Santander)', `${lead.name}: solicitar/emitir a CND de IPTU e subir na pasta do Drive`);
   }
   return true;

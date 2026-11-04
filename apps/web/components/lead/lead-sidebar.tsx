@@ -8,6 +8,7 @@ import { cn, formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, iso
 import { LeadCreditAnalysis } from './lead-credit-analysis';
 import { LeadFhAnalysis } from './lead-fh-analysis';
 import { LeadCertidoes } from './lead-certidoes';
+import { LeadCertidoesProcesso } from './lead-certidoes-processo';
 import { LeadItbi } from './lead-itbi';
 import { LeadVistoria, LeadVistoriaSantander, LeadVistoriaCreditas } from './lead-vistoria';
 import { CaixaCardButtons } from './caixa-card-buttons';
@@ -544,6 +545,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
           {expanded && activeTab === 'Financiamento' && <CaixaCardButtons leadId={lead.id} onDone={onRefresh} />}
           {expanded && activeTab === 'Financiamento' && (/habitacional/i.test(lead.pipeline?.department?.name || '') ? <LeadFhAnalysis leadId={lead.id} /> : <LeadCreditAnalysis leadId={lead.id} onChanged={onRefresh} />)}
           {expanded && activeTab === 'Financiamento' && <LeadCertidoes leadId={lead.id} />}
+          {expanded && activeTab === 'Financiamento' && <LeadCertidoesProcesso leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadItbi leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoria leadId={lead.id} proposta={customValues.num_proposta} instituicao={customValues.instituicao} solicitadaEm={(lead as any).customFields?._vistoriaRequestedAt} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoriaSantander leadId={lead.id} />}

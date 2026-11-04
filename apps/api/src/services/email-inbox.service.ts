@@ -543,6 +543,11 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
       textoDoEmail(messageId, conv.content).then((texto) => importShareLinks({ accountId: acc.accountId, leadId, messageId: conv.id, text: texto, io: opts.io }))
         .catch((err: any) => console.warn('[Link compartilhado e-mail] falhou:', err?.message));
     }
+    // Banco pedindo certidões (Fabio 04/11): só SUGERE o botão "Emitir certidões" (nota + push) — a extensão emite quando a equipe clica.
+    if (conv && folder === 'INBOX' && !opts.initial && from && isInstitutionalSender(from.address) && Date.now() - date.getTime() < 48 * 3_600_000) {
+      const { sugerirCertidoesPorEmail } = require('./certidoes-pessoais.service') as typeof import('./certidoes-pessoais.service');
+      await sugerirCertidoesPorEmail(acc.accountId, leadId, `${env.subject || ''}\n${fresh}`).catch((err) => console.warn('[Certidões e-mail] falhou:', err?.message));
+    }
   }
   // Cliente diz POR E-MAIL que não tem interesse → Perdido (Fabio 15/10). Só e-mail novo (não a primeira sincronização) e nunca de banco/sistema.
   if (leadId && row && folder === 'INBOX' && !opts.initial && from && !isInstitutionalSender(from.address) && Date.now() - date.getTime() < 48 * 3_600_000) {
