@@ -1262,6 +1262,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       if (msg.type === 'text' && text) {
         const { maybeScheduleDocsFollowUp } = require('./docs-checker.service') as typeof import('./docs-checker.service');
         maybeScheduleDocsFollowUp(accountId, leadId, text).catch(() => {});
+        // "Me manda msg às 16", "me chama amanhã" em qualquer outra etapa: o CRM chama no horário (Fabio 04/11).
+        (require('./ai-promise.service') as typeof import('./ai-promise.service')).registrarPedidoDoCliente(leadId, text).catch(() => {});
         // Prospecção/Follow Up: o cliente disse quando preenche a proposta → o loop do Follow Up espera a data (Fabio 29/10).
         (require('./follow-loop.service') as typeof import('./follow-loop.service')).maybeSetFollowPrazo(accountId, leadId, text).catch(() => {});
         const { maybeRecheckOwnerAnswer } = require('./docs-checker.service') as typeof import('./docs-checker.service');
@@ -1680,6 +1682,8 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     if (!enviadas) return;
     await prisma.note.create({ data: { leadId, content: `Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, summary: 'a IA respondeu o cliente', channel: 'WHATSAPP' });
+    // A IA prometeu voltar num horário ("te chamo às 16h"): o CRM agenda e cumpre (Fabio 04/11, qualquer etapa). Venda Futura/Sem Retorno com data, Perdido e ligação têm fluxo próprio.
+    (require('./ai-promise.service') as typeof import('./ai-promise.service')).registrarPromessaDaIa(leadId, reply, { pular: !!(resumeOn || markLost || genResult.callRequest || /venda futura|sem retorno/i.test(String(moveToStage || ''))) }).catch((e: any) => console.error('[Retorno combinado]', e?.message));
     console.log(`[WhatsApp] Resposta de IA enviada automaticamente para lead ${leadId}`);
 
     // Mover etapa / marcar Perdido / preencher dados do card — independente
