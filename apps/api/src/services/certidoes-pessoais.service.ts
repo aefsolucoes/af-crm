@@ -28,7 +28,8 @@ export const CERT_NOME: Record<CertTipo, string> = {
   IPTU: 'CND de IPTU do imóvel',
 };
 type Papel = 'COMPRADOR' | 'VENDEDOR';
-export type Pessoa = { nome: string; doc: string; nascimento?: string; papel: Papel; uf?: string; cidade?: string };
+/** `mae` = nome da mãe: o TJDFT exige pra emitir (Julio 04/11) — sem ele a extensão preenche o resto e espera a pessoa digitar. */
+export type Pessoa = { nome: string; doc: string; nascimento?: string; mae?: string; papel: Papel; uf?: string; cidade?: string };
 type Imovel = { inscricao: string; cidade: string; uf: string };
 /** Onde emitir: `adapter` = a extensão sabe preencher; sem ele, só o link (emitir à mão). `partes` = quantas certidões saem (TRF1: cível + criminal). */
 export type Site = { orgao: string; url: string; adapter?: string; extra?: Record<string, string>; partes?: string[] };
@@ -151,14 +152,14 @@ export async function pedirCertidoes(accountId: string, leadId: string, userId: 
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!lead) throw new Error('Card não encontrado');
   const cf = (lead.customFields || {}) as Record<string, any>;
-  const novos: CertJob[] = []; const manuais: string[] = []; const faltas: string[] = []; const pulados: string[] = [];
+  const novos: CertJob[] = []; const manuais: string[] = []; const faltas: string[] = []; const pulados: string[] = []; const avisos: string[] = [];
   const atual = filaDe(cf);
   const jaNaFila = (tipo: CertTipo, chave: string) => atual.some((j) => j.tipo === tipo && ATIVOS.has(j.status) && (dig(j.pessoa?.doc) || dig(j.imovel?.inscricao)) === chave);
   const agora = new Date().toISOString();
   const salvarPessoas: Pessoa[] = [];
 
   for (const raw of body.pessoas || []) {
-    const p: Pessoa = { nome: String(raw.nome || '').trim(), doc: dig(raw.doc), nascimento: String(raw.nascimento || '').trim(), papel: raw.papel === 'VENDEDOR' ? 'VENDEDOR' : 'COMPRADOR', uf: String(raw.uf || '').trim().toUpperCase().slice(0, 2), cidade: String(raw.cidade || '').trim() };
+    const p: Pessoa = { nome: String(raw.nome || '').trim(), doc: dig(raw.doc), nascimento: String(raw.nascimento || '').trim(), mae: String(raw.mae || '').trim(), papel: raw.papel === 'VENDEDOR' ? 'VENDEDOR' : 'COMPRADOR', uf: String(raw.uf || '').trim().toUpperCase().slice(0, 2), cidade: String(raw.cidade || '').trim() };
     const tipos = (raw.tipos || []).filter((t) => TIPOS_PESSOA.includes(t));
     if (!tipos.length) continue;
     if (!p.nome || !docValido(p.doc)) { faltas.push(`${p.nome || 'pessoa sem nome'}: CPF/CNPJ inválido`); continue; }
@@ -166,6 +167,7 @@ export async function pedirCertidoes(accountId: string, leadId: string, userId: 
     for (const tipo of tipos) {
       if (jaNaFila(tipo, p.doc)) { pulados.push(`${CERT_NOME[tipo]} — ${p.nome}`); continue; }
       if (tipo === 'FEDERAL' && p.doc.length === 11 && !nascValido(p.nascimento)) { faltas.push(`${p.nome}: falta a data de nascimento (dd/mm/aaaa) pra ${CERT_NOME.FEDERAL}`); continue; }
+      if (tipo === 'TJ' && p.uf === 'DF' && p.doc.length === 11 && !p.mae) avisos.push(`${p.nome}: o TJDFT pede o NOME DA MÃE — sem ele a extensão preenche o resto e espera alguém digitar na janela (dá pra informar no botão)`);
       const site = siteDe(tipo, p);
       if (!site) { faltas.push(`${p.nome}: falta o ESTADO do endereço pra ${CERT_NOME[tipo]}`); continue; }
       const job: CertJob = { id: crypto.randomUUID(), tipo, status: site.adapter ? 'REQUESTED' : 'MANUAL', pessoa: p, site, requestedAt: agora, requestedBy: userId };
@@ -199,6 +201,7 @@ export async function pedirCertidoes(accountId: string, leadId: string, userId: 
     naFila.length ? `🧾 Certidões na fila da extensão "Certidões" (${naFila.length}):\n${naFila.map((j) => `• ${CERT_NOME[j.tipo]} — ${alvoTxt(j)} (${j.site?.orgao})`).join('\n')}\nCaptcha que aparecer, quem resolve é a pessoa no Chrome (chega push). O PDF vai sozinho pra pasta do Drive.` : '',
     manuais.length ? `✍️ Emitir À MÃO (ainda sem robô pra esse estado/município) e subir na pasta do Drive:\n${manuais.join('\n')}` : '',
     faltas.length ? `⚠️ Não pedi (falta dado — informe no botão "Emitir certidões"):\n${faltas.map((f) => `• ${f}`).join('\n')}` : '',
+    avisos.length ? avisos.map((a) => `ℹ️ ${a}`).join('\n') : '',
   ].filter(Boolean);
   if (linhas.length) await note(leadId, linhas.join('\n\n'), userId);
   if (manuais.length || faltas.length) await pushDono(accountId, leadId, manuais.length ? '✍️ Certidão pra emitir à mão' : '⚠️ Certidão sem dado', `${lead.name}: ${[manuais.length ? `${manuais.length} à mão` : '', faltas.length ? `${faltas.length} sem dado` : ''].filter(Boolean).join(', ')}`);

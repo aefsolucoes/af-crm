@@ -12,7 +12,7 @@ import { maskDateBR } from '@/lib/utils';
 
 type Tipo = 'FEDERAL' | 'JUSTICA_FEDERAL' | 'TJ' | 'TRABALHISTA' | 'FAZENDA' | 'IPTU';
 const TIPOS_PESSOA: Tipo[] = ['FEDERAL', 'JUSTICA_FEDERAL', 'TJ', 'TRABALHISTA', 'FAZENDA'];
-type Pessoa = { nome: string; doc: string; nascimento?: string; papel: 'COMPRADOR' | 'VENDEDOR'; uf?: string; cidade?: string };
+type Pessoa = { nome: string; doc: string; nascimento?: string; mae?: string; papel: 'COMPRADOR' | 'VENDEDOR'; uf?: string; cidade?: string };
 type Job = {
   id: string; tipo: Tipo; status: string; pessoa?: Pessoa; imovel?: { inscricao: string; cidade: string; uf: string };
   site?: { orgao: string; url: string; adapter?: string }; requestedAt: string; erro?: string; detalhe?: string;
@@ -124,6 +124,7 @@ export function LeadCertidoesProcesso({ leadId }: { leadId: string }) {
                   </select>
                   <button onClick={() => setLinhas((cur) => cur.filter((_, k) => k !== i))} className="col-span-1 text-slate-400 hover:text-red-600" title="Tirar esta pessoa"><X className="mx-auto h-3.5 w-3.5" /></button>
                 </div>
+                <input value={l.mae || ''} onChange={(e) => muda(i, { mae: e.target.value })} placeholder="Nome da mãe (o TJDFT pede pra Cíveis e Criminais)" className="mb-1.5 w-full rounded border border-slate-300 px-2 py-1 text-xs" />
                 <div className="flex flex-wrap gap-x-3 gap-y-1">
                   {TIPOS_PESSOA.map((t) => (
                     <label key={t} className="flex items-center gap-1 text-xs text-slate-600">
