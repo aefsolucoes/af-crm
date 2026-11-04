@@ -6,7 +6,9 @@
 //
 // Bump o número da versão sempre que mudar a estratégia de cache aqui —
 // isso invalida o cache antigo no próximo `activate`.
-const CACHE_NAME = 'af-crm-shell-v1';
+// v2 (Fabio 04/11): a v1 guardava também respostas de ERRO (404 de um arquivo durante a publicação/queda da internet) e servia esse
+// erro pra sempre — o funil do FH ficou em branco/travado. Trocar o nome apaga o cache antigo (com os 404) em todos os aparelhos.
+const CACHE_NAME = 'af-crm-shell-v2';
 const PRECACHE_URLS = ['/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -45,8 +47,7 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          if (res.ok) { const copy = res.clone(); caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)); }
           return res;
         })
         .catch(() => caches.match(request).then((cached) => cached || caches.match('/dashboard')))
@@ -58,11 +59,11 @@ self.addEventListener('fetch', (event) => {
   // cachear agressivo (o hash muda a cada build).
   if (url.pathname.startsWith('/_next/static/')) {
     event.respondWith(
-      caches.match(request).then((cached) => cached || fetch(request).then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+      // Só guarda resposta OK: um 404/500 passageiro guardado aqui virava erro permanente (o hash do nome não muda).
+      caches.match(request).then((cached) => (cached && cached.ok ? cached : fetch(request).then((res) => {
+        if (res.ok) { const copy = res.clone(); caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)); }
         return res;
-      }))
+      })))
     );
     return;
   }
@@ -71,11 +72,10 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(request).then((cached) => {
       const fetchPromise = fetch(request).then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        if (res.ok) { const copy = res.clone(); caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)); }
         return res;
       }).catch(() => cached);
-      return cached || fetchPromise;
+      return (cached && cached.ok ? cached : null) || fetchPromise;
     })
   );
 });
