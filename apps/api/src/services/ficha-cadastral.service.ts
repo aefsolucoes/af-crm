@@ -126,7 +126,7 @@ function rendaDeSocio(participantes: any[], leituras: { arquivo: string; leitura
     const doLucro = fontes.map((x) => ({ tipo: 'lucros', empregador: x.fonte || null, cnpj: x.cnpj || null, bruto: r2(x.valor), liquido: r2(x.valor), irRetido: null, cargo: 'PROPRIETARIO DE ESTABELECIMENTO COMERCIAL', admissao: null, competencia: x.ano ? `12/${x.ano}` : null }));
     // PRÓ-LABORE (Fabio 05/11, Flávia: "todo cliente que for dono de empresa e tiver pró-labore… aparece aqui com os dados da empresa dele, deve constar como
     // administrador e pegar esse valor e dividir por 12"): rendimento TRIBUTÁVEL recebido da PRÓPRIA empresa (mesmo CNPJ base de onde vem o lucro) — renda SEPARADA
-    // (a CAIXA cadastra uma pra lucros e outra pro pró-labore; muda só a ocupação: ADMINISTRADOR). Bruto = valor ÷ 12; líquido = (valor − INSS − IR retido) ÷ 12.
+    // (a CAIXA cadastra uma pra lucros e outra pro pró-labore; muda só a ocupação: ADMINISTRADOR). Bruto = líquido = valor ÷ 12, sem descontos (Fabio 05/11, Tarcisio: renda pelo IRPF é o total ÷ 12 — o líquido saía menor, com INSS e IR tirados).
     const raizes = new Set(fontes.map((x) => x.cnpj.slice(0, 8)).filter((r) => r.length === 8));
     const nomesEmp = new Set(fontes.map((x) => norm(x.fonte).split(/\s+/).slice(0, 2).join(' ')).filter(Boolean));
     const prolabore = new Map<string, { fonte: string; cnpj: string; valor: number; inss: number; ir: number; ano: number }>();
@@ -147,7 +147,7 @@ function rendaDeSocio(participantes: any[], leituras: { arquivo: string; leitura
         }
       }
     }
-    const doProlabore = [...prolabore.values()].map((x) => ({ tipo: 'prolabore', empregador: x.fonte || null, cnpj: x.cnpj || null, bruto: r2(x.valor), liquido: r2(Math.max(0, x.valor - x.inss - x.ir)), irRetido: x.ir > 0 ? r2(x.ir) : null, cargo: 'ADMINISTRADOR', admissao: null, competencia: x.ano ? `12/${x.ano}` : null }));
+    const doProlabore = [...prolabore.values()].map((x) => ({ tipo: 'prolabore', empregador: x.fonte || null, cnpj: x.cnpj || null, bruto: r2(x.valor), liquido: r2(x.valor), irRetido: x.ir > 0 ? r2(x.ir) : null, cargo: 'ADMINISTRADOR', admissao: null, competencia: x.ano ? `12/${x.ano}` : null }));
     if (doProlabore.length) console.log(`[Ficha cadastral] pró-labore ${pu(p.nome)}: ${doProlabore.map((x) => `${x.empregador} ${x.bruto}`).join(', ')}`);
     p.contracheques = [...doLucro, ...doProlabore].sort((a, b) => Number(b.bruto) - Number(a.bruto)); // a maior renda primeiro (a 1ª tela da CAIXA leva a profissão dela)
     p.semRenda = false; p.rendaInformal = false;
