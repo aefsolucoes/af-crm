@@ -808,12 +808,18 @@ router.patch('/:id/star', async (req: AuthRequest, res: Response) => {
 router.patch('/:id/ai-auto-reply', async (req: AuthRequest, res: Response) => {
   try {
     const { active } = req.body as { active: boolean };
+    const antes = await prisma.lead.findUnique({ where: { id: req.params.id }, select: { aiAutoReplyActive: true } });
     const lead = await prisma.lead.update({
       where: { id: req.params.id },
       data: { aiAutoReplyActive: active === true },
       select: { id: true, aiAutoReplyActive: true },
     });
     req.app.get('io')?.to(`lead:${lead.id}`).emit('lead_ai_toggled', { leadId: lead.id, active: lead.aiAutoReplyActive });
+    // Ligou a IA (Fabio 05/11): ela lê a conversa inteira e retoma o que ficou parado enquanto estava desligada.
+    if (lead.aiAutoReplyActive && antes && !antes.aiAutoReplyActive) {
+      const { retomarComIa } = require('../services/whatsapp.service') as typeof import('../services/whatsapp.service');
+      retomarComIa(req.user!.accountId, lead.id, req.app.get('io')).catch((e: any) => console.error('[IA ligada] retomar:', e?.message));
+    }
     res.json(lead);
   } catch {
     res.status(500).json({ error: 'Erro ao atualizar o assistente de IA' });

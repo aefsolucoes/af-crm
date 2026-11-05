@@ -1573,6 +1573,38 @@ async function avisaSilencioDaIa(accountId: string, leadId: string, texto: strin
   }).catch(() => {});
 }
 
+/** IA LIGADA NO CARD (Fabio 05/11: "sempre que eu ativar a IA no card do cliente, a IA leia toda a conversa e saiba o que fazer" — Maria Rosa mandou RG e conta de água
+ *  com a IA desligada e nada andou). Ao ligar (botão "Ativar IA"):
+ *  - Aguardando Documentação com arquivo do cliente depois da nossa última mensagem → a conferência lê os documentos e fala com ele (o que falta / problema / completa);
+ *  - o cliente falou por último e ninguém respondeu → a IA responde AGORA, lendo a conversa inteira, como se a mensagem tivesse acabado de chegar (com as ações: rodar
+ *    análise, mudar etapa…). Só arquivos fora da fase de documentos (RG + comprovante pra montar a proposta) ficam com a proposta montada pelos documentos;
+ *  - o que esperava a IA ligada (proposta pelos documentos, avisos) segue sozinho no próximo minuto. Janela de 24 h fechada: só nota (template é com a equipe). */
+export async function retomarComIa(accountId: string, leadId: string, io: any): Promise<void> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { aiAutoReplyActive: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } }, pipeline: { select: { departmentId: true } }, stage: { select: { name: true } } } });
+  if (!lead?.aiAutoReplyActive || (lead.customFields as any)?._autoPaused) return;
+  const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
+  const ultimaIn = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', deleted: false }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
+  if (!ultimaIn) return;
+  const ultimaOut = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', deleted: false }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  const pendentes = await prisma.message.findMany({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', deleted: false, ...(ultimaOut ? { createdAt: { gt: ultimaOut.createdAt } } : {}) }, select: { content: true, attachments: { select: { id: true } } } });
+  if (Date.now() - ultimaIn.createdAt.getTime() >= 23 * 3_600_000) {
+    if (pendentes.length) await nota('🤖 IA ligada: o cliente falou por último, mas a janela de 24 h do WhatsApp já fechou — a IA não consegue responder. Mande um template pra reabrir a conversa.');
+    return;
+  }
+  const fase = (lead.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (/aguardando document/.test(fase) && pendentes.some((m) => m.attachments.length)) {
+    const { checkDocsComplete } = require('./docs-checker.service') as typeof import('./docs-checker.service');
+    const falou = await checkDocsComplete(accountId, leadId, io, { force: true }).catch(() => false);
+    if (falou) { await nota('🤖 IA ligada: li a conversa e os documentos que chegaram com ela desligada, e já falei com o cliente.'); return; }
+  }
+  if (!pendentes.length) return; // a última palavra foi nossa: não há o que responder agora
+  if (pendentes.every((m) => m.attachments.length) && /prospec|follow|sem retorno/.test(fase)) return; // documentos pra montar a proposta: a proposta pelos documentos pergunta o que falta
+  const phone = [lead.contact?.whatsappPhone, lead.contact?.phone].map((x) => (x || '').trim()).find((x) => x && !x.includes('@'));
+  if (!phone) return;
+  await nota('🤖 IA ligada: o cliente tinha falado por último sem resposta — a IA leu a conversa inteira e respondeu.');
+  await maybeAiAutoReplyCloudApi(accountId, leadId, ultimaIn.content || '(mensagem)', phone, io, lead.pipeline?.departmentId);
+}
+
 async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
   try {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
