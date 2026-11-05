@@ -32,9 +32,11 @@ export async function ondeEstaAProposta(leadId: string): Promise<'CONVERSA' | 'C
     where: {
       date: { gte: desde },
       AND: [
-        { OR: [{ subject: { contains: 'roposta', mode: 'insensitive' } }, { textBody: { contains: 'roposta', mode: 'insensitive' } }] },
+        // Só o e-mail de PROPOSTA do site (assunto começa com 🏠 e não é "sem proposta" — o mesmo critério do site-proposal-email); o nosso "Sua simulação…" tem a palavra
+        // "proposta" e dava falso positivo (Fernando 05/11).
+        { subject: { startsWith: '🏠' } },
+        { NOT: { subject: { contains: 'sem proposta', mode: 'insensitive' } } },
         { OR: [{ leadId }, ...quem.map((q) => ({ textBody: { contains: q } }))] },
-        { NOT: { textBody: { contains: 'ainda sem proposta', mode: 'insensitive' } } },
       ],
     },
     select: { id: true },
