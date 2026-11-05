@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeadDetail, FieldDefinition } from '@/types';
 import api from '@/lib/api';
 import { Plus, Tag, Check, X, ExternalLink, Pencil } from 'lucide-react';
-import { cn, formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate, formatMoneyDisplay } from '@/lib/utils';
+import { cn, formatCurrency, maskCPF, maskMoney, maskMoneyInput, maskDateBR, isoToBRDate, formatMoneyDisplay, valorParaEdicao } from '@/lib/utils';
 import { LeadCreditAnalysis } from './lead-credit-analysis';
 import { LeadFhAnalysis } from './lead-fh-analysis';
 import { LeadCertidoes } from './lead-certidoes';
@@ -52,7 +52,7 @@ function FieldEditor({
   onSave: (v: string) => void;
   onCancel: () => void;
 }) {
-  const [val, setVal] = useState(String(value ?? ''));
+  const [val, setVal] = useState(fieldDef.type === 'NUMBER' ? valorParaEdicao(value) : String(value ?? '')); // número abre com máscara (139.403,95), não cru
   // Evita que o blur (disparado quando o campo some da tela ao confirmar/
   // cancelar pelo teclado) salve de novo ou desfaça o cancelamento.
   const suppressBlurRef = useRef(false);

@@ -114,6 +114,15 @@ export function formatMoneyDisplay(value: string | number): string {
  * que o valor acumulado (ex: "1.234" + "5" digitado = "1.2345") seja confundido
  * com um decimal em formato EN e trunque o valor após poucos dígitos.
  */
+/** Valor guardado no card ("139403.95", "300000") → texto de edição com máscara ("139.403,95", "300.000"). Sem isso o campo abria cru e, ao salvar, o ponto
+ *  decimal virava milhar: 139403.95 → 13.940.395 (Fabio 05/11, Fernanda Karita). Texto que já tem vírgula fica como está. */
+export function valorParaEdicao(value: unknown): string {
+  const s = String(value ?? '').trim();
+  if (!s || s.includes(',') || !/^-?\d+(\.\d+)?$/.test(s)) return s;
+  const n = Number(s);
+  return Number.isFinite(n) ? n.toLocaleString('pt-BR', { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 }) : s;
+}
+
 export function maskMoneyInput(value: string): string {
   const cleaned = value.replace(/\./g, '').replace(/[^\d,]/g, '');
   if (!cleaned) return '';

@@ -4,6 +4,7 @@ import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
+import { maskMoneyInput } from '@/lib/utils';
 import { BANKS, type Bank, type BoardLead, type OverrideData } from '@/components/credit/shared';
 
 /* "Ajustar" um cliente já rodado: valores, renda, prazo e inverter titular/2º participante.
@@ -85,16 +86,33 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
   useEffect(() => {
     let vivo = true;
     Promise.all(BANKS.map((b) => api.get('/api/credit-analysis/overrides', { params: { leadId: lead.id, bank: b.key } }).then((r) => [b.key, r.data?.data || null] as const).catch(() => [b.key, lead.overrides?.[b.key] || null] as const)))
-      .then((pares) => { if (!vivo) return; const f = Object.fromEntries(pares) as Partial<Record<Bank, OverrideData | null>>; setFresh(f); setForm(initial(lead, scope, f)); });
+      .then((pares) => { if (!vivo) return; const f = Object.fromEntries(pares) as Partial<Record<Bank, OverrideData | null>>; setFresh(f); setForm((atual) => comMexidos(initial(lead, scope, f), atual)); });
     return () => { vivo = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lead.id]);
-  const set = (k: keyof OverrideData) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  // O que você mexeu continua quando troca o banco (Fabio 05/11: "toda vez que mudo o banco o ajuste retorna para o que estava").
+  const [mexidos, setMexidos] = useState<Set<string>>(new Set());
+  const marca = (...ks: string[]) => setMexidos((m) => new Set([...Array.from(m), ...ks]));
+  const DINHEIRO = new Set(['valorImovel', 'valorEmprestimo', 'renda', 'rendaParticipante']);
+  const set = (k: keyof OverrideData) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = DINHEIRO.has(k) ? maskMoneyInput(e.target.value) : e.target.value.replace(/\D/g, ''); // máscara: 160.000,00 (prazo só dígitos)
+    setForm((f) => ({ ...f, [k]: v }));
+    marca(k);
+  };
+  /** Valores do banco escolhido + o que você já mexeu por cima. */
+  const comMexidos = (base: OverrideData, atual: OverrideData): OverrideData => {
+    const out: OverrideData = { ...base };
+    mexidos.forEach((k) => {
+      if (k === 'quem') { out.inverter = atual.inverter; out.soTitular = atual.soTitular; out.escolhaManual = atual.escolhaManual; }
+      else (out as any)[k] = (atual as any)[k];
+    });
+    return out;
+  };
   const banksOf = (s: Scope): Bank[] => (s === 'ALL' ? BANKS.map((b) => b.key) : [s]);
 
   function pickScope(s: Scope) {
     setScope(s);
-    setForm(initial(lead, s, fresh || undefined));
+    setForm((atual) => comMexidos(initial(lead, s, fresh || undefined), atual));
   }
 
   async function save(clear = false, runAgain = false) {
@@ -152,7 +170,7 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
             <div className="font-medium text-slate-700 mb-1.5">Quem entra na análise</div>
             {quemOpcoes(c.name1, c.name2).map((o) => (
               <label key={o.key} className="flex items-start gap-2 py-1 cursor-pointer">
-                <input type="radio" name="quem" className="mt-1" checked={quemAtual(form) === o.key} onChange={() => setForm((f) => ({ ...f, ...o.data }))} />
+                <input type="radio" name="quem" className="mt-1" checked={quemAtual(form) === o.key} onChange={() => { setForm((f) => ({ ...f, ...o.data })); marca('quem'); }} />
                 <span>
                   <span className="text-slate-700">{o.label}</span>
                   {o.hint && <span className="block text-xs text-slate-400">{o.hint}</span>}
