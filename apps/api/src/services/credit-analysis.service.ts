@@ -368,7 +368,7 @@ async function alignHolderByAge(db: Db, accountId: string, leadId: string, bank:
 export function formatoDaRodada(detail: string | null | undefined): 'AMBOS' | 'SOZINHO' | null {
   const d = String(detail || '');
   if (!/Titular na an[aá]lise:/i.test(d)) return null;
-  return /Titular na an[aá]lise:[^(\n]*\(2[ºo°] participante:/i.test(d) ? 'AMBOS' : 'SOZINHO';
+  return /Titular na an[aá]lise:[^(\n]*\(2[ºo°] (participante|comprador):/i.test(d) ? 'AMBOS' : 'SOZINHO'; // o Itaú do FH escreve "2º comprador"
 }
 
 /** MESMO FORMATO DE QUEM JÁ APROVOU (Fabio 15/10 + 05/11: "rode apenas no mesmo formato de quem já aprovou"): rodada nova num banco que já aprovou vai no MESMO CPF dessa
@@ -380,7 +380,7 @@ async function alignHoldersWithApproval(db: Db, accountId: string, leadId: strin
   const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '');
   const cpf1 = dig(cf.cpf_1), cpf2 = dig(cf.cpf_2);
   if (cpf1.length !== 11 || cpf2.length !== 11 || cpf1 === cpf2) return;
-  for (const bank of banks.filter((b) => BANK_KEYS.includes(b as any))) {
+  for (const bank of banks.filter((b) => EXT_BANK_KEYS.includes(b))) {
     const ap = await db.creditAnalysis.findFirst({ where: { leadId, bank, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, holderCpf: { not: null } }, orderBy: { createdAt: 'desc' }, select: { holderCpf: true, proposalNumber: true, createdAt: true } });
     const holder = dig(ap?.holderCpf);
     if (!ap || (holder !== cpf1 && holder !== cpf2)) continue;
@@ -1523,7 +1523,7 @@ const OVERRIDE_LABEL: Record<string, string> = {
 
 /** Grava (ou apaga, se ficar vazio) o ajuste do cliente nos bancos escolhidos. `merge` soma ao que já existe. */
 export async function setOverrides(db: Db, p: { accountId: string; userId?: string; userName?: string; leadId: string; banks: string[]; data: Record<string, any>; merge?: boolean }) {
-  const banks = p.banks.filter((b) => BANK_KEYS.includes(b));
+  const banks = p.banks.filter((b) => EXT_BANK_KEYS.includes(b)); // HE + FH (Fabio 05/11: quem entra na análise vale também no Financiamento — Bradesco/Santander, Inter, Itaú)
   if (!banks.length) throw new Error('escolha pelo menos um banco');
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
   if (!lead) throw new Error('card não encontrado');

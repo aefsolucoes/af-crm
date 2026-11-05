@@ -266,14 +266,14 @@ export function casadosNaProposta(cf: Cf, proposta: string): boolean {
  *  - NÃO casados → CADA UM SOZINHO: o 1º sozinho e depois o 2º sozinho (o 2º entra assim que o 1º sozinho já foi enviado) — "depois roda cada um sozinho";
  *    1ª rodada que já foi só no 1º (proposta sem o 2º, Creditas que só aceita cônjuge) → o 2º sozinho; CPF do 1º com proposta ativa na Creditas → só o 2º.
  *  Banco com escolha manual da equipe ou já tratado pela regra antiga (_autoP2Banks) fica de fora. Pura (testável). */
-export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[], manuais: string[] = [], casados = false): { bank: string; who: 'P1' | 'P2' | 'INV'; why: string }[] {
+export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[], manuais: string[] = [], casados = false, bancos: string[] = BANKS): { bank: string; who: 'P1' | 'P2' | 'INV'; why: string }[] {
   const p2 = String(cf.participante_2 || '').trim();
   const cpf2 = String(cf.cpf_2 || '').replace(/\D/g, '');
   if (!p2 || cpf2.length < 11) return [];
   const antigos: string[] = Array.isArray(cf._autoP2Banks) ? cf._autoP2Banks : [];
   const sozinho = (cf._autoSozinho || {}) as Record<string, string[]>;
   const todo: { bank: string; who: 'P1' | 'P2' | 'INV'; why: string }[] = [];
-  for (const bank of BANKS) {
+  for (const bank of bancos) {
     if (antigos.includes(bank) || manuais.includes(bank)) continue;
     const rows = analyses.filter((a) => a.bank === bank);
     if (!rows.length || rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // nada rodado ainda, ou ainda rodando
@@ -319,6 +319,51 @@ async function cascadeToSecond(accountId: string) {
       feitos[t.bank] = Array.from(new Set([...(feitos[t.bank] || []), t.who]));
       await saveCf(l.id, { _autoSozinho: feitos });
       await addNote(l.id, `🤖 ${label[t.bank]} ${t.why} → ${t.who === 'INV' ? `invertido: ${p2} como titular e ${p1} como 2º participante` : `rodando só no nome de ${t.who === 'P1' ? p1 : p2}`}. ${out.created} pedido(s) na fila.`);
+    }
+  }
+}
+
+/** Bancos do FH com cascata (Fabio 05/11: "as regras do HE … também se aplica ao Bradesco, Inter, Santander, Itaú"; CAIXA e BRB não entram). Bradesco e Santander vêm
+ *  JUNTOS na linha CREDIMORAR_FH (uma simulação só no Credimorar): inverter ou rodar sozinho vale pros dois. */
+const FH_CASCATA = ['CREDIMORAR_FH', 'INTER_FH', 'ITAU_FH'];
+const FH_LABEL: Record<string, string> = { CREDIMORAR_FH: 'Bradesco/Santander', INTER_FH: 'Inter', ITAU_FH: 'Itaú' };
+const FH_PROPOSTA = (leadId: string) => prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Financiamento Habitacional' }, OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+
+async function planoFh(leadId: string, cf: Cf, leadName: string) {
+  const rows = await prisma.creditAnalysis.findMany({ where: { leadId, bank: { in: FH_CASCATA }, dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, holderName: true } });
+  const ovs = await prisma.creditOverride.findMany({ where: { leadId, bank: { in: FH_CASCATA } }, select: { bank: true, data: true } });
+  const manuais = ovs.filter((o) => (o.data as any)?.escolhaManual === true).map((o) => o.bank);
+  const casados = casadosNaProposta(cf, (await FH_PROPOSTA(leadId))?.content || '');
+  return cascadePlan(cf, leadName, rows, manuais, casados, FH_CASCATA);
+}
+
+/** Ainda falta tentativa da cascata do FH? (o aviso de negativa / fechamento do card espera). */
+export async function fhCascataPendente(leadId: string, cf: Cf, leadName: string): Promise<boolean> {
+  if (cf._autoPaused || !cf._fhAutoStartedAt || cf._optouCaixa?.banco) return false;
+  return (await planoFh(leadId, cf, leadName)).length > 0;
+}
+
+/** 2b) Cascata do FINANCIAMENTO: as mesmas regras do Home Equity nos bancos do FH (menos CAIXA e BRB). */
+async function cascadeFh(accountId: string) {
+  const leads = await prisma.lead.findMany({
+    where: { accountId, status: 'OPEN', archived: false, pipeline: { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } }, creditAnalyses: { some: { bank: { in: FH_CASCATA }, dryRun: false } } },
+    select: { id: true, name: true, customFields: true },
+    take: 80,
+  });
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Cf;
+    if (cf._autoPaused || !cf._fhAutoStartedAt || cf._optouCaixa?.banco) continue; // pausado, FH não iniciado pela automação, ou o cliente optou pela CAIXA/BRB
+    const todo = await planoFh(l.id, cf, l.name);
+    if (!todo.length) continue;
+    const p1 = String(cf.participante_1 || l.name || '').trim(), p2 = String(cf.participante_2 || '').trim();
+    const feitos = { ...((cf._autoSozinho || {}) as Record<string, string[]>) };
+    for (const t of todo) {
+      const data = t.who === 'INV' ? { inverter: true, soTitular: false } : { inverter: t.who === 'P2', soTitular: true };
+      await setOverrides(prisma, { accountId, leadId: l.id, banks: [t.bank], data, merge: true, userName: t.who === 'INV' ? 'Análise automática (casados: invertido)' : 'Análise automática (cada um sozinho)' });
+      const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [t.bank], dryRun: false, force: true });
+      feitos[t.bank] = Array.from(new Set([...(feitos[t.bank] || []), t.who]));
+      await saveCf(l.id, { _autoSozinho: feitos });
+      await addNote(l.id, `🤖 Financiamento ${FH_LABEL[t.bank]} ${t.why} → ${t.who === 'INV' ? `invertido: ${p2} como titular e ${p1} como 2º participante` : `rodando só no nome de ${t.who === 'P1' ? p1 : p2}`}. ${out.created} pedido(s) na fila.`);
     }
   }
 }
@@ -857,6 +902,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       await startNewFhLeads(s.accountId, s.enabledAt!).catch((e) => console.error('[Análise automática] Financiamento:', e?.message));
       { const { processPropostasPorDocumento } = require('./proposta-documento.service') as typeof import('./proposta-documento.service'); await processPropostasPorDocumento(s.accountId, io).catch((e: any) => console.error('[Proposta por documento]', e?.message)); } // cliente que não preencheu: proposta montada com documento + comprovante + respostas (Fabio 02/11)
       { const { processFhNotices } = require('./fh-approval.service') as typeof import('./fh-approval.service'); await processFhNotices(s.accountId, io).catch((e: any) => console.error('[Financiamento] aviso de aprovação:', e?.message)); }
+      await cascadeFh(s.accountId).catch((e) => console.error('[Financiamento] cascata:', e?.message)); // não passou nos dois nomes → casados invertem, os outros sozinhos (Fabio 05/11)
       { const { processFhRejections } = require('./fh-approval.service') as typeof import('./fh-approval.service'); await processFhRejections(s.accountId, io).catch((e: any) => console.error('[Financiamento] negativa:', e?.message)); }
       await cascadeToSecond(s.accountId).catch((e) => console.error('[Análise automática] 2º participante:', e?.message));
       await noticeClients(s.accountId, io).catch((e) => console.error('[Análise automática] aviso:', e?.message));

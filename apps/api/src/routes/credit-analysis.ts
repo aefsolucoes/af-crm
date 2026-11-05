@@ -117,7 +117,7 @@ router.get('/lead/:leadId', async (req: AuthRequest, res: Response) => {
 router.get('/overrides', async (req: AuthRequest, res: Response) => {
   const bank = String(req.query.bank || '').toUpperCase();
   const leadId = String(req.query.leadId || '');
-  if (!leadId || !(BANK_KEYS.includes(bank) || bank === FH_ITAU_BANK)) return res.status(400).json({ error: 'leadId e bank são obrigatórios' }); // só leitura: ITAU_FH nunca tem ajuste gravado (devolve data:null), mas a extensão do Itaú pode perguntar
+  if (!leadId || !EXT_BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'leadId e bank são obrigatórios' }); // só leitura: ITAU_FH nunca tem ajuste gravado (devolve data:null), mas a extensão do Itaú pode perguntar
   try {
     res.json({ data: await getOverride(prisma, { accountId: req.user!.accountId, leadId, bank }) });
   } catch (err) { fail(res, err, 'Erro ao buscar o ajuste'); }
@@ -150,7 +150,7 @@ router.put('/pause', async (req: AuthRequest, res: Response) => {
 // Grava o ajuste (valores, renda, prazo, inverter) nos bancos escolhidos; `merge` soma ao que já existe; vazio apaga.
 router.put('/overrides', async (req: AuthRequest, res: Response) => {
   const b = req.body || {};
-  const banks = Array.isArray(b.banks) ? (b.banks as unknown[]).map((v) => String(v).toUpperCase()).filter((v) => BANK_KEYS.includes(v)) : [];
+  const banks = Array.isArray(b.banks) ? (b.banks as unknown[]).map((v) => String(v).toUpperCase()).filter((v) => EXT_BANK_KEYS.includes(v)) : []; // HE + FH
   if (!b.leadId || !banks.length) return res.status(400).json({ error: 'leadId e pelo menos um banco são obrigatórios' });
   try {
     const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;

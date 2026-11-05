@@ -251,7 +251,7 @@ export async function processFhRejections(accountId: string, io?: any): Promise<
       pipeline: { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } },
       creditAnalyses: { some: { bank: { in: [FH_BANK, 'INTER_FH', 'ITAU_FH'] }, dryRun: false, updatedAt: { gte: new Date(Date.now() - 20 * 86_400_000) } } },
     },
-    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { bank: { in: [FH_BANK, 'INTER_FH', 'ITAU_FH'] }, dryRun: false }, orderBy: { updatedAt: 'desc' }, take: 20, select: { status: true, kind: true, updatedAt: true } } },
+    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { bank: { in: [FH_BANK, 'INTER_FH', 'ITAU_FH'] }, dryRun: false }, orderBy: { updatedAt: 'desc' }, take: 20, select: { status: true, kind: true, updatedAt: true, createdAt: true, bank: true, detail: true, holderName: true } } },
     take: 50,
   });
   const NEG = /reprov|rejeit|recus|negad|n[aã]o aprovad/i;
@@ -261,6 +261,12 @@ export async function processFhRejections(accountId: string, io?: any): Promise<
     if (cf._fhRejTriedAt && Date.now() - new Date(cf._fhRejTriedAt).getTime() < 6 * 3_600_000) continue;
     if (l.creditAnalyses.some((r) => ['REQUESTED', 'RUNNING'].includes(r.status))) continue; // ainda rodando/conferindo
     if (l.creditAnalyses[0] && Date.now() - l.creditAnalyses[0].updatedAt.getTime() < 10 * 60_000) continue; // folga pras conferências
+    // Cascata do FH (Fabio 05/11: não passou nos dois nomes → casados invertem, os outros rodam cada um sozinho): enquanto a rodada nova de algum banco ainda não respondeu
+    // (a mais nova está ENVIADA) ou ainda falta tentativa, NÃO avisa a negativa nem fecha o card.
+    const maisNovas = new Map<string, { status: string }>();
+    for (const r of [...l.creditAnalyses].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) if (!maisNovas.has(r.bank)) maisNovas.set(r.bank, r);
+    if ([...maisNovas.values()].some((r) => r.status === 'SENT')) continue;
+    { const { fhCascataPendente } = require('./credit-auto.service') as typeof import('./credit-auto.service'); if (await fhCascataPendente(l.id, cf, l.name).catch(() => false)) continue; }
     const bancos = Object.entries(parseBancosFinanciamento(cf._fhResumo)).filter(([b, x]) => !/^(CAIXA|BRB)$/.test(b) && !/n[aã]o enviad/i.test(x.status));
     if (!bancos.length || !bancos.every(([, x]) => NEG.test(x.status))) continue;
     if (!l.aiAutoReplyActive) {
