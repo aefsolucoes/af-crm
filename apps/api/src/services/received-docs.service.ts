@@ -42,11 +42,13 @@ Guia para NÃO confundir (aprendido com arquivos reais de clientes — Fabio 19/
 Se for outro documento, use um nome curto que o descreva (até 4 palavras).
 Depois do nome do documento, coloque " | " e o nome completo do titular como aparece no documento (a pessoa a quem ele pertence). Se não aparecer nome de pessoa, escreva só o nome do documento.
 Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
+SÓ MATRICULA DO IMOVEL ou CERTIDAO DE ONUS em FOTO/imagem de UMA folha: depois do titular coloque mais um " | " com o número da matrícula e a folha impressos no papel, no formato "MAT <número> FICHA <número da ficha/folha>" e " VERSO" quando for o verso (o verso costuma dizer "verso"/"continuação" ou não ter o cabeçalho da ficha). Folha que não dá pra ler: "MAT <número> FICHA ?". Ex.: "MATRICULA DO IMOVEL | JOAO DA SILVA | MAT 26027 FICHA 2 VERSO". Sem titular: "MATRICULA DO IMOVEL |  | MAT 26027 FICHA 1".
 Se NÃO for documento (foto qualquer, selfie, figurinha, print de conversa), responda IGNORAR.`;
 
 type AttachmentForVision = { id: string; driveFileId: string | null; data?: Uint8Array | null; mimeType: string; fileName?: string | null };
 
-export interface DocInfo { type: string; holder?: string; protegido?: boolean }
+/** `folha`: SÓ foto de matrícula/ônus — "MAT 26027 FICHA 2 VERSO" (Fabio 05/11: nomear as folhas PAG 1, 2, 3…). */
+export interface DocInfo { type: string; holder?: string; protegido?: boolean; folha?: string }
 
 const clean = (t: string, max: number) =>
   t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase().slice(0, max);
@@ -154,13 +156,16 @@ export async function classifyDocument(accountId: string, att: AttachmentForVisi
   }
   const data = (await res.json()) as { content: { type: string; text?: string }[] };
   const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').split('\n').map((l) => l.trim()).find((l) => l) || '';
-  const [typePart, holderPart] = text.split('|');
+  const [typePart, holderPart, folhaPart] = text.split('|');
   const type = clean(typePart || '', 40);
   if (!type) return undefined;
   if (type === 'IGNORAR') return null;
   const holder = clean(holderPart || '', 60);
-  return holder ? { type, holder } : { type };
+  const folha = isImage && ehMatriculaTipo(type) ? (clean(folhaPart || '', 40) || 'FICHA ?') : '';
+  return { type, ...(holder ? { holder } : {}), ...(folha ? { folha } : {}) };
 }
+
+export const ehMatriculaTipo = (t: string) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(String(t || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
 
 /** Palpite do tipo de documento pelo NOME do arquivo (só pra anotar na pasta quando o arquivo não abre). */
 export function chuteTipoPeloNome(fileName: string): string {
@@ -228,7 +233,9 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
   let changed = false;
   for (const att of atts) {
     const relerProtegido = String(cache[att.id] || '').startsWith('PROTEGIDO|') && !!protAntes[att.id] && !protAntes[att.id].relido;
-    if (cache[att.id] && !relerProtegido) continue;
+    // Foto de matrícula/ônus lida antes da regra das folhas (05/11): relê 1x pra saber a folha.
+    const relerFolha = /^image\//.test(att.mimeType) && ehMatriculaTipo(String(cache[att.id] || '').split('|')[0]) && String(cache[att.id] || '').split('|').length < 3;
+    if (cache[att.id] && !relerProtegido && !relerFolha) continue;
     const info = await classifyDocument(accountId, att).catch(() => undefined);
     if (relerProtegido) {
       relidos.set(att.id, info && !info.protegido ? info : null);
@@ -236,7 +243,8 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
       if (!info || info.protegido) continue;
     }
     if (info === undefined) continue;
-    cache[att.id] = info === null ? 'IGNORAR' : `${info.type}|${info.holder || ''}`;
+    if (relerFolha && (!info || !ehMatriculaTipo(info.type))) { cache[att.id] = `${String(cache[att.id]).split('|').slice(0, 2).join('|')}|FICHA ?`; changed = true; continue; } // releitura deu outro tipo: mantém a classificação de antes
+    cache[att.id] = info === null ? 'IGNORAR' : `${info.type}|${info.holder || ''}${info.folha ? `|${info.folha}` : ''}`;
     changed = true;
     if (info && info.protegido) {
       // Arquivo que não abre (senha): vai pro card pra a IA PERGUNTAR ao cliente o que é e pra pasta do Drive sair como "VERIFICAR - …" (Fabio 21/10: "a IA pergunta ao cliente e anota o nome do documento na pasta, depois eu verifico").
@@ -275,8 +283,8 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
   const out: Record<string, DocInfo | null> = {};
   for (const [id, v] of Object.entries(cache)) {
     if (v === 'IGNORAR') { out[id] = null; continue; }
-    const [type, holder] = v.split('|');
-    out[id] = holder ? { type, holder } : { type };
+    const [type, holder, folha] = v.split('|');
+    out[id] = { type, ...(holder ? { holder } : {}), ...(folha ? { folha } : {}) };
   }
   return out;
 }
@@ -325,6 +333,30 @@ async function organizeLead(lead: {
     return;
   }
 
+  // FOLHAS da matrícula/ônus em FOTO (Fabio 05/11: "identificar as folhas da certidão de ônus e nomeá-las como pag 1, 2, 3 quando vier em fotos"): por matrícula+folha
+  // vale a foto mais NOVA, nomeada "… - PAG n" na ordem das folhas (ficha 1, verso, ficha 2…); a foto antiga da mesma folha vai pra DESNECESSARIO.
+  const paginas = new Map<string, { nome: string; desnecessario: boolean }>();
+  {
+    const chave = (f: string) => { const mat = ((/MAT\s*([\d.]+)/i.exec(f) || [])[1] || '').replace(/\D/g, ''); const n = Number((/FICHA\s*(\d+)/i.exec(f) || [])[1]); return { mat, ordem: n > 0 ? n * 2 + (/VERSO/i.test(f) ? 1 : 0) : 0 }; };
+    const fotos = attachments.filter((a) => /^image\//.test(a.mimeType) && docInfo[a.id] && ehMatriculaTipo(docInfo[a.id]!.type) && docInfo[a.id]!.folha);
+    const mats = new Set(fotos.map((a) => chave(docInfo[a.id]!.folha!).mat).filter(Boolean));
+    const grupos = new Map<string, typeof fotos>();
+    for (const a of fotos) { const k = `${docLabel(docInfo[a.id]!)}|${mats.size > 1 ? chave(docInfo[a.id]!.folha!).mat : ''}`; grupos.set(k, [...(grupos.get(k) || []), a]); }
+    for (const [k, lista] of grupos) {
+      const [label, mat] = k.split('|');
+      const base = `${label}${mat ? ` ${mat}` : ''}`;
+      const porOrdem = new Map<number, string[]>(); // ordem → ids (do mais antigo pro mais novo)
+      for (const a of lista) { const o = chave(docInfo[a.id]!.folha!).ordem; if (o) porOrdem.set(o, [...(porOrdem.get(o) || []), a.id]); }
+      [...porOrdem.keys()].sort((x, y) => x - y).forEach((o, i) => {
+        const ids = porOrdem.get(o)!;
+        ids.forEach((id, j) => paginas.set(id, j === ids.length - 1 ? { nome: `${base} - PAG ${i + 1}`, desnecessario: false } : { nome: `${base} - PAG ${i + 1} (FOTO ANTERIOR)`, desnecessario: true }));
+      });
+      for (const a of lista) if (!paginas.has(a.id)) paginas.set(a.id, { nome: `${base} - FOLHA NAO IDENTIFICADA`, desnecessario: false });
+    }
+  }
+  // Documento que não vamos usar (Fabio 05/11): recibo de taxa/emolumento, requerimento, comprovante de pagamento, protocolo — vai pra DESNECESSARIO.
+  const SEM_USO = /^(RECIBO(?! (DE ENTREGA|IMPOSTO|DO IMPOSTO|IR\b|IRPF))|REQUERIMENTO|COMPROVANTE DE (PAGAMENTO|TRANSFERENCIA|PIX)|PROTOCOLO|CONSULTA DE PROTOCOLO)/;
+
   const clientFolderName = folderNameFor(lead);
   const result = await organizeReceivedDocsFolder(lead.accountId, {
     files,
@@ -336,11 +368,15 @@ async function organizeLead(lead: {
       if (prot) return `VERIFICAR - ${prot.guess || 'DOCUMENTO PROTEGIDO'} (${String(prot.fileName || f.fileName).replace(/\.[a-z0-9]{2,4}$/i, '').slice(0, 40)})`;
       const info = docInfo[attId];
       if (info === null) return null;
+      if (paginas.has(attId)) return paginas.get(attId)!.nome;
       return info ? docLabel(info) : '';
     },
     folderFor: async (f) => {
       if (simulationDriveIds.has(f.driveFileId) || SIMULATION_FILE_RE.test(f.fileName)) return 'RAIZ';
-      const info = docInfo[attIdByDriveId.get(f.driveFileId) || ''];
+      const attId0 = attIdByDriveId.get(f.driveFileId) || '';
+      if (paginas.get(attId0)?.desnecessario) return 'DESNECESSARIO';
+      const info = docInfo[attId0];
+      if (info && SEM_USO.test(info.type)) return 'DESNECESSARIO';
       if (!info) return 'COMPRADOR';
       if (/SIMULACAO/.test(info.type) || /^SALDO DEVEDOR/.test(info.type) || isDescritivoParcela(info.type)) return 'RAIZ'; // simulação, print do saldo devedor e descritivo da parcela: direto na pasta do cliente
       if (isPropertyDocType(info.type)) return 'IMOVEL';
@@ -355,14 +391,14 @@ async function organizeLead(lead: {
     `📁 Pasta organizada no Drive: ${clientFolderName} (em LEADS ATIVOS)`,
     result.folderUrl,
     '',
-    ...(['COMPRADOR', 'VENDEDOR', 'IMOVEL', 'RAIZ'] as const).flatMap((f) => {
+    ...(['COMPRADOR', 'VENDEDOR', 'IMOVEL', 'RAIZ', 'DESNECESSARIO'] as const).flatMap((f) => {
       const list = result.named.filter((n) => n.folder === f);
       if (!list.length) return [];
-      const title = f === 'RAIZ' ? `Simulações na pasta principal (${list.length}):` : `Subpasta ${f} (${list.length}):`;
+      const title = f === 'RAIZ' ? `Simulações na pasta principal (${list.length}):` : f === 'DESNECESSARIO' ? `Subpasta DESNECESSARIO — repetidos e o que não vamos usar (${list.length}):` : `Subpasta ${f} (${list.length}):`;
       return ['', title, ...list.map((n) => `• ${n.to}`)];
     }),
   ];
-  if (result.ignored.length) lines.push('', `Não são documentos, ficaram fora da COMPRADOR: ${result.ignored.join(', ')}`);
+  if (result.ignored.length) lines.push('', `Não são documentos (foram pra DESNECESSARIO): ${result.ignored.join(', ')}`);
   await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: lines.join('\n') } });
   logActivity({
     accountId: lead.accountId, userId: null, userName: 'Organizador de documentos', action: 'lead_edited', leadId: lead.id, leadName: lead.name,

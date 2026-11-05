@@ -397,7 +397,8 @@ export interface ReceivedDocFile { driveFileId: string; fileName: string; mimeTy
  * pra "LEADS ATIVOS" do setor. Só move e renomeia — nunca apaga nada, e o
  * driveFileId dos anexos continua valendo (o Drive mantém o id ao mover).
  */
-export type DocFolder = 'COMPRADOR' | 'IMOVEL' | 'VENDEDOR' | 'RAIZ';
+/** DESNECESSARIO (Fabio 05/11): documento repetido, que não é documento ou que não vamos usar — sai das outras pastas (e da lista de anexos da vistoria). */
+export type DocFolder = 'COMPRADOR' | 'IMOVEL' | 'VENDEDOR' | 'RAIZ' | 'DESNECESSARIO';
 
 export async function organizeReceivedDocsFolder(accountId: string, params: {
   files: ReceivedDocFile[];
@@ -412,11 +413,11 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   const drive = await getDrive(accountId);
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
 
-  const withParents: { file: ReceivedDocFile; parents: string[] }[] = [];
+  const withParents: { file: ReceivedDocFile; parents: string[]; md5: string }[] = [];
   for (const f of params.files) {
     try {
-      const r = await drive.files.get({ fileId: f.driveFileId, fields: 'id, parents, trashed', supportsAllDrives: true });
-      if (!r.data.trashed) withParents.push({ file: f, parents: r.data.parents || [] });
+      const r = await drive.files.get({ fileId: f.driveFileId, fields: 'id, parents, trashed, md5Checksum', supportsAllDrives: true });
+      if (!r.data.trashed) withParents.push({ file: f, parents: r.data.parents || [], md5: r.data.md5Checksum || '' });
     } catch {
       // arquivo apagado/sem acesso — segue com os outros
     }
@@ -429,7 +430,7 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   let clientFolderId = [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   if (clientFolderId) {
     const meta = await drive.files.get({ fileId: clientFolderId, fields: 'id, name, parents', supportsAllDrives: true });
-    if (/^(comprador|imovel|imóvel|vendedor)$/i.test((meta.data.name || '').trim())) clientFolderId = meta.data.parents?.[0] || null;
+    if (/^(comprador|imovel|imóvel|vendedor|desnecessario|desnecessário)$/i.test((meta.data.name || '').trim())) clientFolderId = meta.data.parents?.[0] || null;
   }
   // Anexos soltos direto na pasta técnica (ou na raiz): cria a pasta do
   // cliente do zero em vez de renomear a pasta de todo mundo.
@@ -472,10 +473,15 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   const used = new Map<string, number>();
   const named: { from: string; to: string; folder: DocFolder }[] = [];
   const ignored: string[] = [];
-  for (const { file, parents } of withParents) {
-    const folder: DocFolder = params.folderFor ? await params.folderFor(file).catch(() => 'COMPRADOR' as DocFolder) : 'COMPRADOR';
-    const base = folder === 'RAIZ' ? '' : await params.nameFor(file).catch(() => undefined);
-    if (base === null) { ignored.push(file.fileName); continue; }
+  // Mesmo arquivo mandado de novo (conteúdo idêntico — md5 do Drive): vale o mais NOVO; os de antes vão pra DESNECESSARIO (Fabio 05/11). `files` vem do mais antigo pro mais novo.
+  const ultimoPorMd5 = new Map<string, string>();
+  for (const w of withParents) if (w.md5) ultimoPorMd5.set(w.md5, w.file.driveFileId);
+  for (const { file, parents, md5 } of withParents) {
+    let folder: DocFolder = params.folderFor ? await params.folderFor(file).catch(() => 'COMPRADOR' as DocFolder) : 'COMPRADOR';
+    let base = folder === 'RAIZ' ? '' : await params.nameFor(file).catch(() => undefined);
+    const repetido = !!md5 && ultimoPorMd5.get(md5) !== file.driveFileId && folder !== 'RAIZ';
+    if (base === null) { ignored.push(file.fileName); folder = 'DESNECESSARIO'; base = ''; } // não é documento: sai das pastas de documento, nome original
+    else if (repetido) { folder = 'DESNECESSARIO'; base = base ? `REPETIDO - ${base}` : base; }
     const ext = (file.fileName.match(/\.[a-z0-9]{2,5}$/i)?.[0] || '').toLowerCase();
     let name = file.fileName;
     if (base) {

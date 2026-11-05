@@ -140,6 +140,9 @@ export async function vistoriaCreditasPreview(accountId: string, leadId: string)
   const onus = (cert && comTipo.find((x) => x.f.id === cert.driveFileId)) || primeiro('ONUS');
   const iptu = primeiro('CAPA_IPTU') || primeiro('IPTU_OUTRO') || primeiro('GUIA_IPTU');
   const marcados = new Set([onus?.f.id, iptu?.f.id].filter(Boolean) as string[]);
+  // Matrícula/ônus em FOTOS separadas por folha ("… - PAG 1", "- PAG 2"… — Fabio 05/11): vão TODAS as folhas da mesma matrícula.
+  const pag = onus ? /^(.*) - PAG \d+/i.exec(onus.f.name.replace(/\.\w+$/, '')) : null;
+  if (pag) for (const x of comTipo) if (x.f.name.toUpperCase().startsWith(`${pag[1].toUpperCase()} - PAG `) && !/FOTO ANTERIOR/i.test(x.f.name)) marcados.add(x.f.id);
   const anexos = doImovel.map((f) => ({ id: f.id, name: f.path === 'conversa' && f.tipo ? `${f.tipo} (${f.name})` : f.name, path: f.path, size: f.size, checked: marcados.has(f.id) }));
 
   const linhas = [

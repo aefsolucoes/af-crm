@@ -210,6 +210,7 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
                 <label key={a.id} className="flex items-center gap-2 py-0.5 text-xs text-slate-600">
                   <input type="checkbox" checked={sel.includes(a.id)} onChange={(e) => setSel((cur) => (e.target.checked ? [...cur, a.id] : cur.filter((x) => x !== a.id)))} />
                   <span>{a.name} <span className="text-slate-400">({Math.max(1, Math.round(a.size / 1024))} KB)</span></span>
+                  <AbrirArquivo a={a} />
                 </label>
               ))}
             </div>
@@ -388,6 +389,7 @@ export function LeadVistoriaCreditas({ leadId }: { leadId: string }) {
                 <label key={a.id} className="flex items-center gap-2 py-0.5 text-xs text-slate-600">
                   <input type="checkbox" checked={sel.includes(a.id)} onChange={(e) => setSel((cur) => (e.target.checked ? [...cur, a.id] : cur.filter((x) => x !== a.id)))} />
                   <span>{a.name}{a.size ? <span className="text-slate-400"> ({Math.max(1, Math.round(a.size / 1024))} KB)</span> : null}</span>
+                  <AbrirArquivo a={a} />
                 </label>
               ))}
             </div>
@@ -401,5 +403,13 @@ export function LeadVistoriaCreditas({ leadId }: { leadId: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** "abrir" ao lado de cada anexo (Fabio 05/11: "não consigo visualizar o documento para saber o que é") — arquivo do Drive abre numa aba nova. */
+function AbrirArquivo({ a }: { a: { id: string; path: string } }) {
+  if (a.path === 'conversa') return null; // anexo da conversa: está na própria Inbox
+  return (
+    <a href={`https://drive.google.com/file/d/${a.id}/view`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="ml-auto shrink-0 text-af-mid hover:underline" title="Abrir o arquivo no Drive">abrir</a>
   );
 }
