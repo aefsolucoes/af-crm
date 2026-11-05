@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { createRequests, setOverrides, parseHolder, loginNeededFor } from './credit-analysis.service';
+import { createRequests, setOverrides, loginNeededFor, formatoDaRodada } from './credit-analysis.service';
 import { requestBankEmail } from './ai-team-question.service';
 import { inNoticeWindow, sendApprovalNoticeNow, sendEarlyStatusNotice, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText, aprovadasSemNumeros } from './approval-notice.service';
 
@@ -248,39 +248,36 @@ async function startNewFhLeads(accountId: string, enabledAt: Date) {
   }
 }
 
-/** Em quais bancos rodar no 2º participante: o 1º foi REPROVADO, APROVADO A MENOR ou já foi ENVIADO e o resultado está pendente (roda sem esperar), e o 2º ainda não foi tentado nem está rodando.
- *  Sem 2º participante (nome e CPF no card), nada. Pura (testável). */
-export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[]): { bank: string; why: string }[] {
+/** CADA UM SOZINHO (Fabio 05/11: "ele pode aprovar primeiro no nome dos dois, sendo casado ou não, depois roda cada um sozinho, caso não consiga aprovação no nome dos dois").
+ *  A 1ª rodada vai nos dois nomes (o 2º participante do card entra). Num banco em que ela foi REPROVADA ou APROVADA A MENOR: roda o 1º participante SOZINHO e depois o 2º
+ *  SOZINHO (o 2º entra assim que o 1º sozinho já foi enviado). 1ª rodada que já foi só no 1º (proposta sem o 2º, Creditas que só aceita cônjuge): roda o 2º sozinho.
+ *  CPF do 1º com proposta ativa na Creditas: só o 2º. Banco com escolha manual da equipe ou já tratado pela regra antiga (_autoP2Banks) fica de fora. Pura (testável). */
+export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[], manuais: string[] = []): { bank: string; who: 'P1' | 'P2'; why: string }[] {
   const p2 = String(cf.participante_2 || '').trim();
   const cpf2 = String(cf.cpf_2 || '').replace(/\D/g, '');
   if (!p2 || cpf2.length < 11) return [];
-  const main = norm(String(cf.participante_1 || leadName));
-  const tried: string[] = Array.isArray(cf._autoP2Banks) ? cf._autoP2Banks : [];
-  const isSecond = (a: { holderName: string | null; detail: string | null }) => { const h = a.holderName || parseHolder(a.detail); return !!h && norm(h) !== main; };
-  const todo: { bank: string; why: string }[] = [];
+  const antigos: string[] = Array.isArray(cf._autoP2Banks) ? cf._autoP2Banks : [];
+  const sozinho = (cf._autoSozinho || {}) as Record<string, string[]>;
+  const todo: { bank: string; who: 'P1' | 'P2'; why: string }[] = [];
   for (const bank of BANKS) {
-    if (tried.includes(bank)) continue;
+    if (antigos.includes(bank) || manuais.includes(bank)) continue;
     const rows = analyses.filter((a) => a.bank === bank);
-    if (rows.some(isSecond)) continue; // já foi rodado no 2º
-    if (rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // ainda rodando
+    if (!rows.length || rows.some((a) => a.kind === 'RUN' && ['REQUESTED', 'RUNNING'].includes(a.status))) continue; // nada rodado ainda, ou ainda rodando
+    const feitos = sozinho[bank] || [];
     const decided = [...rows].reverse().find((a) => ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(a.status));
-    // Falha que é SÓ DA PESSOA (Fabio 26/10: "quando não aprovar no Creditas pelo 1º nome, tentar pelo 2º participante"): o CPF do 1º já tem proposta ativa na Creditas e ela não aparece na lista — não rodou,
-    // mas isso não vale pro 2º participante (outro CPF). Regra do imóvel (mínimo, terreno, saldo) continua NÃO entrando: vale igual pro 2º.
-    if (!decided && rows.some((a) => a.kind === 'RUN' && a.status === 'FAILED' && CREDITAS_CPF_ATIVO.test(a.detail || '') && !isSecond(a))) { todo.push({ bank, why: 'CPF já tem proposta ativa na Creditas' }); continue; }
-    if (decided) {
-      if (decided.status === 'REJECTED') todo.push({ bank, why: 'reprovado' });
-      else if (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || '')) todo.push({ bank, why: 'aprovado a menor' });
-      continue; // aprovado no valor total: não precisa do 2º
-    }
-    // SEM esperar a resposta do 1º (Fabio 15/10: "roda 1 e depois roda outro, sem aguardar a resposta do primeiro"): o 1º já foi ENVIADO ao banco e o resultado demora
-    // (Creditas leva horas) — o 2º participante entra na fila agora, atrás dele. Falha por regra do imóvel (mínimo, terreno, saldo devedor) NÃO entra: vale igual pro 2º.
-    const ultimaRodada = [...rows].reverse().find((a) => a.kind === 'RUN');
-    if (ultimaRodada && ultimaRodada.status === 'SENT') todo.push({ bank, why: 'aguardando o resultado (o 2º roda sem esperar)' });
+    const cpfAtivo = !decided && rows.some((a) => a.kind === 'RUN' && a.status === 'FAILED' && CREDITAS_CPF_ATIVO.test(a.detail || ''));
+    const falhou = cpfAtivo || (decided && (decided.status === 'REJECTED' || (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || ''))));
+    if (!falhou) continue; // aprovado no valor total (ou ainda sem resposta): não precisa
+    const why = cpfAtivo ? 'CPF do 1º já tem proposta ativa na Creditas' : decided!.status === 'REJECTED' ? 'reprovado' : 'aprovado a menor';
+    const primeira = rows.find((a) => a.kind === 'RUN' && /Titular na an[aá]lise:/i.test(a.detail || ''));
+    const nosDois = formatoDaRodada(primeira?.detail) === 'AMBOS';
+    if (nosDois && !cpfAtivo && !feitos.includes('P1')) { todo.push({ bank, who: 'P1', why: `${why} nos dois nomes` }); continue; }
+    if (!feitos.includes('P2')) todo.push({ bank, who: 'P2', why: nosDois ? `${why} nos dois nomes e só no 1º` : why });
   }
   return todo;
 }
 
-/** 2) Cascata: 1º participante reprovado ou aprovado a menor num banco → roda nesse banco no 2º participante (1 vez por banco). */
+/** 2) Cascata: reprovado (ou a menor) nos dois nomes → cada um sozinho, nesse banco (1 vez cada). */
 async function cascadeToSecond(accountId: string) {
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, creditAnalyses: { some: {} } },
@@ -291,16 +288,20 @@ async function cascadeToSecond(accountId: string) {
     const cf = (l.customFields || {}) as Cf;
     if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     if (!cf._autoStartedAt) continue;
-    const p2 = String(cf.participante_2 || '').trim();
-    const todo = cascadePlan(cf, l.name, l.creditAnalyses);
-    const tried: string[] = Array.isArray(cf._autoP2Banks) ? cf._autoP2Banks : [];
+    const ovs = await prisma.creditOverride.findMany({ where: { leadId: l.id }, select: { bank: true, data: true } });
+    const manuais = ovs.filter((o) => (o.data as any)?.escolhaManual === true).map((o) => o.bank);
+    const todo = cascadePlan(cf, l.name, l.creditAnalyses, manuais);
     if (!todo.length) continue;
-    const banks = todo.map((t) => t.bank);
-    await setOverrides(prisma, { accountId, leadId: l.id, banks, data: { inverter: true }, merge: true, userName: 'Análise automática' });
-    const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks, dryRun: false, force: true });
-    await saveCf(l.id, { _autoP2Banks: Array.from(new Set([...tried, ...banks])) });
+    const p1 = String(cf.participante_1 || l.name || '').trim(), p2 = String(cf.participante_2 || '').trim();
     const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
-    await addNote(l.id, `🤖 ${todo.map((t) => `${label[t.bank]} (1º participante ${t.why})`).join(', ')} → rodando no 2º participante, ${p2}. ${out.created} pedido(s) na fila.`);
+    const feitos = { ...((cf._autoSozinho || {}) as Record<string, string[]>) };
+    for (const t of todo) {
+      await setOverrides(prisma, { accountId, leadId: l.id, banks: [t.bank], data: { inverter: t.who === 'P2', soTitular: true }, merge: true, userName: 'Análise automática (cada um sozinho)' });
+      const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [t.bank], dryRun: false, force: true });
+      feitos[t.bank] = Array.from(new Set([...(feitos[t.bank] || []), t.who]));
+      await saveCf(l.id, { _autoSozinho: feitos });
+      await addNote(l.id, `🤖 ${label[t.bank]} ${t.why} → rodando só no nome de ${t.who === 'P1' ? p1 : p2}. ${out.created} pedido(s) na fila.`);
+    }
   }
 }
 

@@ -363,36 +363,34 @@ async function alignHolderByAge(db: Db, accountId: string, leadId: string, bank:
   await setOverrides(db, { accountId, leadId, banks: [bank], data: { inverter: querInvertido, soTitular }, merge: true, userName: 'Análise automática (idade)' }).catch(() => {});
 }
 
-/** Casados (Fabio 05/11: "apenas informar o 2º participante se forem casados"): a relação do 2º participante na proposta (cônjuge/companheiro), ou, sem ela, o estado civil de quem
- *  aprovou (casado/união estável). Pura (testável). */
-export function participantesCasados(relacao: string, estadoCivilTitular: string): boolean {
-  const n = (v: string) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  const r = n(relacao);
-  if (r.trim()) return /conjuge|companheir|espos|marido|mulher/.test(r);
-  return /^casad|uniao estavel/.test(n(estadoCivilTitular).trim());
+/** Formato da rodada (Fabio 05/11): as extensões gravam "Titular na análise: X (2º participante: Y)" quando os dois entram e "Titular na análise: X." quando é um só.
+ *  null = não dá pra saber. Pura (testável). */
+export function formatoDaRodada(detail: string | null | undefined): 'AMBOS' | 'SOZINHO' | null {
+  const d = String(detail || '');
+  if (!/Titular na an[aá]lise:/i.test(d)) return null;
+  return /Titular na an[aá]lise:[^(\n]*\(2[ºo°] participante:/i.test(d) ? 'AMBOS' : 'SOZINHO';
 }
 
-/** MESMO FORMATO DE QUEM JÁ APROVOU (Fabio 15/10 + 05/11): toda rodada nova de um cliente que já tem aprovação vai no MESMO CPF dessa aprovação — e SÓ no nome dele
- *  ("não precisa rodar o crédito de todo mundo novamente… rodar apenas no nome dela"), a menos que o outro participante seja o CÔNJUGE. Banco sem aprovação própria segue a
- *  aprovação mais recente de outro banco. Escolha manual da equipe (botão de um participante / "Ajustar") vale sempre. Só escreve (e anota) quando muda. */
+/** MESMO FORMATO DE QUEM JÁ APROVOU (Fabio 15/10 + 05/11: "rode apenas no mesmo formato de quem já aprovou"): rodada nova num banco que já aprovou vai no MESMO CPF dessa
+ *  aprovação e do mesmo jeito — aprovou nos dois nomes, roda nos dois; aprovou só um, roda só ele. O formato sai da rodada que deu a aprovação (mesmo nº de proposta, senão a
+ *  última antes dela); sem saber, mantém o que está. Escolha manual da equipe (botão de um participante / "Ajustar") vale sempre. Só escreve (e anota) quando muda. */
 async function alignHoldersWithApproval(db: Db, accountId: string, leadId: string, banks: string[]): Promise<void> {
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
   const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '');
   const cpf1 = dig(cf.cpf_1), cpf2 = dig(cf.cpf_2);
   if (cpf1.length !== 11 || cpf2.length !== 11 || cpf1 === cpf2) return;
-  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, holderCpf: { not: null } }, orderBy: { createdAt: 'desc' }, select: { bank: true, holderCpf: true } });
-  if (!aprovadas.length) return;
-  const prop = await db.message.findFirst({ where: { leadId, direction: 'INBOUND', OR: [{ content: { contains: 'Proposta preenchida no site' } }, { content: { contains: 'Proposta manual' } }, { content: { contains: 'PROPOSTA RECEBIDA' } }] }, orderBy: { createdAt: 'desc' }, select: { content: true } });
-  const bloco2 = String(prop?.content || '').split(/2[ºo°]\s*PARTICIPANTE/i)[1] || '';
-  const relacao = /rela[çc][ãa]o[^:\n]*:\s*([^\n]+)/i.exec(bloco2)?.[1] || '';
   for (const bank of banks.filter((b) => BANK_KEYS.includes(b as any))) {
-    const holder = dig((aprovadas.find((a) => a.bank === bank) || aprovadas[0]).holderCpf);
-    if (holder !== cpf1 && holder !== cpf2) continue;
+    const ap = await db.creditAnalysis.findFirst({ where: { leadId, bank, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, holderCpf: { not: null } }, orderBy: { createdAt: 'desc' }, select: { holderCpf: true, proposalNumber: true, createdAt: true } });
+    const holder = dig(ap?.holderCpf);
+    if (!ap || (holder !== cpf1 && holder !== cpf2)) continue;
     const ov = await db.creditOverride.findFirst({ where: { leadId, bank }, select: { data: true } });
     if ((ov?.data as any)?.escolhaManual === true) continue;
+    const runs = await db.creditAnalysis.findMany({ where: { leadId, bank, dryRun: false, kind: 'RUN', detail: { contains: 'Titular na an' } }, orderBy: { createdAt: 'desc' }, take: 15, select: { proposalNumber: true, detail: true, createdAt: true } });
+    const run = runs.find((r) => ap.proposalNumber && r.proposalNumber && dig(r.proposalNumber) === dig(ap.proposalNumber)) || runs.find((r) => r.createdAt <= ap.createdAt);
+    const fmt = formatoDaRodada(run?.detail);
     const querInvertido = holder === cpf2;
-    const soTitular = !participantesCasados(relacao, String((querInvertido ? cf.estado_civil_2 : cf.estado_civil_1) || ''));
+    const soTitular = fmt === 'SOZINHO' ? true : fmt === 'AMBOS' ? false : (ov?.data as any)?.soTitular === true;
     if (((ov?.data as any)?.inverter === true) === querInvertido && ((ov?.data as any)?.soTitular === true) === soTitular) continue;
     await setOverrides(db, { accountId, leadId, banks: [bank], data: { inverter: querInvertido, soTitular }, merge: true, userName: 'Análise automática (mesmo formato da aprovação)' }).catch(() => {});
   }
@@ -421,8 +419,9 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
     // "Sempre tentar no MESMO CPF que aprovou o cliente" vale SÓ quando o CLIENTE pede a nova análise (outro valor/prazo, saldo devedor corrigido, proposta preenchida de novo) — Fabio 21/10.
     // Rodada manual da equipe (botão de um participante, ajuste) e automáticas (cascata, retentativa, cobrança) respeitam o titular que já está escolhido; antes a regra trocava o titular
     // por cima do clique ("pedi o 1º participante e puxou pro nome do 2º").
-    // Fabio 05/11: vale pra TODA rodada nova de quem já tem aprovação (ajuste da equipe, saldo devedor, outro valor) — a escolha manual de participante continua valendo (escolhaManual).
-    if (wantedKind === 'RUN' && !p.dryRun && p.force) await alignHoldersWithApproval(db, p.accountId, l.id, banks).catch(() => {});
+    // Fabio 05/11: vale também pra rodada que a EQUIPE pede (ajuste, "rodar de novo") — a escolha manual de participante continua valendo (escolhaManual). A cascata
+    // (cada um sozinho depois de reprovar nos dois) escolhe o formato dela e não passa por aqui.
+    if (wantedKind === 'RUN' && !p.dryRun && p.force && (p.alignApproval || p.userId)) await alignHoldersWithApproval(db, p.accountId, l.id, banks).catch(() => {});
     const foraDoCliente: string[] = Array.isArray(cfPedido._bancosFora) ? cfPedido._bancosFora : [];
     for (const bank of banks) {
       // Banco que ficou de fora (o cliente recusou / não foi combinado com ele — Fabio 30/10): nenhuma rodada AUTOMÁTICA nele. Clique de uma pessoa (userId) roda normalmente.
@@ -1495,7 +1494,7 @@ export async function setLeadAutoPause(db: Db, p: { accountId: string; leadId: s
 // ─── Ajustes do cliente na análise (inverter titular, valores, renda, prazo) ───
 export interface OverrideData {
   valorImovel?: string; valorEmprestimo?: string; renda?: string; prazo?: string; rendaParticipante?: string; inverter?: boolean;
-  soTitular?: boolean; // roda só no nome do titular: o outro fica fora (idade — Fabio 02/11; ou não é cônjuge de quem aprovou — 05/11)
+  soTitular?: boolean; // roda só no nome do titular: o outro fica fora (idade — Fabio 02/11; aprovação ou cascata só num nome — 05/11)
   escolhaManual?: boolean; // a equipe escolheu quem entra na análise: as regras automáticas (idade, mesmo formato da aprovação) não mexem (Fabio 05/11)
 }
 const OVERRIDE_TEXT_KEYS = ['valorImovel', 'valorEmprestimo', 'renda', 'prazo', 'rendaParticipante'] as const;
