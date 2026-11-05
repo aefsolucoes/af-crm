@@ -358,6 +358,8 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     const registro = { at: agora.toISOString(), usaFgts, participantes: ficha.participantes, conflitos: Array.isArray(ficha.conflitos) ? ficha.conflitos : [], observacao: String(ficha.observacao || ''), arquivos: pessoais.map((x) => ({ nome: x.arquivo, tipo: x.leitura.tipo })), naoLidos };
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as Record<string, unknown>), _fichaCadastral: registro } as any } });
+    // A renda bruta lida dos comprovantes vai pro card (Fabio 05/11).
+    await (require('./renda-comprovante.service') as typeof import('./renda-comprovante.service')).atualizarRendaPeloComprovante(leadId).catch((e: any) => console.error('[Renda comprovante]', e?.message || e));
 
     const quando = agora.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }).slice(0, 17);
     const blocos = ficha.participantes.map((p: any, i: number) => {

@@ -1167,6 +1167,19 @@ router.patch('/:id/docs/:attachmentId', async (req: AuthRequest, res: Response) 
 });
 
 // Ficha de cadastro lida dos documentos da pasta do Drive (Fabio 29/10) — base do cadastro na CAIXA/BRB; a extensão lê pelo GET.
+// Renda do card pelos comprovantes já lidos (Fabio 05/11) — o mesmo que roda sozinho quando um comprovante é lido; serve pra aplicar em card antigo.
+router.post('/:id/renda-comprovante', async (req: AuthRequest, res: Response) => {
+  try {
+    const l = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
+    if (!l) return res.status(404).json({ error: 'Lead não encontrado' });
+    const { atualizarRendaPeloComprovante } = require('../services/renda-comprovante.service') as typeof import('../services/renda-comprovante.service');
+    await atualizarRendaPeloComprovante(l.id);
+    const f = await prisma.lead.findUnique({ where: { id: l.id }, select: { customFields: true } });
+    const cf = (f?.customFields || {}) as Record<string, any>;
+    res.json({ renda_1: cf.renda_1 ?? null, renda_2: cf.renda_2 ?? null, renda_bruta: cf.renda_bruta ?? null, calculo: cf._rendaComprovante ?? null });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+
 router.post('/:id/ficha-cadastral', async (req: AuthRequest, res: Response) => {
   const { gerarFichaCadastral } = require('../services/ficha-cadastral.service') as typeof import('../services/ficha-cadastral.service');
   const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
