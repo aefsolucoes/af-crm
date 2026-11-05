@@ -490,11 +490,41 @@ export async function gravarAvaliacao(accountId: string, leadId: string, r: { st
 }
 
 /** Resultado do cadastro vindo da extensão (preenchido + conferência; salvo ou parado antes de salvar). */
-export async function gravarCadastro(accountId: string, leadId: string, ordem: number, r: { status: string; texto: string }): Promise<void> {
+const MESES_PT = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+/** Cadastro antigo da CAIXA feito há menos de 6 meses (Fabio 05/11: "consegue verificar isso através do comprovante de residência e ref. renda"): a data mais
+ *  recente entre o mês/ano do comprovante de residência e as referências das rendas da lista. Devolve o texto do aviso, ou null. */
+export function cadastroAntigoRecente(d: { residenciaMes?: string; residenciaAno?: string; renda?: string } | null | undefined, hoje = new Date()): string | null {
+  if (!d) return null;
+  const datas: { mm: number; aaaa: number; de: string }[] = [];
+  const mesTxt = String(d.residenciaMes || '').trim();
+  const mm = Number(mesTxt.replace(/\D/g, '')) || MESES_PT.findIndex((m) => mesTxt.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().startsWith(m)) + 1;
+  const aaaa = Number(String(d.residenciaAno || '').replace(/\D/g, ''));
+  if (mm >= 1 && mm <= 12 && aaaa > 2000) datas.push({ mm, aaaa, de: 'comprovante de residência' });
+  // Referência da renda: MM/AAAA solto (a admissão dd/mm/aaaa não conta)
+  for (const m of String(d.renda || '').matchAll(/(?<![\d/])(0[1-9]|1[0-2])\/(20\d{2})(?![\d/])/g)) datas.push({ mm: Number(m[1]), aaaa: Number(m[2]), de: 'referência da renda' });
+  if (!datas.length) return null;
+  const meses = (x: { mm: number; aaaa: number }) => (hoje.getFullYear() - x.aaaa) * 12 + (hoje.getMonth() + 1 - x.mm);
+  const recentes = datas.filter((x) => meses(x) >= 0 && meses(x) < 6);
+  if (!recentes.length) return null;
+  return recentes.map((x) => `${x.de} ${String(x.mm).padStart(2, '0')}/${x.aaaa}`).filter((v, i, a) => a.indexOf(v) === i).join('; ');
+}
+
+export async function gravarCadastro(accountId: string, leadId: string, ordem: number, r: { status: string; texto: string; antigo?: string; antigoDatas?: { residenciaMes?: string; residenciaAno?: string; renda?: string } | null }): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
   const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === Number(ordem));
+  // Cadastro antigo recente (< 6 meses) = provavelmente outro correspondente rodou há pouco → push + anotação. Não vale quando o cadastro anterior foi a própria A&F.
+  const nossoAntes = !!((l.customFields || {}) as Cf)._caixaCadastro?.cadastros?.[ordem]?.fim;
+  const recente = !nossoAntes ? cadastroAntigoRecente(r.antigoDatas) : null;
+  if (recente) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ ${p?.nome || `${ordem}º participante`} já tinha cadastro na CAIXA feito há MENOS DE 6 MESES (${recente}). Pode ter rodado crédito com outro correspondente há pouco — confira antes de seguir.` } }).catch(() => {});
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(accountId, { title: `⚠️ ${l.name}: cadastro recente na CAIXA`, body: `${p?.nome || `${ordem}º participante`} tem cadastro na CAIXA de menos de 6 meses (${recente}). Pode ter passado por outro correspondente.`, leadId }).catch(() => {});
+  }
   await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}), [ordem]: { ...(x.cadastros?.[ordem] || {}), status: r.status, fim: new Date().toISOString() } }; delete x.atual; });
+  // Cadastro que o cliente JÁ tinha na CAIXA, inteiro, como estava antes de a A&F mexer (Fabio 05/11: "sempre que o cliente tiver cadastro antigo, os dados desse
+  // cadastro antigo precisam ficar gravados nas anotações do card") — anotação própria, antes da do resultado.
+  if (r.antigo && r.antigo.trim()) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🗂️ Cadastro ANTIGO na CAIXA — ${ordem}º participante (${p?.nome || '—'}), como estava antes de a A&F mexer:\n\n${r.antigo.slice(0, 12000)}` } }).catch(() => {});
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA — ${ordem}º participante (${p?.nome || '—'}): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `🏦 ${l.name}: cadastro CAIXA (${p?.nome || `${ordem}º`})`, body: r.status, leadId }).catch(() => {});

@@ -117,9 +117,9 @@ router.post('/:leadId/cadastrar', async (req: AuthRequest, res: Response) => {
 });
 
 router.post('/:leadId/cadastro', async (req: AuthRequest, res: Response) => {
-  const { ordem, status, texto } = req.body as { ordem?: number; status?: string; texto?: string };
+  const { ordem, status, texto, antigo, antigoDatas } = req.body as { ordem?: number; status?: string; texto?: string; antigo?: string; antigoDatas?: { residenciaMes?: string; residenciaAno?: string; renda?: string } | null };
   if (!ordem || !status) return res.status(400).json({ error: 'ordem e status obrigatórios' });
-  try { await gravarCadastro(req.user!.accountId, req.params.leadId, Number(ordem), { status: String(status), texto: String(texto || '') }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+  try { await gravarCadastro(req.user!.accountId, req.params.leadId, Number(ordem), { status: String(status), texto: String(texto || ''), antigo: antigo ? String(antigo) : '', antigoDatas: antigoDatas && typeof antigoDatas === 'object' ? antigoDatas : null }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
 // Avaliação de Risco (passo 2): equipe pede; extensão devolve o que viu/fez.
