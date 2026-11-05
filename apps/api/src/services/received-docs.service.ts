@@ -281,6 +281,13 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
   return out;
 }
 
+/** Grava SÓ as chaves do organizador, nunca o card inteiro: a leitura é de antes do Drive (segundos/minutos movendo arquivos) e regravar tudo apagava o que outro
+ *  processo gravou no meio — o pedido do cadastro na CAIXA sumiu 5 s depois do clique (Tarcisio, 05/11). Ver customfields-write-race. */
+async function gravarChaves(leadId: string, set: Record<string, unknown>, tirarFalha = false): Promise<void> {
+  if (tirarFalha) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = (COALESCE("customFields", '{}'::jsonb) - '_driveOrganizeFailedAt') || ${JSON.stringify(set)}::jsonb WHERE id = ${leadId}`;
+  else await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify(set)}::jsonb WHERE id = ${leadId}`;
+}
+
 async function organizeLead(lead: {
   id: string; name: string; accountId: string; customFields: unknown; activeLeadsFolderId: string;
 }): Promise<void> {
@@ -313,8 +320,7 @@ async function organizeLead(lead: {
   const freshLead = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
   const cf = { ...((freshLead?.customFields as Record<string, unknown>) || {}) };
   if (!files.length) {
-    cf._driveOrganizedAt = new Date().toISOString();
-    await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf as any } });
+    await gravarChaves(lead.id, { _driveOrganizedAt: new Date().toISOString() });
     await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: '📁 Card em Documentação Recebida, mas nenhum documento do cliente foi encontrado no Drive (anexos do WhatsApp). A pasta não foi organizada automaticamente.' } });
     return;
   }
@@ -343,10 +349,7 @@ async function organizeLead(lead: {
     },
   });
 
-  cf.link_pasta_drive = result.folderUrl;
-  cf._driveOrganizedAt = new Date().toISOString();
-  delete cf._driveOrganizeFailedAt;
-  await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf as any } });
+  await gravarChaves(lead.id, { link_pasta_drive: result.folderUrl, _driveOrganizedAt: new Date().toISOString() }, true);
 
   const lines = [
     `📁 Pasta organizada no Drive: ${clientFolderName} (em LEADS ATIVOS)`,
@@ -439,7 +442,7 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
           const bruta = await linkIsRawAttachmentsFolder(lead.accountId, lead.id, cf.link_pasta_drive).catch(() => null);
           if (bruta === null) continue; // Drive fora do ar: tenta no próximo ciclo
           if (!bruta) {
-            await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, _driveLinkManual: cf.link_pasta_drive } as any } }).catch(() => {});
+            await gravarChaves(lead.id, { _driveLinkManual: cf.link_pasta_drive }).catch(() => {});
             continue;
           }
         } else {
@@ -456,10 +459,7 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
         await organizeLead({ ...lead, activeLeadsFolderId: lead.pipeline.department!.activeLeadsFolderId! });
       } catch (err) {
         console.error(`[DocsRecebidos] Falha ao organizar a pasta de ${lead.name} (${lead.id}):`, (err as Error)?.message);
-        await prisma.lead.update({
-          where: { id: lead.id },
-          data: { customFields: { ...cf, _driveOrganizeFailedAt: new Date().toISOString() } as any },
-        }).catch(() => {});
+        await gravarChaves(lead.id, { _driveOrganizeFailedAt: new Date().toISOString() }).catch(() => {});
       }
     }
   } finally {
