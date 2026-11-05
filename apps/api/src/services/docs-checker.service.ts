@@ -65,7 +65,15 @@ export async function scheduleDocsCheck(accountId: string, leadId: string, io: I
   // documentos depois que ele respondeu pela Inbox — a IA estava desligada,
   // ninguém conferiu, o card não andou e a pasta no Drive não foi criada).
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } });
-  if (!lead || !etapaConfere(lead.stage.name, (lead.customFields || {}) as Record<string, any>)) return;
+  if (!lead) return;
+  const cf0 = (lead.customFields || {}) as Record<string, any>;
+  if (!etapaConfere(lead.stage.name, cf0)) {
+    // Card que JÁ PASSOU da Aguardando Documentação com pendência anotada (Fabio 05/11, Milena: foi pra Documentação Recebida com "matrícula incompleta", ela mandou
+    // as folhas 3 vezes, ninguém leu e a IA pediu de novo): documento novo → a mesma conferência do botão "Conferir documentos" (sem mensagem ao cliente, sem mover
+    // o card), 10 min depois do último arquivo — atualiza o "o que falta" que a IA lê.
+    if (cf0._docsFaltando || cf0._docProblemsTold) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsRelerDue}', ${JSON.stringify(new Date(Date.now() + CHECK_DELAY_MS).toISOString())}::jsonb, true) WHERE id = ${leadId}`;
+    return;
+  }
   const cf: Record<string, unknown> = { ...((lead.customFields || {}) as Record<string, unknown>), _docsCheckDue: new Date(Date.now() + CHECK_DELAY_MS).toISOString() };
   delete cf._docsLater; // mandou documento: a cobrança do "te mando depois" não é mais necessária
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
@@ -80,6 +88,12 @@ export async function processDocsChecks(accountId: string, io: Io): Promise<void
     delete cf._docsCheckDue;
     await prisma.lead.update({ where: { id }, data: { customFields: cf as any } });
     await checkDocsComplete(accountId, id, io).catch((err) => console.error(`[Docs] Falha ao conferir documentação do lead ${id}:`, err?.message || err));
+  }
+  // Documento novo depois da Aguardando Documentação com pendência anotada (05/11): conferência silenciosa, igual à do botão.
+  const reler = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->>'_docsRelerDue') IS NOT NULL AND ("customFields"->>'_docsRelerDue')::timestamptz <= now() LIMIT 5`;
+  for (const { id } of reler) {
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_docsRelerDue' WHERE id = ${id}`;
+    await conferirDocumentosAgora(accountId, id, 'CRM — documento novo depois da Aguardando Documentação', io).catch((err) => console.error(`[Docs] releitura ${id}:`, err?.message || err));
   }
 }
 
