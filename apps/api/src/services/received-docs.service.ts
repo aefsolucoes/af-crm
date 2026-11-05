@@ -377,6 +377,7 @@ async function organizeLead(lead: {
       if (paginas.get(attId0)?.desnecessario) return 'DESNECESSARIO';
       const info = docInfo[attId0];
       if (info && SEM_USO.test(info.type)) return 'DESNECESSARIO';
+      if (info && /^AUTORIZACAO USECASA/.test(info.type)) return 'FORMULARIOS'; // autorização USECASA assinada (Santander) — Fabio 05/11
       if (!info) return 'COMPRADOR';
       if (/SIMULACAO/.test(info.type) || /^SALDO DEVEDOR/.test(info.type) || isDescritivoParcela(info.type)) return 'RAIZ'; // simulação, print do saldo devedor e descritivo da parcela: direto na pasta do cliente
       if (isPropertyDocType(info.type)) return 'IMOVEL';
@@ -391,7 +392,7 @@ async function organizeLead(lead: {
     `📁 Pasta organizada no Drive: ${clientFolderName} (em LEADS ATIVOS)`,
     result.folderUrl,
     '',
-    ...(['COMPRADOR', 'VENDEDOR', 'IMOVEL', 'RAIZ', 'DESNECESSARIO'] as const).flatMap((f) => {
+    ...(['COMPRADOR', 'VENDEDOR', 'IMOVEL', 'FORMULARIOS', 'RAIZ', 'DESNECESSARIO'] as const).flatMap((f) => {
       const list = result.named.filter((n) => n.folder === f);
       if (!list.length) return [];
       const title = f === 'RAIZ' ? `Simulações na pasta principal (${list.length}):` : f === 'DESNECESSARIO' ? `Subpasta DESNECESSARIO — repetidos e o que não vamos usar (${list.length}):` : `Subpasta ${f} (${list.length}):`;

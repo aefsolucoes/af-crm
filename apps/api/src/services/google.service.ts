@@ -398,7 +398,8 @@ export interface ReceivedDocFile { driveFileId: string; fileName: string; mimeTy
  * driveFileId dos anexos continua valendo (o Drive mantém o id ao mover).
  */
 /** DESNECESSARIO (Fabio 05/11): documento repetido, que não é documento ou que não vamos usar — sai das outras pastas (e da lista de anexos da vistoria). */
-export type DocFolder = 'COMPRADOR' | 'IMOVEL' | 'VENDEDOR' | 'RAIZ' | 'DESNECESSARIO';
+/** FORMULARIOS (Fabio 05/11): formulário de banco que o cliente devolve assinado (autorização USECASA do Santander). */
+export type DocFolder = 'COMPRADOR' | 'IMOVEL' | 'VENDEDOR' | 'RAIZ' | 'DESNECESSARIO' | 'FORMULARIOS';
 
 export async function organizeReceivedDocsFolder(accountId: string, params: {
   files: ReceivedDocFile[];
@@ -430,7 +431,7 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   let clientFolderId = [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   if (clientFolderId) {
     const meta = await drive.files.get({ fileId: clientFolderId, fields: 'id, name, parents', supportsAllDrives: true });
-    if (/^(comprador|imovel|imóvel|vendedor|desnecessario|desnecessário)$/i.test((meta.data.name || '').trim())) clientFolderId = meta.data.parents?.[0] || null;
+    if (/^(comprador|imovel|imóvel|vendedor|desnecessario|desnecessário|formularios|formulários)$/i.test((meta.data.name || '').trim())) clientFolderId = meta.data.parents?.[0] || null;
   }
   // Anexos soltos direto na pasta técnica (ou na raiz): cria a pasta do
   // cliente do zero em vez de renomear a pasta de todo mundo.
