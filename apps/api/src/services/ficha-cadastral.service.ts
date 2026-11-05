@@ -96,7 +96,8 @@ function rendaDeSocio(participantes: any[], leituras: { arquivo: string; leitura
   const pu = (s: unknown) => { const n = norm(String(s || '')).split(/\s+/).filter(Boolean); return n.length ? `${n[0]} ${n[n.length - 1]}` : ''; };
   for (const p of participantes || []) {
     const ccs = Array.isArray(p?.contracheques) ? p.contracheques : [];
-    if (ccs.some((c: any) => Number(c?.bruto) > 0 || Number(c?.liquido) > 0)) continue;
+    // Renda de contracheque/benefício de verdade: fica. A que a junção por IA montou do IR (lucros/pró-labore) é refeita aqui, pelo código (Fabio 05/11, Flávia: o pró-labore não entrava).
+    if (ccs.some((c: any) => (Number(c?.bruto) > 0 || Number(c?.liquido) > 0) && !/lucro|pro.?labore/i.test(String(c?.tipo || '')))) continue;
     const lucros = new Map<string, { fonte: string; cnpj: string; valor: number; ano: number; arquivo: string }>();
     let temIr = false;
     for (const { arquivo, leitura } of leituras) {
