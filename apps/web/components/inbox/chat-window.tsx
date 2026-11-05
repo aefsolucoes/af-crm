@@ -2722,23 +2722,23 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
               onClick={handleOpenTemplates}
               title="Templates prontos"
               className={cn(
-                'hidden md:flex flex-shrink-0 w-10 h-10 rounded-full items-center justify-center transition-all',
+                'hidden md:flex flex-shrink-0 h-10 px-3 gap-1.5 rounded-full items-center justify-center text-xs font-medium transition-all',
                 showTemplates ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
               )}
             >
-              <FileText size={18} />
+              <FileText size={16} /> Templates
             </button>
             {/* AI toggle button */}
             <button
               type="button"
               onClick={() => { setShowAI(v => !v); setShowTemplates(false); }}
-              title="Assistente IA"
+              title="Ajustar o texto com IA (corrigir gramática, profissional, amigável…)"
               className={cn(
-                'hidden md:flex flex-shrink-0 w-10 h-10 rounded-full items-center justify-center transition-all',
+                'hidden md:flex flex-shrink-0 h-10 px-3 gap-1.5 rounded-full items-center justify-center text-xs font-medium transition-all',
                 showAI ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
               )}
             >
-              <Sparkles size={18} />
+              <Sparkles size={16} /> Ajustar com IA
             </button>
           </>
         )}
