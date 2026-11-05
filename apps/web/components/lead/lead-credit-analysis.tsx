@@ -292,6 +292,45 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
         })}
       </div>
 
+      {(() => {
+        // Todas as aprovações (Fabio 05/11, Fernanda): as que não estão nas linhas dos bancos acima (rodadas antigas, outro participante), cada uma com "Escolher".
+        const acima = new Set([...Object.values(data.latest), ...Object.values(data.latestP1 || {}), ...Object.values(data.latestP2 || {}), data.followed]
+          .filter(Boolean).map((a) => `${a!.bank}|${a!.proposalNumber || a!.id}`));
+        const outras = (data.aprovacoes || []).filter((a) => !acima.has(`${a.bank}|${a.proposalNumber || a.id}`));
+        const sem = data.semResultado || [];
+        if (!outras.length && !sem.length) return null;
+        const data2 = (d: string) => new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+        return (
+          <div className="mt-3 pt-2 border-t border-af-border space-y-1.5">
+            {outras.length > 0 && <div className="text-[11px] font-medium text-slate-600">Outras aprovações deste cliente ({outras.length})</div>}
+            {outras.map((a) => (
+              <div key={a.id} className="rounded-md bg-white border border-af-border px-2 py-1.5 text-[11px]">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-600 font-medium">{BANKS.find((b) => b.key === a.bank)?.short || a.bank}{a.proposalNumber ? ` · nº ${a.proposalNumber}` : ''} <span className="font-normal text-slate-400">· {data2(a.createdAt)}{a.holderName ? ` · ${a.holderName.split(' ')[0]}` : ''}</span></span>
+                  <Badge a={a} />
+                </div>
+                <div className="text-slate-600 mt-0.5">
+                  {[a.approvedValue ? formatCurrency(a.approvedValue) : '', a.termMonths ? `${a.termMonths} meses` : '', a.rate || '', a.firstInstallment ? `1ª parcela ${formatCurrency(a.firstInstallment)}` : ''].filter(Boolean).join(' · ')}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  {a.chosen
+                    ? <span className="flex items-center gap-1 text-amber-600"><Star size={10} className="fill-amber-400" /> Proposta escolhida</span>
+                    : <button onClick={() => choose(a)} className="flex items-center gap-1 px-2 py-0.5 rounded bg-af-mid text-white hover:bg-af-dark"><Star size={10} /> Escolher esta proposta</button>}
+                  {a.approvedValue != null && (
+                    <button onClick={() => forward(a)} disabled={!!fwdId} className="flex items-center gap-1 px-2 py-0.5 rounded border border-emerald-600 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"><Send size={10} /> {fwdId === a.id ? 'Encaminhando…' : 'Encaminhar ao cliente'}</button>
+                  )}
+                </div>
+              </div>
+            ))}
+            {sem.map((s) => (
+              <div key={`${s.bank}-${s.proposalNumber}`} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+                {BANKS.find((b) => b.key === s.bank)?.short || s.bank} · nº {s.proposalNumber}{s.holderName ? ` · ${s.holderName.split(' ')[0]}` : ''}{s.requestedValue ? ` · pedido ${formatCurrency(s.requestedValue)}` : ''} · enviada {data2(s.enviadaEm)} — o CRM não leu o resultado desta proposta.
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
       <div className="mt-3 pt-2 border-t border-af-border">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1 text-[11px] font-medium text-slate-600"><FileText size={11} /> Simulação em PDF pro cliente</span>

@@ -96,6 +96,10 @@ export interface LeadAnalyses {
   followed?: Analysis | null; onlyFollowed?: boolean; autoPaused?: boolean;
   /** Aprovações avisadas ao cliente sem análise aprovada no CRM com o mesmo banco e valor (lançadas à mão no card). */
   avisosSemAnalise?: { inst: string; val: string; prazo: string; parcela: string; at: string }[];
+  /** TODAS as aprovações do cliente, uma por proposta (Fabio 05/11: "precisa aparecer todas as aprovações"). */
+  aprovacoes?: Analysis[];
+  /** Propostas enviadas ao banco cujo resultado o CRM nunca leu. */
+  semResultado?: { bank: Bank; proposalNumber: string; holderName: string | null; requestedValue: number | null; enviadaEm: string }[];
   overrides?: Partial<Record<Bank, OverrideData>>;
   participants?: { name1: string; name2: string; inverted: boolean };
   extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null; loginNeeded?: boolean }>;

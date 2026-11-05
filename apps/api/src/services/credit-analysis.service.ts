@@ -1577,7 +1577,26 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   const overrides = await db.creditOverride.findMany({ where: { leadId: p.leadId }, select: { bank: true, data: true } });
   // PROPOSTA QUE O CLIENTE VAI SEGUIR (Fabio 21/10, caso Edson do Carmo: aprovado R$ 50 mil no Santander, pediu R$ 55 mil, a nova rodada foi recusada e o card mostrava "Reprovado", sem a aprovação):
   // a escolhida (⭐) ou, sem escolha, a aprovada do único banco que aprovou. Depois da aprovação (Aguardando Documentação em diante) a tela mostra SÓ ela; as outras análises ficam atrás de um botão.
-  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null }, source: { not: 'AI_SIM' } }, orderBy: { createdAt: 'desc' }, take: 12 });
+  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null }, source: { not: 'AI_SIM' } }, orderBy: { createdAt: 'desc' }, take: 40 });
+  // TODAS as aprovações do cliente, uma por proposta (Fabio 05/11, Fernanda: "precisa aparecer todas as aprovações" — a tela só mostrava a última de cada banco): da mesma proposta,
+  // a leitura mais completa (com parcela) ou a mais nova.
+  const aprovacoes: typeof aprovadas = [];
+  for (const r of aprovadas) {
+    const k = `${r.bank}|${r.proposalNumber || r.id}`;
+    const i = aprovacoes.findIndex((x) => `${x.bank}|${x.proposalNumber || x.id}` === k);
+    if (i < 0) aprovacoes.push(r);
+    else if (!aprovacoes[i].firstInstallment && r.firstInstallment) aprovacoes[i] = r;
+  }
+  // Proposta enviada ao banco cujo resultado o CRM nunca leu (ex.: a conferência foi encerrada porque pediram uma rodada nova antes de o banco responder).
+  const comNumero = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, proposalNumber: { not: null }, source: { not: 'AI_SIM' } }, orderBy: { createdAt: 'desc' }, take: 80, select: { bank: true, proposalNumber: true, status: true, holderName: true, requestedValue: true, createdAt: true } });
+  const semResultado: { bank: string; proposalNumber: string; holderName: string | null; requestedValue: number | null; enviadaEm: Date }[] = [];
+  for (const r of comNumero) {
+    const mesma = comNumero.filter((x) => x.bank === r.bank && x.proposalNumber === r.proposalNumber);
+    if (mesma.some((x) => ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(x.status)) || semResultado.some((x) => x.bank === r.bank && x.proposalNumber === r.proposalNumber)) continue;
+    if (mesma.some((x) => ACTIVE.includes(x.status as any)) || Object.values(latest).some((a: any) => a?.bank === r.bank && a?.proposalNumber === r.proposalNumber)) continue; // ainda sendo lida / é a da linha do banco
+    const primeira = mesma[mesma.length - 1];
+    semResultado.push({ bank: r.bank, proposalNumber: r.proposalNumber!, holderName: r.holderName, requestedValue: mesma.find((x) => x.requestedValue)?.requestedValue ?? null, enviadaEm: primeira.createdAt });
+  }
   const bancosAprov = Array.from(new Set(aprovadas.map((r) => r.bank)));
   const baseSeguida = aprovadas.find((r) => r.chosen) || (bancosAprov.length === 1 ? aprovadas[0] : null) || null;
   // da mesma proposta, a leitura mais completa (a conferência posterior às vezes traz só valor e prazo; a da rodada traz taxa e parcelas)
@@ -1591,6 +1610,7 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
     overrides: Object.fromEntries(overrides.map((o) => [o.bank, o.data])),
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
     cardProposal: propostaDoCard(cf),
+    aprovacoes, semResultado,
     avisosSemAnalise: await (require('./approval-notice.service') as typeof import('./approval-notice.service')).avisosSemAnalise(p.leadId, aprovadas).catch(() => []),
   };
 }
