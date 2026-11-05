@@ -87,7 +87,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     setRerunKey(`${bank}-${who}`);
     try {
       const inverted = !!data?.overrides?.[bank]?.inverter;
-      if ((who === 'p2') !== inverted) await api.put('/api/credit-analysis/overrides', { leadId, banks: [bank], data: { inverter: who === 'p2' }, merge: true });
+      if ((who === 'p2') !== inverted || !data?.overrides?.[bank]?.escolhaManual) await api.put('/api/credit-analysis/overrides', { leadId, banks: [bank], data: { inverter: who === 'p2', escolhaManual: true }, merge: true }); // escolha da equipe: a regra do formato da aprovação não troca (05/11)
       const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [leadId], banks: [bank], force: true });
       pingExtensions(data?.extensions, [bank]);
       toast(r.created ? `${short} na fila${r.queuedBehind ? ' — a extensão está ocupada, roda quando ela terminar' : ''}` : `${short}: já está na fila ou rodando`, r.created ? 'success' : 'error');

@@ -318,7 +318,7 @@ export default function AnaliseCreditoPage() {
     setRerunKey(key);
     try {
       const inverted = !!l.overrides?.[bank]?.inverter;
-      if (who === 'p2' !== inverted) await api.put('/api/credit-analysis/overrides', { leadId: l.id, banks: [bank], data: { inverter: who === 'p2' }, merge: true });
+      if (who === 'p2' !== inverted || !l.overrides?.[bank]?.escolhaManual) await api.put('/api/credit-analysis/overrides', { leadId: l.id, banks: [bank], data: { inverter: who === 'p2', escolhaManual: true }, merge: true }); // escolha da equipe: a regra do formato da aprovação não troca (05/11)
       const { data: r } = await api.post('/api/credit-analysis/requests', { leadIds: [l.id], banks: [bank], force: true }); // o participante foi escolhido pelo botão: não deixa a regra do CPF aprovado trocar
       pingExtensions(data?.extensions, [bank]);
       const short = BANKS.find((b) => b.key === bank)?.short;

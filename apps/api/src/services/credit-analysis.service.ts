@@ -350,6 +350,7 @@ async function alignHolderByAge(db: Db, accountId: string, leadId: string, bank:
   const people = await agePeople(db, leadId);
   if (people.length < 2) return;
   const ov = await db.creditOverride.findFirst({ where: { leadId, bank }, select: { data: true } });
+  if ((ov?.data as any)?.escolhaManual === true) return; // a equipe escolheu quem entra (Fabio 05/11): vale a escolha
   const inverted = (ov?.data as any)?.inverter === true;
   const ok = (x: AgePerson) => bank === 'INTER' ? (x.age === null || (x.age >= 18 && x.age <= 69)) : (x.max === null || x.max >= PRAZO_MINIMO_HOME_EQUITY);
   const [first, second] = inverted ? [people[1], people[0]] : [people[0], people[1]];
@@ -362,23 +363,38 @@ async function alignHolderByAge(db: Db, accountId: string, leadId: string, bank:
   await setOverrides(db, { accountId, leadId, banks: [bank], data: { inverter: querInvertido, soTitular }, merge: true, userName: 'Análise automática (idade)' }).catch(() => {});
 }
 
-/** SEMPRE TENTAR NO MESMO CPF QUE APROVOU O CLIENTE (Fabio 15/10): ao rodar de novo (valor novo, saldo devedor…), cada banco que já aprovou alguém usa de titular o MESMO CPF dessa aprovação —
- *  senão a nova análise vai pro outro participante e perde a aprovação que já existia. Ajusta a inversão de titular por banco; só escreve (e anota) quando muda. */
-async function alignHoldersWithApproval(db: Db, accountId: string, leadId: string): Promise<void> {
+/** Casados (Fabio 05/11: "apenas informar o 2º participante se forem casados"): a relação do 2º participante na proposta (cônjuge/companheiro), ou, sem ela, o estado civil de quem
+ *  aprovou (casado/união estável). Pura (testável). */
+export function participantesCasados(relacao: string, estadoCivilTitular: string): boolean {
+  const n = (v: string) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const r = n(relacao);
+  if (r.trim()) return /conjuge|companheir|espos|marido|mulher/.test(r);
+  return /^casad|uniao estavel/.test(n(estadoCivilTitular).trim());
+}
+
+/** MESMO FORMATO DE QUEM JÁ APROVOU (Fabio 15/10 + 05/11): toda rodada nova de um cliente que já tem aprovação vai no MESMO CPF dessa aprovação — e SÓ no nome dele
+ *  ("não precisa rodar o crédito de todo mundo novamente… rodar apenas no nome dela"), a menos que o outro participante seja o CÔNJUGE. Banco sem aprovação própria segue a
+ *  aprovação mais recente de outro banco. Escolha manual da equipe (botão de um participante / "Ajustar") vale sempre. Só escreve (e anota) quando muda. */
+async function alignHoldersWithApproval(db: Db, accountId: string, leadId: string, banks: string[]): Promise<void> {
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
   const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '');
   const cpf1 = dig(cf.cpf_1), cpf2 = dig(cf.cpf_2);
   if (cpf1.length !== 11 || cpf2.length !== 11 || cpf1 === cpf2) return;
-  for (const bank of BANK_KEYS) {
-    const ap = await db.creditAnalysis.findFirst({ where: { leadId, bank, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, holderCpf: { not: null } }, orderBy: { createdAt: 'desc' }, select: { holderCpf: true } });
-    const holder = dig(ap?.holderCpf);
+  const aprovadas = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, holderCpf: { not: null } }, orderBy: { createdAt: 'desc' }, select: { bank: true, holderCpf: true } });
+  if (!aprovadas.length) return;
+  const prop = await db.message.findFirst({ where: { leadId, direction: 'INBOUND', OR: [{ content: { contains: 'Proposta preenchida no site' } }, { content: { contains: 'Proposta manual' } }, { content: { contains: 'PROPOSTA RECEBIDA' } }] }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const bloco2 = String(prop?.content || '').split(/2[ºo°]\s*PARTICIPANTE/i)[1] || '';
+  const relacao = /rela[çc][ãa]o[^:\n]*:\s*([^\n]+)/i.exec(bloco2)?.[1] || '';
+  for (const bank of banks.filter((b) => BANK_KEYS.includes(b as any))) {
+    const holder = dig((aprovadas.find((a) => a.bank === bank) || aprovadas[0]).holderCpf);
     if (holder !== cpf1 && holder !== cpf2) continue;
     const ov = await db.creditOverride.findFirst({ where: { leadId, bank }, select: { data: true } });
-    const invertido = (ov?.data as any)?.inverter === true;
+    if ((ov?.data as any)?.escolhaManual === true) continue;
     const querInvertido = holder === cpf2;
-    if (invertido === querInvertido) continue;
-    await setOverrides(db, { accountId, leadId, banks: [bank], data: { inverter: querInvertido }, merge: true, userName: 'Análise automática (mesmo CPF da aprovação)' }).catch(() => {});
+    const soTitular = !participantesCasados(relacao, String((querInvertido ? cf.estado_civil_2 : cf.estado_civil_1) || ''));
+    if (((ov?.data as any)?.inverter === true) === querInvertido && ((ov?.data as any)?.soTitular === true) === soTitular) continue;
+    await setOverrides(db, { accountId, leadId, banks: [bank], data: { inverter: querInvertido, soTitular }, merge: true, userName: 'Análise automática (mesmo formato da aprovação)' }).catch(() => {});
   }
 }
 
@@ -405,7 +421,8 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
     // "Sempre tentar no MESMO CPF que aprovou o cliente" vale SÓ quando o CLIENTE pede a nova análise (outro valor/prazo, saldo devedor corrigido, proposta preenchida de novo) — Fabio 21/10.
     // Rodada manual da equipe (botão de um participante, ajuste) e automáticas (cascata, retentativa, cobrança) respeitam o titular que já está escolhido; antes a regra trocava o titular
     // por cima do clique ("pedi o 1º participante e puxou pro nome do 2º").
-    if (wantedKind === 'RUN' && !p.dryRun && p.force && p.alignApproval) await alignHoldersWithApproval(db, p.accountId, l.id).catch(() => {});
+    // Fabio 05/11: vale pra TODA rodada nova de quem já tem aprovação (ajuste da equipe, saldo devedor, outro valor) — a escolha manual de participante continua valendo (escolhaManual).
+    if (wantedKind === 'RUN' && !p.dryRun && p.force) await alignHoldersWithApproval(db, p.accountId, l.id, banks).catch(() => {});
     const foraDoCliente: string[] = Array.isArray(cfPedido._bancosFora) ? cfPedido._bancosFora : [];
     for (const bank of banks) {
       // Banco que ficou de fora (o cliente recusou / não foi combinado com ele — Fabio 30/10): nenhuma rodada AUTOMÁTICA nele. Clique de uma pessoa (userId) roda normalmente.
@@ -1478,7 +1495,8 @@ export async function setLeadAutoPause(db: Db, p: { accountId: string; leadId: s
 // ─── Ajustes do cliente na análise (inverter titular, valores, renda, prazo) ───
 export interface OverrideData {
   valorImovel?: string; valorEmprestimo?: string; renda?: string; prazo?: string; rendaParticipante?: string; inverter?: boolean;
-  soTitular?: boolean; // roda só no nome do titular: o outro participante não alcança o mínimo do banco pela idade (Fabio 02/11)
+  soTitular?: boolean; // roda só no nome do titular: o outro fica fora (idade — Fabio 02/11; ou não é cônjuge de quem aprovou — 05/11)
+  escolhaManual?: boolean; // a equipe escolheu quem entra na análise: as regras automáticas (idade, mesmo formato da aprovação) não mexem (Fabio 05/11)
 }
 const OVERRIDE_TEXT_KEYS = ['valorImovel', 'valorEmprestimo', 'renda', 'prazo', 'rendaParticipante'] as const;
 
@@ -1491,6 +1509,7 @@ export function cleanOverride(input: Record<string, any> | null | undefined): Ov
   }
   if (input?.inverter === true) out.inverter = true;
   if (input?.soTitular === true) out.soTitular = true;
+  if (input?.escolhaManual === true) out.escolhaManual = true;
   return out;
 }
 
@@ -1526,7 +1545,7 @@ export async function setOverrides(db: Db, p: { accountId: string; userId?: stri
   const parts = [
     ...OVERRIDE_TEXT_KEYS.filter((k) => d[k]).map((k) => `${OVERRIDE_LABEL[k]}: ${d[k]}`),
     d.inverter ? 'titular e 2º participante invertidos' : '',
-    d.soTitular ? 'só no nome do titular (o outro participante não alcança, pela idade, o mínimo do banco e fica fora da análise)' : '',
+    d.soTitular ? 'só no nome do titular (o outro participante fica fora da análise)' : '',
   ].filter(Boolean);
   const where = banks.map((b) => BANKS[b].label).join(', ');
   await db.note.create({

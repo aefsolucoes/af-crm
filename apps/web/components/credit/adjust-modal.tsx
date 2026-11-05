@@ -51,7 +51,8 @@ function onlyChanges(lead: BoardLead, form: OverrideData): OverrideData {
     out[k] = v;
   }
   if (form.inverter) out.inverter = true;
-  if (form.soTitular) out.soTitular = true; // marcado pelo CRM pela idade: salvar o ajuste não pode devolver quem ficou fora
+  if (form.soTitular) out.soTitular = true; // marcado pelo CRM (idade / mesmo formato da aprovação) ou pela equipe: salvar não pode devolver quem ficou fora
+  if (form.escolhaManual) out.escolhaManual = true; // a equipe escolheu quem entra (Fabio 05/11): as regras automáticas não mexem
   return out;
 }
 
@@ -122,7 +123,7 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
 
         {hasP2 ? (
           <label className="flex items-start gap-2 rounded-lg border border-af-border p-3 text-sm text-slate-600 cursor-pointer">
-            <input type="checkbox" className="mt-0.5" checked={!!form.inverter} onChange={(e) => setForm((f) => ({ ...f, inverter: e.target.checked }))} />
+            <input type="checkbox" className="mt-0.5" checked={!!form.inverter} onChange={(e) => setForm((f) => ({ ...f, inverter: e.target.checked, escolhaManual: true }))} />
             <span>
               <span className="font-medium text-slate-700">Inverter participantes</span>
               <span className="block text-xs text-slate-400">
@@ -133,6 +134,15 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
           </label>
         ) : (
           <p className="text-xs text-slate-400">Este card não tem 2º participante, então não há o que inverter.</p>
+        )}
+        {hasP2 && (
+          <label className="flex items-start gap-2 rounded-lg border border-af-border p-3 text-sm text-slate-600 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={!!form.soTitular} onChange={(e) => setForm((f) => ({ ...f, soTitular: e.target.checked, escolhaManual: true }))} />
+            <span>
+              <span className="font-medium text-slate-700">Rodar só no nome de {form.inverter ? c.name2 : c.name1}</span>
+              <span className="block text-xs text-slate-400">{form.inverter ? c.name1 : c.name2} fica fora da análise. Sem mexer aqui, o CRM decide sozinho: depois de uma aprovação, a nova rodada vai só no nome de quem aprovou (o 2º participante entra só se for cônjuge).</span>
+            </span>
+          </label>
         )}
 
         <div className="flex flex-wrap justify-between gap-2 pt-1">

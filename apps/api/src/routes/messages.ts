@@ -47,6 +47,10 @@ async function turnOffAiOnHumanReply(req: AuthRequest, leadId: string) {
 }
 
 const router = Router();
+
+/** Mensagens que as extensões dos bancos leem como a proposta preenchida (mesmas marcas de buildData nas extensões). */
+const PROPOSTA_MARCAS = ['Proposta preenchida no site', '[PROPOSTA RECEBIDA]', 'Preenchi a proposta', 'Proposta manual'];
+const PROPOSTA_RX = /Proposta preenchida no site|\[PROPOSTA RECEBIDA\]|Preenchi a proposta|Proposta manual/i;
 router.use(authMiddleware);
 
 /** Diagnóstico temporário (16/09/2026) — guarda só o ÚLTIMO áudio de voz que
@@ -167,10 +171,22 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       // Paginado (ver comentário em getMessages) — `limit` e `before`
       // opcionais, default cobre o caso de sempre (conversa aberta pela
       // primeira vez, sem cursor).
-      const parsedLimit = limit ? Math.min(Math.max(Number(limit) || 50, 1), 200) : 50;
       const parsedBefore = before ? new Date(String(before)) : undefined;
+      // Extensões dos bancos (pedem limit=200, sem cursor) recebem a CONVERSA INTEIRA (Fabio 05/11: "pode ajustar para que receba a conversa inteira" — a proposta
+      // da Fernanda Karita estava antes das 200 últimas). A Inbox pede 50 e pagina com `before`: continua igual.
+      const conversaInteira = !parsedBefore && Number(limit) >= 200;
+      const parsedLimit = conversaInteira ? 3000 : limit ? Math.min(Math.max(Number(limit) || 50, 1), 200) : 50;
       const messages = await getMessages(leadId as string, req.user!.accountId, scopeDepartmentIds, scopeNumberIds, parsedLimit, parsedBefore);
       if (messages === null) { res.status(404).json({ error: 'Conversa não encontrada' }); return; }
+      // Conversa com mais de 3.000 mensagens: a proposta mais nova vem junto mesmo assim, no começo da lista (sem ela a extensão dá "não achei a proposta preenchida na conversa").
+      if (conversaInteira && !messages.some((m) => m.direction === 'INBOUND' && PROPOSTA_RX.test(m.content || ''))) {
+        const props = await prisma.message.findMany({
+          where: { leadId: leadId as string, direction: 'INBOUND', deleted: false, OR: PROPOSTA_MARCAS.map((c) => ({ content: { contains: c, mode: 'insensitive' as const } })), NOT: { content: { contains: 'aefsolucoesfinanceiras.com.br/proposta' } } },
+          orderBy: { createdAt: 'desc' }, take: 2,
+          include: { attachments: { select: { id: true, fileName: true, mimeType: true, driveFileId: true } }, sentBy: { select: { id: true, name: true } } },
+        });
+        if (props.length) { res.json([...props.reverse(), ...messages]); return; }
+      }
       res.json(messages);
     } catch {
       res.status(500).json({ error: 'Erro ao buscar mensagens' });

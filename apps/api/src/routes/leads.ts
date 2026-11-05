@@ -964,13 +964,20 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
     if (customFields && typeof customFields === 'object' && ('saldo_devedor' in customFields || 'troco' in customFields)) {
       const cur = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { customFields: true } });
       const before = (cur?.customFields || {}) as Record<string, unknown>;
-      const mudou = ['saldo_devedor', 'troco'].some((k) => k in customFields && String(customFields[k] ?? '') !== String(before[k] ?? ''));
-      const saldo = parseFieldNumber(('saldo_devedor' in customFields ? customFields.saldo_devedor : before.saldo_devedor) as any);
-      const troco = parseFieldNumber(('troco' in customFields ? customFields.troco : before.troco) as any);
-      if (mudou && saldo > 0) {
+      // Fabio 05/11 (Fernanda Karita: "por que o valor está ficando em 142 mil mesmo eu colocando 160 mil?"): a tela manda o card INTEIRO a cada edição, então compara
+      // NÚMERO com número ("139.403,95" = "139403.95"), não texto; o "Valor do crédito" digitado na mesma edição vale; sem troco não há o que somar (a conta dava
+      // saldo + 0 + folga = 142 mil e passava por cima do valor da equipe); e saldo impossível (maior que o imóvel — virou R$ 13,9 milhões) não refaz nada.
+      const num = (v: unknown) => parseFieldNumber(v as any);
+      const mudou = ['saldo_devedor', 'troco'].some((k) => k in customFields && Math.abs(num(customFields[k]) - num(before[k])) >= 0.01);
+      const saldo = num('saldo_devedor' in customFields ? customFields.saldo_devedor : before.saldo_devedor);
+      const troco = num('troco' in customFields ? customFields.troco : before.troco);
+      const creditoDigitado = 'valor_credito' in customFields && Math.abs(num(customFields.valor_credito) - num(before.valor_credito)) >= 1;
+      const imovel = num('valor_imovel' in customFields ? customFields.valor_imovel : before.valor_imovel);
+      const plausivel = !imovel || saldo <= imovel * 1.5;
+      if (mudou && saldo > 0 && troco > 0 && !creditoDigitado && plausivel) {
         // Mesma conta do ajuste pela IA (saldo-devedor.service): antes do print = saldo declarado + troco no milhar acima (sem folga); depois do print = saldo real + troco + folga.
         const { creditoComTroco } = require('../services/saldo-devedor.service') as typeof import('../services/saldo-devedor.service');
-        const total = creditoComTroco(saldo, troco > 0 ? troco : 0, !!(before as any)._saldoDevedor?.doneAt);
+        const total = creditoComTroco(saldo, troco, !!(before as any)._saldoDevedor?.doneAt);
         customFields.valor_credito = String(total);
         trocoRecalculado = { total, antes: Number((before as any).valor_credito) || 0 };
       }
