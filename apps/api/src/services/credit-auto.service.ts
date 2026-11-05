@@ -241,6 +241,16 @@ async function startNewFhLeads(accountId: string, enabledAt: Date) {
       await addNote(l.id, '🚫 Análise do Financiamento NÃO rodada sozinha: na proposta o cliente marcou RESTRIÇÃO NO SERASA, e no Financiamento os bancos exigem nome limpo. Se quiser tentar assim mesmo, use "Rodar" na aba Análise de Crédito — Financiamento.');
       continue;
     }
+    // Construção (terreno/lote + obra — Fabio 05/11, Cleide): só pela CAIXA e com financiado acima de R$ 200 mil; os bancos privados do FH não rodam.
+    { const { ehConstrucaoFh, financiadoFh, textoConstrucao } = require('./construcao-fh.service') as typeof import('./construcao-fh.service');
+      if (ehConstrucaoFh(proposta.content, cf)) {
+        const txt = textoConstrucao(financiadoFh(proposta.content, cf));
+        await saveCf(l.id, { _fhAutoStartedAt: new Date().toISOString() });
+        await addNote(l.id, txt);
+        const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+        sendPushToAccount(accountId, { title: `🏗️ ${l.name}: construção`, body: txt.slice(0, 160), leadId: l.id }).catch(() => {});
+        continue;
+      } }
     // Inter do Financiamento roda no NOSSO portal (Fabio 29/10: "os financiamentos habitacionais devem ser feitos no nosso Inter"; a extensão do Credimorar desmarca o Inter de lá).
     // Itaú do Financiamento roda no portal Itaú Imóveis, por extensão própria (Fabio 03/11; a extensão do Credimorar passa a marcar só Bradesco e Santander).
     const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [FH_BANK, 'INTER_FH', 'ITAU_FH'], dryRun: false, force: false });

@@ -74,6 +74,14 @@ router.post('/fh-request', async (req: AuthRequest, res: Response) => {
     const leadId = String(req.body?.leadId || '');
     const kind = req.body?.kind === 'CHECK' ? 'CHECK' : 'RUN';
     if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
+    // Construção (Fabio 05/11): só pela CAIXA, financiado acima de R$ 200 mil — o botão também não roda Credimorar/Inter/Itaú.
+    if (kind === 'RUN') {
+      const { ehConstrucaoFh, financiadoFh, textoConstrucao } = require('../services/construcao-fh.service') as typeof import('../services/construcao-fh.service');
+      const l = await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { customFields: true } });
+      const prop = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Financiamento Habitacional' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+      const cf = (l?.customFields || {}) as Record<string, any>;
+      if (l && ehConstrucaoFh(prop?.content || '', cf)) return res.status(400).json({ error: textoConstrucao(financiadoFh(prop?.content || '', cf)).replace(/^🏗️ /, '') });
+    }
     const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds: [leadId], banks: Array.isArray(req.body?.banks) && req.body.banks.length ? FH_RUN_BANKS.filter((b) => req.body.banks.includes(b)) : FH_RUN_BANKS, dryRun: req.body?.dryRun === true, kind, force: kind === 'RUN', queueIfBusy: kind === 'RUN' }); // Credimorar (Bradesco/Santander) + Inter no nosso portal + Itaú no portal Itaú Imóveis (03/11)
     emit(req, { leadId });
     res.json(out);
