@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
@@ -32,8 +32,8 @@ function cardDefaults(lead: BoardLead): OverrideData {
   };
 }
 
-function initial(lead: BoardLead, scope: Scope): OverrideData {
-  const ov = lead.overrides || {};
+function initial(lead: BoardLead, scope: Scope, fresh?: Partial<Record<Bank, OverrideData | null>>): OverrideData {
+  const ov = (fresh || lead.overrides || {}) as Partial<Record<Bank, OverrideData | null>>;
   const saved = scope === 'ALL' ? ((BANKS.map((b) => ov[b.key]).find(Boolean) as OverrideData | undefined) || {}) : ((ov[scope] as OverrideData | undefined) || {});
   const base = cardDefaults(lead);
   return { ...base, ...Object.fromEntries(Object.entries(saved).filter(([, v]) => v !== undefined && v !== '')) } as OverrideData;
@@ -56,6 +56,23 @@ function onlyChanges(lead: BoardLead, form: OverrideData): OverrideData {
   return out;
 }
 
+type Quem = 'AUTO' | 'AMBOS_1' | 'AMBOS_2' | 'SO_1' | 'SO_2';
+/** Quem entra na análise (Fabio 05/11: "preciso de uma opção de selecionar o participante, não essa opção de inverter"). Escolha da equipe = escolhaManual (as regras automáticas não mexem). */
+function quemOpcoes(n1?: string | null, n2?: string | null): { key: Quem; label: string; hint?: string; data: OverrideData }[] {
+  const a = n1 || '1º participante', b = n2 || '2º participante';
+  return [
+    { key: 'AUTO', label: 'O CRM decide', hint: '1ª rodada nos dois nomes; não passou: casados invertem, os outros rodam cada um sozinho; depois de aprovado, roda do jeito que aprovou.', data: { escolhaManual: false } },
+    { key: 'SO_1', label: `Só ${a}`, data: { inverter: false, soTitular: true, escolhaManual: true } },
+    { key: 'SO_2', label: `Só ${b}`, data: { inverter: true, soTitular: true, escolhaManual: true } },
+    { key: 'AMBOS_1', label: `Os dois — titular ${a}`, data: { inverter: false, soTitular: false, escolhaManual: true } },
+    { key: 'AMBOS_2', label: `Os dois — titular ${b}`, data: { inverter: true, soTitular: false, escolhaManual: true } },
+  ];
+}
+function quemAtual(f: OverrideData): Quem {
+  if (!f.escolhaManual) return 'AUTO';
+  return f.soTitular ? (f.inverter ? 'SO_2' : 'SO_1') : (f.inverter ? 'AMBOS_2' : 'AMBOS_1');
+}
+
 export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
   lead: BoardLead; onClose: () => void; onSaved: () => void; onRunAgain: (banks: Bank[]) => void;
 }) {
@@ -63,12 +80,21 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
   const [scope, setScope] = useState<Scope>('ALL');
   const [form, setForm] = useState<OverrideData>(() => initial(lead, 'ALL'));
   const [busy, setBusy] = useState(false);
+  // Ajustes ATUAIS de cada banco (Fabio 05/11: a janela abriu com o ajuste velho da lista — sem a inversão que a rodada automática tinha feito — e salvou "só no nome" da pessoa errada).
+  const [fresh, setFresh] = useState<Partial<Record<Bank, OverrideData | null>> | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    Promise.all(BANKS.map((b) => api.get('/api/credit-analysis/overrides', { params: { leadId: lead.id, bank: b.key } }).then((r) => [b.key, r.data?.data || null] as const).catch(() => [b.key, lead.overrides?.[b.key] || null] as const)))
+      .then((pares) => { if (!vivo) return; const f = Object.fromEntries(pares) as Partial<Record<Bank, OverrideData | null>>; setFresh(f); setForm(initial(lead, scope, f)); });
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lead.id]);
   const set = (k: keyof OverrideData) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const banksOf = (s: Scope): Bank[] => (s === 'ALL' ? BANKS.map((b) => b.key) : [s]);
 
   function pickScope(s: Scope) {
     setScope(s);
-    setForm(initial(lead, s));
+    setForm(initial(lead, s, fresh || undefined));
   }
 
   async function save(clear = false, runAgain = false) {
@@ -122,27 +148,20 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
         </div>
 
         {hasP2 ? (
-          <label className="flex items-start gap-2 rounded-lg border border-af-border p-3 text-sm text-slate-600 cursor-pointer">
-            <input type="checkbox" className="mt-0.5" checked={!!form.inverter} onChange={(e) => setForm((f) => ({ ...f, inverter: e.target.checked, escolhaManual: true }))} />
-            <span>
-              <span className="font-medium text-slate-700">Inverter participantes</span>
-              <span className="block text-xs text-slate-400">
-                {form.inverter ? <>Titular na análise: <strong>{c.name2}</strong> · 2º participante: <strong>{c.name1}</strong></> : <>Titular: <strong>{c.name1}</strong> · 2º participante: <strong>{c.name2}</strong></>}
-              </span>
-              {form.inverter && <span className="block text-[11px] text-slate-400 mt-1">Trocam de lugar nome, CPF, nascimento, telefone, e-mail e estado civil. A renda não troca: o novo titular usa a renda do 1º participante.</span>}
-            </span>
-          </label>
+          <div className="rounded-lg border border-af-border p-3 text-sm text-slate-600">
+            <div className="font-medium text-slate-700 mb-1.5">Quem entra na análise</div>
+            {quemOpcoes(c.name1, c.name2).map((o) => (
+              <label key={o.key} className="flex items-start gap-2 py-1 cursor-pointer">
+                <input type="radio" name="quem" className="mt-1" checked={quemAtual(form) === o.key} onChange={() => setForm((f) => ({ ...f, ...o.data }))} />
+                <span>
+                  <span className="text-slate-700">{o.label}</span>
+                  {o.hint && <span className="block text-xs text-slate-400">{o.hint}</span>}
+                </span>
+              </label>
+            ))}
+          </div>
         ) : (
-          <p className="text-xs text-slate-400">Este card não tem 2º participante, então não há o que inverter.</p>
-        )}
-        {hasP2 && (
-          <label className="flex items-start gap-2 rounded-lg border border-af-border p-3 text-sm text-slate-600 cursor-pointer">
-            <input type="checkbox" className="mt-0.5" checked={!!form.soTitular} onChange={(e) => setForm((f) => ({ ...f, soTitular: e.target.checked, escolhaManual: true }))} />
-            <span>
-              <span className="font-medium text-slate-700">Rodar só no nome de {form.inverter ? c.name2 : c.name1}</span>
-              <span className="block text-xs text-slate-400">{form.inverter ? c.name1 : c.name2} fica fora da análise. Sem mexer aqui, o CRM decide sozinho: depois de uma aprovação, a nova rodada vai só no nome de quem aprovou (o 2º participante entra só se for cônjuge).</span>
-            </span>
-          </label>
+          <p className="text-xs text-slate-400">Este card não tem 2º participante: a análise roda só no nome do titular.</p>
         )}
 
         <div className="flex flex-wrap justify-between gap-2 pt-1">
