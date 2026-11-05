@@ -579,8 +579,8 @@ async function checkAndForward(accountId: string, lead: { id: string; name: stri
     const sig = ruins.map((d) => `${d.attId}:${d.problema}`).join('|');
     if (sig !== st.problemSig && aberto) {
       await saveState(lead.id, { problemSig: sig });
-      const linhas = ruins.map((d) => `⚠️ *${d.kind === 'SCR' ? 'Autorização SCR' : 'Documento de identidade'}${d.holder ? ` (${d.holder.split(' ').slice(0, 2).join(' ')})` : ''}* — ${d.problema}`);
-      const rr = await tellClient(accountId, lead.id, `Conferi o que você mandou e preciso de um ajuste:\n\n${linhas.join('\n')}\n\nAssim que reenviar, eu confiro de novo!`, io);
+      const linhas = ruins.map((d) => `• *${d.kind === 'SCR' ? 'Autorização SCR' : 'Documento de identidade'}${d.holder ? ` (${d.holder.split(' ').slice(0, 2).join(' ')})` : ''}*: ${d.problema}`);
+      const rr = await tellClient(accountId, lead.id, `Obrigado! 😊 Conferi o que você mandou e, pra o banco aceitar, ${linhas.length > 1 ? 'tem uns detalhes' : 'tem só um detalhe'}:\n\n${linhas.join('\n')}\n\nAssim que reenviar, eu confiro de novo!` /* pedido sutil (Fabio 05/11) */, io);
       await addNote(lead.id, `🤖 SCR Creditas: problema nos documentos devolvidos — ${ruins.map((d) => d.problema).join(' | ')}. ${rr?.success ? 'Cliente avisado.' : 'Cliente NÃO avisado (IA desligada).'}`);
     }
     return;
