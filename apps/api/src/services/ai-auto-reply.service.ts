@@ -811,7 +811,8 @@ async function addFollowPrazoQuestion(leadId: string, incomingText: string, etap
 // cliente APROVADO que reclama do preço não recebe despedida — a IA pergunta se ele quer seguir com o aprovado. Sem resposta em 1 dia → Perdidos
 // com "Aprovado sem andamento" (prosseguir.processSeguirAprovado). Uma vez a cada 2 dias.
 export const SEGUIR_APROVADO_Q = 'Você deseja seguir com o crédito aprovado?';
-const HESITA_RX = /(car[oa]s?\b|taxa|juros|parcela|alt[oa]s?\b|pesad|n[ãa]o (cabe|coube|compensa|d[aá] pra)|or[çc]amento|vou pensar|deixa (pra|para) l[aá]|n[ãa]o sei se)/i;
+// "Esse valor não me atende" (Paloma 05/11) também é hesitação com o aprovado.
+export const HESITA_RX = /(car[oa]s?\b|taxa|juros|parcela|alt[oa]s?\b|pesad|n[ãa]o (cabe|coube|compensa|d[aá] pra)|n[ãa]o (me )?atende|or[çc]amento|vou pensar|deixa (pra|para) l[aá]|n[ãa]o sei se)/i;
 const DESPEDIDA_RX = /(fico [àa] disposi|estou [àa] disposi|qualquer (coisa|d[uú]vida),? (é só|me) (chamar|falar)|se (quiser|mudar de ideia|precisar)|retomar (depois|mais tarde|futuramente)|quando quiser|porta (fica )?aberta)/i;
 // Recusa com todas as letras: aí o Perdido da IA vale. Só "achou caro" (Iranildes 29/10: "Muito caro ainda" → a IA marcou Perdido direto) vira a pergunta.
 const RECUSA_RX = /(n[ãa]o (quero|tenho (mais )?interesse|vou (querer|seguir|fazer|continuar))|desist|n[ãa]o,? obrigad|deixa quieto|pode (cancelar|encerrar|parar)|n[ãa]o precis|esquece)/i;
