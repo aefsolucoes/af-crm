@@ -86,7 +86,16 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
   useEffect(() => {
     let vivo = true;
     Promise.all(BANKS.map((b) => api.get('/api/credit-analysis/overrides', { params: { leadId: lead.id, bank: b.key } }).then((r) => [b.key, r.data?.data || null] as const).catch(() => [b.key, lead.overrides?.[b.key] || null] as const)))
-      .then((pares) => { if (!vivo) return; const f = Object.fromEntries(pares) as Partial<Record<Bank, OverrideData | null>>; setFresh(f); setForm((atual) => comMexidos(initial(lead, scope, f), atual)); });
+      .then((pares) => {
+        if (!vivo) return;
+        const f = Object.fromEntries(pares) as Partial<Record<Bank, OverrideData | null>>;
+        setFresh(f);
+        // Um banco só com escolha de quem entra (ex.: Inter "Só Nildinete"): a janela abre nele — em "Todos os bancos" a escolha não aparecia e salvar ali apagava ela.
+        const manuais = BANKS.map((b) => b.key).filter((k) => f[k]?.escolhaManual);
+        const alvo: Scope = scope === 'ALL' && manuais.length === 1 && !mexidos.size ? manuais[0] : scope;
+        if (alvo !== scope) setScope(alvo);
+        setForm((atual) => comMexidos(initial(lead, alvo, f), atual));
+      });
     return () => { vivo = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lead.id]);
@@ -99,6 +108,13 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
     setForm((f) => ({ ...f, [k]: v }));
     marca(k);
   };
+  /** Ao sair do campo, completa os centavos: 160.000 → 160.000,00 (Fabio 05/11: "cadê os centavos?"). */
+  const centavos = (k: keyof OverrideData) => () => setForm((f) => {
+    const v = String(f[k] || '').trim();
+    if (!v) return f;
+    const [int, dec = ''] = v.split(',');
+    return { ...f, [k]: `${int || '0'},${(dec + '00').slice(0, 2)}` };
+  });
   /** Valores do banco escolhido + o que você já mexeu por cima. */
   const comMexidos = (base: OverrideData, atual: OverrideData): OverrideData => {
     const out: OverrideData = { ...base };
@@ -147,20 +163,20 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
         <p className="text-xs text-slate-400">Os campos já vêm com os dados do card. Mude só o que quiser ajustar — o que ficar igual ao card segue como está.</p>
         <div className="grid grid-cols-2 gap-3">
           <label className="block text-xs text-slate-500">Valor do imóvel (R$)
-            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.valorImovel || ''} onChange={set('valorImovel')} placeholder="ex.: 900.000,00" />
+            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.valorImovel || ''} onChange={set('valorImovel')} onBlur={centavos('valorImovel')} placeholder="ex.: 900.000,00" />
           </label>
           <label className="block text-xs text-slate-500">Valor do financiamento (R$)
-            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.valorEmprestimo || ''} onChange={set('valorEmprestimo')} placeholder="ex.: 300.000,00" />
+            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.valorEmprestimo || ''} onChange={set('valorEmprestimo')} onBlur={centavos('valorEmprestimo')} placeholder="ex.: 300.000,00" />
           </label>
           <label className="block text-xs text-slate-500">Renda do titular (R$)
-            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.renda || ''} onChange={set('renda')} placeholder="ex.: 8.000,00" />
+            <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.renda || ''} onChange={set('renda')} onBlur={centavos('renda')} placeholder="ex.: 8.000,00" />
           </label>
           <label className="block text-xs text-slate-500">Prazo (meses)
             <input className={`${inputCls} mt-1`} inputMode="numeric" value={form.prazo || ''} onChange={set('prazo')} placeholder="ex.: 180" />
           </label>
           {hasP2 && (
             <label className="block text-xs text-slate-500 col-span-2">Renda do 2º participante (R$)
-              <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.rendaParticipante || ''} onChange={set('rendaParticipante')} placeholder="ex.: 3.500,00" />
+              <input className={`${inputCls} mt-1`} inputMode="decimal" value={form.rendaParticipante || ''} onChange={set('rendaParticipante')} onBlur={centavos('rendaParticipante')} placeholder="ex.: 3.500,00" />
             </label>
           )}
         </div>
