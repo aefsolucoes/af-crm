@@ -407,6 +407,42 @@ export function situacaoDosDocumentos(atts: { id: string; fileName?: string | nu
   return { ordered, problemas, ok, duvidas, donoPendente };
 }
 
+/** Fotos da MESMA matrícula, uma por folha (classificador: "MAT 26027 FICHA 2 VERSO"): se a última foto de cada folha cobre da ficha 1 até a última, sem buraco, e a
+ *  última não diz que continua ("segue na folha 03"), o problema de "falta folha/verso/página" (ou de estar na capa/livro) de cada foto deixa de valer — a matrícula
+ *  está completa no conjunto. Devolve true se mudou alguma leitura. Pura sobre `cache`. */
+export function matriculaPorFolhas(cache: Record<string, DocReview>, info: Record<string, { type: string; folha?: string } | null>, atts: { id: string; createdAt: Date }[]): boolean {
+  const quando = new Map(atts.map((a) => [a.id, a.createdAt.getTime()]));
+  const grupos = new Map<string, { id: string; ordem: number; t: number }[]>();
+  for (const [id, i] of Object.entries(info)) {
+    if (!i?.folha || !cache[id]) continue;
+    const mat = ((/MAT\s*([\d.]+)/i.exec(i.folha) || [])[1] || '').replace(/\D/g, '');
+    const n = Number((/FICHA\s*(\d+)/i.exec(i.folha) || [])[1]);
+    if (!mat || !(n > 0)) continue;
+    grupos.set(mat, [...(grupos.get(mat) || []), { id, ordem: n * 2 + (/VERSO/i.test(i.folha) ? 1 : 0), t: quando.get(id) || 0 }]);
+  }
+  const DE_FOLHA = /folha|verso|p[aá]gina|segue|continua|come[cç]a no meio|meio de|capa|livro|fich[aá]rio|encaderna|pasta/i;
+  const CONTINUA = /segue (no|na|para)|continua (no|na)|p[aá]gina seguinte|pr[oó]xima folha|(folha|ficha) (0?3|0?4|0?5)\b/i;
+  let mudou = false;
+  for (const [mat, fotos] of grupos) {
+    const ultimaPorOrdem = new Map<number, { id: string; t: number }>();
+    for (const f of fotos) { const u = ultimaPorOrdem.get(f.ordem); if (!u || f.t > u.t) ultimaPorOrdem.set(f.ordem, { id: f.id, t: f.t }); }
+    const ordens = [...ultimaPorOrdem.keys()].sort((a, b) => a - b);
+    if (ordens[0] !== 2) continue; // falta a ficha 1 (frente)
+    if (ordens.some((o, k) => k > 0 && o !== ordens[k - 1] + 1)) continue; // buraco entre as folhas
+    const ultima = cache[ultimaPorOrdem.get(ordens[ordens.length - 1])!.id];
+    if (ultima && ultima.resultado === 'PROBLEMA' && (ultima.problemas || []).some((p) => CONTINUA.test(p) && !/falta(m)? a(s)? (folha|ficha) 0?1\b|anterior/i.test(p))) continue; // a última diz que continua
+    const usadas = new Set([...ultimaPorOrdem.values()].map((u) => u.id));
+    for (const f of fotos) {
+      const r = cache[f.id];
+      if (!r || r.resultado !== 'PROBLEMA' || r.corrigidoPor) continue;
+      if (!(r.problemas || []).every((p) => DE_FOLHA.test(p))) continue; // tem outro problema (ilegível, outro imóvel…): fica
+      cache[f.id] = { ...r, resultado: 'OK', problemas: [], observacao: `${r.observacao ? `${r.observacao} ` : ''}(matrícula ${mat} conferida no conjunto das fotos: ${ordens.length} folha(s), da ficha 1 em diante${usadas.has(f.id) ? '' : '; esta foto foi substituída por uma mais nova da mesma folha'})`.trim() };
+      mudou = true;
+    }
+  }
+  return mudou;
+}
+
 /** Lê os documentos que ainda não foram lidos e devolve a situação atual de cada um. */
 export async function reviewReceivedDocs(accountId: string, leadId: string, opts: { releCertidao?: boolean } = {}): Promise<ReviewSummary | null> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
@@ -479,7 +515,9 @@ export async function reviewReceivedDocs(accountId: string, leadId: string, opts
       await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf1 as any } });
     } catch { /* contagem é só aviso */ }
   }
-  if (novas.length) {
+  // MATRÍCULA EM FOTOS, UMA POR FOLHA (Fabio 05/11, Milena): cada foto lida sozinha "falta a folha seguinte/anterior", mas o conjunto está completo — confere junto.
+  const juntas = matriculaPorFolhas(cache, info, atts);
+  if (novas.length || juntas) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const freshCf = (fresh?.customFields || {}) as any;
     // Correção que a equipe fez no painel ENQUANTO a IA lia (12 PDFs levam minutos): vale a da equipe — o `cache` é de antes e regravaria a leitura velha por cima.
