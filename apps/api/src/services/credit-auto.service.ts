@@ -248,17 +248,31 @@ async function startNewFhLeads(accountId: string, enabledAt: Date) {
   }
 }
 
-/** CADA UM SOZINHO (Fabio 05/11: "ele pode aprovar primeiro no nome dos dois, sendo casado ou não, depois roda cada um sozinho, caso não consiga aprovação no nome dos dois").
- *  A 1ª rodada vai nos dois nomes (o 2º participante do card entra). Num banco em que ela foi REPROVADA ou APROVADA A MENOR: roda o 1º participante SOZINHO e depois o 2º
- *  SOZINHO (o 2º entra assim que o 1º sozinho já foi enviado). 1ª rodada que já foi só no 1º (proposta sem o 2º, Creditas que só aceita cônjuge): roda o 2º sozinho.
- *  CPF do 1º com proposta ativa na Creditas: só o 2º. Banco com escolha manual da equipe ou já tratado pela regra antiga (_autoP2Banks) fica de fora. Pura (testável). */
-export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[], manuais: string[] = []): { bank: string; who: 'P1' | 'P2'; why: string }[] {
+/** Casados? (Fabio 05/11: "se for casado e o nome do primeiro proponente não passou, o CRM deve inverter"): a relação do 2º participante na proposta (cônjuge/companheiro);
+ *  sem ela, o estado civil do 1º (card ou proposta) começando com "casad". Pura (testável). */
+export function casadosNaProposta(cf: Cf, proposta: string): boolean {
+  const n = (v: unknown) => String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const txt = String(proposta || '').replace(/[*_]/g, '');
+  const [principal, bloco2 = ''] = txt.split(/2[ºo°]\s*PARTICIPANTE/i);
+  const relacao = n(/rela[çc][ãa]o[^:\n]*:\s*([^\n]+)/i.exec(bloco2)?.[1]);
+  if (relacao) return /conjuge|companheir|espos|marido|mulher/.test(relacao);
+  const ec = n(cf.estado_civil_1) || n(/estado civil:\s*([^\n]+)/i.exec(principal)?.[1]);
+  return ec.startsWith('casad');
+}
+
+/** DEPOIS DE NÃO PASSAR NOS DOIS NOMES (Fabio 05/11). A 1ª rodada vai nos dois nomes (o 2º participante do card entra, casados ou não). Num banco em que ela foi REPROVADA
+ *  ou APROVADA A MENOR:
+ *  - CASADOS → INVERTE: o 2º vira o titular e o 1º vira o 2º participante (1 vez por banco) — "se for casado e o nome do primeiro proponente não passou, o CRM deve inverter";
+ *  - NÃO casados → CADA UM SOZINHO: o 1º sozinho e depois o 2º sozinho (o 2º entra assim que o 1º sozinho já foi enviado) — "depois roda cada um sozinho";
+ *    1ª rodada que já foi só no 1º (proposta sem o 2º, Creditas que só aceita cônjuge) → o 2º sozinho; CPF do 1º com proposta ativa na Creditas → só o 2º.
+ *  Banco com escolha manual da equipe ou já tratado pela regra antiga (_autoP2Banks) fica de fora. Pura (testável). */
+export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[], manuais: string[] = [], casados = false): { bank: string; who: 'P1' | 'P2' | 'INV'; why: string }[] {
   const p2 = String(cf.participante_2 || '').trim();
   const cpf2 = String(cf.cpf_2 || '').replace(/\D/g, '');
   if (!p2 || cpf2.length < 11) return [];
   const antigos: string[] = Array.isArray(cf._autoP2Banks) ? cf._autoP2Banks : [];
   const sozinho = (cf._autoSozinho || {}) as Record<string, string[]>;
-  const todo: { bank: string; who: 'P1' | 'P2'; why: string }[] = [];
+  const todo: { bank: string; who: 'P1' | 'P2' | 'INV'; why: string }[] = [];
   for (const bank of BANKS) {
     if (antigos.includes(bank) || manuais.includes(bank)) continue;
     const rows = analyses.filter((a) => a.bank === bank);
@@ -269,6 +283,7 @@ export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; 
     const falhou = cpfAtivo || (decided && (decided.status === 'REJECTED' || (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || ''))));
     if (!falhou) continue; // aprovado no valor total (ou ainda sem resposta): não precisa
     const why = cpfAtivo ? 'CPF do 1º já tem proposta ativa na Creditas' : decided!.status === 'REJECTED' ? 'reprovado' : 'aprovado a menor';
+    if (casados) { if (!feitos.includes('INV')) todo.push({ bank, who: 'INV', why: `${why} no nome do 1º (casados)` }); continue; }
     const primeira = rows.find((a) => a.kind === 'RUN' && /Titular na an[aá]lise:/i.test(a.detail || ''));
     const nosDois = formatoDaRodada(primeira?.detail) === 'AMBOS';
     if (nosDois && !cpfAtivo && !feitos.includes('P1')) { todo.push({ bank, who: 'P1', why: `${why} nos dois nomes` }); continue; }
@@ -277,7 +292,7 @@ export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; 
   return todo;
 }
 
-/** 2) Cascata: reprovado (ou a menor) nos dois nomes → cada um sozinho, nesse banco (1 vez cada). */
+/** 2) Cascata: não passou nos dois nomes → casados invertem, os outros rodam cada um sozinho (1 vez cada, por banco). */
 async function cascadeToSecond(accountId: string) {
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, creditAnalyses: { some: {} } },
@@ -290,17 +305,20 @@ async function cascadeToSecond(accountId: string) {
     if (!cf._autoStartedAt) continue;
     const ovs = await prisma.creditOverride.findMany({ where: { leadId: l.id }, select: { bank: true, data: true } });
     const manuais = ovs.filter((o) => (o.data as any)?.escolhaManual === true).map((o) => o.bank);
-    const todo = cascadePlan(cf, l.name, l.creditAnalyses, manuais);
+    const proposta = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+    const casados = casadosNaProposta(cf, proposta?.content || '');
+    const todo = cascadePlan(cf, l.name, l.creditAnalyses, manuais, casados);
     if (!todo.length) continue;
     const p1 = String(cf.participante_1 || l.name || '').trim(), p2 = String(cf.participante_2 || '').trim();
     const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
     const feitos = { ...((cf._autoSozinho || {}) as Record<string, string[]>) };
     for (const t of todo) {
-      await setOverrides(prisma, { accountId, leadId: l.id, banks: [t.bank], data: { inverter: t.who === 'P2', soTitular: true }, merge: true, userName: 'Análise automática (cada um sozinho)' });
+      const data = t.who === 'INV' ? { inverter: true, soTitular: false } : { inverter: t.who === 'P2', soTitular: true };
+      await setOverrides(prisma, { accountId, leadId: l.id, banks: [t.bank], data, merge: true, userName: t.who === 'INV' ? 'Análise automática (casados: invertido)' : 'Análise automática (cada um sozinho)' });
       const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [t.bank], dryRun: false, force: true });
       feitos[t.bank] = Array.from(new Set([...(feitos[t.bank] || []), t.who]));
       await saveCf(l.id, { _autoSozinho: feitos });
-      await addNote(l.id, `🤖 ${label[t.bank]} ${t.why} → rodando só no nome de ${t.who === 'P1' ? p1 : p2}. ${out.created} pedido(s) na fila.`);
+      await addNote(l.id, `🤖 ${label[t.bank]} ${t.why} → ${t.who === 'INV' ? `invertido: ${p2} como titular e ${p1} como 2º participante` : `rodando só no nome de ${t.who === 'P1' ? p1 : p2}`}. ${out.created} pedido(s) na fila.`);
     }
   }
 }
