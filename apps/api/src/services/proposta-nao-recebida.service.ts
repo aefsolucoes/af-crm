@@ -51,12 +51,12 @@ export async function processPropostaNaoRecebida(accountId: string, io?: Io): Pr
     SELECT l.id FROM "Lead" l JOIN "Stage" s ON s.id = l."stageId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
       AND s.name ILIKE 'pr_-an_lise%' AND l."stageEnteredAt" < ${new Date(Date.now() - ESPERA_MS)} AND l."stageEnteredAt" > ${new Date(Date.now() - 30 * 86_400_000)}
-      AND l."customFields"->'_propNaoRecebida' IS NULL AND COALESCE(l."customFields"->>'_autoPaused', '') = ''
+      AND COALESCE(l."customFields"->'_propNaoRecebida'->>'v', '') <> '2' AND COALESCE(l."customFields"->>'_autoPaused', '') = ''
     ORDER BY l."stageEnteredAt" DESC LIMIT 5`;
   for (const { id } of rows) {
     const lead = await prisma.lead.findUnique({ where: { id }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
     if (!lead) continue;
-    const marca = (v: Record<string, unknown>) => prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_propNaoRecebida}', ${JSON.stringify({ ...v, at: new Date().toISOString() })}::jsonb, true) WHERE id = ${id}`;
+    const marca = (v: Record<string, unknown>) => prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_propNaoRecebida}', ${JSON.stringify({ ...v, v: '2', at: new Date().toISOString() })}::jsonb, true) WHERE id = ${id}`;
     const onde = await ondeEstaAProposta(id);
     if (onde && onde !== 'EMAIL') { await marca({ status: 'TEM', onde }); continue; }
     const nota = (content: string) => prisma.note.create({ data: { leadId: id, type: 'COMMENT', content } }).catch(() => {});
