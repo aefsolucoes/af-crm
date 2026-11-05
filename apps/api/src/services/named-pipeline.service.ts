@@ -117,6 +117,9 @@ export async function moveLeadToPerdidos(params: {
   const targetStage = perdidos.stages.find((s) => s.name === mesAtual) || perdidos.stages[0];
   if (!targetStage) return null;
   const m = (motivo || '').trim();
+  // Onde o card estava (Fabio 05/11: a leitura da desistência precisa saber se foi no meio do processo — desistencia.service lê da nota).
+  const antes = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { name: true } }, stage: { select: { name: true } } } });
+  const estava = antes && antes.pipeline.name !== 'Perdidos' ? ` (estava em: ${antes.pipeline.name} / ${antes.stage.name})` : '';
   const movedLead = await prisma.lead.update({
     where: { id: leadId },
     data: {
@@ -125,8 +128,8 @@ export async function moveLeadToPerdidos(params: {
       notes: {
         create: {
           content: m
-            ? `Lead migrado automaticamente para o funil "Perdidos" (${targetStage.name}) ao ser marcado como Perdido — por ${byName}. Motivo: ${m}`
-            : `Lead migrado automaticamente para o funil "Perdidos" (${targetStage.name}) ao ser marcado como Perdido — por ${byName}.`,
+            ? `Lead migrado automaticamente para o funil "Perdidos" (${targetStage.name}) ao ser marcado como Perdido — por ${byName}${estava}. Motivo: ${m}`
+            : `Lead migrado automaticamente para o funil "Perdidos" (${targetStage.name}) ao ser marcado como Perdido — por ${byName}${estava}.`,
           type: 'STAGE_CHANGE',
           ...(userId ? { userId } : {}),
         },
