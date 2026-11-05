@@ -213,6 +213,18 @@ export async function processSaldoDevedor(accountId: string, io: Io): Promise<vo
       if (bloq) await avisarSaldoBloqueado(accountId, c.id, { saldo, valorImovel, aprovado: am.aMenor ? am.valor : null, bloq, podeMandar: false, io });
     } catch (e: any) { console.error(`[Saldo] limite ${c.id}:`, e?.message || e); }
   }
+  // 1d) Bloqueio revisto (Fabio 05/11, Fernanda Karita: o imóvel passou de R$ 200 mil pra R$ 300 mil e o card continuava "não dá pra seguir"): com o valor do imóvel ou a
+  // aprovação de agora o saldo cabe → tira o bloqueio (a cobrança de documentos e a IA voltam ao normal) e avisa a equipe.
+  const bloqueados = await prisma.$queryRaw<{ id: string; saldo: string; valor_imovel: string | null }[]>`SELECT id, "customFields"->'_saldoDevedor'->'bloqueio'->>'saldo' AS saldo, "customFields"->>'valor_imovel' AS valor_imovel FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->'_saldoDevedor'->'bloqueio') IS NOT NULL LIMIT 20`;
+  for (const c of bloqueados) {
+    try {
+      const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(c.id);
+      const saldo = Number(c.saldo) || 0, valorImovel = parseBrl(c.valor_imovel);
+      if (saldoBloqueia(saldo, valorImovel, am.aMenor ? am.valor : null)) continue;
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" #- '{_saldoDevedor,bloqueio}' WHERE id = ${c.id}`;
+      await prisma.note.create({ data: { leadId: c.id, type: 'COMMENT', content: `🔓 Saldo devedor voltou a caber: ${brl(saldo)}${valorImovel ? ` com o imóvel de ${brl(valorImovel)} (limite de 60% = ${brl(Math.round(valorImovel * 0.6 * 100) / 100)})` : ''}${am.aMenor ? ` e o aprovado de ${brl(am.valor)}` : ''}. O bloqueio saiu: a cobrança de documentos e a IA voltam ao normal.` } }).catch(() => {});
+    } catch (e: any) { console.error(`[Saldo] rever bloqueio ${c.id}:`, e?.message || e); }
+  }
   // 2) Quem já foi pedido: lê o print que chegar.
   const rows = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->'_saldoDevedor'->>'askedAt') IS NOT NULL AND ("customFields"->'_saldoDevedor'->>'doneAt') IS NULL LIMIT 10`;
   for (const { id } of rows) {
