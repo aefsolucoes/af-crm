@@ -123,6 +123,13 @@ export function valorParaEdicao(value: unknown): string {
   return Number.isFinite(n) ? n.toLocaleString('pt-BR', { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 }) : s;
 }
 
+/** Máscara de valor estilo app de banco (Fabio 05/11: "deveria escrever 16000000 e aparecer 160.000,00"): só os dígitos, os 2 últimos são os centavos. */
+export function maskCentavos(value: string): string {
+  const d = String(value || '').replace(/\D/g, '').replace(/^0+/, '');
+  if (!d) return '';
+  return (Number(d) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export function maskMoneyInput(value: string): string {
   const cleaned = value.replace(/\./g, '').replace(/[^\d,]/g, '');
   if (!cleaned) return '';

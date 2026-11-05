@@ -4,7 +4,7 @@ import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { maskMoneyInput } from '@/lib/utils';
+import { maskCentavos } from '@/lib/utils';
 import { BANKS, type Bank, type BoardLead, type OverrideData } from '@/components/credit/shared';
 
 /* "Ajustar" um cliente já rodado: valores, renda, prazo e inverter titular/2º participante.
@@ -104,7 +104,7 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
   const marca = (...ks: string[]) => setMexidos((m) => new Set([...Array.from(m), ...ks]));
   const DINHEIRO = new Set(['valorImovel', 'valorEmprestimo', 'renda', 'rendaParticipante']);
   const set = (k: keyof OverrideData) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = DINHEIRO.has(k) ? maskMoneyInput(e.target.value) : e.target.value.replace(/\D/g, ''); // máscara: 160.000,00 (prazo só dígitos)
+    const v = DINHEIRO.has(k) ? maskCentavos(e.target.value) : e.target.value.replace(/\D/g, ''); // máscara de banco: 16000000 → 160.000,00 (prazo só dígitos)
     setForm((f) => ({ ...f, [k]: v }));
     marca(k);
   };
