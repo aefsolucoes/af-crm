@@ -625,6 +625,7 @@ export async function conferirDocumentosAgora(accountId: string, leadId: string,
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const cf = { ...((fresh?.customFields || {}) as Record<string, any>) };
     const naoLidos = atts.filter((a) => !(cf._docInfo || {})[a.id]).map((a) => a.fileName || a.id);
+    const semConferencia = atts.filter((a) => { const i = (cf._docInfo || {})[a.id]; return i && i !== 'IGNORAR' && !(cf._docReview || {})[a.id]; }).map((a) => `${String((cf._docInfo || {})[a.id]).split('|')[0]} (${a.fileName || a.id})`);
     const quem = userName ? `, por ${userName}` : '';
     if (!verdict) {
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📄 Conferência de documentos (botão${quem}): ${atts.length ? 'não consegui conferir — nenhum arquivo foi lido ou não há lista "Documentos …" pro setor do card.' : 'o cliente não mandou nenhum arquivo.'}${naoLidos.length ? `\nSem leitura: ${naoLidos.join('; ')}` : ''}` } }).catch(() => {});
@@ -646,10 +647,16 @@ export async function conferirDocumentosAgora(accountId: string, leadId: string,
           ...(duvidas.length ? [`Em dúvida (balão Dúvidas da IA): ${duvidas.join('; ')}`] : []),
           ...(verdict.emitir.length ? [`A&F precisa emitir: ${verdict.emitir.join('; ')}`] : []),
           ...(naoLidos.length ? [`Sem leitura (confira à mão): ${naoLidos.join('; ')}`] : []),
+          ...(semConferencia.length ? [`Classificados mas SEM conferência (a leitura não saiu — confira à mão): ${semConferencia.join('; ')}`] : []),
           'Nenhuma mensagem foi enviada ao cliente e o card não foi movido.',
         ].join('\n\n'),
       },
     }).catch(() => {});
+    // Pasta do Drive já montada: reorganiza com o que foi lido agora (folhas da matrícula PAG 1, 2…; repetidos e sem uso em DESNECESSARIO — Fabio 05/11).
+    if (cf._driveOrganizedAt || cf.link_pasta_drive) {
+      const { organizeLeadDocsNow } = require('./received-docs.service') as typeof import('./received-docs.service');
+      await organizeLeadDocsNow(leadId).catch((e: any) => console.error(`[Docs] botão — não reorganizei a pasta (${leadId}):`, e?.message || e));
+    }
     if (io) io.to(`lead:${leadId}`).emit('lead_updated', { leadId });
     return { completo: verdict.complete, faltando: verdict.faltando };
   } finally {
