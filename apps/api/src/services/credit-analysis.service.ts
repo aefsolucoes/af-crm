@@ -1786,12 +1786,15 @@ export async function extensionsLive(db: Db, accountId: string, produto: 'HE' | 
     const last = arr[arr.length - 1];
     return { step: last ? String(last.s).replace(/^passo:\s*/i, '').replace(/\s*\(\d+ s depois de abrir a proposta\)$/, '').slice(0, 120) : null, stepAt: last?.t || null };
   };
+  // Pedidos AUTOMÁTICOS guardados de propósito (card pausado, Creditas esperando a autorização SCR) não estão na fila de verdade — a extensão não os pega até a trava sair.
+  // Antes contavam como "Na fila" (Fabio 05/11: "por que tem 9 clientes na fila do Creditas?" — eram 2 cards travados, com pedidos de outubro).
+  const travas = { AND: [notPausedAuto(await pausedLeadIds(db, accountId)), notScrLocked(await scrLockedLeadIds(db, accountId))] };
   for (const bank of bancosDoPainel) {
     const running = await db.creditAnalysis.findMany({
       where: { accountId, bank, status: 'RUNNING', dryRun: false }, orderBy: { startedAt: 'desc' }, take: 3,
       select: { id: true, leadId: true, kind: true, startedAt: true, steps: true, holderName: true, lead: { select: { name: true } } },
     });
-    const pronta = { accountId, bank, status: 'REQUESTED', dryRun: false, OR: [{ notBefore: null }, { notBefore: { lte: agora } }] };
+    const pronta = { accountId, bank, status: 'REQUESTED', dryRun: false, OR: [{ notBefore: null }, { notBefore: { lte: agora } }], ...travas };
     // Fila (Fabio 21/10: "quero que mostre no painel os clientes que estão na fila"): análises (RODAR) primeiro e depois as conferências, cada grupo por ordem de pedido — antes as conferências antigas
     // ocupavam os 12 lugares e escondiam quem estava esperando pra rodar. As conferências agendadas (daqui a alguns minutos) também aparecem com o nome e a hora, não só o número.
     const queue = await db.creditAnalysis.findMany({ where: pronta, orderBy: [{ kind: 'desc' }, { requestedAt: 'asc' }], take: 20, select: { id: true, leadId: true, kind: true, requestedAt: true, requestedById: true, detail: true, lead: { select: { name: true } } } });
