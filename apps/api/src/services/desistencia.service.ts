@@ -132,6 +132,7 @@ async function analisar(accountId: string, leadId: string, d0: Partial<Desistenc
     return;
   }
   // IA desligada (a equipe está conversando) ou janela fechada: a equipe pergunta — o CRM relê se ele responder em até 3 dias.
+  if (!lead.aiAutoReplyActive && r.pergunta) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'porQueDesistiu', `perguntar com jeito o que pesou na desistência — "${r.pergunta}"`);
   d.perguntaEm = agora;
   await gravar(leadId, d);
   await nota(leadId, `${cab} — o porquê não ficou claro.${r.pergunta ? ` Pra entender, pergunte com jeito: "${r.pergunta}"` : ''}${aberta ? '' : ' (janela de 24 h fechada: só por template)'}`);

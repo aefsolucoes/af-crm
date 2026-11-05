@@ -73,6 +73,7 @@ async function avisarSaldoBloqueado(accountId: string, leadId: string, p: { sald
   } else if (!p.podeMandar) porQueNao = 'o saldo foi lido antes desta regra';
   else if (cf._autoPaused) porQueNao = 'card pausado';
   const bloqueio = { motivo: p.bloq.motivo, limite: p.bloq.limite, saldo: p.saldo, valorImovel: p.valorImovel, aprovado: p.aprovado, em: new Date().toISOString(), avisado: enviado };
+  if (!enviado && !lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoBloqueio', `avisar com jeito que com esse saldo não dá pra seguir — "${texto}"`);
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_saldoDevedor,bloqueio}', ${JSON.stringify(bloqueio)}::jsonb, true) WHERE id = ${leadId}`;
   const conta = p.bloq.motivo === 'LIMITE_60' ? `${brl(p.saldo)} passa de 60% do imóvel (${brl(p.valorImovel)} → limite ${brl(p.bloq.limite)})` : `${brl(p.saldo)} é maior que o aprovado a menor (${brl(p.aprovado || 0)})`;
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🚫 Saldo devedor acima do limite: ${conta}. Com este imóvel não dá pra seguir — a cobrança de documentos parou. ${enviado ? `Cliente avisado: "${texto}"` : `Cliente NÃO avisado (${porQueNao}). Mande: "${texto}"`}` } }).catch(() => {});
@@ -130,6 +131,7 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
   const marker = { askedAt: new Date().toISOString(), base, liquido, declared, gravame };
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoDevedor: marker, ...(liquido > 0 ? { troco: String(liquido) } : {}) } as any } }); // "Troco" = o que sobra pro cliente depois de quitar
   const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
+  if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoDevedorPedido', `pedir o print do saldo devedor e o descritivo da parcela — "${texto}"`);
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Crédito aprovado e o imóvel tem financiamento ativo (proposta: faltam ${declared ? brl(declared) : '—'}${gravame ? `; matrícula: ${gravame}` : ''}). ${sent.success ? 'Pedi ao cliente o print do saldo devedor e o descritivo da parcela (PDF do app do banco): o saldo será somado ao valor líquido que ele precisa' + (liquido ? ` (${brl(liquido)})` : '') + ' e a análise refeita com o total.' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor.' : 'IA desligada: peça ao cliente o print do saldo devedor (será somado ao crédito pedido e a análise refeita).'}` } }).catch(() => {});
   return !!sent.success;
 }
@@ -384,6 +386,7 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
       try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: `⚠️ ${lead.name}`, body: 'Valor aprovado a menor não cobre o saldo devedor — decidir como seguir', leadId }).catch(() => {}); } catch { /* push opcional */ }
       return;
     }
+    if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoDevedorLido', `avisar que recebeu o saldo: quitação de ${brl(achou.saldo)}; com o aprovado de ${brl(am.valor)}, o troco fica em ${brl(trocoReal)} (aproximado)`);
     if (lead.aiAutoReplyActive) {
       const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
       await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo${nome ? `, ${nome}` : ''}! 🙏 O saldo para quitação do financiamento é ${brl(achou.saldo)}. Com o valor aprovado de ${brl(am.valor)}, o troco pra você fica em ${brl(trocoReal)} (valor aproximado — o final é confirmado na formalização).${aindaSemDocs ? ' Já pode ir providenciando a documentação que te enviei, assim a gente adianta o processo. 😉' : ''}`, io: io || undefined });
@@ -403,6 +406,7 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
     r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true, alignApproval: true });
   } catch (e: any) { console.error('[Saldo] não consegui pedir a análise:', e?.message); }
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}. Valor líquido que o cliente precisa ${base ? brl(base) : '—'} + saldo (${brl(achou.saldo)}) = ${brl(Math.round((achou.saldo + base) * 100) / 100)}, arredondado pra cima (milhar inteiro) = ${brl(total)}: "Valor do crédito" atualizado e ${r.created ? `análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''})` : 'análise já em andamento'}. O resultado anterior não vale pro valor novo.` } }).catch(() => {});
+  if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoDevedorLido', `avisar que recebeu o saldo (${brl(achou.saldo)}) e que refez a análise com o valor novo de ${brl(total)} (saldo + o que ele precisa receber)`);
   if (lead.aiAutoReplyActive) {
     const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
     await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você precisa receber` : ''}, ou seja, ${brl(total)}.${corrigido?.novoTroco ? ' Usei o troco que você me passou.' : corrigido?.confirmou ? '' : ' Se o troco não for esse, me avisa que eu ajusto.'} Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.${aindaSemDocs ? ' Enquanto a análise roda, já pode ir providenciando a documentação que te enviei, assim a gente adianta o processo. 😉' : ''}`, io: io || undefined }).catch(() => {});

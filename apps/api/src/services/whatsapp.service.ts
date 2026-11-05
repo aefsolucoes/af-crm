@@ -1573,36 +1573,62 @@ async function avisaSilencioDaIa(accountId: string, leadId: string, texto: strin
   }).catch(() => {});
 }
 
-/** IA LIGADA NO CARD (Fabio 05/11: "sempre que eu ativar a IA no card do cliente, a IA leia toda a conversa e saiba o que fazer" — Maria Rosa mandou RG e conta de água
- *  com a IA desligada e nada andou). Ao ligar (botão "Ativar IA"):
- *  - Aguardando Documentação com arquivo do cliente depois da nossa última mensagem → a conferência lê os documentos e fala com ele (o que falta / problema / completa);
- *  - o cliente falou por último e ninguém respondeu → a IA responde AGORA, lendo a conversa inteira, como se a mensagem tivesse acabado de chegar (com as ações: rodar
- *    análise, mudar etapa…). Só arquivos fora da fase de documentos (RG + comprovante pra montar a proposta) ficam com a proposta montada pelos documentos;
- *  - o que esperava a IA ligada (proposta pelos documentos, avisos) segue sozinho no próximo minuto. Janela de 24 h fechada: só nota (template é com a equipe). */
+/** IA LIGADA NO CARD (Fabio 05/11: "sempre que eu ativar a IA no card do cliente, a IA leia toda a conversa e saiba o que fazer… não só nessa etapa, mas também em
+ *  outras"). Roda quando a IA passa de desligada pra ligada — botão "Ativar IA", card entrando em Aguardando Documentação, ação "Ativar IA" das automações, "Retomar"
+ *  do STOP. Em ordem:
+ *  1. Fluxos que ficaram "com a equipe" só porque a IA estava desligada voltam a andar sozinhos (ia-pendencias.destravarFluxosIa — renda do casal, ocorrências,
+ *     quitação, transferência, laudo).
+ *  2. Fase de documentos: a conferência roda e diz o que ainda NÃO foi dito (problemas, o que falta, dono do imóvel — só ficam "ditos" quando saem).
+ *  3. Financiamento com banco escolhido sem simulação/documentos/passos → manda agora.
+ *  4. O cliente falou por último e ninguém respondeu → a IA responde lendo a conversa inteira (com as ações).
+ *  5. Pendências guardadas enquanto ela estava desligada (avisos, perguntas, repasses — guardarPendenciaIa) → a IA lê a conversa inteira + a lista e manda UMA
+ *     mensagem retomando só o que ainda falta (o que a equipe já tratou fica de fora).
+ *  Janela de 24 h fechada: nada sai — nota pra equipe e as pendências ficam pra próxima vez. */
 export async function retomarComIa(accountId: string, leadId: string, io: any): Promise<void> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { aiAutoReplyActive: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } }, pipeline: { select: { departmentId: true } }, stage: { select: { name: true } } } });
-  if (!lead?.aiAutoReplyActive || (lead.customFields as any)?._autoPaused) return;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } }, pipeline: { select: { departmentId: true } }, stage: { select: { name: true } } } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  if (!lead?.aiAutoReplyActive || cf._autoPaused) return;
+  const P = require('./ia-pendencias.service') as typeof import('./ia-pendencias.service');
   const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
+  const destravados = await P.destravarFluxosIa(leadId).catch(() => [] as string[]);
+  const pend = await P.lerPendenciasIa(leadId);
   const ultimaIn = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', deleted: false }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
   if (!ultimaIn) return;
   const ultimaOut = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', deleted: false }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
   const pendentes = await prisma.message.findMany({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', deleted: false, ...(ultimaOut ? { createdAt: { gt: ultimaOut.createdAt } } : {}) }, select: { content: true, attachments: { select: { id: true } } } });
   if (Date.now() - ultimaIn.createdAt.getTime() >= 23 * 3_600_000) {
-    if (pendentes.length) await nota('🤖 IA ligada: o cliente falou por último, mas a janela de 24 h do WhatsApp já fechou — a IA não consegue responder. Mande um template pra reabrir a conversa.');
+    if (pendentes.length || Object.keys(pend).length) await nota(`🤖 IA ligada, mas a janela de 24 h do WhatsApp já fechou — a IA não consegue falar com o cliente agora. Mande um template pra reabrir a conversa.${Object.keys(pend).length ? ` Ficou pendente: ${Object.values(pend).map((p) => p.o).join(' | ').slice(0, 600)}` : ''}`);
     return;
   }
+  const inicio = new Date();
+  const falouAlgo = async () => (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: inicio } } })) > 0;
   const fase = (lead.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  if (/aguardando document/.test(fase) && pendentes.some((m) => m.attachments.length)) {
-    const { checkDocsComplete } = require('./docs-checker.service') as typeof import('./docs-checker.service');
-    const falou = await checkDocsComplete(accountId, leadId, io, { force: true }).catch(() => false);
-    if (falou) { await nota('🤖 IA ligada: li a conversa e os documentos que chegaram com ela desligada, e já falei com o cliente.'); return; }
+  // 2) documentos
+  const D = require('./docs-checker.service') as typeof import('./docs-checker.service');
+  if (D.etapaConfere(lead.stage?.name || '', cf)) await D.checkDocsComplete(accountId, leadId, io).catch((e: any) => console.error('[IA ligada] documentos:', e?.message));
+  // 3) banco do FH escolhido sem o pacote
+  await (require('./fh-approval.service') as typeof import('./fh-approval.service')).retomarEscolhaFh(accountId, leadId, io).catch((e: any) => console.error('[IA ligada] FH:', e?.message));
+  // 4) o cliente falou por último
+  const soDocsParaProposta = pendentes.length > 0 && pendentes.every((m) => m.attachments.length) && /prospec|follow|sem retorno/.test(fase); // a proposta pelos documentos pergunta o que falta
+  if (pendentes.length && !soDocsParaProposta && !(await falouAlgo())) {
+    const phone = [lead.contact?.whatsappPhone, lead.contact?.phone].map((x) => (x || '').trim()).find((x) => x && !x.includes('@'));
+    if (phone) await maybeAiAutoReplyCloudApi(accountId, leadId, ultimaIn.content || '(mensagem)', phone, io, lead.pipeline?.departmentId);
   }
-  if (!pendentes.length) return; // a última palavra foi nossa: não há o que responder agora
-  if (pendentes.every((m) => m.attachments.length) && /prospec|follow|sem retorno/.test(fase)) return; // documentos pra montar a proposta: a proposta pelos documentos pergunta o que falta
-  const phone = [lead.contact?.whatsappPhone, lead.contact?.phone].map((x) => (x || '').trim()).find((x) => x && !x.includes('@'));
-  if (!phone) return;
-  await nota('🤖 IA ligada: o cliente tinha falado por último sem resposta — a IA leu a conversa inteira e respondeu.');
-  await maybeAiAutoReplyCloudApi(accountId, leadId, ultimaIn.content || '(mensagem)', phone, io, lead.pipeline?.departmentId);
+  // 5) pendências
+  if (Object.keys(pend).length) {
+    const lista = Object.values(pend).sort((a, b) => a.em.localeCompare(b.em)).map((p) => `• ${p.o} (desde ${new Date(p.em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})`).join('\n');
+    const aviso = `[AVISO DO CRM — a IA deste card acabou de ser religada; o cliente NÃO escreveu nada agora] Enquanto a IA estava desligada, estas coisas ficaram por dizer ao cliente:\n${lista}\nLeia a conversa INTEIRA: o que a equipe (ou você, agora há pouco) já disse ou já resolveu depois disso, IGNORE. Se ainda sobrar algo, escreva UMA mensagem curta e natural retomando só o que falta — sem dizer que estava desligada nem que é mensagem automática. Se não sobrar nada, responda exatamente NADA.`;
+    const r = await generateAiAutoReply(accountId, leadId, aviso, [], { sugestao: true }).catch(() => null);
+    const texto = String(r?.reply || '').trim();
+    if (texto && !/^nada[.!]?$/i.test(texto)) {
+      const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+      const env = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io });
+      await nota(env.success ? `🤖 IA ligada: retomou o que tinha ficado parado — "${texto}"` : `🤖 IA ligada: a mensagem retomando as pendências não saiu (${(env as any).error || 'erro'}). Pendências: ${lista}`);
+      if (!env.success) return; // ficam pra próxima vez
+    } else await nota(`🤖 IA ligada: as pendências de quando ela estava desligada já tinham sido tratadas na conversa — nada a dizer.\n${lista}`);
+    await P.limparPendenciasIa(leadId);
+  }
+  if (destravados.length) await nota(`🤖 IA ligada: voltaram a andar sozinhos ${destravados.map((k) => ({ _rendaCasal: 'a pergunta da renda do casal', _ocorrencias: 'a orientação das ocorrências no nome', _quitacaoAverbar: 'o pedido de averbar a quitação', _transferenciaAsk: 'o pedido de transferir o imóvel', _laudoAsk: 'as perguntas do laudo' } as Record<string, string>)[k] || k).join(', ')}.`);
 }
 
 async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {

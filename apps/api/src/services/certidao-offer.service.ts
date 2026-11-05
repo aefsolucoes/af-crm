@@ -332,6 +332,7 @@ export async function askClientCartorio(accountId: string, req: { id: string; le
   const cf = (lead.customFields || {}) as Record<string, any>;
   const antes = cf._certidaoCartorio as { matricula?: string; askedAt?: string } | undefined;
   if (antes?.matricula === req.matricula && antes?.askedAt) return false;
+  if (!lead.aiAutoReplyActive && !cf._autoPaused) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(req.leadId, 'certidaoCartorio', `perguntar em qual cartório de registro de imóveis está a matrícula ${req.matricula} (pra emitir a certidão)`);
   if (cf._autoPaused || !lead.aiAutoReplyActive) return false;
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow() || !(await whatsappWindowOpen(req.leadId))) return false;

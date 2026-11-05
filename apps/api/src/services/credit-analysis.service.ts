@@ -640,6 +640,7 @@ async function marcarNovaPropostaRecusada(db: Db, row: { id: string; leadId: str
     if (!out.ok && out.error !== 'janela de 24 h fechada') await nota(`⚠️ Não consegui avisar o cliente da nova proposta recusada (${pedido}): ${out.error}. Avise à mão — a aprovação anterior continua valendo.`);
   } else {
     const texto = await an.buildChangeRefusalText(row.leadId).catch(() => null);
+    await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(row.leadId, 'novaPropostaRecusada', `avisar que a nova proposta (${pedido}) foi recusada e que a aprovação anterior continua valendo${texto ? ` — "${texto}"` : ''}`);
     await nota(`✋ A nova proposta (${pedido}) foi recusada, mas o aviso NÃO saiu sozinho: a IA deste card está desligada.${texto ? ` Texto pronto pra você mandar:\n\n${texto}` : ''}`);
   }
 }
@@ -788,6 +789,7 @@ async function flagCertidaoRecusada(db: Db, row: { id: string; leadId: string; b
     if (lead?.aiAutoReplyActive && aberta && !cf._autoPaused) {
       await sendOutboundWhatsApp({ accountId: row.accountId, leadId: row.leadId, content: `Sobre a matrícula/certidão do imóvel que você enviou: o banco não aceitou essa versão (por ser só consulta ou antiga). Pra seguir, preciso de uma nova certidão. Posso emitir ela por aqui, através do cartório digital?` });
     } else {
+      if (!lead?.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(row.leadId, 'certidaoRecusada', 'avisar que o banco não aceitou a matrícula/certidão enviada (só consulta ou antiga) e perguntar se pode emitir uma nova pelo cartório digital (custo de R$ 40 a R$ 100)');
       await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⚠️ Não avisei o cliente da certidão recusada (IA desligada, card parado ou janela do WhatsApp fechada) — avise e peça o OK pra emitir uma nova (R$ 40–100).' } });
     }
   } catch (e: any) { console.error('[Certidão recusada] aviso ao cliente:', e?.message || e); }
@@ -1474,6 +1476,7 @@ export async function setLeadAutoPause(db: Db, p: { accountId: string; leadId: s
   const voltaIa = !p.paused && cf._autoPausedAiWas === true; // retomar devolve a IA do card ao estado de antes
   if (!p.paused) delete cf._autoPausedAiWas;
   await db.lead.update({ where: { id: lead.id }, data: { customFields: cf as any, ...(p.paused ? { aiAutoReplyActive: false } : voltaIa ? { aiAutoReplyActive: true } : {}) } });
+  if (voltaIa) setTimeout(() => { (require('./whatsapp.service') as typeof import('./whatsapp.service')).retomarComIa(p.accountId, lead.id, null).catch((e: any) => console.error('[IA ligada] retomar:', e?.message)); }, 5_000); // saiu do STOP com a IA: retoma o que ficou parado (Fabio 05/11)
   // Pausar NO MEIO do processo: as rodadas de RODAR que estão executando são derrubadas (a extensão recebe `cancel` no próximo passo e tira a aba do banco do meio do formulário).
   // Fica FAILED com "RODADA ANULADA" (a refação automática não mexe nisso); ao retomar a equipe decide: "Conferir" (se a proposta chegou a ser enviada) ou "Rodar de novo".
   // Conferências (só leitura) em andamento terminam sozinhas.
@@ -2159,6 +2162,7 @@ export async function finishProposalChange(db: Db, leadId: string): Promise<void
         if (!out.ok && out.error !== 'janela de 24 h fechada') await nota(`⚠️ Não consegui avisar o cliente da nova proposta recusada: ${out.error}. Avise à mão — a aprovação anterior continua valendo.`);
       } else {
         const texto = await an.buildChangeRefusalText(leadId).catch(() => null);
+        await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'novaPropostaRecusada', `avisar que a nova proposta pedida foi recusada e que a aprovação anterior continua valendo${texto ? ` — "${texto}"` : ''}`);
         await nota(`✋ A nova proposta pedida pelo cliente foi recusada, mas o aviso NÃO saiu sozinho: a IA deste card está desligada.${texto ? ` Texto pronto pra você mandar:\n\n${texto}` : ''}`);
       }
     }

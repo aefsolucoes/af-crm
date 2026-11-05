@@ -361,6 +361,14 @@ export async function preencherEscolhaFh(accountId: string, leadId: string, banc
   await note(leadId, `⭐ Proposta escolhida: ${banco}${o.valor ? ` — ${o.valor}` : ''}. Card preenchido: ${Object.keys(fill).filter((k) => !k.startsWith('_')).join(', ')}.`);
 }
 
+/** IA religada (Fabio 05/11): o cliente escolheu o banco do FH com ela desligada e não recebeu simulação, documentos, próximos passos e taxas → manda agora. */
+export async function retomarEscolhaFh(accountId: string, leadId: string, io?: any): Promise<boolean> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  if (!lead?.aiAutoReplyActive || !cf._fhChosen?.bank || cf._fhDocsAt) return false;
+  return chooseFhBank(accountId, lead, cf, cf._fhChosen.bank, io);
+}
+
 async function chooseFhBank(accountId: string, lead: { id: string; name: string; aiAutoReplyActive: boolean }, cf: Cf, banco: string, io?: any): Promise<boolean> {
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const { moveToAwaitingDocs } = require('./approval-notice.service') as typeof import('./approval-notice.service');

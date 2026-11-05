@@ -55,7 +55,7 @@ async function perguntar(accountId: string, leadId: string, io?: any): Promise<v
   const saudacao = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
   const texto = textoPergunta(saudacao, rc, !String(cf.falando_com || '').trim());
   if (!lead.aiAutoReplyActive) {
-    await salva(leadId, { status: 'EQUIPE', at: new Date().toISOString() });
+    await salva(leadId, { status: 'EQUIPE', at: new Date().toISOString(), porIa: true } as any); // ligou a IA → volta a PENDING (ia-pendencias)
     await note(leadId, `👥 Casal com renda de só um (${rc.comRenda}) e IA do card desligada: pergunte você se é apenas ${bonito(rc.comRenda || '')} que vai compor a renda. Texto pronto:\n“${texto}”`);
     push(accountId, `👥 ${lead.name}: renda de só um do casal`, 'IA desligada: pergunte se só um vai compor a renda (texto na anotação).', leadId);
     return;

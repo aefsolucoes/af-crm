@@ -150,6 +150,7 @@ async function uma(accountId: string, lead: { id: string; name: string; aiAutoRe
     const r = await sendOutboundWhatsApp({ accountId, leadId: lead.id, content: d.message, io: io as any });
     if (r.success) enviado = true; else motivo = `o envio falhou (${(r as any).error || 'erro'}) — mande você`;
   }
+  if (!enviado && !lead.aiAutoReplyActive && d.message) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(lead.id, `emailBanco_${String(e.id).slice(-8)}`, `repassar ao cliente o que o banco pediu por e-mail (${d.resumo || limpo.subject}) — "${d.message}"`);
   await marca(lead.id, e.id, enviado ? 'ENVIADO ao cliente' : 'AVISOU a equipe');
   await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: enviado
     ? `📧 O banco pediu algo ao cliente por e-mail (${d.resumo || limpo.subject}). Repassei ao cliente pelo WhatsApp: “${d.message.replace(/\s+/g, ' ')}”`

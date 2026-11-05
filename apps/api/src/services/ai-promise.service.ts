@@ -97,7 +97,7 @@ export async function processAiPromises(accountId: string, io?: Io): Promise<voi
       await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `⏰ Hora de chamar o cliente: ${quem} — ${motivo}, então NÃO mandei. Chame o cliente.` } }).catch(() => {});
       try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: lead.name, body: 'Hora de chamar o cliente (combinado na conversa)', leadId: id }).catch(() => {}); } catch { /* push opcional */ }
     };
-    if (!lead.aiAutoReplyActive) { await avisaEquipe('a IA está desligada neste card'); continue; }
+    if (!lead.aiAutoReplyActive) { await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(id, 'retornoCombinado', `${quem} — retomar o assunto combinado`); await avisaEquipe('a IA está desligada neste card'); continue; }
     if (!aberta) { await avisaEquipe('a janela de 24 h do WhatsApp já fechou'); continue; }
     // Mesmo motor da conversa (regras, Base, estado do card, análises, documentos) em modo sugestão: sempre escreve e não aplica ação nenhuma.
     const { generateAiAutoReply } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');

@@ -145,6 +145,7 @@ async function uma(accountId: string, r: { id: string; leadId: string; bank: str
 
   if (!lead.aiAutoReplyActive) {
     await salva(lead.id, { analysisId: r.id, bank: r.bank, status: 'EQUIPE', at: new Date().toISOString() });
+    await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(lead.id, 'cadastroDivergente', `o ${banco} acusou cadastro divergente: perguntar se o nome, o CPF e a data de nascimento estão certos — "${texto}"`);
     await note(lead.id, `🔎 O ${banco} acusou "Cadastro Divergente" (nome, CPF ou data de nascimento não batem). IA do card desligada: pergunte ao cliente se o nome, o CPF e a data de nascimento correspondem à pessoa — pode haver erro em qualquer um dos três (ou o nome de um participante com o CPF do outro). Se estiver trocado, corrija em "Ajustar" e rode de novo em TODOS os bancos. Texto pronto:\n“${texto.replace(/\n+/g, ' ')}”`);
     push(accountId, '🔎 Cadastro divergente', `${lead.name}: ${banco} — confirmar nome e CPF com o cliente`, lead.id);
     return;

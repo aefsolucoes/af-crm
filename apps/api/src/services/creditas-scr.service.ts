@@ -555,6 +555,7 @@ async function tellClient(accountId: string, leadId: string, text: string, io: I
   if (!lead?.aiAutoReplyActive) {
     await addNote(leadId, `🔕 SCR Creditas — a IA está desligada neste card, então NÃO mandei ao cliente. Ia dizer: "${text.replace(/\s+/g, ' ').slice(0, 400)}"`);
     pushTeam(accountId, leadId, lead?.name || 'Cliente', 'SCR da Creditas: o cliente devolveu algo — confira (IA desligada, nada foi enviado)');
+    await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'scrCreditas', `autorização SCR da Creditas — ia dizer: "${text}"`);
     return { success: false, skipped: 'ia-desligada' } as any;
   }
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');

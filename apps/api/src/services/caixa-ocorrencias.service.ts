@@ -86,7 +86,7 @@ export async function enviarOrientacao(accountId: string, leadId: string, io?: a
   const saudacao = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
   const texto = textoOrientacao(saudacao, { nomes: oc.nomes || [], titular: !!oc.titular }, !String(cf.falando_com || '').trim());
   if (!lead.aiAutoReplyActive) {
-    await salva(leadId, { status: 'EQUIPE', at: new Date().toISOString() });
+    await salva(leadId, { status: 'EQUIPE', at: new Date().toISOString(), porIa: true } as any); // ligou a IA → volta a PENDING (ia-pendencias)
     await note(leadId, `⚠️ Ocorrência no nome (CAIXA) e IA do card desligada: mande você a orientação ao cliente. Texto pronto:\n“${texto}”`);
     push(accountId, `⚠️ ${lead.name}: ocorrência no nome (CAIXA)`, 'IA desligada: mande a orientação Serasa/SCPC/protesto (texto na anotação).', leadId);
     return;

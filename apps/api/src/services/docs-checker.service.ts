@@ -37,7 +37,7 @@ function norm(s: string): string {
 
 /** Etapas em que a conferência roda: Aguardando Documentação e, pra quem PEDIU a CAIXA, a Pré-Análise (Fabio 01/11: "O CADASTRO NA CAIXA DEVE OCORRER EM PRÉ-ANÁLISE AINDA" —
  *  o card volta pra lá e a documentação da CAIXA é conferida antes da análise dela; caixa-screening.entrarRotaCaixa). */
-function etapaConfere(stageName: string, cf: Record<string, any>): boolean {
+export function etapaConfere(stageName: string, cf: Record<string, any>): boolean {
   const n = norm(stageName);
   return n.includes('aguardando documentacao') || (!!cf?._caixaRota && /pre.?analise/.test(n));
 }
@@ -186,6 +186,7 @@ export async function processDocsFollowUps(accountId: string, io: Io): Promise<v
     const aberta = !!lastIn && Date.now() - lastIn.createdAt.getTime() < WINDOW_MS;
     if (!lead.aiAutoReplyActive || !aberta) {
       await limpa();
+      if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(id, 'docsPrometidos', `cobrar os documentos que o cliente disse que mandaria ("${st.said}")`);
       await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `⏰ Hora de cobrar os documentos que o cliente prometeu ("${st.said}") — ${!lead.aiAutoReplyActive ? 'a IA está desligada neste card, então NÃO mandei' : 'a janela de 24 h do WhatsApp já fechou, então NÃO mandei'}. Chame o cliente.` } }).catch(() => {});
       try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: lead.name, body: 'Cobrar os documentos que ele prometeu mandar', leadId: id }).catch(() => {}); } catch { /* push opcional */ }
       continue;
@@ -447,7 +448,8 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       ].filter(Boolean) as string[];
       const texto = partes.join('\n\n');
       const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
-      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfd, _donoAskedFor: [...ja, ...novos.map((d) => d.dono.toUpperCase())], _donoAskedAt: new Date().toISOString(), _donoResolvedAt: null } as any } });
+      // Só marca "perguntado" se a pergunta SAIU (Fabio 05/11): com a IA desligada, ao religar a conferência pergunta (retomarComIa).
+      if (sent.success) await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfd, _donoAskedFor: [...ja, ...novos.map((d) => d.dono.toUpperCase())], _donoAskedAt: new Date().toISOString(), _donoResolvedAt: null } as any } });
       if (pessoas.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏠 O imóvel está em nome de ${pessoas.map((d) => d.dono).join(' e ')}, que não é participante. ${sent.success ? 'Perguntei ao cliente quem é essa pessoa pra ele (precisa ser parente de 1º grau ou participante); o card espera a resposta.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte de quem é o imóvel.' : 'IA desligada: pergunte ao cliente de quem é o imóvel (precisa ser parente de 1º grau ou participante).'}` } }).catch(() => {});
       if (empresas.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏢 O documento do imóvel está no nome da EMPRESA ${empresas.map((d) => d.dono).join(' e ')} (pessoa jurídica — em geral a loteadora/construtora, venda ainda não registrada, ou a matrícula-mãe do empreendimento). ${sent.success ? 'Perguntei ao cliente se ele tem a matrícula individual já no nome dele; o card espera. Se ele disser que o imóvel ainda não está no nome dele ou que a empresa é dele, a pergunta vai pro balão Dúvidas da IA.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte se ele tem a matrícula individual no nome dele.' : 'IA desligada: pergunte ao cliente se ele tem a matrícula individual no nome dele.'}` } }).catch(() => {});
     }
@@ -486,9 +488,10 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     const novos = review.problemas.filter((p) => !ditos.has(chave(p)));
     if (novos.length || opts.force) {
       const alvo = novos.length ? novos : review.problemas;
-      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docProblemsTold}', ${JSON.stringify(Array.from(new Set([...ditos, ...alvo.map(chave)])))}::jsonb, true) WHERE id = ${leadId}`;
       const texto = `${buildDocProblemsMessage({ ...review, problemas: alvo }).replace(/\n\nAssim que você reenviar, eu confiro de novo!$/, '')}${faltaTxt}\n\nAssim que você mandar, eu confiro de novo!`;
       const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
+      // "Já dito" só quando SAIU (Fabio 05/11): com a IA desligada, ao religar a conferência avisa (retomarComIa).
+      if (sent.success) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docProblemsTold}', ${JSON.stringify(Array.from(new Set([...ditos, ...alvo.map(chave)])))}::jsonb, true) WHERE id = ${leadId}`;
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA achou problema em documento: ${alvo.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}.${faltando.length ? ` Ainda falta: ${faltando.join('; ')}.` : ''} ${sent.success ? 'Cliente avisado do que corrigir.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: avise o cliente.'}` } }).catch(() => {});
     }
     return !!lead.aiAutoReplyActive;
@@ -505,8 +508,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       if (cf._docsFaltando !== resumo || opts.force) {
         // Só a chave, por SQL: `cf` é de ANTES do pedido do saldo devedor lá em cima — regravar o card inteiro apagava o `_saldoDevedor` e o `troco` que ele acabou de gravar
         // (01/11: o troco sumiu e o saldo foi somado de novo ao valor aprovado, que já incluía a quitação).
-        await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsFaltando}', ${JSON.stringify(resumo)}::jsonb, true) WHERE id = ${leadId}`;
-        // IA ligada: cobra o que falta (uma vez por lista); desligada: quem conversa é a equipe — só nota no card.
+        // IA ligada: cobra o que falta (uma vez por lista); desligada: quem conversa é a equipe — só nota no card (a lista só fica "dita" quando sai: ao religar, cobra).
         let cobrou = false;
         if (lead.aiAutoReplyActive) {
           // Fabio 15/10: não lista o que chegou — só o que falta (depois da espera de 10 min sem arquivo novo).
@@ -515,6 +517,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
           cobrou = !!sent.success;
           falouFalta = cobrou;
         }
+        if (cobrou) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsFaltando}', ${JSON.stringify(resumo)}::jsonb, true) WHERE id = ${leadId}`;
         await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA conferiu os documentos recebidos (lista "${verdict.listaUsada || '?'}"). Ainda falta:\n- ${verdict.faltando.join('\n- ')}\n${cobrou ? 'Cliente avisado do que falta.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: cobre o cliente.'}` } }).catch(() => {});
       }
     }
@@ -533,6 +536,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     const sentFh = lead.aiAutoReplyActive
       ? await sendOutboundWhatsApp({ accountId, leadId, content: banco ? `Recebi toda a documentação, obrigada! Já vou dar entrada na análise da ${banco} e te aviso por aqui assim que sair o resultado.` : 'Recebi toda a documentação, obrigada! Já vou dar andamento e te aviso por aqui assim que tiver novidade.', io: io || undefined })
       : { success: false };
+    if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'docsCompletos', `avisar que recebeu toda a documentação${banco ? ` e que vai dar entrada na análise da ${banco}` : ''} e que avisa por aqui quando sair o resultado`);
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Documentação do comprador COMPLETA (${caixaRota ? 'o cliente pediu a CAIXA' : `Financiamento Habitacional${banco ? ` — ${banco}` : ''}`}):\n${verdict.receivedText}\n\n👉 ${caixaRota ? 'O CRM gera a ficha e a extensão faz o cadastro na CAIXA.' : banco ? `Rodar a análise na ${banco} com esses documentos.` : 'Nenhum banco escolhido ainda.'}${sentFh.success ? ' Cliente avisado.' : ' Cliente NÃO avisado (IA desligada).'}` } }).catch(() => {});
     (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: documentação completa`, body: caixaRota ? 'Ficha e cadastro da CAIXA a caminho' : banco ? `Rodar a análise na ${banco}` : 'Documentação do comprador completa', leadId }).catch(() => {});
     return true;
@@ -551,7 +555,9 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   const obsCertidao = ressalvas.length && !cfR._ressalvaCertidaoAt
     ? `\n\nSobre a matrícula/certidão do imóvel que você enviou: ela veio ${ressalvas.includes('CONSULTA') ? 'como "consulta" (não é a certidão oficial)' : 'com mais de 30 dias'}. A gente aceita, mas quem decide é o banco: se ele não aceitar essa versão, a gente emite uma nova pra você pelo cartório digital. Se isso acontecer, eu te aviso. 🙂`
     : '';
-  if (obsCertidao) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_ressalvaCertidaoAt}', ${JSON.stringify(new Date().toISOString())}::jsonb, true) WHERE id = ${leadId}`;
+  if (obsCertidao && lead.aiAutoReplyActive) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_ressalvaCertidaoAt}', ${JSON.stringify(new Date().toISOString())}::jsonb, true) WHERE id = ${leadId}`;
+  // IA desligada (Fabio 05/11): a equipe está na conversa — ao religar, a IA retoma o aviso de documentação completa (e a escolha da proposta, se houver mais de uma aprovada).
+  if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'docsCompletos', `avisar que recebeu toda a documentação e que segue com a contratação (próximos passos: vistoria do imóvel); se houver mais de uma proposta aprovada e nenhuma escolhida, perguntar com qual seguir${obsCertidao ? '; observação sobre a certidão: ' + obsCertidao.replace(/\s+/g, ' ').trim() : ''}`);
   // Mais de um banco aprovado e nenhuma proposta escolhida: o "recebi tudo" vai junto da pergunta de com qual proposta seguir (Fabio 28/10).
   const perguntouEscolha = !pediuSaldo && lead.aiAutoReplyActive
     ? await (require('./approval-notice.service') as typeof import('./approval-notice.service')).askProposalChoice(accountId, leadId, io, `Recebi toda a documentação, obrigada!${obsCertidao ? obsCertidao.replace(/^\n\n/, ' ') : ''}`).catch((e: any) => { console.error('[Docs] escolha da proposta:', e?.message); return false; })

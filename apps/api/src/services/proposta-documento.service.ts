@@ -327,6 +327,7 @@ async function registrar(accountId: string, l: { id: string; name: string; custo
     const { runAutomations } = require('./automation.service') as typeof import('./automation.service');
     runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: l.id, io, context: { newStageId: moved.stageId, skipClientMessages: true } }).catch(() => {});
   }
+  if (!l.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(l.id, 'propostaMontada', 'avisar que a proposta foi montada com os documentos e as respostas dele e que a pré-análise nos bancos já está rodando (avisa quando sair o resultado)');
   if ((await podeFalar(l.id, l.aiAutoReplyActive)) === 'ok') {
     const nome = (require('../lib/text') as typeof import('../lib/text')).callableFirstName(cf.falando_com, dados.nome, cf.participante_1, l.name);
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');

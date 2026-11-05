@@ -210,6 +210,7 @@ async function descartarImovelRural(accountId: string, l: { id: string; name: st
     const r = await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `${nome ? `${nome}, ` : ''}vi na sua proposta que o imóvel é rural. Infelizmente não trabalhamos com imóvel rural nessa operação. Se você tiver outro imóvel urbano com matrícula, é só preencher a proposta de novo com ele que eu sigo por aqui.` });
     avisou = !!r.success;
   }
+  if (!avisou && !lead?.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(l.id, 'imovelRural', 'avisar com jeito que a A&F não trabalha com imóvel rural e que, se ele tiver outro imóvel URBANO com matrícula, é só preencher a proposta de novo com ele');
   await markRejectedAndMove({ accountId, leadId: l.id, io, disqualify: true, motivo: 'Imóvel desqualificado para a operação (imóvel rural)' }).catch((e: any) => console.error('[Imóvel rural] mover:', e?.message));
   await addNote(l.id, `🚫 Proposta com IMÓVEL RURAL: não rodei nos bancos (a A&F não trabalha com imóvel rural). Card em Perdidos — imóvel desqualificado para a operação.${avisou ? ' Cliente avisado.' : ' Cliente NÃO avisado (IA desligada, fora do horário ou conversa fechada) — avise pela conversa.'}`);
   return true;

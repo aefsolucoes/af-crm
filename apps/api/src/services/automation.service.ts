@@ -373,8 +373,10 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       // Inbox) — pra automatizar exatamente esse toggle por regra (ex.:
       // "entrou em Prospecção/Follow Up" → liga sozinho), sem precisar
       // ninguém clicar conversa por conversa.
+      const antes = await prisma.lead.findUnique({ where: { id: lead.id }, select: { aiAutoReplyActive: true, accountId: true } });
       await prisma.lead.update({ where: { id: lead.id }, data: { aiAutoReplyActive: true } });
       if (io) (io as any).to(`lead:${lead.id}`).emit('lead_ai_toggled', { leadId: lead.id, active: true });
+      if (antes && !antes.aiAutoReplyActive) (require('./whatsapp.service') as typeof import('./whatsapp.service')).retomarComIa(antes.accountId, lead.id, io).catch((e: any) => console.error('[IA ligada] retomar:', e?.message)); // retoma o que ficou parado (Fabio 05/11)
       return true;
     }
     case 'deactivate_ai': {
