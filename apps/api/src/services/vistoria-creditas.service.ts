@@ -86,12 +86,14 @@ async function arquivosPermitidos(accountId: string, leadId: string, cf: Record<
 }
 
 /** Tipo do arquivo pelo nome (a pasta IMOVEL usa o nome do tipo: "CERTIDAO DE ONUS…", "MATRICULA DO IMOVEL…", "CAPA IPTU…") ou pela classificação do anexo. */
-function tipoDoArquivo(nome: string, tipoAnexo?: string): 'ONUS' | 'CAPA_IPTU' | 'IPTU_OUTRO' | 'GUIA_IPTU' | null {
+function tipoDoArquivo(nome: string, tipoAnexo?: string): 'ONUS' | 'CAPA_IPTU' | 'IPTU_OUTRO' | 'GUIA_IPTU' | 'IPTU_CERTIDAO' | null {
   const n = `${tipoAnexo || ''} ${nome}`.toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   if (/CERTIDAO DE ONUS|MATRICULA DO IMOVEL|INTEIRO TEOR/.test(n)) return 'ONUS';
   if (/CAPA IPTU/.test(n)) return 'CAPA_IPTU';
   if (/CADASTRO IMOBILIARIO|NOTIFICACAO IPTU/.test(n)) return 'IPTU_OUTRO';
   if (/GUIA IPTU/.test(n)) return 'GUIA_IPTU';
+  // Certidão de débitos do IPTU (negativa ou positiva) traz a INSCRIÇÃO imobiliária — vale quando não há capa/cadastro/guia (Fabio 05/11, Milena).
+  if (/CND IPTU|CERTIDAO.*(IPTU|DEBITOS)/.test(n)) return 'IPTU_CERTIDAO';
   return null;
 }
 
@@ -138,7 +140,7 @@ export async function vistoriaCreditasPreview(accountId: string, leadId: string)
   // a GUIA de pagamento só se não houver nada disso — já veio guia de OUTRO imóvel, então fica o aviso pra conferir).
   const primeiro = (t: string) => comTipo.find((x) => x.tipo === t && !/ \d\.\w+$/i.test(x.f.name)) || comTipo.find((x) => x.tipo === t);
   const onus = (cert && comTipo.find((x) => x.f.id === cert.driveFileId)) || primeiro('ONUS');
-  const iptu = primeiro('CAPA_IPTU') || primeiro('IPTU_OUTRO') || primeiro('GUIA_IPTU');
+  const iptu = primeiro('CAPA_IPTU') || primeiro('IPTU_OUTRO') || primeiro('GUIA_IPTU') || primeiro('IPTU_CERTIDAO');
   const marcados = new Set([onus?.f.id, iptu?.f.id].filter(Boolean) as string[]);
   // Matrícula/ônus em FOTOS separadas por folha ("… - PAG 1", "- PAG 2"… — Fabio 05/11): vão TODAS as folhas da mesma matrícula.
   const pag = onus ? /^(.*) - PAG \d+/i.exec(onus.f.name.replace(/\.\w+$/, '')) : null;
