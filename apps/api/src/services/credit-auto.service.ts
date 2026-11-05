@@ -392,7 +392,9 @@ async function noticeClients(accountId: string, io: any) {
     if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     // Card que a análise automática NÃO iniciou também entra, se o cliente já recebeu um resumo e agora saiu o resultado de OUTRO banco (Juan, 14/10).
     if (!cf._autoStartedAt && !(await novoBancoPendente(l.id).catch(() => false))) continue;
-    const rows = l.creditAnalyses;
+    // Proposta trazida da busca no portal (escolhida pela equipe, Fabio 05/11) não dispara aviso sozinho: quem escolheu decide se encaminha.
+    const rows = l.creditAnalyses.filter((a) => a.source !== 'PORTAL');
+    if (!rows.some((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status))) continue;
     // Aviso IMEDIATO (Fabio 14/10: "o Inter é o primeiro banco e foi aprovado o valor total, por que não avisou?"): quando o banco de MAIOR prioridade entre os aprovados
     // aprovou o valor TOTAL com os números completos e todos os bancos acima dele na ordem já responderam, não espera os de baixo — se algum deles aprovar depois, sai o aviso de "mais um banco".
     // Os 3 bancos já responderam (aprovou/reprovou/regra barrou) e há aprovação: não tem mais nada a esperar — avisa NA HORA, sem os 10 min de silêncio (Eva, 14/10: Santander aprovou

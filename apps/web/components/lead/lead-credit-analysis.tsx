@@ -26,6 +26,7 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
   const [notify, setNotify] = useState(false);
   const [simBusy, setSimBusy] = useState<string | null>(null);
   const [fwdId, setFwdId] = useState<string | null>(null);
+  const [buscaBusy, setBuscaBusy] = useState<string | null>(null);
   const { data: simDocs } = useQuery<SimDoc[]>({
     queryKey: ['sim-docs', leadId],
     queryFn: async () => (await api.get('/api/credit-analysis/simulation-docs', { params: { leadId } })).data,
@@ -110,6 +111,25 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Não consegui encaminhar a proposta', 'error');
     } finally { setFwdId(null); }
+  }
+
+  async function buscarPortal() {
+    setBuscaBusy('buscar');
+    try {
+      await api.post('/api/credit-analysis/busca-portal', { leadId, bank: 'INTER' });
+      pingExtensions(data?.extensions, ['INTER']);
+      toast('Busca na fila: a extensão do Inter procura as propostas deste cliente no portal', 'success');
+      refresh();
+    } catch (err: any) { toast(err?.response?.data?.error || 'Não consegui pedir a busca', 'error'); } finally { setBuscaBusy(null); }
+  }
+
+  async function escolherPortal(numero: string) {
+    setBuscaBusy(numero);
+    try {
+      await api.post(`/api/credit-analysis/busca-portal/${leadId}/escolher`, { bank: 'INTER', numero });
+      toast(`Proposta ${numero} escolhida`, 'success');
+      refresh(); onChanged?.();
+    } catch (err: any) { toast(err?.response?.data?.error || 'Não consegui escolher a proposta', 'error'); } finally { setBuscaBusy(null); }
   }
 
   async function choose(a: Analysis) {
@@ -325,6 +345,47 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
             {sem.map((s) => (
               <div key={`${s.bank}-${s.proposalNumber}`} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
                 {BANKS.find((b) => b.key === s.bank)?.short || s.bank} · nº {s.proposalNumber}{s.holderName ? ` · ${s.holderName.split(' ')[0]}` : ''}{s.requestedValue ? ` · pedido ${formatCurrency(s.requestedValue)}` : ''} · enviada {data2(s.enviadaEm)} — o CRM não leu o resultado desta proposta.
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {(() => {
+        // Buscar propostas no portal do Inter (Fabio 05/11): TODAS as do cliente, inclusive as feitas à mão fora do CRM — pra escolher com qual seguir.
+        const bp = data.buscaPortal?.INTER;
+        const andando = !!bp && ['FILA', 'RODANDO'].includes(bp.status);
+        const escolhidaNum = (data.aprovacoes || []).find((a) => a.chosen)?.proposalNumber || data.history.find((a) => a.chosen)?.proposalNumber || null;
+        const quando = (d?: string | null) => (d ? new Date(d).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
+        const dataProp = (d?: string | null) => { if (!d) return ''; const t = Date.parse(d); return Number.isNaN(t) ? String(d).slice(0, 10) : new Date(t).toLocaleDateString('pt-BR'); };
+        return (
+          <div className="mt-3 pt-2 border-t border-af-border space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium text-slate-600">Propostas no portal do Inter</span>
+              <button onClick={buscarPortal} disabled={andando || !!buscaBusy} className="text-[11px] px-2 py-0.5 rounded border border-af-mid text-af-mid hover:bg-af-mid hover:text-white disabled:opacity-50" title="A extensão do Inter procura no portal TODAS as propostas pelos CPFs do card (inclusive as feitas à mão) — só leitura, não cria proposta">
+                {andando ? (bp!.status === 'FILA' ? 'Na fila…' : 'Buscando…') : bp ? 'Buscar de novo' : 'Buscar no portal'}
+              </button>
+            </div>
+            {bp?.status === 'ERRO' && <p className="text-[11px] text-red-600">A busca não saiu: {bp.erro}</p>}
+            {bp?.status === 'FEITO' && !(bp.propostas || []).length && <p className="text-[11px] text-slate-500">Nenhuma proposta deste cliente no portal do Inter (busca de {quando(bp.fim)}).</p>}
+            {bp?.status === 'FEITO' && !!(bp.propostas || []).length && <p className="text-[10px] text-slate-400">Busca de {quando(bp.fim)}{bp.por ? ` · pedida por ${bp.por}` : ''}</p>}
+            {(bp?.propostas || []).map((p) => (
+              <div key={p.numero} className={`rounded-md border px-2 py-1.5 text-[11px] ${p.aprovado ? 'bg-white border-emerald-200' : 'bg-white border-af-border'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-600 font-medium">nº {p.numero}<span className="font-normal text-slate-400">{p.data ? ` · ${dataProp(p.data)}` : ''}{p.nome ? ` · ${String(p.nome).split(' ')[0]}` : ''}</span></span>
+                  <span className={p.aprovado ? 'text-emerald-700 font-medium' : 'text-slate-500'}>{p.aprovado ? 'Aprovada' : ''}</span>
+                </div>
+                {p.status && <div className="text-slate-500 mt-0.5">{p.status}</div>}
+                <div className="text-slate-600 mt-0.5">
+                  {[p.valorAprovado ? `aprovado ${formatCurrency(p.valorAprovado)}` : '', p.valorPedido && p.valorPedido !== p.valorAprovado ? `pedido ${formatCurrency(p.valorPedido)}` : '', p.prazo ? `${p.prazo} meses` : '', p.taxa ? `${p.taxa}${p.indexador && !String(p.taxa).includes(p.indexador) ? ` + ${p.indexador}` : ''}` : '', p.primeira ? `1ª parcela ${formatCurrency(p.primeira)}` : ''].filter(Boolean).join(' · ')}
+                </div>
+                {p.aprovado && !!p.valorAprovado && (
+                  <div className="mt-1">
+                    {escolhidaNum === p.numero
+                      ? <span className="flex items-center gap-1 text-amber-600"><Star size={10} className="fill-amber-400" /> Proposta escolhida</span>
+                      : <button onClick={() => escolherPortal(p.numero)} disabled={!!buscaBusy} className="flex items-center gap-1 px-2 py-0.5 rounded bg-af-mid text-white hover:bg-af-dark disabled:opacity-50"><Star size={10} /> {buscaBusy === p.numero ? 'Escolhendo…' : 'Escolher esta proposta'}</button>}
+                  </div>
+                )}
               </div>
             ))}
           </div>

@@ -1244,13 +1244,14 @@ export async function updateAnalysis(db: Db, p: { accountId: string; id: string;
 }
 
 /** Registra à mão uma análise (ex.: o Inter que o Fabio/skill leu no portal). */
-export async function registerManual(db: Db, p: { accountId: string; userId?: string; leadId: string; bank: string; status: string; detail?: string; result?: Record<string, any> }) {
+export async function registerManual(db: Db, p: { accountId: string; userId?: string; leadId: string; bank: string; status: string; detail?: string; result?: Record<string, any>; source?: 'MANUAL' | 'PORTAL'; kind?: 'RUN' | 'CHECK' }) {
   if (!BANK_KEYS.includes(p.bank)) throw new Error('banco desconhecido');
   if (!ALL_STATUS.has(p.status)) throw new Error('status inválido');
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
   if (!lead) throw new Error('card não encontrado');
+  // PORTAL = proposta achada pela busca no portal do banco (Fabio 05/11) e escolhida pela equipe.
   const row = await db.creditAnalysis.create({
-    data: { accountId: p.accountId, leadId: p.leadId, bank: p.bank, status: 'RUNNING', source: 'MANUAL', requestedById: p.userId || null, startedAt: new Date() },
+    data: { accountId: p.accountId, leadId: p.leadId, bank: p.bank, status: 'RUNNING', source: p.source || 'MANUAL', kind: p.kind || 'RUN', requestedById: p.userId || null, startedAt: new Date() },
   });
   const { row: updated } = await applyUpdate(db, row, { status: p.status, detail: p.detail ?? null, holderName: await resolveHolder(db, p.leadId, p.bank, p.detail), ...pickResult(p.result || {}) });
   return updated;
@@ -1611,6 +1612,7 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },
     cardProposal: propostaDoCard(cf),
     aprovacoes, semResultado,
+    buscaPortal: cf._buscaPortal || null,
     avisosSemAnalise: await (require('./approval-notice.service') as typeof import('./approval-notice.service')).avisosSemAnalise(p.leadId, aprovadas).catch(() => []),
   };
 }

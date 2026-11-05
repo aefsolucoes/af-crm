@@ -7,6 +7,7 @@ import { previewApprovalNotice, sendApprovalNoticeNow, forwardApprovalToClient }
 import { sendRejectionAndClose } from '../services/credit-auto.service';
 import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.service';
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
+import { pedirBuscaPortal, claimBuscas, resultadoBusca, escolherDoPortal } from '../services/busca-portal.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, finishItauDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
   BANK_KEYS, EXT_BANK_KEYS, FH_BANK, FH_RUN_BANKS, FH_ITAU_BANK, fhBoard, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
@@ -282,7 +283,9 @@ router.get('/queue', async (req: AuthRequest, res: Response) => {
     const lib = await liberadoAte(prisma, req.user!.accountId);
     const docs = caps.includes('doc') && req.query.claim !== '0' && (!foraDoHorario() || lib) ? await claimSimulationDocs(prisma, { accountId: req.user!.accountId, extBank: bank, limit: 2 }) : [];
     // `liberadoAte`: a extensão também tem a trava de 07h–22h; com isto ela sabe que pode trabalhar fora do horário até essa hora.
-    res.json({ items, docs, liberadoAte: lib ? lib.toISOString() : null });
+    // Busca de propostas no portal pedida no card (Fabio 05/11) — só leitura; extensão que avisa saber atender (caps inclui "busca").
+    const buscas = caps.includes('busca') && req.query.claim !== '0' ? await claimBuscas(req.user!.accountId, bank, 1) : [];
+    res.json({ items, docs, buscas, liberadoAte: lib ? lib.toISOString() : null });
   } catch (err) { fail(res, err, 'Erro ao buscar a fila'); }
 });
 
@@ -403,6 +406,34 @@ router.post('/:id/choose', async (req: AuthRequest, res: Response) => {
     emit(req);
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao escolher a proposta', 400); }
+});
+
+// ── Buscar propostas no portal do banco (Fabio 05/11: listar as aprovadas, inclusive as feitas à mão, pra escolher) ──────────────
+router.post('/busca-portal', async (req: AuthRequest, res: Response) => {
+  const leadId = String(req.body?.leadId || ''); const bank = String(req.body?.bank || 'INTER').toUpperCase();
+  if (!leadId) return res.status(400).json({ error: 'leadId obrigatório' });
+  try {
+    const nome = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+    const erro = await pedirBuscaPortal(req.user!.accountId, leadId, bank, nome);
+    if (erro) return res.status(400).json({ error: erro });
+    emit(req, { leadId });
+    res.json({ ok: true });
+  } catch (err) { fail(res, err, 'Erro ao pedir a busca no portal'); }
+});
+router.post('/busca-portal/:leadId/resultado', async (req: AuthRequest, res: Response) => {
+  const bank = String(req.body?.bank || 'INTER').toUpperCase();
+  try { await resultadoBusca(req.user!.accountId, req.params.leadId, bank, req.body || {}); emit(req, { leadId: req.params.leadId }); res.json({ ok: true }); } catch (err) { fail(res, err, 'Erro ao gravar a busca'); }
+});
+router.post('/busca-portal/:leadId/escolher', async (req: AuthRequest, res: Response) => {
+  const bank = String(req.body?.bank || 'INTER').toUpperCase(); const numero = String(req.body?.numero || '');
+  if (!numero) return res.status(400).json({ error: 'numero obrigatório' });
+  try {
+    const nome = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;
+    const r = await escolherDoPortal(req.user!.accountId, req.params.leadId, bank, numero, { id: req.user!.id, nome });
+    if ('erro' in r) return res.status(400).json({ error: r.erro });
+    emit(req, { leadId: req.params.leadId });
+    res.json(r);
+  } catch (err) { fail(res, err, 'Erro ao escolher a proposta'); }
 });
 
 // Botão "Encaminhar aprovação ao cliente" de cada proposta aprovada (Fabio 02/11): só os dados dela + o PDF da simulação, quando o banco tem.

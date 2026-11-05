@@ -83,6 +83,11 @@ export function overrideSummary(o?: OverrideData): string {
   ].filter(Boolean).join(' · ');
 }
 
+export interface PropostaPortal {
+  numero: string; data?: string | null; nome?: string | null; cpf?: string | null; status?: string | null; produto?: string | null; aprovado?: boolean;
+  valorPedido?: number | null; valorAprovado?: number | null; prazo?: number | null; taxa?: string | null; indexador?: string | null; primeira?: number | null; ultima?: number | null;
+}
+
 export interface LeadAnalyses {
   /** Proposta anotada SÓ no card (Instituição + Nº da proposta), sem análise no CRM: dá pra pedir uma conferência no portal. */
   cardProposal?: { bank: Bank; numero: string } | null;
@@ -100,6 +105,8 @@ export interface LeadAnalyses {
   aprovacoes?: Analysis[];
   /** Propostas enviadas ao banco cujo resultado o CRM nunca leu. */
   semResultado?: { bank: Bank; proposalNumber: string; holderName: string | null; requestedValue: number | null; enviadaEm: string }[];
+  /** Busca de propostas no portal do banco, pedida no card (Fabio 05/11) — por banco. */
+  buscaPortal?: Record<string, { status: 'FILA' | 'RODANDO' | 'FEITO' | 'ERRO'; pedidoEm: string; por?: string; fim?: string; erro?: string | null; propostas?: PropostaPortal[] }> | null;
   overrides?: Partial<Record<Bank, OverrideData>>;
   participants?: { name1: string; name2: string; inverted: boolean };
   extensions: Record<Bank, { online: boolean; lastSeenAt: string | null; extId?: string | null; loginNeeded?: boolean }>;
