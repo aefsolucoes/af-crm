@@ -114,6 +114,7 @@ export async function processDocLoop(accountId: string, io?: Io): Promise<void> 
     if (enviados >= POR_RODADA) break;
     const cf = (l.customFields || {}) as Record<string, any>;
     if (cf._autoPaused) continue;
+    if (cf._saldoDevedor?.bloqueio) continue; // saldo devedor acima do limite: com este imóvel não dá pra seguir (Fabio 05/11)
     const st: DocLoopState = cf._docLoop && typeof cf._docLoop.passo === 'number' ? cf._docLoop : { passo: 0 };
     const conversa = await ultimaConversa(l.id);
     const ultimo = st.ultimoAt ? new Date(st.ultimoAt) : null;

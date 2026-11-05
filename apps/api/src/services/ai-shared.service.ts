@@ -379,6 +379,13 @@ export async function aiCardState(leadId: string): Promise<string> {
     partes.push(`DOCUMENTOS (conferência da IA): recebidos e OK: ${ok.join(', ') || 'nenhum'}.${prob.length ? ` Com problema: ${prob.join(', ')}.` : ''}${protegidos ? ` Arquivos protegidos por senha aguardando verificação: ${protegidos}.` : ''}${cf._rendaDispensada ? ' Renda dispensada neste card (caso específico).' : ''} Não peça de novo o que já está "recebido e OK".`);
   }
 
+  // Saldo devedor real acima do limite (Fabio 05/11, Fernanda Karita): a IA não pode dizer que o crédito segue aprovado.
+  const sdB = cf._saldoDevedor?.bloqueio as { motivo?: string; limite?: number; saldo?: number; valorImovel?: number; aprovado?: number | null; avisado?: boolean } | undefined;
+  if (sdB?.saldo) {
+    const r$ = (v?: number | null) => `R$ ${Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    partes.push(`SALDO DEVEDOR ACIMA DO LIMITE: o saldo REAL do financiamento (print) é ${r$(sdB.saldo)}, ${sdB.motivo === 'LIMITE_60' ? `acima de 60% do valor do imóvel (${r$(sdB.valorImovel)} → limite ${r$(sdB.limite)})` : `maior que o valor aprovado a menor (${r$(sdB.aprovado)}), e o banco não aprova mais`} — o crédito precisa primeiro quitar o financiamento, então com ESTE imóvel NÃO dá pra seguir${sdB.avisado ? ' (o cliente já foi avisado disso)' : ' (o cliente AINDA NÃO foi avisado: explique com jeito, com a conta, na próxima resposta)'}. NUNCA diga que o crédito segue aprovado, não peça documento pra seguir. Se ele tiver OUTRO imóvel pra garantia, peça que preencha a proposta de novo com esse imóvel; se ele só aceitar ("ok", "entendi", "que pena") → "markLost": "Lead desqualificado — saldo devedor acima do limite do imóvel".`);
+  }
+
   // Contratação
   const contr: string[] = [];
   const certs = await prisma.certidaoRequest.findMany({ where: { leadId, status: { notIn: ['CANCELLED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 3, select: { matricula: true, status: true, paidAt: true, pixSentAt: true } }).catch(() => []);
