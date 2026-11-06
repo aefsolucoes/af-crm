@@ -30,6 +30,7 @@ const ROTULO: Record<string, string> = {
   ENVIANDO: 'extensão criando a OS…',
   ENVIADA: 'solicitada',
   JA_TEM_OS: 'o imóvel já tem OS no SIOPI',
+  OUTRO_CCA: 'imóvel de OUTRO correspondente — pedir alteração à agência por e-mail',
   ERRO: 'parou',
 };
 
@@ -74,7 +75,7 @@ export function VistoriaCaixaButton({ leadId, onDone }: { leadId: string; onDone
           title="Lê a certidão do imóvel, confere o contato da vistoria e a extensão do SIOPI cadastra o imóvel e prepara a OS (sem enviar)"
           className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-medium text-[#005CA9] hover:bg-blue-100 disabled:opacity-50"
         >
-          <Home className="h-3 w-3" /> {st === 'ERRO' || st === 'JA_TEM_OS' ? 'Solicitar vistoria CAIXA de novo' : 'Solicitar vistoria CAIXA'}
+          <Home className="h-3 w-3" /> {st === 'ERRO' || st === 'JA_TEM_OS' || st === 'OUTRO_CCA' ? 'Solicitar vistoria CAIXA de novo' : 'Solicitar vistoria CAIXA'}
         </button>
         {st === 'OS_PRONTA' && (
           <button onClick={() => setConferir(true)} disabled={busy} className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">

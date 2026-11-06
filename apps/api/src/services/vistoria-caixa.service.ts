@@ -16,7 +16,7 @@ import { arquivosDoImovel, moverParaVistoria } from './vistoria-inter.service';
  */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
-type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'ENVIADA' | 'JA_TEM_OS' | 'ERRO';
+type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'ENVIADA' | 'JA_TEM_OS' | 'OUTRO_CCA' | 'ERRO';
 
 const MODELO = 'claude-sonnet-5';
 const LEASE_MS = 20 * 60_000;
@@ -350,6 +350,13 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
   if (etapa === 'CADASTRADO' || etapa === 'IMOVEL_JA_EXISTIA') {
     await gravar(leadId, { codigoImovel: body.codigoImovel || null });
     await nota(leadId, `🏠 SIOPI: imóvel ${etapa === 'CADASTRADO' ? 'cadastrado' : 'já estava cadastrado'} — código do imóvel ${body.codigoImovel || '?'}.`);
+    return;
+  }
+  // Imóvel cadastrado por OUTRO correspondente (Fabio 06/11): não dá pra abrir a OS — a equipe manda e-mail à agência pedindo a alteração. Por enquanto: nota + push.
+  if (etapa === 'OUTRO_CCA') {
+    await gravar(leadId, { status: 'OUTRO_CCA', leaseAt: null, codigoImovel: body.codigoImovel || null, outroCca: body.texto || null });
+    await nota(leadId, `⚠️ Vistoria CAIXA parada: o imóvel${body.codigoImovel ? ` (código ${body.codigoImovel})` : ''} foi cadastrado no SIOPI por OUTRO correspondente${body.texto ? ` — ${body.texto}` : ''}. Precisa mandar e-mail à agência pedindo a alteração do imóvel pro nosso CCA (77001). Depois, clique de novo em "Solicitar vistoria CAIXA".`);
+    await push(accountId, leadId, `🏠 ${lead.name}: imóvel de outro correspondente`, 'Imóvel cadastrado por outro CCA no SIOPI — mande e-mail à agência pedindo a alteração.');
     return;
   }
   if (etapa === 'OS_PRONTA') {
