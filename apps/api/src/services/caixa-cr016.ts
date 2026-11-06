@@ -42,15 +42,16 @@ const chaveFonte = (s: unknown) => String(s || '').normalize('NFD').replace(/[̀
 const mesNum = (cmp: unknown): number | null => { const m = /(\d{1,2})\/(\d{4})/.exec(String(cmp || '')); return m ? Number(m[2]) * 12 + Number(m[1]) - 1 : null; };
 
 /** Fonte de renda da ficha sem comprovante dentro do prazo da CAIXA — competência de até 2 meses antes do mês corrente (a CAIXA recusa com "A data de
- *  referência do comprovante de renda deve ser limitada aos 2 últimos meses"). Mesma janela da extensão (fontesDeRenda). Lucros pelo IR (dezembro do
- *  ano-calendário) e contracheque sem competência lida ficam de fora. Pura. */
+ *  referência do comprovante de renda deve ser limitada aos 2 últimos meses"). Mesma janela da extensão (fontesDeRenda). Lucros e pró-labore do sócio pelo IR
+ *  (dezembro do ano-calendário — a extensão lança com o comprovante "Declaração de IR" e a referência do mês atual; o pró-labore entrou em 05/11 e ficava
+ *  barrado aqui, Windson 06/11) e contracheque sem competência lida ficam de fora. Pura. */
 export function rendaForaDoPrazo(p: any, agora = new Date()): string[] {
   if (!p || p.semRenda || p.rendaInformal) return [];
   const [, m, a] = agora.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }).split('/').map(Number);
   const hoje = a * 12 + m - 1;
   const porFonte = new Map<string, { nome: string; meses: number[] }>();
   for (const c of Array.isArray(p.contracheques) ? p.contracheques : []) {
-    if (!c || /lucro/i.test(String(c.tipo || '')) || !(Number(c.bruto) > 0 || Number(c.liquido) > 0)) continue;
+    if (!c || /lucro|pro.?labore/i.test(String(c.tipo || '')) || !(Number(c.bruto) > 0 || Number(c.liquido) > 0)) continue;
     const n = mesNum(c.competencia);
     if (n === null) continue;
     const nome = String(c.empregador || p.trabalho?.empregador || 'fonte de renda');
