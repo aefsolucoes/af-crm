@@ -533,7 +533,9 @@ export async function generateAiAutoReply(
   images: { type: 'base64'; media_type: string; data: string }[] = [],
   // sugestao (Fabio 03/11: "essa IA de sugerir resposta seja a mesma da conversa"): o botão "Sugerir resposta" usa ESTE motor, com o mesmo contexto e as mesmas regras —
   // só não fica quieta (sempre escreve), não grava nada no card e as ações do JSON não são aplicadas por quem chama.
-  opts: { sugestao?: boolean } = {},
+  // botaoSugerir (Fabio 06/11, "sugerir resposta continua lento"): só o botão "Sugerir resposta" — o texto vai pra alguém da equipe revisar, então não espera a leitura nova
+  // dos bancos e para de gerar quando o texto termina (ver abaixo). Os outros usos do modo sugestão (retorno combinado, IA religada) MANDAM ao cliente e seguem como antes.
+  opts: { sugestao?: boolean; botaoSugerir?: boolean } = {},
 ): Promise<AiAutoReplyResult | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !incomingText.trim()) return null;
@@ -585,31 +587,39 @@ export async function generateAiAutoReply(
       return { reply: '', handoff: false, noReply: true };
     }
 
-    const ctx = await medir('contexto', buildSharedAiContext(accountId, leadId, incomingText, {
-      fullHistory: true,
-      historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' },
-    }));
+    // Partes do contexto em PARALELO (Fabio 06/11, "sugerir resposta continua lento") — antes uma depois da outra. Duas levas, pra manter a ordem que importa: tudo que vem
+    // depois da leitura nova dos bancos (análises, escolha pendente, SCR, aprovação…) só lê o banco quando ela termina, como antes.
+    const [ctx, camposTexto, duvidasEquipe, ligacao, conversasPorTelefone] = await Promise.all([
+      medir('contexto', buildSharedAiContext(accountId, leadId, incomingText, {
+        fullHistory: true,
+        historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' },
+      })),
+      medir('campos', buildFillableFieldsText(accountId)),
+      medir('duvidas', teamQuestionsContext(leadId)),
+      medir('ligacao', callPermissionContext(accountId, leadId, incomingText)),
+      medir('telefone', callSummaryContext(leadId).catch(() => '')),
+      // Pergunta de status: pede leitura NOVA nos bancos (extensão) e espera até ~2 min; depois monta o bloco com o que está mais recente.
+      // No botão "Sugerir resposta" não espera (Fabio 06/11): ficava até 2 min girando sempre que a última mensagem do cliente falava de proposta/crédito/banco/parcela — a
+      // sugestão usa a última leitura salva; o pedido de leitura nova sai igual e vale pro próximo clique/resposta.
+      medir('leituraBancos', refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText, ...(opts.botaoSugerir ? { maxWaitMs: 0 } : {}) }).catch(() => null)),
+    ]);
     if (!ctx) return null;
 
-    const camposTexto = await medir('campos', buildFillableFieldsText(accountId));
-    const duvidasEquipe = await medir('duvidas', teamQuestionsContext(leadId));
-    const ligacao = await medir('ligacao', callPermissionContext(accountId, leadId, incomingText));
-    const conversasPorTelefone = await medir('telefone', callSummaryContext(leadId).catch(() => ''));
-    // Pergunta de status: pede leitura NOVA nos bancos (extensão) e espera até ~2 min; depois monta o bloco com o que está mais recente.
-    await medir('leituraBancos', refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText }).catch(() => null));
-    const analiseCredito = await medir('analise', aiCreditContext(prisma, leadId).catch(() => ''));
-    const reentrada = await medir('reentrada', (require('./reentry.service') as typeof import('./reentry.service')).aiReentryContext(leadId).catch(() => ''));
-    const cessao = await medir('cessao', (require('./reentry.service') as typeof import('./reentry.service')).aiCessaoContext(leadId).catch(() => ''));
-    const combinados = await medir('combinados', (require('./bancos-combinados.service') as typeof import('./bancos-combinados.service')).aiBancosCombinadosContext(leadId).catch(() => ''));
-    const escolhaPendente = await medir('escolha', (require('./approval-notice.service') as typeof import('./approval-notice.service')).aiEscolhaPendenteContext(leadId).catch(() => ''));
-    const documentos = await medir('documentos', aiDocsContext(leadId).catch(() => ''));
-    const scrCreditas = await medir('scr', (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => ''));
-    const emailsProcesso = await medir('emails', aiEmailsContext(leadId).catch(() => ''));
-    const cadDiv = await medir('cadDiv', (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).aiCadDivContext(leadId).catch(() => ''));
-    const ocorrencias = await medir('ocorrencias', (require('./caixa-ocorrencias.service') as typeof import('./caixa-ocorrencias.service')).aiOcorrenciasContext(leadId).catch(() => ''));
+    const [analiseCredito, reentrada, cessao, combinados, escolhaPendente, documentos, scrCreditas, emailsProcesso, cadDiv, ocorrencias, vfLead] = await Promise.all([
+      medir('analise', aiCreditContext(prisma, leadId).catch(() => '')),
+      medir('reentrada', (require('./reentry.service') as typeof import('./reentry.service')).aiReentryContext(leadId).catch(() => '')),
+      medir('cessao', (require('./reentry.service') as typeof import('./reentry.service')).aiCessaoContext(leadId).catch(() => '')),
+      medir('combinados', (require('./bancos-combinados.service') as typeof import('./bancos-combinados.service')).aiBancosCombinadosContext(leadId).catch(() => '')),
+      medir('escolha', (require('./approval-notice.service') as typeof import('./approval-notice.service')).aiEscolhaPendenteContext(leadId).catch(() => '')),
+      medir('documentos', aiDocsContext(leadId).catch(() => '')),
+      medir('scr', (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => '')),
+      medir('emails', aiEmailsContext(leadId).catch(() => '')),
+      medir('cadDiv', (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).aiCadDivContext(leadId).catch(() => '')),
+      medir('ocorrencias', (require('./caixa-ocorrencias.service') as typeof import('./caixa-ocorrencias.service')).aiOcorrenciasContext(leadId).catch(() => '')),
+      medir('vendaFutura', prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } }).catch(() => null)),
+    ]);
 
     const hojeTxt = new Date(Date.now() - 3 * 3_600_000).toISOString().slice(0, 10);
-    const vfLead = await medir('vendaFutura', prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } }).catch(() => null));
     const vfAt = String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaAt || '');
     const retomadaTxt = /^\d{4}-\d{2}-\d{2}$/.test(vfAt) ? vfAt.split('-').reverse().join('/') : null;
     const naVendaFutura = /venda futura/i.test(vfLead?.stage?.name || '');
@@ -693,6 +703,10 @@ ${conversasPorTelefone}` : ''}`;
     const { pareceRaciocinio } = require('./ai-shared.service') as typeof import('./ai-shared.service');
     let result: AiAutoReplyResult | null = null;
     let rawFalho = '';
+    // Botão "Sugerir resposta": a geração PARA quando o texto ("reply", 1º campo do JSON) termina (Fabio 06/11, "sugerir resposta continua lento"). Os ~20 campos de ações
+    // que vinham depois são jogados fora na sugestão e custavam segundos a mais; com o pedido e o prompt iguais, o texto é o mesmo. parseReply lê o "reply" do JSON cortado.
+    // Corte que não trouxe o texto (ou erro da API) → a 2ª tentativa vai sem corte, como antes. O que vai direto ao cliente nunca é cortado (precisa de askTeam/handoff etc.).
+    let semCorte = !opts.botaoSugerir;
     for (let tentativa = 0; tentativa < 2; tentativa++) {
       const lembrete = tentativa ? '\n\n[ATENÇÃO: a resposta anterior veio fora do formato. Responda SOMENTE com o objeto JSON pedido — nada antes nem depois dele. O campo "reply" é a mensagem que vai ao cliente: fale COM ele, nunca descreva a conversa nem o que você pretende fazer.]' : '';
       const tChamada = Date.now();
@@ -705,6 +719,7 @@ ${conversasPorTelefone}` : ''}`;
           // limite: com 1024 às vezes acabava tudo no raciocínio e a resposta
           // vinha VAZIA (cliente ficava sem resposta, achado 2026-09-25).
           max_tokens: 4096,
+          ...(semCorte ? {} : { stop_sequences: ['"noReply"'] }),
           system: cachedSystem(systemFixed, systemDynamic),
           messages: [{
             role: 'user',
@@ -719,6 +734,7 @@ ${conversasPorTelefone}` : ''}`;
       });
       if (!response.ok) {
         console.error('[AI Auto-reply] Erro Anthropic:', response.status, (await response.text()).slice(0, 300));
+        if (!semCorte && tentativa === 0) { semCorte = true; continue; }
         return null;
       }
       const data = await response.json() as { content: { type: string; text?: string }[]; stop_reason?: string; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } };
@@ -726,9 +742,13 @@ ${conversasPorTelefone}` : ''}`;
       tempos.push(`anthropic${tentativa + 1}=${Date.now() - tChamada}(entrada ${u.input_tokens ?? '?'}+cache ${u.cache_read_input_tokens ?? 0}/${u.cache_creation_input_tokens ?? 0}, saída ${u.output_tokens ?? '?'}, ${data.stop_reason || '?'})`);
       // TODOS os blocos de texto (antes só o 1º: se o modelo escrevia um texto antes do JSON, o 1º bloco era esse texto).
       const raw = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').trim();
-      if (!raw) return null;
-      const r = parseReply(raw);
+      const cortado = !semCorte && data.stop_reason === 'stop_sequence';
+      if (!raw) { if (cortado) { semCorte = true; continue; } return null; }
+      // Cortado com o texto VAZIO = a IA ia ficar quieta (noReply): mesmo resultado de antes, sem gerar o resto (quem chama usa a sugestão de reserva).
+      if (cortado && /^\{\s*"reply"\s*:\s*""\s*,?\s*$/.test(raw)) { result = { reply: '', noReply: true, handoff: false }; break; }
+      const r = parseReply(cortado ? `${raw.replace(/,\s*$/, '')}}` : raw); // cortado termina em `{"reply": "…",` — fecha o JSON
       if (!r.formatError && !(r.reply && pareceRaciocinio(r.reply))) { result = r; break; }
+      if (cortado) semCorte = true;
       rawFalho = raw;
       console.warn('[AI Auto-reply] resposta fora do formato/raciocínio — tentativa', tentativa + 1, raw.slice(0, 200));
     }
@@ -777,7 +797,7 @@ ${conversasPorTelefone}` : ''}`;
     return null;
   } finally {
     const total = Date.now() - tIni;
-    if (opts.sugestao || total > 15_000) console.log(`[AI Tempo] ${opts.sugestao ? 'sugestão' : 'resposta automática'} ${leadId}: total=${total}ms | ${tempos.join(' ')}`);
+    if (opts.botaoSugerir || total > 15_000) console.log(`[AI Tempo] ${opts.botaoSugerir ? 'sugestão (botão)' : opts.sugestao ? 'mensagem automática (modo sugestão)' : 'resposta automática'} ${leadId}: total=${total}ms | ${tempos.join(' ')}`);
   }
 }
 

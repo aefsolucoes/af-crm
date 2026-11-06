@@ -76,7 +76,7 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
       ? rajada.reverse().join('\n')
       : '[O cliente não escreveu nada depois da nossa última mensagem. A equipe quer mandar a próxima mensagem agora: sugira a melhor mensagem pra seguir com este cliente, de acordo com a conversa e o momento do card.]';
     const { generateAiAutoReply } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
-    const r = await generateAiAutoReply(accountId, leadId, texto, [], { sugestao: true });
+    const r = await generateAiAutoReply(accountId, leadId, texto, [], { sugestao: true, botaoSugerir: true });
     if (r?.reply?.trim()) return { suggestion: stripOpeningInterjection(r.reply.trim()) };
     console.warn(`[AI Suggest-reply] ${leadId}: o motor da conversa não devolveu texto — usando a sugestão clássica`);
   } catch (err: any) {
