@@ -908,6 +908,8 @@ export async function resolveContactAndLeadByPhone(
         where: { id: existingLead.id },
         data: { customFields: { ...((fresh?.customFields as any) || {}), ...form.fields } as any, ...(renomear ? { name: normalizeClientName(form.fields.participante_1) } : {}) },
       });
+      // Finalidade do imóvel pela proposta (Fabio 06/11) — só com o campo vazio; a varredura de 10 em 10 min pega o resto (e-mail, documentos).
+      (require('./finalidade-imovel.service') as typeof import('./finalidade-imovel.service')).preencherFinalidade(existingLead.id, io, textForCampaignDetection).catch((e: any) => console.error('[Finalidade]', e?.message));
       if (renomear) {
         if (fresh?.contactId) await prisma.contact.update({ where: { id: fresh.contactId }, data: { name: normalizeClientName(form.fields.participante_1) } }).catch(() => {});
         await prisma.note.create({ data: { leadId: existingLead.id, type: 'DATA_EDIT', content: `📝 Nome do card corrigido pela proposta do site: "${fresh?.name}" → "${normalizeClientName(form.fields.participante_1)}".` } }).catch(() => {});

@@ -330,6 +330,13 @@ httpServer.listen(PORT, () => {
     setInterval(() => { processLearningReview(io).catch((err) => console.error('[Aprendizado] Poll:', err?.message)); }, 10 * 60 * 1000);
   }, 6 * 60 * 1000);
 
+  // Finalidade do imóvel (Fabio 06/11): card mexido com a Finalidade vazia ganha Residencial/Apartamento/Terreno/Construção/Comercial/Sala/Loja/Galpão pela proposta e documentos.
+  setTimeout(() => {
+    const varrer = () => (require('./services/finalidade-imovel.service') as typeof import('./services/finalidade-imovel.service')).varrerFinalidade(io as any).catch((err: any) => console.error('[Finalidade] Poll:', err?.message));
+    varrer();
+    setInterval(varrer, 10 * 60 * 1000);
+  }, 4 * 60 * 1000);
+
   // Venda Futura com data (Fabio 16/10): manda a retomada no dia combinado com o cliente e depois de 30 em 30 dias, até ele responder.
   setTimeout(() => {
     setInterval(() => {

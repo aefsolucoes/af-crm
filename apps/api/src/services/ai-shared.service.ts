@@ -587,7 +587,7 @@ export async function buildFillableFieldsText(accountId: string): Promise<string
   const defs = await prisma.fieldDefinition.findMany({ where: { accountId }, orderBy: [{ tab: 'asc' }, { order: 'asc' }] });
   const builtinText = BUILTIN_LEAD_FIELDS.map((f) => `- "${f.key}": ${f.label}`).join('\n');
   const builtinKeys = new Set(BUILTIN_LEAD_FIELDS.map((f) => f.key));
-  const customText = defs.filter((d) => !builtinKeys.has(d.key)).map((d) => `- "${d.key}" (aba ${d.tab}): ${d.name}`).join('\n');
+  const customText = defs.filter((d) => !builtinKeys.has(d.key)).map((d) => `- "${d.key}" (aba ${d.tab}): ${d.name}${d.key === 'finalidade' ? ' do imóvel — SÓ um destes: Residencial (casa), Apartamento, Terreno, Construção, Comercial, Sala, Loja, Galpão' : ''}`).join('\n');
   return [builtinText, customText].filter(Boolean).join('\n');
 }
 
@@ -824,6 +824,15 @@ export async function applyAiExtractedActions(
         if (!raw) continue;
         const parsed = NUMBER_FIELD_KEYS.has(k) ? parseMoneyOrNumber(raw) : raw;
         if (parsed !== null && parsed !== '') patch[k] = parsed;
+      }
+      // Finalidade do imóvel (Fabio 06/11): só um dos 8 valores e nunca por cima do que a equipe preencheu — o "Residencial"/"Comercial" que o próprio CRM gravou pode ficar mais específico.
+      if (patch.finalidade !== undefined) {
+        const { normalizarFinalidade, FINALIDADES } = require('./finalidade-imovel.service') as typeof import('./finalidade-imovel.service');
+        const nova = normalizarFinalidade(patch.finalidade);
+        const cf0 = (lead.customFields || {}) as Record<string, any>;
+        const antes = String(cf0.finalidade ?? '').trim();
+        const pode = !!nova && (!antes || (cf0._finalidadeAuto === antes && FINALIDADES.indexOf(nova) < FINALIDADES.indexOf(antes as any)));
+        if (pode) { patch.finalidade = nova!; patch._finalidadeAuto = nova!; } else delete patch.finalidade;
       }
       if (Object.keys(patch).length) {
         // Lido de novo: as ações acima (Perdido, etapa, Venda Futura) também gravam no customFields — a cópia do início apagaria o que elas gravaram.
