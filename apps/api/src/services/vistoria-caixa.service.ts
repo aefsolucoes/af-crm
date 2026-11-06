@@ -125,8 +125,15 @@ async function cepDoImovel(ficha: any, cf: Record<string, any>): Promise<string 
   const logr = String(e.logradouro || '').trim();
   if (!uf || !cidade || logr.length < 3) return null;
   try {
-    const r = await fetch(`https://viacep.com.br/ws/${encodeURIComponent(uf)}/${encodeURIComponent(cidade)}/${encodeURIComponent(logr)}/json/`, { signal: AbortSignal.timeout(8000) });
-    const lista = (await r.json()) as { cep: string; logradouro: string; complemento: string; bairro: string }[];
+    // ViaCEP às vezes não responde do servidor (06/11, 2ª leitura da Fernanda): tenta 3x; sem CEP a extensão procura pelo navegador.
+    let lista: { cep: string; logradouro: string; complemento: string; bairro: string }[] = [];
+    for (let i = 0; i < 3 && !lista.length; i++) {
+      try {
+        const r = await fetch(`https://viacep.com.br/ws/${encodeURIComponent(uf)}/${encodeURIComponent(cidade)}/${encodeURIComponent(logr.replace(/([A-Za-z])-(\d)/g, '$1 $2'))}/json/`, { signal: AbortSignal.timeout(12000) });
+        const j = await r.json();
+        if (Array.isArray(j)) lista = j;
+      } catch { await new Promise((ok) => setTimeout(ok, 1500)); }
+    }
     if (!Array.isArray(lista) || !lista.length) return null;
     const norm = (s: string) => semAcento(s).toUpperCase().replace(/\s+/g, ' ').trim();
     const bairro = norm(String(e.bairro || '').split(/[\/,-]/).pop() || '');
@@ -242,17 +249,22 @@ async function prepararVistoria(accountId: string, leadId: string, user: { id: s
   const ficha = lida.ficha;
   const cep = await cepDoImovel(ficha, cf);
   const dados = montarDadosSiopi(ficha, cf, cep, ehHE(lead.pipeline?.department?.name || ''));
-  const faltas = [!cep && 'CEP do imóvel (não achei pelo endereço)', !dados.imovel.logradouro && 'logradouro', !dados.imovel.bairro && 'bairro', !(num(ficha.areaPrivativa) || 0) && 'área do imóvel', ...(Array.isArray(ficha.problemas) ? ficha.problemas : [])].filter(Boolean) as string[];
+  // CEP achado fica no card ("CEP do imóvel"): a próxima leitura usa ele e não depende do ViaCEP.
+  if (cep && !String(cf.imovel_cep || '').replace(/\D/g, '')) {
+    const fresh = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, imovel_cep: cep.replace(/^(\d{5})(\d{3})$/, '$1-$2') } } });
+  }
+  const faltas = [!dados.imovel.logradouro && 'logradouro', !dados.imovel.bairro && 'bairro', !(num(ficha.areaPrivativa) || 0) && 'área do imóvel', ...(Array.isArray(ficha.problemas) ? ficha.problemas : [])].filter(Boolean) as string[];
   await gravar(leadId, { ficha, dados, faltas });
   await nota(leadId, [
     `🏠 Vistoria CAIXA — dados do imóvel lidos da certidão (${ficha.arquivo}):`,
     `Matrícula ${fmtMatricula(ficha.matricula)} • ${ficha.cartorio?.nome || 'cartório?'} • Livro ${dados.imovel.livro}`,
-    `Endereço: ${dados.imovel.logradouro}${dados.imovel.bloco ? ` Bloco ${dados.imovel.bloco}` : ''}, ${dados.imovel.bairro} — ${dados.imovel.municipio}/${dados.imovel.uf} • CEP ${cep || '—'}`,
+    `Endereço: ${dados.imovel.logradouro}${dados.imovel.bloco ? ` Bloco ${dados.imovel.bloco}` : ''}, ${dados.imovel.bairro} — ${dados.imovel.municipio}/${dados.imovel.uf} • CEP ${cep || '— (a extensão procura pelo endereço, se precisar cadastrar)'}`,
     `Área privativa ${dados.imovel.areaPrivativa} m² • ${String(ficha.tipo || '').toLowerCase()}${ficha.condominio ? ' em condomínio' : ''} • compra e venda R$ ${dados.imovel.valorCompraVenda} • a financiar R$ ${dados.os.valor}`,
     `Descrição: ${dados.imovel.descricao}`,
     faltas.length ? `⚠️ Falta/conferir: ${faltas.join('; ')}` : '',
   ].filter(Boolean).join('\n'));
-  if (!cep || !dados.imovel.logradouro) {
+  if (!dados.imovel.logradouro) {
     await gravar(leadId, { status: 'ERRO', erro: `Falta ${faltas.join(', ')}` });
     await push(accountId, leadId, `🏠 ${lead.name}: vistoria CAIXA parada`, `Falta ${faltas.join(', ')} — preencha "CEP do imóvel" no card e clique de novo.`);
     return;
