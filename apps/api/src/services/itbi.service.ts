@@ -302,7 +302,11 @@ export async function reportItbi(accountId: string, leadId: string, data: Record
         it.claimedAt = null;
         if (!faltam) {
           const total = it.declaracoes.reduce((s, x) => s + (x.valorItbi || 0), 0);
-          await nota(leadId, `🏛️ ITBI CALCULADO no portal (nada enviado ainda):\n${it.declaracoes.map((x) => `• ${x.transmitente.nome} → ${x.adquirente.nome} (${x.percentual}%): base ${brl(x.baseCalculo)}, alíquota ${x.aliquota ?? '?'}%, ITBI ${brl(x.valorItbi)}`).join('\n')}\nTotal: ${brl(total)}. Confira e confirme o ENVIO no card (bloco ITBI) ou pelo assistente — o envio gera o imposto e a guia vai pro cliente.`);
+          // Base abaixo do valor pactuado da parte = o portal pode ter aplicado o percentual em cima do valor já dividido (Francisco, 3 vendedoras, 06/11)
+          const esperadoTotal = Math.round(it.valorTotal * (it.imovelNovo ? 1 : 2)) / 100;
+          const baseBaixa = it.declaracoes.some((x) => x.baseCalculo != null && x.baseCalculo < x.valorPactuado * 0.95);
+          const alerta = baseBaixa || total < esperadoTotal * 0.97 ? `\n⚠️ Esperado ≈ ${brl(esperadoTotal)} (${it.imovelNovo ? 1 : 2}% de ${brl(it.valorTotal)}). A base ficou abaixo do valor de compra e venda — confira antes de enviar.` : '';
+          await nota(leadId, `🏛️ ITBI CALCULADO no portal (nada enviado ainda):\n${it.declaracoes.map((x) => `• ${x.transmitente.nome} → ${x.adquirente.nome} (${x.percentual}%): base ${brl(x.baseCalculo)}, alíquota ${x.aliquota ?? '?'}%, ITBI ${brl(x.valorItbi)}`).join('\n')}\nTotal: ${brl(total)}.${alerta}\nConfira e confirme o ENVIO no card (bloco ITBI) ou pelo assistente — o envio gera o imposto e a guia vai pro cliente.`);
           push(accountId, '🏛️ ITBI calculado — confirme o envio', `${lead.name}: ${brl(total)} (${it.declaracoes.length} declaração(ões))`, leadId, userIds);
         }
       }
