@@ -150,6 +150,12 @@ export function promisedAt(text: string, now: Date): Date {
 export async function maybeRecheckOwnerAnswer(accountId: string, leadId: string, io: Io): Promise<void> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId, status: 'OPEN' }, select: { customFields: true } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
+  // Respondeu a pergunta do habite-se (Fabio 06/11): grava a resposta na hora e, se mudou, a conferência segue (falta/problemas/contratação).
+  const h = cf._habiteSe;
+  if (h && (h.status === 'PERGUNTADO' || h.status === 'NAO_SABE')) {
+    const r = await (require('./habite-se.service') as typeof import('./habite-se.service')).lerRespostaHabite(accountId, leadId).catch(() => null);
+    if (r && r !== h.status && !(cf._donoAskedAt && !cf._donoResolvedAt)) await scheduleDocsCheck(accountId, leadId, io);
+  }
   if (!cf._donoAskedAt || cf._donoResolvedAt) return;
   await scheduleDocsCheck(accountId, leadId, io);
 }
@@ -474,6 +480,13 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _donoResolvedAt: new Date().toISOString() } as any } });
   }
 
+  // HABITE-SE (Fabio 06/11: "Santander e Creditas só fazem Home Equity para imóveis com habite-se"): certidão de ônus/matrícula que mostra só TERRENO/LOTE e o cliente disse
+  // CASA → o CRM pergunta UMA vez se a casa tem habite-se (certidão antiga: avisa que pode ter saído depois). Perguntou agora = a conferência para aqui (o resto segue quando ele responder).
+  if (!caixaRota) {
+    const passoHabite = await (require('./habite-se.service') as typeof import('./habite-se.service')).habiteNaConferencia(accountId, leadId, io, { podeFalar: true }).catch((e: any) => { console.error('[Habite-se] conferência:', e?.message || e); return null; });
+    if (passoHabite === 'PERGUNTOU') return true;
+  }
+
   // Imóvel com financiamento ativo (gravame vigente na matrícula + proposta com saldo): pede o print do saldo devedor (1 vez). Se pediu, o "recebi tudo" vai junto nessa mensagem.
   const pediuSaldo = caixaRota ? false // a CAIXA confere só a documentação pessoal agora (o saldo devedor fica pra depois do resultado dela)
     : await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).maybeAskSaldoDevedor(accountId, leadId, io, { docsReceived: true }).catch((e: any) => { console.error('[Saldo] pedido:', e?.message || e); return false; });
@@ -555,6 +568,12 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: documentação completa`, body: caixaRota ? 'Ficha e cadastro da CAIXA a caminho' : banco ? `Rodar a análise na ${banco}` : 'Documentação do comprador completa', leadId }).catch(() => {});
     return true;
   }
+  // Habite-se em aberto, ou imóvel sem habite-se com proposta do Santander/Creditas em jogo (Fabio 06/11): o card não vai sozinho pra contratação — a equipe decide (nota + push).
+  const seguraHabite = await (require('./habite-se.service') as typeof import('./habite-se.service')).segurarContratacaoHabite(accountId, leadId).catch((e: any) => { console.error('[Habite-se] segurar:', e?.message || e); return null; });
+  if (seguraHabite) {
+    console.log(`[Docs] ${lead.name} (${leadId}): documentação completa, contratação segurada — ${seguraHabite}`);
+    return false;
+  }
   const moved = await moveLeadToContracting(accountId, leadId, io, 'a IA conferiu que a documentação chegou completa');
   if (!moved) {
     console.warn(`[Docs] ${lead.name} (${leadId}): documentação completa, mas o funil de contratação do setor não foi encontrado`);
@@ -618,6 +637,8 @@ export async function conferirDocumentosAgora(accountId: string, leadId: string,
   conferindoAgora.add(leadId);
   try {
     const review = await reviewReceivedDocs(accountId, leadId, { releCertidao: true }).catch((e) => { console.error(`[Docs] botão — leitura falhou (${leadId}):`, e?.message || e); return null; });
+    // Habite-se (Fabio 06/11): lê a certidão e anota pra equipe — pelo botão nada vai pro cliente.
+    await (require('./habite-se.service') as typeof import('./habite-se.service')).habiteNaConferencia(accountId, leadId, io, { podeFalar: false }).catch((e: any) => console.error('[Habite-se] botão:', e?.message || e));
     const verdict = await evaluateDocs(accountId, leadId).catch((e) => { console.error(`[Docs] botão — conferência falhou (${leadId}):`, e?.message || e); return null; });
     // Arquivos que continuam sem leitura (protegido, grande demais, erro): ficam listados pra alguém olhar.
     const atts = (await prisma.messageAttachment.findMany({ where: { leadId, message: { direction: 'INBOUND' } }, select: { id: true, fileName: true, mimeType: true, driveFileId: true, data: true } }))
