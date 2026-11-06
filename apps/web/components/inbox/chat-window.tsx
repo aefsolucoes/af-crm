@@ -2306,7 +2306,8 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                 </div>
               </div>
 
-              {windowClosedForApi && (
+              {/* Fabio 06/11 ("sugerir template sumiu"): o cartão aparece em toda conversa de WhatsApp — fechada, a IA sugere sozinha ao abrir; aberta, só no clique. */}
+              {channel === 'WHATSAPP' && (
                 <div className="m-2 p-3 rounded-lg border border-amber-500/30 bg-[#1f2c34] space-y-2 min-w-0 break-words">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-[10px] uppercase tracking-wide font-semibold text-amber-400 flex items-center gap-1"><Lightbulb size={12} /> Template sugerido pra este cliente</p>
@@ -2314,11 +2315,12 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                       {tplSuggestion?.template && (
                         <button onClick={useTemplateSuggestion} className="px-2.5 py-1 rounded-lg bg-[#00a884] text-[#111b21] text-xs font-medium hover:bg-[#02c093]">Usar este template</button>
                       )}
-                      <button onClick={loadTemplateSuggestion} disabled={tplSuggesting} className="text-[11px] text-[#8696a0] hover:text-[#e9edef] disabled:opacity-50">{tplSuggesting ? 'Pensando…' : 'Sugerir de novo'}</button>
+                      <button onClick={loadTemplateSuggestion} disabled={tplSuggesting} className="text-[11px] text-[#8696a0] hover:text-[#e9edef] disabled:opacity-50">{tplSuggesting ? 'Pensando…' : tplSuggestion || tplSuggestError ? 'Sugerir de novo' : 'Sugerir template'}</button>
                     </div>
                   </div>
                   {tplSuggesting && !tplSuggestion && <div className="flex items-center gap-2 text-xs text-[#8696a0]"><Loader2 size={13} className="animate-spin" /> Escolhendo pelo histórico, pela etapa e pelo que já foi enviado…</div>}
                   {tplSuggestError && <p className="text-xs text-amber-400">{tplSuggestError}</p>}
+                  {!windowClosedForApi && !tplSuggestion && !tplSuggesting && !tplSuggestError && <p className="text-xs text-[#8696a0]">Conversa ainda aberta (dá pra mandar texto). Pra a IA escolher um template mesmo assim, clique em &quot;Sugerir template&quot;.</p>}
                   {tplSuggestion && (
                     <div className={cn('space-y-2', tplSuggesting && 'opacity-50')}>
                       {tplSuggestion.template ? (
