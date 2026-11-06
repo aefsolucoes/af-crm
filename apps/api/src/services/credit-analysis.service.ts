@@ -480,6 +480,21 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
           continue;
         }
       }
+      // Santander e Creditas só fazem Home Equity com habite-se (Fabio 06/11): sem habite-se (o cliente disse, ou marcou "Não tem Habite-se" na proposta de imóvel quitado),
+      // rodada AUTOMÁTICA nem abre. Clique de uma pessoa roda (ela decide).
+      if ((bank === 'CREDIMORAR' || bank === 'CREDITAS') && kind === 'RUN' && !p.dryRun && !p.userId) {
+        const hs = require('./habite-se.service') as typeof import('./habite-se.service');
+        const semH = await hs.semHabiteDoCard(l.id, cfPedido).catch(() => null);
+        if (semH) {
+          const detail = `NÃO RODEI: ${hs.textoNaoRodeiHabite(bank, semH)}`;
+          await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail, dryRun: false, source: p.source || 'EXTENSION', requestedById: null, finishedAt: new Date() } });
+          const conteudo = `🚫 ${bank === 'CREDITAS' ? 'Creditas' : 'Santander'} NÃO analisa este cliente: ${detail.replace(/^NÃO RODEI:\s*/, '')}`;
+          const ja = await db.note.findFirst({ where: { leadId: l.id, content: conteudo, createdAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
+          if (!ja) await db.note.create({ data: { leadId: l.id, type: 'COMMENT', content: conteudo } }).catch(() => {});
+          created++;
+          continue;
+        }
+      }
       const prev = kind === 'CHECK' ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true, requestedValue: true } }) : null;
       const doCard = kind === 'CHECK' && !prev?.proposalNumber ? propostaDoCard(cfPedido) : null; // sem análise com número: usa a proposta anotada no card
       const prevNumber = prev?.proposalNumber || (doCard && doCard.bank === bank ? doCard.numero : null);
@@ -919,13 +934,15 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
 }
 
 /** Sexo no Inter (Fabio 06/11, Josiane "Cônjuge" como Masculino): a simulação do portal não tem campo de sexo e o Inter grava TODO proponente como Masculino.
- *  Só dá pra corrigir no "Formulário de cadastro" (etapa 3). Quando aprova, o card diz quem é Feminino pelo nome (sexoPeloNome) — uma vez por proposta. */
+ *  O portal do parceiro NÃO tem campo de sexo em lugar nenhum (nem no "Formulário de cadastro": Dados pessoais = CPF, nome, nascimento, nacionalidade, profissão, estado civil,
+ *  regime de bens, documento, e-mail e telefone — conferido 06/11 na 005707710). Quando aprova, o card diz quem é Feminino pelo nome (sexoPeloNome) pra pedir a correção ao
+ *  consultor do Inter — uma vez por proposta. */
 async function avisarSexoInter(db: Db, row: { leadId: string; bank: string; detail?: string | null; holderName?: string | null; proposalNumber?: string | null }): Promise<void> {
   const det = String(row.detail || '');
   const nomes = [parseHolder(det) || row.holderName || '', /2[ºo°] participante:\s*([^).;|\n]+)/i.exec(det)?.[1] || ''].map((n) => n.trim()).filter((n) => n.length >= 3);
   const mulheres = Array.from(new Set(nomes.filter((n) => sexoPeloNome(n) === 'F')));
   if (!mulheres.length) return;
-  const conteudo = `⚠️ Inter${row.proposalNumber ? ` (proposta nº ${row.proposalNumber})` : ''}: o portal grava todo proponente como MASCULINO (a simulação não tem campo de sexo). No Formulário de cadastro (etapa 3), marque FEMININO para: ${mulheres.join(', ')}.`;
+  const conteudo = `⚠️ Inter${row.proposalNumber ? ` (proposta nº ${row.proposalNumber})` : ''}: o portal grava todo proponente como MASCULINO e não tem campo de sexo pra corrigir (nem na simulação, nem no Formulário de cadastro). Peça ao consultor do Inter pra corrigir pra FEMININO: ${mulheres.join(', ')}.`;
   const ja = await db.note.findFirst({ where: { leadId: row.leadId, content: conteudo }, select: { id: true } });
   if (!ja) await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: conteudo } });
 }
@@ -2009,6 +2026,13 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   if (jogo && !jogo.rendaNecessaria) linhas.push('- DOCUMENTOS DE RENDA: a equipe DISPENSOU a renda deste cliente (ele não vai seguir pelo banco que pedia). NÃO peça nem cobre renda e, se ele já mandou, não aponte problema nela.');
   const santanderFora = (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).aiSantanderTerceiroLinha(cf); // Fabio 03/11
   if (santanderFora) linhas.push(santanderFora);
+  // Santander e Creditas só fazem Home Equity com habite-se (Fabio 06/11).
+  const depto = (await db.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { department: { select: { name: true } } } } } }))?.pipeline?.department?.name || '';
+  if (/home equity/i.test(depto)) {
+    const hs = require('./habite-se.service') as typeof import('./habite-se.service');
+    const habiteFora = hs.aiHabiteBancosLinha(cf, cf._habiteSe?.status === 'NAO_TEM' ? '' : await hs.propostaDoLead(leadId).catch(() => ''));
+    if (habiteFora) linhas.push(habiteFora);
+  }
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };
 
