@@ -538,6 +538,10 @@ export async function generateAiAutoReply(
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !incomingText.trim()) return null;
 
+  // Cronômetro por etapa (Fabio 06/11: "sugerir resposta continua lento"): uma linha "[AI Tempo]" no log por sugestão (e por resposta automática que passe de 15 s).
+  const tIni = Date.now();
+  const tempos: string[] = [];
+  const medir = async <T>(nome: string, p: Promise<T>): Promise<T> => { const s0 = Date.now(); try { return await p; } finally { tempos.push(`${nome}=${Date.now() - s0}`); } };
   try {
     // "Ok" depois de a gente explicar que a operação não dá (imóvel em
     // usufruto, sem matrícula, parcela atrasada…): não é só confirmação — a
@@ -575,46 +579,46 @@ export async function generateAiAutoReply(
     }
 
     // Cliente ainda mandando documento: legenda/aviso solto ("comprovante de endereço", "tá aí") não recebe resposta; dúvida de verdade (com "?") é respondida SEM listar o que chegou/falta.
-    const chegando = await docsStillArriving(leadId).catch(() => false);
+    const chegando = await medir('docsChegando', docsStillArriving(leadId).catch(() => false));
     if (chegando && !opts.sugestao && !incomingText.includes('?')) {
       console.log(`[AI Auto-reply] cliente ainda mandando documentos ("${incomingText.trim().slice(0, 40)}") — sem resposta, a conferência avisa depois`);
       return { reply: '', handoff: false, noReply: true };
     }
 
-    const ctx = await buildSharedAiContext(accountId, leadId, incomingText, {
+    const ctx = await medir('contexto', buildSharedAiContext(accountId, leadId, incomingText, {
       fullHistory: true,
       historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' },
-    });
+    }));
     if (!ctx) return null;
 
-    const camposTexto = await buildFillableFieldsText(accountId);
-    const duvidasEquipe = await teamQuestionsContext(leadId);
-    const ligacao = await callPermissionContext(accountId, leadId, incomingText);
-    const conversasPorTelefone = await callSummaryContext(leadId).catch(() => '');
+    const camposTexto = await medir('campos', buildFillableFieldsText(accountId));
+    const duvidasEquipe = await medir('duvidas', teamQuestionsContext(leadId));
+    const ligacao = await medir('ligacao', callPermissionContext(accountId, leadId, incomingText));
+    const conversasPorTelefone = await medir('telefone', callSummaryContext(leadId).catch(() => ''));
     // Pergunta de status: pede leitura NOVA nos bancos (extensão) e espera até ~2 min; depois monta o bloco com o que está mais recente.
-    await refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText }).catch(() => null);
-    const analiseCredito = await aiCreditContext(prisma, leadId).catch(() => '');
-    const reentrada = await (require('./reentry.service') as typeof import('./reentry.service')).aiReentryContext(leadId).catch(() => '');
-    const cessao = await (require('./reentry.service') as typeof import('./reentry.service')).aiCessaoContext(leadId).catch(() => '');
-    const combinados = await (require('./bancos-combinados.service') as typeof import('./bancos-combinados.service')).aiBancosCombinadosContext(leadId).catch(() => '');
-    const escolhaPendente = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aiEscolhaPendenteContext(leadId).catch(() => '');
-    const documentos = await aiDocsContext(leadId).catch(() => '');
-    const scrCreditas = await (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => '');
-    const emailsProcesso = await aiEmailsContext(leadId).catch(() => '');
-    const cadDiv = await (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).aiCadDivContext(leadId).catch(() => '');
-    const ocorrencias = await (require('./caixa-ocorrencias.service') as typeof import('./caixa-ocorrencias.service')).aiOcorrenciasContext(leadId).catch(() => '');
+    await medir('leituraBancos', refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText }).catch(() => null));
+    const analiseCredito = await medir('analise', aiCreditContext(prisma, leadId).catch(() => ''));
+    const reentrada = await medir('reentrada', (require('./reentry.service') as typeof import('./reentry.service')).aiReentryContext(leadId).catch(() => ''));
+    const cessao = await medir('cessao', (require('./reentry.service') as typeof import('./reentry.service')).aiCessaoContext(leadId).catch(() => ''));
+    const combinados = await medir('combinados', (require('./bancos-combinados.service') as typeof import('./bancos-combinados.service')).aiBancosCombinadosContext(leadId).catch(() => ''));
+    const escolhaPendente = await medir('escolha', (require('./approval-notice.service') as typeof import('./approval-notice.service')).aiEscolhaPendenteContext(leadId).catch(() => ''));
+    const documentos = await medir('documentos', aiDocsContext(leadId).catch(() => ''));
+    const scrCreditas = await medir('scr', (require('./creditas-scr.service') as typeof import('./creditas-scr.service')).scrCreditasContext(leadId).catch(() => ''));
+    const emailsProcesso = await medir('emails', aiEmailsContext(leadId).catch(() => ''));
+    const cadDiv = await medir('cadDiv', (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).aiCadDivContext(leadId).catch(() => ''));
+    const ocorrencias = await medir('ocorrencias', (require('./caixa-ocorrencias.service') as typeof import('./caixa-ocorrencias.service')).aiOcorrenciasContext(leadId).catch(() => ''));
 
     const hojeTxt = new Date(Date.now() - 3 * 3_600_000).toISOString().slice(0, 10);
-    const vfLead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } }).catch(() => null);
+    const vfLead = await medir('vendaFutura', prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } }).catch(() => null));
     const vfAt = String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaAt || '');
     const retomadaTxt = /^\d{4}-\d{2}-\d{2}$/.test(vfAt) ? vfAt.split('-').reverse().join('/') : null;
     const naVendaFutura = /venda futura/i.test(vfLead?.stage?.name || '');
-    const vfAprovado = await (require('./caixa-screening.service') as typeof import('./caixa-screening.service')).temAprovacao(leadId, (vfLead?.customFields || {}) as Record<string, any>).catch(() => true);
+    const vfAprovado = await medir('temAprovacao', (require('./caixa-screening.service') as typeof import('./caixa-screening.service')).temAprovacao(leadId, (vfLead?.customFields || {}) as Record<string, any>).catch(() => true));
     // Parte FIXA (igual pra todos os clientes: vai pro CACHE de prompt — nas chamadas seguintes, em até 5 min, as ~14 mil tokens de regras custam ~10%) e parte que muda por cliente/momento.
     // As regras condicionais (venda futura, documentos chegando/lidos, campos do card) e o formato de saída ficam na parte que muda, logo antes do contexto.
-    const coreRules = await fixedRule(accountId, 'CORE_RULES', CORE_RULES);
+    const coreRules = await medir('regras', fixedRule(accountId, 'CORE_RULES', CORE_RULES));
     // Regras de negócio vivem na Base de Conhecimento (fonte única, Fabio 29/10); o texto do código abaixo é só a semente/plano B. OUTPUT_FORMAT e SAFETY_RULES ficam no código (estrutura/segurança).
-    const R = await fixedRules(accountId, { ROLE_FRAMING, HANDOFF_RULES, ASK_TEAM_RULES, MOVE_STAGE_RULES, NEW_VALUE_RULES, PROPERTY_DOCS_RULES, RETENTION_RULES, OUTRO_CANAL_RULES, APARTMENT_APPRAISAL_RULES, MARK_LOST_RULES, STOP_FOLLOWUP_RULES, FORM_FIRST_RULES, CONVERSE_BEFORE_LINK_RULES, PROPOSAL_REVIEW_RULES, CREDIT_ANALYSIS_RULES, NO_RECEIPT_LIST_RULES, NO_REPLY_RULES, DOCS_ARRIVING_RULES, EMAIL_RELAY_RULES });
+    const R = await medir('regras2', fixedRules(accountId, { ROLE_FRAMING, HANDOFF_RULES, ASK_TEAM_RULES, MOVE_STAGE_RULES, NEW_VALUE_RULES, PROPERTY_DOCS_RULES, RETENTION_RULES, OUTRO_CANAL_RULES, APARTMENT_APPRAISAL_RULES, MARK_LOST_RULES, STOP_FOLLOWUP_RULES, FORM_FIRST_RULES, CONVERSE_BEFORE_LINK_RULES, PROPOSAL_REVIEW_RULES, CREDIT_ANALYSIS_RULES, NO_RECEIPT_LIST_RULES, NO_REPLY_RULES, DOCS_ARRIVING_RULES, EMAIL_RELAY_RULES }));
     const systemFixed = `${R.ROLE_FRAMING}
 
 ${coreRules}
@@ -691,6 +695,7 @@ ${conversasPorTelefone}` : ''}`;
     let rawFalho = '';
     for (let tentativa = 0; tentativa < 2; tentativa++) {
       const lembrete = tentativa ? '\n\n[ATENÇÃO: a resposta anterior veio fora do formato. Responda SOMENTE com o objeto JSON pedido — nada antes nem depois dele. O campo "reply" é a mensagem que vai ao cliente: fale COM ele, nunca descreva a conversa nem o que você pretende fazer.]' : '';
+      const tChamada = Date.now();
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
@@ -716,7 +721,9 @@ ${conversasPorTelefone}` : ''}`;
         console.error('[AI Auto-reply] Erro Anthropic:', response.status, (await response.text()).slice(0, 300));
         return null;
       }
-      const data = await response.json() as { content: { type: string; text?: string }[] };
+      const data = await response.json() as { content: { type: string; text?: string }[]; stop_reason?: string; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } };
+      const u = data.usage || {};
+      tempos.push(`anthropic${tentativa + 1}=${Date.now() - tChamada}(entrada ${u.input_tokens ?? '?'}+cache ${u.cache_read_input_tokens ?? 0}/${u.cache_creation_input_tokens ?? 0}, saída ${u.output_tokens ?? '?'}, ${data.stop_reason || '?'})`);
       // TODOS os blocos de texto (antes só o 1º: se o modelo escrevia um texto antes do JSON, o 1º bloco era esse texto).
       const raw = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').trim();
       if (!raw) return null;
@@ -759,13 +766,18 @@ ${conversasPorTelefone}` : ''}`;
     // a IA mandou a Resposta Rápida inteira, que abre com a frase de aprovação).
     const aprovado = /aprovad|aguardando document|document|contrata|conclu|fechad/i.test(ctx.etapaTexto.split('→').pop() || '');
     if (!aprovado && result.reply) result.reply = stripApprovalClaims(result.reply);
-    await addDocsDoubtQuestions(leadId, incomingText, ctx.etapaTexto, result);
-    await addFollowPrazoQuestion(leadId, incomingText, ctx.etapaTexto, result);
-    if (!opts.sugestao) await addSeguirAprovadoQuestion(leadId, incomingText, ctx.etapaTexto, result);
+    await medir('fim', (async () => {
+      await addDocsDoubtQuestions(leadId, incomingText, ctx.etapaTexto, result!);
+      await addFollowPrazoQuestion(leadId, incomingText, ctx.etapaTexto, result!);
+      if (!opts.sugestao) await addSeguirAprovadoQuestion(leadId, incomingText, ctx.etapaTexto, result!);
+    })());
     return result;
   } catch (err) {
     console.error('[AI Auto-reply] Erro ao gerar resposta:', err);
     return null;
+  } finally {
+    const total = Date.now() - tIni;
+    if (opts.sugestao || total > 15_000) console.log(`[AI Tempo] ${opts.sugestao ? 'sugestão' : 'resposta automática'} ${leadId}: total=${total}ms | ${tempos.join(' ')}`);
   }
 }
 

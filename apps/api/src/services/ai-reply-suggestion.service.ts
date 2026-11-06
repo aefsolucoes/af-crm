@@ -82,7 +82,10 @@ export async function generateReplySuggestion(accountId: string, leadId: string)
   } catch (err: any) {
     console.error('[AI Suggest-reply] motor da conversa falhou — usando a sugestão clássica:', err?.message);
   }
-  return generateReplySuggestionClassica(accountId, leadId);
+  const tClassica = Date.now();
+  const classica = await generateReplySuggestionClassica(accountId, leadId);
+  console.log(`[AI Tempo] sugestão clássica (reserva) ${leadId}: ${Date.now() - tClassica}ms${classica ? '' : ' — sem sugestão'}`);
+  return classica;
 }
 
 async function generateReplySuggestionClassica(accountId: string, leadId: string): Promise<ReplySuggestion | null> {
