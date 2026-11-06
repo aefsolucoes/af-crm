@@ -19,7 +19,7 @@ interface Estado {
   campos: { rotulo: string; valor: string }[];
 }
 
-const ANDAMENTO = ['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO', 'AGUARDANDO_CONTATO'];
+const ANDAMENTO = ['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO', 'BOLETO', 'BAIXANDO_BOLETO', 'AGUARDANDO_CONTATO'];
 const ROTULO: Record<string, string> = {
   LENDO: 'lendo a certidão do imóvel…',
   AGUARDANDO_CONTATO: 'esperando o contato da vistoria (nome e telefone)',
@@ -31,6 +31,8 @@ const ROTULO: Record<string, string> = {
   DOCUMENTOS: 'OS criada — anexando a certidão de ônus…',
   ANEXANDO: 'extensão anexando a certidão de ônus…',
   TAXA_PRONTA: 'OS criada e certidão anexada — falta emitir a taxa (boleto)',
+  BOLETO: 'taxa emitida — baixando o boleto pra mandar ao cliente…',
+  BAIXANDO_BOLETO: 'extensão baixando o boleto…',
   ENVIADA: 'solicitada',
   JA_TEM_OS: 'o imóvel já tem OS no SIOPI',
   OUTRO_CCA: 'imóvel de OUTRO correspondente — pedir alteração à agência por e-mail',

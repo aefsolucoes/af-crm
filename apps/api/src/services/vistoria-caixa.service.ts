@@ -16,7 +16,7 @@ import { arquivosDoImovel, moverParaVistoria } from './vistoria-inter.service';
  */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
-type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'DOCUMENTOS' | 'ANEXANDO' | 'TAXA_PRONTA' | 'ENVIADA' | 'JA_TEM_OS' | 'OUTRO_CCA' | 'ERRO';
+type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'DOCUMENTOS' | 'ANEXANDO' | 'TAXA_PRONTA' | 'BOLETO' | 'BAIXANDO_BOLETO' | 'ENVIADA' | 'JA_TEM_OS' | 'OUTRO_CCA' | 'ERRO';
 
 const MODELO = 'claude-sonnet-5';
 const LEASE_MS = 20 * 60_000;
@@ -312,7 +312,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
   const rows = await prisma.$queryRaw<{ id: string; accountId: string; status: string; leaseAt: string | null; tentativas: number | null }[]>`
     SELECT id, "accountId", "customFields"->'_vistoriaCaixa'->>'status' AS status, "customFields"->'_vistoriaCaixa'->>'leaseAt' AS "leaseAt",
            ("customFields"->'_vistoriaCaixa'->>'tentativas')::int AS tentativas
-      FROM "Lead" WHERE "customFields"->'_vistoriaCaixa'->>'status' IN ('AGUARDANDO_CONTATO','RODANDO','ENVIANDO','ANEXANDO')`;
+      FROM "Lead" WHERE "customFields"->'_vistoriaCaixa'->>'status' IN ('AGUARDANDO_CONTATO','RODANDO','ENVIANDO','ANEXANDO','BAIXANDO_BOLETO')`;
   for (const r of rows) {
     try {
       if (r.status === 'AGUARDANDO_CONTATO') {
@@ -327,7 +327,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
           await gravar(r.id, { status: 'ERRO', erro: 'A extensão do SIOPI começou 3 vezes e não terminou.' });
           await nota(r.id, '⚠️ Vistoria CAIXA: a extensão do SIOPI começou 3 vezes e não terminou. Confira o SIOPI aberto no Chrome (login) e clique de novo em "Solicitar vistoria CAIXA".');
           await push(r.accountId, r.id, '🏠 Vistoria CAIXA travou', 'A extensão do SIOPI não terminou — confira o Chrome.');
-        } else await gravar(r.id, { status: r.status === 'ENVIANDO' ? 'ENVIAR' : r.status === 'ANEXANDO' ? 'DOCUMENTOS' : 'FILA', leaseAt: null, tentativas: tent });
+        } else await gravar(r.id, { status: r.status === 'ENVIANDO' ? 'ENVIAR' : r.status === 'ANEXANDO' ? 'DOCUMENTOS' : r.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : 'FILA', leaseAt: null, tentativas: tent });
       }
     } catch (e: any) { console.error('[Vistoria CAIXA] poll', r.id, e?.message); }
   }
@@ -336,7 +336,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
 /** Fila da extensão: o próximo card em FILA (cadastra + prepara a OS, sem enviar) ou ENVIAR (cria a OS). */
 export async function proximaVistoriaCaixa(accountId: string): Promise<any | null> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' IN ('FILA','ENVIAR','DOCUMENTOS')
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' IN ('FILA','ENVIAR','DOCUMENTOS','BOLETO')
      ORDER BY ("customFields"->'_vistoriaCaixa'->>'status' <> 'FILA') DESC, "updatedAt" ASC LIMIT 1`;
   if (!rows.length) return null;
   const lead = await prisma.lead.findUnique({ where: { id: rows[0].id }, select: { id: true, name: true, customFields: true } });
@@ -344,13 +344,14 @@ export async function proximaVistoriaCaixa(accountId: string): Promise<any | nul
   const cf = (lead.customFields || {}) as Record<string, any>;
   const vc = cf._vistoriaCaixa || {};
   const enviar = vc.status === 'ENVIAR';
-  const modo = vc.status === 'DOCUMENTOS' ? 'DOCUMENTOS' : enviar ? 'ENVIAR' : 'PREPARAR';
-  await gravar(lead.id, { status: modo === 'DOCUMENTOS' ? 'ANEXANDO' : enviar ? 'ENVIANDO' : 'RODANDO', leaseAt: new Date().toISOString() });
+  const modo = vc.status === 'BOLETO' ? 'BOLETO' : vc.status === 'DOCUMENTOS' ? 'DOCUMENTOS' : enviar ? 'ENVIAR' : 'PREPARAR';
+  await gravar(lead.id, { status: modo === 'BOLETO' ? 'BAIXANDO_BOLETO' : modo === 'DOCUMENTOS' ? 'ANEXANDO' : enviar ? 'ENVIANDO' : 'RODANDO', leaseAt: new Date().toISOString() });
   return {
     leadId: lead.id,
     leadName: lead.name,
     modo,
     enviar,
+    tituloBoleto: vc.boleto?.titulo || null,
     codigoImovel: vc.codigoImovel || null,
     imovel: vc.dados?.imovel,
     os: { ...(vc.dados?.os || {}), contatoNome: vc.contato?.nome || '', contatoTelefone: vc.contato?.telefone || '', cpf: String(cf.cpf_1 || '').replace(/\D/g, '') },
@@ -406,7 +407,7 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
   }
   // ERRO / AGUARDANDO_LOGIN / tela desconhecida: para e avisa (a pessoa confere o SIOPI e clica de novo).
   const vc = ((((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any)._vistoriaCaixa) || {};
-  const voltaPara: Estado = etapa === 'AGUARDANDO_LOGIN' ? (vc.status === 'ENVIANDO' ? 'ENVIAR' : vc.status === 'ANEXANDO' ? 'DOCUMENTOS' : 'FILA') : 'ERRO';
+  const voltaPara: Estado = etapa === 'AGUARDANDO_LOGIN' ? (vc.status === 'ENVIANDO' ? 'ENVIAR' : vc.status === 'ANEXANDO' ? 'DOCUMENTOS' : vc.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : 'FILA') : 'ERRO';
   await gravar(leadId, { status: voltaPara, leaseAt: null, erro: body.erro || etapa });
   if (etapa === 'AGUARDANDO_LOGIN') {
     if (!vc.avisoLoginEm || Date.now() - new Date(vc.avisoLoginEm).getTime() > 2 * 3600_000) {
@@ -502,4 +503,70 @@ export async function certidaoDaVistoria(accountId: string, leadId: string): Pro
   const google = await import('./google.service');
   const buf = await google.downloadDriveFile(accountId, id, mime);
   return { nome: /\.pdf$/i.test(nome) || mime !== 'application/pdf' ? nome : `${nome}.pdf`, mimeType: mime, base64: buf.toString('base64') };
+}
+
+/**
+ * Boleto da taxa da vistoria aberto no SIOPI (a equipe clicou em "Concluir" na tela "Emite Taxa" e o boleto abriu numa aba — Fabio 06/11: "era só clicar em concluir";
+ * "já emiti, encaminhe à cliente"). A extensão manda o nº do título; o CRM liga ao card que está esperando a taxa (TAXA_PRONTA — só um; vários = push pra equipe) e põe
+ * na fila pra extensão baixar o PDF dentro do SIOPI.
+ */
+export async function boletoAberto(accountId: string, titulo: string, leadId?: string | null): Promise<{ leadId: string } | { erro: string }> {
+  const t = String(titulo || '').replace(/\D/g, '');
+  if (!t) return { erro: 'título sem número' };
+  let alvo = leadId || null;
+  if (!alvo) {
+    const ja = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->'boleto'->>'titulo' = ${t} LIMIT 1`;
+    if (ja.length) return { leadId: ja[0].id }; // já ligado (aba aberta de novo)
+    const esperando = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' = 'TAXA_PRONTA'`;
+    if (esperando.length !== 1) {
+      const quem = await prisma.user.findMany({ where: { accountId, role: 'ADMIN' }, select: { id: true } });
+      await sendPushToAccount(accountId, { title: '🏠 Boleto da vistoria CAIXA aberto', body: esperando.length ? `Tem ${esperando.length} cards esperando a taxa — não sei de quem é o boleto ${t}. Mande pela Inbox.` : `Nenhum card esperando a taxa — boleto ${t} não foi ligado a ninguém.` }, quem.map((u) => u.id)).catch(() => {});
+      return { erro: esperando.length ? 'mais de um card esperando a taxa' : 'nenhum card esperando a taxa' };
+    }
+    alvo = esperando[0].id;
+  }
+  await gravar(alvo, { status: 'BOLETO', leaseAt: null, tentativas: 0, boleto: { titulo: t, abertoEm: new Date().toISOString() } });
+  await nota(alvo, `🧾 Taxa da vistoria CAIXA emitida no SIOPI (título ${t}) — a extensão baixa o boleto e o CRM manda ao cliente.`);
+  return { leadId: alvo };
+}
+
+const TEXTO_BOLETO = (valor?: string) => `Segue o boleto da taxa de avaliação do imóvel (vistoria)${valor ? `, no valor de ${valor}` : ''}. Assim que for pago, a vistoria é agendada com o contato que você nos passou. Qualquer dúvida, estou à disposição.`;
+
+/** PDF do boleto (baixado pela extensão no SIOPI) → pasta IMOVEL do Drive + WhatsApp do cliente (Fabio 06/11: "emitir e encaminhar à cliente"). */
+export async function gravarBoletoVistoria(accountId: string, leadId: string, body: { nome?: string; base64?: string; valor?: string; titulo?: string }, io?: Io): Promise<{ erro: string } | { ok: true; enviado: boolean }> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!lead) return { erro: 'Card não encontrado' };
+  const data = Buffer.from(String(body.base64 || ''), 'base64');
+  if (data.length < 1000 || data.subarray(0, 4).toString('latin1') !== '%PDF') return { erro: 'o arquivo do boleto não é um PDF' };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const nome = 'BOLETO TAXA VISTORIA CAIXA.pdf';
+  let driveId: string | null = null;
+  const link = String(cf.link_pasta_drive || '').trim();
+  if (link) {
+    try {
+      const google = await import('./google.service');
+      const pasta = await google.createFolder(accountId, 'IMOVEL', google.extractFolderId(link));
+      for (const velho of (await google.listFolderContents(accountId, pasta.id)).filter((f: any) => f.name === nome)) await google.trashDriveItem(accountId, velho.id).catch(() => {});
+      driveId = (await google.uploadFile(accountId, { name: nome, mimeType: 'application/pdf', parentId: pasta.id, data })).id;
+    } catch (e: any) { console.error('[Vistoria CAIXA] boleto no Drive', e?.message); }
+  }
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const { sendOutboundMedia } = require('./message.service') as typeof import('./message.service');
+  let enviado = false;
+  let erroEnvio = '';
+  if (await whatsappWindowOpen(leadId)) {
+    const valor = body.valor || (String((cf._vistoriaCaixa || {}).taxa?.texto || '').match(/Valor da Taxa:\s*(R\$\s*[\d.,]+)/) || [])[1] || '';
+    const r = await sendOutboundMedia({ accountId, leadId, buffer: data, fileName: 'Boleto taxa vistoria.pdf', mimeType: 'application/pdf', caption: TEXTO_BOLETO(valor), io: io as any });
+    enviado = r.success;
+    if (!r.success) erroEnvio = (r as any).error || 'falhou';
+  } else erroEnvio = 'a conversa está fechada (janela de 24 h)';
+  await gravar(leadId, { status: 'ENVIADA', leaseAt: null, boleto: { ...((cf._vistoriaCaixa || {}).boleto || {}), titulo: body.titulo || (cf._vistoriaCaixa || {}).boleto?.titulo || null, driveId, baixadoEm: new Date().toISOString(), enviadoEm: enviado ? new Date().toISOString() : null } });
+  if (enviado) {
+    await nota(leadId, `✅ Boleto da taxa da vistoria CAIXA${body.valor ? ` (${body.valor})` : ''} enviado ao cliente pelo WhatsApp${driveId ? ' e salvo na pasta IMOVEL do Drive' : ''}.`);
+    await push(accountId, leadId, `✅ ${lead.name}: boleto da vistoria enviado`, 'O cliente recebeu o boleto da taxa de avaliação.');
+  } else {
+    await nota(leadId, `⚠️ Boleto da taxa da vistoria CAIXA baixado${driveId ? ' e salvo na pasta IMOVEL do Drive' : ''}, mas NÃO foi enviado ao cliente: ${erroEnvio}. Mande pela Inbox (o arquivo está na pasta).`);
+    await push(accountId, leadId, `🏠 ${lead.name}: boleto da vistoria não foi`, `Não enviei o boleto: ${erroEnvio}. Está na pasta IMOVEL.`);
+  }
+  return { ok: true, enviado };
 }
