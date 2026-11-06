@@ -61,7 +61,15 @@ async function chamarIA(system: string, content: any[], maxTokens: number): Prom
 }
 
 const semAcento = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '');
-const num = (v: unknown) => { const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(/\./g, '').replace(',', '.')); return Number.isFinite(n) ? n : null; };
+// O card guarda número com PONTO decimal ("292998.84"); documento/IA pode mandar no formato BR ("1.234,56"). Só com vírgula o ponto é milhar.
+const num = (v: unknown) => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  let t = String(v ?? '').replace(/[^\d.,-]/g, '');
+  if (!t) return null;
+  if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+};
 const brlSemSimbolo = (v: unknown) => { const n = num(v); return n && n > 0 ? n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : ''; };
 const area4 = (v: unknown) => { const n = num(v); return (n && n > 0 ? n : 0).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4, useGrouping: false }); };
 const fmtMatricula = (m: string) => Number(m).toLocaleString('pt-BR');
