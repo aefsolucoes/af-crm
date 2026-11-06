@@ -260,6 +260,8 @@ export async function claimItbi(accountId: string) {
   return {
     leadId, leadName: name, modo: it.modo, natureza: it.natureza, declarante: ITBI_DECLARANTE, idx: d.idx, total: it.declaracoes.length,
     transmitente: d.transmitente, adquirente: d.adquirente, percentual: d.percentual, valorPactuado: d.valorPactuado, inscricao: it.inscricao,
+    // "Transmitente não proprietário" → a extensão tenta os outros vendedores (Fabio 06/11)
+    outrosVendedores: it.vendedores.filter((v) => v.cpf !== d.transmitente.cpf),
     contrato: it.contrato, anexo: it.anexo ? { nome: it.anexo.nome, path: `/itbi/${leadId}/anexo` } : null,
     // Envio: a extensão confere se o Resumo bate com o que a equipe viu no CONFERIR (mesmo valor do ITBI).
     esperado: d.valorItbi ? { valorItbi: d.valorItbi, baseCalculo: d.baseCalculo } : null, aliquotaEsperada: it.imovelNovo ? 1 : 2,
@@ -289,6 +291,13 @@ export async function reportItbi(accountId: string, leadId: string, data: Record
   it.lastProgress = agora;
   switch (String(data.event)) {
     case 'step': d.detail = String(data.stage || '').slice(0, 200); break;
+    case 'transmitente': { // a Receita só aceitou o imóvel com outro vendedor (Fabio 06/11: "tenta o outro vendedor")
+      const novo = it.vendedores.find((v) => v.cpf === String(data.cpf || ''));
+      if (!novo) throw new Error('vendedor fora do pedido');
+      await nota(leadId, `🏛️ ITBI: a Receita não reconheceu ${d.transmitente.nome} como dono no cadastro do IPTU; a declaração ${idx + 1} seguiu com ${novo.nome}.`);
+      d.transmitente = novo;
+      break;
+    }
     case 'login': {
       if (!it.detail?.startsWith('aguardando login')) push(accountId, '🔐 Receita DF pedindo login', `${lead.name}: a extensão do ITBI está no login — entre com o seu gov.br (CPF) na janela da Receita DF`, leadId, userIds);
       it.detail = 'aguardando login no portal da Receita DF'; break;
