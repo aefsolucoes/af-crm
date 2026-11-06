@@ -749,18 +749,45 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     setReplyingTo(msg);
     inputRef.current?.focus();
   }
-  /** Clica na citação dentro de uma bolha → pula pra mensagem original, se
-   *  ela ainda estiver carregada nesta conversa (destaque rápido). */
+  /** Clica na citação dentro de uma bolha → sobe até a mensagem original e pisca, igual ao WhatsApp. Se ela é mais antiga que as
+   *  mensagens carregadas, vai buscando as levas anteriores até achar (Fabio 06/11: "quando clico em cima de onde o cliente está mencionando,
+   *  não sobe a conversa igual no WhatsApp" — a citada era de 3 dias antes e o clique não fazia nada). */
+  const pendingQuoteRef = useRef<{ externalId: string; tries: number } | null>(null);
+  function flashMessage(id: string) {
+    const el = document.getElementById(`msg-${id}`);
+    if (!el) return false;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('ring-2', 'ring-[#00a884]');
+    setTimeout(() => el.classList.remove('ring-2', 'ring-[#00a884]'), 2000);
+    return true;
+  }
   function scrollToQuoted(externalId?: string | null) {
     if (!externalId) return;
     const original = messages.find((m) => m.externalId === externalId);
-    if (!original) return;
-    const el = document.getElementById(`msg-${original.id}`);
-    if (!el) return;
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    el.classList.add('ring-2', 'ring-[#00a884]');
-    setTimeout(() => el.classList.remove('ring-2', 'ring-[#00a884]'), 1200);
+    if (original) { flashMessage(original.id); return; }
+    if (!hasOlderMessages || !onLoadOlderMessages) { toast('A mensagem citada não está mais nesta conversa', 'warning'); return; }
+    pendingQuoteRef.current = { externalId, tries: 0 };
+    if (!loadingOlderMessages) handleLoadOlderMessages();
   }
+  // Leva antiga chegou: achou a citada → sobe até ela; não achou → pede a próxima (até 20 levas).
+  useEffect(() => {
+    const pending = pendingQuoteRef.current;
+    if (!pending || loadingOlderMessages) return;
+    const original = messages.find((m) => m.externalId === pending.externalId);
+    if (original) {
+      pendingQuoteRef.current = null;
+      setTimeout(() => flashMessage(original.id), 60);
+      return;
+    }
+    if (hasOlderMessages && pending.tries < 20) {
+      pending.tries += 1;
+      handleLoadOlderMessages();
+      return;
+    }
+    pendingQuoteRef.current = null;
+    toast('A mensagem citada não está mais nesta conversa', 'warning');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, loadingOlderMessages, hasOlderMessages]);
 
   const forwardMatches = (forwardLeads || [])
     .filter((l) => l.id !== leadId)
