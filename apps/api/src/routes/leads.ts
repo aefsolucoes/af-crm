@@ -1191,6 +1191,21 @@ router.post('/:id/ficha-cadastral', async (req: AuthRequest, res: Response) => {
     .catch((e) => console.error('[Ficha cadastral]', e?.message));
 });
 
+// POST /api/leads/:id/documentos-equipe {arquivos:[{nome,mimeType,base64}]} — a equipe anexa documentos pessoais direto no card, sem pasta nem conversa
+// (Fabio 06/11). Vão pro Drive (pasta técnica "DOCUMENTOS SEM PASTA") e a ficha de cadastro lê junto com os da conversa.
+router.post('/:id/documentos-equipe', async (req: AuthRequest, res: Response) => {
+  const arquivos = Array.isArray(req.body?.arquivos) ? req.body.arquivos.slice(0, 10) : [];
+  if (!arquivos.length) return res.status(400).json({ error: 'Mande ao menos um arquivo' });
+  const { anexarDocumentosEquipe } = require('../services/ficha-cadastral.service') as typeof import('../services/ficha-cadastral.service');
+  try {
+    const r = await anexarDocumentosEquipe(req.user!.accountId, req.params.id, arquivos, req.user!.id);
+    if ('erro' in r) return res.status(400).json({ error: r.erro });
+    res.json(r);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Erro ao anexar' });
+  }
+});
+
 router.get('/:id/ficha-cadastral', async (req: AuthRequest, res: Response) => {
   const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { customFields: true } });
   if (!lead) return res.status(404).json({ error: 'Lead não encontrado' });

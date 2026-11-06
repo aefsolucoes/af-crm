@@ -207,6 +207,41 @@ async function anexosDaConversa(leadId: string): Promise<Arquivo[]> {
   return rows.map((r) => ({ id: r.driveFileId as string, name: r.fileName, mimeType: r.mimeType, path: 'CONVERSA', size: 0 }));
 }
 
+/** Documentos que a EQUIPE anexou direto no card (cliente sem conversa nem pasta — Fabio 06/11, Windson: "faz o cadastro desse cliente na CAIXA, não
+ *  precisa criar pasta"). Ficam no Drive numa pasta técnica "DOCUMENTOS SEM PASTA", ao lado dos anexos do WhatsApp; a ficha lê junto com os da conversa. */
+function documentosDaEquipe(cf: Record<string, any>): Arquivo[] {
+  return (Array.isArray(cf._documentosEquipe) ? cf._documentosEquipe : [])
+    .filter((d: any) => d?.id && d?.mimeType)
+    .map((d: any) => ({ id: String(d.id), name: String(d.nome || 'documento'), mimeType: String(d.mimeType), path: 'EQUIPE', size: 0 }));
+}
+
+export async function anexarDocumentosEquipe(accountId: string, leadId: string, arquivos: { nome: string; mimeType: string; base64: string }[], userId: string | null): Promise<{ erro: string } | { anexados: string[] }> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true } });
+  if (!lead) return { erro: 'Lead não encontrado' };
+  const validos = arquivos.filter((a) => /pdf|^image\//.test(String(a?.mimeType || '')) && a?.base64);
+  if (!validos.length) return { erro: 'Mande PDF ou foto' };
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  const pai = conn?.whatsappAttachmentsFolderId || conn?.rootFolderId;
+  if (!conn?.refreshToken || !pai) return { erro: 'Google Drive não conectado' };
+  const google = await import('./google.service');
+  const pasta = await google.createFolder(accountId, 'DOCUMENTOS SEM PASTA', pai);
+  const novos: { id: string; nome: string; mimeType: string; em: string }[] = [];
+  for (const a of validos) {
+    const data = Buffer.from(a.base64, 'base64');
+    if (data.length < 500) continue;
+    const nome = `${lead.name} - ${String(a.nome || 'documento').replace(/[\\/]/g, '-')}`.slice(0, 180);
+    const up = await google.uploadFile(accountId, { name: nome, mimeType: a.mimeType, parentId: pasta.id, data });
+    novos.push({ id: up.id, nome: String(a.nome || 'documento'), mimeType: a.mimeType, em: new Date().toISOString() });
+  }
+  if (!novos.length) return { erro: 'Arquivos vazios' };
+  // Relê na hora de gravar (corrida no customFields).
+  const fresh = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+  const antes = Array.isArray(fresh._documentosEquipe) ? fresh._documentosEquipe : [];
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _documentosEquipe: [...antes, ...novos] } as any } });
+  await prisma.note.create({ data: { leadId, ...(userId ? { userId } : {}), type: 'COMMENT', content: `📎 Documentos anexados pela equipe (sem pasta nem conversa), lidos pela ficha de cadastro: ${novos.map((n) => n.nome).join('; ')}.` } }).catch(() => {});
+  return { anexados: novos.map((n) => n.nome) };
+}
+
 /** Lê UM documento pessoal (RG/CNH/comprovante…) que o cliente mandou na conversa, pelo arquivo no Drive — usado pela proposta montada com os documentos (proposta-documento.service). */
 export async function lerDocumentoPessoal(accountId: string, f: { driveFileId: string; fileName: string; mimeType: string }): Promise<any | null> {
   return lerArquivo(accountId, { id: f.driveFileId, name: f.fileName, mimeType: f.mimeType, path: 'CONVERSA', size: 0 });
@@ -358,10 +393,10 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     const google = await import('./google.service');
     // Com a pasta, os anexos da conversa já estão nela (organizados). Sem a pasta (Fabio 31/10: "o CRM deve coletar os dados para o cadastro através da
     // documentação encaminhada na própria conversa"): os anexos que o cliente mandou na conversa, que ficam no Drive pelo driveFileId.
-    const todos: Arquivo[] = link ? await google.listAllFilesInFolderTree(accountId, google.extractFolderId(link), 3) : await anexosDaConversa(leadId);
+    const todos: Arquivo[] = link ? await google.listAllFilesInFolderTree(accountId, google.extractFolderId(link), 3) : [...(await anexosDaConversa(leadId)), ...documentosDaEquipe(cf)];
     const arquivos = arquivosPessoais(todos);
     if (!arquivos.length) return link ? 'Não achei documento pessoal (PDF/foto) na pasta do Drive' : 'O card não tem a pasta do Drive nem documento (PDF/foto) na conversa';
-    const origem = link ? 'da pasta do Drive' : 'enviados na conversa';
+    const origem = link ? 'da pasta do Drive' : documentosDaEquipe(cf).length ? 'anexados pela equipe/enviados na conversa' : 'enviados na conversa';
 
     // 1) Cada arquivo sozinho, 4 de cada vez.
     const leituras: { arquivo: string; leitura: any }[] = [];
