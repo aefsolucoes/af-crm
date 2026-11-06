@@ -420,8 +420,25 @@ async function noticeClients(accountId: string, io: any) {
     // Aprovação SEM números (a extensão ainda não leu): segura o aviso e pede a leitura — senão sai só a outra opção (Alexandre/Larissa, 14/10).
     const semNum = await aprovadasSemNumeros(l.id).catch(() => [] as string[]);
     if (semNum.length) {
-      const jaPedido = await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, kind: 'CHECK', bank: { in: semNum }, OR: [{ status: { in: ['REQUESTED', 'RUNNING'] } }, { createdAt: { gte: new Date(Date.now() - 10 * 60_000) } }] }, select: { id: true } });
-      if (!jaPedido) await createRequests(prisma, { accountId, leadIds: [l.id], banks: semNum, dryRun: false, kind: 'CHECK' });
+      // Já conferiu 3 vezes e o banco segue "aprovado" sem os números (Fabio 06/11, Cleci: o Santander aprovado foi conferido 28 vezes, de 10 em 10 min — "era pra ela parar"):
+      // para de conferir esse banco e avisa a equipe UMA vez pra lançar o resultado à mão.
+      const desde = new Date(Date.now() - 24 * 3_600_000);
+      const cansados: string[] = [];
+      for (const b of semNum) {
+        const n = await prisma.creditAnalysis.count({ where: { leadId: l.id, bank: b, kind: 'CHECK', status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: null, updatedAt: { gte: desde } } });
+        if (n >= 3) cansados.push(b);
+      }
+      if (cansados.length) {
+        const nomes = cansados.map((b) => ({ CREDIMORAR: 'Santander', INTER: 'Inter', CREDITAS: 'Creditas' } as Record<string, string>)[b] || b).join(' e ');
+        const ja = await prisma.note.findFirst({ where: { leadId: l.id, content: { startsWith: '⏹️ Parei de conferir' }, createdAt: { gte: desde } }, select: { id: true } });
+        if (!ja) {
+          await addNote(l.id, `⏹️ Parei de conferir o ${nomes}: já está APROVADO, mas a conferência não traz prazo/parcela (3 leituras iguais). Lance o resultado à mão ("Resultado" na Análise de Crédito) pra sair o aviso.`);
+          (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `⏹️ ${l.name}: ${nomes} aprovado sem números`, body: 'Parei de conferir. Lance o resultado à mão pra sair o aviso.', leadId: l.id }).catch(() => {});
+        }
+      }
+      const conferir = semNum.filter((b) => !cansados.includes(b));
+      const jaPedido = conferir.length ? await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, kind: 'CHECK', bank: { in: conferir }, OR: [{ status: { in: ['REQUESTED', 'RUNNING'] } }, { createdAt: { gte: new Date(Date.now() - 10 * 60_000) } }] }, select: { id: true } }) : true;
+      if (!jaPedido) await createRequests(prisma, { accountId, leadIds: [l.id], banks: conferir, dryRun: false, kind: 'CHECK' });
       continue;
     }
     const preview = await previewApprovalNotice(l.id).catch(() => null);

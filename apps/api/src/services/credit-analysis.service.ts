@@ -1075,6 +1075,20 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   // (sem prazo, parcela e taxa). Agora: avisos repetidos viram um só, as condições também são lidas do campo `conditions`, e número nulo vindo da extensão não apaga o que o texto trouxe.
   const detail = p.detail == null ? p.detail : dedupeAvisos(p.detail);
   const numbers = p.bank === 'CREDIMORAR' ? parseSantanderConditions(`${detail || ''} ${(p.result && p.result.conditions) || ''}`) : {};
+  // Conferência do Santander que acha "Aprovado" na LISTA não traz prazo/parcela (só a rodada lê a simulação): o valor vem do texto da lista e o resto da RODADA da mesma
+  // proposta. Sem isso a aprovação ficava "sem números" e o CRM pedia outra conferência de 10 em 10 min o dia inteiro (Fabio 06/11, Cleci: 28 conferências "APROVADO R$ 80.000").
+  if (p.bank === 'CREDIMORAR' && row.kind === 'CHECK' && (status === 'APPROVED' || status === 'CONDITIONAL') && numbers.approvedValue == null) {
+    const naLista = /APROVAD[OA][^.]*?R\$\s*([\d.]+,\d{2})/i.exec(detail || '');
+    if (naLista) numbers.approvedValue = brNumber(naLista[1]);
+    const runs = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, bank: p.bank, kind: 'RUN', dryRun: false, status: { in: REAL_SENT }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 10, select: { proposalNumber: true, detail: true, conditions: true } });
+    const dig = (s: unknown) => String(s || '').replace(/\D/g, '');
+    const num = dig(row.proposalNumber) || dig(/proposta\s*(\d{6,})/i.exec(detail || '')?.[1]);
+    const run = runs.find((r) => num && (dig(r.proposalNumber) === num || dig(r.detail).includes(num))) || (runs.length === 1 ? runs[0] : null);
+    if (run) {
+      const daRodada = parseSantanderConditions(`${run.detail || ''} ${run.conditions || ''}`);
+      for (const k of Object.keys(daRodada) as (keyof ResultFields)[]) if ((numbers as any)[k] == null) (numbers as any)[k] = daRodada[k];
+    }
+  }
   const holderName = parseHolder(detail) || row.holderName || (FINAL.has(status) ? await resolveHolder(db, p.leadId, p.bank, null) : null);
   const vindo = pickResult(p.result || {});
   for (const k of Object.keys(numbers) as (keyof ResultFields)[]) if (vindo[k] == null) delete vindo[k];
