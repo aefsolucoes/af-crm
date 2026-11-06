@@ -49,6 +49,15 @@ router.post('/:leadId/reenviar', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao reenviar a guia', 400); }
 });
 
+// Requerimento de ITBI (pedido manual pelo Atendimento Virtual): gera/regera com os campos que a equipe completou; `reenviar` manda de novo ao cliente.
+router.post('/:leadId/requerimento', async (req: AuthRequest, res: Response) => {
+  try {
+    const { gerarRequerimentoItbi, enviarRequerimentoAoCliente } = require('../services/itbi.service') as typeof import('../services/itbi.service');
+    if (req.body?.reenviar) return res.json({ ok: true, resultado: await enviarRequerimentoAoCliente(req.user!.accountId, req.params.leadId, io(req), true) });
+    res.json({ ok: true, requerimento: await gerarRequerimentoItbi(req.user!.accountId, req.params.leadId, { campos: req.body?.campos || {}, io: io(req), userId: req.user!.id }) });
+  } catch (err) { fail(res, err, 'Erro ao gerar o requerimento', 400); }
+});
+
 // ── Extensão ──
 router.get('/queue', async (req: AuthRequest, res: Response) => {
   try { res.json({ job: await claimItbi(req.user!.accountId) }); } catch (err) { fail(res, err, 'Erro ao buscar a fila do ITBI'); }

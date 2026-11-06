@@ -33,6 +33,13 @@ export type Itbi = {
   requestedAt: string; requestedById?: string | null; claimedAt?: string | null; claimedIdx?: number | null; lastProgress?: string | null;
   attempts: number; detail?: string; finishedAt?: string | null; enviarAoCliente: boolean;
   envio?: { templateAt?: string; enviadoAt?: string; falha?: string };
+  requerimento?: ItbiRequerimento;
+};
+/** Requerimento de ITBI (pedido manual pelo Atendimento Virtual quando a DEITBI não aceita) — Fabio 06/11. */
+export type ItbiReqCampos = { areaConstruida?: string; dataPagamento?: string; rg?: string; rgEmissao?: string; orgaoUf?: string };
+export type ItbiRequerimento = {
+  geradoAt: string; driveFileId: string; link: string; nome: string; campos: ItbiReqCampos; faltam: string[];
+  envio?: { pronto?: boolean; templateAt?: string; enviadoAt?: string; falha?: string };
 };
 type Leitura = {
   arquivo: { id: string; nome: string }; vendedores: { nome: string; cpf: string; percentual?: number | null }[]; compradores: { nome: string; cpf: string; percentual?: number | null }[];
@@ -289,6 +296,7 @@ export async function reportItbi(accountId: string, leadId: string, data: Record
   const quem = `${d.transmitente.nome} → ${d.adquirente.nome}`;
   const userIds = it.requestedById ? [it.requestedById] : undefined;
   it.lastProgress = agora;
+  let gerarRequerimento = false;
   switch (String(data.event)) {
     case 'step': d.detail = String(data.stage || '').slice(0, 200); break;
     case 'transmitente': { // a Receita só aceitou o imóvel com outro vendedor (Fabio 06/11: "tenta o outro vendedor")
@@ -326,6 +334,7 @@ export async function reportItbi(accountId: string, leadId: string, data: Record
       d.status = 'OFICIO'; d.detail = String(data.mensagem || '').slice(0, 500); it.status = 'OFICIO'; it.finishedAt = agora; it.claimedAt = null;
       await nota(leadId, `⚠️ ITBI (${quem}): o portal mandou para LANÇAMENTO DE OFÍCIO — não gerou guia. Mensagem: "${d.detail}". Siga pelo Atendimento Virtual da Receita DF (assunto ITBI).`);
       push(accountId, '⚠️ ITBI: lançamento de ofício', `${lead.name}: o portal não gerou a guia — seguir pelo Atendimento Virtual`, leadId, userIds);
+      gerarRequerimento = true; // Fabio 06/11: pedido manual = requerimento assinado pelo gov.br; o CRM gera e manda ao cliente
       break;
     }
     case 'failed': {
@@ -347,6 +356,7 @@ export async function reportItbi(accountId: string, leadId: string, data: Record
   }
   await salvarChave(leadId, '_itbi', it);
   emitir(io, accountId, leadId);
+  if (gerarRequerimento) void gerarRequerimentoItbi(accountId, leadId, { io }).catch((e) => console.error('[ITBI] requerimento:', e?.message));
   return { ok: true, status: it.status };
 }
 
@@ -428,11 +438,120 @@ export async function enviarGuiasAoCliente(accountId: string, leadId: string, io
 export async function processItbiEnvios(accountId: string, io?: Io): Promise<void> {
   const ids = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_itbi'->>'status' = 'DONE' AND "customFields"->'_itbi'->'envio'->>'enviadoAt' IS NULL AND COALESCE("customFields"->'_itbi'->>'enviarAoCliente', 'true') = 'true' LIMIT 10`;
   for (const { id } of ids) await enviarGuiasAoCliente(accountId, id, io).catch((e) => console.error('[ITBI] envio:', e?.message));
+  const reqs = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_itbi'->'requerimento'->'envio'->>'pronto' = 'true' AND "customFields"->'_itbi'->'requerimento'->'envio'->>'enviadoAt' IS NULL LIMIT 10`;
+  for (const { id } of reqs) await enviarRequerimentoAoCliente(accountId, id, io).catch((e) => console.error('[ITBI] requerimento:', e?.message));
+}
+
+// ── Requerimento de ITBI (pedido manual) ────────────────────────────────────────────────────────────────
+// Fabio 06/11: quando a DEITBI não aceita (nenhum vendedor consta como dono no IPTU / lançamento de ofício), o ITBI é pedido pelo
+// Atendimento Virtual da Receita DF com o REQUERIMENTO preenchido e assinado pelo gov.br. O CRM gera o PDF na pasta ITBI e manda ao
+// cliente pra assinar; faltando dado que o CRM não tem (área construída, data do pagamento, RG), a equipe completa no card antes.
+const REQ_CAMPOS: { k: keyof ItbiReqCampos; nome: string }[] = [
+  { k: 'areaConstruida', nome: 'área construída (m²)' }, { k: 'dataPagamento', nome: 'data do pagamento' },
+  { k: 'rg', nome: 'nº da identidade' }, { k: 'rgEmissao', nome: 'data de emissão da identidade' }, { k: 'orgaoUf', nome: 'órgão emissor/UF' },
+];
+const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+
+export async function gerarRequerimentoItbi(accountId: string, leadId: string, opts: { campos?: ItbiReqCampos; io?: Io; userId?: string } = {}): Promise<ItbiRequerimento> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const it = cf._itbi as Itbi | undefined;
+  if (!lead || !it) throw new Error('este card não tem pedido de ITBI');
+  const leitura = cf._itbiLeitura as Leitura | undefined;
+  const campos: ItbiReqCampos = { ...(it.requerimento?.campos || {}) };
+  for (const { k } of REQ_CAMPOS) { const v = String(opts.campos?.[k] ?? '').trim(); if (v) campos[k] = v.slice(0, 60); }
+  if (!campos.rg && cf.rg_1) campos.rg = String(cf.rg_1).slice(0, 30);
+  const faltam = REQ_CAMPOS.filter(({ k }) => !campos[k]).map((c) => c.nome);
+
+  // Modelo da pasta, fiel: só o 1º vendedor (Fabio 06/11) e o 1º comprador, que é quem assina pelo gov.br.
+  const vendedor = it.vendedores[0];
+  const comprador = it.compradores[0];
+  const enderecoMinuta = String(leitura?.endereco || '').split(/,\s*medindo/i)[0].trim();
+  const objeto = [enderecoMinuta || `inscrição ${it.inscricao}`, leitura?.matricula ? `matrícula nº ${leitura.matricula}` : ''].filter(Boolean).join(', ');
+  const hoje = new Date(Date.now() - 3 * 3600_000);
+  const [orgao, uf] = String(campos.orgaoUf || '').split(/\s*[\/-]\s*|\s+/);
+  const { montarRequerimentoItbiPdf } = await import('./itbi-requerimento-pdf');
+  const pdf = await montarRequerimentoItbiPdf({
+    transmitente: { nome: vendedor?.nome || '', cpf: vendedor?.cpf || '' },
+    adquirente: { nome: comprador?.nome || lead.name, cpf: comprador?.cpf || '' },
+    natureza: it.natureza === '004' ? '004 – Compra e venda com alienação fid.' : '001 – Compra e venda',
+    objeto,
+    inscricao: it.inscricao,
+    areaConstruida: campos.areaConstruida || '',
+    valor: it.valorTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    percentual: '100%',
+    dataPagamento: campos.dataPagamento || '',
+    responsavel: {
+      nome: comprador?.nome || lead.name, cpf: comprador?.cpf || '', rg: campos.rg || '', rgEmissao: campos.rgEmissao || '', orgao: orgao || '', uf: uf || '',
+      email: String(cf.email_1 || comprador?.email || '').trim(), telefone: String(cf.telefone_1 || comprador?.telefone || '').trim(),
+    },
+    data: { dia: String(hoje.getUTCDate()).padStart(2, '0'), mes: MESES[hoje.getUTCMonth()], ano: String(hoje.getUTCFullYear()) },
+  });
+
+  const google = await import('./google.service');
+  const pasta = String(cf.link_pasta_drive || '').trim() ? google.extractFolderId(String(cf.link_pasta_drive)) : '';
+  if (!pasta) throw new Error('o card não tem a pasta do Drive');
+  const sub = await google.createFolder(accountId, 'ITBI', pasta);
+  const nomeArq = `REQUERIMENTO ITBI - ${comprador?.nome || lead.name}.pdf`.replace(/[\\/:*?"<>|]/g, ' ');
+  const up = await google.uploadFile(accountId, { name: nomeArq, mimeType: 'application/pdf', data: pdf, parentId: sub.id });
+  const req: ItbiRequerimento = {
+    geradoAt: new Date().toISOString(), driveFileId: up.id, link: up.webViewLink || google.folderLink(sub.id), nome: nomeArq, campos, faltam,
+    // regerar depois de enviado não manda de novo sozinho (o botão do card manda)
+    envio: it.requerimento?.envio?.enviadoAt ? it.requerimento.envio : { pronto: faltam.length === 0 },
+  };
+  await prisma.$executeRawUnsafe(`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_itbi,requerimento}', $1::jsonb, true) WHERE id = $2 AND "customFields" ? '_itbi'`, JSON.stringify(req), leadId);
+  const anexos = 'documento de identificação do cliente (pasta COMPRADOR), certidão de inteiro teor da matrícula (pasta IMOVEL — pode estar vencida) e o contrato/minuta (pasta MINUTA)';
+  if (faltam.length) {
+    await nota(leadId, `📝 ITBI manual: gerei o REQUERIMENTO DE ITBI (pasta ITBI do Drive), mas falta(m): ${faltam.join(', ')}. Complete no card (bloco ITBI) que eu gero de novo e mando ao cliente pra assinar pelo gov.br. Anexos do pedido no Atendimento Virtual: ${anexos}.`);
+    push(accountId, '📝 Requerimento de ITBI: complete no card', `${lead.name}: falta ${faltam.join(', ')}`, leadId, opts.userId ? [opts.userId] : it.requestedById ? [it.requestedById] : undefined);
+  } else {
+    await nota(leadId, `📝 ITBI manual: REQUERIMENTO DE ITBI gerado (pasta ITBI do Drive) e indo ao cliente pra assinar pelo gov.br. Quando ele devolver assinado, peça pelo Atendimento Virtual da Receita DF com: requerimento assinado + ${anexos}.`);
+  }
+  emitir(opts.io, accountId, leadId);
+  if (!faltam.length && !req.envio?.enviadoAt) await enviarRequerimentoAoCliente(accountId, leadId, opts.io).catch((e) => console.error('[ITBI] requerimento ao cliente:', e?.message));
+  return req;
+}
+
+/** Manda o requerimento ao cliente pra assinar pelo gov.br (07h–21h; conversa fechada = template "Olá, tudo bem?" e sai quando ele responder). */
+export async function enviarRequerimentoAoCliente(accountId: string, leadId: string, io?: Io, forcar = false): Promise<'ENVIADO' | 'TEMPLATE' | 'DEPOIS' | 'FALHOU'> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const req = (cf._itbi as Itbi | undefined)?.requerimento;
+  if (!lead || !req || req.faltam.length || (req.envio?.enviadoAt && !forcar)) return 'DEPOIS';
+  const grava = (envio: ItbiRequerimento['envio']) => prisma.$executeRawUnsafe(`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_itbi,requerimento,envio}', $1::jsonb, true) WHERE id = $2 AND "customFields"->'_itbi' ? 'requerimento'`, JSON.stringify(envio), leadId);
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow()) { await grava({ ...(req.envio || {}), pronto: true }); return 'DEPOIS'; }
+  const msg = require('./message.service') as typeof import('./message.service');
+  if (!(await whatsappWindowOpen(leadId))) {
+    if (req.envio?.templateAt && !forcar) return 'DEPOIS';
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: 'ola_tudo_bem', language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem?', io: undefined } as any);
+    if (!t.success) { await grava({ ...(req.envio || {}), pronto: true, falha: (t as any).error || 'template não saiu' }); return 'FALHOU'; }
+    await grava({ ...(req.envio || {}), pronto: true, templateAt: new Date().toISOString() });
+    await nota(leadId, '📨 ITBI: conversa fechada — mandei o template "Olá, tudo bem?". O requerimento de ITBI vai quando o cliente responder.');
+    return 'TEMPLATE';
+  }
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const google = await import('./google.service');
+  const buffer = await google.downloadDriveFile(accountId, req.driveFileId, 'application/pdf');
+  const caption = `${nome ? `${nome}, p` : 'P'}ara emitir a guia do ITBI, a Receita do DF pede este requerimento assinado por você pelo gov.br. É rapidinho:\n1. Abra assinador.iti.br e entre com a sua conta gov.br\n2. Envie este PDF e assine\n3. Baixe o arquivo assinado e me mande aqui 🙂`;
+  const r = await msg.sendOutboundMedia({ accountId, leadId, buffer, fileName: req.nome, mimeType: 'application/pdf', caption, io: io || undefined });
+  if (!r.success) {
+    await grava({ ...(req.envio || {}), pronto: true, falha: r.error });
+    await nota(leadId, `⚠️ ITBI: o requerimento não saiu pro cliente (${r.error}). Ele está na pasta ITBI do Drive.`);
+    push(accountId, '⚠️ Requerimento de ITBI não saiu', `${lead.name}: ${r.error}`, leadId);
+    return 'FALHOU';
+  }
+  await grava({ pronto: true, templateAt: req.envio?.templateAt, enviadoAt: new Date().toISOString() });
+  await nota(leadId, '✅ ITBI: requerimento enviado ao cliente pra assinar pelo gov.br. Quando voltar assinado, peça a guia pelo Atendimento Virtual da Receita DF.');
+  push(accountId, '✅ Requerimento de ITBI enviado ao cliente', `${lead.name}: assinar pelo gov.br`, leadId);
+  emitir(io, accountId, leadId);
+  return 'ENVIADO';
 }
 
 /** Resumo pra IA/Jarvis. */
 export function resumoItbi(it: Itbi | null | undefined): string {
   if (!it) return 'sem pedido de ITBI';
   const st: Record<string, string> = { REQUESTED: 'na fila da extensão', RUNNING: 'a extensão está no portal', CALCULADO: 'calculado, esperando a equipe confirmar o envio', DONE: 'guia emitida', OFICIO: 'lançamento de ofício (sem guia)', FAILED: 'falhou', CANCELED: 'cancelado' };
-  return `ITBI ${st[it.status] || it.status} (${it.modo})${it.detail ? ` — ${it.detail}` : ''}\n${it.declaracoes.map((d) => `• ${d.transmitente.nome} → ${d.adquirente.nome} ${d.percentual}% ${brl(d.valorPactuado)}: ${d.status}${d.valorItbi ? `, ITBI ${brl(d.valorItbi)}` : ''}${d.vencimento ? `, vence ${d.vencimento}` : ''}${d.detail && d.status !== 'GUIA' ? ` (${d.detail})` : ''}`).join('\n')}${it.envio?.enviadoAt ? '\nGuia enviada ao cliente.' : ''}`;
+  return `ITBI ${st[it.status] || it.status} (${it.modo})${it.detail ? ` — ${it.detail}` : ''}\n${it.declaracoes.map((d) => `• ${d.transmitente.nome} → ${d.adquirente.nome} ${d.percentual}% ${brl(d.valorPactuado)}: ${d.status}${d.valorItbi ? `, ITBI ${brl(d.valorItbi)}` : ''}${d.vencimento ? `, vence ${d.vencimento}` : ''}${d.detail && d.status !== 'GUIA' ? ` (${d.detail})` : ''}`).join('\n')}${it.envio?.enviadoAt ? '\nGuia enviada ao cliente.' : ''}${it.requerimento ? `\nRequerimento manual: ${it.requerimento.faltam.length ? `falta ${it.requerimento.faltam.join(', ')}` : it.requerimento.envio?.enviadoAt ? 'enviado ao cliente pra assinar pelo gov.br' : 'pronto, indo ao cliente'}.` : ''}`;
 }

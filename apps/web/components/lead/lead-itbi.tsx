@@ -12,9 +12,19 @@ import { toast } from '@/components/ui/toast';
 
 type Pessoa = { nome: string; cpf: string; percentual: number };
 type Decl = { idx: number; transmitente: Pessoa; adquirente: Pessoa; percentual: number; valorPactuado: number; status: string; valorItbi?: number; baseCalculo?: number; aliquota?: number; vencimento?: string; darUrl?: string; detail?: string };
-type Itbi = { status: string; modo: string; natureza: string; inscricao: string; valorTotal: number; declaracoes: Decl[]; detail?: string; envio?: { enviadoAt?: string; templateAt?: string; falha?: string } };
+type ReqCampos = { areaConstruida?: string; dataPagamento?: string; rg?: string; rgEmissao?: string; orgaoUf?: string };
+type Requerimento = { link: string; nome: string; faltam: string[]; campos: ReqCampos; geradoAt: string; envio?: { pronto?: boolean; enviadoAt?: string; templateAt?: string; falha?: string } };
+type Itbi = { status: string; modo: string; natureza: string; inscricao: string; valorTotal: number; declaracoes: Decl[]; detail?: string; envio?: { enviadoAt?: string; templateAt?: string; falha?: string }; requerimento?: Requerimento };
 type Preview = { natureza: '004' | '001'; inscricao: string; valorTotal: number; itbiEstimado: number; aliquotaEsperada: number; vendedores: Pessoa[]; compradores: Pessoa[]; declaracoes: Decl[]; faltam: string[]; avisos: string[]; anexo: { nome: string } | null; minuta: { arquivo: string; observacao: string } | null };
 
+// Campos do requerimento manual que o CRM não tem (a equipe completa) — Fabio 06/11
+const REQ_CAMPOS: { k: keyof ReqCampos; label: string; ph: string }[] = [
+  { k: 'areaConstruida', label: 'Área construída (m²)', ph: 'ex.: 120,50' },
+  { k: 'dataPagamento', label: 'Data do pagamento', ph: 'dd/mm/aaaa' },
+  { k: 'rg', label: 'Identidade (RG) do cliente', ph: 'nº' },
+  { k: 'rgEmissao', label: 'Emissão da identidade', ph: 'dd/mm/aaaa' },
+  { k: 'orgaoUf', label: 'Órgão emissor / UF', ph: 'SSP/DF' },
+];
 const brl = (n?: number) => (n || n === 0 ? n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—');
 const STATUS: Record<string, { label: string; cls: string }> = {
   REQUESTED: { label: 'Na fila da extensão', cls: 'bg-slate-100 text-slate-600' },
@@ -32,6 +42,7 @@ export function LeadItbi({ leadId }: { leadId: string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [pv, setPv] = useState<Preview | null>(null);
   const [form, setForm] = useState<{ inscricao: string; valorTotal: string; natureza: '004' | '001'; vendedores: Pessoa[] } | null>(null);
+  const [reqForm, setReqForm] = useState<ReqCampos | null>(null);
   const { data } = useQuery<{ itbi: Itbi | null; elegivel: boolean }>({
     queryKey: key,
     queryFn: async () => (await api.get('/api/itbi/status', { params: { leadId } })).data,
@@ -88,6 +99,17 @@ export function LeadItbi({ leadId }: { leadId: string }) {
     try { await api.post(`/api/itbi/${leadId}/${path}`); toast(msg, 'success'); queryClient.invalidateQueries({ queryKey: key }); } catch (err: any) { toast(err?.response?.data?.error || 'Erro', 'error'); } finally { setBusy(null); }
   }
 
+  async function gerarRequerimento(body: Record<string, unknown>, msg: string) {
+    setBusy('requerimento');
+    try {
+      const { data: r } = await api.post(`/api/itbi/${leadId}/requerimento`, body);
+      const req = r?.requerimento as Requerimento | undefined;
+      toast(req?.faltam?.length ? `Requerimento gerado — ainda falta: ${req.faltam.join(', ')}` : msg, req?.faltam?.length ? 'error' : 'success');
+      if (req && !req.faltam.length) setReqForm(null);
+      queryClient.invalidateQueries({ queryKey: key });
+    } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao gerar o requerimento', 'error'); } finally { setBusy(null); }
+  }
+
   const st = it ? STATUS[it.status] || { label: it.status, cls: 'bg-slate-100 text-slate-600' } : null;
   const input = 'w-full rounded border border-slate-200 px-1.5 py-1 text-[11px]';
   return (
@@ -125,6 +147,40 @@ export function LeadItbi({ leadId }: { leadId: string }) {
               <button onClick={() => acao('reenviar', 'Guia reenviada ao cliente (ou na fila do horário)')} disabled={!!busy} className="rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-50">Mandar a guia ao cliente de novo</button>
             )}
           </div>
+
+          {/* Pedido manual: a DEITBI não aceitou (ninguém da venda é dono no IPTU / lançamento de ofício) → requerimento assinado pelo gov.br */}
+          {(it.requerimento || ['OFICIO', 'FAILED'].includes(it.status)) && (
+            <div className="mt-2 space-y-1.5 rounded-md border border-orange-200 bg-orange-50/40 p-2">
+              <div className="font-medium text-slate-700">Requerimento de ITBI (pedido manual)</div>
+              {it.requerimento ? (
+                <>
+                  {it.requerimento.faltam.length > 0 && <div className="text-red-700">Falta: {it.requerimento.faltam.join(', ')} — complete abaixo.</div>}
+                  {it.requerimento.envio?.enviadoAt && <div className="text-emerald-700">Enviado ao cliente pra assinar pelo gov.br. Quando voltar assinado, peça a guia pelo Atendimento Virtual da Receita DF.</div>}
+                  {!it.requerimento.faltam.length && !it.requerimento.envio?.enviadoAt && <div className="text-slate-500">{it.requerimento.envio?.templateAt ? 'Conversa fechada: mandei "Olá, tudo bem?" — o requerimento vai quando o cliente responder.' : it.requerimento.envio?.falha ? `Não saiu: ${it.requerimento.envio.falha}` : 'Vai ao cliente no horário de envio (07h–21h).'}</div>}
+                  <div className="flex flex-wrap gap-2">
+                    <a href={it.requerimento.link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-50"><ExternalLink className="h-3 w-3" /> Requerimento no Drive</a>
+                    {!reqForm && <button onClick={() => setReqForm({ ...it.requerimento!.campos })} className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-50">{it.requerimento.faltam.length ? 'Completar' : 'Editar dados'}</button>}
+                    {!it.requerimento.faltam.length && <button onClick={() => gerarRequerimento({ reenviar: true }, 'Requerimento reenviado ao cliente (ou na fila do horário)')} disabled={!!busy} className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-50">Mandar ao cliente de novo</button>}
+                  </div>
+                </>
+              ) : (
+                !reqForm && <button onClick={() => setReqForm({})} className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100">Gerar requerimento</button>
+              )}
+              {reqForm && (
+                <div className="space-y-1.5 text-[11px] text-slate-600">
+                  <div className="grid grid-cols-2 gap-2">
+                    {REQ_CAMPOS.map((c) => (
+                      <label key={c.k}>{c.label}<input className={input} placeholder={c.ph} value={reqForm[c.k] || ''} onChange={(e) => setReqForm({ ...reqForm, [c.k]: e.target.value })} /></label>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => gerarRequerimento({ campos: reqForm }, 'Requerimento gerado e indo ao cliente pra assinar pelo gov.br')} disabled={busy === 'requerimento'} className="rounded bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700 disabled:opacity-50">{busy === 'requerimento' ? 'Gerando…' : 'Gerar e mandar ao cliente'}</button>
+                    <button onClick={() => setReqForm(null)} className="rounded border border-slate-200 px-2 py-1 hover:bg-white">Fechar</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
