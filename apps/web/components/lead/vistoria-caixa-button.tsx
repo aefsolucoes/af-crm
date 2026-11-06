@@ -19,7 +19,7 @@ interface Estado {
   campos: { rotulo: string; valor: string }[];
 }
 
-const ANDAMENTO = ['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'AGUARDANDO_CONTATO'];
+const ANDAMENTO = ['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO', 'AGUARDANDO_CONTATO'];
 const ROTULO: Record<string, string> = {
   LENDO: 'lendo a certidão do imóvel…',
   AGUARDANDO_CONTATO: 'esperando o contato da vistoria (nome e telefone)',
@@ -28,6 +28,9 @@ const ROTULO: Record<string, string> = {
   OS_PRONTA: 'OS pronta — confira e clique em "Enviar OS"',
   ENVIAR: 'na fila pra criar a OS',
   ENVIANDO: 'extensão criando a OS…',
+  DOCUMENTOS: 'OS criada — anexando a certidão de ônus…',
+  ANEXANDO: 'extensão anexando a certidão de ônus…',
+  TAXA_PRONTA: 'OS criada e certidão anexada — falta emitir a taxa (boleto)',
   ENVIADA: 'solicitada',
   JA_TEM_OS: 'o imóvel já tem OS no SIOPI',
   OUTRO_CCA: 'imóvel de OUTRO correspondente — pedir alteração à agência por e-mail',
@@ -63,7 +66,7 @@ export function VistoriaCaixaButton({ leadId, onDone }: { leadId: string; onDone
     : st === 'ENVIADA' ? `solicitada${e.os?.numero ? ` · OS ${e.os.numero}` : ''}`
     : st === 'ERRO' ? `parou: ${e.erro || '—'}`
     : `${ROTULO[st] || st}${e.codigoImovel ? ` · imóvel ${e.codigoImovel}` : ''}`;
-  const travado = ANDAMENTO.includes(st) || st === 'ENVIADA' || st === 'OS_PRONTA';
+  const travado = ANDAMENTO.includes(st) || st === 'ENVIADA' || st === 'OS_PRONTA' || st === 'TAXA_PRONTA';
 
   return (
     <div className="mt-2 border-t border-slate-100 pt-2">

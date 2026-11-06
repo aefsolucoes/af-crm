@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { requirePermission } from '../middleware/permission';
-import { solicitarVistoriaCaixa, enviarOsVistoriaCaixa, estadoVistoriaCaixa, proximaVistoriaCaixa, gravarVistoriaCaixa } from '../services/vistoria-caixa.service';
+import { solicitarVistoriaCaixa, enviarOsVistoriaCaixa, estadoVistoriaCaixa, proximaVistoriaCaixa, gravarVistoriaCaixa, certidaoDaVistoria } from '../services/vistoria-caixa.service';
 
 // Vistoria da CAIXA pelo SIOPI (Fabio 06/11) — botões do bloco CAIXA do card + fila da extensão "SIOPI (A&F)".
 const router = Router();
@@ -20,6 +20,14 @@ router.post('/log', async (req: AuthRequest, res: Response) => {
   res.json({ ok: true });
 });
 
+// Extensão: a certidão de ônus do imóvel pra anexar na OS ("Incluir Documentos").
+router.get('/:leadId/certidao', async (req: AuthRequest, res: Response) => {
+  try {
+    const c = await certidaoDaVistoria(req.user!.accountId, req.params.leadId);
+    if (!c) return res.status(404).json({ error: 'Certidão do imóvel não encontrada na pasta IMOVEL' });
+    res.json(c);
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao baixar a certidão' }); }
+});
 router.get('/:leadId', async (req: AuthRequest, res: Response) => {
   try {
     const e = await estadoVistoriaCaixa(req.user!.accountId, req.params.leadId);

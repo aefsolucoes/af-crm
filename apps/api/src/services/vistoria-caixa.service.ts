@@ -16,7 +16,7 @@ import { arquivosDoImovel, moverParaVistoria } from './vistoria-inter.service';
  */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
-type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'ENVIADA' | 'JA_TEM_OS' | 'OUTRO_CCA' | 'ERRO';
+type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'DOCUMENTOS' | 'ANEXANDO' | 'TAXA_PRONTA' | 'ENVIADA' | 'JA_TEM_OS' | 'OUTRO_CCA' | 'ERRO';
 
 const MODELO = 'claude-sonnet-5';
 const LEASE_MS = 20 * 60_000;
@@ -112,6 +112,8 @@ async function lerFichaImovel(accountId: string, cf: Record<string, any>): Promi
   const ficha = await chamarIA(SYSTEM_IMOVEL, content, 6000);
   if (!ficha?.matricula || !ficha?.descricao) return { erro: 'Não consegui ler a matrícula e a descrição do imóvel na certidão.' };
   ficha.arquivo = certidao.name;
+  ficha.arquivoId = certidao.id; // a extensão anexa esse arquivo na OS ("Incluir Documentos" → Certidão da Matrícula)
+  ficha.arquivoMime = certidao.mimeType;
   return { ficha };
 }
 
@@ -221,8 +223,8 @@ export async function solicitarVistoriaCaixa(accountId: string, leadId: string, 
   if (!lead) return { erro: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
   const vc = cf._vistoriaCaixa || {};
-  if (['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO'].includes(vc.status)) return { erro: 'A vistoria da CAIXA deste cliente já está em andamento.' };
-  if (vc.status === 'ENVIADA') return { erro: `A vistoria da CAIXA já foi solicitada${vc.os?.numero ? ` (OS ${vc.os.numero})` : ''}.` };
+  if (['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO'].includes(vc.status)) return { erro: 'A vistoria da CAIXA deste cliente já está em andamento.' };
+  if (vc.status === 'ENVIADA' || vc.status === 'TAXA_PRONTA') return { erro: `A vistoria da CAIXA já foi solicitada${vc.os?.numero ? ` (OS ${vc.os.numero})` : ''}.` };
   if (!String(cf.link_pasta_drive || '').trim()) return { erro: 'O card não tem a pasta do Drive (a certidão do imóvel fica na pasta IMOVEL).' };
   if (!brlSemSimbolo(cf.valor_credito)) return { erro: 'Preencha o "Valor do crédito" do card (vai como valor proposto a financiar).' };
   if (!brlSemSimbolo(cf.valor_imovel)) return { erro: 'Preencha o "Valor do imóvel" do card (vai como valor de compra e venda).' };
@@ -310,7 +312,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
   const rows = await prisma.$queryRaw<{ id: string; accountId: string; status: string; leaseAt: string | null; tentativas: number | null }[]>`
     SELECT id, "accountId", "customFields"->'_vistoriaCaixa'->>'status' AS status, "customFields"->'_vistoriaCaixa'->>'leaseAt' AS "leaseAt",
            ("customFields"->'_vistoriaCaixa'->>'tentativas')::int AS tentativas
-      FROM "Lead" WHERE "customFields"->'_vistoriaCaixa'->>'status' IN ('AGUARDANDO_CONTATO','RODANDO','ENVIANDO')`;
+      FROM "Lead" WHERE "customFields"->'_vistoriaCaixa'->>'status' IN ('AGUARDANDO_CONTATO','RODANDO','ENVIANDO','ANEXANDO')`;
   for (const r of rows) {
     try {
       if (r.status === 'AGUARDANDO_CONTATO') {
@@ -325,7 +327,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
           await gravar(r.id, { status: 'ERRO', erro: 'A extensão do SIOPI começou 3 vezes e não terminou.' });
           await nota(r.id, '⚠️ Vistoria CAIXA: a extensão do SIOPI começou 3 vezes e não terminou. Confira o SIOPI aberto no Chrome (login) e clique de novo em "Solicitar vistoria CAIXA".');
           await push(r.accountId, r.id, '🏠 Vistoria CAIXA travou', 'A extensão do SIOPI não terminou — confira o Chrome.');
-        } else await gravar(r.id, { status: r.status === 'ENVIANDO' ? 'ENVIAR' : 'FILA', leaseAt: null, tentativas: tent });
+        } else await gravar(r.id, { status: r.status === 'ENVIANDO' ? 'ENVIAR' : r.status === 'ANEXANDO' ? 'DOCUMENTOS' : 'FILA', leaseAt: null, tentativas: tent });
       }
     } catch (e: any) { console.error('[Vistoria CAIXA] poll', r.id, e?.message); }
   }
@@ -334,18 +336,20 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
 /** Fila da extensão: o próximo card em FILA (cadastra + prepara a OS, sem enviar) ou ENVIAR (cria a OS). */
 export async function proximaVistoriaCaixa(accountId: string): Promise<any | null> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' IN ('FILA','ENVIAR')
-     ORDER BY ("customFields"->'_vistoriaCaixa'->>'status' = 'ENVIAR') DESC, "updatedAt" ASC LIMIT 1`;
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' IN ('FILA','ENVIAR','DOCUMENTOS')
+     ORDER BY ("customFields"->'_vistoriaCaixa'->>'status' <> 'FILA') DESC, "updatedAt" ASC LIMIT 1`;
   if (!rows.length) return null;
   const lead = await prisma.lead.findUnique({ where: { id: rows[0].id }, select: { id: true, name: true, customFields: true } });
   if (!lead) return null;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const vc = cf._vistoriaCaixa || {};
   const enviar = vc.status === 'ENVIAR';
-  await gravar(lead.id, { status: enviar ? 'ENVIANDO' : 'RODANDO', leaseAt: new Date().toISOString() });
+  const modo = vc.status === 'DOCUMENTOS' ? 'DOCUMENTOS' : enviar ? 'ENVIAR' : 'PREPARAR';
+  await gravar(lead.id, { status: modo === 'DOCUMENTOS' ? 'ANEXANDO' : enviar ? 'ENVIANDO' : 'RODANDO', leaseAt: new Date().toISOString() });
   return {
     leadId: lead.id,
     leadName: lead.name,
+    modo,
     enviar,
     codigoImovel: vc.codigoImovel || null,
     imovel: vc.dados?.imovel,
@@ -383,16 +387,26 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
     await push(accountId, leadId, `🏠 ${lead.name}: já tem OS na CAIXA`, 'O imóvel já tem ordem de serviço de engenharia — não abri outra.');
     return;
   }
-  if (etapa === 'OS_ENVIADA') {
-    await gravar(leadId, { status: 'ENVIADA', leaseAt: null, os: body.os || null, enviadaEm: new Date().toISOString() });
-    await nota(leadId, `✅ Vistoria CAIXA SOLICITADA no SIOPI${body.os?.numero ? ` — OS ${body.os.numero}` : ''}${body.os?.situacao ? ` (${body.os.situacao})` : ''}.${body.texto ? `\n${body.texto.slice(0, 800)}` : ''}`);
-    await push(accountId, leadId, `✅ ${lead.name}: vistoria CAIXA solicitada`, body.os?.numero ? `OS ${body.os.numero}` : 'OS criada no SIOPI.');
-    await moverParaVistoria(accountId, leadId, 'vistoria da CAIXA solicitada no SIOPI', io as any);
+  // OS criada (Fabio 06/11: depois do Próximo vem "Incluir Documentos" — "precisa anexar a certidão de ônus do imóvel") → a extensão anexa a certidão e segue até a taxa.
+  if (etapa === 'OS_CRIADA' || etapa === 'OS_ENVIADA') {
+    await gravar(leadId, { status: 'DOCUMENTOS', leaseAt: null, os: body.os || null, enviadaEm: new Date().toISOString(), tentativas: 0 });
+    await nota(leadId, `🏠 OS da vistoria CAIXA CRIADA no SIOPI${body.os?.numero ? ` — registro ${body.os.numero}` : ''}. Próximo passo: anexar a certidão de ônus e emitir a taxa.`);
+    await moverParaVistoria(accountId, leadId, 'OS da vistoria criada no SIOPI (CAIXA)', io as any);
+    return;
+  }
+  if (etapa === 'DOC_ANEXADO') {
+    await nota(leadId, `📎 SIOPI: certidão de ônus anexada na OS da vistoria${body.texto ? ` (${body.texto.slice(0, 120)})` : ''}.`);
+    return;
+  }
+  if (etapa === 'TAXA_PRONTA') {
+    await gravar(leadId, { status: 'TAXA_PRONTA', leaseAt: null, taxa: { em: new Date().toISOString(), texto: (body.texto || '').slice(0, 2000), campos: body.campos || [] } });
+    await nota(leadId, `🏠 Vistoria CAIXA: OS criada e certidão anexada — o SIOPI está na tela da TAXA (boleto), ainda NÃO emitida.${campos ? `\n${campos}` : ''}`);
+    await push(accountId, leadId, `🏠 ${lead.name}: falta a taxa da vistoria`, 'OS criada e certidão anexada — falta emitir a taxa (boleto).');
     return;
   }
   // ERRO / AGUARDANDO_LOGIN / tela desconhecida: para e avisa (a pessoa confere o SIOPI e clica de novo).
   const vc = ((((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any)._vistoriaCaixa) || {};
-  const voltaPara: Estado = etapa === 'AGUARDANDO_LOGIN' ? (vc.status === 'ENVIANDO' ? 'ENVIAR' : 'FILA') : 'ERRO';
+  const voltaPara: Estado = etapa === 'AGUARDANDO_LOGIN' ? (vc.status === 'ENVIANDO' ? 'ENVIAR' : vc.status === 'ANEXANDO' ? 'DOCUMENTOS' : 'FILA') : 'ERRO';
   await gravar(leadId, { status: voltaPara, leaseAt: null, erro: body.erro || etapa });
   if (etapa === 'AGUARDANDO_LOGIN') {
     if (!vc.avisoLoginEm || Date.now() - new Date(vc.avisoLoginEm).getTime() > 2 * 3600_000) {
@@ -469,4 +483,23 @@ export async function pedirNomeTelefoneContato(accountId: string, leadId: string
   if (!t.success) throw new Error(`template "Olá, tudo bem?" falhou: ${t.error}`);
   const { queueOnReply } = require('./reply-pending.service') as typeof import('./reply-pending.service');
   await queueOnReply(prisma, { leadId, label: 'contato da vistoria', text: texto, noteText: `🏠 O cliente disse que a vistoria é com "${quem}" e a janela de 24 h estava fechada — mandei o template "Olá, tudo bem?"; quando ele responder, sai o pedido de nome e telefone.` });
+}
+
+/** Certidão de ônus/matrícula usada na ficha → a extensão anexa na OS (base64). */
+export async function certidaoDaVistoria(accountId: string, leadId: string): Promise<{ nome: string; mimeType: string; base64: string } | null> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!lead) return null;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const ficha = cf._vistoriaCaixa?.ficha || {};
+  let id: string | null = ficha.arquivoId || null;
+  let mime: string = ficha.arquivoMime || 'application/pdf';
+  let nome: string = ficha.arquivo || 'CERTIDAO DE ONUS.pdf';
+  if (!id) {
+    const arq = (await arquivosDoImovel(accountId, cf)).find((f) => /CERTIDAO DE ONUS|MATRICULA|INTEIRO TEOR/.test(semAcento(f.name).toUpperCase()));
+    if (!arq) return null;
+    id = arq.id; mime = arq.mimeType; nome = arq.name;
+  }
+  const google = await import('./google.service');
+  const buf = await google.downloadDriveFile(accountId, id, mime);
+  return { nome: /\.pdf$/i.test(nome) || mime !== 'application/pdf' ? nome : `${nome}.pdf`, mimeType: mime, base64: buf.toString('base64') };
 }
