@@ -177,7 +177,7 @@ export async function previewItbi(accountId: string, leadId: string, ov: ItbiOve
   const natureza: '004' | '001' = ov.natureza || (financiado > 0 ? '004' : '001');
   const anexo = ov.anexoDriveFileId ? { driveFileId: ov.anexoDriveFileId, nome: 'contrato.pdf' } : minuta ? { driveFileId: minuta.id, nome: minuta.name } : null;
   if (leitura?.valorCompraVenda && num(cf.valor_imovel) && Math.abs(leitura.valorCompraVenda - (num(cf.valor_imovel) || 0)) > 1) avisos.push(`a minuta diz ${brl(leitura.valorCompraVenda)} de compra e venda e o card ${brl(num(cf.valor_imovel))} — vale o da minuta`);
-  if (!/(^|\s)df$|distrito federal|bras[ií]lia/i.test(`${leitura?.endereco || ''} ${cf.cidade_imovel || ''}`) && leitura?.endereco) avisos.push(`o endereço da minuta não parece ser do DF ("${leitura.endereco.slice(0, 80)}") — esta extensão só faz ITBI do DF`);
+  if (!/\bDF\b|distrito federal|bras[ií]lia/i.test(`${leitura?.endereco || ''} ${cf.cidade_imovel || ''}`) && leitura?.endereco) avisos.push(`o endereço da minuta não parece ser do DF ("${leitura.endereco.slice(0, 80)}") — esta extensão só faz ITBI do DF`);
 
   const faltam: string[] = [];
   if (inscricao.length !== 8) faltam.push('inscrição do IPTU do imóvel (8 dígitos)');
