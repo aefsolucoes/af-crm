@@ -29,7 +29,7 @@ type Dados = { contato?: { nome?: string; telefone?: string; papel?: string }; v
   compradores?: { profissao?: string; email?: string }[]; imovel?: ImovelFh };
 type St = { status?: string; autAskedAt?: string; saudeSentAt?: string;
   autSignedAt?: string; autSignedName?: string; saudeSignedAt?: string; saudeSignedName?: string; faltaNoteAt?: string; teamAskNoteAt?: string; semAssinaturaNoteAt?: string;
-  sentAt?: string; to?: string; erro?: string; prontaNoteAt?: string; startedByTeam?: boolean; fichaTentouAt?: string };
+  sentAt?: string; to?: string; erro?: string; prontaNoteAt?: string; startedByTeam?: boolean; fichaTentouAt?: string; pendentes?: string[] };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
 const push = (accountId: string, title: string, body: string, leadId: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
@@ -259,7 +259,6 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
   const st = (cf._vistoriaSantFh || {}) as St;
   if (st.status === 'ENVIADA') return true;
   if (opts.manual && !st.startedByTeam) { await salvaSt(leadId, { startedByTeam: true }); st.startedByTeam = true; }
-  const repete = (iso?: string) => opts.manual || faz(iso) > AVISO_REPETIR_MS;
 
   // Ficha cadastral dos compradores (lida dos documentos): sem ela, gera agora (é a base da ficha do Santander e da declaração).
   if (!cf._fichaCadastral && (opts.manual || faz(st.fichaTentouAt) > 6 * 3600_000)) {
@@ -347,14 +346,8 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
   if (!cat.compCivil.length) faltam.push('certidão de estado civil do comprador');
   if (!cat.venIdent.length) faltam.push('RG/CNH do vendedor');
   if (!cat.venCivil.length) faltam.push('certidão de estado civil do vendedor');
-  if (faltam.length) {
-    if (repete(st.faltaNoteAt)) {
-      await salvaSt(leadId, { status: 'AGUARDA_DOCS', faltaNoteAt: new Date().toISOString() });
-      await note(leadId, `🏦 Santander (Financiamento): formulários assinados, mas a pasta do Drive ainda não tem: ${faltam.join('; ')}. Assim que estiver na pasta, o CRM envia o pedido à Letícia.`);
-      push(accountId, '🏦 Vistoria Santander: falta documento', `${lead.name}: ${faltam.join('; ').slice(0, 110)}`, leadId);
-    }
-    return false;
-  }
+  // Documento faltando NÃO trava o pedido (Fabio 06/11: "não travar, por falta de documento, o envio à Letícia"): sai com o que tem; o e-mail e a nota dizem o que vai depois.
+  const pendente = faltam.length ? `\n⚠️ Ainda não está na pasta (mande à Letícia depois, por e-mail): ${faltam.join('; ')}.` : '';
 
   // 5) ficha (Word)
   const fresh = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
@@ -376,9 +369,11 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
   };
   const ficha = dadosFichaFh({ compradores: compradoresDe(fresh, lead.name), vendedores, conta: dados.conta || null, contaDebito: dados.contaComprador || null, imovel, contato, usaFgts: /^(s|sim|true|1)/i.test(String(fresh.usa_fgts ?? '').trim()) });
   const docx = await preencherFichaFh(ficha.ops);
-  const essenciais = ficha.faltando.filter((f) => /conta do comprador|contat|endere[cç]o completo do im[oó]vel|tipo do im[oó]vel|conta do vendedor|dados do vendedor|n[uú]mero do documento|estado civil|telefone|e-mail|profiss/i.test(f));
+  // Nº do documento em branco não segura quando os RG/CNH vão anexados no mesmo e-mail (Fabio 06/11): a Letícia lê no documento.
+  const identAnexada = cat.compIdent.length >= compradores.length && cat.venIdent.length > 0;
+  const essenciais = ficha.faltando.filter((f) => /conta do comprador|contat|endere[cç]o completo do im[oó]vel|tipo do im[oó]vel|conta do vendedor|dados do vendedor|n[uú]mero do documento|estado civil|telefone|e-mail|profiss/i.test(f) && !(identAnexada && /n[uú]mero do documento/i.test(f)));
   if (essenciais.length) {
-    if (repete(st.faltaNoteAt) || st.status !== 'FALTAM_DADOS') {
+    if (st.status !== 'FALTAM_DADOS' || faz(st.faltaNoteAt) > AVISO_REPETIR_MS) { // clique no card não repete a nota (Fabio 06/11)
       await salvaSt(leadId, { status: 'FALTAM_DADOS', faltaNoteAt: new Date().toISOString() });
       const guardou = await guardaFormulario(accountId, fresh, 'FICHA CADASTRO SANTANDER - PARA COMPLETAR.docx', DOCX, docx);
       await note(leadId, `🏦 Santander (Financiamento): formulários assinados e documentos ok, mas a ficha de cadastro ficou sem: ${essenciais.join('; ')}.${guardou ? ' Guardei a ficha preenchida na pasta FORMULARIOS do Drive ("PARA COMPLETAR"): complete e envie à Letícia, ou preencha no card (Contato vistoria) e o CRM tenta de novo.' : ''}`);
@@ -390,8 +385,8 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
   if (opts.holdSend && !opts.manual) {
     if (st.status !== 'PRONTA') {
       await salvaSt(leadId, { status: 'PRONTA', prontaNoteAt: new Date().toISOString() });
-      await note(leadId, '🏦 Santander (Financiamento): formulários assinados, documentos completos e ficha preenchida. Falta só enviar à Letícia: botão "Enviar à Letícia" na vistoria do Santander do card.');
-      push(accountId, '🏦 Vistoria Santander pronta', `${lead.name}: clique em "Enviar à Letícia" no card`, leadId);
+      await note(leadId, `🏦 Santander (Financiamento): formulários assinados${faltam.length ? '' : ', documentos completos'} e ficha preenchida. Falta só enviar à Letícia: botão "Enviar à Letícia" na vistoria do Santander do card.${faltam.length ? ` O pedido sai com o que já está na pasta.${pendente}` : ''}`);
+      push(accountId, '🏦 Vistoria Santander pronta', `${lead.name}: clique em "Enviar à Letícia" no card${faltam.length ? ` (pendente: ${faltam.join('; ')})` : ''}`.slice(0, 160), leadId);
     }
     return false;
   }
@@ -425,6 +420,7 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
     'CONTATOS', ...compradoresDe(fresh, lead.name).map((p, i) => pessoaLinha(`${i + 1}º comprador`, p)), ...vendedores.slice(0, 2).map((p, i) => pessoaLinha(i ? 'cônjuge do vendedor' : 'vendedor', p)), '',
     `CONTA PARA CRÉDITO (vendedor): ${[conta.titular && `titular ${conta.titular}`, conta.banco && `banco ${conta.banco}`, conta.agencia && `agência ${conta.agencia}`, conta.conta && `conta ${conta.conta}${conta.digito ? `-${conta.digito}` : ''}`, conta.tipo].filter(Boolean).join(', ') || '—'}`, '',
     `Contato para a vistoria: ${contatoTxt || '—'}`, '',
+    ...(faltam.length ? [`Segue depois, assim que tivermos: ${faltam.map((f) => f.replace(/\s*\(a A&F emite\)/, '')).join('; ')}.`, ''] : []),
     'Qualquer dúvida, estou à disposição.', 'Obrigado!',
   ].join('\n');
   const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
@@ -440,9 +436,9 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
     return false;
   }
   await patchCf(leadId, (c) => { c._vistoriaRequestedAt = new Date().toISOString(); });
-  await salvaSt(leadId, { status: 'ENVIADA', sentAt: new Date().toISOString(), to: VISTORIA_SANTANDER_TO });
-  await note(leadId, `📨 Vistoria do Santander (Financiamento) solicitada: e-mail para ${VISTORIA_SANTANDER_TO} com ${anexos.length} anexo(s): ${anexos.map((a) => a.filename).join('; ')}.${ficha.faltando.length ? `\nFicaram em branco na ficha: ${ficha.faltando.join('; ')}.` : ''}`);
-  push(accountId, '📨 Vistoria solicitada ao Santander', lead.name, leadId);
+  await salvaSt(leadId, { status: 'ENVIADA', sentAt: new Date().toISOString(), to: VISTORIA_SANTANDER_TO, pendentes: faltam });
+  await note(leadId, `📨 Vistoria do Santander (Financiamento) solicitada: e-mail para ${VISTORIA_SANTANDER_TO} com ${anexos.length} anexo(s): ${anexos.map((a) => a.filename).join('; ')}.${ficha.faltando.length ? `\nFicaram em branco na ficha: ${ficha.faltando.join('; ')}.` : ''}${pendente}`);
+  push(accountId, faltam.length ? '📨 Vistoria Santander pedida — falta documento' : '📨 Vistoria solicitada ao Santander', faltam.length ? `${lead.name}: mandar à Letícia depois: ${faltam.join('; ')}`.slice(0, 160) : lead.name, leadId);
   try {
     const card = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipelineId: true, stageId: true, stage: { select: { name: true } } } });
     const vist = card ? await prisma.stage.findFirst({ where: { pipelineId: card.pipelineId, name: { contains: 'Vistoria', mode: 'insensitive' } }, select: { id: true, name: true } }) : null;

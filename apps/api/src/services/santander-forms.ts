@@ -14,7 +14,9 @@ import { generoPeloNome } from './sexo-pelo-nome';
 const ASSETS = path.resolve(__dirname, '../../assets/santander');
 export const MARCA_USECASA = 'AF-USECASA'; // vai nas palavras-chave do PDF: o PDF assinado pelo gov.br mantém isso e o CRM reconhece o retorno
 
-// ─── Dados da proposta do site ("Proposta preenchida no site — …": uma linha "Campo: valor" por informação) ───
+// ─── Dados da proposta do site ("Proposta preenchida no site — …" por e-mail ou "Preenchi a proposta…" pelo WhatsApp: uma linha "Campo: valor" por informação) ───
+/** As duas formas da proposta do site (e-mail do FormSubmit e mensagem do WhatsApp) — pra achar a mensagem no card. */
+export const MARCAS_PROPOSTA_SITE = ['Proposta preenchida no site', 'Preenchi a proposta'];
 export function camposDaProposta(texto: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const l of String(texto || '').split('\n')) {
@@ -183,11 +185,18 @@ export function dadosWebCasas(cf: Record<string, any>, campos: Record<string, st
   const mesmaCidade = !!garantia && !!res.cidade && norm(cidadeDe(garantia)) === norm(res.cidade);
   const propria = /pr[oó]pri/i.test(campos['Tipo de residência'] || '');
   const cidadeImovel = cidadeDe(garantia) || res.cidade;
-  if (mesmaCidade && propria && res.cep) {
+  // Proposta pelo WhatsApp (Fabio 06/11, Alexandre): traz "CEP do imóvel" e "Endereço do imóvel: Rua X, 303 Casa — Bairro" — vale direto, sem depender da residência.
+  const endIm = /^(.*?),\s*(\d+[\w-]*)\s*([^—–]*?)\s*(?:[—–]\s*(.+))?$/.exec(campos['Endereço do imóvel'] || '');
+  if (endIm && campos['CEP do imóvel']) {
+    const ruaIm = endIm[1].trim();
+    const tipoRua = /^av/i.test(ruaIm) ? 2 : /^lad/i.test(ruaIm) ? 1 : /^rua|^r\./i.test(ruaIm) ? 0 : -1;
+    t(63, campos['CEP do imóvel']); if (tipoRua >= 0) m(64, tipoRua); t(65, ruaIm.replace(/^(rua|avenida|av\.?|ladeira)\s+/i, '')); t(66, endIm[2]); t(68, (endIm[4] || '').split(/\s*[—–]\s*/)[0]); t(69, cidadeImovel); t(70, ufDe(garantia));
+  } else if (mesmaCidade && propria && res.cep) {
     t(63, res.cep); if (res.tipo >= 0) m(64, res.tipo); t(65, res.rua); t(66, res.num); t(68, res.bairro); t(69, res.cidade); t(70, res.uf);
   } else { t(69, cidadeImovel); t(70, ufDe(garantia)); faltando.push('endereço completo do imóvel (CEP, rua, número, bairro)'); }
-  const tipoImovel = campos['Tipo do imóvel'] || String(cf.imovel_tipo || '');
-  if (/apart/i.test(tipoImovel)) m(71, 0); else if (/casa|sobrado/i.test(tipoImovel)) m(71, 1); else faltando.push('tipo do imóvel');
+  // "Residencial" sozinho não diz casa ou apartamento: o complemento do endereço do imóvel diz ("303 Casa", "Apto 12", "Bloco B").
+  const tipoImovel = `${campos['Tipo do imóvel'] || String(cf.imovel_tipo || '')} ${endIm ? endIm[3] : ''}`;
+  if (/apart|\bapto?\b|bloco|torre/i.test(tipoImovel)) m(71, 0); else if (/casa|sobrado/i.test(tipoImovel)) m(71, 1); else faltando.push('tipo do imóvel');
   const quitado = campos['Imóvel quitado'] || '';
   t(72, /^sim/i.test(quitado) ? 'Não (quitado)' : quitado ? 'Sim' : '');
   t(73, contato.pessoa); t(74, contato.telefone);
