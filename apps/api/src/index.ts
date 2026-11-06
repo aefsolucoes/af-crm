@@ -40,6 +40,7 @@ import creditAnalysisRoutes from './routes/credit-analysis';
 import certidaoRoutes from './routes/certidoes';
 import itbiRoutes from './routes/itbi';
 import caixaCadastroRoutes from './routes/caixa-cadastro';
+import vistoriaCaixaRoutes from './routes/vistoria-caixa';
 import vistoriaRoutes from './routes/vistorias';
 import certidoesPessoaisRoutes from './routes/certidoes-pessoais';
 import supervisionRoutes from './routes/supervision';
@@ -121,6 +122,7 @@ app.use('/api/credit-analysis', creditAnalysisRoutes);
 app.use('/api/certidoes', certidaoRoutes);
 app.use('/api/itbi', itbiRoutes);
 app.use('/api/caixa-cadastro', caixaCadastroRoutes);
+app.use('/api/vistoria-caixa', vistoriaCaixaRoutes);
 app.use('/api/vistorias', vistoriaRoutes);
 app.use('/api/certidoes-pessoais', certidoesPessoaisRoutes);
 app.use('/api/supervision', supervisionRoutes);
@@ -334,6 +336,13 @@ httpServer.listen(PORT, () => {
   setTimeout(() => {
     (require('./services/whatsapp-calling.service') as typeof import('./services/whatsapp-calling.service')).repairHungUpCallsMarkedMissed().catch((err: any) => console.error('[Calling] Reparo:', err?.message));
   }, 60 * 1000);
+
+  // Vistoria CAIXA pelo SIOPI (Fabio 06/11): contato da vistoria chegou → fila da extensão; extensão que sumiu no meio → volta pra fila.
+  setTimeout(() => {
+    const rodar = () => (require('./services/vistoria-caixa.service') as typeof import('./services/vistoria-caixa.service')).processVistoriaCaixa(io as any).catch((err: any) => console.error('[Vistoria CAIXA] Poll:', err?.message));
+    rodar();
+    setInterval(rodar, 2 * 60 * 1000);
+  }, 3 * 60 * 1000);
 
   // Gênero dos participantes (Fabio 06/11): "Gênero"/"Gênero 2" vazios ganham Feminino/Masculino pela proposta ou pelo primeiro nome (nunca por cima da equipe).
   setTimeout(() => {

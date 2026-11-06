@@ -548,7 +548,7 @@ ${ctx.historicoTexto}`;
  *  FieldDefinition, por isso ficam hardcoded aqui (mesmo critério já usado
  *  em site-lead.service.ts pros campos conhecidos). */
 const BUILTIN_LEAD_FIELDS: { key: string; label: string }[] = [
-  { key: 'contato_vistoria', label: 'Contato de quem vai ACOMPANHAR A VISTORIA do imóvel — nome, relação se disser e telefone (ex.: "Maria, inquilina — (11) 99999-0000"; "o próprio cliente — (11) 98888-0000"). Preencha quando o cliente responder quem acompanha a vistoria (pode ser outra pessoa que não é proponente)' },
+  { key: 'contato_vistoria', label: 'Contato de quem vai ACOMPANHAR A VISTORIA do imóvel — NOME e TELEFONE, mais a relação se disser (ex.: "Maria, inquilina — (11) 99999-0000"; "o próprio cliente — (11) 98888-0000"). Preencha SÓ com nome E telefone (pode ser outra pessoa que não é proponente). Se o cliente disser só QUEM é (ex.: "o corretor", "minha irmã") sem nome e telefone, NÃO preencha — pergunte o nome e o telefone dessa pessoa (Fabio 06/11)' },
   { key: 'falando_com', label: 'Nome de QUEM ESTÁ FALANDO no WhatsApp quando NÃO é o titular do crédito (ex.: a esposa que preencheu a proposta) — deixe vazio se quem fala é o próprio titular' },
   { key: 'cadastro_confirmado', label: 'Cliente CONFIRMOU que nome, CPF e data de nascimento da proposta estão corretos — preencha "Sim" SÓ quando ele disser isso (resposta à pergunta de confirmação do cadastro)' },
   { key: 'ocorrencias_cliente', label: 'Resposta do cliente à orientação Serasa/SCPC/protesto (bloco RESTRIÇÃO NO NOME): "sem" quando ele disser que conferiu e NÃO há ocorrência; "com" quando confirmar ocorrência — só com esse bloco' },
@@ -833,6 +833,16 @@ export async function applyAiExtractedActions(
         const antes = String(cf0.finalidade ?? '').trim();
         const pode = !!nova && (!antes || (cf0._finalidadeAuto === antes && FINALIDADES.indexOf(nova) < FINALIDADES.indexOf(antes as any)));
         if (pode) { patch.finalidade = nova!; patch._finalidadeAuto = nova!; } else delete patch.finalidade;
+      }
+      // Contato da vistoria (Fabio 06/11, Fernanda respondeu "o corretor" e o card ficou "Corretor"): só vale com NOME e TELEFONE. Sem telefone não grava — o CRM pede ao
+      // cliente o nome e o telefone dessa pessoa (IA do card ligada: ela mesma pergunta, regra no campo).
+      if (patch.contato_vistoria !== undefined) {
+        const vc = require('./vistoria-caixa.service') as typeof import('./vistoria-caixa.service');
+        if (!vc.contatoVistoriaCompleto(patch.contato_vistoria)) {
+          const quem = patch.contato_vistoria;
+          delete patch.contato_vistoria;
+          vc.pedirNomeTelefoneContato(accountId, lead.id, quem, io as any).catch((e: any) => console.error('[Contato vistoria] pedir nome/telefone:', e?.message));
+        }
       }
       if (Object.keys(patch).length) {
         // Lido de novo: as ações acima (Perdido, etapa, Venda Futura) também gravam no customFields — a cópia do início apagaria o que elas gravaram.

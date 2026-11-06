@@ -6,6 +6,7 @@ import api from '@/lib/api';
 import { cn, formatCurrency } from '@/lib/utils';
 import { toast } from '@/components/ui/toast';
 import { Modal } from '@/components/ui/modal';
+import { VistoriaCaixaButton } from './vistoria-caixa-button';
 
 /* Bloco "CAIXA" na aba Financiamento do card (Fabio 03/11: "NÃO ACHEI O BOTÃO PARA RODAR CADASTRO NA CAIXA E TBM OUTRO BOTÃO ESCRITO, RODAR ANÁLISE DE CRÉDITO
  * NA CAIXA" + "OS BOTÕES DEVEM FICAR DENTRO DA ABA DE FINANCIAMENTO, ONDE FICA A PARTE DA CAIXA"). Mesma fila da extensão "Cadastro CAIXA" do painel CAIXA da Análise
@@ -129,6 +130,7 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
           ? botao('analise', 'Rodar análise CAIXA de novo', 'Rodar de novo a Avaliação de Risco que deu erro (ex.: depois da autorização do PV) — a extensão reabre a mesma avaliação e clica em Avançar', RotateCcw)
           : botao('analise', 'Análise CAIXA', 'Rodar a análise de crédito (Avaliação de Risco) deste cliente na CAIXA pela extensão', ShieldCheck)}
       </div>
+      <VistoriaCaixaButton leadId={leadId} onDone={onDone} />
 
       <Modal open={modal !== null} onClose={() => setModal(null)} title={modal === 'analise' ? (denovo ? 'Rodar a análise na CAIXA de novo' : 'Análise de crédito na CAIXA') : 'Cadastro na CAIXA'} size="sm">
         <div className="space-y-3 text-sm text-slate-600">
