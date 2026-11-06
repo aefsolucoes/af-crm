@@ -2,7 +2,7 @@ import { prisma } from '../lib/prisma';
 
 /* ITBI NO DF pela DEITBI (Declaração Eletrônica de ITBI da Receita do DF) — Fabio 30/10: "vamos fazer uma extensão para solicitar ITBI de um cliente".
  * Decisões: DF primeiro (outras cidades depois, uma por vez); a guia (DAR) vai pro cliente no WhatsApp e fica na pasta ITBI do Drive; quem pede é a
- * equipe (botão no card ou Jarvis) — nada automático; o login no portal é com o certificado A1 da A&F ("F CLEMENTE", CNPJ 49.592.816/0001-40).
+ * equipe (botão no card ou Jarvis) — nada automático; o login no portal é com o gov.br PESSOAL do Fabio (com o certificado da empresa a validação do imóvel falhava — 06/11).
  *
  * Regras do portal (manual DEITBI + tela):
  *  - 1 transmitente × 1 adquirente × 1 imóvel por declaração: casal vira várias declarações, cada uma com o seu percentual do imóvel e valor proporcional.
@@ -290,7 +290,7 @@ export async function reportItbi(accountId: string, leadId: string, data: Record
   switch (String(data.event)) {
     case 'step': d.detail = String(data.stage || '').slice(0, 200); break;
     case 'login': {
-      if (!it.detail?.startsWith('aguardando login')) push(accountId, '🔐 Receita DF pedindo login', `${lead.name}: a extensão do ITBI está na tela de login — escolha o certificado da A&F (F CLEMENTE)`, leadId, userIds);
+      if (!it.detail?.startsWith('aguardando login')) push(accountId, '🔐 Receita DF pedindo login', `${lead.name}: a extensão do ITBI está no login — entre com o seu gov.br (CPF) na janela da Receita DF`, leadId, userIds);
       it.detail = 'aguardando login no portal da Receita DF'; break;
     }
     case 'resumo': {
