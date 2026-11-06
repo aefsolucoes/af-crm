@@ -245,7 +245,8 @@ export function participantesDaAvaliacao(ps: any[]): { tomador: any | null; incl
 export function consultaSegura(textos: string[]): string | null {
   for (const t of textos) {
     if (/proposta solicitada em outro CCA/i.test(t) && !/n[aã]o possui proposta solicitada em outro CCA/i.test(t)) return 'proposta em outro correspondente (CCA)';
-    if (/avalia[cç][aã]o em andamento/i.test(t) && !/n[aã]o possui avalia[cç][aã]o em andamento/i.test(t)) return 'avaliação de risco em andamento';
+    if (/avalia[cç][aã]o (de risco )?em andamento/i.test(t) && !/n[aã]o possui avalia[cç][aã]o (de risco )?em andamento/i.test(t)) return 'avaliação de risco em andamento';
+    if (/possui proposta solicitada/i.test(t) && !/n[aã]o possui proposta solicitada/i.test(t)) return 'proposta solicitada';
   }
   return null;
 }
@@ -263,7 +264,7 @@ export function faltaParaCadastro(p: any, agora = new Date()): string[] {
 
 /** "Quando estiver tudo ok, a extensão da CAIXA ativa para fazer o cadastro do cliente" (Fabio 31/10): participante com a ficha completa e ainda sem cadastro →
  *  fila da extensão (que preenche pela ficha e o CRM confere tela a tela). Faltando dado → anotação + push uma vez por participante; a ficha é refeita quando
- *  chega documento novo e o cadastro sai na rodada seguinte. Consulta com proposta/avaliação em outro CCA → segura pra equipe. */
+ *  chega documento novo e o cadastro sai na rodada seguinte. Consulta com proposta/avaliação em andamento só vira anotação: o cadastro segue (Fabio 06/11). */
 export async function cadastroAutomatico(accountId: string, leadId: string): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
@@ -276,13 +277,12 @@ export async function cadastroAutomatico(accountId: string, leadId: string): Pro
   const pendentes = participantesDa(cf).filter((p) => !cads[p.ordem]);
   if (!pendentes.length) return;
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  // Avaliação/proposta em andamento na consulta NÃO segura mais o cadastro (Fabio 06/11, Windson: "sempre que aparecer isso, e a extensão clicar em cadastrar
+  // o cliente e não aparecer nenhum empecilho, ela pode seguir com o cadastro"): só anota uma vez; impedimento de verdade o portal mostra e a extensão para.
   const motivo = consultaSegura(Object.values(c.consultas || {}).map((x: any) => String(x?.texto || '')));
-  if (motivo) {
-    if (c.autoSeguradoAt) return;
-    await salvar(leadId, (x) => { x.autoSeguradoAt = new Date().toISOString(); });
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA NÃO saiu sozinho: a consulta mostra ${motivo}. Confira e, se for seguir, peça o cadastro pela tela.` } }).catch(() => {});
-    sendPushToAccount(accountId, { title: `🏦 ${l.name}: CAIXA segurada`, body: `Consulta com ${motivo} — cadastro automático parado.`, leadId }).catch(() => {});
-    return;
+  if (motivo && !c.consultaAvisadaAt) {
+    await salvar(leadId, (x) => { x.consultaAvisadaAt = new Date().toISOString(); });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 A consulta da CAIXA mostra ${motivo}. Seguindo com o cadastro mesmo assim (regra do Fabio 06/11): se o portal mostrar algum impedimento ao cadastrar, a extensão para e avisa.` } }).catch(() => {});
   }
   const prontos = pendentes.filter((p) => !faltaParaCadastro(p).length).map((p) => p.ordem);
   if (prontos.length && avaliacaoFeita(cf)) { await segurarPosAvaliacao(leadId, `a ficha tem ${prontos.map((o) => participantesDa(cf).find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')} pronto(s) pro cadastro`); return; }
