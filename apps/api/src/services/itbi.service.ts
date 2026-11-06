@@ -322,6 +322,8 @@ export async function reportItbi(accountId: string, leadId: string, data: Record
     case 'failed': {
       const motivo = String(data.reason || 'sem detalhe').slice(0, 400);
       d.detail = motivo;
+      // guarda as últimas falhas: o detail da declaração é sobrescrito pelos passos da tentativa seguinte (Francisco 06/11)
+      (it as any).falhas = [...(((it as any).falhas as any[]) || []), { idx: d.idx, at: agora, motivo }].slice(-6);
       const definitivo = !!data.definitivo || (it.attempts || 0) + 1 >= 3;
       it.attempts = (it.attempts || 0) + 1;
       it.claimedAt = null;
