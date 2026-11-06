@@ -338,7 +338,7 @@ export async function pedirCadastroParticipantes(accountId: string, leadId: stri
   const ps = participantesDa((l.customFields || {}) as Cf);
   const validos = ordens.filter((o) => ps.some((p) => p.ordem === o));
   if (!validos.length) return 'Participante não está na ficha';
-  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of validos) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por }; });
+  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of validos) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por, ...jaFeito(x.cadastros[o]) }; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA pedido (${por}) para: ${validos.map((o) => ps.find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')}. A extensão preenche pela ficha e o CRM confere.` } }).catch(() => {});
   return null;
 }
@@ -355,7 +355,7 @@ export async function reenfileirarComFichaNova(leadId: string, antes: any[]): Pr
     .map(([o]) => Number(o));
   if (!voltar.length) return;
   if (avaliacaoFeita(cf)) { await segurarPosAvaliacao(leadId, `chegou o documento de identidade de ${voltar.map((o) => ps.find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')}`); return; }
-  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of voltar) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por: 'CRM (documento novo)' }; });
+  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of voltar) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por: 'CRM (documento novo)', ...jaFeito(x.cadastros[o]) }; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Chegou o documento de identidade de ${voltar.map((o) => ps.find((p) => p.ordem === o)?.nome || `${o}º`).join(', ')} — a ficha foi refeita e o cadastro na CAIXA voltou pra fila da extensão.` } }).catch(() => {});
 }
 
@@ -366,7 +366,7 @@ export async function reenfileirarCadastrosPendentes(leadId: string, motivo: str
   const voltar = Object.entries(cads).filter(([, v]) => v && !['GRAVADO', 'FILA', 'RODANDO'].includes(String(v.status))).map(([o]) => Number(o));
   if (!voltar.length) return;
   if (avaliacaoFeita((l?.customFields || {}) as Cf)) { await segurarPosAvaliacao(leadId, motivo); return; }
-  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of voltar) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por: `CRM (${motivo})` }; });
+  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of voltar) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por: `CRM (${motivo})`, ...jaFeito(x.cadastros[o]) }; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA de volta pra fila da extensão (${motivo}).` } }).catch(() => {});
 }
 
@@ -490,6 +490,8 @@ export async function gravarAvaliacao(accountId: string, leadId: string, r: { st
 }
 
 /** Resultado do cadastro vindo da extensão (preenchido + conferência; salvo ou parado antes de salvar). */
+/** Recolocar na fila não apaga que a A&F JÁ mexeu nesse cadastro (Tarcisio 05/11: refeito pra corrigir a renda e veio o aviso de "cadastro de menos de 6 meses" — era o nosso). */
+const jaFeito = (c: any) => (c?.fim || c?.jaFeito ? { jaFeito: c.jaFeito || c.fim } : {});
 const MESES_PT = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
 /** Cadastro antigo da CAIXA feito há menos de 6 meses (Fabio 05/11: "consegue verificar isso através do comprovante de residência e ref. renda"): a data mais
  *  recente entre o mês/ano do comprovante de residência e as referências das rendas da lista. Devolve o texto do aviso, ou null. */
@@ -514,7 +516,8 @@ export async function gravarCadastro(accountId: string, leadId: string, ordem: n
   if (!l) return;
   const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === Number(ordem));
   // Cadastro antigo recente (< 6 meses) = provavelmente outro correspondente rodou há pouco → push + anotação. Não vale quando o cadastro anterior foi a própria A&F.
-  const nossoAntes = !!((l.customFields || {}) as Cf)._caixaCadastro?.cadastros?.[ordem]?.fim;
+  const ant = ((l.customFields || {}) as Cf)._caixaCadastro?.cadastros?.[ordem];
+  const nossoAntes = !!(ant?.fim || ant?.jaFeito);
   const recente = !nossoAntes ? cadastroAntigoRecente(r.antigoDatas) : null;
   if (recente) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ ${p?.nome || `${ordem}º participante`} já tinha cadastro na CAIXA feito há MENOS DE 6 MESES (${recente}). Pode ter rodado crédito com outro correspondente há pouco — confira antes de seguir.` } }).catch(() => {});
