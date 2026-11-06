@@ -2086,7 +2086,13 @@ const fmtBRL = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionD
  *  com o resultado (o anterior é zerado); quem já recebeu a lista de documentos só recebe o PDF quando escolher. */
 async function novaPropostaFh(db: Db, accountId: string, leadId: string, p: { prazo: number; valor: number }, cf: Record<string, any>): Promise<{ ok: boolean; detail: string }> {
   if (p.prazo && !(p.prazo >= 60 && p.prazo <= 420)) return { ok: false, detail: `prazo de ${p.prazo} meses fora do Financiamento (60 a 420)` };
-  if (!cf._fhResumo) return { ok: false, detail: 'o Financiamento deste cliente ainda não rodou (use a análise normal)' };
+  // Sem rodada do CRM (pré-análise feita à mão — Fabio 06/11, Déborah: trocou de imóvel em Aguardando Documentação e a IA prometeu rodar de novo): roda igual ao botão
+  // "Rodar" da aba, com os valores novos do card. Construção continua só pela CAIXA.
+  if (!cf._fhResumo) {
+    const { ehConstrucaoFh, financiadoFh, textoConstrucao } = require('./construcao-fh.service') as typeof import('./construcao-fh.service');
+    const prop = await db.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Financiamento Habitacional' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+    if (ehConstrucaoFh(prop?.content || '', cf)) return { ok: false, detail: textoConstrucao(financiadoFh(prop?.content || '', cf)).replace(/^🏗️ /, '') };
+  }
   const imovel = Number(String(cf.valor_imovel || '').replace(/[^\d.]/g, '')) || 0;
   if (p.valor && imovel && p.valor > imovel * 0.8) return { ok: false, detail: `o valor pedido (${fmtBRL(p.valor)}) passa de 80% do imóvel (${fmtBRL(imovel)})` };
   const fresh = ((await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
@@ -2235,6 +2241,15 @@ export function bancosEmAnaliseNoTexto(texto: string): string[] {
     if (/\bcreditas\b/i.test(frase)) out.add('CREDITAS');
   }
   return [...out];
+}
+
+/** A IA disse ao cliente que vai RODAR de novo (Fabio 06/11, Déborah: "Anotei os novos valores… Vou rodar a análise de novo com esses dados" e nada foi pedido — o card
+ *  só ganhou os valores). Pura (testável): "vou/vamos rodar/refazer/simular…" + o que roda (análise, proposta, simulação, valores…), sem "não vou". */
+export function prometeuNovaAnaliseNoTexto(texto: string): boolean {
+  const n = String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  return n.split(/(?<=[.!?\n])\s*/).some((f) =>
+    /\b(vou|vamos|irei)\s+(ja\s+)?(rodar|refazer|reenviar|simular|reprocessar)\b[^.!?]{0,40}\b(analise|proposta|simulac|credito|financiamento|bancos?|valores|dados)/.test(f)
+    && !/\bnao (vou|vamos|irei)\b/.test(f));
 }
 
 /** A IA disse ao cliente que um banco "está em análise" e esse banco NUNCA rodou neste card (Fabio 26/10, Jézer: "não tem problema a IA falar que está em análise, desde que a outra IA rode

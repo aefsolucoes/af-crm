@@ -1748,11 +1748,27 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     (require('./ai-promise.service') as typeof import('./ai-promise.service')).registrarPromessaDaIa(leadId, reply, { pular: !!(resumeOn || markLost || genResult.callRequest || /venda futura|sem retorno/i.test(String(moveToStage || ''))) }).catch((e: any) => console.error('[Retorno combinado]', e?.message));
     console.log(`[WhatsApp] Resposta de IA enviada automaticamente para lead ${leadId}`);
 
+    // A IA disse "vou rodar a análise de novo" sem pedir nada (Fabio 06/11, Déborah: trocou de imóvel, a IA anotou os valores e prometeu — nada rodou): com valor/prazo
+    // novo na mesma resposta vira a NOVA PROPOSTA de verdade; sem isso, a equipe é avisada (nota + push) pra rodar à mão ou corrigir com o cliente.
+    let simulateFinal = simulate;
+    const { prometeuNovaAnaliseNoTexto } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    if (!simulate && !runAnalysis && !runBanks.length && prometeuNovaAnaliseNoTexto(reply)) {
+      const num = (v: unknown) => Number(String(v ?? '').replace(/[^\d.,]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')) || 0;
+      const valor = Math.round(num(extractedFields?.valor_credito));
+      const prazo = Math.round(num(String(extractedFields?.prazo_financ ?? '').match(/\d+/)?.[0]));
+      if (valor > 0 || prazo > 0) simulateFinal = { ...(valor > 0 ? { valor } : {}), ...(prazo > 0 ? { prazo } : {}) };
+      else {
+        await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A IA disse ao cliente que vai rodar a análise de novo, mas não pediu nenhuma análise: "${reply.slice(0, 200)}". Rode à mão ou corrija com o cliente.` } }).catch(() => {});
+        const quem = (await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } }))?.name || 'Cliente';
+        (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `⚠️ ${quem}: IA prometeu rodar de novo`, body: 'O CRM não pediu a análise. Rode à mão ou corrija com o cliente.', leadId }).catch(() => {});
+      }
+    }
+
     // Mover etapa / marcar Perdido / preencher dados do card — independente
     // do handoff (pode marcar Perdido no mesmo turno em que encerra, por ex.).
     // chooseBank/caixaPedido/caixaRota sozinhos também aplicam (Fabio 01/11: a rota da CAIXA não chegava aqui).
-    if (moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulate || chooseBank || caixaPedido || caixaRota || (extractedFields && Object.keys(extractedFields).length)) {
-      await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, resumeOn, markLost, stopFollowUp, extractedFields, runAnalysis, runBanks, sendSimulation, sendApproval, simulate, chooseBank, caixaPedido, caixaRota }, io);
+    if (moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulateFinal || chooseBank || caixaPedido || caixaRota || (extractedFields && Object.keys(extractedFields).length)) {
+      await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, resumeOn, markLost, stopFollowUp, extractedFields, runAnalysis, runBanks, sendSimulation, sendApproval, simulate: simulateFinal, chooseBank, caixaPedido, caixaRota }, io);
     }
 
     // Cliente quer ligação num horário: abre o popup pra equipe confirmar se

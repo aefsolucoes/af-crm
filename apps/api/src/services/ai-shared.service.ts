@@ -814,6 +814,49 @@ export async function applyAiExtractedActions(
       } catch (e: any) { console.error('[IA] agendar retomada (Venda Futura) falhou:', e?.message); }
     }
 
+    // Preencher dados extraídos da conversa — só chaves conhecidas
+    // (buildFillableFieldsText), nunca sobrescreve com vazio. Vem ANTES das análises (Fabio 06/11, Déborah): a nova proposta roda com os valores que o cliente acabou de dar.
+    if (action.extractedFields && Object.keys(action.extractedFields).length) {
+      const patch: Record<string, string> = {};
+      for (const [k, v] of Object.entries(action.extractedFields)) {
+        if (v === undefined || v === null) continue;
+        const raw = String(v).trim();
+        if (!raw) continue;
+        const parsed = NUMBER_FIELD_KEYS.has(k) ? parseMoneyOrNumber(raw) : raw;
+        if (parsed !== null && parsed !== '') patch[k] = parsed;
+      }
+      if (Object.keys(patch).length) {
+        // Lido de novo: as ações acima (Perdido, etapa, Venda Futura) também gravam no customFields — a cópia do início apagaria o que elas gravaram.
+        const atual = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
+        const customFields = { ...((atual?.customFields as any) || (lead.customFields as any) || {}), ...patch };
+        // Nome do card era número/emoji e o cliente disse como se chama:
+        // corrige o nome do card e do contato também (Fabio 08/10).
+        const renomear = patch.participante_1 && isCallableName(patch.participante_1) && !isCallableName(lead.name);
+        await prisma.lead.update({ where: { id: lead.id }, data: { customFields, ...(renomear ? { name: normalizeClientName(patch.participante_1) } : {}) } });
+        // O card aberto na tela relê (Déborah 06/11: o banco já tinha R$ 150 mil e a tela seguia com R$ 200 mil até recarregar).
+        if (io) io.to(`lead:${lead.id}`).emit('lead_updated', { leadId: lead.id });
+        // O cliente corrigiu o TROCO (Fabio 21/10): o valor do crédito (saldo + troco) é ajustado e a análise refeita se já tinha rodado no valor antigo.
+        if (patch.troco && Number(patch.troco) > 0 && String(patch.troco) !== String(((lead.customFields as any) || {}).troco ?? '')) {
+          (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).aplicarTrocoCorrigido(accountId, lead.id, Number(patch.troco), io as any).catch((e: any) => console.error('[Troco] ajuste do crédito:', e?.message));
+        }
+        // Cadastro divergente (Fabio 23/10): o cliente corrigiu nome/CPF/nascimento depois da pergunta → refaz a análise em TODOS os bancos com os dados certos.
+        (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).cadastroCorrigido(accountId, lead.id, Object.keys(patch), io as any).catch((e: any) => console.error('[Cadastro divergente] refazer análise:', e?.message));
+        // Restrição no nome (CAIXA, Fabio 01/11): o cliente respondeu à orientação Serasa/SCPC/protesto.
+        if (patch.ocorrencias_cliente) (require('./caixa-ocorrencias.service') as typeof import('./caixa-ocorrencias.service')).ocorrenciasRespondidas(accountId, lead.id, patch).catch((e: any) => console.error('[Ocorrências] resposta:', e?.message));
+        // Renda do casal (Fabio 01/11): o cliente disse se só um compõe a renda.
+        if (patch.renda_composicao) (require('./renda-casal.service') as typeof import('./renda-casal.service')).rendaCasalRespondida(accountId, lead.id, patch).catch((e: any) => console.error('[Renda do casal] resposta:', e?.message));
+        if (renomear && lead.contactId) {
+          await prisma.contact.update({ where: { id: lead.contactId }, data: { name: normalizeClientName(patch.participante_1) } }).catch(() => {});
+          await prisma.note.create({ data: { leadId: lead.id, type: 'DATA_EDIT', content: `🤖 Nome do card corrigido pela IA: "${lead.name}" → "${normalizeClientName(patch.participante_1)}" (o cliente informou o nome).` } }).catch(() => {});
+          if (io) io.to(`account_${accountId}`).emit("new_conversation", { leadId: lead.id });
+        }
+        logActivity({
+          accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited',
+          leadId: lead.id, leadName: lead.name, summary: `preencheu dados do card a partir da conversa (${Object.keys(patch).join(', ')})`,
+        });
+      }
+    }
+
     // Rodar a análise de crédito (a IA pediu): só com a "Análise automática" ligada, sem pausa geral e card em Pré-Análise.
     if (action.runAnalysis) {
       try {
@@ -920,44 +963,6 @@ export async function applyAiExtractedActions(
       } catch (e: any) { console.error('[IA] pedir PDF da simulação falhou:', e?.message); }
     }
 
-    // Preencher dados extraídos da conversa — só chaves conhecidas
-    // (buildFillableFieldsText), nunca sobrescreve com vazio.
-    if (action.extractedFields && Object.keys(action.extractedFields).length) {
-      const patch: Record<string, string> = {};
-      for (const [k, v] of Object.entries(action.extractedFields)) {
-        if (v === undefined || v === null) continue;
-        const raw = String(v).trim();
-        if (!raw) continue;
-        const parsed = NUMBER_FIELD_KEYS.has(k) ? parseMoneyOrNumber(raw) : raw;
-        if (parsed !== null && parsed !== '') patch[k] = parsed;
-      }
-      if (Object.keys(patch).length) {
-        const customFields = { ...((lead.customFields as any) || {}), ...patch };
-        // Nome do card era número/emoji e o cliente disse como se chama:
-        // corrige o nome do card e do contato também (Fabio 08/10).
-        const renomear = patch.participante_1 && isCallableName(patch.participante_1) && !isCallableName(lead.name);
-        await prisma.lead.update({ where: { id: lead.id }, data: { customFields, ...(renomear ? { name: normalizeClientName(patch.participante_1) } : {}) } });
-        // O cliente corrigiu o TROCO (Fabio 21/10): o valor do crédito (saldo + troco) é ajustado e a análise refeita se já tinha rodado no valor antigo.
-        if (patch.troco && Number(patch.troco) > 0 && String(patch.troco) !== String(((lead.customFields as any) || {}).troco ?? '')) {
-          (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).aplicarTrocoCorrigido(accountId, lead.id, Number(patch.troco), io as any).catch((e: any) => console.error('[Troco] ajuste do crédito:', e?.message));
-        }
-        // Cadastro divergente (Fabio 23/10): o cliente corrigiu nome/CPF/nascimento depois da pergunta → refaz a análise em TODOS os bancos com os dados certos.
-        (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).cadastroCorrigido(accountId, lead.id, Object.keys(patch), io as any).catch((e: any) => console.error('[Cadastro divergente] refazer análise:', e?.message));
-        // Restrição no nome (CAIXA, Fabio 01/11): o cliente respondeu à orientação Serasa/SCPC/protesto.
-        if (patch.ocorrencias_cliente) (require('./caixa-ocorrencias.service') as typeof import('./caixa-ocorrencias.service')).ocorrenciasRespondidas(accountId, lead.id, patch).catch((e: any) => console.error('[Ocorrências] resposta:', e?.message));
-        // Renda do casal (Fabio 01/11): o cliente disse se só um compõe a renda.
-        if (patch.renda_composicao) (require('./renda-casal.service') as typeof import('./renda-casal.service')).rendaCasalRespondida(accountId, lead.id, patch).catch((e: any) => console.error('[Renda do casal] resposta:', e?.message));
-        if (renomear && lead.contactId) {
-          await prisma.contact.update({ where: { id: lead.contactId }, data: { name: normalizeClientName(patch.participante_1) } }).catch(() => {});
-          await prisma.note.create({ data: { leadId: lead.id, type: 'DATA_EDIT', content: `🤖 Nome do card corrigido pela IA: "${lead.name}" → "${normalizeClientName(patch.participante_1)}" (o cliente informou o nome).` } }).catch(() => {});
-          if (io) io.to(`account_${accountId}`).emit("new_conversation", { leadId: lead.id });
-        }
-        logActivity({
-          accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited',
-          leadId: lead.id, leadName: lead.name, summary: `preencheu dados do card a partir da conversa (${Object.keys(patch).join(', ')})`,
-        });
-      }
-    }
   } catch (err) {
     console.error('[AI] Erro ao aplicar ações extraídas (mover etapa/preencher campos):', err);
   }

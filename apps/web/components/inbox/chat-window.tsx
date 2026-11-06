@@ -978,6 +978,13 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
       if (id === leadId) setAiActive(active);
     });
 
+    // O servidor mexeu no card (IA preencheu valores, conferência de documentos, aviso…): o painel da direita relê — antes ficava com o
+    // valor velho até recarregar (Fabio 06/11, Déborah: R$ 200 mil na tela, R$ 150 mil no banco).
+    const onLeadUpdated = ({ leadId: id }: { leadId: string }) => {
+      if (id === leadId) queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+    };
+    socket.on('lead_updated', onLeadUpdated);
+
     // Menu de mensagem estilo WhatsApp — apagar/reagir/fixar/favoritar,
     // vindo da própria ação (outra aba) ou do cliente (reação/apagar dele).
     socket.on('message_deleted', ({ id }: { id: string }) => {
@@ -1013,6 +1020,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
       socket.off('new_message');
       socket.off('message_status');
       socket.off('lead_ai_toggled');
+      socket.off('lead_updated', onLeadUpdated);
       socket.off('message_deleted');
       socket.off('message_reaction');
       socket.off('message_pinned');
