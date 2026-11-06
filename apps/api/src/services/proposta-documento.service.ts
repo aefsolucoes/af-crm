@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { sexoPeloNome } from './sexo-pelo-nome';
 
 /**
  * PROPOSTA MONTADA COM OS DOCUMENTOS (Fabio 02/11: "sim" — automatizar). Cliente do Home Equity que não consegue preencher a proposta: a IA oferece
@@ -106,7 +107,7 @@ function juntar(st: Estado, cf: Cf, contato: { email?: string | null; telefone?:
   // Endereço do imóvel dito pelo cliente e DIFERENTE do comprovante vale mais que um "é o mesmo endereço" (Francisco 02/11: mora em Goiânia, o imóvel é no Ceará).
   const cepDe = (e: any) => String(e?.cep || '').replace(/\D/g, '');
   const outroLugar = !!imEnd && !!end && ((cepDe(imEnd) && cepDe(end) && cepDe(imEnd).slice(0, 5) !== cepDe(end).slice(0, 5)) || (imEnd.cidade && end.cidade && norm(imEnd.cidade) !== norm(end.cidade)));
-  const sexo = String(id.sexo || '').toUpperCase();
+  const sexo = String(id.sexo || sexoPeloNome(id.nome || cf.participante_1) || '').toUpperCase(); // documento sem sexo: pelo nome (Fabio 06/11)
   const quitado = r.quitado || (num(cf.saldo_devedor) > 0 ? 'Não' : '');
   return {
     nome: id.nome || cf.participante_1 || '', cpf: id.cpf || cf.cpf_1 || '', nascimento: id.nascimento || cf.nascimento_1 || '',

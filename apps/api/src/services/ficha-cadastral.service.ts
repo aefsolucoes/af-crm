@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { logActivity } from './activity.service';
 import { comRegrasCaixa, regrasRendaCaixa } from './caixa-cr016';
+import { sexoPeloNome } from './sexo-pelo-nome';
 
 /* FICHA DE CADASTRO (Fabio 29/10): "os dados devem vir dos documentos do cliente, o CRM deve gravar esses dados do cadastro em anotações para puxar de lá as
  * informações que deverá colocar no cadastro, ela puxa esses dados da pasta do cliente no Drive". Base do cadastro dos participantes na CAIXA (Caixa Aqui:
@@ -381,6 +382,8 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     const ficha = await chamarIA(juntaComCr016, [{ type: 'text', text: `Hoje é ${hoje()} (documento de 2026 não é "data futura").\nUSA FGTS: ${usaFgts ? 'sim' : 'não'}\n\nPARTICIPANTES DO CARD:\n${JSON.stringify(participantesCard)}\n\nLEITURAS DOS DOCUMENTOS:\n${JSON.stringify(pessoais).slice(0, 180_000)}` }], 16000);
     if (!ficha || !Array.isArray(ficha.participantes) || !ficha.participantes.length) return 'Não consegui montar a ficha com as leituras';
     rendaDeSocio(ficha.participantes, pessoais);
+    // Documento sem sexo (RG antigo/CNH não trazem): pelo primeiro nome (Fabio 06/11).
+    for (const p of ficha.participantes) if (!/^[MF]$/.test(String(p?.sexo || ''))) { const s = sexoPeloNome(p?.nome); if (s) p.sexo = s; }
     await completarSocios(ficha.participantes).catch((e) => console.error('[Ficha cadastral] sócio:', e?.message));
 
     const agora = new Date();

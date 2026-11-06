@@ -3,6 +3,7 @@ import path from 'path';
 import { PDFArray, PDFDict, PDFDocument, PDFName, StandardFonts, rgb } from 'pdf-lib';
 import JSZip from 'jszip';
 import { aplicarOps, fmtCpf } from './santander-forms';
+import { sexoPeloNome } from './sexo-pelo-nome';
 
 /**
  * Formulários da vistoria do Santander no FINANCIAMENTO (aquisição) — Fabio 30/10: "são 3 formulários, todos deverão ser preenchidos; os 2 em PDF vão ao cliente pra assinar pelo gov.br,
@@ -150,7 +151,7 @@ const perfilRenda = (p: PessoaFicha) => {
 
 /** Bloco de uma pessoa com os índices dos parágrafos do modelo. Pura. */
 function blocoPessoa(t: (i: number, s: unknown) => boolean, m: (i: number, n: number) => void, p: PessoaFicha, ix: Record<string, number>, faltando: string[], quem: string) {
-  const sexo = norm(p.sexo);
+  const sexo = norm(p.sexo || sexoPeloNome(p.nome)); // documento sem sexo: pelo nome (Fabio 06/11)
   if (ix.sexo !== undefined) { if (sexo.startsWith('f')) m(ix.sexo, 0); else if (sexo.startsWith('m')) m(ix.sexo, 1); else faltando.push(`sexo ${quem}`); }
   if (ix.profissao !== undefined && !t(ix.profissao, p.profissao || p.trabalho?.cargo)) faltando.push(`profissão ${quem}`);
   if (ix.cargo !== undefined) t(ix.cargo, p.trabalho?.cargo);

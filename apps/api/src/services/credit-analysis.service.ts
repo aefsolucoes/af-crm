@@ -1,5 +1,6 @@
 import type { PrismaClient, Prisma } from '@prisma/client';
 import { whyNotRun } from './credit-not-run';
+import { sexoPeloNome } from './sexo-pelo-nome';
 
 /**
  * Aba "Análise de Crédito" (Fabio 14/10). As extensões do Chrome dele (Inter,
@@ -911,9 +912,22 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (becameFinal && !updated.dryRun) await finishProposalChange(db, updated.leadId).catch((e: any) => console.error('[IA] nova proposta com outro prazo/valor:', e?.message));
   if (becameFinal) await noteVerdictFlip(db, updated as any).catch((e: any) => console.error('[Mudança de resultado]', e?.message || e));
   await flagCertidaoRecusada(db, updated as any).catch((e: any) => console.error('[Certidão recusada]', e?.message || e));
+  if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL') && (row.bank === 'INTER' || row.bank === FH_INTER_BANK)) await avisarSexoInter(db, updated as any).catch((e: any) => console.error('[Sexo Inter]', e?.message || e));
   if (becameFinal && !updated.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL')) await reabrirSeAprovouDepoisDaNegativa(db, updated as any).catch((e: any) => console.error('[Reabrir ao aprovar]', e?.message || e));
   await santanderManualFlow(db, updated as any).catch((e: any) => console.error('[Santander manual]', e?.message || e));
   return { row: updated, becameFinal };
+}
+
+/** Sexo no Inter (Fabio 06/11, Josiane "Cônjuge" como Masculino): a simulação do portal não tem campo de sexo e o Inter grava TODO proponente como Masculino.
+ *  Só dá pra corrigir no "Formulário de cadastro" (etapa 3). Quando aprova, o card diz quem é Feminino pelo nome (sexoPeloNome) — uma vez por proposta. */
+async function avisarSexoInter(db: Db, row: { leadId: string; bank: string; detail?: string | null; holderName?: string | null; proposalNumber?: string | null }): Promise<void> {
+  const det = String(row.detail || '');
+  const nomes = [parseHolder(det) || row.holderName || '', /2[ºo°] participante:\s*([^).;|\n]+)/i.exec(det)?.[1] || ''].map((n) => n.trim()).filter((n) => n.length >= 3);
+  const mulheres = Array.from(new Set(nomes.filter((n) => sexoPeloNome(n) === 'F')));
+  if (!mulheres.length) return;
+  const conteudo = `⚠️ Inter${row.proposalNumber ? ` (proposta nº ${row.proposalNumber})` : ''}: o portal grava todo proponente como MASCULINO (a simulação não tem campo de sexo). No Formulário de cadastro (etapa 3), marque FEMININO para: ${mulheres.join(', ')}.`;
+  const ja = await db.note.findFirst({ where: { leadId: row.leadId, content: conteudo }, select: { id: true } });
+  if (!ja) await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: conteudo } });
 }
 
 /** QUEM foi analisado (nome e CPF do participante do card), pelo CPF gravado, senão pelo nome do titular da análise (nome mais parecido — ver whichParticipant),

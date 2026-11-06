@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { PDFArray, PDFDict, PDFDocument, PDFName } from 'pdf-lib';
 import JSZip from 'jszip';
+import { generoPeloNome } from './sexo-pelo-nome';
 
 /**
  * Formulários da vistoria do Santander (Fabio 21/10): a vistoria sai por e-mail e leva DOIS anexos que o CRM preenche:
@@ -143,7 +144,7 @@ export function dadosWebCasas(cf: Record<string, any>, campos: Record<string, st
 
   // Comprador (o cabeçalho do modelo não tem linha de nome/CPF: vai no parágrafo vazio logo abaixo)
   t(3, `Nome: ${titulo(p1.nome)}    CPF: ${p1.cpf}`);
-  const genero = norm(campos['Gênero']);
+  const genero = norm(campos['Gênero'] || generoPeloNome(p1.nome)); // sem gênero na proposta: pelo nome (Fabio 06/11)
   if (genero.startsWith('fem')) m(4, 0); else if (genero.startsWith('masc')) m(4, 1); else faltando.push('sexo do comprador');
   const cargo = campos['Cargo / Profissão'] || campos['Profissão'] || '';
   const perfil = /empres|s[oó]cio|propriet/i.test(cargo) ? 'empresário' : /aut[oô]nom|liberal|mei\b/i.test(cargo) ? 'autônomo' : cargo ? 'assalariado' : '';
