@@ -215,7 +215,7 @@ function documentosDaEquipe(cf: Record<string, any>): Arquivo[] {
     .map((d: any) => ({ id: String(d.id), name: String(d.nome || 'documento'), mimeType: String(d.mimeType), path: 'EQUIPE', size: 0 }));
 }
 
-export async function anexarDocumentosEquipe(accountId: string, leadId: string, arquivos: { nome: string; mimeType: string; base64: string }[], userId: string | null): Promise<{ erro: string } | { anexados: string[] }> {
+export async function anexarDocumentosEquipe(accountId: string, leadId: string, arquivos: { nome: string; mimeType: string; base64: string }[], userId: string | null): Promise<{ erro: string } | { anexados: string[]; links: (string | null)[] }> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true } });
   if (!lead) return { erro: 'Lead não encontrado' };
   const validos = arquivos.filter((a) => /pdf|^image\//.test(String(a?.mimeType || '')) && a?.base64);
@@ -225,21 +225,21 @@ export async function anexarDocumentosEquipe(accountId: string, leadId: string, 
   if (!conn?.refreshToken || !pai) return { erro: 'Google Drive não conectado' };
   const google = await import('./google.service');
   const pasta = await google.createFolder(accountId, 'DOCUMENTOS SEM PASTA', pai);
-  const novos: { id: string; nome: string; mimeType: string; em: string }[] = [];
+  const novos: { id: string; nome: string; mimeType: string; em: string; link: string | null }[] = [];
   for (const a of validos) {
     const data = Buffer.from(a.base64, 'base64');
     if (data.length < 500) continue;
     const nome = `${lead.name} - ${String(a.nome || 'documento').replace(/[\\/]/g, '-')}`.slice(0, 180);
     const up = await google.uploadFile(accountId, { name: nome, mimeType: a.mimeType, parentId: pasta.id, data });
-    novos.push({ id: up.id, nome: String(a.nome || 'documento'), mimeType: a.mimeType, em: new Date().toISOString() });
+    novos.push({ id: up.id, nome: String(a.nome || 'documento'), mimeType: a.mimeType, em: new Date().toISOString(), link: up.webViewLink });
   }
   if (!novos.length) return { erro: 'Arquivos vazios' };
   // Relê na hora de gravar (corrida no customFields).
   const fresh = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
   const antes = Array.isArray(fresh._documentosEquipe) ? fresh._documentosEquipe : [];
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _documentosEquipe: [...antes, ...novos] } as any } });
-  await prisma.note.create({ data: { leadId, ...(userId ? { userId } : {}), type: 'COMMENT', content: `📎 Documentos anexados pela equipe (sem pasta nem conversa), lidos pela ficha de cadastro: ${novos.map((n) => n.nome).join('; ')}.` } }).catch(() => {});
-  return { anexados: novos.map((n) => n.nome) };
+  await prisma.note.create({ data: { leadId, ...(userId ? { userId } : {}), type: 'COMMENT', content: `📎 Documentos anexados pela equipe (sem pasta nem conversa):\n${novos.map((n) => `• ${n.nome}${n.link ? ` — ${n.link}` : ''}`).join('\n')}` } }).catch(() => {});
+  return { anexados: novos.map((n) => n.nome), links: novos.map((n) => n.link) };
 }
 
 /** Lê UM documento pessoal (RG/CNH/comprovante…) que o cliente mandou na conversa, pelo arquivo no Drive — usado pela proposta montada com os documentos (proposta-documento.service). */
