@@ -80,7 +80,7 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
 // resposta") — nunca envia nada sozinha, só devolve o texto pro balão; quem
 // manda é o colaborador, depois de revisar. Ver ai-reply-suggestion.service.ts.
 router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
-  const { leadId, auto } = req.body as { leadId?: string; auto?: boolean };
+  const { leadId, auto, testeEsforco } = req.body as { leadId?: string; auto?: boolean; testeEsforco?: string };
   if (!leadId) {
     res.status(400).json({ error: 'leadId obrigatório' });
     return;
@@ -88,7 +88,12 @@ router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
   // Fabio 20/10: a sugestão só sai no CLIQUE do botão. Telas antigas ainda abertas disparavam `auto: true` a cada mensagem do cliente — agora o servidor ignora (não chama a IA).
   if (auto === true) { res.json({ suggestion: null }); return; }
   try {
-    const result = await generateReplySuggestion(req.user!.accountId, leadId);
+    // testeEsforco (Fabio 06/11): só admin — 'normal' | 'low' | 'medium' | 'high'. A tela nunca manda; serve pra comparar tempo/texto do raciocínio.
+    const teste = req.user!.role === 'ADMIN' && typeof testeEsforco === 'string' && ['normal', 'low', 'medium', 'high'].includes(testeEsforco)
+      ? { esforco: testeEsforco as 'normal' | 'low' | 'medium' | 'high' } : undefined;
+    const t0 = Date.now();
+    const result = await generateReplySuggestion(req.user!.accountId, leadId, teste);
+    if (teste) { res.status(result ? 200 : 422).json({ ...(result || { suggestion: null }), ms: Date.now() - t0, esforco: testeEsforco }); return; }
     if (!result) {
       res.status(422).json({ error: 'Não consegui gerar uma sugestão agora (sem histórico de conversa, IA indisponível ou a resposta saiu fora do formato) — tente de novo.' });
       return;

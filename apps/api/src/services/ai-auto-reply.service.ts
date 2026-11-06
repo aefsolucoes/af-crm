@@ -535,7 +535,8 @@ export async function generateAiAutoReply(
   // só não fica quieta (sempre escreve), não grava nada no card e as ações do JSON não são aplicadas por quem chama.
   // botaoSugerir (Fabio 06/11, "sugerir resposta continua lento"): só o botão "Sugerir resposta" — o texto vai pra alguém da equipe revisar, então não espera a leitura nova
   // dos bancos e para de gerar quando o texto termina (ver abaixo). Os outros usos do modo sugestão (retorno combinado, IA religada) MANDAM ao cliente e seguem como antes.
-  opts: { sugestao?: boolean; botaoSugerir?: boolean } = {},
+  // esforco: só no TESTE do admin (Fabio 06/11, "Sim, testar") — pede menos raciocínio ao modelo (output_config.effort) pra comparar tempo e texto; sem ele, nada muda.
+  opts: { sugestao?: boolean; botaoSugerir?: boolean; esforco?: 'normal' | 'low' | 'medium' | 'high' } = {},
 ): Promise<AiAutoReplyResult | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !incomingText.trim()) return null;
@@ -601,7 +602,8 @@ export async function generateAiAutoReply(
       // Pergunta de status: pede leitura NOVA nos bancos (extensão) e espera até ~2 min; depois monta o bloco com o que está mais recente.
       // No botão "Sugerir resposta" não espera (Fabio 06/11): ficava até 2 min girando sempre que a última mensagem do cliente falava de proposta/crédito/banco/parcela — a
       // sugestão usa a última leitura salva; o pedido de leitura nova sai igual e vale pro próximo clique/resposta.
-      medir('leituraBancos', refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText, ...(opts.botaoSugerir ? { maxWaitMs: 0 } : {}) }).catch(() => null)),
+      // No teste de esforço não pede leitura nova (vários cliques seguidos não podem encher a fila das extensões); o contexto é o mesmo (o botão já não espera).
+      opts.esforco ? Promise.resolve(null) : medir('leituraBancos', refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText, ...(opts.botaoSugerir ? { maxWaitMs: 0 } : {}) }).catch(() => null)),
     ]);
     if (!ctx) return null;
 
@@ -720,6 +722,7 @@ ${conversasPorTelefone}` : ''}`;
           // vinha VAZIA (cliente ficava sem resposta, achado 2026-09-25).
           max_tokens: 4096,
           ...(semCorte ? {} : { stop_sequences: ['"noReply"'] }),
+          ...(opts.esforco && opts.esforco !== 'normal' ? { output_config: { effort: opts.esforco } } : {}),
           system: cachedSystem(systemFixed, systemDynamic),
           messages: [{
             role: 'user',
@@ -734,7 +737,7 @@ ${conversasPorTelefone}` : ''}`;
       });
       if (!response.ok) {
         console.error('[AI Auto-reply] Erro Anthropic:', response.status, (await response.text()).slice(0, 300));
-        if (!semCorte && tentativa === 0) { semCorte = true; continue; }
+        if (!semCorte && tentativa === 0 && !opts.esforco) { semCorte = true; continue; }
         return null;
       }
       const data = await response.json() as { content: { type: string; text?: string }[]; stop_reason?: string; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } };
@@ -797,7 +800,7 @@ ${conversasPorTelefone}` : ''}`;
     return null;
   } finally {
     const total = Date.now() - tIni;
-    if (opts.botaoSugerir || total > 15_000) console.log(`[AI Tempo] ${opts.botaoSugerir ? 'sugestão (botão)' : opts.sugestao ? 'mensagem automática (modo sugestão)' : 'resposta automática'} ${leadId}: total=${total}ms | ${tempos.join(' ')}`);
+    if (opts.botaoSugerir || total > 15_000) console.log(`[AI Tempo] ${opts.botaoSugerir ? 'sugestão (botão)' : opts.sugestao ? 'mensagem automática (modo sugestão)' : 'resposta automática'}${opts.esforco ? ` [teste esforço=${opts.esforco}]` : ''} ${leadId}: total=${total}ms | ${tempos.join(' ')}`);
   }
 }
 
