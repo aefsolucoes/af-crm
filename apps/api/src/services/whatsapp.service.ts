@@ -1638,7 +1638,7 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     if (await imageWithoutContext(leadId)) { console.log(`[IA] ${leadId}: imagem sem texto nem contexto — espera o cliente perguntar`); return; }
 
     const latestInbound = () => prisma.message.findFirst({
-      where: { leadId, direction: 'INBOUND' }, orderBy: { createdAt: 'desc' }, select: { id: true, externalId: true },
+      where: { leadId, direction: 'INBOUND' }, orderBy: { createdAt: 'desc' }, select: { id: true, externalId: true, createdAt: true },
     });
     const mine = await latestInbound();
     // Confirmação solta ("ok", "beleza") normalmente não tem resposta — sem
@@ -1693,6 +1693,10 @@ async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incom
     // repetindo a mesma coisa).
     const newest = await latestInbound();
     if (mine && newest && newest.id !== mine.id) return;
+    // IA desligada ou a EQUIPE respondeu enquanto a resposta era gerada (Fabio 05/11, Diego: ele desligou a IA, mandou a mensagem dele e 4 s depois saiu a da IA): descarta.
+    const aindaLigada = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
+    if (!aindaLigada?.aiAutoReplyActive || (aindaLigada.customFields as any)?._autoPaused) { console.log(`[IA] ${leadId}: IA desligada durante a geração — resposta descartada`); return; }
+    if (mine && (await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', sentByUserId: { not: null }, createdAt: { gt: mine.createdAt } }, select: { id: true } }))) { console.log(`[IA] ${leadId}: a equipe respondeu durante a geração — resposta descartada`); return; }
     const { reply, handoff, moveToStage, markLost, stopFollowUp, moveReason, resumeOn, extractedFields, runAnalysis, sendSimulation, sendApproval, simulate, chooseBank, caixaPedido, caixaRota } = genResult;
     // Banco que a IA marcou pra rodar + rede de segurança (Fabio 26/10): banco citado como "em análise" no texto que vai ao cliente também roda (só os que nunca rodaram — requestBankRunForAi confere).
     const { bancosEmAnaliseNoTexto } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
