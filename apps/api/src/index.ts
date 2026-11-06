@@ -330,6 +330,13 @@ httpServer.listen(PORT, () => {
     setInterval(() => { processLearningReview(io).catch((err) => console.error('[Aprendizado] Poll:', err?.message)); }, 10 * 60 * 1000);
   }, 6 * 60 * 1000);
 
+  // Gênero dos participantes (Fabio 06/11): "Gênero"/"Gênero 2" vazios ganham Feminino/Masculino pela proposta ou pelo primeiro nome (nunca por cima da equipe).
+  setTimeout(() => {
+    const varrer = () => (require('./services/genero.service') as typeof import('./services/genero.service')).varrerGenero(io as any).catch((err: any) => console.error('[Gênero] Poll:', err?.message));
+    varrer();
+    setInterval(varrer, 10 * 60 * 1000);
+  }, 5 * 60 * 1000);
+
   // Finalidade do imóvel (Fabio 06/11): card mexido com a Finalidade vazia ganha Residencial/Apartamento/Terreno/Construção/Comercial/Sala/Loja/Galpão pela proposta e documentos.
   setTimeout(() => {
     const varrer = () => (require('./services/finalidade-imovel.service') as typeof import('./services/finalidade-imovel.service')).varrerFinalidade(io as any).catch((err: any) => console.error('[Finalidade] Poll:', err?.message));

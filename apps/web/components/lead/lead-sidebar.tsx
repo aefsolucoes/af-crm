@@ -452,6 +452,8 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
               { key: 'telefone_1',    label: 'Telefone' },
               { key: 'cpf_1',         label: 'CPF' },
               { key: 'nascimento_1',  label: 'Nascimento', type: undefined },
+              // Gênero de cada participante (Fabio 06/11): vai pra ficha da CAIXA, Santander e Credimorar; vazio, o CRM preenche pelo primeiro nome.
+              { key: 'genero_1',      label: 'Gênero', type: 'select', options: ['Feminino', 'Masculino'] },
               { key: 'renda_1',       label: 'Renda' },
               { key: 'email_1',       label: 'E-mail' },
               { key: 'vinculo_1',     label: 'Tipo de vínculo', type: 'select', options: VINCULO_OPTS },
@@ -459,6 +461,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
               { key: 'telefone_2',    label: 'Telefone 2' },
               { key: 'cpf_2',         label: 'CPF 2' },
               { key: 'nascimento_2',  label: 'Nascimento 2' },
+              { key: 'genero_2',      label: 'Gênero 2', type: 'select', options: ['Feminino', 'Masculino'] },
               { key: 'renda_2',       label: 'Renda 2' },
               { key: 'email_2',       label: 'E-mail 2' },
               { key: 'vinculo_2',     label: 'Tipo de vínculo 2', type: 'select', options: VINCULO_OPTS },
