@@ -34,6 +34,7 @@ const FIELD_MAP: { labels: string[]; key: string; kind: 'text' | 'number' | 'dat
   { labels: ['celular', 'whatsapp', 'telefone'], key: 'telefone_1', kind: 'text' },
   { labels: ['renda bruta'], key: 'renda_1', kind: 'number' },
   { labels: ['perfil de renda'], key: 'vinculo_1', kind: 'text' },
+  { labels: ['genero', 'sexo'], key: 'genero_1', kind: 'text' },
   { labels: ['valor do imovel (garantia)', 'valor do imovel', 'valor de compra e venda'], key: 'valor_imovel', kind: 'number' },
   { labels: ['credito desejado', 'valor financiado'], key: 'valor_credito', kind: 'number' },
   { labels: ['valor de entrada', 'entrada / fgts', 'entrada'], key: 'valor_entrada', kind: 'number' },

@@ -169,6 +169,7 @@ async function main() {
     { tab: 'Principal', name: 'Renda 2', key: 'renda_2', type: 'NUMBER' as const, options: [], order: 9 },
     { tab: 'Principal', name: 'E-mail 2', key: 'email_2', type: 'EMAIL' as const, options: [], order: 10 },
     { tab: 'Principal', name: 'Tipo de vínculo 2', key: 'vinculo_2', type: 'TEXT' as const, options: [], order: 11 },
+    { tab: 'Principal', name: 'Gênero', key: 'genero_1', type: 'TEXT' as const, options: [], order: 13 },
     // "Pasta Drive" (key pasta_drive) removido — duplicava "Pasta no Drive"
     // (key link_pasta_drive), o campo que o assistente/agente de verdade
     // lê e escreve (ver DRIVE_LINK_FIELD_KEY em routes/ai.ts). Consolidado
