@@ -136,6 +136,37 @@ export async function finalizeCallMessage(waCallId: string, status: string, dura
   }
 }
 
+/** Atendeu: o card da ligação na conversa troca "Chamando…" por "Em ligação" (Fabio 06/11). Só mexe em quem ainda está tocando — nunca
+ *  desfaz um resultado final que já chegou. */
+export async function markCallMessageConnected(waCallId: string, io: any, accountId: string, leadId: string | null): Promise<void> {
+  try {
+    const { count } = await prisma.message.updateMany({ where: { callWaCallId: waCallId, callStatus: { in: ['RINGING', 'CONNECTING'] } }, data: { callStatus: 'CONNECTED' } });
+    if (count > 0 && io) {
+      const payload = { waCallId, callStatus: 'CONNECTED', callDurationSec: 0 };
+      if (leadId) io.to(`lead:${leadId}`).emit('call_message_updated', payload);
+      io.to(`account_${accountId}`).emit('call_message_updated', payload);
+    }
+  } catch (err) {
+    console.error('[Calling] Falha ao marcar a ligação como em andamento:', err);
+  }
+}
+
+/** Ligação conversada que ficou como "perdida" (o aviso de encerramento da Meta chegava DEPOIS do botão Desligar do CRM e trocava ENDED →
+ *  MISSED — a da Fernanda de 06/11, 1min46 de conversa, aparecia "Ligação de voz perdida"). Volta pra encerrada com a duração. Idempotente. */
+export async function repairHungUpCallsMarkedMissed(): Promise<number> {
+  const calls = await prisma.call.findMany({ where: { status: 'MISSED', connectedAt: { not: null }, endedAt: { not: null } }, select: { id: true, waCallId: true, connectedAt: true, endedAt: true } });
+  for (const c of calls) {
+    const sec = Math.max(0, Math.round((c.endedAt!.getTime() - c.connectedAt!.getTime()) / 1000));
+    await prisma.call.update({ where: { id: c.id }, data: { status: 'ENDED' } });
+    await prisma.message.updateMany({
+      where: { callWaCallId: c.waCallId },
+      data: { callStatus: 'ENDED', callDurationSec: sec, content: sec > 0 ? `📞 Ligação de voz — ${formatCallDuration(sec)}` : '📞 Ligação de voz encerrada' },
+    });
+  }
+  if (calls.length) console.log(`[Calling] ${calls.length} ligação(ões) conversada(s) que estavam como "perdida" voltaram pra encerrada`);
+  return calls.length;
+}
+
 /** Inbound: estabelece a mídia antes de formalizar a atendida (opcional, mas
  *  recomendado pela Meta pra reduzir o tempo até o áudio conectar). Recebe o
  *  config já resolvido (não accountId/departmentId) — o Call já sabe exatamente
@@ -436,6 +467,7 @@ async function handleOutboundCallStatus(st: any, io: any): Promise<void> {
   const existing = await prisma.call.findUnique({ where: { waCallId } });
   if (!existing || existing.direction !== 'OUTBOUND' || existing.status === 'CONNECTED') return;
   await prisma.call.update({ where: { waCallId }, data: { status: 'CONNECTED', connectedAt: new Date() } });
+  await markCallMessageConnected(waCallId, io, existing.accountId, existing.leadId);
 
   if (handleAiCallAccepted(waCallId)) return;
   if (existing.answeredByUserId) io.to(`user_${existing.answeredByUserId}`).emit('call_accepted', { waCallId });
@@ -545,8 +577,16 @@ export async function processIncomingWhatsAppCall(body: any, accountId: string, 
       if (event === 'terminate') {
         const existing = await prisma.call.findUnique({ where: { waCallId } });
         if (!existing) continue; // encerrou algo que não rastreamos (ex.: chamada de teste anterior a este deploy)
+        console.log(`[Calling] terminate ${waCallId.slice(-12)} ${existing.direction} estava=${existing.status}:`, JSON.stringify({ status: call.status, duration: call.duration, reason: call.termination_reason, errors: call.errors }));
 
-        const wasConnected = existing.status === 'CONNECTED';
+        // Já finalizada pelo próprio CRM (Desligar/Recusar): o aviso da Meta só confirma. Antes ele trocava a "encerrada" por "perdida"
+        // (status ENDED ≠ CONNECTED) — e numa RECEBIDA ainda disparava o "vi sua ligação, te ligo em 20 min" pro cliente.
+        if (['ENDED', 'MISSED', 'REJECTED', 'FAILED'].includes(existing.status)) {
+          handleAiCallEnded(waCallId);
+          continue;
+        }
+
+        const wasConnected = existing.status === 'CONNECTED' || !!existing.connectedAt;
         const endReason = (call.status || call.termination_reason || 'terminated') as string;
         const updated = await prisma.call.update({
           where: { waCallId },

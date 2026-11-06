@@ -25,7 +25,7 @@ interface CallRecord {
 const STATUS_LABEL: Record<CallRecord['status'], string> = {
   RINGING: 'Chamando…',
   CONNECTING: 'Conectando…',
-  CONNECTED: 'Em andamento',
+  CONNECTED: 'Em ligação',
   ENDED: 'Atendida',
   MISSED: 'Perdida',
   REJECTED: 'Recusada',

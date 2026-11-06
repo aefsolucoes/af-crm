@@ -7,7 +7,7 @@ import { validate } from '../middleware/validate';
 import {
   preAcceptCall, acceptCall, rejectCall, terminateCall,
   connectCall, getCallPermissionState, sendCallPermissionRequest, pickRealPhone,
-  createCallMessage, finalizeCallMessage, cancelCallPush,
+  createCallMessage, finalizeCallMessage, cancelCallPush, markCallMessageConnected,
 } from '../services/whatsapp-calling.service';
 import { getWhatsAppConfig, normalizeBrazilianWhatsAppPhone } from '../services/whatsapp.service';
 import { startAiCall } from '../services/ai-call-bridge.service';
@@ -71,19 +71,22 @@ router.post('/:waCallId/accept', validate(sdpSchema), async (req: AuthRequest, r
   const result = await acceptCall(call.whatsappConfig, call.waCallId, req.body.sdpAnswer);
   if (!result.ok) return res.status(502).json({ error: result.json?.error?.message || 'Falha ao atender a ligação' });
 
-  const updated = await prisma.call.update({
-    where: { id: call.id },
+  // Só se ainda não terminou: o aviso de encerramento da Meta pode chegar durante esta requisição — sem a condição, a ligação "ressuscitava"
+  // como em andamento pra sempre.
+  await prisma.call.updateMany({
+    where: { id: call.id, status: { in: ['RINGING', 'CONNECTING'] } },
     data: { status: 'CONNECTED', connectedAt: new Date(), answeredByUserId: req.user!.id },
   });
 
   const io = (req as any).app.get('io');
+  await markCallMessageConnected(call.waCallId, io, req.user!.accountId, call.leadId);
   io.to(`account_${req.user!.accountId}`).emit('call_answered_by', {
     waCallId: call.waCallId,
     byUserId: req.user!.id,
     byUserName: (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name,
   });
 
-  res.json({ ok: true, callId: updated.id });
+  res.json({ ok: true, callId: call.id });
 });
 
 // POST /api/calls/:waCallId/reject

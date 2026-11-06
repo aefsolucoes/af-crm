@@ -5,7 +5,7 @@ import { Phone, PhoneOff } from 'lucide-react';
 import { getSocket } from '@/lib/socket';
 import api from '@/lib/api';
 import { ActiveCallBar } from '@/components/ui/active-call-bar';
-import { waitForIceGatheringComplete } from '@/lib/webrtc';
+import { waitForIceGatheringComplete, remoteStreamFrom, sendCallDiag } from '@/lib/webrtc';
 import { playTone, SoundKey } from '@/lib/sounds';
 import { startCallRecording } from '@/lib/call-recorder';
 import { closeCallNotifications } from '@/lib/call-notifications';
@@ -43,6 +43,7 @@ export function IncomingCallRinger() {
   const stopRecordingRef = useRef<(() => void) | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
   const acceptSentRef = useRef(false);
+  const diagTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ringToneRef = useRef<{ ctx: AudioContext; stop: () => void } | null>(null);
 
   const current = queue[0] || null;
@@ -80,6 +81,7 @@ export function IncomingCallRinger() {
   }, [current, active, startRingtone, stopRingtone]);
 
   const cleanupPeerConnection = useCallback(() => {
+    if (diagTimerRef.current) { clearInterval(diagTimerRef.current); diagTimerRef.current = null; }
     pcRef.current?.close();
     pcRef.current = null;
     stopRecordingRef.current?.();
@@ -165,23 +167,38 @@ export function IncomingCallRinger() {
       pcRef.current = pc;
 
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+      const diag = (tag: string) => sendCallDiag(pcRef.current, call.waCallId, audioElRef.current, tag, 'in');
+      // "Atendeu e ficou mudo" (Fabio 06/11): o <audio> dependia só do autoPlay e ficava vazio quando a Meta manda a faixa sem stream.
+      // Agora toca na mão (igual à ligação que o CRM faz) e o resultado vai pro diagnóstico.
       pc.ontrack = (event) => {
-        remoteStreamRef.current = event.streams[0] || null;
-        if (audioElRef.current) audioElRef.current.srcObject = event.streams[0];
+        const stream = remoteStreamFrom(event);
+        remoteStreamRef.current = stream;
+        const el = audioElRef.current;
+        if (el) {
+          el.srcObject = stream;
+          el.play().then(() => diag('play-ok'), (err) => diag(`play-falhou: ${err?.name || err}`));
+        }
       };
+      // O "atender" precisa levar EXATAMENTE o mesmo SDP do "pré-atender" (regra da Meta). Antes ia o pc.localDescription do momento,
+      // que já podia ter candidatos novos juntados depois — a ligação das 16h00 de 06/11 caiu 0,1 s depois de atendida.
+      let resolvePreAccepted: (sdp: string) => void = () => {};
+      const preAccepted = new Promise<string>((resolve) => { resolvePreAccepted = resolve; });
       pc.oniceconnectionstatechange = () => console.log('[Calling] iceConnectionState:', pc.iceConnectionState);
       pc.onconnectionstatechange = () => {
         console.log('[Calling] connectionState:', pc.connectionState);
+        if (pc.connectionState !== 'connected') diag(`conn-${pc.connectionState}`);
         if (pc.connectionState === 'connected' && !acceptSentRef.current) {
           acceptSentRef.current = true;
-          api.post(`/api/calls/${call.waCallId}/accept`, { sdpAnswer: pc.localDescription?.sdp })
+          preAccepted
+            .then((sdpAnswer) => api.post(`/api/calls/${call.waCallId}/accept`, { sdpAnswer }))
             .then(() => {
+              diag('accept-ok');
               if (localStreamRef.current && remoteStreamRef.current && !stopRecordingRef.current) {
                 stopRecordingRef.current = startCallRecording(localStreamRef.current, remoteStreamRef.current, call.waCallId);
               }
               setActive((a) => (a?.call.waCallId === call.waCallId ? { ...a, stage: 'connected', connectedAt: Date.now() } : a));
             })
-            .catch((err) => { console.error('[Calling] Falha ao confirmar accept:', err); endActiveCall(call.waCallId); });
+            .catch((err) => { console.error('[Calling] Falha ao confirmar accept:', err); diag(`accept-falhou: ${err?.response?.data?.error || err?.message || err}`); endActiveCall(call.waCallId); });
         }
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
           endActiveCall(call.waCallId);
@@ -195,9 +212,13 @@ export function IncomingCallRinger() {
       // Espera juntar TODOS os candidatos ICE antes de mandar o SDP pra Meta
       // — ver comentário em waitForIceGatheringComplete.
       await waitForIceGatheringComplete(pc);
-      const localSdp = pc.localDescription?.sdp || answerSdp.sdp;
+      const localSdp = pc.localDescription?.sdp || answerSdp.sdp || '';
 
       await api.post(`/api/calls/${call.waCallId}/pre-accept`, { sdpAnswer: localSdp });
+      resolvePreAccepted(localSdp);
+      diag('pre-accept-ok');
+      if (diagTimerRef.current) clearInterval(diagTimerRef.current);
+      diagTimerRef.current = setInterval(() => diag('tick'), 5000);
     } catch (err) {
       console.error('[Calling] Falha ao atender:', err);
       cleanupPeerConnection();

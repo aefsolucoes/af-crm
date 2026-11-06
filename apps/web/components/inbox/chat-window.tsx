@@ -1854,7 +1854,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                 const isFinal = status !== 'RINGING' && status !== 'CONNECTING' && status !== 'CONNECTED';
                 const isBad = status === 'MISSED' || status === 'REJECTED' || status === 'FAILED';
                 const label = !isFinal
-                  ? 'Chamando…'
+                  ? (status === 'CONNECTED' ? 'Em ligação' : 'Chamando…') // atendeu → "Em ligação" (Fabio 06/11)
                   : status === 'MISSED' ? 'Perdida'
                   : status === 'REJECTED' ? 'Recusada'
                   : status === 'FAILED' ? 'Falhou'

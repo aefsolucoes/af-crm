@@ -330,6 +330,11 @@ httpServer.listen(PORT, () => {
     setInterval(() => { processLearningReview(io).catch((err) => console.error('[Aprendizado] Poll:', err?.message)); }, 10 * 60 * 1000);
   }, 6 * 60 * 1000);
 
+  // Ligação conversada que ficou como "perdida" (desligar pelo CRM + aviso atrasado da Meta, Fabio 06/11): volta pra encerrada com a duração.
+  setTimeout(() => {
+    (require('./services/whatsapp-calling.service') as typeof import('./services/whatsapp-calling.service')).repairHungUpCallsMarkedMissed().catch((err: any) => console.error('[Calling] Reparo:', err?.message));
+  }, 60 * 1000);
+
   // Gênero dos participantes (Fabio 06/11): "Gênero"/"Gênero 2" vazios ganham Feminino/Masculino pela proposta ou pelo primeiro nome (nunca por cima da equipe).
   setTimeout(() => {
     const varrer = () => (require('./services/genero.service') as typeof import('./services/genero.service')).varrerGenero(io as any).catch((err: any) => console.error('[Gênero] Poll:', err?.message));
