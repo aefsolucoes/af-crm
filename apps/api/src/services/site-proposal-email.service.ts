@@ -21,7 +21,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 
 /** Remetentes de formulário do site — nunca são "o cliente" (não entram na
  *  regra de lembrar remetente da caixa de e-mail). */
-export const SITE_FORM_SENDERS = new Set(['submissions@formsubmit.co', 'notify@web3forms.com']);
+export const SITE_FORM_SENDERS = new Set(['submissions@formsubmit.co', 'notify@web3forms.com', 'site@aefsolucoesfinanceiras.com.br']); // site@ = função /api/enviar-email do site (Resend), que substituiu o FormSubmit em 05/11
 
 const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
