@@ -90,7 +90,7 @@ router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
   try {
     // testeEsforco (Fabio 06/11): só admin — 'normal' | 'low' | 'medium' | 'high'. A tela nunca manda; serve pra comparar tempo/texto do raciocínio.
     const teste = req.user!.role === 'ADMIN' && typeof testeEsforco === 'string' && ['normal', 'low', 'medium', 'high'].includes(testeEsforco)
-      ? { esforco: testeEsforco as 'normal' | 'low' | 'medium' | 'high' } : undefined;
+      ? (testeEsforco === 'normal' ? {} : { esforco: testeEsforco as 'low' | 'medium' | 'high' }) : undefined;
     const t0 = Date.now();
     const result = await generateReplySuggestion(req.user!.accountId, leadId, teste);
     if (teste) { res.status(result ? 200 : 422).json({ ...(result || { suggestion: null }), ms: Date.now() - t0, esforco: testeEsforco }); return; }

@@ -535,8 +535,10 @@ export async function generateAiAutoReply(
   // só não fica quieta (sempre escreve), não grava nada no card e as ações do JSON não são aplicadas por quem chama.
   // botaoSugerir (Fabio 06/11, "sugerir resposta continua lento"): só o botão "Sugerir resposta" — o texto vai pra alguém da equipe revisar, então não espera a leitura nova
   // dos bancos e para de gerar quando o texto termina (ver abaixo). Os outros usos do modo sugestão (retorno combinado, IA religada) MANDAM ao cliente e seguem como antes.
-  // esforco: só no TESTE do admin (Fabio 06/11, "Sim, testar") — pede menos raciocínio ao modelo (output_config.effort) pra comparar tempo e texto; sem ele, nada muda.
-  opts: { sugestao?: boolean; botaoSugerir?: boolean; esforco?: 'normal' | 'low' | 'medium' | 'high' } = {},
+  // esforco: quanto o modelo raciocina antes de escrever (output_config.effort). Sem ele = o padrão do modelo (a resposta automática ao cliente segue assim).
+  // O botão "Sugerir resposta" usa 'low' (Fabio 06/11, "Sim, colocar": no teste em 5 conversas reais caiu de ~18,5 s pra ~3,4 s, texto parecido, e sumiram as falhas
+  // em que a IA pensava até o limite e não escrevia nada). teste = comparação do admin pela API (não pede leitura nova dos bancos nem repete a chamada se a API recusar).
+  opts: { sugestao?: boolean; botaoSugerir?: boolean; esforco?: 'low' | 'medium' | 'high'; teste?: boolean } = {},
 ): Promise<AiAutoReplyResult | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !incomingText.trim()) return null;
@@ -603,7 +605,7 @@ export async function generateAiAutoReply(
       // No botão "Sugerir resposta" não espera (Fabio 06/11): ficava até 2 min girando sempre que a última mensagem do cliente falava de proposta/crédito/banco/parcela — a
       // sugestão usa a última leitura salva; o pedido de leitura nova sai igual e vale pro próximo clique/resposta.
       // No teste de esforço não pede leitura nova (vários cliques seguidos não podem encher a fila das extensões); o contexto é o mesmo (o botão já não espera).
-      opts.esforco ? Promise.resolve(null) : medir('leituraBancos', refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText, ...(opts.botaoSugerir ? { maxWaitMs: 0 } : {}) }).catch(() => null)),
+      opts.teste ? Promise.resolve(null) : medir('leituraBancos', refreshAnalysesForAi(prisma, { accountId, leadId, text: incomingText, ...(opts.botaoSugerir ? { maxWaitMs: 0 } : {}) }).catch(() => null)),
     ]);
     if (!ctx) return null;
 
@@ -722,7 +724,7 @@ ${conversasPorTelefone}` : ''}`;
           // vinha VAZIA (cliente ficava sem resposta, achado 2026-09-25).
           max_tokens: 4096,
           ...(semCorte ? {} : { stop_sequences: ['"noReply"'] }),
-          ...(opts.esforco && opts.esforco !== 'normal' ? { output_config: { effort: opts.esforco } } : {}),
+          ...(opts.esforco ? { output_config: { effort: opts.esforco } } : {}),
           system: cachedSystem(systemFixed, systemDynamic),
           messages: [{
             role: 'user',
@@ -737,7 +739,7 @@ ${conversasPorTelefone}` : ''}`;
       });
       if (!response.ok) {
         console.error('[AI Auto-reply] Erro Anthropic:', response.status, (await response.text()).slice(0, 300));
-        if (!semCorte && tentativa === 0 && !opts.esforco) { semCorte = true; continue; }
+        if (!semCorte && tentativa === 0 && !opts.teste) { semCorte = true; continue; }
         return null;
       }
       const data = await response.json() as { content: { type: string; text?: string }[]; stop_reason?: string; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } };
@@ -751,6 +753,9 @@ ${conversasPorTelefone}` : ''}`;
       if (cortado && /^\{\s*"reply"\s*:\s*""\s*,?\s*$/.test(raw)) { result = { reply: '', noReply: true, handoff: false }; break; }
       const r = parseReply(cortado ? `${raw.replace(/,\s*$/, '')}}` : raw); // cortado termina em `{"reply": "…",` — fecha o JSON
       if (!r.formatError && !(r.reply && pareceRaciocinio(r.reply))) { result = r; break; }
+      // Botão (Fabio 06/11, "Sim, colocar"): ~1 em 4 vezes a IA escreve só a mensagem, sem o JSON — antes isso virava uma 2ª chamada inteira (+5 a 11 s, custo em dobro).
+      // No botão o texto passa pela revisão de alguém da equipe, então a mensagem solta serve, se tiver cara de mensagem ao cliente (ver textoSoltoServe).
+      if (opts.botaoSugerir && r.formatError && textoSoltoServe(raw)) { result = { reply: stripOpeningInterjection(raw.trim()), handoff: false }; tempos.push('textoSolto'); break; }
       if (cortado) semCorte = true;
       rawFalho = raw;
       console.warn('[AI Auto-reply] resposta fora do formato/raciocínio — tentativa', tentativa + 1, raw.slice(0, 200));
@@ -800,7 +805,7 @@ ${conversasPorTelefone}` : ''}`;
     return null;
   } finally {
     const total = Date.now() - tIni;
-    if (opts.botaoSugerir || total > 15_000) console.log(`[AI Tempo] ${opts.botaoSugerir ? 'sugestão (botão)' : opts.sugestao ? 'mensagem automática (modo sugestão)' : 'resposta automática'}${opts.esforco ? ` [teste esforço=${opts.esforco}]` : ''} ${leadId}: total=${total}ms | ${tempos.join(' ')}`);
+    if (opts.botaoSugerir || total > 15_000) console.log(`[AI Tempo] ${opts.botaoSugerir ? 'sugestão (botão)' : opts.sugestao ? 'mensagem automática (modo sugestão)' : 'resposta automática'}${opts.esforco || opts.teste ? ` [${opts.teste ? 'teste ' : ''}esforço=${opts.esforco || 'normal'}]` : ''} ${leadId}: total=${total}ms | ${tempos.join(' ')}`);
   }
 }
 
@@ -923,6 +928,18 @@ export function stripApprovalClaims(text: string): string {
     .replace(/^\s+/, '')
     .replace(/\n{3,}/g, '\n\n');
   return out.trim() ? out.charAt(0).toUpperCase() + out.slice(1) : text;
+}
+
+/** Mensagem solta (sem o JSON) que o botão "Sugerir resposta" pode aproveitar (Fabio 06/11). Só texto com cara de mensagem ao cliente: sem pedaço de JSON, sem
+ *  raciocínio da IA, sem orientação ao vendedor e sem marca do histórico ("(áudio) …", "[…]", "Cliente: …"). Nunca usado na resposta automática. Pura (testável). */
+export function textoSoltoServe(raw: string): boolean {
+  const t = String(raw || '').trim();
+  if (t.length < 2 || t.length > 1500) return false;
+  if (/[{}]|"reply"|"noReply"|```/.test(t)) return false;
+  if (/^[([]/.test(t) || /^(cliente|vendedor|ia|equipe|atendente)\s*:/im.test(t)) return false;
+  const { pareceRaciocinio } = require('./ai-shared.service') as typeof import('./ai-shared.service');
+  const { pareceOrientacaoAoVendedor } = require('./ai-reply-suggestion.service') as typeof import('./ai-reply-suggestion.service');
+  return !pareceRaciocinio(t) && !pareceOrientacaoAoVendedor(t);
 }
 
 function parseReply(raw: string): AiAutoReplyResult {

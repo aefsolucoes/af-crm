@@ -64,8 +64,8 @@ export function parseSuggestion(raw: string): string | null {
  *  da conversa + Base de Conhecimento + Respostas Rápidas do setor do lead
  *  (mesmo material que o auto-reply usa). Retorna null se faltar configuração,
  *  não houver histórico, ou algo der errado. */
-// teste (Fabio 06/11, "Sim, testar"): só o admin, pela API — compara o raciocínio normal com um mais curto (esforco). Sem ele, nada muda.
-export async function generateReplySuggestion(accountId: string, leadId: string, teste?: { esforco: 'normal' | 'low' | 'medium' | 'high' }): Promise<ReplySuggestion | null> {
+// Raciocínio curto ('low') por padrão no botão (Fabio 06/11, "Sim, colocar"). teste = comparação do admin pela API (esforco sem valor = o padrão do modelo).
+export async function generateReplySuggestion(accountId: string, leadId: string, teste?: { esforco?: 'low' | 'medium' | 'high' }): Promise<ReplySuggestion | null> {
   // MESMO CÉREBRO da IA da conversa (Fabio 03/11: "essa IA de sugerir resposta seja a mesma da conversa, pra que ela tenha ciência de tudo que está acontecendo com esse cliente"):
   // a sugestão sai do generateAiAutoReply em modo sugestão — mesmas regras, Base, estado do card, análises, documentos, e-mails do processo. O caminho antigo fica de reserva.
   try {
@@ -77,7 +77,7 @@ export async function generateReplySuggestion(accountId: string, leadId: string,
       ? rajada.reverse().join('\n')
       : '[O cliente não escreveu nada depois da nossa última mensagem. A equipe quer mandar a próxima mensagem agora: sugira a melhor mensagem pra seguir com este cliente, de acordo com a conversa e o momento do card.]';
     const { generateAiAutoReply } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
-    const r = await generateAiAutoReply(accountId, leadId, texto, [], { sugestao: true, botaoSugerir: true, ...(teste ? { esforco: teste.esforco } : {}) });
+    const r = await generateAiAutoReply(accountId, leadId, texto, [], { sugestao: true, botaoSugerir: true, ...(teste ? { teste: true, ...(teste.esforco ? { esforco: teste.esforco } : {}) } : { esforco: 'low' as const }) });
     if (r?.reply?.trim()) return { suggestion: stripOpeningInterjection(r.reply.trim()) };
     if (teste) return null; // no teste não cai na sugestão clássica (misturaria os tempos)
     console.warn(`[AI Suggest-reply] ${leadId}: o motor da conversa não devolveu texto — usando a sugestão clássica`);
