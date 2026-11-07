@@ -382,7 +382,9 @@ export async function aiCardState(leadId: string): Promise<string> {
   if (revs.length || protegidos) {
     const ok = Array.from(new Set(revs.filter((r) => r.resultado !== 'PROBLEMA').map((r) => String(r.tipo)))).slice(0, 14);
     const prob = Array.from(new Set(revs.filter((r) => r.resultado === 'PROBLEMA').map((r) => String(r.tipo)))).slice(0, 8);
-    partes.push(`DOCUMENTOS (conferência da IA): recebidos e OK: ${ok.join(', ') || 'nenhum'}.${prob.length ? ` Com problema: ${prob.join(', ')}.` : ''}${protegidos ? ` Arquivos protegidos por senha aguardando verificação: ${protegidos}.` : ''}${cf._rendaDispensada ? ' Renda dispensada neste card (caso específico).' : ''} Não peça de novo o que já está "recebido e OK".`);
+    // Reenviado com o MESMO problema (Fabio 07/11): o CRM não pede de novo — a equipe confere na Documentação Recebida.
+    const ressalvas = Array.from(new Set(((Array.isArray(cf._docRessalvas) ? cf._docRessalvas : []) as { doc?: string }[]).map((r) => String(r.doc || '')).filter(Boolean))).slice(0, 6);
+    partes.push(`DOCUMENTOS (conferência da IA): recebidos e OK: ${ok.join(', ') || 'nenhum'}.${prob.length ? ` Com problema: ${prob.join(', ')}.` : ''}${ressalvas.length ? ` O cliente REENVIOU com o mesmo problema: ${ressalvas.join(', ')} — NÃO peça esse documento de novo (a equipe confere na Documentação Recebida).` : ''}${protegidos ? ` Arquivos protegidos por senha aguardando verificação: ${protegidos}.` : ''}${cf._rendaDispensada ? ' Renda dispensada neste card (caso específico).' : ''} Não peça de novo o que já está "recebido e OK".`);
   }
 
   // Saldo devedor real acima do limite (Fabio 05/11, Fernanda Karita): a IA não pode dizer que o crédito segue aprovado.

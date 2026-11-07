@@ -36,6 +36,82 @@ function norm(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
 
+// ─── Mesmo erro reenviado (Fabio 07/11) ─────────────────────────────────────────────────────────────────────────────────────────────
+// "No caso de vir certidão de matrícula errada ou cortada ou algo assim, e o cliente mandar novamente, não solicitar novamente se vier com o mesmo erro" + "vou colocar um
+// colaborador para conferir quando a documentação for para Documentação Recebida". A IA descreve o mesmo erro com outras palavras em cada arquivo, então a comparação é por
+// FAMÍLIA do documento e CATEGORIA do erro, não pelo texto. Mesmo erro reenviado = não pede de novo, vira ressalva (`_docRessalvas`) e deixa de segurar o card.
+
+const semAcento = (s: string) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+/** Família do documento: a certidão reenviada pode vir com outro rótulo (MATRÍCULA ↔ CERTIDÃO DE ÔNUS ↔ INTEIRO TEOR). RG/CNH ficam por pessoa. Pura. */
+export function familiaDoc(doc: string): string {
+  const n = semAcento(doc).toUpperCase();
+  const titular = (/\(([^)]*)\)/.exec(n)?.[1] || '').replace(/[^A-Z ]/g, ' ').trim().split(/\s+/).slice(0, 2).join(' ');
+  const base = n.replace(/\([^)]*\)/g, ' ').replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/\bMATRICULA\b|\bONUS\b|INTEIRO TEOR/.test(base)) return 'MATRICULA';
+  if (/^ESCRITURA\b/.test(base)) return 'ESCRITURA';
+  if (/IPTU|CADASTRO IMOBILIARIO|INSCRICAO IMOBILIARIA/.test(base)) return 'IPTU';
+  if (/^(RG|CNH|CIN|CARTEIRA DE IDENTIDADE|DOCUMENTO DE IDENTIDADE|IDENTIDADE)\b/.test(base)) return `ID:${titular}`;
+  return `${base.split(' ').slice(0, 2).join(' ')}${titular ? `:${titular}` : ''}`;
+}
+
+const CATEGORIAS_ERRO: [string, RegExp][] = [
+  ['CORTADO', /cortad|incomplet|pela metade|falt(a|am|ou|aram|ando)\b[^.;]{0,50}\b(folha|pagina|parte|verso|frente|capa|lado|final|inicio|continuacao)|comeca e termina no meio|termina no meio|comeca no meio|folhas? (anterior|seguinte)|todas as (folhas|paginas)|so (a frente|o verso|um lado)|sem (o )?verso|sem a (frente|capa)|chegou so/],
+  ['ILEGIVEL', /ilegivel|borrad|desfocad|escur|tremid|reflexo|baixa (qualidade|resolucao)|nao (da|consigo|deu) (pra |para )?(ler|enxergar)|sem nitidez|pouco nitid/],
+  ['ANTIGO', /antig|desatualizad|vencid|validade|emitid[ao] ha mais|mais de \d+ dias|ultimos \d+ dias|mais recente|atualizad/],
+  ['OUTRA_PESSOA', /nome d[eao] outr|outra pessoa|nao e (do|da) (cliente|participante|titular)|titular diferente|nao e participante/],
+  ['OUTRO_IMOVEL', /outro imovel|imovel diferente|endereco diferente|matricula diferente|numero diferente/],
+  ['DOC_ERRADO', /nao e (a|o|uma|um) (certidao|matricula|documento|iptu|escritura)|documento errado|em vez d|no lugar d|outro documento/],
+  ['FORMATO', /\bpdf\b|print|captura de tela|foto da tela/],
+];
+
+/** Categorias do erro pelas palavras (sem categoria = o próprio texto normalizado, aí só o texto igual conta como mesmo erro). Pura. */
+export function categoriasDoErro(textos: string[]): string[] {
+  const t = semAcento(textos.join(' ')).toLowerCase().replace(/\s+/g, ' ').trim();
+  const cats = CATEGORIAS_ERRO.filter(([, rx]) => rx.test(t)).map(([c]) => c);
+  return cats.length ? cats : [t.slice(0, 120)];
+}
+
+/** Chave de um problema já dito ao cliente (`_docProblemsTold`): "DOC:texto1/texto2" sem acento, em maiúsculas. */
+export const chaveProblema = (p: { doc: string; texto: string[] }) => semAcento(`${p.doc}:${p.texto.join('/')}`).toUpperCase().replace(/\s+/g, ' ');
+
+export type DocRessalva = { doc: string; fam: string; cats: string[]; texto: string; at: string };
+
+/** Problemas atuais que são o MESMO erro de um já dito e que o cliente REENVIOU (arquivo da mesma família lido nesta rodada, depois do aviso). Pura.
+ *  `reenviados`: rótulos (TIPO (Titular)) dos arquivos lidos agora com problema e a hora em que chegaram; `toldAt`: quando cada chave foi dita (chave antiga sem hora = dita antes). */
+export function mesmoErroReenviado(
+  problemas: { doc: string; texto: string[] }[],
+  reenviados: { doc: string; at: Date }[],
+  ditos: string[],
+  toldAt: Record<string, string> = {},
+): { doc: string; texto: string[]; cats: string[] }[] {
+  const out: { doc: string; texto: string[]; cats: string[] }[] = [];
+  for (const p of problemas) {
+    const fam = familiaDoc(p.doc);
+    const cats = categoriasDoErro(p.texto);
+    const novosDaFamilia = reenviados.filter((r) => familiaDoc(r.doc) === fam);
+    if (!novosDaFamilia.length) continue; // o cliente não reenviou nada desta família nesta rodada: segue como hoje
+    const mesmo = ditos.some((k) => {
+      const i = k.indexOf(':');
+      if (i < 0 || familiaDoc(k.slice(0, i)) !== fam) return false;
+      const quando = toldAt[k] ? new Date(toldAt[k]).getTime() : 0;
+      if (quando && !novosDaFamilia.some((r) => r.at.getTime() > quando)) return false; // o arquivo novo chegou ANTES do aviso: não é reenvio
+      const catsDito = categoriasDoErro([k.slice(i + 1)]);
+      return catsDito.some((c) => cats.includes(c));
+    });
+    if (mesmo) out.push({ ...p, cats });
+  }
+  return out;
+}
+
+/** O problema já virou ressalva (mesmo erro reenviado antes): não segura o card nem é pedido de novo. Pura. */
+export function cobertoPorRessalva(p: { doc: string; texto: string[] }, ressalvas: DocRessalva[]): boolean {
+  if (!ressalvas.length) return false;
+  const fam = familiaDoc(p.doc);
+  const cats = categoriasDoErro(p.texto);
+  return ressalvas.some((r) => r.fam === fam && r.cats.some((c) => cats.includes(c)));
+}
+
 /** Etapas em que a conferência roda: Aguardando Documentação e, pra quem PEDIU a CAIXA, a Pré-Análise (Fabio 01/11: "O CADASTRO NA CAIXA DEVE OCORRER EM PRÉ-ANÁLISE AINDA" —
  *  o card volta pra lá e a documentação da CAIXA é conferida antes da análise dela; caixa-screening.entrarRotaCaixa). */
 export function etapaConfere(stageName: string, cf: Record<string, any>): boolean {
@@ -506,12 +582,38 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   const faltando = verdict && !verdict.complete ? verdict.faltando : [];
   const faltaTxt = faltando.length ? `\n\nAinda falta mandar:\n${faltando.map((f) => `• ${f}`).join('\n')}` : '';
 
+  // MESMO ERRO REENVIADO (Fabio 07/11): o cliente mandou de novo o documento da mesma família com o mesmo tipo de erro (certidão cortada de novo…) → não pede outra vez;
+  // vira ressalva pro colaborador conferir em Documentação Recebida e deixa de segurar o card (nesta e nas próximas conferências).
+  let ressalvasAtivas: { doc: string; texto: string[] }[] = [];
+  if (review?.problemas.length) {
+    const freshR0 = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cfR0 = (freshR0?.customFields || {}) as Record<string, any>;
+    const ressalvas: DocRessalva[] = Array.isArray(cfR0._docRessalvas) ? cfR0._docRessalvas : [];
+    const novasProb = review.novas.filter((n) => n.r.resultado === 'PROBLEMA');
+    const ids = novasProb.map((n) => n.attId).filter((x): x is string => !!x);
+    const horas = ids.length ? await prisma.messageAttachment.findMany({ where: { id: { in: ids } }, select: { id: true, createdAt: true } }) : [];
+    const reenviados = novasProb.map((n) => ({ doc: n.r.titular ? `${n.r.tipo} (${n.r.titular})` : n.r.tipo, at: horas.find((h) => h.id === n.attId)?.createdAt || new Date() }));
+    const ditos0: string[] = Array.isArray(cfR0._docProblemsTold) ? cfR0._docProblemsTold : [];
+    const repetidos = mesmoErroReenviado(review.problemas.filter((p) => !cobertoPorRessalva(p, ressalvas)), reenviados, ditos0, (cfR0._docProblemsToldAt || {}) as Record<string, string>);
+    if (repetidos.length) {
+      const agora = new Date().toISOString();
+      const novasR: DocRessalva[] = repetidos.map((p) => ({ doc: p.doc, fam: familiaDoc(p.doc), cats: p.cats, texto: p.texto.join('; '), at: agora }));
+      // Só a chave (jsonb_set): regravar o card inteiro apaga o que outro processo gravou no meio (corrida no customFields, 29/10).
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docRessalvas}', ${JSON.stringify([...ressalvas, ...novasR])}::jsonb, true) WHERE id = ${leadId}`;
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Conferir em Documentação Recebida: ${repetidos.map((p) => `${p.doc} reenviado com o mesmo problema (${p.texto.join('; ')})`).join(' | ')}. O CRM não pediu de novo ao cliente e esse documento não segura mais a documentação.` } }).catch(() => {});
+      console.log(`[Docs] ${lead.name} (${leadId}): mesmo erro reenviado — ${repetidos.map((p) => p.doc).join(', ')} virou ressalva`);
+      ressalvas.push(...novasR);
+    }
+    ressalvasAtivas = review.problemas.filter((p) => cobertoPorRessalva(p, ressalvas));
+    if (ressalvasAtivas.length) review.problemas = review.problemas.filter((p) => !cobertoPorRessalva(p, ressalvas));
+  }
+
   if (review?.problemas.length) {
     // Um aviso só, e CADA problema é dito UMA vez (Fabio 21/10, Luiz: a IA repetiu "me mande a matrícula e a capa do IPTU" 3 vezes — texto velho de um documento que não serve — depois de ele já ter mandado). O que já foi dito
     // não volta; o card continua parado esperando o cliente (ou o que ainda falta é cobrado pelo caminho normal abaixo).
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const cf = (fresh?.customFields || {}) as Record<string, any>;
-    const chave = (p: { doc: string; texto: string[] }) => `${p.doc}:${p.texto.join('/')}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ');
+    const chave = chaveProblema;
     const ditos = new Set<string>(Array.isArray(cf._docProblemsTold) ? cf._docProblemsTold : []);
     const novos = review.problemas.filter((p) => !ditos.has(chave(p)));
     if (novos.length || opts.force) {
@@ -519,7 +621,11 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       const texto = `${buildDocProblemsMessage({ ...review, problemas: alvo }).replace(/\n\nAssim que você reenviar, eu confiro de novo!$/, '')}${faltaTxt}\n\nAssim que você mandar, eu confiro de novo!`;
       const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
       // "Já dito" só quando SAIU (Fabio 05/11): com a IA desligada, ao religar a conferência avisa (retomarComIa).
-      if (sent.success) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docProblemsTold}', ${JSON.stringify(Array.from(new Set([...ditos, ...alvo.map(chave)])))}::jsonb, true) WHERE id = ${leadId}`;
+      // Com a hora de cada aviso (`_docProblemsToldAt`): o "mesmo erro reenviado" só conta arquivo que chegou DEPOIS do aviso (Fabio 07/11).
+      if (sent.success) {
+        const quando = Object.fromEntries(alvo.map((p) => [chave(p), new Date().toISOString()]));
+        await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docProblemsTold}', ${JSON.stringify(Array.from(new Set([...ditos, ...alvo.map(chave)])))}::jsonb, true), '{_docProblemsToldAt}', COALESCE("customFields"->'_docProblemsToldAt', '{}'::jsonb) || ${JSON.stringify(quando)}::jsonb, true) WHERE id = ${leadId}`;
+      }
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA achou problema em documento: ${alvo.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}.${faltando.length ? ` Ainda falta: ${faltando.join('; ')}.` : ''} ${sent.success ? 'Cliente avisado do que corrigir.' : lead.aiAutoReplyActive ? 'O aviso ao cliente não saiu.' : 'IA desligada: avise o cliente.'}` } }).catch(() => {});
     }
     return !!lead.aiAutoReplyActive;
@@ -611,6 +717,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
         `🤖 A IA conferiu a documentação (lista "${verdict.listaUsada || '?'}") e considerou completa:`,
         receivedText,
         '',
+        ...(ressalvasAtivas.length ? ['', `⚠️ CONFERIR (o cliente reenviou com o mesmo problema e o CRM não pediu de novo — Fabio 07/11): ${ressalvasAtivas.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}`] : []),
         ...(verdict.emitir.length ? ['', `⚠️ A&F precisa EMITIR (o cliente autorizou; custo de R$ 40 a R$ 100 pra ele): ${verdict.emitir.join('; ')} — pelo endereço completo com CEP (conferir com o da proposta) ou pelo número da matrícula.`] : []),
         '',
         `Card movido para "${moved.pipelineName}" (${moved.stageName}).${sent.success ? ' Cliente avisado de que o banco pode pedir algum documento a mais.' : lead.aiAutoReplyActive ? '' : ' Cliente NÃO foi avisado automaticamente (IA desligada no card) — avise pela conversa.'}`,
@@ -656,7 +763,8 @@ export async function conferirDocumentosAgora(accountId: string, leadId: string,
     // Só a chave (Fabio 03/11): regravar o card inteiro apagava o que outro processo gravou no meio — inclusive a correção que a equipe fez no painel de documentos (corrida no customFields, 29/10).
     if (verdict.complete) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) - '_docsFaltando' WHERE id = ${leadId}`;
     else if (verdict.faltando.length) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsFaltando}', ${JSON.stringify(verdict.faltando.join('; '))}::jsonb, true) WHERE id = ${leadId}`;
-    const problemas = (review?.problemas || []).map((p) => `${p.doc} — ${p.texto.join('; ')}`);
+    const ressalvasCard: DocRessalva[] = Array.isArray(cf._docRessalvas) ? cf._docRessalvas : [];
+    const problemas = (review?.problemas || []).map((p) => `${p.doc} — ${p.texto.join('; ')}${cobertoPorRessalva(p, ressalvasCard) ? ' (reenviado com o mesmo problema: o CRM não pede de novo — conferir)' : ''}`);
     const duvidas = (review?.duvidas || []).map((d) => `${d.doc} (${d.arquivo})`);
     await prisma.note.create({
       data: {
