@@ -206,7 +206,7 @@ export async function perguntarQuestionario(accountId: string, leadId: string, i
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return false;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   if (!(await whatsappWindowOpen(leadId))) {
     if (q.templateAt) return false;
     // template de atualização já saiu hoje (equipe/Jarvis/supervisão): não repete
@@ -297,7 +297,7 @@ async function lerAgora(accountId: string, leadId: string, io?: Io) {
   const { inNoticeWindow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoCobranca(callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '', faltas, d), io });
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoCobranca(callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '', faltas, d), io });
   if (r.success) await salva(leadId, { cobrouAt: new Date().toISOString() });
 }
 

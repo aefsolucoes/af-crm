@@ -1,6 +1,7 @@
 import { cachedSystem } from '../lib/anthropic-usage';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { nomeSocialNota } from '../lib/text';
 import { fixedRule } from './fixed-rules.service';
 import { getDocInfo, isStickerAttachment, isScreenshotAttachment, isDescritivoParcela } from './received-docs.service';
 import { moveLeadToContracting } from './contracting.service';
@@ -212,7 +213,7 @@ export async function processDocsFollowUps(accountId: string, io: Io): Promise<v
       continue;
     }
     const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-    const nome = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
+    const nome = String(cf.nome_social_1 || cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
     const oi = (await conversationActive(id)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
     const pediuLembrete = /lembr/i.test(st.said);
     const texto = st.beyond
@@ -330,8 +331,8 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const precisaDescritivo = !ehFh && !caixaRota && (await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).proposalFinancing(leadId).catch(() => null))?.quitado === false;
   const temDescritivo = atts.some((a) => a.mimeType === 'application/pdf' && revAll[a.id]?.resultado !== 'PROBLEMA' && (isDescritivoParcela(info[a.id]?.type) || isDescritivoParcela(revAll[a.id]?.tipo)));
   const participants = [
-    cf.participante_1 && `1) ${cf.participante_1}${cf.vinculo_1 ? ` — ${cf.vinculo_1}` : ''}`,
-    cf.participante_2 && `2) ${cf.participante_2}${cf.vinculo_2 ? ` — ${cf.vinculo_2}` : ''}`,
+    cf.participante_1 && `1) ${cf.participante_1}${cf.vinculo_1 ? ` — ${cf.vinculo_1}` : ''}${nomeSocialNota(cf, 1)}`,
+    cf.participante_2 && `2) ${cf.participante_2}${cf.vinculo_2 ? ` — ${cf.vinculo_2}` : ''}${nomeSocialNota(cf, 2)}`,
   ].filter(Boolean).join('\n') || `1) ${lead.name}`;
   const history = (await prisma.message.findMany({
     where: { leadId, callWaCallId: null }, orderBy: { createdAt: 'desc' }, take: 25, select: { content: true, direction: true },

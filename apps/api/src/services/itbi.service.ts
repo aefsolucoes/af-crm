@@ -410,7 +410,7 @@ export async function enviarGuiasAoCliente(accountId: string, leadId: string, io
     return 'TEMPLATE';
   }
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const total = it.declaracoes.reduce((s, d) => s + (d.valorItbi || 0), 0);
   const vencs = [...new Set(it.declaracoes.map((d) => d.vencimento).filter(Boolean))];
   const google = await import('./google.service');
@@ -531,7 +531,7 @@ export async function enviarRequerimentoAoCliente(accountId: string, leadId: str
     return 'TEMPLATE';
   }
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const google = await import('./google.service');
   const buffer = await google.downloadDriveFile(accountId, req.driveFileId, 'application/pdf');
   const caption = `${nome ? `${nome}, p` : 'P'}ara emitir a guia do ITBI, a Receita do DF pede este requerimento assinado por você pelo gov.br. É rapidinho:\n1. Abra assinador.iti.br e entre com a sua conta gov.br\n2. Envie este PDF e assine\n3. Baixe o arquivo assinado e me mande aqui 🙂`;

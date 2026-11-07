@@ -236,7 +236,7 @@ async function processarUm(accountId: string, l: { id: string; name: string; cus
   }
 
   // 3) Pergunta (1 vez; uma 2ª só com o que ainda falta depois da resposta; depois disso a equipe assume).
-  const nome = (require('../lib/text') as typeof import('../lib/text')).callableFirstName(cf.falando_com, dados.nome, cf.participante_1, l.name);
+  const nome = (require('../lib/text') as typeof import('../lib/text')).callableFirstName(cf.falando_com, dados.nome, cf.nome_social_1, cf.participante_1, l.name);
   if (!st.perguntouAt) {
     const pode = await podeFalar(l.id, l.aiAutoReplyActive);
     if (pode === 'horario') return;
@@ -330,7 +330,7 @@ async function registrar(accountId: string, l: { id: string; name: string; custo
   }
   if (!l.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(l.id, 'propostaMontada', 'avisar que a proposta foi montada com os documentos e as respostas dele e que a pré-análise nos bancos já está rodando (avisa quando sair o resultado)');
   if ((await podeFalar(l.id, l.aiAutoReplyActive)) === 'ok') {
-    const nome = (require('../lib/text') as typeof import('../lib/text')).callableFirstName(cf.falando_com, dados.nome, cf.participante_1, l.name);
+    const nome = (require('../lib/text') as typeof import('../lib/text')).callableFirstName(cf.falando_com, dados.nome, cf.nome_social_1, cf.participante_1, l.name);
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `Pronto${nome ? `, ${nome}` : ''}! Montei sua proposta com os seus documentos e as suas respostas. Agora vou fazer a pré-análise nos bancos e te aviso assim que sair.` }).catch(() => null);
   }

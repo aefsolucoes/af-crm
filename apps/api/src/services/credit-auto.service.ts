@@ -205,7 +205,7 @@ async function descartarImovelRural(accountId: string, l: { id: string; name: st
   let avisou = false;
   if (lead?.aiAutoReplyActive && inNoticeWindow() && (await whatsappWindowOpen(l.id))) {
     const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-    const nome = callableFirstName(cf.falando_com, cf.participante_1, l.name);
+    const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name);
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const r = await sendOutboundWhatsApp({ accountId, leadId: l.id, io, content: `${nome ? `${nome}, ` : ''}vi na sua proposta que o imóvel é rural. Infelizmente não trabalhamos com imóvel rural nessa operação. Se você tiver outro imóvel urbano com matrícula, é só preencher a proposta de novo com ele que eu sigo por aqui.` });
     avisou = !!r.success;

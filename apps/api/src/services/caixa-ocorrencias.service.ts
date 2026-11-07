@@ -83,7 +83,7 @@ export async function enviarOrientacao(accountId: string, leadId: string, io?: a
   const oc = cf._ocorrencias as Oc | undefined;
   if (!lead || !oc || (oc.status !== 'PENDING' && oc.status !== 'TEMPLATE') || cf._autoPaused) return;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const saudacao = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const texto = textoOrientacao(saudacao, { nomes: oc.nomes || [], titular: !!oc.titular }, !String(cf.falando_com || '').trim());
   if (!lead.aiAutoReplyActive) {
     await salva(leadId, { status: 'EQUIPE', at: new Date().toISOString(), porIa: true } as any); // ligou a IA → volta a PENDING (ia-pendencias)

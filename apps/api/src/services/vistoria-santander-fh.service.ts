@@ -116,7 +116,7 @@ export async function pedirDadosVistoriaFh(accountId: string, leadId: string, ba
   if (!inNoticeWindow() && !opts.manual) return false;
   if (!(await whatsappWindowOpen(leadId))) { await avisaEquipe('A janela de 24 h do WhatsApp está fechada: a pergunta sai assim que o cliente responder.'); return false; }
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoPedidoDados(nome, itens, compradores.length > 1, banco), io });
   if (!r.success) return false;
   await salvaDadosSt(leadId, { askedAt: new Date().toISOString(), banco, itens });
@@ -273,7 +273,7 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
   if (!c1) return false;
   const comp = (p: PessoaFicha): CompradorFh => ({ nome: String(p.nome || ''), cpf: String(p.cpf || ''), nascimento: String(p.nascimento || ''), profissao: String(p.profissao || '') || undefined });
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const primeiroNome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const primeiroNome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
   const endImovel = await enderecoDoImovel(leadId, cf).catch(() => null);
   const cidade = endImovel?.cidade || String(c1.endereco?.cidade || '');

@@ -70,7 +70,7 @@ export async function processPropostaNaoRecebida(accountId: string, io?: Io): Pr
     const cf = (lead.customFields || {}) as Record<string, any>;
     const fh = /habitacional/i.test(lead.pipeline?.department?.name || '');
     const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-    const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || String(lead.name || '').trim().split(/\s+/)[0] || 'tudo bem';
+    const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || String(lead.name || '').trim().split(/\s+/)[0] || 'tudo bem';
     const texto = textoPropostaNaoRecebida(nome, fh);
     if (!lead.aiAutoReplyActive) {
       await marca({ status: 'EQUIPE' });

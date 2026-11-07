@@ -4,7 +4,7 @@ import { voiceNoteForAi } from './speech-to-text.service';
 import { searchKnowledge } from './knowledge.service';
 import { parseMoneyOrNumber } from './campaign-detection.service';
 import { logActivity } from './activity.service';
-import { callableFirstName, isCallableName, normalizeClientName } from '../lib/text';
+import { callableFirstName, isCallableName, normalizeClientName, nomeSocialNota } from '../lib/text';
 
 
 /**
@@ -254,8 +254,8 @@ export async function buildSharedAiContext(
     creditoTexto: await aiCardState(lead.id).catch(() => ''),
     nomeTexto: (() => {
       const cf = (lead.customFields || {}) as Record<string, unknown>;
-      const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name);
-      const titular = callableFirstName(cf.participante_1, lead.name);
+      const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name);
+      const titular = callableFirstName(cf.nome_social_1, cf.participante_1, lead.name);
       const falando = callableFirstName(cf.falando_com);
       if (falando && titular && falando.toLowerCase() !== titular.toLowerCase()) {
         const rel = String(cf.falando_com_relacao || '').trim().toLowerCase();
@@ -264,6 +264,11 @@ export async function buildSharedAiContext(
       return nome
         ? `${nome} (pode chamar pelo nome, sem repetir em toda mensagem).`
         : `O nome no card ("${String(cf.participante_1 || lead.name || '').slice(0, 40)}") NÃO é um nome de verdade (tem número, emoji ou símbolo). NÃO chame o cliente por esse nome nem por um pedaço dele (Fabio 08/10). Quando for natural na conversa, pergunte como ele se chama; quando ele disser, preencha "participante_1" em "extractedFields" com o nome que ele informou.`;
+    })() + (() => {
+      // Nome social (Fabio 07/11): a IA chama pelo nome social e reconhece o documento no nome de registro.
+      const cf = (lead.customFields || {}) as Record<string, any>;
+      const sociais = ([1, 2] as const).map((n) => { const t = nomeSocialNota(cf, n); return t && `participante ${n}${t}`; }).filter(Boolean);
+      return sociais.length ? ` NOME SOCIAL: ${sociais.join('; ')}. Não comente nem pergunte sobre isso, não peça documento com o nome social e não mude os campos "participante_N".` : '';
     })(),
   };
 }
@@ -556,6 +561,9 @@ const BUILTIN_LEAD_FIELDS: { key: string; label: string }[] = [
   { key: 'falando_com_relacao', label: 'Relação de quem está falando com o titular (Esposa, Marido, Filho(a), Pai/Mãe, Sócio(a), Contador(a), Outro)' },
   { key: 'participante_1', label: 'Nome do participante 1' },
   { key: 'participante_2', label: 'Nome do participante 2' },
+  // Nome social (Fabio 07/11): "participante_N" fica com o nome de REGISTRO CIVIL (documento/CPF); o nome social vai aqui.
+  { key: 'nome_social_1', label: 'NOME SOCIAL do participante 1 — SÓ quando o próprio cliente disser que a pessoa usa um nome social diferente do nome de registro (documento/CPF); o "Nome do participante" continua com o nome de registro' },
+  { key: 'nome_social_2', label: 'NOME SOCIAL do participante 2 — SÓ quando o próprio cliente disser que a pessoa usa um nome social diferente do nome de registro (documento/CPF); o "Nome do participante" continua com o nome de registro' },
   { key: 'telefone_1', label: 'Telefone do participante 1' },
   { key: 'telefone_2', label: 'Telefone do participante 2' },
   { key: 'cpf_1', label: 'CPF do participante 1' },

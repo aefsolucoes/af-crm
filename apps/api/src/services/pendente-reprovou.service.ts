@@ -73,7 +73,7 @@ export async function processPendenteReprovou(accountId: string, io?: Io): Promi
     }));
     const { SEGUIR_APROVADO_Q } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
     const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-    const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || String(lead.name || '').trim().split(/\s+/)[0] || '';
+    const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || String(lead.name || '').trim().split(/\s+/)[0] || '';
     const texto = textoPendenteReprovou(nome, pend, aprovados, !escolheu, SEGUIR_APROVADO_Q);
     const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
     const bancosNeg = lista(pend.map((b) => NOMES[b]));

@@ -165,7 +165,7 @@ export function fillVariables(text: string, lead: LeadForActions, context?: RunC
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const cf = (lead.customFields || {}) as Record<string, unknown>;
   const vars: Record<string, string> = {
-    nome: callableFirstName(cf.falando_com, cf.participante_1, lead.contact?.name, lead.name) || '',
+    nome: callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.contact?.name, lead.name) || '',
     telefone: lead.contact?.phone || lead.contact?.whatsappPhone || '',
     mensagem_recebida: context?.incomingText || '',
   };

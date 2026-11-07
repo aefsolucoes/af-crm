@@ -212,7 +212,7 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return false;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
   const texto = certidaoOfferText(nome, !(await conversationActive(leadId)), d.matricula);
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: (io || undefined) as any });
@@ -241,7 +241,7 @@ async function maybeOfferPorEndereco(accountId: string, leadId: string, lead: No
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return false;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
   const texto = certidaoOfferEnderecoText(nome, !(await conversationActive(leadId)), end);
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: (io || undefined) as any });
@@ -337,7 +337,7 @@ export async function askClientCartorio(accountId: string, req: { id: string; le
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow() || !(await whatsappWindowOpen(req.leadId))) return false;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
   const saud = (await conversationActive(req.leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
   const texto = `${saud}Pra pedir a certidão ${req.endereco ? 'do seu imóvel' : `da matrícula ${req.matricula}`} preciso saber o cartório de registro de imóveis. Em ${req.cidade} o portal tem estas opções:\n${opcoes.map((o) => `• ${o}`).join('\n')}\n\n${req.endereco ? 'Você sabe qual deles atende o seu bairro (aparece no contrato, escritura ou carnê do IPTU)?' : 'Na sua escritura ou matrícula aparece qual deles?'} Se não souber, sem problema, é só me avisar.`;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
@@ -485,7 +485,7 @@ export async function askEnderecoCertidao(accountId: string, leadId: string, opt
   const e = opts.endereco && opts.cidade && opts.uf ? { endereco: opts.endereco, cidade: opts.cidade, uf: opts.uf } : await enderecoDoImovel(leadId, cf);
   if (!e) return { ok: false, erro: 'não achei o endereço completo do imóvel (CEP, rua, número, cidade/UF)' };
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
   const texto = `${nome ? `${nome}, p` : 'P'}ra emitir a certidão de ônus do imóvel, confirma pra mim se o endereço é este?\n${enderecoTexto(e.endereco)} — ${e.cidade}/${e.uf}`;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: (io || undefined) as any });
@@ -561,7 +561,7 @@ export async function askImovelRegular(accountId: string, leadId: string, p: Omi
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) { await salvaIrregular(leadId, { ...p, pendingAsk: true }); return 'SCHEDULED'; }
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || null;
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
   const texto = `${nome ? `${nome}, p` : 'P'}ra emitir a certidão do imóvel, uma dúvida: ele tem matrícula registrada no Cartório de Registro de Imóveis (escritura registrada)? Pergunto porque, pelo endereço, a região pode ainda não ser regularizada.`;
   const msg = require('./message.service') as typeof import('./message.service');
   if (!(await whatsappWindowOpen(leadId))) {
@@ -616,7 +616,7 @@ async function respondeImovelRegular(accountId: string, leadId: string, texto: s
   await salvaIrregular(leadId, { ...ir, answeredAt: new Date().toISOString(), resposta: r, ...(r === 'NAO' ? { outroImovelAskedAt: new Date().toISOString() } : {}) });
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const cf = (lead?.customFields || {}) as Record<string, any>;
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead?.name) || null;
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead?.name) || null;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   if (r === 'NAO') {
     // Fabio 30/10: avisa que o imóvel não serve de garantia e pergunta se tem outro.
@@ -690,7 +690,7 @@ async function checarOutroImovelSemResposta(): Promise<void> {
       if (agora - new Date(ir.outroImovelAskedAt).getTime() < 2 * DIA) continue;
       const cf = (l.customFields || {}) as Record<string, any>;
       const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-      const nome = callableFirstName(cf.falando_com, cf.participante_1, l.name) || null;
+      const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name) || null;
       const pergunta = `${nome ? `${nome}, c` : 'C'}onseguiu ver se você possui outro imóvel com matrícula registrada que possa ser usado como garantia? Sem isso, não temos como avançar com o empréstimo.`;
       const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
       const msg = require('./message.service') as typeof import('./message.service');

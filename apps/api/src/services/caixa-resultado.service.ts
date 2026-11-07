@@ -247,7 +247,7 @@ export async function avisarCondicionadaCliente(accountId: string, leadId: strin
   const c = cf._caixaResultado?.condicionada as Cf | undefined;
   if (!lead || !c || (c.status !== 'PENDING' && c.status !== 'TEMPLATE')) return;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const saudacao = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const liberado = c.tipo === 'liberado';
   const texto = liberado ? textoLiberado(saudacao, { valor: Number(c.valor), he: !!c.he }) : textoCondicionada(saudacao, { parcela: Number(c.parcela), minimo: Number(c.minimo), he: !!c.he, motivo: !!c.motivo, seguir: !!c.seguir });
   const rotulo = liberado ? 'CAIXA aprovada na PRICE' : 'CAIXA condicionada';
@@ -337,7 +337,7 @@ export async function avisarPvCliente(accountId: string, leadId: string, io?: an
   const pv = cf._caixaResultado?.pvAviso as { status?: string; templateAt?: string } | undefined;
   if (!lead || !pv || (pv.status !== 'PENDING' && pv.status !== 'TEMPLATE') || cf._autoPaused) return;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const saudacao = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || '';
+  const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const texto = textoPv(saudacao);
   const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');

@@ -913,7 +913,7 @@ export async function confirmPendingAction(p: { accountId: string; userId: strin
       const habit = /habita/i.test(l.pipeline?.department?.name || '');
       const nomeTpl = habit ? 'atualizacao_processo_habitacional' : 'atualizacao_processo_credito';
       const cf = (l.customFields || {}) as Record<string, any>;
-      const w = String(cf.falando_com || cf.participante_1 || l.name || '').trim().split(/\s+/)[0] || '';
+      const w = String(cf.falando_com || cf.nome_social_1 || cf.participante_1 || l.name || '').trim().split(/\s+/)[0] || '';
       const nome = w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : 'tudo bem';
       const corpo = `Oi ${nome}, tudo bem? Temos uma atualização sobre o seu processo de ${habit ? 'financiamento habitacional' : 'crédito com garantia de imóvel'}. Responda esta mensagem para que a gente possa te passar os detalhes.`;
       await callApi(p.token, 'POST', '/messages/send-template', { leadId: x.leadId, templateName: nomeTpl, language: 'pt_BR', bodyParams: [nome], previewText: corpo });

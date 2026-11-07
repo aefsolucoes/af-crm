@@ -59,7 +59,7 @@ async function avisarSaldoBloqueado(accountId: string, leadId: string, p: { sald
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, userId: true, aiAutoReplyActive: true, customFields: true } });
   if (!lead) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
-  const nome = String(cf.falando_com || cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
+  const nome = String(cf.falando_com || cf.nome_social_1 || cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
   const texto = mensagemSaldoBloqueado(nome.charAt(0).toUpperCase() + nome.slice(1).toLowerCase(), p.saldo, p.valorImovel, p.bloq, p.aprovado);
   let enviado = false;
   let porQueNao = 'IA desligada neste card';

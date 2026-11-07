@@ -168,7 +168,7 @@ async function executarPasso(
   }
   const lembrete = FOLLOW_LEMBRETES[passo.tipo];
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, l.name) || 'tudo bem';
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name) || 'tudo bem';
   const texto = lembrete.texto(nome);
   const preview = `${texto}\n\n${lembrete.botoes.map((b) => `[${b}]`).join('  ')}`;
   const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');

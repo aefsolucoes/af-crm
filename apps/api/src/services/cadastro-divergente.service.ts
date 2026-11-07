@@ -27,7 +27,7 @@ export function cpfMascarado(cpf: unknown): string {
   return d.length === 11 ? `${d.slice(0, 3)}.***.***-${d.slice(9)}` : '';
 }
 
-export type CadDivParticipante = { nome: string; cpf: string; nascimento: string };
+export type CadDivParticipante = { nome: string; cpf: string; nascimento: string; /** nome de REGISTRO quando a pessoa usa nome social (o `nome` é o social) */ registro?: string };
 /** 02113849500 → 021.138.495-00. Outro formato (CPF incompleto/digitado errado) sai como está, pro cliente enxergar o erro. */
 export function cpfCompleto(cpf: unknown): string {
   const d = soDigitos(cpf);
@@ -37,11 +37,14 @@ export function cpfCompleto(cpf: unknown): string {
 export function participantesDoCard(cf: Record<string, any>): CadDivParticipante[] {
   const out: CadDivParticipante[] = [];
   for (const i of [1, 2]) {
-    const nome = String(cf[`participante_${i}`] || '').trim();
+    // Nome social (Fabio 07/11): o cliente vê o nome social; o de registro (o que foi pro banco) fica em `registro` pro contexto da IA.
+    const registro = String(cf[`participante_${i}`] || '').trim();
+    const social = String(cf[`nome_social_${i}`] || '').trim();
+    const nome = social || registro;
     // CPF COMPLETO (Fabio 26/10: "como o CRM vai confirmar o CPF se ela não mostra o CPF completo? foi o próprio cliente que informou, não precisa tapar com *"): o cliente só consegue conferir se vir o número todo.
     const cpf = cpfCompleto(cf[`cpf_${i}`]);
     const nascimento = String(cf[`nascimento_${i}`] || '').trim();
-    if (nome || cpf) out.push({ nome: nome || '(sem nome)', cpf: cpf || '(sem CPF)', nascimento: nascimento || '(sem data)' });
+    if (nome || cpf) out.push({ nome: nome || '(sem nome)', cpf: cpf || '(sem CPF)', nascimento: nascimento || '(sem data)', ...(social && registro && social !== registro ? { registro } : {}) });
   }
   return out;
 }
@@ -109,7 +112,7 @@ async function reabrirConversas(accountId: string, io: Io): Promise<void> {
     const respondeu = cd.at ? await prisma.message.count({ where: { leadId: lead.id, direction: 'INBOUND', createdAt: { gt: new Date(cd.at) } } }) : 0;
     if (respondeu && cd.status === 'ASKED') continue; // ele respondeu depois da pergunta: a conversa está com a IA/equipe
     const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-    const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name) || String(lead.name || '').trim().split(/\s+/)[0] || 'cliente';
+    const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || String(lead.name || '').trim().split(/\s+/)[0] || 'cliente';
     const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
     const t = await sendOutboundWhatsAppTemplate({ accountId, leadId: lead.id, templateName: REABRIR_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText: `Oi ${nome}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io: io as any });
     if (!t.success) { await note(lead.id, `🔎 Cadastro divergente: tentei reabrir a conversa (template de atualização) e não saiu: ${t.error}.`); await salva(lead.id, { reopenAt: new Date().toISOString(), reopenN: (cd.reopenN || 0) + 1 }); continue; }
@@ -139,7 +142,7 @@ async function uma(accountId: string, r: { id: string; leadId: string; bank: str
   const participantes = participantesDoCard(cf);
   if (!participantes.length) return;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name);
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name);
   const texto = cadDivText(participantes, nome);
   const banco = BANK_LABEL[r.bank] || r.bank;
 
@@ -177,7 +180,7 @@ export async function aiCadDivContext(leadId: string): Promise<string> {
   if (!cd || cd.status !== 'ASKED') return aiCadConfirmContext((l?.customFields || {}) as Record<string, any>);
   const cf = (l?.customFields || {}) as Record<string, any>;
   const banco = BANK_LABEL[cd.bank || ''] || 'o banco';
-  const lista = participantesDoCard(cf).map((p, i) => `  ${i + 1}) ${p.nome} — CPF ${p.cpf} — nascimento ${p.nascimento}`).join('\n');
+  const lista = participantesDoCard(cf).map((p, i) => `  ${i + 1}) ${p.nome} — CPF ${p.cpf} — nascimento ${p.nascimento}${p.registro ? ` (NOME SOCIAL; o nome de registro, que foi pro banco, é "${p.registro}" — NÃO é erro, não troque o "participante_${i + 1}" e nunca escreva o nome de registro ao cliente)` : ''}`).join('\n');
   return `--- CADASTRO DIVERGENTE (pergunta já feita ao cliente) ---
 ${banco} acusou "Cadastro Divergente" (o cadastro não bate: nome, CPF ou data de nascimento) e o CRM já perguntou ao cliente se o nome, o CPF e a data de nascimento correspondem à mesma pessoa. Dados do card:
 ${lista}
@@ -269,7 +272,7 @@ async function confirmaUma(accountId: string, leadId: string, leadName: string, 
   const participantes = participantesDoCard(cf);
   if (!participantes.length) return;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.participante_1, leadName);
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, leadName);
   const env = await sendOutboundWhatsApp({ accountId, leadId, content: cadConfirmText(participantes, nome), io: io as any });
   if (!env.success) return; // tenta no próximo minuto
   await salvaConfirm(leadId, { status: 'ASKED', at: new Date().toISOString(), participantes });
@@ -280,7 +283,7 @@ async function confirmaUma(accountId: string, leadId: string, leadName: string, 
 export function aiCadConfirmContext(cf: Record<string, any>): string {
   const cc = cf._cadConfirm as { status?: string; at?: string } | undefined;
   if (!cc || cc.status !== 'ASKED' || (cc.at && Date.now() - new Date(cc.at).getTime() > CONFIRM_ASK_VALID_MS)) return '';
-  const lista = participantesDoCard(cf).map((p, i) => `  ${i + 1}) ${p.nome} — CPF ${p.cpf} — nascimento ${p.nascimento}`).join('\n');
+  const lista = participantesDoCard(cf).map((p, i) => `  ${i + 1}) ${p.nome} — CPF ${p.cpf} — nascimento ${p.nascimento}${p.registro ? ` (NOME SOCIAL; o nome de registro, que foi pro banco, é "${p.registro}" — NÃO é erro, não troque o "participante_${i + 1}" e nunca escreva o nome de registro ao cliente)` : ''}`).join('\n');
   return `--- CONFIRMAÇÃO DO CADASTRO DA PROPOSTA (pergunta já feita ao cliente) ---
 O CRM já perguntou se o nome, o CPF e a data de nascimento que vieram na proposta estão corretos (a análise de crédito JÁ está rodando: isto não a atrasa nem a impede). Dados do card:
 ${lista}

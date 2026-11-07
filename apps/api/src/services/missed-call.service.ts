@@ -32,7 +32,7 @@ async function handleMissedCall(accountId: string, leadId: string, endedAt: Date
   let enviado = false;
   if (!respondeu && Date.now() - ultimo > UMA_VEZ_MS && inNoticeWindow() && (await whatsappWindowOpen(leadId))) {
     const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-    const nome = callableFirstName(cf.falando_com, cf.participante_1, lead.name);
+    const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name);
     const texto = `Oi${nome ? `, ${nome}` : ''}! Vi sua ligação, mas estamos em outra ligação agora. Te ligo em uns ${RETORNO_MIN} minutos, tudo bem?`;
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io }).catch((e: any) => ({ success: false, error: e?.message }));

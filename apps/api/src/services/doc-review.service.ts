@@ -1,6 +1,7 @@
 import { cachedSystem } from '../lib/anthropic-usage';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { nomeSocialNota } from '../lib/text';
 import { downloadDriveFileForVision } from './google.service';
 import { getDocInfo, isStickerAttachment, isScreenshotAttachment, isPropertyDocType, isDescritivoParcela } from './received-docs.service';
 import { todayContextLine } from './ai-shared.service';
@@ -247,8 +248,8 @@ async function recentConversation(leadId: string): Promise<string> {
 
 export function participantsContext(cf: Record<string, any>, leadName: string, setor = ''): string {
   const parts = [
-    cf.participante_1 && `1) ${cf.participante_1}${cf.cpf_1 ? ` (CPF ${String(cf.cpf_1).replace(/\D/g, '').replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4')})` : ''}`,
-    cf.participante_2 && `2) ${cf.participante_2}${cf.cpf_2 ? ` (CPF ${String(cf.cpf_2).replace(/\D/g, '').replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4')})` : ''}`,
+    cf.participante_1 && `1) ${cf.participante_1}${cf.cpf_1 ? ` (CPF ${String(cf.cpf_1).replace(/\D/g, '').replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4')})` : ''}${nomeSocialNota(cf, 1)}`,
+    cf.participante_2 && `2) ${cf.participante_2}${cf.cpf_2 ? ` (CPF ${String(cf.cpf_2).replace(/\D/g, '').replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4')})` : ''}${nomeSocialNota(cf, 2)}`,
   ].filter(Boolean).join('\n') || `1) ${leadName}`;
   return `${todayContextLine()}${setor ? `\nSetor: ${setor}` : ''}\nParticipantes do card:\n${parts}\n\nConfira este arquivo.`;
 }

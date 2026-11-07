@@ -4,7 +4,7 @@ import { Readable } from 'stream';
 import { PDFDocument, rgb } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { CARLITO_REGULAR_BASE64 } from './creditas-scr-font';
-import { callableFirstName } from '../lib/text';
+import { callableFirstName, paraNomeSocial } from '../lib/text';
 import { logActivity } from './activity.service';
 
 /**
@@ -510,8 +510,8 @@ async function askClient(accountId: string, lead: { id: string; name: string; cu
   }
   const nomes = await scrSigners(lead, st);
   const { pdf, preenchido, cidade } = await scrFormFilled(accountId, lead, st, nomes); // o CRM data e preenche local/nome/CPF; o cliente só assina
-  const nome = callableFirstName(nomes[0], cf.participante_1, lead.name) || '';
-  const outros = nomes.slice(1);
+  const nome = callableFirstName(paraNomeSocial(cf, nomes[0] || ''), cf.nome_social_1, cf.participante_1, lead.name) || '';
+  const outros = nomes.slice(1).map((n) => paraNomeSocial(cf, n)); // o formulário vai no nome de registro; a mensagem chama pelo nome social
   const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const saudacao = (await conversationActive(lead.id)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
   const abertura = ofertas.length
@@ -690,7 +690,8 @@ async function remindBeforeWindowCloses(accountId: string, lead: { id: string; n
     return;
   }
   const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-  const nome = callableFirstName(nomes[0], (lead.customFields || {}).participante_1, lead.name) || '';
+  const cfL = (lead.customFields || {}) as Record<string, any>;
+  const nome = callableFirstName(paraNomeSocial(cfL, nomes[0] || ''), cfL.nome_social_1, cfL.participante_1, lead.name) || '';
   const saudacao = (await conversationActive(lead.id)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
   const texto = `${saudacao}Passando pra lembrar do SCR Bacen da Creditas — sem ele a análise não segue. Ainda falta:\n${faltas.map((f) => `• ${f}`).join('\n')}\n\nÉ só me mandar por aqui mesmo. Se tiver dificuldade pra assinar pelo gov.br, me avisa que eu te ajudo. 😊`;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');

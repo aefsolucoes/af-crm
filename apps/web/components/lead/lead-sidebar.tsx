@@ -264,10 +264,11 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
         setValueInput(String(numeric));
       }
 
-      // Sincroniza nome do lead quando participante_1 ou participante_2 muda
-      if (key === 'participante_1' || key === 'participante_2') {
-        const p1 = String(key === 'participante_1' ? value : (customValues.participante_1 ?? '')).trim();
-        const p2 = String(key === 'participante_2' ? value : (customValues.participante_2 ?? '')).trim();
+      // Sincroniza nome do lead quando participante_1 ou participante_2 muda — pelo NOME SOCIAL quando houver (é o nome que aparece na Inbox e nas mensagens)
+      if (['participante_1', 'participante_2', 'nome_social_1', 'nome_social_2'].includes(key)) {
+        const v = (k: string) => String(key === k ? value : (customValues[k] ?? '')).trim();
+        const p1 = v('nome_social_1') || v('participante_1');
+        const p2 = v('nome_social_2') || v('participante_2');
         const newName = p2 ? `${p1} / ${p2}` : p1;
         if (newName) {
           await api.put(`/api/leads/${lead.id}`, { name: newName });
@@ -446,6 +447,8 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
 
             const builtinFields: { key: string; label: string; type?: 'select'; options?: string[] }[] = [
               { key: 'participante_1', label: 'Participante 1' },
+              // Nome social (Fabio 07/11): "Participante" fica com o nome de REGISTRO (documento/CPF — bancos, cartório, extensões); a IA e as mensagens chamam pelo nome social.
+              { key: 'nome_social_1', label: 'Nome social' },
               // Quem escreve no WhatsApp quando NÃO é o titular (ex.: a esposa que preencheu a proposta): o CRM e a IA cumprimentam por esse nome.
               { key: 'falando_com',   label: 'Quem fala no WhatsApp' },
               { key: 'falando_com_relacao', label: 'Relação com o titular', type: 'select', options: ['Esposa', 'Marido', 'Filho(a)', 'Pai/Mãe', 'Sócio(a)', 'Contador(a)', 'Outro'] },
@@ -458,6 +461,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
               { key: 'email_1',       label: 'E-mail' },
               { key: 'vinculo_1',     label: 'Tipo de vínculo', type: 'select', options: VINCULO_OPTS },
               { key: 'participante_2', label: 'Participante 2' },
+              { key: 'nome_social_2', label: 'Nome social 2' },
               { key: 'telefone_2',    label: 'Telefone 2' },
               { key: 'cpf_2',         label: 'CPF 2' },
               { key: 'nascimento_2',  label: 'Nascimento 2' },

@@ -21,6 +21,29 @@ export function isCallableName(raw: unknown): boolean {
   return s.split(/\s+/)[0].replace(/[.'-]/g, '').length >= 2;
 }
 
+/** NOME SOCIAL (Fabio 07/11, Maria Rosa: o 2º participante usa o nome social Marcello e o RG está no nome de registro): no card, "Participante N" é o nome de
+ *  REGISTRO CIVIL — o do documento e do CPF, que vai pros bancos, cartório e extensões — e "Nome social N" (nome_social_N) é como a pessoa é chamada. Com o cliente
+ *  (mensagens, IA, listas de documentos), sempre o nome social. */
+export function nomeDeTratamento(cf: Record<string, any>, n: 1 | 2): string {
+  return String(cf[`nome_social_${n}`] || cf[`participante_${n}`] || '').trim();
+}
+
+/** Nome de registro de um participante → o nome social dele, pra texto ao cliente (nome que não é de participante com nome social volta igual). */
+export function paraNomeSocial(cf: Record<string, any>, nome: string): string {
+  const norm = (x: unknown) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  for (const n of [1, 2] as const) if (cf[`nome_social_${n}`] && norm(cf[`participante_${n}`]) === norm(nome)) return String(cf[`nome_social_${n}`]).trim();
+  return nome;
+}
+
+/** Trecho pras IAs que leem a conversa/documentos quando o participante N tem nome social diferente do de registro ('' sem nome social). */
+export function nomeSocialNota(cf: Record<string, any>, n: 1 | 2): string {
+  const social = String(cf[`nome_social_${n}`] || '').trim();
+  const civil = String(cf[`participante_${n}`] || '').trim();
+  const norm = (x: string) => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ');
+  if (!social || !civil || norm(social) === norm(civil)) return '';
+  return ` — usa o NOME SOCIAL "${social}" (é assim que a pessoa é chamada); "${civil}" é o nome de REGISTRO CIVIL, o do documento e do CPF. Documento em qualquer um dos dois nomes, com o mesmo CPF, é DESTA pessoa (não é erro nem outra pessoa). Em qualquer texto ao cliente use SÓ o nome social — nunca o nome de registro`;
+}
+
 /** Primeiro nome (Capitalizado) do primeiro candidato que é nome de verdade; null se nenhum é. */
 export function callableFirstName(...raws: unknown[]): string | null {
   for (const raw of raws) {
