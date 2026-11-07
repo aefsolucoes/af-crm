@@ -122,11 +122,24 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
 
 /** Card vai pra etapa de VISTORIA do funil dele quando uma vistoria é SOLICITADA — e-mail ao banco ou extensão acionada (Fabio 03/11: "sempre que qualquer extensão for acionada e seja
  *  de solicitar vistoria, o card deve mudar de etapa"). Não volta card que já está adiante da vistoria (Análise Jurídica, contrato…). Devolve se moveu. */
+/** Vistoria solicitada = o card vai pra "Vistoria do Imóvel" (Fabio 21/10 e 07/11: "sempre que solicitar a vistoria, a etapa do cliente deve ir para Vistoria do Imóvel").
+ *  Único caminho de todas as solicitações (Inter, Santander HE/FH, Creditas, CAIXA/SIOPI, e-mail de vistoria escrito pela equipe). Só anda pra frente (card já em Análise
+ *  Jurídica ou adiante fica onde está) e só card aberto. Card ainda no funil de Vendas (Aguardando Documentação, Fechado…) passa antes pro funil "Em contratação" do setor
+ *  (moveLeadToContracting, que passa pelo Fechado como a tela) — antes o card de Vendas não tinha etapa "Vistoria" e ficava parado sem aviso. */
 export async function moverParaVistoria(accountId: string, leadId: string, motivo: string, io?: Io): Promise<boolean> {
   try {
-    const card = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { pipelineId: true, stageId: true, stage: { select: { name: true, order: true } } } });
-    if (!card) return false;
-    const vist = await prisma.stage.findFirst({ where: { pipelineId: card.pipelineId, name: { contains: 'Vistoria', mode: 'insensitive' } }, select: { id: true, name: true, order: true } });
+    const sel = { status: true, pipelineId: true, stageId: true, stage: { select: { name: true, order: true } }, pipeline: { select: { name: true } } } as const;
+    let card = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: sel });
+    if (!card || card.status !== 'OPEN') return false;
+    const vistoriaDe = (pipelineId: string) => prisma.stage.findFirst({ where: { pipelineId, name: { contains: 'Vistoria', mode: 'insensitive' } }, select: { id: true, name: true, order: true } });
+    let vist = await vistoriaDe(card.pipelineId);
+    if (!vist && /vendas/i.test(card.pipeline?.name || '')) {
+      const { moveLeadToContracting } = require('./contracting.service') as typeof import('./contracting.service');
+      if (!(await moveLeadToContracting(accountId, leadId, (io || null) as any, motivo))) return false;
+      card = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: sel });
+      if (!card) return false;
+      vist = await vistoriaDe(card.pipelineId);
+    }
     if (!vist || vist.id === card.stageId || (card.stage && card.stage.order > vist.order)) return false;
     const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
     await updateLeadStage(leadId, accountId, vist.id);
@@ -167,15 +180,7 @@ export async function solicitarVistoria(p: { accountId: string; userId: string; 
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', userId: p.userId, content: `📨 Vistoria solicitada ao Inter (e-mail para ${to}${attachments.length ? `, com ${attachments.length} anexo(s): ${attachments.map((a) => a.filename).join('; ')}` : ''}). Aguardando o engenheiro entrar em contato (até 2 dias úteis).` } }).catch(() => {});
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(p.accountId, { title: '📨 Vistoria solicitada ao Inter', body: lead.name, leadId: p.leadId }).catch(() => {}); } catch { /* aviso */ }
   // Vistoria solicitada = o card vai pra "Vistoria do Imóvel" (Fabio 21/10: "sempre que conseguir solicitar a vistoria, mover o card pra Vistoria").
-  try {
-    const vist = await prisma.stage.findFirst({ where: { pipelineId: lead.pipelineId, name: { contains: 'Vistoria', mode: 'insensitive' } }, select: { id: true, name: true } });
-    if (vist && vist.id !== lead.stageId) {
-      const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
-      await updateLeadStage(p.leadId, p.accountId, vist.id);
-      await prisma.note.create({ data: { leadId: p.leadId, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '—'}" → "${vist.name}" — vistoria solicitada ao Inter` } }).catch(() => {});
-      p.io?.to?.(`account_${p.accountId}`)?.emit?.('new_conversation', { leadId: p.leadId });
-    }
-  } catch (e: any) { console.warn('[Vistoria] não consegui mover o card:', e?.message); }
+  await moverParaVistoria(p.accountId, p.leadId, 'vistoria solicitada ao Inter', p.io);
   return { ok: true, to, anexou: attachments.length > 0 };
 }
 

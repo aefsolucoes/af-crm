@@ -353,6 +353,14 @@ router.get('/drive-file/:fileId', async (req: AuthRequest, res: Response) => {
   }
 });
 
+/** Endereço de banco/correspondente que recebe pedido de vistoria (Inter, Creditas, Santander/Credimorar, CAIXA, Itaú, BRB). */
+const BANCO_EMAIL = /@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br|creditas\.com(\.br)?|credimorar\.(com\.vc|me|com\.br|com)|santander\.com\.br|caixa\.gov\.br|itau(-unibanco)?\.com\.br|brb\.com\.br)$/i;
+/** É pedido de vistoria? Assunto com "vistoria", ou o texto pede/agenda a vistoria — e vai pra um banco (e-mail ao cliente sobre a vistoria não conta). */
+export function ehEmailDeVistoria(subject: string, body: string, destinos: string[]): boolean {
+  if (!destinos.some((a) => BANCO_EMAIL.test(a))) return false;
+  return /vistoria/i.test(subject) || /(solicit\w*|pedido de|agendar|agendamento d[aeo]|abrir|abertura d[aeo])\s+(a\s+|da\s+)?vistoria/i.test(body);
+}
+
 router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: AuthRequest, res: Response) => {
   const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
   if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
@@ -376,6 +384,13 @@ router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: 
       attachments,
     });
     res.json(saved);
+    // E-mail de VISTORIA escrito pela equipe e mandado ao banco pela caixa do CRM (modo manual, fora dos botões de vistoria): o card vai pra "Vistoria do Imóvel"
+    // (Fabio 07/11: "sempre que solicitar a vistoria, a etapa do cliente deve ir para Vistoria do Imóvel"). Só pra frente; card já adiante fica onde está.
+    const destinos = [...list(b.to), ...list(b.cc)].map((a) => a.toLowerCase());
+    if (saved?.leadId && ehEmailDeVistoria(String(b.subject || ''), String(b.body || ''), destinos)) {
+      const { moverParaVistoria } = require('../services/vistoria-inter.service') as typeof import('../services/vistoria-inter.service');
+      moverParaVistoria(req.user!.accountId, saved.leadId, `e-mail de vistoria enviado a ${destinos.filter((a) => BANCO_EMAIL.test(a)).join(', ')}`, io(req) as any).catch(() => {});
+    }
   } catch (err) {
     fail(res, err, 'Não consegui enviar o e-mail');
   }

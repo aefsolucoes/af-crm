@@ -386,6 +386,7 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
     await gravar(leadId, { status: 'JA_TEM_OS', leaseAt: null, os: body.os || null });
     await nota(leadId, `🏠 Vistoria CAIXA: esse imóvel já tem OS de engenharia no SIOPI${body.os?.numero ? ` (${body.os.numero}, ${body.os.situacao || '—'})` : ''} — não abri outra.${body.texto ? `\n${body.texto.slice(0, 600)}` : ''}`);
     await push(accountId, leadId, `🏠 ${lead.name}: já tem OS na CAIXA`, 'O imóvel já tem ordem de serviço de engenharia — não abri outra.');
+    await moverParaVistoria(accountId, leadId, 'o imóvel já tem OS de vistoria no SIOPI (CAIXA)', io as any); // vistoria já pedida = mesma etapa (Fabio 07/11)
     return;
   }
   // OS criada (Fabio 06/11: depois do Próximo vem "Incluir Documentos" — "precisa anexar a certidão de ônus do imóvel") → a extensão anexa a certidão e segue até a taxa.

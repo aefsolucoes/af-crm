@@ -271,14 +271,8 @@ export async function processVistoriaSantander(accountId: string, leadId: string
   await note(leadId, `📨 Vistoria solicitada ao Santander: e-mail para ${VISTORIA_SANTANDER_TO} com ${anexos.length} anexo(s): ${anexos.map((a) => a.filename).join('; ')}.${dados.faltando.length ? `\nFicaram em branco no cadastro: ${dados.faltando.join('; ')}.` : ''}${pendente}`);
   if (faltam.length) await pushDono(accountId, leadId, '📨 Vistoria Santander pedida — falta documento', `${lead.name}: mandar à Letícia depois: ${faltam.join('; ')}`.slice(0, 160));
   else push(accountId, '📨 Vistoria solicitada ao Santander', lead.name, leadId);
-  try {
-    const vist = await prisma.stage.findFirst({ where: { pipelineId: fresh!.pipelineId, name: { contains: 'Vistoria', mode: 'insensitive' } }, select: { id: true, name: true } });
-    if (vist && vist.id !== fresh!.stageId) {
-      const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
-      await updateLeadStage(leadId, accountId, vist.id);
-      await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `Estágio: "${fresh!.stage?.name || '—'}" → "${vist.name}" — vistoria solicitada ao Santander` } }).catch(() => {});
-    }
-  } catch (e: any) { console.warn('[Vistoria Santander] não consegui mover o card:', e?.message); }
+  // Vistoria solicitada = "Vistoria do Imóvel" (mesmo caminho do Inter/Creditas/CAIXA: só pra frente e tira do funil de Vendas se precisar).
+  await (require('./vistoria-inter.service') as typeof import('./vistoria-inter.service')).moverParaVistoria(accountId, leadId, 'vistoria solicitada ao Santander', io as any);
   return true;
 }
 

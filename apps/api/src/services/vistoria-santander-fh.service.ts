@@ -441,15 +441,8 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
   await salvaSt(leadId, { status: 'ENVIADA', sentAt: new Date().toISOString(), to: VISTORIA_SANTANDER_TO, pendentes: faltam });
   await note(leadId, `📨 Vistoria do Santander (Financiamento) solicitada: e-mail para ${VISTORIA_SANTANDER_TO} com ${anexos.length} anexo(s): ${anexos.map((a) => a.filename).join('; ')}.${ficha.faltando.length ? `\nFicaram em branco na ficha: ${ficha.faltando.join('; ')}.` : ''}${pendente}`);
   push(accountId, faltam.length ? '📨 Vistoria Santander pedida — falta documento' : '📨 Vistoria solicitada ao Santander', faltam.length ? `${lead.name}: mandar à Letícia depois: ${faltam.join('; ')}`.slice(0, 160) : lead.name, leadId);
-  try {
-    const card = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipelineId: true, stageId: true, stage: { select: { name: true } } } });
-    const vist = card ? await prisma.stage.findFirst({ where: { pipelineId: card.pipelineId, name: { contains: 'Vistoria', mode: 'insensitive' } }, select: { id: true, name: true } }) : null;
-    if (card && vist && vist.id !== card.stageId) {
-      const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
-      await updateLeadStage(leadId, accountId, vist.id);
-      await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `Estágio: "${card.stage?.name || '—'}" → "${vist.name}" — vistoria solicitada ao Santander` } }).catch(() => {});
-    }
-  } catch (e: any) { console.warn('[Vistoria Santander FH] mover card:', e?.message); }
+  // Vistoria solicitada = "Vistoria do Imóvel" (mesmo caminho dos outros bancos).
+  await (require('./vistoria-inter.service') as typeof import('./vistoria-inter.service')).moverParaVistoria(accountId, leadId, 'vistoria solicitada ao Santander (Financiamento)', io as any);
   return true;
 }
 
