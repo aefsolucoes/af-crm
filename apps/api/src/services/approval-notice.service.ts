@@ -217,7 +217,7 @@ export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
 /** Prazo máximo do Inter (meses): o simulador vai de 60 a 240. */
 export const INTER_MAX_TERM = 240;
 
-interface ApprovalOption { /** análise de crédito de onde a opção veio (botão "Seguir com esta") */ analysisId?: string; condicionalSemNumeros?: boolean; docsImovelExtra?: string[]; interCondicional?: boolean; quitacao?: string; troco?: string; /** Creditas: dívidas que o crédito quita ("Valor das Dívidas à quitar" do e-mail de pré-aprovação — Fabio 03/11) */ dividas?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean; prazoTodo?: string }
+interface ApprovalOption { /** análise de crédito de onde a opção veio (botão "Seguir com esta") */ analysisId?: string; /** aprovado a menor sem parcelas: por que a extensão não conseguiu simular o valor aprovado (o portal recusou) */ semSimulacao?: string; condicionalSemNumeros?: boolean; docsImovelExtra?: string[]; interCondicional?: boolean; quitacao?: string; troco?: string; /** Creditas: dívidas que o crédito quita ("Valor das Dívidas à quitar" do e-mail de pré-aprovação — Fabio 03/11) */ dividas?: string; aMenor?: boolean; documentos?: { perfil: string; itens: string[] }; instituicao: string; valor: string; liquido?: boolean; prazo?: string; taxa?: string; primeiraParcela?: string; ultimaParcela?: string; nome?: string; pedido?: string; incompleta?: boolean; prazoTodo?: string }
 
 /** Os dígitos de um valor ("R$ 6.289,96" → "628996") aparecem no texto de onde ele veio? */
 function appearsIn(value: string | undefined, source: string): boolean {
@@ -521,6 +521,8 @@ function optionFromRow(r: CreditAnalysis, interCondicional: boolean): ApprovalOp
     // Aprovado a menor SEM parcelas segura o aviso só onde a extensão refaz a simulação (Santander). No INTER as parcelas só existem depois que o cliente aceita a proposta no portal
     // ("Seguir com proposta"): segurar o aviso por isso era um beco sem saída — o cliente nunca ficava sabendo da aprovação (Luiz Fernando e Jézer, 20/10; Fabio: "o CRM deveria dizer que houve aprovação a menor no Inter").
     incompleta: /aprovad[oa] a menor/i.test(r.detail || '') && !r.firstInstallment && r.bank !== 'INTER',
+    // A extensão tentou simular o valor aprovado e o portal recusou (Jairo/Carla, 07/11: o simulador do Credimorar só simula a partir de R$ 30 mil financiados — o Santander aprovou R$ 28 mil e R$ 25 mil).
+    semSimulacao: (/N[aã]o consegui simular os valores aprovados \(([^)]+)\)/i.exec(r.detail || '') || [])[1],
     // Fabio 19/10 (Jézer): aprovado a menor no Inter num prazo menor que o máximo → o aviso diz que NO PRAZO veio a menor e aconselha o prazo todo (aprovação melhor).
     prazoTodo: r.bank === 'INTER' && /aprovad[oa] a menor/i.test(r.detail || '') && r.termMonths && r.termMonths < INTER_MAX_TERM ? `${INTER_MAX_TERM} meses` : undefined,
     documentos: /aprovad[oa] a menor/i.test(r.detail || '') ? parseDocumentosExigidos(r.detail) || undefined : undefined,
@@ -885,11 +887,14 @@ async function bancosEmAnalise(leadId: string): Promise<string[]> {
 }
 
 /** O que seria enviado: texto com TODAS as opções aprovadas (cada uma com o nome em que saiu, se for o 2º participante) e como vai. */
-export async function previewApprovalNotice(leadId: string): Promise<{ text: string; /** o mesmo aviso em mensagens separadas, com o botão "Seguir com esta" em cada proposta (2+ opções) */ parts: ReturnType<typeof renderApprovalParts>; docsText: string; options: number; condSozinho: boolean; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[] } | null> {
+export async function previewApprovalNotice(leadId: string): Promise<{ text: string; /** o mesmo aviso em mensagens separadas, com o botão "Seguir com esta" em cada proposta (2+ opções) */ parts: ReturnType<typeof renderApprovalParts>; docsText: string; options: number; condSozinho: boolean; mode: 'text' | 'template'; docs: { available: boolean; alreadySent: boolean }; move: { from: string; to: string } | null; warnings: string[]; /** opções aprovadas a menor sem parcelas (seguram o aviso) */ incompletas: { instituicao: string; valor: string; motivo: string | null; abaixoDoSimulador: boolean }[] } | null> {
   const built = await optionsFromAnalyses(leadId).catch(() => null);
   if (!built) return null;
   // "Aprovado a menor": as parcelas certas são as da NOVA simulação com os valores aprovados (a extensão refaz). Sem elas, não avisa.
-  const warnings = (built.filter((o) => o.incompleta).map((o) => `${o.instituicao}: aprovado a menor — faltam a 1ª e a última parcela (a extensão ainda não refez a simulação com os valores aprovados). Clique em "Conferir" nesse banco e tente de novo.`));
+  const incompletas = built.filter((o) => o.incompleta).map((o) => ({ instituicao: o.instituicao, valor: o.valor, motivo: o.semSimulacao || null, abaixoDoSimulador: /valor financiado m[ií]nimo/i.test(o.semSimulacao || '') }));
+  const warnings = incompletas.map((o) => o.motivo
+    ? `${o.instituicao}: aprovado a menor (${o.valor}) — faltam a 1ª e a última parcela: a extensão tentou simular o valor aprovado e o portal recusou (${o.motivo}). ${o.abaixoDoSimulador ? '"Conferir" não resolve: o simulador não aceita esse valor. ' : ''}Lance as parcelas à mão em "Resultado" ou decida com o cliente.`
+    : `${o.instituicao}: aprovado a menor — faltam a 1ª e a última parcela (a extensão ainda não refez a simulação com os valores aprovados). Clique em "Conferir" nesse banco e tente de novo.`);
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true } });
   // Já mandamos um resumo antes (ex.: sem as parcelas certas)? Então este é uma ATUALIZAÇÃO, e o texto diz isso.
   const anterior = await ultimoResumo(leadId);
@@ -931,7 +936,7 @@ export async function previewApprovalNotice(leadId: string): Promise<{ text: str
     whatsappWindowOpen(leadId), lead ? docsTemplate(lead.accountId) : null, docsAlreadySent(leadId), awaitingDocsMove(leadId),
   ]);
   const docsText = lead ? await buildDocsText(lead.accountId, await withHolders(leadId, built), leadId) : '';
-  return { text, parts, docsText, options: built.length, condSozinho: built.every((o) => o.condicionalSemNumeros), mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings };
+  return { text, parts, docsText, options: built.length, condSozinho: built.every((o) => o.condicionalSemNumeros), mode: mode ? 'text' : 'template', docs: { available: !!tpl, alreadySent: already }, move: move ? { from: move.from, to: move.to } : null, warnings, incompletas };
 }
 
 /** O cliente já recebeu um resumo e agora existe uma opção aprovada de um banco que NÃO estava nele (ex.: a Creditas saiu horas depois do Santander).

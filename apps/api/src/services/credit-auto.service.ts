@@ -398,6 +398,24 @@ export function avisoCedo(rows: VRow[] & { approvedValue?: number | null; firstI
   return acima.every((b) => bankVerdict(rows as any, b) !== 'PENDING');
 }
 
+/** Aviso de aprovação PRESO por "aprovado a menor" sem a 1ª e a última parcela (Fabio 07/11, Jairo/Carla: 5 e 11 dias parados na Pré-Análise sem ninguém saber — o simulador do
+ *  Credimorar só simula a partir de R$ 30 mil financiados e a simulação com o valor aprovado nunca saiu). 15 min depois do resultado (a extensão já terminou a tentativa), nota + push
+ *  pra equipe UMA vez por aprovação. Resultado com mais de 10 dias não avisa (card antigo, já tratado à mão). */
+async function avisoPresoSemParcelas(accountId: string, l: { id: string; name: string }, cf: Cf, rows: { bank: string; status: string; detail: string | null; updatedAt: Date; approvedValue: number | null; firstInstallment: number | null }[], incompletas: { instituicao: string; valor: string; motivo: string | null; abaixoDoSimulador: boolean }[]) {
+  const presas = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue && !a.firstInstallment && a.bank !== 'INTER' && /aprovad[oa] a menor/i.test(a.detail || ''));
+  const ultima = presas[0]?.updatedAt; // rows: do mais novo pro mais antigo
+  if (!ultima) return;
+  const idade = Date.now() - ultima.getTime();
+  if (idade < 15 * 60_000 || idade > 10 * 86_400_000) return;
+  const sig = presas.map((a) => `${a.bank}:${a.approvedValue}`).sort().join('|');
+  if (cf._avisoPresoSig === sig) return;
+  await saveCf(l.id, { _avisoPresoSig: sig });
+  const linhas = incompletas.map((o) => `${o.instituicao} aprovou a menor (${o.valor})${o.motivo ? ` e o portal não simulou esse valor (${o.motivo})` : ', mas a extensão ainda não refez a simulação com o valor aprovado'}`);
+  const simulador = incompletas.some((o) => o.abaixoDoSimulador);
+  await addNote(l.id, `⏸️ Aviso de aprovação PARADO: ${linhas.join('; ')}. Sem a 1ª e a última parcela o aviso não sai sozinho.${simulador ? ' O simulador não aceita esse valor, então "Conferir" não resolve.' : ''} Lance as parcelas à mão em "Resultado" (Análise de Crédito) ou decida com o cliente.`);
+  (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `⏸️ ${l.name}: aviso de aprovação parado`, body: `${incompletas.map((o) => `${o.instituicao} ${o.valor}`).join(', ')} sem as parcelas${simulador ? ' (o simulador não aceita esse valor)' : ''}. Lance à mão ou decida com o cliente.`, leadId: l.id }).catch(() => {});
+}
+
 /** 3) Quando as respostas assentam, avisa o cliente de todas as opções aprovadas (até 3) pra ele escolher. A IA do CRM dá o apoio. */
 async function noticeClients(accountId: string, io: any) {
   const leads = await prisma.lead.findMany({
@@ -451,6 +469,7 @@ async function noticeClients(accountId: string, io: any) {
       continue;
     }
     const preview = await previewApprovalNotice(l.id).catch(() => null);
+    if (preview?.incompletas.length) await avisoPresoSemParcelas(accountId, l, cf, rows, preview.incompletas).catch((e: any) => console.error('[Análise automática] aviso preso:', e?.message));
     if (!preview || preview.warnings.length) continue; // nenhuma aprovada com valor, ou ainda faltam as parcelas da nova simulação
     // Só o Inter CONDICIONAL (sem valor até receber os documentos): o aviso automático sai enquanto o card ainda está ANTES de "Aguardando Documentação" — card que a equipe já tocou/avançou não recebe aviso sozinho (Jeane, 23/10).
     if (preview.condSozinho && !preview.move) continue;
