@@ -303,22 +303,31 @@ export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; 
   return todo;
 }
 
+/** O que falta da cascata do card, com os ajustes manuais e o "casados?" da proposta — o MESMO cálculo pra quem roda (cascadeToSecond) e pra quem fecha (closeRejected).
+ *  Antes o closeRejected chamava cascadePlan sem o "casados": depois de inverter (INV) ele achava que faltava rodar cada um sozinho e segurava o card na Pré-Análise
+ *  pra sempre, sem negativa nem pergunta à equipe (Murilo e Cristiano, 07/11). */
+async function cascadeTodo(leadId: string, cf: Cf, leadName: string, analyses: Parameters<typeof cascadePlan>[2]) {
+  const ovs = await prisma.creditOverride.findMany({ where: { leadId }, select: { bank: true, data: true } });
+  const manuais = ovs.filter((o) => (o.data as any)?.escolhaManual === true).map((o) => o.bank);
+  const proposta = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  return cascadePlan(cf, leadName, analyses, manuais, casadosNaProposta(cf, proposta?.content || ''));
+}
+
 /** 2) Cascata: não passou nos dois nomes → casados invertem, os outros rodam cada um sozinho (1 vez cada, por banco). */
 async function cascadeToSecond(accountId: string) {
+  // Os mais mexidos primeiro e com folga no limite: com `take: 80` sem ordem o Postgres devolvia 80 cards quaisquer de ~90 abertos com análise, e os de fora
+  // (Amanda e Luana, 06/11) nunca passavam pro 2º participante — o card ficava parado na Pré-Análise sem erro nenhum no log (Fabio 07/11: "por que travou").
   const leads = await prisma.lead.findMany({
-    where: { accountId, status: 'OPEN', archived: false, creditAnalyses: { some: {} } },
+    where: { accountId, status: 'OPEN', archived: false, creditAnalyses: { some: { dryRun: false } } },
     select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' } } },
-    take: 80,
+    orderBy: { updatedAt: 'desc' }, take: 300,
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
     if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     if (!cf._autoStartedAt) continue;
-    const ovs = await prisma.creditOverride.findMany({ where: { leadId: l.id }, select: { bank: true, data: true } });
-    const manuais = ovs.filter((o) => (o.data as any)?.escolhaManual === true).map((o) => o.bank);
-    const proposta = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { content: true } });
-    const casados = casadosNaProposta(cf, proposta?.content || '');
-    const todo = cascadePlan(cf, l.name, l.creditAnalyses, manuais, casados);
+    if (!String(cf.participante_2 || '').trim()) continue; // sem 2º participante não há cascata (poupa as 2 consultas abaixo)
+    const todo = await cascadeTodo(l.id, cf, l.name, l.creditAnalyses);
     if (!todo.length) continue;
     const p1 = String(cf.participante_1 || l.name || '').trim(), p2 = String(cf.participante_2 || '').trim();
     const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
@@ -359,7 +368,7 @@ async function cascadeFh(accountId: string) {
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, pipeline: { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } }, creditAnalyses: { some: { bank: { in: FH_CASCATA }, dryRun: false } } },
     select: { id: true, name: true, customFields: true },
-    take: 80,
+    orderBy: { updatedAt: 'desc' }, take: 300,
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
@@ -395,7 +404,7 @@ async function noticeClients(accountId: string, io: any) {
     // Só Home Equity: o Financiamento tem o aviso dele (fh-approval). Sem isso o card do FH recebeu o aviso do HE com "Instituição: INTER_FH" e a lista de documentos do HE (Pedro Paulo, 29/10).
     where: { accountId, status: 'OPEN', archived: false, NOT: { pipeline: { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } } }, creditAnalyses: { some: { status: { in: ['APPROVED', 'CONDITIONAL'] }, dryRun: false } } },
     select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { dryRun: false }, orderBy: { updatedAt: 'desc' }, select: { kind: true, status: true, updatedAt: true, createdAt: true, bank: true, approvedValue: true, firstInstallment: true, holderName: true, detail: true, source: true } } },
-    take: 80,
+    orderBy: { updatedAt: 'desc' }, take: 300, // sem ordem, os 80 de sempre deixavam card de fora sem aviso (mesmo defeito da cascata, 07/11)
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
@@ -555,7 +564,7 @@ async function closeRejected(accountId: string, io: any) {
     if (!emJogo.length || emJogo.some((b) => bankVerdict(rows, b) !== 'NEG')) continue;
     const last = Math.max(...rows.map((r) => r.updatedAt.getTime()));
     if (Date.now() - last < 2 * 60_000) continue; // resultado final dos 3 bancos: só uma folga curta pra conferências em andamento
-    if (cascadePlan(cf, l.name, rows as any).length) continue; // ainda falta rodar no 2º participante
+    if ((await cascadeTodo(l.id, cf, l.name, rows as any)).length) continue; // ainda falta rodar no 2º participante
     // Bancos combinados com CAIXA/banco manual ainda pela frente: não fecha sozinho, a equipe decide (Fabio 30/10).
     if (await (require('./bancos-combinados.service') as typeof import('./bancos-combinados.service')).segurarNegativa(accountId, l.id, l.name, cf).catch(() => true)) continue;
     // A negativa automática só sai com a IA DAQUELE card ligada (Fabio 19/10, mesma regra do aviso de aprovação): com a IA desligada (a equipe assumiu a conversa)

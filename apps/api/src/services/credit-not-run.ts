@@ -72,6 +72,10 @@ export function whyNotRun(i: NotRunInput): string {
   const deveriaRodar = ult.status === 'REJECTED' || ult.status === 'SENT' || (POSITIVO.has(ult.status) && /aprovad[oa] a menor/i.test(ult.detail || ''));
   if (deveriaRodar) {
     if (tried.includes(i.bank)) return 'O automático já pediu o 2º participante neste banco — o pedido está na fila.';
+    // Cascata nova (Fabio 05/11, `_autoSozinho`): já inverteu ou já rodou cada um sozinho neste banco — a tela dizia "deveria ter passado pro 2º" (Cristiano, 07/11).
+    const sozinho: string[] = ((cf._autoSozinho || {}) as Record<string, string[]>)[i.bank] || [];
+    if (sozinho.includes('INV')) return 'O automático já inverteu neste banco (o 2º participante como titular) e também não passou.';
+    if (sozinho.includes('P2')) return 'O automático já rodou o 2º participante sozinho neste banco.';
     if (!cf._autoStartedAt) return 'Este cliente não foi iniciado pelo automático, então o 2º participante não roda sozinho — use "Rodar no 2º participante".';
     return 'O 1º participante deveria ter passado pro 2º: o automático ainda não fez (ele confere a cada minuto) — se continuar assim, use "Rodar no 2º participante".';
   }
