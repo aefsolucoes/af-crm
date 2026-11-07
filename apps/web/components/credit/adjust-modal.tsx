@@ -104,7 +104,18 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
   const marca = (...ks: string[]) => setMexidos((m) => new Set([...Array.from(m), ...ks]));
   const DINHEIRO = new Set(['valorImovel', 'valorEmprestimo', 'renda', 'rendaParticipante']);
   const set = (k: keyof OverrideData) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = DINHEIRO.has(k) ? maskCentavos(e.target.value) : e.target.value.replace(/\D/g, ''); // máscara de banco: 16000000 → 160.000,00 (prazo só dígitos)
+    const el = e.target;
+    const v = DINHEIRO.has(k) ? maskCentavos(el.value) : el.value.replace(/\D/g, ''); // máscara de banco: 16000000 → 160.000,00 (prazo só dígitos)
+    // O cursor fica antes dos MESMOS dígitos de antes (Fabio 07/11: trocou 160 por 200 no meio do valor, o cursor pulou pro fim, os dígitos seguintes
+    // entraram nos centavos e o Inter recebeu imóvel de R$ 2.000.000,00).
+    if (DINHEIRO.has(k)) {
+      const aDireita = el.value.slice(el.selectionStart ?? el.value.length).replace(/\D/g, '').length;
+      requestAnimationFrame(() => {
+        let i = v.length, n = 0;
+        while (i > 0 && n < aDireita) { i--; if (/\d/.test(v[i])) n++; }
+        try { el.setSelectionRange(i, i); } catch { /* campo já fechado */ }
+      });
+    }
     setForm((f) => ({ ...f, [k]: v }));
     marca(k);
   };
@@ -132,6 +143,16 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
   }
 
   async function save(clear = false, runAgain = false) {
+    // Valor muito longe do card (5× pra mais ou pra menos) quase sempre é dígito a mais/a menos: confirma antes de salvar (Fabio 07/11, R$ 200 mil virou R$ 2 milhões).
+    if (!clear) {
+      const base = cardDefaults(lead);
+      const rotulo: Record<string, string> = { valorImovel: 'Valor do imóvel', valorEmprestimo: 'Valor do financiamento', renda: 'Renda do titular', rendaParticipante: 'Renda do 2º participante' };
+      const longe = (['valorImovel', 'valorEmprestimo', 'renda', 'rendaParticipante'] as const).filter((k) => {
+        const a = toNum(form[k]), b = toNum(base[k]);
+        return a !== null && b !== null && a > 0 && b > 0 && (a / b >= 5 || b / a >= 5);
+      });
+      if (longe.length && !window.confirm(`Confira antes de salvar:\n${longe.map((k) => `• ${rotulo[k]}: R$ ${form[k]} — no card está R$ ${base[k]}`).join('\n')}\n\nEstá certo?`)) return;
+    }
     if (runAgain && !window.confirm(`Salvar e enviar de novo a proposta de ${lead.name} para ${banksOf(scope).map((b) => BANKS.find((x) => x.key === b)!.short).join(', ')}? Isso envia de verdade ao banco.`)) return;
     setBusy(true);
     try {
