@@ -37,15 +37,16 @@ export function generoDoCard(cf: Record<string, any> | null | undefined, nome: u
   const n = semAcento(nome).replace(/[^a-z\s]/g, ' ').trim().split(/\s+/);
   if (!cf || !n[0]) return null;
   for (const i of [1, 2]) {
-    const p = semAcento(cf[`participante_${i}`]).replace(/[^a-z\s]/g, ' ').trim().split(/\s+/);
-    if (!p[0] || p[0] !== n[0] || (p.length > 1 && n.length > 1 && p[p.length - 1] !== n[n.length - 1])) continue;
+    const casa = (k: string) => { const p = semAcento(cf[k]).replace(/[^a-z\s]/g, ' ').trim().split(/\s+/); return !!p[0] && p[0] === n[0] && !(p.length > 1 && n.length > 1 && p[p.length - 1] !== n[n.length - 1]); };
+    if (!casa(`participante_${i}`) && !casa(`nome_social_${i}`)) continue; // nome de registro ou nome social (Fabio 07/11)
     const sexo = MF(cf[`genero_${i}`]);
     return sexo ? { sexo, equipe: String(cf._generoAuto?.[i] ?? '') !== String(cf[`genero_${i}`]) } : null;
   }
   return null;
 }
 
-/** Sexo pra formulário/portal: o "Gênero" do card posto pela EQUIPE → o do documento/proposta → o do card (CRM) → o primeiro nome. Pura. */
+/** Sexo pra formulário/portal: o "Gênero" do card posto pela EQUIPE ou lido do DOCUMENTO de identidade (genero.service: o documento grava o card fora do
+ *  `_generoAuto`, Fabio 07/11) → o do documento/proposta desta leitura → o do card (CRM) → o primeiro nome. Pura. */
 export function sexoParaFormulario(cf: Record<string, any> | null | undefined, nome: unknown, doDocumento?: unknown): 'M' | 'F' | null {
   const card = generoDoCard(cf, nome);
   if (card?.equipe) return card.sexo;

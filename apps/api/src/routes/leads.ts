@@ -1180,6 +1180,21 @@ router.post('/:id/renda-comprovante', async (req: AuthRequest, res: Response) =>
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
+// Gênero do card pelo documento de identidade (Fabio 07/11: "usar o gênero do documento") — relê o sexo impresso nos RG/CNH lidos antes dessa regra e aplica no card.
+router.post('/:id/genero-documento', async (req: AuthRequest, res: Response) => {
+  try {
+    const l = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
+    if (!l) return res.status(404).json({ error: 'Lead não encontrado' });
+    const { relerSexoDosDocumentos } = require('../services/doc-review.service') as typeof import('../services/doc-review.service');
+    const { atualizarGeneroPeloDocumento } = require('../services/genero.service') as typeof import('../services/genero.service');
+    const lidos = await relerSexoDosDocumentos(req.user!.accountId, l.id);
+    const mudancas = await atualizarGeneroPeloDocumento(l.id);
+    const f = await prisma.lead.findUnique({ where: { id: l.id }, select: { customFields: true } });
+    const cf = (f?.customFields || {}) as Record<string, any>;
+    res.json({ ...lidos, mudancas, genero_1: cf.genero_1 ?? null, genero_2: cf.genero_2 ?? null, doDocumento: cf._generoDoc ?? null });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+
 router.post('/:id/ficha-cadastral', async (req: AuthRequest, res: Response) => {
   const { gerarFichaCadastral } = require('../services/ficha-cadastral.service') as typeof import('../services/ficha-cadastral.service');
   const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });

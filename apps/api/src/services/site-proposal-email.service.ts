@@ -47,6 +47,7 @@ const FIELD_MAP: { labels: string[]; key: string; kind: 'text' | 'number' | 'dat
   { labels: ['celular 2º', 'celular 2o'], key: 'telefone_2', kind: 'text' },
   { labels: ['relacao'], key: 'vinculo_2', kind: 'text' },
   { labels: ['renda bruta 2º', 'renda bruta 2o'], key: 'renda_2', kind: 'number' },
+  { labels: ['genero 2º', 'genero 2o', 'sexo 2º', 'sexo 2o'], key: 'genero_2', kind: 'text' }, // quando o site mandar o gênero do 2º (Fabio 07/11: nenhuma proposta trazia)
   // Formulário novo (15/10): saldo devedor, troco e se o imóvel tem certidão de ônus/matrícula.
   { labels: ['valor que falta para quitacao'], key: 'saldo_devedor', kind: 'number' },
   { labels: ['certidao de onus/matricula'], key: 'possui_certidao', kind: 'text' },
