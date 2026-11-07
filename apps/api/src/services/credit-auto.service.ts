@@ -277,7 +277,7 @@ export function casadosNaProposta(cf: Cf, proposta: string): boolean {
  *  - NÃO casados → CADA UM SOZINHO: o 1º sozinho e depois o 2º sozinho (o 2º entra assim que o 1º sozinho já foi enviado) — "depois roda cada um sozinho";
  *    1ª rodada que já foi só no 1º (proposta sem o 2º, Creditas que só aceita cônjuge) → o 2º sozinho; CPF do 1º com proposta ativa na Creditas → só o 2º.
  *  Banco com escolha manual da equipe ou já tratado pela regra antiga (_autoP2Banks) fica de fora. Pura (testável). */
-export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null; approvedValue?: number | null }[], manuais: string[] = [], casados = false, bancos: string[] = BANKS): { bank: string; who: 'P1' | 'P2' | 'INV'; why: string }[] {
+export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[], manuais: string[] = [], casados = false, bancos: string[] = BANKS): { bank: string; who: 'P1' | 'P2' | 'INV'; why: string }[] {
   const p2 = String(cf.participante_2 || '').trim();
   const cpf2 = String(cf.cpf_2 || '').replace(/\D/g, '');
   if (!p2 || cpf2.length < 11) return [];
@@ -291,9 +291,9 @@ export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; 
     const feitos = sozinho[bank] || [];
     const decided = [...rows].reverse().find((a) => ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(a.status));
     const cpfAtivo = !decided && rows.some((a) => a.kind === 'RUN' && a.status === 'FAILED' && CREDITAS_CPF_ATIVO.test(a.detail || ''));
-    const falhou = cpfAtivo || (decided && (decided.status === 'REJECTED' || abaixoDoMinimoHE(decided) || (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || ''))));
+    const falhou = cpfAtivo || (decided && (decided.status === 'REJECTED' || (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || ''))));
     if (!falhou) continue; // aprovado no valor total (ou ainda sem resposta): não precisa
-    const why = cpfAtivo ? 'CPF do 1º já tem proposta ativa na Creditas' : decided!.status === 'REJECTED' ? 'reprovado' : abaixoDoMinimoHE(decided!) ? 'aprovado abaixo do mínimo' : 'aprovado a menor';
+    const why = cpfAtivo ? 'CPF do 1º já tem proposta ativa na Creditas' : decided!.status === 'REJECTED' ? 'reprovado' : 'aprovado a menor';
     if (casados) { if (!feitos.includes('INV')) todo.push({ bank, who: 'INV', why: `${why} no nome do 1º (casados)` }); continue; }
     const primeira = rows.find((a) => a.kind === 'RUN' && /Titular na an[aá]lise:/i.test(a.detail || ''));
     const nosDois = formatoDaRodada(primeira?.detail) === 'AMBOS';
@@ -391,7 +391,7 @@ async function cascadeFh(accountId: string) {
 const PRIORIDADE_BANCOS = ['INTER', 'CREDITAS', 'CREDIMORAR']; // mesma ordem fixa dos PDFs: Inter > Creditas > Santander
 /** O aprovado de MAIOR prioridade é valor TOTAL (não "a menor") e tem os números completos, e os bancos acima dele na ordem já responderam? Pura (testável). */
 export function avisoCedo(rows: VRow[] & { approvedValue?: number | null; firstInstallment?: number | null }[]): boolean {
-  const aprovados = (rows as any[]).filter((a) => (a.status === 'APPROVED' || a.status === 'CONDITIONAL') && a.approvedValue && a.firstInstallment && !/aprovad[oa] a menor/i.test(a.detail || '') && !abaixoDoMinimoHE(a));
+  const aprovados = (rows as any[]).filter((a) => (a.status === 'APPROVED' || a.status === 'CONDITIONAL') && a.approvedValue && a.firstInstallment && !/aprovad[oa] a menor/i.test(a.detail || ''));
   if (!aprovados.length) return false;
   const melhor = [...aprovados].sort((a, b) => PRIORIDADE_BANCOS.indexOf(a.bank) - PRIORIDADE_BANCOS.indexOf(b.bank))[0];
   const acima = PRIORIDADE_BANCOS.slice(0, PRIORIDADE_BANCOS.indexOf(melhor.bank));
@@ -498,11 +498,7 @@ export const DADO_PARA_CORRIGIR = /DADO PARA CORRIGIR/i;
 /** Creditas: "Este CPF já possui uma proposta ativa … ela NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar na Creditas — conta como NÃO desse banco
  *  (se os outros também não deram, o cliente é avisado e vai pra Perdido; se algum aprovou, o aviso de aprovação sai sem esperar a Creditas). */
 const CREDITAS_CPF_ATIVO = /CPF j[aá] possui uma proposta ativa na Creditas/i;
-type VRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; source: string; approvedValue?: number | null };
-/** Valor mínimo da A&F no Home Equity (Fabio 02/11). Aprovação ABAIXO dele conta como reprovação (Fabio 07/11, Jairo/Carla: o Santander aprovou R$ 28 mil e o aviso ficou
- *  parado dias, sem nota — "tratar como reprovado"). Só os bancos do HE; sem o valor gravado (linha sem approvedValue) não muda nada. */
-export const HE_CREDITO_MINIMO = 50_000;
-export const abaixoDoMinimoHE = (r: { bank: string; status: string; approvedValue?: number | null }) => BANKS.includes(r.bank) && ['APPROVED', 'CONDITIONAL'].includes(r.status) && r.approvedValue != null && r.approvedValue < HE_CREDITO_MINIMO;
+type VRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; source: string };
 /** Linha que NÃO conta como veredito do banco: a simulação de teste antiga (AI_SIM) e a nova proposta que o CLIENTE pediu (outro prazo/valor — AI_CHANGE) quando NÃO foi aprovada:
  *  recusa num prazo/valor diferente não desfaz a aprovação que o banco já deu (senão o CRM mandaria a negativa e fecharia o card de quem está aprovado). Enquanto roda, segura como pendente. */
 export const semRuidoDeSimulacao = (r: { source: string; status: string }) => r.source !== 'AI_SIM' && !(r.source === 'AI_CHANGE' && !['APPROVED', 'CONDITIONAL', 'REQUESTED', 'RUNNING', 'SENT'].includes(r.status));
@@ -513,7 +509,7 @@ export function bankVerdict(rows: VRow[], bank: string): 'NEG' | 'POS' | 'PENDIN
   const mine = rows.filter((r) => r.bank === bank && semRuidoDeSimulacao(r) && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   const r = mine[0];
   if (!r) return 'PENDING';
-  if (r.status === 'APPROVED' || r.status === 'CONDITIONAL') return abaixoDoMinimoHE(r) ? 'NEG' : 'POS';
+  if (r.status === 'APPROVED' || r.status === 'CONDITIONAL') return 'POS';
   if (r.status === 'REJECTED') return 'NEG';
   if (r.status === 'FAILED' && OBJECTIVE_FAIL.test(r.detail || '')) return 'NEG';
   if (bank === 'CREDITAS' && CREDITAS_CPF_ATIVO.test(r.detail || '')) return 'NEG'; // conferir/"verificar" com esse aviso: não tem como rodar
@@ -555,7 +551,7 @@ async function closeRejected(accountId: string, io: any) {
       pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
       creditAnalyses: { some: { dryRun: false } },
     },
-    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true, approvedValue: true } } },
+    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true } } },
     orderBy: { createdAt: 'asc' }, take: 80,
   });
   for (const l of leads) {
@@ -629,7 +625,7 @@ export function rejectionPendingOf(rows: any[], lead: { status: string; stage?: 
 export async function sendRejectionAndClose(p: { accountId: string; leadId: string; userId: string; io: any }): Promise<{ ok: boolean; scheduled?: boolean; already?: boolean; error?: string }> {
   const l = await prisma.lead.findFirst({
     where: { id: p.leadId, accountId: p.accountId, status: 'OPEN' },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true, approvedValue: true } } },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true } } },
   });
   if (!l) return { ok: false, error: 'Card não encontrado ou já fechado.' };
   const rows = l.creditAnalyses;
@@ -920,7 +916,7 @@ async function earlyStatusNotices(accountId: string, io: any) {
       pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
       creditAnalyses: { some: { dryRun: false } },
     },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, source: true, approvedValue: true } } },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, source: true } } },
     take: 60,
   });
   for (const l of leads) {

@@ -51,7 +51,7 @@ export async function processPendenteReprovou(accountId: string, io?: Io): Promi
     const cf = (lead.customFields || {}) as Record<string, any>;
     const chave = ultimo.createdAt.toISOString();
     if (cf._pendReprovou?.aviso === chave) continue;
-    const rows = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, select: { bank: true, kind: true, status: true, detail: true, source: true, createdAt: true, updatedAt: true, chosen: true, approvedValue: true } });
+    const rows = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, select: { bank: true, kind: true, status: true, detail: true, source: true, createdAt: true, updatedAt: true, chosen: true } });
     const vered = pend.map((b) => bankVerdict(rows as any, b));
     if (vered.includes('PENDING') || vered.includes('POS')) continue; // ainda analisando, ou aprovou (aí sai o aviso de "mais um banco")
     const marca = (v: Record<string, unknown>) => prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_pendReprovou}', ${JSON.stringify({ ...v, aviso: chave, bancos: pend, at: new Date().toISOString() })}::jsonb, true) WHERE id = ${leadId}`;

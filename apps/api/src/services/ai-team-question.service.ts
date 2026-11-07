@@ -515,7 +515,7 @@ Se o cliente voltar num assunto ainda sem resposta, não responda nada sobre ele
 
 /** Veredito real de cada banco pro card (bankVerdict: negou / aprovou / ainda em análise). Vazio se o card não tem análise de crédito. */
 async function veredictosDosBancos(leadId: string): Promise<{ nome: string; v: 'NEG' | 'POS' | 'PENDING' }[]> {
-  const rows = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, select: { bank: true, kind: true, status: true, detail: true, source: true, createdAt: true, approvedValue: true } });
+  const rows = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, select: { bank: true, kind: true, status: true, detail: true, source: true, createdAt: true } });
   if (!rows.length) return [];
   const { bankVerdict } = require('./credit-auto.service') as typeof import('./credit-auto.service');
   const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };

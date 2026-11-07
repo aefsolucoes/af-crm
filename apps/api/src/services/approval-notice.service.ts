@@ -535,7 +535,6 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
     orderBy: { createdAt: 'asc' },
   });
   const bucket = await holderBucketer(leadId);
-  const { abaixoDoMinimoHE } = require('./credit-auto.service') as typeof import('./credit-auto.service');
   // O veredito MAIS RECENTE de cada banco+PARTICIPANTE vale: se depois de aprovado o banco negou (ex.: Creditas nega a análise seguinte à pré-qualificação), não oferece
   // mais essa opção — mas a negativa do titular não apaga a aprovação do 2º participante (esposa/segundo proponente) no mesmo banco.
   const byKey = new Map<string, (typeof rows)[number]>();
@@ -543,8 +542,7 @@ async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | n
   for (const r of rows) {
     const k = `${r.bank}|${bucket(r.holderName, r.holderCpf)}`;
     ultimo.set(k, r);
-    // Aprovado ABAIXO do mínimo de R$ 50 mil do HE conta como reprovação (Fabio 07/11): não vira opção do aviso, e sem outra opção sai a negativa.
-    if (r.status === 'REJECTED' || abaixoDoMinimoHE(r)) { if (r.source !== 'AI_CHANGE') byKey.delete(k); } // recusa de outro prazo/valor pedido pelo cliente não desfaz a aprovação anterior
+    if (r.status === 'REJECTED') { if (r.source !== 'AI_CHANGE') byKey.delete(k); } // recusa de outro prazo/valor pedido pelo cliente não desfaz a aprovação anterior
     else if (r.approvedValue != null) byKey.set(k, r);
   }
   // Por banco, a aprovação de MAIOR valor (titular ou 2º participante).
@@ -1275,10 +1273,6 @@ export async function buildRejectionText(leadId: string): Promise<{ text: string
   if (/terreno/i.test(detail)) reasons.push('o imóvel é um terreno (a maioria dos bancos não aceita)');
   if (/abaixo do m[ií]nimo/i.test(detail)) reasons.push('o valor do imóvel fica abaixo do mínimo exigido por alguns bancos');
   if (rows.some((r) => r.bank === 'CREDIMORAR' && /saldo devedor/i.test(r.detail || ''))) reasons.push('o imóvel ainda tem saldo devedor (um dos bancos não aceita)');
-  const { abaixoDoMinimoHE, HE_CREDITO_MINIMO } = require('./credit-auto.service') as typeof import('./credit-auto.service');
-  const aprovados = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, select: { bank: true, status: true, approvedValue: true } });
-  // "menos que o mínimo" (não "abaixo do mínimo"): esse é o motivo temporário do IMÓVEL, que pergunta à equipe; o valor aprovado baixo já foi decidido — reprovado (Fabio 07/11).
-  if (aprovados.some((r) => abaixoDoMinimoHE(r))) reasons.push(`o banco aprovou menos que o mínimo de R$ ${HE_CREDITO_MINIMO / 1000} mil do Home Equity`);
   if (rows.some((r) => r.status === 'REJECTED')) reasons.push(reasons.length ? 'os demais bancos não aprovaram a análise de crédito' : 'os bancos não aprovaram a análise de crédito');
   if (!reasons.length && rows.length) reasons.push('o pedido não atendeu às regras dos bancos parceiros');
   if (!reasons.length) return null;

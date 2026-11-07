@@ -315,7 +315,7 @@ export async function aiCreditContext(leadId: string): Promise<string> {
   const rows = await prisma.creditAnalysis.findMany({
     where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
     orderBy: { createdAt: 'desc' },
-    select: { bank: true, kind: true, status: true, detail: true, conditions: true, source: true, createdAt: true, approvedValue: true },
+    select: { bank: true, kind: true, status: true, detail: true, conditions: true, source: true, createdAt: true },
   });
   if (!rows.length) return '';
   const { bankVerdict, semRuidoDeSimulacao } = require('./credit-auto.service') as typeof import('./credit-auto.service');
@@ -330,7 +330,6 @@ export async function aiCreditContext(leadId: string): Promise<string> {
     if (lat[b]?.cadDiv) txt = 'CADASTRO DIVERGENTE (o banco acusou que nome, CPF ou data de nascimento não batem; o CRM pede ao cliente para conferir e refaz a análise quando ele corrige) — NÃO é reprovação';
     else if (aMenorB) txt = 'APROVOU A MENOR (menos que o pedido — o banco NÃO aprova mais que isso; pedir valor maior não adianta)';
     else if (v === 'POS') txt = ultima?.status === 'CONDITIONAL' ? 'APROVOU (condicionado ao envio de documentos)' : 'APROVOU';
-    else if (v === 'NEG' && ultima && ['APPROVED', 'CONDITIONAL'].includes(ultima.status)) txt = 'APROVOU ABAIXO DO MÍNIMO de R$ 50 mil da A&F — conta como NÃO aprovado (Fabio 07/11): não ofereça esse valor; quem comunica é o aviso padrão de não aprovado'
     else if (v === 'NEG') txt = ultima?.status === 'REJECTED' ? 'REPROVOU a proposta' : 'NÃO analisa este cliente (regra do banco/imóvel — nem chegou a analisar)';
     else if (ultima && ['SENT', 'REQUESTED', 'RUNNING'].includes(ultima.status)) txt = 'EM ANÁLISE (proposta enviada, sem resposta ainda)';
     // 26/10 (Jézer): banco sem NENHUMA análise virava "ainda sem resultado" e a IA disse 3 vezes "o Santander ainda está em análise" — ele nunca rodou.
