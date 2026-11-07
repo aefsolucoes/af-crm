@@ -31,6 +31,7 @@ export async function preencherGenero(leadId: string, io?: Io): Promise<number> 
   for (const i of [1, 2]) {
     const nome = String(cf[`participante_${i}`] || '').trim();
     if (!nome) continue;
+    if (String(cf[`nome_social_${i}`] || '').trim()) continue; // com nome social o gênero não se adivinha por nenhum dos dois nomes: fica o que está, a equipe decide (Fabio 07/11)
     const atual = String(cf[`genero_${i}`] || '').trim();
     const doCrm = !!atual && auto[i] === atual;
     if (atual && !(doCrm && autoNome[i] !== nome)) continue; // a equipe pôs, ou o CRM já gravou pra esse mesmo nome
