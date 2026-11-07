@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
@@ -83,6 +83,9 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
   const [busy, setBusy] = useState(false);
   // Ajustes ATUAIS de cada banco (Fabio 05/11: a janela abriu com o ajuste velho da lista — sem a inversão que a rodada automática tinha feito — e salvou "só no nome" da pessoa errada).
   const [fresh, setFresh] = useState<Partial<Record<Bank, OverrideData | null>> | null>(null);
+  // O que a pessoa já mexeu, lido NA HORA (ref): a busca dos ajustes abaixo volta depois de abrir e, com o Set da abertura (vazio), apagava a escolha
+  // feita antes dela voltar (Fabio 07/11, Maria Rosa: marcou "Só a Maria" e o Inter foi salvo "Os dois — titular Maria").
+  const mexidosRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     let vivo = true;
     Promise.all(BANKS.map((b) => api.get('/api/credit-analysis/overrides', { params: { leadId: lead.id, bank: b.key } }).then((r) => [b.key, r.data?.data || null] as const).catch(() => [b.key, lead.overrides?.[b.key] || null] as const)))
@@ -92,7 +95,7 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
         setFresh(f);
         // Um banco só com escolha de quem entra (ex.: Inter "Só Nildinete"): a janela abre nele — em "Todos os bancos" a escolha não aparecia e salvar ali apagava ela.
         const manuais = BANKS.map((b) => b.key).filter((k) => f[k]?.escolhaManual);
-        const alvo: Scope = scope === 'ALL' && manuais.length === 1 && !mexidos.size ? manuais[0] : scope;
+        const alvo: Scope = scope === 'ALL' && manuais.length === 1 && !mexidosRef.current.size ? manuais[0] : scope;
         if (alvo !== scope) setScope(alvo);
         setForm((atual) => comMexidos(initial(lead, alvo, f), atual));
       });
@@ -100,8 +103,9 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lead.id]);
   // O que você mexeu continua quando troca o banco (Fabio 05/11: "toda vez que mudo o banco o ajuste retorna para o que estava").
-  const [mexidos, setMexidos] = useState<Set<string>>(new Set());
-  const marca = (...ks: string[]) => setMexidos((m) => new Set([...Array.from(m), ...ks]));
+  const marca = (...ks: string[]) => {
+    mexidosRef.current = new Set([...Array.from(mexidosRef.current), ...ks]);
+  };
   const DINHEIRO = new Set(['valorImovel', 'valorEmprestimo', 'renda', 'rendaParticipante']);
   const set = (k: keyof OverrideData) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const el = e.target;
@@ -129,7 +133,7 @@ export function AdjustModal({ lead, onClose, onSaved, onRunAgain }: {
   /** Valores do banco escolhido + o que você já mexeu por cima. */
   const comMexidos = (base: OverrideData, atual: OverrideData): OverrideData => {
     const out: OverrideData = { ...base };
-    mexidos.forEach((k) => {
+    mexidosRef.current.forEach((k) => {
       if (k === 'quem') { out.inverter = atual.inverter; out.soTitular = atual.soTitular; out.escolhaManual = atual.escolhaManual; }
       else (out as any)[k] = (atual as any)[k];
     });
