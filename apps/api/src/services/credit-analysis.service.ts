@@ -407,6 +407,14 @@ export function propostaDoCard(cf: Record<string, any>): { bank: string; numero:
   return hits.length === 1 ? { bank: hits[0], numero } : null;
 }
 
+/** Terreno no Home Equity só roda no Santander pelo Credimorar (Fabio 08/11: "terreno a gente só roda na Credimorar pelo Santander… não precisa rodar em todos"). Lê o "Tipo do imóvel"
+ *  da proposta (o mesmo que as extensões usam) e, sem ele, o do card. */
+export async function imovelTerreno(db: Db, leadId: string, cf: Record<string, any>): Promise<boolean> {
+  const prop = await db.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Tipo do im', mode: 'insensitive' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const daProposta = /tipo do im[óo]vel:\s*\**\s*([^\n*]+)/i.exec(prop?.content || '')?.[1];
+  return /terreno|\blote\b/i.test(String(daProposta || cf.tipo_imovel || cf.tipo_do_imovel || ''));
+}
+
 export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; alignApproval?: boolean; queueIfBusy?: boolean }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => EXT_BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
@@ -479,6 +487,16 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
           created++;
           continue;
         }
+      }
+      // Terreno: só o Santander (Fabio 08/11). Inter e Creditas nem abrem — "NÃO RODEI" na hora, e o resultado do Santander já vai pro cliente sem esperar os outros dois.
+      if ((bank === 'INTER' || bank === 'CREDITAS') && kind === 'RUN' && !p.dryRun && (await imovelTerreno(db, l.id, cfPedido).catch(() => false))) {
+        const detail = 'NÃO RODEI: terreno a gente só roda no Santander (Credimorar).';
+        await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
+        const conteudo = '🚫 Terreno: só roda no Santander (Credimorar) — Inter e Creditas ficam de fora.';
+        const ja = await db.note.findFirst({ where: { leadId: l.id, content: conteudo, createdAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
+        if (!ja) await db.note.create({ data: { leadId: l.id, type: 'COMMENT', content: conteudo } }).catch(() => {});
+        created++;
+        continue;
       }
       // Santander e Creditas só fazem Home Equity com habite-se (Fabio 06/11): sem habite-se (o cliente disse, ou marcou "Não tem Habite-se" na proposta de imóvel quitado),
       // rodada AUTOMÁTICA nem abre. Clique de uma pessoa roda (ela decide).
