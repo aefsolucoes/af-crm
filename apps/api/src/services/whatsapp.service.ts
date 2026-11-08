@@ -818,11 +818,12 @@ export async function resolveContactAndLeadByPhone(
   io: any,
   departmentId?: string | null,
   textForCampaignDetection: string = ''
-): Promise<{ contact: any; leadId: string; formattedPhone: string; formAdvanced: boolean }> {
+): Promise<{ contact: any; leadId: string; formattedPhone: string; formAdvanced: boolean; propostaAdiante: boolean }> {
   const formattedPhone = formatPhoneDisplay(from);
   // Proposta completa levou o card pra Pré-Análise: a automação da etapa já
   // responde ("Recebi sua proposta...") — a IA não responde em cima.
   let formAdvanced = false;
+  let propostaAdiante = false;
 
   // ── Find or create contact ──────────────────────────────────────────
   // Incidente real: cliente já tinha Contact/Lead criado pelo webhook do
@@ -975,6 +976,8 @@ export async function resolveContactAndLeadByPhone(
           runAutomations({ accountId, trigger: 'STAGE_CHANGE', leadId: existingLead.id, io, context: { newStageId: nowStage.stageId } }).catch(() => {});
         }
       }
+      // Card já adiante da Pré-Análise: o aviso de etapa (proposta-adiante.service) responde a esta proposta — a IA da conversa não (Fabio 08/11).
+      if (!formAdvanced && await (require('./proposta-adiante.service') as typeof import('./proposta-adiante.service')).temPropostaAdiante(existingLead.id).catch(() => false)) propostaAdiante = true;
     }
   } else {
     // Lead de campanha (ficha do site preenchida) já nasce no funil/estágio
@@ -1031,7 +1034,7 @@ export async function resolveContactAndLeadByPhone(
     }
   }
 
-  return { contact, leadId, formattedPhone, formAdvanced };
+  return { contact, leadId, formattedPhone, formAdvanced, propostaAdiante };
 }
 
 /** Localização que o cliente manda pelo WhatsApp (type "location"): vira texto com o nome/endereço e o link do mapa. Antes era DESCARTADA (Fabio 26/10: "não estou recebendo a localização no Inbox do CRM"). Pura (testável). */
@@ -1134,11 +1137,13 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       let leadId: string;
       let formattedPhone: string;
       let formAdvanced = false;
+      let propostaAdiante = false;
       try {
         const resolved = await resolveContactAndLeadByPhone(accountId, from, profileName, io, departmentId, text);
         leadId = resolved.leadId;
         formattedPhone = resolved.formattedPhone;
         formAdvanced = resolved.formAdvanced;
+        propostaAdiante = resolved.propostaAdiante;
       } catch (err) {
         console.error('[WhatsApp] Erro ao resolver contato/lead:', err);
         continue;
@@ -1349,9 +1354,10 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         // proposta: o e-mail já levou o card pra Pré-Análise e a automação
         // já mandou o "Recebi sua proposta" — a IA respondia de novo
         // (Alexandre Barutti 27/09: duas confirmações seguidas).
-        const formAlreadyAcknowledged = formAdvanced || await isSiteFormAlreadyAcknowledged(leadId, text);
+        const formAlreadyAcknowledged = !propostaAdiante && (formAdvanced || await isSiteFormAlreadyAcknowledged(leadId, text));
         if (formAlreadyAcknowledged) console.log(`[Formulário] ${leadId}: proposta pelo WhatsApp já confirmada (chegou antes por e-mail) — sem resposta`);
-        const alreadyHandled = interestHandled || formAlreadyAcknowledged;
+        if (propostaAdiante) console.log(`[Formulário] ${leadId}: proposta de card adiante da Pré-Análise — o aviso de etapa responde`);
+        const alreadyHandled = interestHandled || formAlreadyAcknowledged || propostaAdiante;
         if (!alreadyHandled) {
           const templateDisparou = await maybeAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId);
           if (!templateDisparou) {

@@ -313,6 +313,8 @@ export async function advanceLeadOnProposalForm(accountId: string, leadId: strin
       await prisma.note.create({
         data: { leadId: lead.id, type: 'COMMENT', content: `📋 O cliente preencheu de novo a proposta (${sig.label}), mas o card ficou onde está — já está em "${lead.pipeline.name} → ${lead.stage.name}", adiante da Pré-Análise.` },
       }).catch(() => {});
+      // E o cliente fica sabendo em que etapa está: o CRM lê a conversa e avisa, com a IA ligada ou não (Fabio 08/11, proposta-adiante.service).
+      await (require('./proposta-adiante.service') as typeof import('./proposta-adiante.service')).marcarPropostaAdiante(lead.id).catch((e: any) => console.error('[Proposta adiante] marca:', e?.message));
     }
     return null;
   }
