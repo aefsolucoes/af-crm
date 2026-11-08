@@ -16,6 +16,7 @@ import { CrmAssistant } from '@/components/ui/crm-assistant';
 import { SendLocationNotice } from '@/components/ui/send-location-notice';
 import { useAuthStore } from '@/store/auth.store';
 import { useLocationPing } from '@/hooks/use-location-ping';
+import { syncPushSubscription } from '@/hooks/use-push-subscription';
 import { effectivePermissions, ROUTE_PERMISSION } from '@/lib/permissions';
 import { getSocket } from '@/lib/socket';
 import { playSoundOnce, SoundKey } from '@/lib/sounds';
@@ -34,6 +35,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     init();
   }, [init]);
+
+  // Ao abrir o app, confere se este aparelho continua inscrito no servidor pra receber push (ver use-push-subscription).
+  useEffect(() => {
+    if (user?.id) syncPushSubscription().catch(() => {});
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user && typeof window !== 'undefined') {

@@ -42,6 +42,66 @@ type PushPayload = {
   url?: string;
 };
 
+export type PushDeliveryResult = { id: string; device: string; status: 'enviado' | 'expirado' | 'erro'; error?: string };
+
+type SubWithUser = { id: string; endpoint: string; p256dh: string; auth: string; userAgent: string | null; user: { name: string } };
+
+/** Nome do aparelho pelo navegador que se inscreveu — lista de Configurações, resultado do teste e log de inscrição removida. */
+export function deviceLabel(userAgent?: string | null): string {
+  const ua = userAgent || '';
+  if (/iPhone/i.test(ua)) return 'iPhone';
+  if (/iPad/i.test(ua)) return 'iPad';
+  if (/Android/i.test(ua)) return /Mobile/i.test(ua) ? 'Celular Android' : 'Tablet Android';
+  if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac';
+  if (/Windows/i.test(ua)) return 'Windows';
+  if (/Linux/i.test(ua)) return 'Linux';
+  return 'Aparelho desconhecido';
+}
+
+/** Entrega o push em cada inscrição e diz o que aconteceu com cada uma. Autolimpa as que o provedor devolveu como expiradas (410/404). */
+async function deliverToSubs(subs: SubWithUser[], body: string): Promise<PushDeliveryResult[]> {
+  const settled = await Promise.allSettled(
+    subs.map((sub) =>
+      webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+        body,
+        // Sem isso o provedor trata como "normal": com o celular em economia de energia o aviso fica pra depois (Fabio 08/11, "não estou recebendo").
+        { urgency: 'high' },
+      ),
+    ),
+  );
+
+  const expiredIds: string[] = [];
+  const results = settled.map((r, i): PushDeliveryResult => {
+    const device = deviceLabel(subs[i].userAgent);
+    if (r.status === 'fulfilled') return { id: subs[i].id, device, status: 'enviado' };
+    const reason = r.reason as any;
+    const statusCode = reason?.statusCode;
+    if (statusCode === 404 || statusCode === 410) {
+      expiredIds.push(subs[i].id);
+      console.log(`[Push] Inscrição expirada removida: ${subs[i].user.name} — ${device} (HTTP ${statusCode})`);
+      return { id: subs[i].id, device, status: 'expirado' };
+    }
+    const error = statusCode ? `HTTP ${statusCode} ${String(reason?.body || '').slice(0, 200)}`.trim() : String(reason?.message || reason);
+    console.warn(`[Push] Falha ao enviar (${subs[i].user.name} — ${device}):`, error);
+    return { id: subs[i].id, device, status: 'erro', error };
+  });
+
+  if (expiredIds.length) {
+    await prisma.pushSubscription.deleteMany({ where: { id: { in: expiredIds } } });
+  }
+  return results;
+}
+
+/** Push de teste pros aparelhos de quem pediu (botão em Configurações → Sons), com o resultado de cada um. */
+export async function sendTestPush(userId: string): Promise<{ configured: boolean; results: PushDeliveryResult[] }> {
+  if (!configured) return { configured: false, results: [] };
+  const subs = await prisma.pushSubscription.findMany({ where: { userId }, include: { user: { select: { name: true } } } });
+  if (!subs.length) return { configured: true, results: [] };
+  const body = JSON.stringify({ title: '🔔 Teste do AF CRM', body: 'Se este aviso apareceu, as notificações estão chegando neste aparelho.', url: '/configuracoes' });
+  return { configured: true, results: await deliverToSubs(subs, body) };
+}
+
 /**
  * Dispara push para todos os dispositivos de todos os usuários da conta —
  * mesmo escopo do evento `new_notification` (conta inteira, sem filtro por
@@ -56,6 +116,7 @@ export async function sendPushToAccount(accountId: string, payload: PushPayload,
   try {
     let subs = await prisma.pushSubscription.findMany({
       where: { user: { accountId }, ...(onlyUserIds ? { userId: { in: onlyUserIds } } : {}) },
+      include: { user: { select: { name: true } } },
     });
     // `desktopOnly`: só os navegadores de computador do usuário (celular/tablet ficam de fora) — ex.: o aviso de "banco deslogado" é pra quem tem as extensões no Chrome do computador.
     if (opts?.desktopOnly) subs = subs.filter((x) => !/Android|iPhone|iPad|iPod|Mobile/i.test(x.userAgent || ''));
@@ -68,27 +129,7 @@ export async function sendPushToAccount(accountId: string, payload: PushPayload,
       ...(payload.type ? { type: payload.type } : {}),
     });
 
-    const results = await Promise.allSettled(
-      subs.map((sub) =>
-        webpush.sendNotification(
-          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-          body,
-        ),
-      ),
-    );
-
-    const expiredIds: string[] = [];
-    results.forEach((r, i) => {
-      if (r.status === 'rejected') {
-        const statusCode = (r.reason as any)?.statusCode;
-        if (statusCode === 404 || statusCode === 410) expiredIds.push(subs[i].id);
-        else console.warn('[Push] Falha ao enviar:', (r.reason as any)?.message || r.reason);
-      }
-    });
-
-    if (expiredIds.length) {
-      await prisma.pushSubscription.deleteMany({ where: { id: { in: expiredIds } } });
-    }
+    await deliverToSubs(subs, body);
   } catch (err) {
     console.error('[Push] Erro ao disparar notificações:', err);
   }

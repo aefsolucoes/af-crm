@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
+import { deviceLabel, isPushConfigured, sendTestPush } from '../services/push.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -53,6 +54,40 @@ router.delete('/subscribe', validate(unsubscribeSchema), async (req: AuthRequest
     res.json({ ok: true });
   } catch {
     res.status(500).json({ error: 'Erro ao remover inscrição de push' });
+  }
+});
+
+// GET /api/push/devices — aparelhos que recebem push: o admin vê os da conta inteira, os outros só os próprios.
+router.get('/devices', async (req: AuthRequest, res: Response) => {
+  try {
+    const subs = await prisma.pushSubscription.findMany({
+      where: req.user!.role === 'ADMIN' ? { user: { accountId: req.user!.accountId } } : { userId: req.user!.id },
+      include: { user: { select: { name: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({
+      configured: isPushConfigured(),
+      devices: subs.map((s) => ({
+        id: s.id,
+        userName: s.user.name,
+        mine: s.userId === req.user!.id,
+        device: deviceLabel(s.userAgent),
+        createdAt: s.createdAt,
+        // Só o finalzinho do endereço, pra tela marcar "este aparelho" sem expor a inscrição inteira.
+        endpointTail: s.endpoint.slice(-12),
+      })),
+    });
+  } catch {
+    res.status(500).json({ error: 'Erro ao listar aparelhos' });
+  }
+});
+
+// POST /api/push/test — manda um push de teste pros aparelhos de quem clicou e devolve o que aconteceu em cada um.
+router.post('/test', async (req: AuthRequest, res: Response) => {
+  try {
+    res.json(await sendTestPush(req.user!.id));
+  } catch {
+    res.status(500).json({ error: 'Erro ao enviar o teste' });
   }
 });
 

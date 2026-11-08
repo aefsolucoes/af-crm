@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Topbar } from '@/components/ui/topbar';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
-import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2, Globe, KeyRound, Sparkles, PhoneCall, MapPin } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, ExternalLink, Info, RefreshCw, ChevronDown, ArrowRight, Trash2, Volume2, VolumeX, Palette, Bot, Plus, Pencil, X as XIcon, HardDrive, Folder, FolderOpen, ChevronRight, Building2, Bell, BellOff, Loader2, Globe, KeyRound, Sparkles, PhoneCall, MapPin, Smartphone, Monitor, Send } from 'lucide-react';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { SendLocationReport } from '@/components/settings/send-location-report';
 import { useAuthStore } from '@/store/auth.store';
@@ -11,12 +11,49 @@ import { usePushSubscription } from '@/hooks/use-push-subscription';
 import { SoundKey, SOUND_OPTIONS, playSoundOnce } from '@/lib/sounds';
 
 // ── Notificação push (chega no celular com o app fechado/em 2º plano) ──────
-function PushNotificationCard() {
-  const { status, busy, subscribe, unsubscribe } = usePushSubscription();
+type PushDevice = { id: string; userName: string; mine: boolean; device: string; createdAt: string; endpointTail: string };
+type PushTestResult = { id: string; device: string; status: 'enviado' | 'expirado' | 'erro'; error?: string };
 
-  if (status === 'unsupported') return null; // navegador sem suporte a Web Push — não mostra a opção
+function PushNotificationCard() {
+  const { status, busy, endpoint, subscribe, unsubscribe } = usePushSubscription();
+  const [devices, setDevices] = useState<PushDevice[] | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResults, setTestResults] = useState<PushTestResult[] | null>(null);
+
+  useEffect(() => {
+    if (status === 'loading') return;
+    api.get('/api/push/devices').then(({ data }) => setDevices(data.devices)).catch(() => setDevices([]));
+  }, [status]);
+
+  async function sendTest() {
+    setTesting(true);
+    setTestResults(null);
+    try {
+      const { data } = await api.post('/api/push/test');
+      if (!data.configured) toast('Notificação push ainda não configurada no servidor — fale com o admin.', 'error');
+      else if (!data.results.length) toast('Nenhum aparelho seu está inscrito.', 'error');
+      setTestResults(data.results);
+    } catch {
+      toast('Não consegui enviar o teste. Tente de novo.', 'error');
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  // No iPhone o Safari só tem push com o CRM instalado — sem este aviso a opção simplesmente não aparecia.
+  if (status === 'unsupported') {
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+        <p className="text-xs text-amber-700">
+          <strong>🔕 Este navegador não recebe notificação push.</strong> No iPhone, abra o CRM pelo ícone na Tela de Início (no Safari: Compartilhar → Adicionar à Tela de Início).
+        </p>
+      </div>
+    );
+  }
 
   const isOn = status === 'subscribed';
+  const resultOf = (id: string) => testResults?.find((r) => r.id === id);
+  const hasMine = !!devices?.some((d) => d.mine);
 
   return (
     <div className="bg-white rounded-2xl border border-af-border shadow-sm overflow-hidden">
@@ -67,6 +104,58 @@ function PushNotificationCard() {
               {isOn ? 'Desativar' : 'Ativar'}
             </button>
           </div>
+        )}
+
+        {devices && (
+          <div className="rounded-xl border border-af-border overflow-hidden">
+            <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 bg-slate-50 border-b border-af-border">
+              <p className="text-xs font-semibold text-slate-600">Aparelhos que recebem</p>
+              {hasMine && (
+                <button
+                  onClick={sendTest}
+                  disabled={testing}
+                  className="flex items-center gap-1.5 px-3 py-1 text-xs rounded-lg font-medium bg-af-blue text-white hover:bg-af-mid transition-colors flex-shrink-0 disabled:opacity-60"
+                >
+                  {testing ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                  Enviar teste
+                </button>
+              )}
+            </div>
+            {devices.length === 0 ? (
+              <p className="px-3.5 py-3 text-xs text-slate-400">Nenhum aparelho inscrito. Abra o CRM no celular, em Configurações → Sons, e toque em Ativar.</p>
+            ) : (
+              <ul className="divide-y divide-af-border">
+                {devices.map((d) => {
+                  const r = resultOf(d.id);
+                  const isPhone = /iPhone|iPad|Android/.test(d.device);
+                  return (
+                    <li key={d.id} className="flex items-center gap-2.5 px-3.5 py-2.5">
+                      {isPhone ? <Smartphone size={16} className="text-slate-400 flex-shrink-0" /> : <Monitor size={16} className="text-slate-400 flex-shrink-0" />}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-slate-800 truncate">
+                          {d.device}
+                          {!d.mine && <span className="text-slate-400"> · {d.userName}</span>}
+                          {endpoint?.endsWith(d.endpointTail) && <span className="ml-1.5 text-[10px] font-semibold text-af-blue">este aparelho</span>}
+                        </p>
+                        <p className="text-xs text-slate-400">desde {new Date(d.createdAt).toLocaleDateString('pt-BR')}</p>
+                      </div>
+                      {r && (
+                        <span className={`text-xs font-medium flex-shrink-0 ${r.status === 'enviado' ? 'text-emerald-600' : r.status === 'expirado' ? 'text-amber-600' : 'text-red-600'}`} title={r.error}>
+                          {r.status === 'enviado' ? '✅ Enviado' : r.status === 'expirado' ? '⚠️ Vencida, removida' : '❌ Erro'}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {!!testResults?.length && (
+          <p className="text-xs text-slate-400">
+            “Enviado” quer dizer que a Apple ou o Google aceitou o aviso. Se ele não apareceu, confira nos Ajustes do celular se as notificações do CRM estão ligadas e se o modo Foco está desligado.
+          </p>
         )}
       </div>
     </div>
