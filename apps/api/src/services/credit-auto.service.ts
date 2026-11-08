@@ -567,7 +567,8 @@ async function learnedRejectionRule(accountId: string, leadId: string, reasons: 
 const INCOMPLETO_MAX_MS = 24 * 3_600_000;
 type IRow = { kind: string; status: string; detail: string | null; createdAt: Date; finishedAt?: Date | null; source: string };
 const RX_INCOMPLETO = /dados incompletos/i;
-const santanderIncompleto = (r: IRow) => r.status === 'INCOMPLETE' || (['CHECK', 'SENT', 'REQUESTED'].includes(r.status) && RX_INCOMPLETO.test(r.detail || ''));
+// Só o "Dados Incompletos" do BANCO: a extensão também usa INCOMPLETE pra "não achei a proposta preenchida na conversa" (pendência nossa, não do Santander).
+const santanderIncompleto = (r: IRow) => ['INCOMPLETE', 'CHECK', 'SENT', 'REQUESTED'].includes(r.status) && RX_INCOMPLETO.test(r.detail || '');
 
 /** Desde quando o Santander está SEGUIDO em "Dados Incompletos" (linhas do CREDIMORAR, mais nova primeiro), se já passou de 24 h; senão null. Pura (testável). */
 export function incompletoHa24h(rows: IRow[], now = Date.now()): Date | null {
@@ -586,7 +587,7 @@ async function rejectStaleIncomplete(accountId: string) {
     where: {
       accountId, status: 'OPEN', archived: false, isGroup: false,
       pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
-      creditAnalyses: { some: { bank: 'CREDIMORAR', dryRun: false, createdAt: { lt: new Date(Date.now() - INCOMPLETO_MAX_MS) }, OR: [{ status: 'INCOMPLETE' }, { detail: { contains: 'Dados Incompletos', mode: 'insensitive' } }] } },
+      creditAnalyses: { some: { bank: 'CREDIMORAR', dryRun: false, createdAt: { lt: new Date(Date.now() - INCOMPLETO_MAX_MS) }, detail: { contains: 'Dados Incompletos', mode: 'insensitive' } } },
     },
     select: { id: true, name: true, customFields: true, creditAnalyses: { where: { bank: 'CREDIMORAR', dryRun: false }, orderBy: { createdAt: 'desc' }, take: 30, select: { id: true, kind: true, status: true, detail: true, createdAt: true, finishedAt: true, source: true, proposalNumber: true, holderName: true, holderCpf: true } } },
     take: 100,
