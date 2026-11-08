@@ -1961,6 +1961,18 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   const p2 = { ...ruins.p2, ...bons.p2 };
   const agora = Date.now();
   const ha = (d: Date) => { const m = Math.max(0, Math.round((agora - d.getTime()) / 60000)); return m < 60 ? `${m} min` : m < 1440 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} dia(s)`; };
+  // Prazo aprovado = o MÁXIMO (Fabio 08/11: Santander aprovou em 216 meses, o teto pela idade, e a IA ofereceu "estender pra 240 meses" pra baixar a parcela).
+  // A 1ª análise já roda no prazo máximo que o banco aceita (idade + prazo ≤ 80, anos cheios no Santander); só NÃO é o máximo quando o cliente pediu outro prazo (AI_CHANGE)
+  // ou a equipe ajustou um prazo menor que 240 — sem limite de idade na nota, aí a IA não afirma nada.
+  const ajustes = await db.creditOverride.findMany({ where: { leadId }, select: { bank: true, data: true } }).catch(() => [] as Array<{ bank: string; data: any }>);
+  const prazoAjustado = (bank: string) => Number((ajustes.find((o) => o.bank === bank)?.data as any)?.prazo) || 0;
+  const prazoNota = (r: any): string => {
+    const t = Number(r.termMonths) || Number((/prazo\s+(\d{2,3})\s*meses/i.exec(r.detail || '') || [])[1]) || 0;
+    if (!t) return '';
+    const porIdade = /s[oó] aceita prazo de at[eé]|pela idade/i.test(r.detail || '');
+    const maximo = t >= 240 || porIdade || (r.source !== 'AI_CHANGE' && !(prazoAjustado(r.bank) && prazoAjustado(r.bank) < 240));
+    return maximo ? `. PRAZO: ${t} meses JÁ É O MÁXIMO que o banco aceita pra este cliente${porIdade ? ' (limite pela idade)' : ''} — NUNCA ofereça aumentar/estender o prazo pra baixar a parcela; se a parcela não cabe, o caminho é um valor de crédito menor` : '';
+  };
   const descreve = (r: any): string => {
     const aMenor = /aprovad[oa] a menor/i.test(r.detail || '');
     switch (r.status) {
@@ -1979,9 +1991,9 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
         // Creditas com dívidas a quitar (Fabio 03/11, Lucas): o crédito paga as dívidas e o líquido é o que sobra — a IA explica e pede o saldo atualizado de cada dívida.
         const div = (/d[ií]vidas a quitar\s*(R\$\s*[\d.]+,\d{2})/i.exec(r.detail || '') || [])[1];
         const divTxt = div ? `. ATENÇÃO: esse crédito QUITA dívidas do cliente (${div}, o banco paga direto) e o valor líquido acima é o que sobra pra ele DEPOIS da quitação — explique isso e peça o print ou descritivo do saldo devedor atualizado de cada dívida (credor e valor pra quitação)` : '';
-        return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}${docsTxt}${prazoTxt}${divTxt}`;
+        return `${aMenor ? 'APROVADO A MENOR (valor menor que o pedido)' : 'APROVADO'}${partes.length ? `: ${partes.join(', ')}` : ' (os números ainda não foram lidos)'}${docsTxt}${prazoTxt || prazoNota(r)}${divTxt}`;
       }
-      case 'CONDITIONAL': return 'APROVADO COM CONDIÇÃO — o banco pede documentos para seguir';
+      case 'CONDITIONAL': return `APROVADO COM CONDIÇÃO — o banco pede documentos para seguir${prazoNota(r)}`;
       case 'REJECTED': return 'REPROVADO';
       case 'SENT': {
         if (SANTANDER_MANUAL.test(r.detail || '')) {
