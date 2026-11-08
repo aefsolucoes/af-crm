@@ -20,14 +20,15 @@ export async function temAprovacao(leadId: string, cf: Record<string, any>): Pro
 /** O cliente pediu a CAIXA (já aprovado) e a pergunta de nome limpo e Habite-se saiu (Fabio 01/11: "a consulta ocorre assim que o cliente indicar querer fazer com
  *  a CAIXA e a pergunta dos requisitos saírem"): põe a consulta do nome (Oportunidades de Negócios) na fila da extensão na hora, com os nomes e CPFs da proposta —
  *  a ficha e o cadastro só depois da documentação. Uma vez por card. true = entrou na fila agora. */
-export async function pedirConsultaCaixa(accountId: string, leadId: string): Promise<boolean> {
+export async function pedirConsultaCaixa(accountId: string, leadId: string, opts: { concorrente?: boolean } = {}): Promise<boolean> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) return false;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._caixaCadastro || cf._caixaPedido) return false;
   // Financiamento Habitacional: taxa/parcela alta → CAIXA mesmo sem aprovação (Fabio 03/11 — a IA só marca a CAIXA nos casos da regra).
   const fh = /habitacional/i.test(lead.pipeline?.department?.name || '');
-  if (!fh && !(await temAprovacao(leadId, cf))) return false; // sem aprovação a CAIXA não entra (passo 0 da regra)
+  // Cliente que ia pela CAIXA POR FORA (Fabio 08/11): a A&F também faz CAIXA — entra mesmo sem aprovação.
+  if (!fh && !opts.concorrente && !(await temAprovacao(leadId, cf))) return false; // sem aprovação a CAIXA não entra (passo 0 da regra)
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaPedido}', ${JSON.stringify({ at: new Date().toISOString() })}::jsonb, true) WHERE id = ${leadId}`;
   const { pedirCadastroCaixa } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
   const erro = await pedirCadastroCaixa(accountId, leadId, 'automático — o cliente pediu a CAIXA');
@@ -40,19 +41,19 @@ export async function pedirConsultaCaixa(accountId: string, leadId: string): Pro
 
 /** O cliente pediu a CAIXA e passou nas regras dela: marca `_caixaRota` (+ `_optouCaixa`, que guarda as outras aprovações), volta o card pra Pré-Análise e agenda a
  *  conferência dos documentos que já estão na conversa. true = entrou agora. */
-export async function entrarRotaCaixa(accountId: string, leadId: string, motivo: string | null, io?: Io): Promise<boolean> {
+export async function entrarRotaCaixa(accountId: string, leadId: string, motivo: string | null, io?: Io, opts: { concorrente?: boolean } = {}): Promise<boolean> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } } });
   if (!lead) return false;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._caixaRota) return false;
   // Financiamento Habitacional: taxa/parcela alta → CAIXA mesmo sem aprovação (Fabio 03/11 — regra FINANCIAMENTO HABITACIONAL × TAXA/PARCELA ALTA).
   const fh = /habitacional/i.test(lead.pipeline?.department?.name || '');
-  if (!fh && !(await temAprovacao(leadId, cf))) {
+  if (!fh && !opts.concorrente && !(await temAprovacao(leadId, cf))) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏦 O cliente pediu a CAIXA, mas nenhum banco aprovou ainda: pela regra (Fabio 01/11) a documentação da CAIXA só é pedida depois de alguma aprovação. O card ficou onde estava.' } }).catch(() => {});
     return false;
   }
   const agora = new Date().toISOString();
-  const rota = { at: agora, motivo: motivo || null, etapaAntes: lead.stage?.name || null };
+  const rota = { at: agora, motivo: motivo || null, etapaAntes: lead.stage?.name || null, ...(opts.concorrente ? { concorrente: true } : {}) };
   // Só as duas chaves (jsonb_set): regravar o card inteiro apaga o que outro processo gravou no meio (corrida no customFields, 29/10).
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaRota}', ${JSON.stringify(rota)}::jsonb, true), '{_optouCaixa}', ${JSON.stringify({ banco: 'CAIXA', at: agora })}::jsonb, true) WHERE id = ${leadId}`;
   const sales = lead.pipeline?.departmentId
@@ -69,7 +70,7 @@ export async function entrarRotaCaixa(accountId: string, leadId: string, motivo:
   // Documento que já está na conversa (RG, comprovante…) entra na conferência da CAIXA sem esperar arquivo novo.
   const due = new Date(Date.now() + 5 * 60_000).toISOString();
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsCheckDue}', ${JSON.stringify(due)}::jsonb, true) WHERE id = ${leadId}`;
-  await prisma.note.create({ data: { leadId, type: movido ? 'STAGE_CHANGE' : 'COMMENT', content: `🏦 O cliente PEDIU a CAIXA (nome limpo, imóvel com Habite-se)${motivo ? ` — ${motivo}` : ''}. ${movido ? `Card voltou pra "${movido}"` : 'Card fica na Pré-Análise'} até o resultado da CAIXA. As aprovações dos outros bancos ficam GUARDADAS. A IA pediu a documentação da CAIXA; quando estiver completa, o CRM gera a ficha e a extensão faz o cadastro.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: movido ? 'STAGE_CHANGE' : 'COMMENT', content: `🏦 ${opts.concorrente ? 'O cliente ia seguir pela CAIXA POR FORA (proposta da CAIXA em outro lugar) — a IA disse que a A&F também faz CAIXA' : 'O cliente PEDIU a CAIXA (nome limpo, imóvel com Habite-se)'}${motivo ? ` — ${motivo}` : ''}. ${movido ? `Card voltou pra "${movido}"` : 'Card fica na Pré-Análise'} até o resultado da CAIXA. As aprovações dos outros bancos ficam GUARDADAS. A IA pediu a documentação da CAIXA; quando estiver completa, o CRM gera a ficha e a extensão faz o cadastro.` } }).catch(() => {});
   (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: pediu a CAIXA`, body: `Card ${movido ? 'voltou pra Pré-Análise' : 'na Pré-Análise'}; documentação da CAIXA pedida`, leadId }).catch(() => {});
   logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId, leadName: lead.name, summary: `cliente pediu a CAIXA${movido ? ' — card voltou pra Pré-Análise' : ''}` });
   return true;
