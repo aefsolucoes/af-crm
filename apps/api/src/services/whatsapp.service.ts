@@ -873,6 +873,33 @@ export async function resolveContactAndLeadByPhone(
     });
   }
 
+  // Número sem card, mas que já está num card como o OUTRO telefone do cliente (telefone_1/telefone_alt — ex.: sobrou de uma unificação): a conversa
+  // continua NAQUELE card e as respostas passam a ir pra esse número (mesma regra da unificação: vale o número que escreveu por último). Antes nascia
+  // um card novo com a IA ligada, a IA respondia e só depois a unificação juntava (Fabio 08/11, Andréa: card Perdido com IA desligada recebeu resposta da IA).
+  if (!contact.leads.length) {
+    const core = normalizedFrom.replace(/\D/g, '').slice(-8);
+    const achado = core.length === 8 ? (await prisma.$queryRaw<{ id: string }[]>`
+      SELECT l.id FROM "Lead" l LEFT JOIN "Contact" c ON c.id = l."contactId"
+      WHERE l."accountId" = ${accountId} AND l.archived = false AND l."isGroup" = false AND l."contactId" IS DISTINCT FROM ${contact.id}
+        AND ${core} IN (
+          right(regexp_replace(COALESCE(l."customFields"->>'telefone_1', ''), '\\D', '', 'g'), 8),
+          right(regexp_replace(COALESCE(l."customFields"->>'telefone_alt', ''), '\\D', '', 'g'), 8),
+          right(regexp_replace(COALESCE(c.phone, ''), '\\D', '', 'g'), 8),
+          right(regexp_replace(COALESCE(c."whatsappPhone", ''), '\\D', '', 'g'), 8))
+      ORDER BY l."updatedAt" DESC LIMIT 1`)[0] : undefined;
+    const card = achado && await prisma.lead.findUnique({ where: { id: achado.id }, include: { contact: { select: { phone: true, whatsappPhone: true } } } });
+    if (card) {
+      const anterior = (card.contact?.whatsappPhone || card.contact?.phone || '').trim();
+      const trocaAlt = !!anterior && anterior.replace(/\D/g, '').slice(-8) !== core;
+      await prisma.lead.update({ where: { id: card.id }, data: { contactId: contact.id } });
+      if (trocaAlt) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{telefone_alt}', to_jsonb(${anterior}::text), true) WHERE id = ${card.id}`;
+      await prisma.note.create({ data: { leadId: card.id, type: 'DATA_EDIT', content: `📞 O cliente escreveu pelo outro número dele (${normalizedFrom}): a conversa segue neste card e as respostas passam a ir pra esse número.${trocaAlt ? ` O anterior (${anterior}) ficou registrado como outro número.` : ''}` } }).catch(() => {});
+      console.log(`[WhatsApp] ${normalizedFrom} sem card próprio → card ${card.id} (outro número do mesmo cliente)`);
+      const { contact: _c, ...semContato } = card;
+      contact = { ...contact, leads: [semContato] };
+    }
+  }
+
   // ── Find or create lead ─────────────────────────────────────────────
   let leadId: string;
 
