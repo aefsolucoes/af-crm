@@ -1920,9 +1920,9 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                       </span>
                       <span className="self-end text-[11px] text-[#e9edef]/60 px-3 pb-2 -mt-1">{time}</span>
                       {isLastCall && isFinal && (
-                        <span className={cn('flex items-center justify-center gap-1.5 border-t border-white/10 py-2 text-[13px] font-medium', permitted ? (isOut ? 'text-[#e9edef]' : 'text-[#00a884]') : 'text-[#e9edef]/50')}>
+                        <span className={cn('flex items-center justify-center gap-1.5 border-t border-white/10 px-3 py-2 text-[13px] font-medium text-center', permitted ? (isOut ? 'text-[#e9edef]' : 'text-[#00a884]') : 'text-[#e9edef]/50')}>
                           <Phone size={14} />
-                          {permitted ? 'Ligar de volta' : callButtonState === 'pending' ? 'Aguardando o cliente permitir ligações' : 'Ligar de volta só depois que o cliente permitir'}
+                          {permitted ? 'Ligar de volta' : callButtonState === 'pending' ? 'Aguardando permissão pra ligar' : 'Cliente ainda não permitiu ligar'}
                         </span>
                       )}
                     </button>
