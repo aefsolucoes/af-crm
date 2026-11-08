@@ -179,3 +179,63 @@ async function enviarPasso(accountId: string, leadId: string, leadName: string, 
   logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, leadName, summary: `lembrete de documentação ${passo.tipo + 1} de 3` });
   return true;
 }
+
+/* Antes da janela de 24 h fechar (Fabio 08/11, Evandro: "antes da janela fechar, encaminhar uma msg perguntando quando ele consegue encaminhar a documentação solicitada").
+ * Card em Aguardando Documentação com a IA ligada e a janela ainda aberta: ~2 h antes de fechar (se cair fora de 07h–21h, às 20h30 da véspera) o CRM pergunta quando o
+ * cliente consegue mandar. A resposta reabre a janela, e o prazo que ele der segue pela cobrança combinada (docs-checker.maybeScheduleDocsFollowUp) e pelo loop (`_docsPrazo`).
+ * Uma vez por janela: `_janelaDocs` guarda a última mensagem do cliente que já teve a pergunta. */
+const JANELA_MS = 24 * 3_600_000;
+
+/** Quando perguntar, pela última mensagem do cliente: 2 h antes de a janela fechar; fora de 07h–21h de Brasília, às 20h30 de antes. Pura. */
+export function quandoPerguntarDocs(ultimaDoCliente: Date): Date {
+  const alvo = ultimaDoCliente.getTime() + JANELA_MS - 2 * 3_600_000;
+  const l = new Date(alvo + BRT);
+  const h = l.getUTCHours();
+  if (h >= 7 && h < 21) return new Date(alvo);
+  return new Date(Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate() - (h < 7 ? 1 : 0), 20, 30) - BRT);
+}
+
+/** Poller (1 min, 07h–21h). */
+export async function processJanelaDocs(accountId: string, io?: Io): Promise<void> {
+  if (!emHorario()) return;
+  const agora = Date.now();
+  const leads = await prisma.lead.findMany({
+    where: {
+      accountId, status: 'OPEN', archived: false, isGroup: false, aiAutoReplyActive: true,
+      stage: { name: { contains: 'aguardando document', mode: 'insensitive' } },
+      NOT: { tags: { has: 'Pediu pra parar lembretes' } },
+      // a pergunta cai nas últimas ~13 h da janela: só quem escreveu entre 11 h e 24 h atrás
+      messages: { some: { direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gt: new Date(agora - JANELA_MS), lt: new Date(agora - 11 * 3_600_000) } } },
+    },
+    select: { id: true, name: true, stageEnteredAt: true, customFields: true },
+  });
+  const { isWaitingApprovalReply, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  for (const l of leads) {
+    const cf = (l.customFields || {}) as Record<string, any>;
+    if (cf._autoPaused || cf._saldoDevedor?.bloqueio || cf._docsLater) continue; // _docsLater: já tem a cobrança combinada com ele
+    if (cf._docsPrazo && agora < Date.parse(cf._docsPrazo)) continue; // ele já disse quando manda
+    const ultimaIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    if (!ultimaIn) continue;
+    const fecha = ultimaIn.createdAt.getTime() + JANELA_MS;
+    if (agora < quandoPerguntarDocs(ultimaIn.createdAt).getTime() || agora > fecha - 15 * 60_000) continue;
+    const marca = ultimaIn.createdAt.toISOString();
+    if (cf._janelaDocs === marca) continue;
+    // Mensagem nossa na última hora: a conversa está andando — espera.
+    if (await prisma.message.findFirst({ where: { leadId: l.id, direction: 'OUTBOUND', channel: 'WHATSAPP', createdAt: { gt: new Date(agora - 60 * 60_000) } }, select: { id: true } })) continue;
+    if (await isWaitingApprovalReply(l.id)) continue;
+    // Pega a vez (uma por janela, mesmo com dois servidores no ar durante um deploy).
+    const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_janelaDocs}', to_jsonb(${marca}::text), true) WHERE id = ${l.id} AND COALESCE("customFields"->>'_janelaDocs', '') <> ${marca}`;
+    if (!pegou) continue;
+    const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+    const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name);
+    const mandouAlgo = await prisma.messageAttachment.count({ where: { leadId: l.id, message: { direction: 'INBOUND' }, createdAt: { gt: l.stageEnteredAt || new Date(0) } } });
+    const oi = (await conversationActive(l.id, 2)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
+    const texto = `${oi}Quando você consegue me encaminhar ${mandouAlgo ? 'o restante da documentação' : 'a documentação que te pedi'}? Assim a gente já dá andamento no seu crédito. 😊`;
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    const r = await sendOutboundWhatsApp({ accountId, leadId: l.id, content: texto, io: io || undefined });
+    const hora = new Date(fecha).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: r.success ? `⏳ A janela de 24 h do WhatsApp fecha ${hora}: perguntei ao cliente quando ele consegue mandar a documentação.` : `⏳ A janela de 24 h do WhatsApp fecha ${hora} e a pergunta da documentação não saiu (${(r as any).error || 'erro'}).` } }).catch(() => {});
+    if (r.success) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId: l.id, leadName: l.name, summary: 'perguntou quando o cliente manda a documentação (janela de 24 h fechando)' });
+    else console.error(`[Janela da documentação] ${l.name}: não saiu — ${(r as any).error}`);
+  }
+}
