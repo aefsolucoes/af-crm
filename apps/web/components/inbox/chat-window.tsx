@@ -414,6 +414,12 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     return null;
   }, [messages]);
 
+  // Último card de ligação da conversa: é nele que aparece "Ligar de volta" (Fabio 08/11).
+  const lastCallMsgId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].callWaCallId) return messages[i].id;
+    return null;
+  }, [messages]);
+
   // Botões das mensagens enviadas e qual deles o cliente escolheu (a resposta
   // do botão chega citando a mensagem — replyToExternalId = wamid dela).
   const buttonInfo = useMemo(() => {
@@ -1870,46 +1876,55 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
               const msg = item.data;
               const isOut = msg.direction === 'OUTBOUND';
 
-              // Ligação de voz (Calling API) — card próprio, igual ao
-              // WhatsApp de verdade, em vez do balão de texto normal.
-              // Clicar num card de ligação já ENCERRADA (não numa que ainda
-              // está tocando) liga de novo pro mesmo cliente.
+              // Ligação de voz (Calling API) — card próprio, no formato do WhatsApp (Fabio 08/11: ícone grande no círculo, "Ligação de voz" + duração
+              // embaixo, perdida/não atendida em vermelho). Clicar num card ENCERRADO liga de novo — só quando o cliente já permitiu ligações; o último
+              // card da conversa mostra "Ligar de volta" (ou que falta a permissão).
               if (msg.callWaCallId) {
                 const live = callStateMap[msg.id];
                 const status = live?.status ?? msg.callStatus ?? 'RINGING';
                 const durationSec = live?.durationSec ?? msg.callDurationSec ?? 0;
                 const isFinal = status !== 'RINGING' && status !== 'CONNECTING' && status !== 'CONNECTED';
                 const isBad = status === 'MISSED' || status === 'REJECTED' || status === 'FAILED';
+                const title = status === 'MISSED' && !isOut ? 'Ligação de voz perdida' : 'Ligação de voz';
                 const label = !isFinal
-                  ? (status === 'CONNECTED' ? 'Em ligação' : 'Chamando…') // atendeu → "Em ligação" (Fabio 06/11)
-                  : status === 'MISSED' ? 'Perdida'
-                  : status === 'REJECTED' ? 'Recusada'
+                  ? (status === 'CONNECTED' ? 'Em ligação' : isOut ? 'Chamando…' : 'Tocando…') // atendeu → "Em ligação" (Fabio 06/11)
+                  : status === 'MISSED' ? (isOut ? 'Não atendida' : 'Ninguém atendeu')
+                  : status === 'REJECTED' ? (isOut ? 'Recusada pelo cliente' : 'Recusada')
                   : status === 'FAILED' ? 'Falhou'
-                  : durationSec > 0 ? formatCallDurationDisplay(durationSec) : 'Encerrada';
+                  : durationSec > 0 ? formatCallDurationDisplay(durationSec) : (isOut ? 'Não atendida' : 'Encerrada');
                 const CallIcon = isBad ? PhoneMissed : isOut ? PhoneOutgoing : PhoneIncoming;
-                const canCallBack = isFinal && outboundCall.stage === 'idle';
+                const permitted = callButtonState === 'permitted';
+                const canCallBack = isFinal && permitted && outboundCall.stage === 'idle';
+                const isLastCall = msg.id === lastCallMsgId;
                 return (
-                  <div key={msg.id} className={cn('flex mb-0.5', isOut ? 'justify-end' : 'justify-start')}>
+                  <div key={msg.id} className={cn('flex mb-1', isOut ? 'justify-end' : 'justify-start')}>
                     <button
                       type="button"
                       onClick={canCallBack ? handleClickLigar : undefined}
-                      title={canCallBack ? 'Ligar de novo' : undefined}
+                      title={canCallBack ? 'Ligar de volta' : isFinal && !permitted ? 'O cliente ainda não permitiu ligações' : undefined}
                       disabled={!canCallBack}
                       className={cn(
-                        'flex items-center gap-2.5 max-w-xs lg:max-w-md px-3.5 py-2.5 rounded-2xl shadow-sm text-left transition-colors',
-                        canCallBack && 'hover:brightness-110 cursor-pointer',
-                        !canCallBack && 'cursor-default',
+                        'flex flex-col min-w-[240px] max-w-xs lg:max-w-sm rounded-xl shadow-sm text-left transition-[filter] overflow-hidden',
+                        canCallBack ? 'hover:brightness-110 cursor-pointer' : 'cursor-default',
                       )}
                       style={{ backgroundColor: isOut ? '#005c4b' : '#202c33' }}
                     >
-                      <span className={cn('flex items-center justify-center w-8 h-8 rounded-full flex-shrink-0', isBad ? 'bg-red-500/20' : 'bg-white/10')}>
-                        <CallIcon size={15} className={isBad ? 'text-red-400' : 'text-[#e9edef]'} />
+                      <span className="flex items-center gap-3 px-3 pt-3 pb-1.5">
+                        <span className="flex items-center justify-center w-11 h-11 rounded-full flex-shrink-0 bg-black/25">
+                          <CallIcon size={20} className={isBad ? 'text-[#f15c6d]' : 'text-[#e9edef]'} />
+                        </span>
+                        <span className="flex flex-col leading-snug min-w-0 flex-1">
+                          <span className="text-[15px] font-semibold text-[#e9edef]">{title}</span>
+                          <span className={cn('text-sm', isBad || label === 'Não atendida' ? 'text-[#f15c6d]' : 'text-[#e9edef]/60')}>{label}</span>
+                        </span>
                       </span>
-                      <span className="flex flex-col leading-tight min-w-0">
-                        <span className="text-sm font-medium text-[#e9edef]">Ligação de voz</span>
-                        <span className={cn('text-xs', isBad ? 'text-red-400' : 'text-[#8696a0]')}>{label}</span>
-                      </span>
-                      <span className="text-[10px] text-[#e9edef]/50 flex-shrink-0 self-end ml-1">{time}</span>
+                      <span className="self-end text-[11px] text-[#e9edef]/60 px-3 pb-2 -mt-1">{time}</span>
+                      {isLastCall && isFinal && (
+                        <span className={cn('flex items-center justify-center gap-1.5 border-t border-white/10 py-2 text-[13px] font-medium', permitted ? (isOut ? 'text-[#e9edef]' : 'text-[#00a884]') : 'text-[#e9edef]/50')}>
+                          <Phone size={14} />
+                          {permitted ? 'Ligar de volta' : callButtonState === 'pending' ? 'Aguardando o cliente permitir ligações' : 'Ligar de volta só depois que o cliente permitir'}
+                        </span>
+                      )}
                     </button>
                   </div>
                 );
