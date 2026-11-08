@@ -90,7 +90,6 @@ function InboxPageInner() {
   useEffect(() => {
     if (leadIdParam && leadIdParam !== selectedId) {
       setSelectedId(leadIdParam);
-      setLocalMessages([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadIdParam]);
@@ -114,7 +113,6 @@ function InboxPageInner() {
     const onOpenLead = (ev: Event) => {
       const id = (ev as CustomEvent<string>).detail;
       if (!id) return;
-      if (selectedIdRef.current !== id) setLocalMessages([]);
       setSelectedId(id);
       setShowMobileInfo(false);
     };
@@ -167,8 +165,15 @@ function InboxPageInner() {
       });
       if (!found) refresh();
     };
+    // Dois cards viraram um (unificação): o que fica ganhou as mensagens e notas do outro — relê; se a conversa aberta era a do card que sumiu, abre a que ficou.
+    const onMerged = ({ keepId, sourceId }: { keepId: string; sourceId: string }) => {
+      queryClient.invalidateQueries({ queryKey: ['messages', keepId] });
+      queryClient.invalidateQueries({ queryKey: ['lead', keepId] });
+      if (selectedIdRef.current === sourceId) setSelectedId(keepId);
+    };
     socket.on('new_conversation', refresh);
     socket.on('new_notification', onNotification);
+    socket.on('lead_merged', onMerged);
     // Outro colaborador marcou/desmarcou um lead como importante — atualiza
     // a estrela na lista pra quem também está com a Inbox aberta.
     socket.on('lead_starred', refresh);
@@ -177,6 +182,7 @@ function InboxPageInner() {
       if (t) clearTimeout(t);
       socket.off('new_conversation', refresh);
       socket.off('new_notification', onNotification);
+      socket.off('lead_merged', onMerged);
       socket.off('lead_starred', refresh);
       socket.off('connect', refresh);
     };
@@ -204,6 +210,8 @@ function InboxPageInner() {
     queryKey: ['messages', selectedId],
     queryFn: ({ pageParam }) => fetchMessages(selectedId!, pageParam),
     enabled: !!selectedId,
+    // Voltar pra uma conversa sempre confere o que chegou enquanto ela estava fechada (fora da sala do socket) — com o padrão de 30 s, voltar rápido mostrava o histórico velho.
+    staleTime: 0,
     refetchInterval: () => (getSocket().connected ? false : 10000), // socket caído: a conversa aberta confere sozinha de 10 em 10 s
     initialPageParam: undefined as string | undefined,
     // Cada página vem em ordem cronológica (mais antiga primeiro) — se a
@@ -241,9 +249,11 @@ function InboxPageInner() {
   // de `messages`, então a conversa era puxada de volta pro final mesmo sem
   // nenhuma mensagem nova, no meio de o usuário rolar pra cima pra ler o
   // histórico. Agora só muda de referência quando o conteúdo realmente muda.
+  // As que chegaram ao vivo ficam guardadas por conversa (não se apagam ao trocar/clicar de novo): antes eram zeradas a cada clique na lista e,
+  // com a leva do histórico ainda "fresca" no cache, a mensagem sumia da tela até recarregar (Fabio 08/11, Andréa: o "Recebi sua proposta" saiu e não aparecia).
   const allMessages = useMemo(
-    () => [...(messages || []), ...localMessages.filter((m) => !messages?.find((x) => x.id === m.id))],
-    [messages, localMessages]
+    () => [...(messages || []), ...localMessages.filter((m) => m.leadId === selectedId && !messages?.find((x) => x.id === m.id))],
+    [messages, localMessages, selectedId]
   );
 
   const selectedConv = conversations?.find((c) => c.id === selectedId);
@@ -275,7 +285,7 @@ function InboxPageInner() {
           <ConversationList
             conversations={sectorConversations}
             selectedId={selectedId || undefined}
-            onSelect={(id) => { setSelectedId(id); setLocalMessages([]); setShowMobileInfo(false); }}
+            onSelect={(id) => { setSelectedId(id); setShowMobileInfo(false); }}
             loading={loadingConvs}
             loadError={convsError}
             onRetry={() => { refetchConvs(); }}
