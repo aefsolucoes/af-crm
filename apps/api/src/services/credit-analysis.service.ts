@@ -2120,8 +2120,9 @@ export async function refreshAnalysesForAi(db: Db, p: { accountId: string; leadI
     for (const r of ran) if (!ultimaPorBanco.has(r.bank)) ultimaPorBanco.set(r.bank, r.updatedAt.getTime());
     const precisa = banks.filter((b) => Date.now() - (ultimaPorBanco.get(b) || 0) > 10 * 60_000);
     if (precisa.length) await createRequests(db, { accountId: p.accountId, leadIds: [p.leadId], banks: precisa, dryRun: false, kind: 'CHECK', source: 'AI' });
-    // espera as leituras abertas (as que acabei de pedir e as que já estavam na fila)
-    const abertas = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, kind: 'CHECK', status: { in: ['REQUESTED', 'RUNNING'] }, updatedAt: { gt: new Date(Date.now() - 25 * 60_000) } }, select: { id: true, attempt: true } });
+    // espera as leituras abertas (as que acabei de pedir e as que já estavam na fila). Conferência MARCADA pra depois (notBefore no futuro — a da Creditas vai de 30 em 30 min)
+    // não roda nesses 2 min: esperar por ela só segurava a resposta 2 min à toa (Fabio 08/11, Deyvede — e o reinício do servidor cortou a resposta no meio da espera).
+    const abertas = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, kind: 'CHECK', updatedAt: { gt: new Date(Date.now() - 25 * 60_000) }, OR: [{ status: 'RUNNING' }, { status: 'REQUESTED', OR: [{ notBefore: null }, { notBefore: { lte: new Date(Date.now() + 60_000) } }] }] }, select: { id: true, attempt: true } });
     if (!abertas.length) return { asked: precisa.length > 0, waited: false };
     const limite = Date.now() + (p.maxWaitMs ?? 120_000);
     while (Date.now() < limite) {

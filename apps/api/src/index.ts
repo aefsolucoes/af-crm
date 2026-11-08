@@ -337,6 +337,11 @@ httpServer.listen(PORT, () => {
     (require('./services/whatsapp-calling.service') as typeof import('./services/whatsapp-calling.service')).repairHungUpCallsMarkedMissed().catch((err: any) => console.error('[Calling] Reparo:', err?.message));
   }, 60 * 1000);
 
+  // Resposta da IA cortada pelo reinício (Fabio 08/11, Deyvede): 90 s depois de subir — o servidor antigo já parou — responde quem ficou sem resposta.
+  setTimeout(() => {
+    (require('./services/whatsapp.service') as typeof import('./services/whatsapp.service')).retomarRespostasInterrompidas(io).catch((err: any) => console.error('[IA] Retomada após reinício:', err?.message));
+  }, 90 * 1000);
+
   // Vistoria CAIXA pelo SIOPI (Fabio 06/11): contato da vistoria chegou → fila da extensão; extensão que sumiu no meio → volta pra fila.
   setTimeout(() => {
     const rodar = () => (require('./services/vistoria-caixa.service') as typeof import('./services/vistoria-caixa.service')).processVistoriaCaixa(io as any).catch((err: any) => console.error('[Vistoria CAIXA] Poll:', err?.message));

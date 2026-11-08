@@ -1633,7 +1633,41 @@ export async function retomarComIa(accountId: string, leadId: string, io: any): 
   if (destravados.length) await nota(`🤖 IA ligada: voltaram a andar sozinhos ${destravados.map((k) => ({ _rendaCasal: 'a pergunta da renda do casal', _ocorrencias: 'a orientação das ocorrências no nome', _quitacaoAverbar: 'o pedido de averbar a quitação', _transferenciaAsk: 'o pedido de transferir o imóvel', _laudoAsk: 'as perguntas do laudo' } as Record<string, string>)[k] || k).join(', ')}.`);
 }
 
+// Resposta da IA cortada no meio por reinício do servidor (Fabio 08/11, Deyvede: o deploy das 13:24 parou o servidor enquanto a IA esperava a leitura dos bancos e o cliente
+// ficou sem resposta). Cada resposta em andamento deixa a marca `_iaRespondendo` no card (só essa chave, por SQL); quem termina tira a SUA marca. Marca de antes de o
+// servidor subir = resposta interrompida → `retomarRespostasInterrompidas` responde de novo, se o cliente ainda for o último a falar.
+const SERVER_BOOT_AT = Date.now();
 async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
+  const marca = new Date().toISOString();
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_iaRespondendo}', to_jsonb(${marca}::text), true) WHERE id = ${leadId}`.catch(() => {});
+  try {
+    await respostaIaCloudApi(accountId, leadId, incomingText, phone, io, departmentId);
+  } finally {
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaRespondendo' WHERE id = ${leadId} AND "customFields"->>'_iaRespondendo' = ${marca}`.catch(() => {});
+  }
+}
+
+/** Ao subir o servidor: respostas da IA que o reinício cortou (marca `_iaRespondendo` de antes do boot, até 30 min). Só responde se a última mensagem da conversa ainda
+ *  for do cliente — a resposta pode ter saído antes de o servidor cair. Tira a marca antes (atômico), então roda uma vez só por card. */
+export async function retomarRespostasInterrompidas(io: any): Promise<void> {
+  const boot = new Date(SERVER_BOOT_AT).toISOString();
+  const desde = new Date(SERVER_BOOT_AT - 30 * 60_000).toISOString();
+  const leads = await prisma.$queryRaw<{ id: string; accountId: string }[]>`SELECT id, "accountId" FROM "Lead" WHERE "customFields"->>'_iaRespondendo' < ${boot} AND "customFields"->>'_iaRespondendo' > ${desde}`;
+  for (const l of leads) {
+    const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaRespondendo' WHERE id = ${l.id} AND "customFields"->>'_iaRespondendo' < ${boot}`;
+    if (!pegou) continue;
+    const lead = await prisma.lead.findUnique({ where: { id: l.id }, select: { aiAutoReplyActive: true, isGroup: true, contact: { select: { phone: true, whatsappPhone: true } }, pipeline: { select: { departmentId: true } } } });
+    if (!lead?.aiAutoReplyActive || lead.isGroup) continue;
+    const ultima = await prisma.message.findFirst({ where: { leadId: l.id, channel: 'WHATSAPP', deleted: false, callWaCallId: null }, orderBy: { createdAt: 'desc' }, select: { direction: true, content: true } });
+    if (ultima?.direction !== 'INBOUND') continue;
+    const phone = [lead.contact?.whatsappPhone, lead.contact?.phone].map((x) => (x || '').trim()).find((x) => x && !x.includes('@'));
+    if (!phone) continue;
+    console.log(`[IA] ${l.id}: resposta cortada pelo reinício do servidor — respondendo de novo`);
+    await maybeAiAutoReplyCloudApi(l.accountId, l.id, ultima.content || '(mensagem)', phone, io, lead.pipeline?.departmentId).catch((e: any) => console.error('[IA] retomada após reinício:', e?.message));
+  }
+}
+
+async function respostaIaCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
   try {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
     if (!lead?.aiAutoReplyActive || (lead.customFields as any)?._autoPaused) return; // Stop total do cliente: a IA não responde
