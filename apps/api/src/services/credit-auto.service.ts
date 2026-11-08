@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { createRequests, setOverrides, loginNeededFor, formatoDaRodada } from './credit-analysis.service';
+import { createRequests, setOverrides, loginNeededFor, formatoDaRodada, reportAnalysis } from './credit-analysis.service';
 import { requestBankEmail } from './ai-team-question.service';
 import { inNoticeWindow, sendApprovalNoticeNow, sendEarlyStatusNotice, previewApprovalNotice, novoBancoPendente, sendRejectionNoticeNow, markRejectedAndMove, buildRejectionText, aprovadasSemNumeros } from './approval-notice.service';
 
@@ -562,6 +562,52 @@ async function learnedRejectionRule(accountId: string, leadId: string, reasons: 
 
 /** 4) Os 3 bancos responderam NÃO (reprovou ou a regra do banco/imóvel barrou): avisa o cliente que retornou reprovado e tira o card da Pré-Análise (Reprovado → Perdidos),
  *  senão a fila acumula (Fabio 14/10). Falha técnica (extensão, dado faltando) NÃO conta: essa fica pra refazer. */
+/** Santander em "Dados Incompletos" há mais de 24 h (Fabio 08/11: "pode marcar como reprovado no santander. Reprovado por dados incompletos"): o cadastro não passa no
+ *  Santander (Personas) e a proposta fica parada sem resposta. Vira REPROVADO e o resto segue como qualquer reprovação (2º participante, negativa, fechamento). */
+const INCOMPLETO_MAX_MS = 24 * 3_600_000;
+type IRow = { kind: string; status: string; detail: string | null; createdAt: Date; finishedAt?: Date | null; source: string };
+const RX_INCOMPLETO = /dados incompletos/i;
+const santanderIncompleto = (r: IRow) => r.status === 'INCOMPLETE' || (['CHECK', 'SENT', 'REQUESTED'].includes(r.status) && RX_INCOMPLETO.test(r.detail || ''));
+
+/** Desde quando o Santander está SEGUIDO em "Dados Incompletos" (linhas do CREDIMORAR, mais nova primeiro), se já passou de 24 h; senão null. Pura (testável). */
+export function incompletoHa24h(rows: IRow[], now = Date.now()): Date | null {
+  if (rows.some((r) => r.status === 'RUNNING' || (r.kind === 'RUN' && r.status === 'REQUESTED'))) return null; // a extensão está mexendo nele agora
+  // Conferência sem leitura útil ("conferir"/na fila sem "Dados Incompletos") não quebra nem começa a contagem.
+  const sig = rows.filter((r) => semRuidoDeSimulacao(r) && !(r.kind === 'CHECK' && ['CHECK', 'REQUESTED'].includes(r.status) && !RX_INCOMPLETO.test(r.detail || '')))
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  if (!sig.length || !santanderIncompleto(sig[0])) return null;
+  let desde = sig[0].finishedAt || sig[0].createdAt;
+  for (const r of sig) { if (!santanderIncompleto(r)) break; desde = r.finishedAt || r.createdAt; }
+  return now - desde.getTime() >= INCOMPLETO_MAX_MS ? desde : null;
+}
+
+async function rejectStaleIncomplete(accountId: string) {
+  const leads = await prisma.lead.findMany({
+    where: {
+      accountId, status: 'OPEN', archived: false, isGroup: false,
+      pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
+      creditAnalyses: { some: { bank: 'CREDIMORAR', dryRun: false, createdAt: { lt: new Date(Date.now() - INCOMPLETO_MAX_MS) }, OR: [{ status: 'INCOMPLETE' }, { detail: { contains: 'Dados Incompletos', mode: 'insensitive' } }] } },
+    },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { bank: 'CREDIMORAR', dryRun: false }, orderBy: { createdAt: 'desc' }, take: 30, select: { id: true, kind: true, status: true, detail: true, createdAt: true, finishedAt: true, source: true, proposalNumber: true, holderName: true, holderCpf: true } } },
+    take: 100,
+  });
+  for (const l of leads) {
+    if (((l.customFields || {}) as Cf)._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático
+    const desde = incompletoHa24h(l.creditAnalyses);
+    if (!desde) continue;
+    const ref = l.creditAnalyses.find((r) => r.proposalNumber || r.holderName) || l.creditAnalyses[0];
+    // Conferências na fila desta proposta param: o banco já tem resposta (senão a próxima leitura de "Dados Incompletos" reabria a contagem).
+    await prisma.creditAnalysis.updateMany({ where: { leadId: l.id, bank: 'CREDIMORAR', kind: 'CHECK', status: 'REQUESTED', dryRun: false }, data: { status: 'CHECK', finishedAt: new Date(), detail: 'Conferência encerrada: o Santander ficou mais de 24 h em "Dados Incompletos" e foi marcado como reprovado.' } });
+    const row = await prisma.creditAnalysis.create({ data: { accountId, leadId: l.id, bank: 'CREDIMORAR', status: 'RUNNING', kind: 'CHECK', source: 'EXTENSION', dryRun: false, startedAt: new Date(), proposalNumber: ref?.proposalNumber || null, holderName: ref?.holderName || null, holderCpf: ref?.holderCpf || null } });
+    const quando = desde.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+    await reportAnalysis(prisma, {
+      accountId, requestId: row.id, leadId: l.id, bank: 'CREDIMORAR', status: 'REJECTED',
+      detail: `RESULTADO: REPROVADO POR DADOS INCOMPLETOS${ref?.proposalNumber ? ` — proposta ${ref.proposalNumber}` : ''}. O Santander ficou em "Dados Incompletos" por mais de 24 h (desde ${quando}) sem o cadastro passar: marcado como reprovado.`,
+    });
+    console.log(`[Análise automática] ${l.name}: Santander em Dados Incompletos desde ${quando} → reprovado por dados incompletos`);
+  }
+}
+
 async function closeRejected(accountId: string, io: any) {
   const leads = await prisma.lead.findMany({
     where: {
@@ -962,6 +1008,7 @@ export async function processCreditAutomation(io: any): Promise<void> {
       { const { processFhNotices } = require('./fh-approval.service') as typeof import('./fh-approval.service'); await processFhNotices(s.accountId, io).catch((e: any) => console.error('[Financiamento] aviso de aprovação:', e?.message)); }
       await cascadeFh(s.accountId).catch((e) => console.error('[Financiamento] cascata:', e?.message)); // não passou nos dois nomes → casados invertem, os outros sozinhos (Fabio 05/11)
       { const { processFhRejections } = require('./fh-approval.service') as typeof import('./fh-approval.service'); await processFhRejections(s.accountId, io).catch((e: any) => console.error('[Financiamento] negativa:', e?.message)); }
+      await rejectStaleIncomplete(s.accountId).catch((e) => console.error('[Análise automática] Santander dados incompletos:', e?.message)); // +24 h em Dados Incompletos = reprovado (Fabio 08/11)
       await cascadeToSecond(s.accountId).catch((e) => console.error('[Análise automática] 2º participante:', e?.message));
       await noticeClients(s.accountId, io).catch((e) => console.error('[Análise automática] aviso:', e?.message));
       await closeRejected(s.accountId, io).catch((e) => console.error('[Análise automática] fechar reprovados:', e?.message));
