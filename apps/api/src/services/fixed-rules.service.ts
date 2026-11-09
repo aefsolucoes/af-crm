@@ -18,6 +18,7 @@ export const FIXED_RULE_TITLES: Record<string, string> = {
   NEW_VALUE_RULES: '[REGRA FIXA] IA do cliente — valor novo pedido (NEW_VALUE_RULES)',
   PROPERTY_DOCS_RULES: '[REGRA FIXA] IA do cliente — documentos do imóvel (PROPERTY_DOCS_RULES)',
   RETENTION_RULES: '[REGRA FIXA] IA do cliente — retenção / cliente desistindo (RETENTION_RULES)',
+  UNSURE_FUTURE_RULES: '[REGRA FIXA] IA do cliente — não sabe como vai ser daqui pra frente (UNSURE_FUTURE_RULES)',
   OUTRO_CANAL_RULES: '[REGRA FIXA] IA do cliente — outro canal (OUTRO_CANAL_RULES)',
   APARTMENT_APPRAISAL_RULES: '[REGRA FIXA] IA do cliente — laudo do apartamento (APARTMENT_APPRAISAL_RULES)',
   MARK_LOST_RULES: '[REGRA FIXA] IA do cliente — marcar Perdido (MARK_LOST_RULES)',

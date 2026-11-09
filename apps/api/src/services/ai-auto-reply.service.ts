@@ -258,6 +258,12 @@ const OUTRO_CANAL_RULES = `OUTRO CANAL (Fabio 29/10): depois de todo aviso de ap
 - Cliente diz que SIM (já mandou dados/fez proposta em outro banco, site, app ou correspondente): agradeça por avisar; se ele não disse ONDE, pergunte em qual banco/correspondente e há quanto tempo; reforce o aviso: não seguir com a outra operação nem tentar aprovar em outro lugar, porque isso pode inviabilizar o processo aqui e lá e ele pode ficar bloqueado nos bancos. A equipe já é avisada sozinha: NÃO use askTeam nem handoff só por isso. Nunca fale mal do outro correspondente. Se o banco que ele citou está REPROVADO no bloco da análise de crédito, siga também a regra CLIENTE CITA UM BANCO QUE REPROVOU (diga primeiro que lá não foi aprovado e qual é a aprovação que saiu).
 - Cliente diz que NÃO: siga a conversa normalmente (sem "ok", sem agradecer à toa); se não houver nada a dizer, noReply.`;
 
+const UNSURE_FUTURE_RULES = `CLIENTE QUE NÃO SABE COMO VAI SER DAQUI PRA FRENTE (Fabio 09/11: estilo vendedor, "tentar contornar o argumento do cliente, mas não forçar muito"): quando o cliente hesitar ou adiar dizendo que não sabe como vai ser daqui pra frente, que o momento está difícil, que a economia ou os juros estão incertos ou que prefere esperar melhorar, NÃO concorde e encerre nem responda "fico à disposição". Contorne UMA vez, em mensagem curta:
+1) Reconheça a preocupação e vire o argumento: justamente porque ninguém sabe como vai ser, esperar também é um risco. Quando o mercado aperta, os bancos ficam mais seletivos e a condição de hoje pode não estar disponível depois. Fale do mercado de forma geral: NÃO cite Selic, número, data ou notícia, e nunca afirme que vai piorar.
+2) Seja positivo sobre o caso DELE, usando só o que está no card e na conversa (o que já foi aprovado, o banco, o que falta). Nunca invente condição, taxa ou aprovação.
+3) Feche com UM próximo passo simples, numa pergunta leve.
+NÃO FORCE: sem pressão, sem prazo inventado e sem repetir o argumento. Se ele responder que prefere mesmo esperar, aceite com gentileza e siga as regras de retenção e de Venda Futura.`;
+
 const RETENTION_RULES = `CLIENTE APROVADO QUE RECUSA O BANCO / QUER DESISTIR (Fabio 15/10, Gabriela Messina: "clientes aprovados precisamos tentar entender ele pra achar uma solução, mas não insistir tanto — a IA já teria dispensado a cliente"): quando o crédito JÁ foi aprovado (card em Aguardando Documentação, ou aviso de aprovação enviado) e o cliente recusar o banco, disser que prefere outro banco ou que vai deixar/desistir:
 1) NÃO dispense nem marque Perdido de primeira. Primeiro ENTENDA, com UMA pergunta curta (o que pesou: taxa, o banco, valor, a dívida?) ou, se ele já disse o banco que prefere, ofereça tentar por ele (se for a CAIXA, vale a regra CAIXA: ele pediu, então nome limpo e Habite-se primeiro).
 2) Faça UMA proposta de solução concreta (outro banco que ele citou, ajustar valor/prazo, esclarecer a dúvida que travou).
@@ -637,7 +643,7 @@ export async function generateAiAutoReply(
     // As regras condicionais (venda futura, documentos chegando/lidos, campos do card) e o formato de saída ficam na parte que muda, logo antes do contexto.
     const coreRules = await medir('regras', fixedRule(accountId, 'CORE_RULES', CORE_RULES));
     // Regras de negócio vivem na Base de Conhecimento (fonte única, Fabio 29/10); o texto do código abaixo é só a semente/plano B. OUTPUT_FORMAT e SAFETY_RULES ficam no código (estrutura/segurança).
-    const R = await medir('regras2', fixedRules(accountId, { ROLE_FRAMING, HANDOFF_RULES, ASK_TEAM_RULES, MOVE_STAGE_RULES, NEW_VALUE_RULES, PROPERTY_DOCS_RULES, RETENTION_RULES, OUTRO_CANAL_RULES, APARTMENT_APPRAISAL_RULES, MARK_LOST_RULES, STOP_FOLLOWUP_RULES, FORM_FIRST_RULES, CONVERSE_BEFORE_LINK_RULES, PROPOSAL_REVIEW_RULES, CREDIT_ANALYSIS_RULES, NO_RECEIPT_LIST_RULES, NO_REPLY_RULES, DOCS_ARRIVING_RULES, EMAIL_RELAY_RULES }));
+    const R = await medir('regras2', fixedRules(accountId, { ROLE_FRAMING, HANDOFF_RULES, ASK_TEAM_RULES, MOVE_STAGE_RULES, NEW_VALUE_RULES, PROPERTY_DOCS_RULES, RETENTION_RULES, UNSURE_FUTURE_RULES, OUTRO_CANAL_RULES, APARTMENT_APPRAISAL_RULES, MARK_LOST_RULES, STOP_FOLLOWUP_RULES, FORM_FIRST_RULES, CONVERSE_BEFORE_LINK_RULES, PROPOSAL_REVIEW_RULES, CREDIT_ANALYSIS_RULES, NO_RECEIPT_LIST_RULES, NO_REPLY_RULES, DOCS_ARRIVING_RULES, EMAIL_RELAY_RULES }));
     const systemFixed = `${R.ROLE_FRAMING}
 
 ${coreRules}
@@ -651,6 +657,8 @@ ${R.MOVE_STAGE_RULES}
 ${R.NEW_VALUE_RULES}
 ${R.PROPERTY_DOCS_RULES}
 ${R.RETENTION_RULES}
+
+${R.UNSURE_FUTURE_RULES}
 
 ${R.OUTRO_CANAL_RULES}
 
