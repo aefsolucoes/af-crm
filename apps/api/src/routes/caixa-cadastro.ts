@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { requirePermission } from '../middleware/permission';
-import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA, estadoCaixaDoCard, cadastroCaixaPeloCard, analiseCaixaPeloCard } from '../services/caixa-cadastro.service';
+import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, consultaSemResultado, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA, estadoCaixaDoCard, cadastroCaixaPeloCard, analiseCaixaPeloCard } from '../services/caixa-cadastro.service';
 import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado, pedirAvisoPv } from '../services/caixa-resultado.service';
 import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
 
@@ -89,6 +89,13 @@ router.post('/:leadId/consulta', async (req: AuthRequest, res: Response) => {
     await verificarOcorrencias(req.user!.accountId, req.params.leadId, (req as any).app.get('io')).catch((e) => console.error('[Ocorrências]', e?.message));
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+
+// A CAIXA respondeu sem o resultado: a extensão conta o que apareceu e a fila segue (Fabio 09/11).
+router.post('/:leadId/consulta-sem-resultado', async (req: AuthRequest, res: Response) => {
+  const { ordem, texto } = req.body as { ordem?: number; texto?: string };
+  if (!ordem) return res.status(400).json({ error: 'ordem obrigatória' });
+  try { await consultaSemResultado(req.user!.accountId, req.params.leadId, Number(ordem), String(texto || '')); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
 router.post('/:leadId/pedir', async (req: AuthRequest, res: Response) => {

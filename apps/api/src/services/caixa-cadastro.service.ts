@@ -17,6 +17,8 @@ const ehHe = (dept: string | null | undefined) => /home|garantia/i.test(dept || 
 // "Cadastro conferido" pede a Avaliação de Risco do HE sozinho? DESLIGADO — Fabio 31/10: "NÃO RODA NENHUM CRÉDITO, ACOMPANHA OS CADASTROS". Só ele libera.
 export const AVALIACAO_APOS_CONFERENCIA = false;
 const LEASE_MS = 10 * 60_000; // participante "em consulta" há mais que isso = a extensão largou; volta pra fila
+const CONSULTA_MAX_TENTATIVAS = 2; // respostas da CAIXA sem resultado antes de o card sair da fila
+const CONSULTA_PARADA = 'CONSULTA_PARADA';
 
 async function salvar(leadId: string, mut: (c: Cf) => void): Promise<Cf> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
@@ -85,7 +87,7 @@ export async function pedirCadastroCaixa(accountId: string, leadId: string, por:
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
   if (!participantesDa(cf).length) return 'O card ainda não tem a ficha de cadastro (anotação "📋 FICHA DE CADASTRO — CAIXA") nem os participantes da proposta';
-  await salvar(leadId, (c) => { c.status = 'FILA'; c.pedidoEm = new Date().toISOString(); c.por = por; c.consultas = {}; delete c.atual; });
+  await salvar(leadId, (c) => { c.status = 'FILA'; c.pedidoEm = new Date().toISOString(); c.por = por; c.consultas = {}; delete c.atual; delete c.tentativasConsulta; delete c.consultaParadaEm; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Card na fila da CAIXA (${por}): a extensão vai consultar o nome de cada participante em Oportunidades de Negócios e gravar o resultado aqui.` } }).catch(() => {});
   logActivity({ accountId, userId, userName: por, action: 'lead_edited', leadId, leadName: l.name, summary: 'colocou o card na fila do cadastro da CAIXA' } as any);
   return null;
@@ -93,10 +95,16 @@ export async function pedirCadastroCaixa(accountId: string, leadId: string, por:
 
 /** Próximo trabalho da extensão: o 1º participante ainda sem consulta do card mais antigo na fila. Marca como "em consulta" (10 min). */
 export async function proximaConsulta(accountId: string): Promise<any | null> {
+  // Consulta que já falhou ou foi largada vai pro fim da fila (Fabio 09/11: um card repetiu por horas e prendeu quem estava atrás); a que está em andamento fica na frente pra valer o "um por vez".
+  const prazo = new Date(Date.now() - LEASE_MS).toISOString();
   const ids = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
       AND "customFields"->'_caixaCadastro'->>'status' = 'FILA'
-    ORDER BY "customFields"->'_caixaCadastro'->>'pedidoEm' ASC LIMIT 10`;
+    ORDER BY CASE
+        WHEN "customFields"->'_caixaCadastro'->'atual'->>'desde' >= ${prazo} THEN 0
+        WHEN "customFields"->'_caixaCadastro'->'atual' IS NOT NULL THEN GREATEST(COALESCE(("customFields"->'_caixaCadastro'->>'tentativasConsulta')::int, 0), 1)
+        ELSE COALESCE(("customFields"->'_caixaCadastro'->>'tentativasConsulta')::int, 0)
+      END ASC, "customFields"->'_caixaCadastro'->>'pedidoEm' ASC LIMIT 10`;
   // Depois das consultas: cadastros pedidos (Fabio 29/10: "faz o cadastro da Bianca e da Adriana").
   const cads = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
@@ -174,7 +182,7 @@ export async function gravarConsulta(accountId: string, leadId: string, ordem: n
   if (!l) return;
   const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === Number(ordem));
   const limpo = String(texto || '').replace(/\n{3,}/g, '\n\n').trim().slice(0, 3500);
-  const c = await salvar(leadId, (x) => { x.consultas = { ...(x.consultas || {}), [ordem]: { at: new Date().toISOString(), texto: limpo } }; delete x.atual; });
+  const c = await salvar(leadId, (x) => { x.consultas = { ...(x.consultas || {}), [ordem]: { at: new Date().toISOString(), texto: limpo } }; delete x.atual; delete x.tentativasConsulta; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 CAIXA — Oportunidades de Negócios (${ordem}º participante: ${p?.nome || '—'}), consultado pela extensão:\n\n${limpo}` } }).catch(() => {});
   const todos = participantesDa((l.customFields || {}) as Cf).every((x) => c.consultas?.[x.ordem]);
   if (!todos) return;
@@ -182,6 +190,25 @@ export async function gravarConsulta(accountId: string, leadId: string, ordem: n
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `🏦 ${l.name}: consulta da CAIXA pronta`, body: temFicha((l.customFields || {}) as Cf) ? 'Resultado nas anotações. Quem está com a ficha completa já vai pro cadastro (a extensão preenche e o CRM confere).' : 'Resultado nas anotações. O cadastro sai quando a documentação da CAIXA for conferida.', leadId }).catch(() => {});
   await cadastroAutomatico(accountId, leadId).catch((e) => console.error('[CAIXA] cadastro automático:', e?.message));
+}
+
+/** A CAIXA respondeu a consulta sem "Situação CPF": a extensão manda o que apareceu na tela (Fabio 09/11). Na 1ª vez o card vai pro fim da fila; na 2ª sai dela, com nota e
+ *  push, e aparece em "Cadastro não saiu sozinho" no painel CAIXA, de onde o "Fazer cadastro" o põe na fila de novo. */
+export async function consultaSemResultado(accountId: string, leadId: string, ordem: number, texto: string): Promise<void> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
+  if (!l) return;
+  const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === Number(ordem));
+  const tela = String(texto || '').replace(/\d{3}\.?\d{3}\.?\d{3}-?\d{2}/g, '[CPF]').replace(/\n{3,}/g, '\n\n').trim().slice(0, 1500);
+  console.log('[CAIXA ext] consulta sem resultado:', l.name, '·', tela.slice(0, 500).replace(/\s+/g, ' '));
+  const c = await salvar(leadId, (x) => {
+    x.tentativasConsulta = (x.tentativasConsulta || 0) + 1;
+    delete x.atual;
+    if (x.tentativasConsulta >= CONSULTA_MAX_TENTATIVAS) { x.status = CONSULTA_PARADA; x.consultaParadaEm = new Date().toISOString(); }
+  });
+  if (c.status !== CONSULTA_PARADA) return;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA: a consulta de ${p?.nome || `${ordem}º participante`} em Oportunidades de Negócios não trouxe resultado em ${c.tentativasConsulta} tentativas, e o card saiu da fila pra não segurar os outros. Veja no Caixa Aqui e use "Fazer cadastro" no painel CAIXA pra tentar de novo.\n\nO que apareceu na tela:\n${tela || '(tela sem texto)'}` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `⚠️ ${l.name}: consulta da CAIXA não saiu`, body: 'O card saiu da fila. O que apareceu na tela está nas anotações.', leadId }).catch(() => {});
 }
 
 /** Cards prontos pro cadastro (consultados) — a extensão mostra pra escolher na hora de preencher. */
