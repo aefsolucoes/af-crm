@@ -395,6 +395,18 @@ model EmailMessage {
   @@index([leadId])
 }
 
+// E-mail que voltou (Fabio 09/11): INEXISTENTE não recebe mais nada; CAIXA_CHEIA pausa os automáticos por 30 dias. Ver email-bounce.service.
+model EmailBounce {
+  accountId String
+  address   String
+  kind      String
+  detail    String?
+  lastAt    DateTime
+  updatedAt DateTime @updatedAt
+
+  @@id([accountId, address])
+}
+
 // Dúvida que a IA de atendimento não soube responder sozinha e perguntou pra
 // equipe pelo balão "Dúvidas da IA" — o colaborador responde ali, a IA
 // repassa ao cliente pelo WhatsApp e, se a resposta for regra geral (vale pra

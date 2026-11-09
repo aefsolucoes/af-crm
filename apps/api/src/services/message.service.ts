@@ -408,6 +408,11 @@ export async function sendOutboundEmail(params: {
   const to = lead.contact?.email?.trim();
   if (!to) return { success: false, code: 'NO_EMAIL', error: 'Este contato não tem e-mail cadastrado — cadastre no card do cliente.' };
 
+  // Endereço que já voltou não recebe os lembretes automáticos (Fabio 09/11).
+  const { motivoBloqueioEmail } = require('./email-bounce.service') as typeof import('./email-bounce.service');
+  const bloqueio = await motivoBloqueioEmail(accountId, to, { automatico: true });
+  if (bloqueio) return { success: false, code: 'EMAIL_BLOCKED', error: `E-mail não enviado: ${bloqueio}.` };
+
   try {
     await sendGenericEmail(to, subject, body, html);
   } catch (err) {

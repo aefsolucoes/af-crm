@@ -8,6 +8,7 @@ import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer';
 import { sealSecret, openSecret } from '../lib/secret-box';
 import { companySignatureHtml, companySignatureText } from './email.service';
+import { enderecosBarrados, motivoBloqueioEmail, registrarDevolucao } from './email-bounce.service';
 
 /**
  * Caixa de e-mail dentro do CRM (pedido do Fabio, 2026-09-24/25): a caixa da
@@ -504,6 +505,11 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
     },
   }).catch((err) => { if (err?.code !== 'P2002') throw err; return null; });
 
+  // Devolução de e-mail: guarda quem voltou e por quê, pro CRM não insistir (Fabio 09/11, email-bounce.service).
+  if (row && folder === 'INBOX' && from && /^mailer-daemon@/i.test(from.address)) {
+    await registrarDevolucao(acc.accountId, textBody || '', date).catch((err) => console.warn('[Devolução e-mail] falhou:', err?.message));
+  }
+
   // Creditas pedindo a Autorização SCR Bacen assinada: acha o card pelo CPF do texto, liga o e-mail e dispara o fluxo (creditas-scr.service).
   if (row && folder === 'INBOX' && from && /@([a-z0-9-]+\.)*creditas\.(com|com\.br|io)$/i.test(from.address)) {
     const { handleCreditasScrEmail } = require('./creditas-scr.service') as typeof import('./creditas-scr.service');
@@ -762,6 +768,14 @@ function escapeHtml(s: string) {
 
 /** Envia pela caixa escolhida. Resposta (replyToId) mantém a conversa no
  *  mesmo fio (In-Reply-To/References) e herda o card do e-mail original. */
+/** O e-mail sendo respondido. Pode estar em outra caixa que a pessoa enxerga (Fabio 09/11: responder pelo fabio@ o que chegou no comercial@). */
+function emailRespondido(acc: EmailAccount, replyToId: string | null | undefined, userId: string | null | undefined) {
+  if (!replyToId) return Promise.resolve(null);
+  return prisma.emailMessage.findFirst({
+    where: { id: replyToId, emailAccount: { accountId: acc.accountId, OR: [{ id: acc.id }, { userId: null }, ...(userId ? [{ userId }] : [])] } },
+  });
+}
+
 export async function sendEmailFrom(params: {
   acc: EmailAccount; userId: string | null; to: string[]; cc?: string[]; subject: string; body: string;
   replyToId?: string | null; leadId?: string | null; io: Io;
@@ -774,17 +788,22 @@ export async function sendEmailFrom(params: {
   if (files.length > MAX_ATTACHMENTS) throw new Error(`No máximo ${MAX_ATTACHMENTS} anexos por e-mail`);
   const totalBytes = files.reduce((sum, f) => sum + f.content.length, 0);
   if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error(`Os anexos passam de ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB — mande em mais de um e-mail ou use um link do Drive`);
-  const to = params.to.map((a) => a.trim().toLowerCase()).filter(Boolean);
-  const cc = (params.cc || []).map((a) => a.trim().toLowerCase()).filter(Boolean);
-  if (!to.length) throw new Error('Informe pelo menos um destinatário');
-  const bad = [...to, ...cc].find((a) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a));
+  const pedidosTo = params.to.map((a) => a.trim().toLowerCase()).filter(Boolean);
+  const pedidosCc = (params.cc || []).map((a) => a.trim().toLowerCase()).filter(Boolean);
+  if (!pedidosTo.length) throw new Error('Informe pelo menos um destinatário');
+  const bad = [...pedidosTo, ...pedidosCc].find((a) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a));
   if (bad) throw new Error(`E-mail inválido: ${bad}`);
+  // E-mail inexistente não recebe mais nada (Fabio 09/11): sai da lista; se não sobrar destinatário, o envio para e quem mandou vê o motivo.
+  const barrados = await enderecosBarrados(acc.accountId, [...pedidosTo, ...pedidosCc]);
+  const to = pedidosTo.filter((a) => !barrados.has(a));
+  const cc = pedidosCc.filter((a) => !barrados.has(a));
+  if (!to.length) throw new Error(`E-mail não enviado para ${pedidosTo[0]}: ${barrados.get(pedidosTo[0])}. Corrija o endereço.`);
   const subject = params.subject.trim() || '(sem assunto)';
   const body = params.body.replace(/\r/g, '');
   if (!body.trim()) throw new Error('Escreva a mensagem');
 
   const user = params.userId ? await prisma.user.findUnique({ where: { id: params.userId }, select: { name: true } }) : null;
-  const parent = params.replyToId ? await prisma.emailMessage.findFirst({ where: { id: params.replyToId, emailAccountId: acc.id } }) : null;
+  const parent = await emailRespondido(acc, params.replyToId, params.userId);
 
   const domain = acc.address.split('@')[1] || 'af-crm.local';
   const messageId = `<${crypto.randomUUID()}@${domain}>`;
@@ -973,6 +992,12 @@ export async function sendFollowUpEmail(params: {
   accountId: string; leadId: string; to: string; text: string; subject?: string | null; io: Io;
 }): Promise<boolean> {
   try {
+    // Endereço que já voltou não recebe automático (Fabio 09/11).
+    const bloqueio = await motivoBloqueioEmail(params.accountId, params.to, { automatico: true });
+    if (bloqueio) {
+      console.log(`[E-mail] Automático não enviado (lead ${params.leadId}): ${bloqueio}`);
+      return false;
+    }
     const lead = await prisma.lead.findFirst({
       where: { id: params.leadId, accountId: params.accountId },
       select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } },
@@ -1052,7 +1077,7 @@ async function removeDraft(acc: EmailAccount, draftId: string) {
 /** Salva (ou atualiza) um rascunho na pasta Rascunhos do servidor — aparece
  *  também no webmail. Atualizar = grava o novo e apaga o anterior. */
 export async function saveDraft(params: {
-  acc: EmailAccount; to: string[]; cc?: string[]; subject: string; body: string; draftId?: string | null; replyToId?: string | null;
+  acc: EmailAccount; to: string[]; cc?: string[]; subject: string; body: string; draftId?: string | null; replyToId?: string | null; userId?: string | null;
 }) {
   const { acc } = params;
   const to = params.to.map((a) => a.trim().toLowerCase()).filter(Boolean);
@@ -1062,7 +1087,7 @@ export async function saveDraft(params: {
   if (!to.length && !subject && !body.trim()) throw new Error('Rascunho vazio');
   const domain = acc.address.split('@')[1] || 'af-crm.local';
   const messageId = `<${crypto.randomUUID()}@${domain}>`;
-  const parent = params.replyToId ? await prisma.emailMessage.findFirst({ where: { id: params.replyToId, emailAccountId: acc.id } }) : null;
+  const parent = await emailRespondido(acc, params.replyToId, params.userId);
   const mail = {
     from: acc.address, to: to.length ? to : undefined, cc: cc.length ? cc : undefined, subject, text: body, messageId,
     ...(parent?.messageId ? { inReplyTo: parent.messageId, references: [parent.references, parent.messageId].filter(Boolean).join(' ') } : {}),

@@ -316,7 +316,7 @@ export function EmailComposer({
       <div className="space-y-2.5">
         <div className="flex items-center gap-2">
           <label className="w-14 text-xs text-slate-500 flex-shrink-0">De</label>
-          <select value={mailboxId} onChange={(e) => setMailboxId(e.target.value)} className={field} disabled={!!replyToId}>
+          <select value={mailboxId} onChange={(e) => setMailboxId(e.target.value)} className={field}>
             {mailboxes.map((m) => (
               <option key={m.id} value={m.id}>{m.shared ? `${m.displayName || 'Comercial'} — ` : ''}{m.address}</option>
             ))}

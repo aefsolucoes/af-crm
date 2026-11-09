@@ -124,7 +124,7 @@ router.post('/accounts/:id/drafts', async (req: AuthRequest, res: Response) => {
   const b = req.body || {};
   const list = (v: unknown) => (Array.isArray(v) ? v : String(v || '').split(/[,;]/)).map((x) => String(x).trim()).filter(Boolean);
   try {
-    res.json(await saveDraft({ acc, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''), draftId: b.draftId || null, replyToId: b.replyToId || null }));
+    res.json(await saveDraft({ acc, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''), draftId: b.draftId || null, replyToId: b.replyToId || null, userId: req.user!.id }));
   } catch (err) {
     fail(res, err, 'Não consegui salvar o rascunho');
   }

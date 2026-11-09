@@ -375,6 +375,7 @@ httpServer.listen(PORT, () => {
   // conectadas — a da empresa e as pessoais. E-mail de cliente conhecido
   // também cai na conversa do card.
   setTimeout(() => {
+    (require('./services/email-bounce.service') as typeof import('./services/email-bounce.service')).importarDevolucoes().catch((err) => console.error('[Devolução e-mail] Importar:', err?.message));
     syncAllEmailAccounts(io).catch((err) => console.error('[E-mail] Poll (boot):', err?.message));
     setInterval(() => {
       syncAllEmailAccounts(io).catch((err) => console.error('[E-mail] Poll:', err?.message));
