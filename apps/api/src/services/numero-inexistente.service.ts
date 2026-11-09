@@ -8,7 +8,7 @@ export const MOTIVO_NUMERO_INEXISTENTE = 'Número de telefone inexistente (sem W
  * Só mexe quando nada prova que o número funciona ou que o cliente está em contato: nunca escreveu (o aviso do site não conta) e nenhuma mensagem foi entregue.
  * O 131026 também aparece pra quem tem WhatsApp desatualizado, e por isso quem já conversou fica onde está.
  */
-export async function perdidoSeNumeroInexistente(leadId: string, io: any, simular = false): Promise<boolean> {
+export async function perdidoSeNumeroInexistente(leadId: string, io: any): Promise<boolean> {
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
     select: { id: true, name: true, accountId: true, status: true, archived: true, isGroup: true, pipeline: { select: { departmentId: true } } },
@@ -25,7 +25,6 @@ export async function perdidoSeNumeroInexistente(leadId: string, io: any, simula
     select: { id: true },
   });
   if (prova) return false;
-  if (simular) return true;
 
   const { updateLead } = require('./lead.service') as typeof import('./lead.service');
   const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
@@ -33,18 +32,4 @@ export async function perdidoSeNumeroInexistente(leadId: string, io: any, simula
   await moveLeadToPerdidos({ accountId: lead.accountId, leadId: lead.id, departmentId: lead.pipeline?.departmentId, byName: 'CRM', userId: null, motivo: MOTIVO_NUMERO_INEXISTENTE, io });
   logActivity({ accountId: lead.accountId, userId: null, userName: 'CRM', action: 'lead_status_changed', leadId: lead.id, leadName: lead.name, summary: `marcou o card como Perdido: "${MOTIVO_NUMERO_INEXISTENTE}"` });
   return true;
-}
-
-/** Varredura única dos cards antigos (Fabio 09/11: "sim, passa"). Sem `aplicar` só devolve a lista. Sai do código depois de rodar. */
-export async function varrerNumerosInexistentes(accountId: string, io: any, aplicar: boolean) {
-  const falhas = await prisma.message.findMany({
-    where: { status: 'FAILED', statusError: { contains: '131026' }, lead: { accountId, status: 'OPEN', archived: false, isGroup: false } },
-    distinct: ['leadId'],
-    select: { leadId: true, lead: { select: { name: true, pipeline: { select: { name: true } }, stage: { select: { name: true } } } } },
-  });
-  const cards: { id: string; nome: string; onde: string }[] = [];
-  for (const f of falhas) {
-    if (await perdidoSeNumeroInexistente(f.leadId, io, !aplicar)) cards.push({ id: f.leadId, nome: f.lead.name, onde: `${f.lead.pipeline.name} / ${f.lead.stage.name}` });
-  }
-  return { aplicado: aplicar, comFalha: falhas.length, ficam: falhas.length - cards.length, movidos: cards.length, cards };
 }
