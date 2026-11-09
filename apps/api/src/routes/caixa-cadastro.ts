@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { requirePermission } from '../middleware/permission';
-import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, consultaSemResultado, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA, estadoCaixaDoCard, cadastroCaixaPeloCard, analiseCaixaPeloCard } from '../services/caixa-cadastro.service';
+import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, consultaSemResultado, informarEstadoCivil, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA, estadoCaixaDoCard, cadastroCaixaPeloCard, analiseCaixaPeloCard } from '../services/caixa-cadastro.service';
 import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado, pedirAvisoPv } from '../services/caixa-resultado.service';
 import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
 
@@ -89,6 +89,15 @@ router.post('/:leadId/consulta', async (req: AuthRequest, res: Response) => {
     await verificarOcorrencias(req.user!.accountId, req.params.leadId, (req as any).app.get('io')).catch((e) => console.error('[Ocorrências]', e?.message));
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+
+// Estado civil informado pela equipe quando a ficha não traz (Fabio 09/11).
+router.post('/:leadId/estado-civil', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const { ordem, estadoCivil } = req.body as { ordem?: number; estadoCivil?: string };
+  if (!ordem || !estadoCivil) return res.status(400).json({ error: 'ordem e estadoCivil obrigatórios' });
+  const erro = await informarEstadoCivil(req.user!.accountId, req.params.leadId, Number(ordem), String(estadoCivil).trim(), await nomeDe(req)).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
 });
 
 // A CAIXA respondeu sem o resultado: a extensão conta o que apareceu e a fila segue (Fabio 09/11).
