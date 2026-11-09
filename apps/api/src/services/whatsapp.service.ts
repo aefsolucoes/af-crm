@@ -749,6 +749,11 @@ export async function processWhatsAppStatus(body: any, io: any) {
                 statusError: msg.statusError,
               });
             }
+            // Número que não existe, em cliente que nunca respondeu: o card vai pra Perdidos (Fabio 09/11).
+            if (msg && newStatus === 'FAILED' && Number(s.errors?.[0]?.code) === 131026) {
+              const { perdidoSeNumeroInexistente } = require('./numero-inexistente.service') as typeof import('./numero-inexistente.service');
+              await perdidoSeNumeroInexistente(msg.leadId, io).catch((err: any) => console.warn('[Número inexistente] falhou:', err?.message));
+            }
           }
         }
       }
