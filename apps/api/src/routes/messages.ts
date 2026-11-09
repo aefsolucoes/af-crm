@@ -60,6 +60,17 @@ router.use(authMiddleware);
  *  as rotas /debug/last-audio* junto com isto depois de resolvido. */
 let lastAudioDebug: { raw: Buffer; transcoded: Buffer | null; mimeType: string; error: string | null; at: Date } | null = null;
 
+// Varredura única dos cards antigos com número inexistente (Fabio 09/11). Sem { aplicar: true } só mostra a lista. Sai do código depois de rodar.
+router.post('/debug/numeros-inexistentes', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só admin' });
+  const { varrerNumerosInexistentes } = require('../services/numero-inexistente.service') as typeof import('../services/numero-inexistente.service');
+  try {
+    res.json(await varrerNumerosInexistentes(req.user!.accountId, req.app.get('io'), req.body?.aplicar === true));
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Falhou' });
+  }
+});
+
 // Teste pontual do SMTP recém configurado (Titan) — ADMIN manda um e-mail de
 // teste pra si mesmo. Remover depois de confirmado.
 router.post('/debug/test-email', async (req: AuthRequest, res: Response) => {
