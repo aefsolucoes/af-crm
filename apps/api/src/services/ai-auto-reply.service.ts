@@ -202,7 +202,7 @@ const ASK_TEAM_RULES = `PERGUNTAR PRA EQUIPE ("askTeam") — quando você NÃO t
 - Em "askTeam", escreva a pergunta pra equipe: curta, direta e com o contexto que a equipe precisa pra responder sem abrir a conversa (produto, o que o cliente disse, o que exatamente você precisa saber). Ex.: "Cliente de Home Equity diz que o imóvel é só de escritura, sem matrícula no cartório. Dá pra seguir ou precisa de outro imóvel?" / "Cliente de Home Equity pediu simulação de R$ 50 mil em 60 meses — qual fica a parcela?"
 - CITE O CLIENTE AO PÉ DA LETRA (Fabio 03/11, Otto: ele escreveu "Meu imóvel vale 150 mil. Não 60 mil" e a pergunta chegou à equipe como "vale R$ 150 mil, não R$ 100 mil" — a equipe respondeu outra coisa): no "askTeam", traga entre aspas as palavras EXATAS da mensagem do cliente sobre a dúvida, com os números do jeito que ELE escreveu. Nunca troque, corrija nem "interprete" um número dele; se você acha que ele se confundiu, diga isso à parte (ex.: "— acho que ele leu os R$ 60 mil do crédito pedido como valor do imóvel").
 - Se a mesma dúvida já está com a equipe (ver "DÚVIDAS DESTE CLIENTE QUE VOCÊ JÁ LEVOU PRA EQUIPE"), não pergunte de novo e não responda nada sobre ela ("noReply": true, "askTeam": null) — a resposta chega pelo balão.
-- VISITA AO ESCRITÓRIO (Fabio 29/10, Jaime: "seu escritório é onde, pra gente ir aí pessoalmente?"): quando o cliente quiser ir ao escritório, marcar uma reunião presencial ou perguntar o endereço pra visitar, NUNCA confirme ("pode vir", "estamos aqui", horário, endereço) — primeiro a equipe responde. Diga curto que vai ver com a equipe o melhor dia e horário e já confirma (ex.: "Claro! Vou ver com a equipe o melhor horário pra te receber e já te confirmo por aqui.") e use "askTeam": "Cliente quer ir ao escritório<, quando: dia/horário que ele disse> — pode receber? Qual dia/horário?". Se essa pergunta já está com a equipe, não abra outra.
+- VISITA AO ESCRITÓRIO (Fabio 29/10, Jaime: "seu escritório é onde, pra gente ir aí pessoalmente?"): quando o cliente quiser ir ao escritório, marcar uma reunião presencial ou perguntar o endereço pra visitar, NUNCA confirme ("pode vir", "estamos aqui", horário, endereço) — primeiro a equipe responde. Diga curto apenas que vai ver um horário e já retorna (ex.: "Claro! Vou ver um horário e já te retorno por aqui."), sem dizer que é "com a equipe" (Fabio 09/11) — é a única exceção ao "não responda" acima — e use "askTeam": "Cliente quer ir ao escritório<, quando: dia/horário que ele disse> — pode receber? Qual dia/horário?". Se essa pergunta já está com a equipe, não abra outra.
 - Nos outros casos, "askTeam": null. Não use por cautela quando o material responde.`;
 
 /** Só estes valores são aceitos em "moveToStage" — usuário definiu esse
@@ -791,13 +791,15 @@ ${conversasPorTelefone}` : ''}`;
     // Quando manda a dúvida pra equipe, a IA não fala nada pro cliente
     // (Fabio 30/09) — mas às vezes ela escreve "deixa eu confirmar com a
     // equipe, já te retorno" junto (Marcelo 08/10). Trava fixa: descarta.
-    if (result.askTeam && result.reply && /(vou|deixa eu|deixe-me|deixa eu s[oó]) (verificar|confirmar|checar|conferir|ver)|com a equipe|j[aá] te (retorno|respondo|falo)|te retorno|retorno por aqui/i.test(result.reply)) {
+    // Visita ao escritório é a exceção (Fabio 09/11): o cliente ouve "vou ver um horário e já te retorno" enquanto a pergunta vai pra equipe.
+    const avisoDeVisita = /escrit[oó]rio/i.test(result.askTeam || '') && /vou ver (um|o)( melhor)? hor[aá]rio/i.test(result.reply || '') && !/com a equipe/i.test(result.reply || '');
+    if (result.askTeam && result.reply && !avisoDeVisita && /(vou|deixa eu|deixe-me|deixa eu s[oó]) (verificar|confirmar|checar|conferir|ver)|com a equipe|j[aá] te (retorno|respondo|falo)|te retorno|retorno por aqui/i.test(result.reply)) {
       result.reply = '';
       result.noReply = true;
     }
     // Trava 2 (Fabio 29/10, Floriza: a IA respondeu "dá pra tentar sim usar o terreno rural como garantia" E mandou a mesma dúvida pra equipe, que disse "não fazemos
     // imóvel rural"): se a resposta fala do MESMO assunto que foi pra equipe, ela não sai — o cliente recebe só a resposta da equipe, pelo balão.
-    if (result.askTeam && result.reply && respondeOQueFoiPraEquipe(result.reply, result.askTeam)) {
+    if (result.askTeam && result.reply && !avisoDeVisita && respondeOQueFoiPraEquipe(result.reply, result.askTeam)) {
       console.log(`[AI Auto-reply] resposta descartada: falava do mesmo assunto da pergunta pra equipe ("${result.askTeam.slice(0, 80)}")`);
       result.reply = '';
       result.noReply = true;
