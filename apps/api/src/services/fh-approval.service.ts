@@ -116,6 +116,20 @@ async function enriquecer(leadId: string, cf: Cf, ops: FhOption[]): Promise<FhOp
   });
 }
 
+/** Rodada NOVA pedida (outro valor/prazo, novaPropostaFh): até cada banco responder, o que está no card ainda é da proposta antiga — o aviso espera, no máximo 12 h (Fabio 09/11, Pedro Paulo:
+ *  pediu R$ 360 mil, a IA disse que ia rodar e 1 min depois saiu o aviso com os R$ 340 mil da proposta anterior; o PDF veio com os R$ 360 mil certos). RUN em SENT só termina com a leitura (CHECK) depois dele. Pura (testável). */
+export function rodadaNovaPendente(desde: Date, linhas: { bank: string; kind: string; status: string; createdAt: Date }[], agora = Date.now()): boolean {
+  if (!(desde.getTime() > 0) || agora - desde.getTime() > MAX_WAIT_OTHERS_MS) return false;
+  const emAberto = (s: string) => ['REQUESTED', 'RUNNING', 'SENT'].includes(s);
+  const ultimos = new Map<string, { bank: string; kind: string; status: string; createdAt: Date }>();
+  for (const r of linhas) {
+    if (r.kind !== 'RUN' || r.createdAt < desde) continue;
+    const u = ultimos.get(r.bank);
+    if (!u || r.createdAt > u.createdAt) ultimos.set(r.bank, r);
+  }
+  return Array.from(ultimos.values()).some((run) => emAberto(run.status) && !(run.status === 'SENT' && linhas.some((r) => r.bank === run.bank && r.kind === 'CHECK' && r.createdAt >= run.createdAt && !emAberto(r.status))));
+}
+
 /** Roda no ciclo da análise automática: manda o aviso de aprovação do Financiamento quando dá. */
 export async function processFhNotices(accountId: string, io?: any): Promise<void> {
   const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
@@ -134,6 +148,11 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
     if (cf._autoPaused || !cf._fhResumo) continue;
+    if (cf._fhRodadaNova) {
+      const desde = new Date(cf._fhRodadaNova);
+      const linhas = await prisma.creditAnalysis.findMany({ where: { leadId: l.id, dryRun: false, bank: { in: [FH_BANK, ...Object.values(PORTAL_PROPRIO)] }, createdAt: { gte: desde } }, select: { bank: true, kind: true, status: true, createdAt: true } });
+      if (rodadaNovaPendente(desde, linhas)) continue;
+    }
     const run = await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, bank: FH_BANK, kind: 'RUN', dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
     const op = fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`);
     const emAnalise = op.emAnalise;

@@ -2169,6 +2169,7 @@ async function novaPropostaFh(db: Db, accountId: string, leadId: string, p: { pr
   if (p.prazo) novo._fhPrazo = p.prazo;
   if (p.valor) { novo._valorPedido = fresh.valor_credito; novo.valor_credito = String(p.valor); if (imovel) novo.valor_entrada = String(imovel - p.valor); }
   for (const k of ['_fhNotice', '_fhFirstApprovalAt', '_fhChosen', '_fhNoticeTeamAt']) delete novo[k];
+  novo._fhRodadaNova = new Date().toISOString(); // o aviso espera esta rodada (fh-approval: rodadaNovaPendente)
   novo._changeAsk = [p.prazo && `o prazo de ${p.prazo} meses`, p.valor && `o valor de ${fmtBRL(p.valor)}`].filter(Boolean).join(' e ');
   await db.lead.update({ where: { id: leadId }, data: { customFields: novo as any, ...(p.valor ? { value: p.valor } : {}) } });
   const r = await createRequests(db, { accountId, leadIds: [leadId], banks: [FH_BANK, FH_INTER_BANK, FH_ITAU_BANK], dryRun: false, kind: 'RUN', source: 'AI', force: true, queueIfBusy: true });
