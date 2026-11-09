@@ -16,7 +16,7 @@ type Io = any;
 const DESDE = '2026-11-05T00:00:00Z'; // perdidos de antes não são relidos
 const PRAZO_RESPOSTA_MS = 3 * 86_400_000;
 const WINDOW_MS = 23 * 3_600_000;
-const NAO_FOI_O_CLIENTE_RX = /reprov|desqualific|negad|n[ãa]o aprov|rural|cess[ãa]o de direitos|sem retorno|n[ãa]o respond|sem resposta|duplicad|teste/i;
+const NAO_FOI_O_CLIENTE_RX = /reprov|desqualific|negad|n[ãa]o aprov|rural|cess[ãa]o de direitos|sem retorno|n[ãa]o respond|sem resposta|duplicad|teste|inexistente/i;
 const JA_PERGUNTOU_RX = /(o que (pesou|motivou|levou|fez)|por que|porque|motivo)[^?]*\?/i;
 
 type Desistencia = {
