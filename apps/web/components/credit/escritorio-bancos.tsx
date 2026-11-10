@@ -91,8 +91,8 @@ function layoutPara(n: number): Layout {
   const estacoes = Array.from({ length: n }, (_, k) => [52 + k * 64, 50] as [number, number]);
   // café e xadrez com lugar pros 4 lado a lado (fora do horário todos vão pro café)
   // café e xadrez com um lugar por banco, lado a lado (fora do horário todos vão pro café)
-  const zona = 6 + n * 20, div = 20 + n * 64 + 10, cafe0 = div + 6, xad0 = cafe0 + zona;
-  const fila = (x0: number) => Array.from({ length: n }, (_, i) => [x0 + 4 + i * 20, 44] as [number, number]);
+  const zona = 8 + n * 24, div = 20 + n * 64 + 10, cafe0 = div + 6, xad0 = cafe0 + zona;
+  const fila = (x0: number) => Array.from({ length: n }, (_, i) => [x0 + 6 + i * 24, 44] as [number, number]);
   return { W: xad0 + zona, estacoes, div, cafe0, xad0, zona, cafe: fila(cafe0), xadrez: fila(xad0) };
 }
 
@@ -327,10 +327,10 @@ export function EscritorioBancos({ produto = 'he' }: { produto?: 'he' | 'fh' }) 
           <>
             <div className="relative w-full overflow-hidden rounded-lg bg-[#141821]">
               <canvas ref={cvRef} width={L.W} height={H} onClick={clique} className="block w-full cursor-pointer [image-rendering:pixelated]" aria-label="Escritório dos bancos: sentado na mesa = rodando; no café = sem cliente na fila; em pé no xadrez = login vencido, sem sinal ou pausado" />
-              {pos.map((p) => (p.st.lugar === 'mesa' ? (
+              {pos.map((p, k) => (p.st.lugar === 'mesa' ? (
                 <div key={`tag-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded px-[0.6em] py-[0.15em] font-bold text-white shadow" style={{ left: pct(p.cx, L.W), top: pct(p.dy + 21, H), background: p.b.cor, fontSize: 'clamp(7px, 0.85vw, 11px)' }}>{p.b.nome}</div>
               ) : (
-                <div key={`tag-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded px-[0.5em] py-[0.1em] font-bold text-white shadow" style={{ left: pct(p.x + 8, L.W), top: pct(p.y + 30, H), background: p.b.cor, fontSize: 'clamp(6px, 0.75vw, 10px)' }}>{p.b.nome}</div>
+                <div key={`tag-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded px-[0.5em] py-[0.1em] font-bold text-white shadow" style={{ left: pct(p.x + 8, L.W), top: pct(p.y + 30 + (pos.filter((q, j) => j < k && q.st.lugar === p.st.lugar).length % 2) * 7, H), background: p.b.cor, fontSize: 'clamp(6px, 0.75vw, 10px)' }}>{p.b.nome}</div>
               )))}
               {pos.map((p) => (p.st.lugar === 'mesa' ? (
                 <div key={`bal-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-white px-[0.7em] py-[0.3em] leading-tight text-slate-800 shadow-md" style={{ left: pct(p.cx, L.W), top: pct(p.dy - 21, H), fontSize: 'clamp(7px, 0.85vw, 11px)' }}>
