@@ -196,8 +196,16 @@ function tomCaixa(status: string): string {
   if (/reprov|negad|recus|cancel|nao aprovad/.test(s)) return 'bg-red-100 text-red-700';
   if (/aprovad|gravado/.test(s)) return 'bg-emerald-100 text-emerald-700';
   if (/condicion|pend|incomplet|conferir|nao saiu|segurad|falt|erro|falhou|parou/.test(s)) return 'bg-amber-100 text-amber-700';
-  if (/analise|aguard|enviad|process|fila|rodando/.test(s)) return 'bg-blue-100 text-blue-700';
+  if (/analise|aguard|enviad|process|fila|rodando|consultando/.test(s)) return 'bg-blue-100 text-blue-700';
   return 'bg-slate-100 text-slate-500';
+}
+
+/** Resultado da Avaliação de Risco (_caixaResultado.status): "RESULTADO: Avaliação Condicionada." → "Avaliação Condicionada"; FILA/RODANDO = consulta em andamento. */
+function rotuloResultado(r: string): string {
+  if (/^(FILA|RODANDO)$/i.test(r.trim())) return 'Consultando resultado';
+  if (/^AGUARDANDO_NOVA_AVALIACAO$/i.test(r.trim())) return 'Aguardando nova avaliação';
+  const s = r.replace(/^\s*RESULTADO:\s*/i, '').replace(/aprovada e n[aã]o propagada/gi, 'Aprovada').split(/\s+—\s+|\n/)[0].replace(/[.\s]+$/, '').trim();
+  return s.length > 40 ? `${s.slice(0, 38)}…` : s || curto(r);
 }
 
 type Estado = { rotulo: string; cls: string; sub?: string; pulsa?: boolean; title?: string };
@@ -235,7 +243,7 @@ export function CaixaColuna({ leadId, data }: { leadId: string; data?: PainelCai
   const ps = c.participantes.length ? c.participantes : [{ ordem: 1, nome: '', semRenda: false, cadastro: null, consultado: c.status === 'CONSULTADO' } as Part];
   const card: Estado[] = [];
   if (c.atual?.tipo === 'avaliar') card.push({ rotulo: 'Rodando', cls: 'bg-blue-100 text-blue-700', sub: 'Avaliação de Risco', pulsa: true });
-  else if (c.resultado) card.push({ rotulo: curto(c.resultado), cls: tomCaixa(c.resultado), sub: 'Avaliação de Risco', title: c.resultado });
+  else if (c.resultado) card.push({ rotulo: rotuloResultado(c.resultado), cls: tomCaixa(rotuloResultado(c.resultado)), sub: 'Avaliação de Risco', title: c.resultado });
   else if (c.avaliacao) card.push({ rotulo: c.avaliacao.status === 'FILA' ? 'Na fila' : curto(c.avaliacao.status), cls: tomCaixa(c.avaliacao.status), sub: `Avaliação de Risco${c.avaliacao.fim || c.avaliacao.pedidoEm ? ` · ${ago(c.avaliacao.fim || c.avaliacao.pedidoEm)}` : ''}`, title: c.avaliacao.status });
   if (c.conferencia?.status === 'PENDENTE') card.push({ rotulo: 'Conferir cadastro', cls: 'bg-amber-100 text-amber-700', sub: 'no quadro CAIXA, acima' });
   return (
