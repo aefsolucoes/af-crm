@@ -86,13 +86,14 @@ const CHAR = [
 const H = 88;
 const hash = (x: number, y: number) => (((x * 73856093) ^ (y * 19349663)) >>> 0) % 1000 / 1000;
 
-interface Layout { W: number; estacoes: [number, number][]; div: number; cafe0: number; xad0: number; cafe: [number, number][]; xadrez: [number, number][] }
+interface Layout { W: number; estacoes: [number, number][]; div: number; cafe0: number; xad0: number; zona: number; cafe: [number, number][]; xadrez: [number, number][] }
 function layoutPara(n: number): Layout {
   const estacoes = Array.from({ length: n }, (_, k) => [52 + k * 64, 50] as [number, number]);
   // café e xadrez com lugar pros 4 lado a lado (fora do horário todos vão pro café)
-  const div = 20 + n * 64 + 10, cafe0 = div + 6, xad0 = cafe0 + 86;
-  const fila = (x0: number) => [0, 1, 2, 3].map((i) => [x0 + 4 + i * 20, 44] as [number, number]);
-  return { W: xad0 + 84, estacoes, div, cafe0, xad0, cafe: fila(cafe0), xadrez: fila(xad0) };
+  // café e xadrez com um lugar por banco, lado a lado (fora do horário todos vão pro café)
+  const zona = 6 + n * 20, div = 20 + n * 64 + 10, cafe0 = div + 6, xad0 = cafe0 + zona;
+  const fila = (x0: number) => Array.from({ length: n }, (_, i) => [x0 + 4 + i * 20, 44] as [number, number]);
+  return { W: xad0 + zona, estacoes, div, cafe0, xad0, zona, cafe: fila(cafe0), xadrez: fila(xad0) };
 }
 
 type Ctx = CanvasRenderingContext2D;
@@ -151,12 +152,12 @@ function fundo(L: Layout): HTMLCanvasElement {
   for (let x = L.cafe0 + 10, k = 0; x < L.cafe0 + 54; k++) { const w = 2 + (k % 3 === 0 ? 1 : 0), h = 8 + (k % 2); R(x, 4 + (9 - h), w, h, cores[k % 7]); x += w + 1; }
   // divisória, café (carpete + balcão) e xadrez
   R(L.div, 20, 6, H - 20, '#232B42'); R(L.div + 1, 20, 4, H - 20, '#4A5878'); R(L.div + 1, 20, 4, 1, '#6A7AA0');
-  R(L.cafe0, 20, 86, H - 20, '#2F4F88'); R(L.cafe0 + 2, 21, 82, H - 22, '#3F67AE');
-  for (let y = 23; y < H - 2; y += 4) for (let x = L.cafe0 + 4 + (y % 8 ? 2 : 0); x < L.cafe0 + 82; x += 4) P(x, y, '#4A74BC');
+  R(L.cafe0, 20, L.zona, H - 20, '#2F4F88'); R(L.cafe0 + 2, 21, L.zona - 4, H - 22, '#3F67AE');
+  for (let y = 23; y < H - 2; y += 4) for (let x = L.cafe0 + 4 + (y % 8 ? 2 : 0); x < L.cafe0 + L.zona - 4; x += 4) P(x, y, '#4A74BC');
   box(L.cafe0 + 4, 24, 44, 10, '#C99A62'); R(L.cafe0 + 4, 24, 44, 2, '#E2B27A'); R(L.cafe0 + 4, 32, 44, 2, '#9E6C3A');
   box(L.cafe0 + 7, 17, 10, 10, '#3A3F4B'); R(L.cafe0 + 8, 18, 8, 2, '#5A6172'); R(L.cafe0 + 10, 22, 4, 3, '#1F2530'); P(L.cafe0 + 12, 21, '#E24B4B');
   box(L.cafe0 + 22, 26, 3, 3, '#F5F5F5'); R(L.cafe0 + 22, 26, 3, 1, '#6B3E1F'); box(L.cafe0 + 28, 26, 3, 3, '#F5F5F5'); box(L.cafe0 + 35, 27, 2, 2, '#F5F5F5'); box(L.cafe0 + 40, 26, 4, 4, '#E8B84A');
-  planta(g, L.cafe0 + 66, 20);
+  planta(g, L.cafe0 + L.zona - 20, 20);
   R(L.xad0, 20, 1, H - 20, '#1A1A1A');
   for (let y = 20; y < H; y++) for (let x = L.xad0 + 1; x < W; x++) P(x, y, ((Math.floor((x - L.xad0 - 1) / 8) + Math.floor((y - 20) / 8)) % 2) ? '#ECECEC' : '#2B2B2B');
   planta(g, L.div - 16, 22);

@@ -147,7 +147,7 @@ export function Sidebar() {
   const { collapsed, toggle, init, mobileOpen, closeMobile } = useSidebarStore();
   const router = useRouter();
   const [analiseHref, setAnaliseHref] = useState('/analise-credito');
-  useEffect(() => { setAnaliseHref(ANALISE_HREF[lerProdutoEscolhido()]); }, [pathname]);
+  useEffect(() => { setAnaliseHref(ANALISE.find((p) => pathname.startsWith(p)) || ANALISE_HREF[lerProdutoEscolhido()]); }, [pathname]);
   // "Inbox" e "Funil de Vendas": clicar abre/fecha a lista de setores no
   // próprio menu, sem navegar (Fabio 28/09) — computador e celular; já vem
   // aberto na seção em que a pessoa está.
