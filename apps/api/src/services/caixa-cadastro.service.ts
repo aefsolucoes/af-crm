@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { logActivity } from './activity.service';
 import { comRegrasCaixa, regrasRendaCaixa, rendaForaDoPrazo } from './caixa-cr016';
+import { comEmissaoDoRg } from './rg-emissao';
 
 /* Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar"). A extensão "Cadastro CAIXA (Caixa Aqui)" pergunta a fila a cada minuto.
  * Ordem da CAIXA (Fabio 29/10): (1) consultar o nome de cada participante em Oportunidades de Negócios; (2) limpo → cadastrar 1º e 2º participante (2º sem renda:
@@ -68,7 +69,8 @@ export const participantesDa = (cf: Cf): any[] => {
   // nomes e CPFs da proposta (participante_N / cpf_N), só pra consulta.
   const ps = temFicha(cf) ? cf._fichaCadastral.participantes
     : [1, 2, 3, 4].filter((n) => String(cf[`participante_${n}`] || '').trim()).map((n) => ({ ordem: n, nome: String(cf[`participante_${n}`]).trim(), daProposta: true }));
-  const base = ps.map((p: any, i: number) => {
+  // Ficha já gravada sem a data do RG que a conferência de documentos leu no verso (Fabio 10/11, Sueli): completa na leitura, sem esperar a ficha ser refeita.
+  const base = comEmissaoDoRg(ps, [], temFicha(cf) ? cf._docReview : {}).map((p: any, i: number) => {
     const n = Number(p.ordem) || i + 1;
     // Estado civil informado pela equipe (Fabio 09/11: divórcio recente, sem documento na pasta) manda no da ficha e continua valendo quando ela é refeita.
     const estadoCivil = String(cf[`estado_civil_${n}`] || '').trim();
