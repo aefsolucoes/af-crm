@@ -104,3 +104,42 @@ body {
   max-height: 90vh;
   max-height: calc(100dvh - 2rem);
 }
+
+/* Tabela de clientes da Análise de Crédito (HE e FH) no tom azul-escuro do escritório dos bancos (Fabio 10/11: "deixa assim também").
+ * Tema só dentro de .tabela-escura: troca as cores claras do Tailwind pelas escuras, sem mexer nas etiquetas das outras telas (card do lead etc.). */
+.tabela-escura { background: #1B2440; border: 1px solid #2C3A5E; color: #EEF2FA; }
+.tabela-escura .bg-white { background-color: #212C4C; }
+.tabela-escura .bg-slate-50, .tabela-escura .bg-slate-50\/60 { background-color: #19223C; }
+.tabela-escura .bg-slate-100 { background-color: #263255; }
+.tabela-escura .hover\:bg-slate-50:hover, .tabela-escura .hover\:bg-af-accent\/10:hover { background-color: #243052; }
+.tabela-escura .text-slate-800, .tabela-escura .text-slate-700, .tabela-escura .text-slate-900 { color: #EEF2FA; }
+.tabela-escura .text-slate-600, .tabela-escura .hover\:text-slate-600:hover { color: #C9D4EA; }
+.tabela-escura .text-slate-500 { color: #A9B6D3; }
+.tabela-escura .text-slate-400, .tabela-escura .placeholder\:text-slate-400::placeholder { color: #8E9BBA; }
+.tabela-escura .text-slate-300 { color: #6E7B9A; }
+.tabela-escura .border-af-border, .tabela-escura .border-slate-200, .tabela-escura .border-slate-100, .tabela-escura .divide-af-border > * + * { border-color: #2C3A5E; }
+.tabela-escura .text-af-accent, .tabela-escura .text-af-mid { color: #8DB8F2; }
+/* etiquetas: em análise / rodando (azul) */
+.tabela-escura .bg-blue-50, .tabela-escura .bg-blue-100, .tabela-escura .bg-indigo-50, .tabela-escura .bg-sky-50 { background-color: #18294A; }
+.tabela-escura .text-blue-600, .tabela-escura .text-blue-700, .tabela-escura .text-indigo-600, .tabela-escura .text-indigo-700, .tabela-escura .text-sky-700 { color: #8DB8F2; }
+.tabela-escura .border-indigo-300, .tabela-escura .border-blue-200 { border-color: #4A5FA8; }
+.tabela-escura .hover\:bg-indigo-50:hover { background-color: #1E3157; }
+/* aprovado (verde) */
+.tabela-escura .bg-emerald-50, .tabela-escura .bg-emerald-100, .tabela-escura .bg-green-50, .tabela-escura .bg-teal-50 { background-color: #143327; }
+.tabela-escura .text-emerald-600, .tabela-escura .text-emerald-700, .tabela-escura .text-green-700, .tabela-escura .text-teal-700 { color: #5FD3A1; }
+.tabela-escura .border-emerald-200, .tabela-escura .border-emerald-300 { border-color: #2E7D5B; }
+.tabela-escura .hover\:bg-emerald-50:hover { background-color: #183D2E; }
+/* aguardando / atenção (amarelo e laranja) */
+.tabela-escura .bg-amber-50, .tabela-escura .bg-amber-50\/60, .tabela-escura .bg-amber-100, .tabela-escura .bg-yellow-50 { background-color: #3A2D10; }
+.tabela-escura .text-amber-500, .tabela-escura .text-amber-600, .tabela-escura .text-amber-700 { color: #F2C063; }
+.tabela-escura .border-amber-200, .tabela-escura .border-amber-300 { border-color: #8A6A1F; }
+.tabela-escura .bg-orange-50, .tabela-escura .bg-orange-100 { background-color: #3A2410; }
+.tabela-escura .text-orange-600, .tabela-escura .text-orange-700 { color: #F5A35C; }
+/* reprovado (vermelho); o botão STOP cheio (bg-red-600) continua vermelho */
+.tabela-escura .bg-red-50, .tabela-escura .bg-red-100 { background-color: #3D1B19; }
+.tabela-escura .text-red-500, .tabela-escura .text-red-600, .tabela-escura .text-red-700 { color: #F28B82; }
+.tabela-escura .bg-red-600 { color: #FFFFFF; }
+.tabela-escura .border-red-300 { border-color: #8E3B36; }
+.tabela-escura .hover\:bg-red-50:hover { background-color: #45201D; }
+/* campos (busca) */
+.tabela-escura input:not([type="checkbox"]), .tabela-escura select, .tabela-escura textarea { background-color: #141C33; color: #EEF2FA; border-color: #2C3A5E; }

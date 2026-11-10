@@ -250,7 +250,7 @@ export default function AnaliseFinanciamentoPage() {
         </div>
 
         {/* Quadro */}
-        <div className="bg-white rounded-xl border border-af-border overflow-hidden">
+        <div className="tabela-escura rounded-xl overflow-hidden">
           <div className="px-4 pt-3 border-b border-af-border flex items-end gap-1">
             {([['pre', 'Pré-Análise', preLeads.length], ['ran', 'Já rodados', ranLeads.length]] as const).map(([k, label, n]) => (
               <button key={k} onClick={() => setView(k)} className={`px-4 py-2 text-sm -mb-px border-b-2 transition-colors ${view === k ? 'border-af-accent text-slate-800 font-medium' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
