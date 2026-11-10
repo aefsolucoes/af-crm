@@ -45,7 +45,7 @@ import vistoriaRoutes from './routes/vistorias';
 import certidoesPessoaisRoutes from './routes/certidoes-pessoais';
 import supervisionRoutes from './routes/supervision';
 import { processWeeklySupervision } from './services/supervision.service';
-import { processDriveLifecycle } from './services/drive-lifecycle.service';
+import { processDriveLifecycle, ligarPastaNaHora } from './services/drive-lifecycle.service';
 import automationMetricsRoutes from './routes/automation-metrics';
 import costsRoutes from './routes/costs';
 import emailRoutes from './routes/email';
@@ -322,6 +322,7 @@ httpServer.listen(PORT, () => {
     // Supervisão de sexta (08h lista + push pro Fabio; 14h lembrete) e pasta do cliente acompanhando o status do card (Ganho → Concluídos/ano/mês, Perdido → Leads frios, reaberto → Leads ativos).
     setInterval(() => { processWeeklySupervision().catch((err) => console.error('[Supervisão] Poll:', err?.message)); }, 60 * 1000);
     setInterval(() => { processDriveLifecycle().catch((err) => console.error('[Pasta do card] Poll:', err?.message)); }, 5 * 60 * 1000);
+    ligarPastaNaHora(); // e na hora em que o status do card muda (Fabio 10/11)
     setInterval(() => { processTaskReminders().catch((err) => console.error('[Tarefas] Lembretes:', err?.message)); }, 60 * 1000);
     // Certidão (Fabio 30/10): lembrete das 18h do PIX que vence hoje + PIX vencido refeito 1x — no servidor, sem depender do Chrome da extensão.
     setInterval(() => { (require('./services/certidao.service') as typeof import('./services/certidao.service')).processCertidaoPix((require('./lib/prisma') as typeof import('./lib/prisma')).prisma as any, io as any).catch((err: any) => console.error('[Certidão] PIX:', err?.message)); }, 5 * 60 * 1000);

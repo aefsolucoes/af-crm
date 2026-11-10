@@ -8,7 +8,8 @@ import { getDrive, extractFolderId, moveDriveItem, createFolder, folderLink } fr
  *  - Reaberto (Perdido → Aberto) → a pasta que está em "LEADS FRIOS" volta pra "LEADS ATIVOS".
  * A área é descoberta pelo lugar ONDE A PASTA ESTÁ (a pai dela é o "LEADS ATIVOS"/"LEADS FRIOS" de algum setor), não pelo funil do card.
  * Só age quando o STATUS do card muda (marcador customFields._pastaStatus = último status já tratado); pasta fora desses lugares não é mexida.
- * Poller a cada 5 min (index.ts).
+ * Na hora (Fabio 10/11: o Pedro foi pra Perdido e a pasta continuava em LEADS ATIVOS — o poller só passava 3 min depois): qualquer mudança de status de card
+ * pelo Prisma chama a mesma passada 3 s depois (ligarPastaNaHora, middleware). O poller de 5 min (index.ts) fica como garantia (erro do Drive, outra instância).
  */
 
 const MESES = ['JANEIRO', 'FEVEREIRO', 'MARCO', 'ABRIL', 'MAIO', 'JUNHO', 'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO'];
@@ -66,9 +67,34 @@ export async function monthFolderFor(accountId: string, concluidos: string, quan
 }
 
 let running = false;
+let deNovo = false; // pedido "na hora" chegou com uma passada rodando: roda outra quando ela terminar
+let agendado: ReturnType<typeof setTimeout> | null = null;
+
+/** Status de card mudou: a passada roda em 3 s (junta várias mudanças seguidas numa só). */
+export function pastaAcompanhaAgora(): void {
+  if (agendado) return;
+  agendado = setTimeout(() => {
+    agendado = null;
+    processDriveLifecycle().catch((err) => console.error('[Pasta do card] Na hora:', err?.message));
+  }, 3000);
+}
+
+const STATUS_ACOES = new Set(['update', 'updateMany', 'upsert']);
+/** Liga o "na hora": depois de todo update/upsert de Lead que mexe no status, agenda a passada. Chamado uma vez no início do servidor (index.ts). */
+export function ligarPastaNaHora(): void {
+  prisma.$use(async (params, next) => {
+    const r = await next(params);
+    if (params.model === 'Lead' && STATUS_ACOES.has(params.action)) {
+      const a = (params.args || {}) as Record<string, any>;
+      const mudouStatus = (d: any) => !!d && typeof d === 'object' && d.status !== undefined;
+      if (mudouStatus(a.data) || mudouStatus(a.update)) pastaAcompanhaAgora();
+    }
+    return r;
+  });
+}
 
 export async function processDriveLifecycle(): Promise<void> {
-  if (running) return;
+  if (running) { deNovo = true; return; }
   running = true;
   try {
     // cards com link de pasta cujo status mudou desde a última vez (marcador ausente = era Aberto)
@@ -86,7 +112,10 @@ export async function processDriveLifecycle(): Promise<void> {
         await tratar(r, areasPorConta.get(r.accountId)!);
       } catch (e: any) { console.warn(`[Pasta do card] ${r.name}:`, e?.message); }
     }
-  } finally { running = false; }
+  } finally {
+    running = false;
+    if (deNovo) { deNovo = false; pastaAcompanhaAgora(); }
+  }
 }
 
 async function marcar(leadId: string, status: string) {
