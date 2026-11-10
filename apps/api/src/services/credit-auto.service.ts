@@ -319,13 +319,16 @@ async function cascadeToSecond(accountId: string) {
   // (Amanda e Luana, 06/11) nunca passavam pro 2º participante — o card ficava parado na Pré-Análise sem erro nenhum no log (Fabio 07/11: "por que travou").
   const leads = await prisma.lead.findMany({
     where: { accountId, status: 'OPEN', archived: false, creditAnalyses: { some: { dryRun: false } } },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' } } },
+    select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } }, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' } } },
     orderBy: { updatedAt: 'desc' }, take: 300,
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
     if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
-    if (!cf._autoStartedAt) continue;
+    // Card que a análise automática não iniciou (rodado à mão) também entra se está na Pré-Análise do HE: o closeRejected espera esta cascata antes de mandar a negativa,
+    // e sem ela o card ficava parado pra sempre, sem negativa e sem nota (Suelen, 10/11: os 3 bancos negaram e o 2º participante nunca rodou).
+    const naPreHe = /^pré-an/i.test(l.stage?.name || '') && /home equity/i.test(l.pipeline?.department?.name || '');
+    if (!cf._autoStartedAt && !naPreHe) continue;
     if (!String(cf.participante_2 || '').trim()) continue; // sem 2º participante não há cascata (poupa as 2 consultas abaixo)
     const todo = await cascadeTodo(l.id, cf, l.name, l.creditAnalyses);
     if (!todo.length) continue;
