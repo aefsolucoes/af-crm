@@ -24,6 +24,15 @@ const BONECOS_HE: Boneco[] = [
   { key: 'CAIXA', nome: 'CAIXA', cor: '#005CA9', hair: ['#BDBDBD', '#8F8F8F', '#E0E0E0'], skin: ['#E8B590', '#C98F69'], shirt: ['#005CA9', '#00427A', '#2A7DC4'], tie: '#F39200', longo: false },
 ];
 
+// Financiamento (FH): Credimorar (Bradesco e Santander numa simulação), Inter no nosso portal, Itaú no portal Itaú Imóveis, CAIXA e BRB (à mão).
+const BONECOS_FH: Boneco[] = [
+  { key: 'CREDIMORAR_FH', nome: 'Credimorar', cor: '#1F3A93', hair: ['#5A3A24', '#3E2718', '#7A5236'], skin: ['#E8B590', '#C98F69'], shirt: ['#1F3A93', '#152A6B', '#3554B8'], tie: '#CC092F', longo: false },
+  { key: 'INTER_FH', nome: 'Inter', cor: '#FF7A00', hair: ['#4A2F1F', '#33201A', '#6B4630'], skin: ['#F1C6A0', '#D9A27C'], shirt: ['#FF7A00', '#C95E00', '#FF9D45'], tie: null, longo: false },
+  { key: 'ITAU_FH', nome: 'Itaú', cor: '#EC7000', hair: ['#1A1412', '#0E0A09', '#33281F'], skin: ['#8D5A3B', '#6E4329'], shirt: ['#0B3D91', '#072A66', '#2A5BB5'], tie: '#EC7000', longo: false },
+  { key: 'CAIXA_FH', nome: 'CAIXA', cor: '#005CA9', hair: ['#BDBDBD', '#8F8F8F', '#E0E0E0'], skin: ['#E8B590', '#C98F69'], shirt: ['#005CA9', '#00427A', '#2A7DC4'], tie: '#F39200', longo: false },
+  { key: 'BRB_FH', nome: 'BRB', cor: '#00529B', hair: ['#2B1B14', '#1A100B', '#4A3022'], skin: ['#B07A55', '#8E5F40'], shirt: ['#3FA7E0', '#2A82B5', '#7CC6EE'], tie: '#00529B', longo: true },
+];
+
 interface CardCaixa { leadId: string; nome: string; status: string | null; atual: { tipo: string; ordem: number; desde: string } | null; participantes: { ordem: number; nome: string; cadastro: string | null }[]; conferencia: { status: string } | null; avaliacao: { status: string } | null }
 const ACAO_CAIXA: Record<string, string> = { consultar: 'consultando o nome', cadastrar: 'cadastrando no Caixa Aqui', avaliar: 'Avaliação de Risco' };
 
@@ -41,6 +50,16 @@ export function estadoDoBanco(l: Live | undefined, pausado: boolean): EstadoBanc
   if (q) return { lugar: 'mesa', titulo: q.leadName, detalhe: `próximo da fila${l.queued > 1 ? ` · ${l.queued} na fila` : ''}`, proximo: true };
   if (pausado) return { lugar: 'xadrez', titulo: '⏸ automático pausado', detalhe: 'só roda o que for pedido' };
   return { lugar: 'cafe', titulo: '☕ sem cliente na fila', detalhe: '' };
+}
+
+/** Banco rodado à mão (CAIXA e BRB no Financiamento): na mesa enquanto tem cliente em análise; senão no café. Pura. */
+export function estadoManual(l: Live | undefined): EstadoBanco {
+  if (!l) return { lugar: 'cafe', titulo: 'carregando…', detalhe: '' };
+  const r = l.running[0];
+  if (r) return { lugar: 'mesa', titulo: r.leadName, detalhe: 'em análise (à mão)' };
+  const q = l.queue[0];
+  if (q) return { lugar: 'mesa', titulo: q.leadName, detalhe: `pedido à mão${l.queued > 1 ? ` · ${l.queued} na fila` : ''}`, proximo: true };
+  return { lugar: 'cafe', titulo: '✋ roda à mão', detalhe: 'com a documentação completa' };
 }
 
 /** CAIXA: pelo painel da fila do Caixa Aqui (consulta, cadastro, Avaliação de Risco). Pura. */
@@ -204,12 +223,13 @@ function posicionar(L: Layout, bonecos: Boneco[], estados: Record<string, Estado
 type Modo = 'escritorio' | 'mini' | 'caixas';
 const CHAVE_MODO = 'analise-credito-escritorio';
 
-export function EscritorioBancos() {
-  const bonecos = BONECOS_HE;
-  const colunas = colunasDe('he');
-  const { data: live } = useCreditLive('he');
-  const { data: caixa } = useQuery<{ cards: CardCaixa[] }>({ queryKey: ['caixa-painel'], queryFn: async () => (await api.get('/api/caixa-cadastro/painel')).data, refetchInterval: 10_000 });
-  const { data: auto } = useQuery<{ paused?: boolean }>({ queryKey: ['credit-auto'], queryFn: async () => (await api.get('/api/credit-analysis/auto')).data });
+export function EscritorioBancos({ produto = 'he' }: { produto?: 'he' | 'fh' }) {
+  const he = produto === 'he';
+  const bonecos = he ? BONECOS_HE : BONECOS_FH;
+  const colunas = colunasDe(produto);
+  const { data: live } = useCreditLive(produto);
+  const { data: caixa } = useQuery<{ cards: CardCaixa[] }>({ queryKey: ['caixa-painel'], queryFn: async () => (await api.get('/api/caixa-cadastro/painel')).data, refetchInterval: 10_000, enabled: he });
+  const { data: auto } = useQuery<{ paused?: boolean }>({ queryKey: ['credit-auto'], queryFn: async () => (await api.get('/api/credit-analysis/auto')).data, enabled: he });
 
   const [modo, setModo] = useState<Modo>('escritorio');
   const [escolhido, setEscolhido] = useState<string | null>(null);
@@ -218,9 +238,12 @@ export function EscritorioBancos() {
 
   const estados = useMemo(() => {
     const out: Record<string, EstadoBanco> = {};
-    for (const b of bonecos) out[b.key] = b.key === 'CAIXA' ? estadoDaCaixa(caixa?.cards) : estadoDoBanco(live?.find((l) => l.bank === b.key), !!auto?.paused);
+    for (const b of bonecos) {
+      const l = live?.find((x) => x.bank === b.key);
+      out[b.key] = b.key === 'CAIXA' ? estadoDaCaixa(caixa?.cards) : colunas.find((c) => c.key === b.key)?.manual ? estadoManual(l) : estadoDoBanco(l, he && !!auto?.paused);
+    }
     return out;
-  }, [bonecos, live, caixa, auto]);
+  }, [bonecos, colunas, he, live, caixa, auto]);
   const L = useMemo(() => layoutPara(bonecos.length), [bonecos.length]);
   const pos = useMemo(() => posicionar(L, bonecos, estados), [L, bonecos, estados]);
 
@@ -270,15 +293,15 @@ export function EscritorioBancos() {
   const pct = (v: number, total: number) => `${(v / total) * 100}%`;
   const sel = escolhido ? bonecos.find((b) => b.key === escolhido) : null;
 
-  const botao = 'text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50';
+  const botao = 'text-xs px-2.5 py-1 rounded-lg border border-[#2C3A5E] text-[#D6DEEE] hover:bg-[#243052]';
   const icone = (t: string) => { const w = t.split(' ')[0]; return /^[A-Za-zÀ-ÿ0-9]/.test(w) ? '•' : w; };
   return (
     <div className="space-y-3">
-      <div className="bg-white rounded-xl border border-af-border p-2.5 space-y-2.5">
+      <div className="bg-[#1B2440] rounded-xl border border-[#2C3A5E] p-2.5 space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2 px-1">
           <div>
-            <p className="text-sm font-semibold text-slate-800">Bancos</p>
-            <p className="text-xs text-slate-500">{rodando} rodando · {noCafe} no café · {problema} com problema{naFila ? ` · ${naFila} cliente${naFila === 1 ? '' : 's'} na fila` : ''}</p>
+            <p className="text-sm font-semibold text-white">Bancos</p>
+            <p className="text-xs text-[#9FB0D0]">{rodando} rodando · {noCafe} no café · {problema} com problema{naFila ? ` · ${naFila} cliente${naFila === 1 ? '' : 's'} na fila` : ''}</p>
           </div>
           <div className="flex flex-wrap gap-2">
             {modo !== 'mini' && <button type="button" className={botao} onClick={() => mudarModo('mini')}>Minimizar</button>}
@@ -290,10 +313,10 @@ export function EscritorioBancos() {
         {modo === 'mini' && (
           <div className="flex flex-wrap gap-2 px-1 pb-1">
             {pos.map((p) => (
-              <button key={p.b.key} type="button" onClick={() => { setEscolhido(p.b.key); mudarModo('escritorio'); }} className="inline-flex items-center gap-1.5 rounded-full border border-af-border px-2.5 py-0.5 text-xs text-slate-700 hover:bg-slate-50">
+              <button key={p.b.key} type="button" onClick={() => { setEscolhido(p.b.key); mudarModo('escritorio'); }} className="inline-flex items-center gap-1.5 rounded-full border border-[#2C3A5E] px-2.5 py-0.5 text-xs text-[#D6DEEE] hover:bg-[#243052]">
                 <span className="h-2.5 w-2.5 rounded-sm" style={{ background: p.b.cor }} />
                 <b>{p.b.nome}</b>
-                <span className="text-slate-500">{p.st.lugar === 'mesa' ? `${p.st.proximo ? 'próximo' : 'rodando'} ${curto(p.st.titulo, 22)}` : p.st.titulo.replace(/^\S+\s/, '')}</span>
+                <span className="text-[#9FB0D0]">{p.st.lugar === 'mesa' ? `${p.st.proximo ? 'próximo' : 'rodando'} ${curto(p.st.titulo, 22)}` : p.st.titulo.replace(/^\S+\s/, '')}</span>
               </button>
             ))}
           </div>
@@ -317,7 +340,7 @@ export function EscritorioBancos() {
                 <div key={`ico-${p.b.key}`} title={`${p.b.nome}: ${p.st.titulo.replace(/^\S+\s/, '')}`} className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded-full bg-white px-[0.35em] leading-none shadow" style={{ left: pct(p.marca.x, L.W), top: pct(p.marca.y - 1, H), fontSize: 'clamp(8px, 0.95vw, 13px)' }}>{icone(p.st.titulo)}</div>
               )))}
             </div>
-            {!sel && <p className="px-1 text-xs text-slate-400">Clique num banco para ver a fila e os botões dele. ☕ sem cliente na fila · 🌙 fora do horário · 🔑 login vencido · 📡 extensão sem sinal · ⏸ automático pausado</p>}
+            {!sel && <p className="px-1 text-xs text-[#9FB0D0]">Clique num banco para ver a fila e os botões dele. ☕ sem cliente na fila · 🌙 fora do horário · 🔑 login vencido · 📡 extensão sem sinal · ⏸ automático pausado{he ? '' : ' · ✋ roda à mão'}</p>}
             {sel && (
               <div className="max-w-xl">
                 {sel.key === 'CAIXA' ? <CaixaPanel /> : <BancoLiveCard b={colunas.find((c) => c.key === sel.key)!} l={live?.find((l) => l.bank === sel.key)} />}
@@ -327,7 +350,7 @@ export function EscritorioBancos() {
         )}
       </div>
 
-      {modo === 'caixas' && <ExtensionsLivePanel />}
+      {modo === 'caixas' && <ExtensionsLivePanel produto={produto} />}
     </div>
   );
 }

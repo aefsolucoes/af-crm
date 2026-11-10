@@ -8,9 +8,10 @@ import { useInboxSectorStore, InboxSector } from '@/store/inbox-sector.store';
 import { useFunilSectorStore } from '@/store/funil-sector.store';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { ANALISE_HREF, lerProdutoEscolhido } from '@/components/credit/produto-switch';
 import {
   LayoutDashboard, Kanban, MessageSquare, CheckSquare, BarChart3, LogOut, Settings,
-  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown, Megaphone, Landmark, Gauge, Coins, Home, ClipboardList,
+  FileText, Zap, UserCog, PanelLeftClose, PanelLeftOpen, Wallet, Upload, X, Sparkles, Phone, Mail, ChevronDown, Megaphone, Landmark, Gauge, Coins, ClipboardList,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 import { useSidebarStore } from '@/store/sidebar.store';
@@ -27,7 +28,6 @@ const NAV: NavItem[] = [
   // sem precisar de configuração extra de permissão.
   { href: '/meu-assistente', label: 'Meu Assistente', icon: Sparkles, perm: 'dashboard' },
   { href: '/analise-credito', label: 'Análise de Crédito', icon: Landmark, perm: 'funnel_view' },
-  { href: '/analise-financiamento', label: 'Análise Financiamento Imob.', icon: Home, perm: 'funnel_view' },
   // Item único pros 3 setores (Habitação/Consórcio/Home Equity) — antes eram
   // 3 itens de menu separados, um por setor; agora FunilView tem seu próprio
   // seletor de setor (mesmo critério de "só os próprios setores" de antes,
@@ -133,6 +133,10 @@ function FunilSectorLinks({ onNavigate }: { onNavigate?: () => void }) {
 
 // Itens do menu que abrem/fecham uma lista embaixo em vez de navegar.
 const EXPANDABLE = ['/funil', '/inbox'];
+// Análise de Crédito: um item só no menu (Fabio 10/11). Fica ativo no HE e no FH e abre o último escolhido na chave HE / FH da página.
+const ANALISE = ['/analise-credito', '/analise-financiamento'];
+const isActive = (pathname: string, href: string) => (ANALISE.includes(href) ? ANALISE.some((p) => pathname.startsWith(p)) : pathname.startsWith(href));
+
 function SubLinks({ href, onNavigate }: { href: string; onNavigate?: () => void }) {
   return href === '/inbox' ? <InboxSectorLinks onNavigate={onNavigate} /> : <FunilSectorLinks onNavigate={onNavigate} />;
 }
@@ -142,6 +146,8 @@ export function Sidebar() {
   const { user, logout } = useAuthStore();
   const { collapsed, toggle, init, mobileOpen, closeMobile } = useSidebarStore();
   const router = useRouter();
+  const [analiseHref, setAnaliseHref] = useState('/analise-credito');
+  useEffect(() => { setAnaliseHref(ANALISE_HREF[lerProdutoEscolhido()]); }, [pathname]);
   // "Inbox" e "Funil de Vendas": clicar abre/fecha a lista de setores no
   // próprio menu, sem navegar (Fabio 28/09) — computador e celular; já vem
   // aberto na seção em que a pessoa está.
@@ -235,7 +241,7 @@ export function Sidebar() {
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
         {nav.map(({ href, label, icon: Icon }) => {
-          const active = pathname.startsWith(href);
+          const active = isActive(pathname, href);
           return (
             <Fragment key={href}>
             {EXPANDABLE.includes(href) && !collapsed ? (
@@ -252,7 +258,7 @@ export function Sidebar() {
               </button>
             ) : (
               <Link
-                href={href}
+                href={href === '/analise-credito' ? analiseHref : href}
                 title={collapsed ? label : undefined}
                 className={cn(
                   'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
@@ -322,7 +328,7 @@ export function Sidebar() {
 
           <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
             {nav.map(({ href, label, icon: Icon }) => {
-              const active = pathname.startsWith(href);
+              const active = isActive(pathname, href);
               return (
                 <Fragment key={href}>
                 {EXPANDABLE.includes(href) ? (
@@ -339,7 +345,7 @@ export function Sidebar() {
                   </button>
                 ) : (
                   <Link
-                    href={href}
+                    href={href === '/analise-credito' ? analiseHref : href}
                     className={cn(
                       'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
                       active ? 'bg-af-mid text-white' : 'text-slate-300 hover:bg-af-blue hover:text-white'

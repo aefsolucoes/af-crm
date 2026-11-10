@@ -12,6 +12,7 @@ import { formatCurrency } from '@/lib/utils';
 import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead, fmtCpf, sameWho, ParticipantCell, jaSeguiuAprovado, PropostasRodadas, propostasRodadas } from '@/components/credit/shared';
 import { AdjustModal } from '@/components/credit/adjust-modal';
 import { EscritorioBancos } from '@/components/credit/escritorio-bancos';
+import { ProdutoSwitch } from '@/components/credit/produto-switch';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
 import { CaixaColuna, useCaixaPainel } from '@/components/credit/caixa-panel';
 import { pingExtensions } from '@/lib/credit-extensions';
@@ -347,6 +348,7 @@ export default function AnaliseCreditoPage() {
       <Topbar title="Análise de Crédito" subtitle="Disparo e retorno das análises dos bancos (extensões do Chrome)" />
       <div className="flex-1 overflow-auto px-4 md:px-6 py-4 space-y-4 scrollbar-thin">
         {/* Extensões: o escritório dos bancos (Fabio 10/11) — sentado = rodando, café = sem fila, xadrez = problema; "Ver em caixinhas" volta ao painel antigo */}
+        <ProdutoSwitch atual="he" />
         <EscritorioBancos />
         <p className="-mt-2 text-xs text-slate-400">As análises rodam no Chrome do Fabio (login e código dos bancos ficam lá), das 07h às 22h. Com o Chrome aberto, a extensão busca os pedidos desta tela a cada minuto.</p>
 

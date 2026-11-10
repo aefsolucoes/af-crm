@@ -10,7 +10,8 @@ import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
 import { STATUS, ago, fmtCpf, type Bank } from '@/components/credit/shared';
-import { ExtensionsLivePanel } from '@/components/credit/extensions-live-panel';
+import { EscritorioBancos } from '@/components/credit/escritorio-bancos';
+import { ProdutoSwitch } from '@/components/credit/produto-switch';
 import { pingExtensions } from '@/lib/credit-extensions';
 import { ChevronDown, ChevronRight, MessageSquare, Play, RefreshCw, AlertTriangle, FileText } from 'lucide-react';
 import api from '@/lib/api';
@@ -217,8 +218,9 @@ export default function AnaliseFinanciamentoPage() {
     <div className="flex flex-col h-full">
       <Topbar title="Análise de Crédito — Financiamento Imobiliário" subtitle="Bradesco e Santander pelo Credimorar · Inter pelo nosso portal · Itaú pelo portal Itaú Imóveis · CAIXA e BRB com a documentação completa" />
       <div className="flex-1 overflow-auto px-4 md:px-6 py-4 space-y-4 scrollbar-thin">
-        {/* Extensões: logo de cada banco e o cliente que a extensão está rodando agora */}
-        <ExtensionsLivePanel produto="fh" />
+        <ProdutoSwitch atual="fh" />
+        {/* Extensões: o escritório dos bancos (Fabio 10/11), igual ao do Home Equity; "Ver em caixinhas" volta ao painel antigo */}
+        <EscritorioBancos produto="fh" />
         <p className="-mt-2 text-xs text-slate-400">As análises rodam no Chrome do Fabio (login e código dos bancos ficam lá), das 07h às 22h. Com o Chrome aberto, a extensão busca os pedidos desta tela a cada minuto.</p>
 
         <div className="bg-white rounded-xl border border-af-border p-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
