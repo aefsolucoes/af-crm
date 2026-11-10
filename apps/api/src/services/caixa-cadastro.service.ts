@@ -64,6 +64,34 @@ async function segurarPosAvaliacao(leadId: string, motivo: string): Promise<void
   sendPushToAccount(l.accountId, { title: `✋ ${l.name}: alterar cadastro CAIXA?`, body: `${motivo} — crédito já rodado, a equipe decide`.slice(0, 160), leadId }).catch(() => {});
 }
 
+/** CNPJ válido (14 dígitos e dígitos verificadores). Pura. */
+export function cnpjValido(v: unknown): boolean {
+  const d = String(v ?? '').replace(/\D/g, '');
+  if (d.length !== 14 || /^(\d)\1+$/.test(d)) return false;
+  const dv = (base: string) => { let s = 0, w = base.length - 7; for (const ch of base) { s += Number(ch) * w; w = w === 2 ? 9 : w - 1; } const r = s % 11; return r < 2 ? 0 : 11 - r; };
+  return dv(d.slice(0, 12)) === Number(d[12]) && dv(d.slice(0, 13)) === Number(d[13]);
+}
+
+/** CNPJ e data de admissão da fonte de renda informados pela equipe (Fabio 10/11, Deborah: a admissão veio em foto da ficha funcional do SIAPE e nenhum
+ *  documento traz o CNPJ) — `cnpj_renda_N` / `admissao_renda_N` mandam na ficha e continuam valendo quando ela é refeita. Valem pro emprego da ficha
+ *  (`trabalho`) e os contracheques dele; aposentadoria, pensão e lucros ficam como estão. Pura. */
+export function comRendaInformada(p: any, cf: Cf, n: number): any {
+  const cnpj = String(cf[`cnpj_renda_${n}`] || '').replace(/\D/g, '');
+  const admissao = String(cf[`admissao_renda_${n}`] || '').trim();
+  const temCnpj = cnpj.length === 14, temAdm = /^\d{2}\/\d{2}\/\d{4}$/.test(admissao);
+  if (!temCnpj && !temAdm) return p;
+  const t = p?.trabalho || {};
+  const chave = (s: unknown) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().trim().split(/\s+/).slice(0, 2).join(' ');
+  const doEmprego = (c: any) => !/aposent|pens|lucro|labore/i.test(String(c?.tipo || '')) && (!c?.empregador || !t.empregador || chave(c.empregador) === chave(t.empregador));
+  const novo = { ...(temCnpj ? { cnpj } : {}), ...(temAdm ? { admissao } : {}) };
+  return {
+    ...p,
+    trabalho: { ...t, ...novo },
+    contracheques: (Array.isArray(p?.contracheques) ? p.contracheques : []).map((c: any) => (doEmprego(c) ? { ...c, ...novo } : c)),
+    faltando: (Array.isArray(p?.faltando) ? p.faltando : []).filter((f: unknown) => !((temCnpj && /cnpj/i.test(String(f))) || (temAdm && /admiss/i.test(String(f))))),
+  };
+}
+
 export const participantesDa = (cf: Cf): any[] => {
   // Sem ficha ainda (Fabio 01/11: "a consulta ocorre assim que o cliente indicar querer fazer com a CAIXA e a pergunta dos requisitos saírem", antes dos documentos):
   // nomes e CPFs da proposta (participante_N / cpf_N), só pra consulta.
@@ -74,7 +102,7 @@ export const participantesDa = (cf: Cf): any[] => {
     const n = Number(p.ordem) || i + 1;
     // Estado civil informado pela equipe (Fabio 09/11: divórcio recente, sem documento na pasta) manda no da ficha e continua valendo quando ela é refeita.
     const estadoCivil = String(cf[`estado_civil_${n}`] || '').trim();
-    return { ...p, ordem: n, cpf: String(p.cpf || cf[`cpf_${n}`] || '').replace(/\D/g, ''), telefone: cf[`telefone_${n}`] || '', email: cf[`email_${n}`] || '', ...(estadoCivil ? { estadoCivil, faltando: (Array.isArray(p.faltando) ? p.faltando : []).filter((f: unknown) => !/estado civil/i.test(String(f))) } : {}) };
+    return comRendaInformada({ ...p, ordem: n, cpf: String(p.cpf || cf[`cpf_${n}`] || '').replace(/\D/g, ''), telefone: cf[`telefone_${n}`] || '', email: cf[`email_${n}`] || '', ...(estadoCivil ? { estadoCivil, faltando: (Array.isArray(p.faltando) ? p.faltando : []).filter((f: unknown) => !/estado civil/i.test(String(f))) } : {}) }, cf, n);
   });
   // CPF do cônjuge: a certidão de casamento não traz — se o cônjuge é o outro participante do card, usa o CPF dele (Jézer/Bianca 29/10).
   const primeiroNome = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim().split(/\s+/)[0];
@@ -205,6 +233,29 @@ export async function informarEstadoCivil(accountId: string, leadId: string, ord
   if (!p) return 'Participante não encontrado';
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify({ [`estado_civil_${ordem}`]: estadoCivil })}::jsonb WHERE id = ${leadId}`;
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📋 Estado civil de ${p.nome || `${ordem}º participante`} informado por ${por}: ${estadoCivil}. Vale no cadastro da CAIXA no lugar do que a ficha trouxer.` } }).catch(() => {});
+  return null;
+}
+
+/** CNPJ e/ou data de admissão do emprego de um participante, informados pela equipe (comRendaInformada). */
+export async function informarDadosRenda(accountId: string, leadId: string, ordem: number, dados: { cnpj?: string; admissao?: string }, por: string): Promise<string | null> {
+  const cnpj = String(dados.cnpj || '').replace(/\D/g, '');
+  const admissao = String(dados.admissao || '').trim();
+  if (!cnpj && !admissao) return 'Informe o CNPJ e/ou a data de admissão';
+  if (cnpj && !cnpjValido(cnpj)) return 'CNPJ inválido';
+  if (admissao) {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(admissao);
+    if (!m) return 'Data de admissão no formato dd/mm/aaaa';
+    const d = new Date(`${m[3]}-${m[2]}-${m[1]}T12:00:00-03:00`);
+    if (isNaN(d.getTime()) || d.getUTCDate() !== Number(m[1]) || d.getTime() > Date.now()) return 'Data de admissão inválida ou no futuro';
+  }
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!l) return 'Lead não encontrado';
+  const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === ordem);
+  if (!p) return 'Participante não encontrado';
+  const patch = { ...(cnpj ? { [`cnpj_renda_${ordem}`]: cnpj } : {}), ...(admissao ? { [`admissao_renda_${ordem}`]: admissao } : {}) };
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb WHERE id = ${leadId}`;
+  const fonte = p.trabalho?.empregador ? ` (${p.trabalho.empregador})` : '';
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📋 Renda de ${p.nome || `${ordem}º participante`}${fonte} informada por ${por}: ${[cnpj && `CNPJ ${cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')}`, admissao && `admissão ${admissao}`].filter(Boolean).join(', ')}. Vale no cadastro da CAIXA no lugar do que a ficha trouxer.` } }).catch(() => {});
   return null;
 }
 

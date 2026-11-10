@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { requirePermission } from '../middleware/permission';
-import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, consultaSemResultado, informarEstadoCivil, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA, estadoCaixaDoCard, cadastroCaixaPeloCard, analiseCaixaPeloCard } from '../services/caixa-cadastro.service';
+import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, consultaSemResultado, informarEstadoCivil, informarDadosRenda, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA, estadoCaixaDoCard, cadastroCaixaPeloCard, analiseCaixaPeloCard } from '../services/caixa-cadastro.service';
 import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado, pedirAvisoPv } from '../services/caixa-resultado.service';
 import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
 
@@ -96,6 +96,15 @@ router.post('/:leadId/estado-civil', requirePermission('funnel_manage'), async (
   const { ordem, estadoCivil } = req.body as { ordem?: number; estadoCivil?: string };
   if (!ordem || !estadoCivil) return res.status(400).json({ error: 'ordem e estadoCivil obrigatórios' });
   const erro = await informarEstadoCivil(req.user!.accountId, req.params.leadId, Number(ordem), String(estadoCivil).trim(), await nomeDe(req)).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+
+// CNPJ e/ou data de admissão do emprego informados pela equipe (Fabio 10/11): valem no lugar da ficha, mesmo quando ela é refeita.
+router.post('/:leadId/dados-renda', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const { ordem, cnpj, admissao } = req.body as { ordem?: number; cnpj?: string; admissao?: string };
+  if (!ordem) return res.status(400).json({ error: 'ordem obrigatória' });
+  const erro = await informarDadosRenda(req.user!.accountId, req.params.leadId, Number(ordem), { cnpj, admissao }, await nomeDe(req)).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
