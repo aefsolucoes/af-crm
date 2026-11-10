@@ -13,7 +13,7 @@ import { CaixaPanel } from './caixa-panel';
  * Dados: GET /api/credit-analysis/live (extensionsLive). Atualiza a cada 5 s e na hora que o CRM avisa de mudança. */
 
 interface Item { id: string; leadId: string; leadName: string; kind: string }
-interface Live {
+export interface Live {
   bank: string; online: boolean; loginNeeded: boolean; lastSeenAt: string | null; foraDoHorario: boolean; queued: number; queuedRuns?: number; scheduled: number;
   scheduledList?: (Item & { at: string })[];
   running: (Item & { holderName: string | null; since: string; step: string | null; stepAt: string | null })[];
@@ -23,7 +23,7 @@ interface Live {
 
 type Estado = { rotulo: string; cls: string; borda: string; pulsa?: boolean };
 
-function estadoDe(l: Live, manual = false): Estado {
+export function estadoDe(l: Live, manual = false): Estado {
   if (manual) return l.running.length || l.queued > 0 ? { rotulo: 'Em análise (à mão)', cls: 'bg-blue-50 text-blue-700', borda: 'border-l-blue-500' } : { rotulo: 'À mão — com a documentação', cls: 'bg-slate-100 text-slate-600', borda: 'border-l-slate-300' };
   if (l.loginNeeded) return { rotulo: 'Deslogada — entre no portal', cls: 'bg-red-50 text-red-700', borda: 'border-l-red-500' };
   if (l.running.length) return { rotulo: l.running[0].kind === 'CHECK' ? 'Conferindo resultado' : 'Rodando', cls: 'bg-blue-50 text-blue-700', borda: 'border-l-blue-500', pulsa: true };
@@ -40,7 +40,7 @@ function Titulo({ children, n }: { children: React.ReactNode; n?: number }) {
 }
 
 /** Colunas do painel. Financiamento (Fabio 29/10: "cadê os outros bancos?"): Credimorar (Bradesco, Santander), Inter no nosso portal, Itaú no portal Itaú Imóveis (03/11), CAIXA e BRB (à mão). */
-type Coluna = { key: string; short: string; sub?: string; logo?: Bank; img?: string; sigla?: string; cor?: string; manual?: boolean };
+export type Coluna = { key: string; short: string; sub?: string; logo?: Bank; img?: string; sigla?: string; cor?: string; manual?: boolean };
 const COLUNAS_FH: Coluna[] = [
   { key: 'CREDIMORAR_FH', short: 'Credimorar', sub: 'Bradesco · Santander', sigla: 'CM', cor: '#1F3A93' },
   { key: 'INTER_FH', short: 'Inter', sub: 'nosso portal', logo: 'INTER' },
@@ -57,11 +57,12 @@ function Emblema({ c }: { c: Coluna }) {
   return <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg text-[11px] font-bold text-white" style={{ background: c.cor }}>{c.sigla}</span>;
 }
 
-export function ExtensionsLivePanel({ produto = 'he' }: { produto?: 'he' | 'fh' }) {
-  const router = useRouter();
+export const colunasDe = (produto: 'he' | 'fh'): Coluna[] => (produto === 'fh' ? COLUNAS_FH : BANKS.map((b) => ({ key: b.key, short: b.short, logo: b.key })));
+
+/** Fila das extensões (GET /api/credit-analysis/live): a cada 5 s e na hora que o CRM avisa de mudança. Usada pelo painel e pelo escritório dos bancos. */
+export function useCreditLive(produto: 'he' | 'fh') {
   const queryClient = useQueryClient();
-  const colunas: Coluna[] = produto === 'fh' ? COLUNAS_FH : BANKS.map((b) => ({ key: b.key, short: b.short, logo: b.key }));
-  const { data } = useQuery<Live[]>({
+  const q = useQuery<Live[]>({
     queryKey: ['credit-live', produto],
     queryFn: async () => (await api.get('/api/credit-analysis/live', { params: produto === 'fh' ? { produto: 'fh' } : {} })).data,
     refetchInterval: 5_000,
@@ -73,38 +74,22 @@ export function ExtensionsLivePanel({ produto = 'he' }: { produto?: 'he' | 'fh' 
     socket.on('credit_analysis_updated', on);
     return () => { socket.off('credit_analysis_updated', on); };
   }, [queryClient]);
+  return q;
+}
 
-  const abrir = (leadId: string) => router.push(`/inbox?leadId=${leadId}`);
-  const nome = (n: string, id: string) => <button onClick={() => abrir(id)} className="hover:underline text-left truncate min-w-0" title={`${n} — abrir a conversa`}>{n}</button>;
+const hora = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-  // Resumo da fila de todos os bancos: quantos clientes diferentes estão esperando (agora + agendados).
-  const esperando = new Map<string, { nome: string; bancos: string[] }>();
-  for (const l of data || []) for (const q of [...l.queue, ...(l.scheduledList || [])]) {
-    const e = esperando.get(q.leadId) || { nome: q.leadName, bancos: [] };
-    const bk = colunas.find((x) => x.key === l.bank)?.short || l.bank;
-    if (!e.bancos.includes(bk)) e.bancos.push(bk);
-    esperando.set(q.leadId, e);
-  }
-  const hora = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+function useAbrirLead() {
+  const router = useRouter();
+  return (n: string, id: string) => <button onClick={() => router.push(`/inbox?leadId=${id}`)} className="hover:underline text-left truncate min-w-0" title={`${n} — abrir a conversa`}>{n}</button>;
+}
 
+/** Cartão de UM banco: estado da extensão, quem está rodando, a fila, as agendadas e os últimos já rodados. */
+export function BancoLiveCard({ b, l }: { b: Coluna; l?: Live }) {
+  const nome = useAbrirLead();
+  const e = l ? estadoDe(l, b.manual) : { rotulo: 'carregando…', cls: 'bg-slate-100 text-slate-400', borda: 'border-l-slate-200' };
   return (
-    <div className="space-y-3">
-    {esperando.size > 0 && (
-      <div className="bg-white rounded-xl border border-af-border px-3 py-2">
-        <Titulo n={esperando.size}>Clientes na fila (todos os bancos)</Titulo>
-        <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-slate-700">
-          {Array.from(esperando.entries()).map(([id, e]) => (
-            <span key={id} className="inline-flex items-center gap-1 min-w-0">{nome(e.nome, id)}<span className="text-[10px] text-slate-400 flex-shrink-0">{e.bancos.join(' · ')}</span></span>
-          ))}
-        </div>
-      </div>
-    )}
-    <div className={cn('grid grid-cols-1 gap-3 md:grid-cols-2', produto === 'fh' ? 'xl:grid-cols-5' : 'xl:grid-cols-4')}>
-      {colunas.map((b) => {
-        const l = data?.find((x) => x.bank === b.key);
-        const e = l ? estadoDe(l, b.manual) : { rotulo: 'carregando…', cls: 'bg-slate-100 text-slate-400', borda: 'border-l-slate-200' };
-        return (
-          <div key={b.key} className={cn('bg-white rounded-xl border border-af-border border-l-4 p-3 min-w-0', e.borda)}>
+          <div className={cn('bg-white rounded-xl border border-af-border border-l-4 p-3 min-w-0', e.borda)}>
             <div className="flex items-center gap-3">
               <Emblema c={b} />
               <div className="min-w-0 flex-1">
@@ -191,8 +176,37 @@ export function ExtensionsLivePanel({ produto = 'he' }: { produto?: 'he' | 'fh' 
               </div>
             )}
           </div>
-        );
-      })}
+  );
+}
+
+export function ExtensionsLivePanel({ produto = 'he' }: { produto?: 'he' | 'fh' }) {
+  const nome = useAbrirLead();
+  const colunas = colunasDe(produto);
+  const { data } = useCreditLive(produto);
+
+  // Resumo da fila de todos os bancos: quantos clientes diferentes estão esperando (agora + agendados).
+  const esperando = new Map<string, { nome: string; bancos: string[] }>();
+  for (const l of data || []) for (const q of [...l.queue, ...(l.scheduledList || [])]) {
+    const e = esperando.get(q.leadId) || { nome: q.leadName, bancos: [] };
+    const bk = colunas.find((x) => x.key === l.bank)?.short || l.bank;
+    if (!e.bancos.includes(bk)) e.bancos.push(bk);
+    esperando.set(q.leadId, e);
+  }
+
+  return (
+    <div className="space-y-3">
+    {esperando.size > 0 && (
+      <div className="bg-white rounded-xl border border-af-border px-3 py-2">
+        <Titulo n={esperando.size}>Clientes na fila (todos os bancos)</Titulo>
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-slate-700">
+          {Array.from(esperando.entries()).map(([id, e]) => (
+            <span key={id} className="inline-flex items-center gap-1 min-w-0">{nome(e.nome, id)}<span className="text-[10px] text-slate-400 flex-shrink-0">{e.bancos.join(' · ')}</span></span>
+          ))}
+        </div>
+      </div>
+    )}
+    <div className={cn('grid grid-cols-1 gap-3 md:grid-cols-2', produto === 'fh' ? 'xl:grid-cols-5' : 'xl:grid-cols-4')}>
+      {colunas.map((b) => <BancoLiveCard key={b.key} b={b} l={data?.find((x) => x.bank === b.key)} />)}
       {/* Home Equity: a CAIXA é a 4ª coluna (Fabio 31/10) — cadastro, conferência e Avaliação de Risco. */}
       {produto === 'he' && <CaixaPanel />}
     </div>
