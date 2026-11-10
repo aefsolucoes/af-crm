@@ -53,7 +53,7 @@ router.get('/:leadId', async (req: AuthRequest, res: Response) => {
 });
 router.post('/:leadId/solicitar', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
   try {
-    const r = await solicitarVistoriaCaixa(req.user!.accountId, req.params.leadId, await quem(req), req.app.get('io'));
+    const r = await solicitarVistoriaCaixa(req.user!.accountId, req.params.leadId, await quem(req), req.app.get('io'), { novoImovel: req.body?.novoImovel === true });
     if ('erro' in r) return res.status(400).json({ error: r.erro });
     res.json({ ok: true, mensagem: r.mensagem });
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir a vistoria' }); }

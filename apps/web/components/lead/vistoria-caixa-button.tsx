@@ -49,10 +49,10 @@ export function VistoriaCaixaButton({ leadId, onDone }: { leadId: string; onDone
   });
   if (!e) return null;
 
-  async function chamar(acao: 'solicitar' | 'enviar') {
+  async function chamar(acao: 'solicitar' | 'enviar', corpo?: { novoImovel: true }) {
     setBusy(true);
     try {
-      const { data } = await api.post(`/api/vistoria-caixa/${leadId}/${acao}`);
+      const { data } = await api.post(`/api/vistoria-caixa/${leadId}/${acao}`, corpo);
       toast(data?.mensagem || 'Pedido enviado');
       setConferir(false);
       refetch();
@@ -85,6 +85,17 @@ export function VistoriaCaixaButton({ leadId, onDone }: { leadId: string; onDone
         {st === 'OS_PRONTA' && (
           <button onClick={() => setConferir(true)} disabled={busy} className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">
             <Send className="h-3 w-3" /> Enviar OS
+          </button>
+        )}
+        {/* Cliente trocou de imóvel depois da vistoria pedida (Fabio 10/11): a anterior vai pro histórico e a nova sai da certidão que está na pasta IMOVEL. */}
+        {['ENVIADA', 'TAXA_PRONTA', 'OS_PRONTA', 'ERRO'].includes(st) && (
+          <button
+            onClick={() => { if (window.confirm(`O cliente trocou de imóvel?\n\nA vistoria anterior${e.os?.numero ? ` (OS ${e.os.numero})` : ''} vai pro histórico do card e o CRM pede uma nova com a certidão que está na pasta IMOVEL do Drive. Antes, mande os documentos do imóvel antigo pra pasta DESNECESSARIO.`)) chamar('solicitar', { novoImovel: true }); }}
+            disabled={busy}
+            title="Cliente trocou de imóvel: guarda a vistoria anterior no histórico e pede a vistoria do imóvel novo"
+            className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+          >
+            <Home className="h-3 w-3" /> Imóvel trocado: nova vistoria
           </button>
         )}
       </div>

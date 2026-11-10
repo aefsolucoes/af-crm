@@ -218,16 +218,36 @@ function montarDadosSiopi(ficha: any, cf: Record<string, any>, cep: string | nul
 }
 
 /** Botão "Solicitar vistoria CAIXA". Responde na hora; a leitura da certidão segue em segundo plano. */
-export async function solicitarVistoriaCaixa(accountId: string, leadId: string, user: { id: string; nome: string }, io?: Io): Promise<{ erro: string } | { mensagem: string }> {
+/** Cliente TROCOU DE IMÓVEL depois da vistoria pedida (Fabio 10/11, Fernanda: não pagou o boleto e achou outro imóvel): a vistoria anterior (OS, código do
+ *  imóvel, boleto, ficha) vai pro histórico `anteriores` e a nova começa do zero — sem o CEP do imóvel antigo (`imovel_cep`). A certidão do imóvel novo
+ *  tem que estar na pasta IMOVEL (a do antigo vai pra DESNECESSARIO). Pura (testável): devolve o `_vistoriaCaixa` novo. */
+export function vistoriaDoImovelNovo(vc: Record<string, any>, agora: string): Record<string, any> {
+  const anterior = {
+    status: vc.status || null, os: vc.os || null, codigoImovel: vc.codigoImovel || null, pedidoEm: vc.pedidoEm || null,
+    boleto: vc.boleto ? { titulo: vc.boleto.titulo || null, enviadoEm: vc.boleto.enviadoEm || null } : null,
+    imovel: vc.ficha ? { matricula: vc.ficha.matricula || null, descricao: String(vc.ficha.descricao || '').slice(0, 300) } : null,
+    contato: vc.contato || null, trocadoEm: agora, motivo: 'cliente trocou de imóvel',
+  };
+  return { anteriores: [...(Array.isArray(vc.anteriores) ? vc.anteriores : []), anterior].slice(-5) };
+}
+
+export async function solicitarVistoriaCaixa(accountId: string, leadId: string, user: { id: string; nome: string }, io?: Io, opts: { novoImovel?: boolean } = {}): Promise<{ erro: string } | { mensagem: string }> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!lead) return { erro: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
   const vc = cf._vistoriaCaixa || {};
   if (['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO'].includes(vc.status)) return { erro: 'A vistoria da CAIXA deste cliente já está em andamento.' };
-  if (vc.status === 'ENVIADA' || vc.status === 'TAXA_PRONTA') return { erro: `A vistoria da CAIXA já foi solicitada${vc.os?.numero ? ` (OS ${vc.os.numero})` : ''}.` };
+  if (!opts.novoImovel && (vc.status === 'ENVIADA' || vc.status === 'TAXA_PRONTA')) return { erro: `A vistoria da CAIXA já foi solicitada${vc.os?.numero ? ` (OS ${vc.os.numero})` : ''}. Se o cliente trocou de imóvel, use "Imóvel trocado: nova vistoria".` };
   if (!String(cf.link_pasta_drive || '').trim()) return { erro: 'O card não tem a pasta do Drive (a certidão do imóvel fica na pasta IMOVEL).' };
   if (!brlSemSimbolo(cf.valor_credito)) return { erro: 'Preencha o "Valor do crédito" do card (vai como valor proposto a financiar).' };
   if (!brlSemSimbolo(cf.valor_imovel)) return { erro: 'Preencha o "Valor do imóvel" do card (vai como valor de compra e venda).' };
+  if (opts.novoImovel && vc.status) {
+    const agora = new Date().toISOString();
+    const fresh = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+    const { imovel_cep: _cepAntigo, ...resto } = fresh;
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...resto, _vistoriaCaixa: vistoriaDoImovelNovo(fresh._vistoriaCaixa || vc, agora) } } });
+    await nota(leadId, `🏠 Imóvel trocado (${user.nome}): a vistoria CAIXA anterior${vc.os?.numero ? ` (OS ${vc.os.numero}${vc.codigoImovel ? `, imóvel ${vc.codigoImovel}` : ''})` : ''} foi pro histórico do card; a nova sai da certidão que está na pasta IMOVEL.`, user.id);
+  }
   await gravar(leadId, { status: 'LENDO', pedidoEm: new Date().toISOString(), por: user.nome, porId: user.id, erro: null, tentativas: 0 });
   await nota(leadId, `🏠 Vistoria CAIXA pedida por ${user.nome} — lendo a certidão do imóvel pra cadastrar no SIOPI.`, user.id);
   prepararVistoria(accountId, leadId, user, io).catch(async (e) => {
