@@ -256,6 +256,11 @@ export async function informarDadosRenda(accountId: string, leadId: string, orde
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb WHERE id = ${leadId}`;
   const fonte = p.trabalho?.empregador ? ` (${p.trabalho.empregador})` : '';
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📋 Renda de ${p.nome || `${ordem}º participante`}${fonte} informada por ${por}: ${[cnpj && `CNPJ ${cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')}`, admissao && `admissão ${admissao}`].filter(Boolean).join(', ')}. Vale no cadastro da CAIXA no lugar do que a ficha trouxer.` } }).catch(() => {});
+  // Só com a CAIXA já pedida (consulta feita/na fila): o cadastro que esperava esse dado sai sozinho; o que parou volta pra fila.
+  if ((l.customFields as Cf | null)?._caixaCadastro) {
+    await reenfileirarCadastrosPendentes(leadId, 'dado da renda informado pela equipe').catch(() => {});
+    await cadastroAutomatico(accountId, leadId).catch(() => {});
+  }
   return null;
 }
 
