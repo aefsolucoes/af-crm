@@ -83,7 +83,7 @@ const CHAR = [
   'OTTOTTTTTTTTOttO', 'OTTOTTTTTTTtOttO', 'OSSOPPPPPPPPOssO', '.OOOPPPPPPPpOOO.', '...OPPPPPPPpO...', '...OPPPOOPPpO...',
   '...OPPpOOPPpO...', '...OPPpOOPPpO...', '...OBbBOOBbBO...', '...OOOOOOOOOO...',
 ];
-const H = 88;
+const H = 98; // piso com folga embaixo pras plaquinhas de quem está em pé (alternadas)
 const hash = (x: number, y: number) => (((x * 73856093) ^ (y * 19349663)) >>> 0) % 1000 / 1000;
 
 interface Layout { W: number; estacoes: [number, number][]; div: number; cafe0: number; xad0: number; zona: number; cafe: [number, number][]; xadrez: [number, number][] }
