@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
-import { cn } from '@/lib/utils';
 import { ExtensionsLivePanel, BancoLiveCard, colunasDe, useCreditLive, type Live } from './extensions-live-panel';
 import { CaixaPanel } from './caixa-panel';
 
@@ -71,12 +70,10 @@ const hash = (x: number, y: number) => (((x * 73856093) ^ (y * 19349663)) >>> 0)
 interface Layout { W: number; estacoes: [number, number][]; div: number; cafe0: number; xad0: number; cafe: [number, number][]; xadrez: [number, number][] }
 function layoutPara(n: number): Layout {
   const estacoes = Array.from({ length: n }, (_, k) => [52 + k * 64, 50] as [number, number]);
-  const div = 20 + n * 64 + 10, cafe0 = div + 6, xad0 = cafe0 + 66;
-  return {
-    W: xad0 + 68, estacoes, div, cafe0, xad0,
-    cafe: [[cafe0 + 6, 40], [cafe0 + 36, 52], [cafe0 + 46, 36], [cafe0 + 20, 58]],
-    xadrez: [[xad0 + 6, 40], [xad0 + 40, 54], [xad0 + 24, 58], [xad0 + 46, 34]],
-  };
+  // café e xadrez com lugar pros 4 lado a lado (fora do horário todos vão pro café)
+  const div = 20 + n * 64 + 10, cafe0 = div + 6, xad0 = cafe0 + 86;
+  const fila = (x0: number) => [0, 1, 2, 3].map((i) => [x0 + 4 + i * 20, 44] as [number, number]);
+  return { W: xad0 + 84, estacoes, div, cafe0, xad0, cafe: fila(cafe0), xadrez: fila(xad0) };
 }
 
 type Ctx = CanvasRenderingContext2D;
@@ -135,12 +132,12 @@ function fundo(L: Layout): HTMLCanvasElement {
   for (let x = L.cafe0 + 10, k = 0; x < L.cafe0 + 54; k++) { const w = 2 + (k % 3 === 0 ? 1 : 0), h = 8 + (k % 2); R(x, 4 + (9 - h), w, h, cores[k % 7]); x += w + 1; }
   // divisória, café (carpete + balcão) e xadrez
   R(L.div, 20, 6, H - 20, '#232B42'); R(L.div + 1, 20, 4, H - 20, '#4A5878'); R(L.div + 1, 20, 4, 1, '#6A7AA0');
-  R(L.cafe0, 20, 66, H - 20, '#2F4F88'); R(L.cafe0 + 2, 21, 62, H - 22, '#3F67AE');
-  for (let y = 23; y < H - 2; y += 4) for (let x = L.cafe0 + 4 + (y % 8 ? 2 : 0); x < L.cafe0 + 62; x += 4) P(x, y, '#4A74BC');
+  R(L.cafe0, 20, 86, H - 20, '#2F4F88'); R(L.cafe0 + 2, 21, 82, H - 22, '#3F67AE');
+  for (let y = 23; y < H - 2; y += 4) for (let x = L.cafe0 + 4 + (y % 8 ? 2 : 0); x < L.cafe0 + 82; x += 4) P(x, y, '#4A74BC');
   box(L.cafe0 + 4, 24, 44, 10, '#C99A62'); R(L.cafe0 + 4, 24, 44, 2, '#E2B27A'); R(L.cafe0 + 4, 32, 44, 2, '#9E6C3A');
   box(L.cafe0 + 7, 17, 10, 10, '#3A3F4B'); R(L.cafe0 + 8, 18, 8, 2, '#5A6172'); R(L.cafe0 + 10, 22, 4, 3, '#1F2530'); P(L.cafe0 + 12, 21, '#E24B4B');
   box(L.cafe0 + 22, 26, 3, 3, '#F5F5F5'); R(L.cafe0 + 22, 26, 3, 1, '#6B3E1F'); box(L.cafe0 + 28, 26, 3, 3, '#F5F5F5'); box(L.cafe0 + 35, 27, 2, 2, '#F5F5F5'); box(L.cafe0 + 40, 26, 4, 4, '#E8B84A');
-  planta(g, L.cafe0 + 50, 66);
+  planta(g, L.cafe0 + 66, 20);
   R(L.xad0, 20, 1, H - 20, '#1A1A1A');
   for (let y = 20; y < H; y++) for (let x = L.xad0 + 1; x < W; x++) P(x, y, ((Math.floor((x - L.xad0 - 1) / 8) + Math.floor((y - 20) / 8)) % 2) ? '#ECECEC' : '#2B2B2B');
   planta(g, L.div - 16, 22);
@@ -274,61 +271,63 @@ export function EscritorioBancos() {
   const sel = escolhido ? bonecos.find((b) => b.key === escolhido) : null;
 
   const botao = 'text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50';
+  const icone = (t: string) => { const w = t.split(' ')[0]; return /^[A-Za-zÀ-ÿ0-9]/.test(w) ? '•' : w; };
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <p className="text-sm font-semibold text-slate-800">Bancos</p>
-          <p className="text-xs text-slate-500">{rodando} rodando · {noCafe} no café · {problema} com problema{naFila ? ` · ${naFila} cliente${naFila === 1 ? '' : 's'} na fila` : ''}</p>
+      <div className="bg-white rounded-xl border border-af-border p-2.5 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+          <div>
+            <p className="text-sm font-semibold text-slate-800">Bancos</p>
+            <p className="text-xs text-slate-500">{rodando} rodando · {noCafe} no café · {problema} com problema{naFila ? ` · ${naFila} cliente${naFila === 1 ? '' : 's'} na fila` : ''}</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {modo !== 'mini' && <button type="button" className={botao} onClick={() => mudarModo('mini')}>Minimizar</button>}
+            {modo !== 'escritorio' && <button type="button" className={botao} onClick={() => mudarModo('escritorio')}>Ver o escritório</button>}
+            {modo !== 'caixas' && <button type="button" className={botao} onClick={() => mudarModo('caixas')}>Ver em caixinhas</button>}
+          </div>
         </div>
-        <div className="flex gap-2">
-          {modo !== 'mini' && <button type="button" className={botao} onClick={() => mudarModo('mini')}>Minimizar</button>}
-          {modo !== 'escritorio' && <button type="button" className={botao} onClick={() => mudarModo('escritorio')}>Ver o escritório</button>}
-          {modo !== 'caixas' && <button type="button" className={botao} onClick={() => mudarModo('caixas')}>Ver em caixinhas</button>}
-        </div>
+
+        {modo === 'mini' && (
+          <div className="flex flex-wrap gap-2 px-1 pb-1">
+            {pos.map((p) => (
+              <button key={p.b.key} type="button" onClick={() => { setEscolhido(p.b.key); mudarModo('escritorio'); }} className="inline-flex items-center gap-1.5 rounded-full border border-af-border px-2.5 py-0.5 text-xs text-slate-700 hover:bg-slate-50">
+                <span className="h-2.5 w-2.5 rounded-sm" style={{ background: p.b.cor }} />
+                <b>{p.b.nome}</b>
+                <span className="text-slate-500">{p.st.lugar === 'mesa' ? `${p.st.proximo ? 'próximo' : 'rodando'} ${curto(p.st.titulo, 22)}` : p.st.titulo.replace(/^\S+\s/, '')}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {modo === 'escritorio' && (
+          <>
+            <div className="relative w-full overflow-hidden rounded-lg bg-[#141821]">
+              <canvas ref={cvRef} width={L.W} height={H} onClick={clique} className="block w-full cursor-pointer [image-rendering:pixelated]" aria-label="Escritório dos bancos: sentado na mesa = rodando; no café = sem cliente na fila; em pé no xadrez = login vencido, sem sinal ou pausado" />
+              {pos.map((p) => (p.st.lugar === 'mesa' ? (
+                <div key={`tag-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded px-[0.6em] py-[0.15em] font-bold text-white shadow" style={{ left: pct(p.cx, L.W), top: pct(p.dy + 21, H), background: p.b.cor, fontSize: 'clamp(7px, 0.85vw, 11px)' }}>{p.b.nome}</div>
+              ) : (
+                <div key={`tag-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded px-[0.5em] py-[0.1em] font-bold text-white shadow" style={{ left: pct(p.x + 8, L.W), top: pct(p.y + 30, H), background: p.b.cor, fontSize: 'clamp(6px, 0.75vw, 10px)' }}>{p.b.nome}</div>
+              )))}
+              {pos.map((p) => (p.st.lugar === 'mesa' ? (
+                <div key={`bal-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-white px-[0.7em] py-[0.3em] leading-tight text-slate-800 shadow-md" style={{ left: pct(p.cx, L.W), top: pct(p.dy - 21, H), fontSize: 'clamp(7px, 0.85vw, 11px)' }}>
+                  {p.st.proximo ? 'Próximo: ' : 'Rodando: '}<b>{curto(p.st.titulo, 24)}</b>
+                  <span className="block text-[0.85em] text-slate-500">{curto(p.st.detalhe)}</span>
+                </div>
+              ) : (
+                <div key={`ico-${p.b.key}`} title={`${p.b.nome}: ${p.st.titulo.replace(/^\S+\s/, '')}`} className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded-full bg-white px-[0.35em] leading-none shadow" style={{ left: pct(p.marca.x, L.W), top: pct(p.marca.y - 1, H), fontSize: 'clamp(8px, 0.95vw, 13px)' }}>{icone(p.st.titulo)}</div>
+              )))}
+            </div>
+            {!sel && <p className="px-1 text-xs text-slate-400">Clique num banco para ver a fila e os botões dele. ☕ sem cliente na fila · 🌙 fora do horário · 🔑 login vencido · 📡 extensão sem sinal · ⏸ automático pausado</p>}
+            {sel && (
+              <div className="max-w-xl">
+                {sel.key === 'CAIXA' ? <CaixaPanel /> : <BancoLiveCard b={colunas.find((c) => c.key === sel.key)!} l={live?.find((l) => l.bank === sel.key)} />}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {modo === 'caixas' && <ExtensionsLivePanel />}
-
-      {modo === 'mini' && (
-        <div className="bg-white rounded-xl border border-af-border px-3 py-2 flex flex-wrap gap-2">
-          {pos.map((p) => (
-            <button key={p.b.key} type="button" onClick={() => { setEscolhido(p.b.key); mudarModo('escritorio'); }} className="inline-flex items-center gap-1.5 rounded-full border border-af-border px-2.5 py-0.5 text-xs text-slate-700 hover:bg-slate-50">
-              <span className="h-2.5 w-2.5 rounded-sm" style={{ background: p.b.cor }} />
-              <b>{p.b.nome}</b>
-              <span className="text-slate-500">{p.st.lugar === 'mesa' ? `${p.st.proximo ? 'próximo' : 'rodando'} ${curto(p.st.titulo, 22)}` : p.st.titulo.replace(/^\S+\s/, '')}</span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {modo === 'escritorio' && (
-        <div className="bg-white rounded-xl border border-af-border p-2.5 space-y-2.5">
-          <div className="relative w-full overflow-hidden rounded-lg bg-[#141821]">
-            <canvas ref={cvRef} width={L.W} height={H} onClick={clique} className="block w-full cursor-pointer [image-rendering:pixelated]" aria-label="Escritório dos bancos: sentado na mesa = rodando; no café = sem cliente na fila; em pé no xadrez = login vencido, sem sinal ou pausado" />
-            {pos.map((p) => (
-              <div key={`tag-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded px-[0.6em] py-[0.15em] font-bold text-white shadow" style={{ left: pct(p.cx, L.W), top: pct(p.dy + 21, H), background: p.b.cor, fontSize: 'clamp(7px, 0.85vw, 11px)' }}>{p.b.nome}</div>
-            ))}
-            {pos.map((p) => (p.st.lugar === 'mesa' ? (
-              <div key={`bal-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-white px-[0.7em] py-[0.3em] leading-tight text-slate-800 shadow-md" style={{ left: pct(p.cx, L.W), top: pct(p.dy - 21, H), fontSize: 'clamp(7px, 0.85vw, 11px)' }}>
-                {p.st.proximo ? 'Próximo: ' : 'Rodando: '}<b>{curto(p.st.titulo, 24)}</b>
-                <span className="block text-[0.85em] text-slate-500">{curto(p.st.detalhe)}</span>
-              </div>
-            ) : (
-              <div key={`off-${p.b.key}`} className="pointer-events-none absolute -translate-x-1/2 -translate-y-full whitespace-nowrap rounded border border-[#3a4360] bg-[#22283a] px-[0.6em] py-[0.3em] text-center leading-tight text-white" style={{ left: pct(p.marca.x, L.W), top: pct(p.marca.y - 1, H), fontSize: 'clamp(7px, 0.8vw, 10px)' }}>
-                <b>{p.b.nome}</b>
-                <span className="block font-semibold text-[#ffd27a]">{curto(p.st.titulo, 28)}</span>
-              </div>
-            )))}
-          </div>
-          {!sel && <p className="text-xs text-slate-400">Clique num banco para ver a fila e os botões dele.</p>}
-          {sel && (
-            <div className={cn('max-w-xl')}>
-              {sel.key === 'CAIXA' ? <CaixaPanel /> : <BancoLiveCard b={colunas.find((c) => c.key === sel.key)!} l={live?.find((l) => l.bank === sel.key)} />}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
