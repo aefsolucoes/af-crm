@@ -250,7 +250,15 @@ export async function solicitarVistoriaCaixa(accountId: string, leadId: string, 
   }
   await gravar(leadId, { status: 'LENDO', pedidoEm: new Date().toISOString(), por: user.nome, porId: user.id, erro: null, tentativas: 0 });
   await nota(leadId, `🏠 Vistoria CAIXA pedida por ${user.nome} — lendo a certidão do imóvel pra cadastrar no SIOPI.`, user.id);
-  prepararVistoria(accountId, leadId, user, io).catch(async (e) => {
+  // Imóvel trocado: antes de ler a certidão, os documentos do imóvel que chegaram antes da vistoria anterior saem da pasta IMOVEL (senão o organizador
+  // devolvia a matrícula antiga como "MATRICULA DO IMOVEL" e a leitura pegava o imóvel errado — Fernanda, 10/11).
+  const antesDe = opts.novoImovel && vc.pedidoEm ? String(vc.pedidoEm) : null;
+  const tirarAntigos = antesDe
+    ? (require('./received-docs.service') as typeof import('./received-docs.service')).marcarDocsImovelAntigo(accountId, leadId, antesDe)
+      .then((nomes) => (nomes.length ? nota(leadId, `📁 Imóvel trocado: ${nomes.join(', ')} (do imóvel antigo) foram pra DESNECESSARIO com "ANTIGO -" no nome e não voltam pra IMOVEL.`) : undefined))
+      .catch((e) => console.error('[Vistoria CAIXA] docs do imóvel antigo:', e?.message))
+    : Promise.resolve();
+  tirarAntigos.then(() => prepararVistoria(accountId, leadId, user, io)).catch(async (e) => {
     console.error('[Vistoria CAIXA]', leadId, e?.message);
     await gravar(leadId, { status: 'ERRO', erro: e?.message || 'erro ao preparar' });
   });

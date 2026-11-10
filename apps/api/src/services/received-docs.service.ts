@@ -357,6 +357,10 @@ async function organizeLead(lead: {
   // Documento que não vamos usar (Fabio 05/11): recibo de taxa/emolumento, requerimento, comprovante de pagamento, protocolo — vai pra DESNECESSARIO.
   const SEM_USO = /^(RECIBO(?! (DE ENTREGA|IMPOSTO|DO IMPOSTO|IR\b|IRPF))|REQUERIMENTO|COMPROVANTE DE (PAGAMENTO|TRANSFERENCIA|PIX)|PROTOCOLO|CONSULTA DE PROTOCOLO)/;
 
+  // Documentos do IMÓVEL ANTIGO (Fabio 10/11, cliente trocou de imóvel): `_docsImovelAntigo` = { [attachmentId]: … } — ficam em DESNECESSARIO com "ANTIGO - "
+  // no nome e não voltam pra IMOVEL a cada reorganização (sem isso a matrícula antiga voltava a ser "MATRICULA DO IMOVEL" e a nova virava "… 2").
+  const antigos = (cf._docsImovelAntigo || {}) as Record<string, unknown>;
+
   const clientFolderName = folderNameFor(lead);
   const result = await organizeReceivedDocsFolder(lead.accountId, {
     files,
@@ -364,6 +368,7 @@ async function organizeLead(lead: {
     activeLeadsFolderId: lead.activeLeadsFolderId,
     nameFor: async (f) => {
       const attId = attIdByDriveId.get(f.driveFileId) || '';
+      if (antigos[attId]) { const i = docInfo[attId]; return `ANTIGO - ${i ? docLabel(i) : String(f.fileName).replace(/\.[a-z0-9]{2,5}$/i, '').slice(0, 40)}`; }
       const prot = ((cf._docsProtegidos || {}) as Record<string, { fileName?: string; guess?: string }>)[attId];
       if (prot) return `VERIFICAR - ${prot.guess || 'DOCUMENTO PROTEGIDO'} (${String(prot.fileName || f.fileName).replace(/\.[a-z0-9]{2,4}$/i, '').slice(0, 40)})`;
       const info = docInfo[attId];
@@ -374,6 +379,7 @@ async function organizeLead(lead: {
     folderFor: async (f) => {
       if (simulationDriveIds.has(f.driveFileId) || SIMULATION_FILE_RE.test(f.fileName)) return 'RAIZ';
       const attId0 = attIdByDriveId.get(f.driveFileId) || '';
+      if (antigos[attId0]) return 'DESNECESSARIO';
       if (paginas.get(attId0)?.desnecessario) return 'DESNECESSARIO';
       const info = docInfo[attId0];
       if (info && SEM_USO.test(info.type)) return 'DESNECESSARIO';
@@ -502,6 +508,25 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
   } finally {
     running = false;
   }
+}
+
+/** Cliente TROCOU DE IMÓVEL (Fabio 10/11): os documentos DO IMÓVEL (matrícula/ônus, IPTU…) que ele mandou ANTES de `antesDe` são do imóvel antigo →
+ *  `_docsImovelAntigo` (DESNECESSARIO, "ANTIGO - …") e a pasta é reorganizada na hora, pra a pasta IMOVEL ficar só com os do imóvel novo. Devolve os nomes marcados. */
+export async function marcarDocsImovelAntigo(accountId: string, leadId: string, antesDe: string): Promise<string[]> {
+  const atts = await prisma.messageAttachment.findMany({
+    where: { leadId, driveFileId: { not: null }, message: { direction: 'INBOUND' }, createdAt: { lt: new Date(antesDe) } },
+    select: { id: true, driveFileId: true, fileName: true, mimeType: true },
+  });
+  if (!atts.length) return [];
+  const info = await getDocInfo(accountId, leadId, atts);
+  const doImovel = atts.filter((a) => info[a.id] && isPropertyDocType(info[a.id]!.type));
+  if (!doImovel.length) return [];
+  const agora = new Date().toISOString();
+  const marca = Object.fromEntries(doImovel.map((a) => [a.id, { em: agora, tipo: info[a.id]!.type }]));
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsImovelAntigo}', COALESCE("customFields"->'_docsImovelAntigo', '{}'::jsonb) || ${JSON.stringify(marca)}::jsonb, true) WHERE id = ${leadId}`;
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  if (((lead?.customFields || {}) as Record<string, unknown>)._driveOrganizedAt) await organizeLeadDocsNow(leadId).catch((e: any) => console.error('[Docs] imóvel trocado — não reorganizei a pasta:', e?.message || e));
+  return doImovel.map((a) => docLabel(info[a.id]!));
 }
 
 /** Monta/atualiza a pasta do cliente no Drive agora, em qualquer etapa
