@@ -13,6 +13,7 @@ import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, t
 import { AdjustModal } from '@/components/credit/adjust-modal';
 import { ExtensionsLivePanel } from '@/components/credit/extensions-live-panel';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
+import { CaixaColuna, useCaixaPainel } from '@/components/credit/caixa-panel';
 import { pingExtensions } from '@/lib/credit-extensions';
 import { useAuthStore } from '@/store/auth.store';
 import { ChevronDown, ChevronRight, MessageSquare, Square, Play, Plus, Star, Pencil, SlidersHorizontal, ArrowLeftRight, RefreshCw, Send } from 'lucide-react';
@@ -115,6 +116,7 @@ export default function AnaliseCreditoPage() {
   const [notify, setNotify] = useState<BoardLead | null>(null);
   const [forceRun, setForceRun] = useState(false);
   const isAdmin = useAuthStore((s) => s.user?.role === 'ADMIN');
+  const { data: caixa } = useCaixaPainel(); // coluna CAIXA da tabela (mesma consulta do quadro CAIXA)
   const { data: auto } = useQuery<{ enabled: boolean; enabledAt: string | null; paused?: boolean; pauseInterEmails?: boolean; contractingAuto?: boolean }>({ queryKey: ['credit-auto'], queryFn: async () => (await api.get('/api/credit-analysis/auto')).data });
   async function togglePause() {
     const next = !auto?.paused;
@@ -423,12 +425,13 @@ export default function AnaliseCreditoPage() {
             <div className="text-center py-10 text-slate-400 text-sm">{busca.trim() ? `Nenhum cliente encontrado para "${busca.trim()}" (procurei em Pré-Análise e Já rodados).` : view === 'pre' ? 'Nenhum cliente na Pré-Análise agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[860px]">
+              <table className="w-full text-sm min-w-[980px]">
                 <thead>
                   <tr className="text-left text-xs text-slate-400 border-b border-af-border">
                     <th className="pl-4 pr-2 py-2.5 w-8"><input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? selected.filter((id) => !leads.some((l) => l.id === id)) : Array.from(new Set([...selected, ...leads.map((l) => l.id)])))} /></th>
                     <th className="px-3 py-2.5 font-medium">Cliente</th>
                     {BANKS.map((b) => <th key={b.key} className="px-3 py-2.5 font-medium">{b.short}</th>)}
+                    <th className="px-3 py-2.5 font-medium" title="Caixa Aqui: consulta do nome → cadastro → conferência → Avaliação de Risco (com a documentação)">CAIXA</th>
                     <th className="px-3 py-2.5 font-medium">Ajustes</th>
                     <th className="px-3 py-2.5 w-8" />
                   </tr>
@@ -485,6 +488,7 @@ export default function AnaliseCreditoPage() {
                               </td>
                             );
                           })}
+                          <td className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}><CaixaColuna leadId={l.id} data={caixa} /></td>
                           <td className="px-3 py-3">
                             <div className="flex flex-col gap-1.5 items-start">
                               <button onClick={() => router.push(`/inbox?leadId=${l.id}`)} title="Abrir a conversa do WhatsApp deste cliente" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50"><MessageSquare size={11} /> Conversa</button>
@@ -519,7 +523,7 @@ export default function AnaliseCreditoPage() {
                         {expanded && (
                           <tr className="bg-slate-50/60">
                             <td />
-                            <td colSpan={BANKS.length + 3} className="px-3 py-4">
+                            <td colSpan={BANKS.length + 4} className="px-3 py-4">
                               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                                 {BANKS.flatMap((b) => {
                                   const a1 = l.latestP1?.[b.key], a2 = l.latestP2?.[b.key];

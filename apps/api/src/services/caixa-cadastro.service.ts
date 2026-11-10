@@ -683,10 +683,23 @@ export async function fazerCadastroManual(accountId: string, leadId: string, por
   return pedirCadastroParticipantes(accountId, leadId, ordens, por);
 }
 
+/** Resumo da consulta em Oportunidades de Negócios pra coluna CAIXA do HE (Fabio 10/11): "Pesquisa Cadastral" (Nada consta / Constam ocorrências), CPF fora do
+ *  regular na Receita e o que trava (consultaSegura). Sem CPF nem texto da tela. Pura. */
+export function resumoConsulta(texto: unknown): { consulta: string | null; alerta: string | null } {
+  const t = String(texto || '').replace(/\s+/g, ' ');
+  if (!t) return { consulta: null, alerta: null };
+  if (/^SEM CPF/i.test(t)) return { consulta: 'sem CPF', alerta: null };
+  const receita = /situa[cç][aã]o (?:do )?cpf na receita:\s*(.+?)(?=\s*pesquisa cadastral|\s*\.\s|$)/i.exec(t)?.[1]?.trim() || '';
+  const consulta = /pesquisa cadastral:\s*nada consta/i.test(t) ? 'Nada consta' : /pesquisa cadastral:\s*constam? ocorr/i.test(t) ? 'Constam ocorrências' : null;
+  const alerta = consultaSegura([t]) || (receita && !/\bregular\b/i.test(receita) ? `CPF na Receita: ${receita.slice(0, 60)}` : null);
+  return { consulta, alerta };
+}
+
 /** Painel CAIXA da Análise de Crédito: cards com cadastro na CAIXA (sem CPF) — rodando, conferir, avaliação — e os que têm ficha e ainda não foram pra CAIXA. */
 export async function painelCaixa(accountId: string): Promise<any[]> {
-  const rows = await prisma.$queryRaw<{ id: string; name: string; c: Cf; ps: any; dept: string | null }[]>`
-    SELECT l.id, l.name, l."customFields"->'_caixaCadastro' AS c, l."customFields"->'_fichaCadastral'->'participantes' AS ps, d.name AS dept
+  const rows = await prisma.$queryRaw<{ id: string; name: string; c: Cf; ps: any; dept: string | null; res: string | null }[]>`
+    SELECT l.id, l.name, l."customFields"->'_caixaCadastro' AS c, l."customFields"->'_fichaCadastral'->'participantes' AS ps, d.name AS dept,
+      l."customFields"->'_caixaResultado'->>'status' AS res
     FROM "Lead" l LEFT JOIN "Pipeline" p ON p.id = l."pipelineId" LEFT JOIN "Department" d ON d.id = p."departmentId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."customFields"->'_caixaCadastro' IS NOT NULL
     ORDER BY l."updatedAt" DESC LIMIT 80`;
@@ -696,9 +709,10 @@ export async function painelCaixa(accountId: string): Promise<any[]> {
     const atual = c.atual && Date.now() - Date.parse(c.atual.desde) < LEASE_MS ? { tipo: c.atual.tipo || 'consultar', ordem: c.atual.ordem, desde: c.atual.desde } : null;
     return {
       leadId: r.id, nome: r.name, produto: ehHe(r.dept) ? 'HE' : 'FH', status: c.status || null, atual,
-      participantes: ps.map((p: any) => ({ ...p, cadastro: c.cadastros?.[p.ordem]?.status || null, consultado: !!c.consultas?.[p.ordem] })),
+      participantes: ps.map((p: any) => ({ ...p, cadastro: c.cadastros?.[p.ordem]?.status || null, consultado: !!c.consultas?.[p.ordem], ...resumoConsulta(c.consultas?.[p.ordem]?.texto) })),
       conferencia: c.conferencia || null,
       avaliacao: c.avaliacao ? { status: c.avaliacao.status, pedidoEm: c.avaliacao.pedidoEm || null, fim: c.avaliacao.fim || null } : null,
+      resultado: r.res ? String(r.res).slice(0, 160) : null, // resultado da Avaliação de Risco (Formulários Enviados), pra coluna CAIXA do HE
     };
   });
 }

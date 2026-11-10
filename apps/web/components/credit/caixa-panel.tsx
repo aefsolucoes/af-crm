@@ -10,20 +10,31 @@ import { ago } from './shared';
 /* Coluna CAIXA da Análise de Crédito (Fabio 31/10: "INCLUA A CAIXA NAS AVALIAÇÕES DE HE"). A CAIXA não roda só com a proposta: com a documentação, a ficha
  * vira cadastro no Caixa Aqui (extensão "Cadastro CAIXA"), a equipe CONFERE o cadastro e só então a Avaliação de Risco roda (Home Equity).
  * Dados: GET /api/caixa-cadastro/painel. Botões: "Cadastro conferido" (POST /:id/conferido) e "Fazer cadastro" quando não rodou sozinho (POST /:id/fazer-cadastro). */
-interface Part { ordem: number; nome: string; semRenda: boolean; cadastro: string | null; consultado: boolean }
-interface CardCaixa {
+interface Part { ordem: number; nome: string; semRenda: boolean; cadastro: string | null; consultado: boolean; consulta?: string | null; alerta?: string | null }
+export interface CardCaixa {
   leadId: string; nome: string; produto: 'HE' | 'FH'; status: string | null;
   atual: { tipo: string; ordem: number; desde: string } | null;
   participantes: Part[];
   conferencia: { status: string; desde?: string; por?: string; em?: string } | null;
   avaliacao: { status: string; pedidoEm: string | null; fim: string | null } | null;
+  resultado?: string | null;
 }
 interface SemCad { leadId: string; nome: string; produto: 'HE' | 'FH'; fichaEm: string | null; participantes: string[] }
+export interface PainelCaixa { cards: CardCaixa[]; semCadastro: SemCad[]; avaliacaoAposConferencia?: boolean }
 
-const gravado = (s: string | null) => /^GRAVADO/i.test(s || '');
-const andando = (s: string | null) => s === 'FILA' || s === 'RODANDO';
-const curto = (s: string) => s.split(/[:—]/)[0].trim();
-const ACAO: Record<string, string> = { consultar: 'consultando o nome', cadastrar: 'cadastrando', avaliar: 'Avaliação de Risco' };
+export const gravado = (s: string | null) => /^GRAVADO/i.test(s || '');
+export const andando = (s: string | null) => s === 'FILA' || s === 'RODANDO';
+export const curto = (s: string) => s.split(/[:—]/)[0].trim();
+export const ACAO: Record<string, string> = { consultar: 'consultando o nome', cadastrar: 'cadastrando', avaliar: 'Avaliação de Risco' };
+
+/** Mesma consulta do quadro CAIXA e da coluna CAIXA da tabela do HE (uma requisição só, a cada 10 s). */
+export function useCaixaPainel() {
+  return useQuery<PainelCaixa>({
+    queryKey: ['caixa-painel'],
+    queryFn: async () => (await api.get('/api/caixa-cadastro/painel')).data,
+    refetchInterval: 10_000,
+  });
+}
 
 function Titulo({ children, n }: { children: React.ReactNode; n?: number }) {
   return <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{children}{n != null && <span className="ml-1 text-slate-500 normal-case font-medium">({n})</span>}</p>;
@@ -33,11 +44,7 @@ export function CaixaPanel() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
-  const { data } = useQuery<{ cards: CardCaixa[]; semCadastro: SemCad[]; avaliacaoAposConferencia?: boolean }>({
-    queryKey: ['caixa-painel'],
-    queryFn: async () => (await api.get('/api/caixa-cadastro/painel')).data,
-    refetchInterval: 10_000,
-  });
+  const { data } = useCaixaPainel();
   const cards = data?.cards || [];
   const rodando = cards.filter((c) => c.atual);
   const conferir = cards.filter((c) => c.conferencia?.status === 'PENDENTE');
@@ -175,6 +182,73 @@ export function CaixaPanel() {
       )}
 
       {data && !rodando.length && !naFila.length && !conferir.length && !avaliacoes.length && !parados.length && !semCadastro.length && <p className="mt-2 text-xs text-slate-400">Nenhum cliente na CAIXA agora.</p>}
+    </div>
+  );
+}
+
+/* ── Coluna CAIXA da tabela de clientes do Home Equity (Fabio 10/11, "Sim, criar coluna"), como a do Financiamento: estado de cada participante na fila do
+ * Caixa Aqui (consulta → cadastro) e, embaixo, o que é do card (conferência e Avaliação de Risco). Dados do mesmo GET /painel do quadro CAIXA. ── */
+
+const semAcento = (v: string) => v.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+/** Cor no padrão do tom() do Financiamento. */
+function tomCaixa(status: string): string {
+  const s = semAcento(status);
+  if (/reprov|negad|recus|cancel|nao aprovad/.test(s)) return 'bg-red-100 text-red-700';
+  if (/aprovad|gravado/.test(s)) return 'bg-emerald-100 text-emerald-700';
+  if (/condicion|pend|incomplet|conferir|nao saiu|segurad|falt|erro|falhou|parou/.test(s)) return 'bg-amber-100 text-amber-700';
+  if (/analise|aguard|enviad|process|fila|rodando/.test(s)) return 'bg-blue-100 text-blue-700';
+  return 'bg-slate-100 text-slate-500';
+}
+
+type Estado = { rotulo: string; cls: string; sub?: string; pulsa?: boolean; title?: string };
+function estadoParticipante(c: CardCaixa, p: Pick<Part, 'ordem' | 'cadastro' | 'consultado'>): Estado {
+  if (c.atual && c.atual.tipo !== 'avaliar' && c.atual.ordem === p.ordem) return { rotulo: 'Rodando', cls: 'bg-blue-100 text-blue-700', sub: ACAO[c.atual.tipo] || c.atual.tipo, pulsa: true };
+  if (gravado(p.cadastro)) return { rotulo: 'Cadastro gravado', cls: 'bg-emerald-100 text-emerald-700', title: p.cadastro || undefined };
+  if (andando(p.cadastro)) return { rotulo: 'Cadastro na fila', cls: 'bg-blue-50 text-blue-600' };
+  if (p.cadastro) return { rotulo: curto(p.cadastro), cls: tomCaixa(p.cadastro), title: p.cadastro };
+  if (!p.consultado && c.status === 'FILA') return { rotulo: 'Na fila', cls: 'bg-blue-50 text-blue-600', sub: 'consulta do nome' };
+  if (!p.consultado && c.status === 'CONSULTA_PARADA') return { rotulo: 'Consulta não saiu', cls: 'bg-amber-100 text-amber-700', sub: '"Fazer cadastro" no quadro CAIXA', title: 'A CAIXA respondeu duas vezes sem o resultado da consulta' };
+  if (p.consultado) return { rotulo: 'Consultado', cls: 'bg-slate-100 text-slate-600', sub: 'cadastro ainda não feito' };
+  return { rotulo: '—', cls: 'text-slate-300' };
+}
+
+function Pilula({ e }: { e: Estado }) {
+  if (e.rotulo === '—') return <span className="text-xs text-slate-300">—</span>;
+  return (
+    <div className="space-y-0.5" title={e.title}>
+      <span className={cn('inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium', e.cls)}>
+        {e.pulsa && <span className="relative flex h-1.5 w-1.5"><span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75 animate-ping" /><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" /></span>}
+        {e.rotulo}
+      </span>
+      {e.sub && <div className="text-[10px] text-slate-400 leading-tight">{e.sub}</div>}
+    </div>
+  );
+}
+
+/** Célula da coluna CAIXA de um cliente. `data` = useCaixaPainel().data. */
+export function CaixaColuna({ leadId, data }: { leadId: string; data?: PainelCaixa }) {
+  const c = data?.cards.find((x) => x.leadId === leadId);
+  if (!c) {
+    if (data?.semCadastro.some((x) => x.leadId === leadId)) return <Pilula e={{ rotulo: 'Pediu a CAIXA', cls: 'bg-amber-100 text-amber-700', sub: 'ficha pronta, sem cadastro' }} />;
+    return <span className="text-[11px] text-slate-400 leading-tight block">com a documentação</span>;
+  }
+  const ps = c.participantes.length ? c.participantes : [{ ordem: 1, nome: '', semRenda: false, cadastro: null, consultado: c.status === 'CONSULTADO' } as Part];
+  const card: Estado[] = [];
+  if (c.atual?.tipo === 'avaliar') card.push({ rotulo: 'Rodando', cls: 'bg-blue-100 text-blue-700', sub: 'Avaliação de Risco', pulsa: true });
+  else if (c.resultado) card.push({ rotulo: curto(c.resultado), cls: tomCaixa(c.resultado), sub: 'Avaliação de Risco', title: c.resultado });
+  else if (c.avaliacao) card.push({ rotulo: c.avaliacao.status === 'FILA' ? 'Na fila' : curto(c.avaliacao.status), cls: tomCaixa(c.avaliacao.status), sub: `Avaliação de Risco${c.avaliacao.fim || c.avaliacao.pedidoEm ? ` · ${ago(c.avaliacao.fim || c.avaliacao.pedidoEm)}` : ''}`, title: c.avaliacao.status });
+  if (c.conferencia?.status === 'PENDENTE') card.push({ rotulo: 'Conferir cadastro', cls: 'bg-amber-100 text-amber-700', sub: 'no quadro CAIXA, acima' });
+  return (
+    <div className="space-y-1.5">
+      {ps.map((p) => (
+        <div key={p.ordem}>
+          {ps.length > 1 && <div className="text-[10px] uppercase tracking-wide text-slate-400">{p.ordem}º participante</div>}
+          <Pilula e={estadoParticipante(c, p)} />
+          {p.consulta && <div className={cn('text-[10px] font-medium leading-tight', p.consulta === 'Constam ocorrências' ? 'text-red-600' : p.consulta === 'Nada consta' ? 'text-emerald-600' : 'text-slate-500')}>{p.consulta}</div>}
+          {p.alerta && <div className="text-[10px] text-amber-600 leading-tight">⚠ {p.alerta}</div>}
+        </div>
+      ))}
+      {card.length > 0 && <div className="pt-1 border-t border-slate-100 space-y-1">{card.map((e, i) => <Pilula key={i} e={e} />)}</div>}
     </div>
   );
 }
