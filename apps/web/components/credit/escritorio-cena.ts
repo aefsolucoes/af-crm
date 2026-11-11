@@ -181,7 +181,7 @@ function cidade(g: Ctx, x0: number, x1: number, per: Periodo) {
     R(meio, 3, 4, 4, '#F4F1DC'); P(meio, 3, c.faixas[0]); P(meio + 3, 3, c.faixas[0]); P(meio, 6, c.faixas[0]); P(meio + 3, 6, c.faixas[0]); P(meio + 2, 4, '#D9D5BC');
   } else if (per === 'dia') {
     R(meio, 3, 4, 4, '#FFE27A'); R(meio + 1, 4, 2, 2, '#FFF6C4'); P(meio, 3, c.faixas[0]); P(meio + 3, 3, c.faixas[0]); P(meio, 6, c.faixas[1]); P(meio + 3, 6, c.faixas[1]);
-    for (let x = x0 + 14; x < x1 - 20; x += 61) { R(x, 5, 9, 2, '#FFFFFF'); R(x + 2, 4, 5, 1, '#FFFFFF'); R(x + 24, 8, 7, 1, '#EEF6FF'); }
+    for (let x = x0 + 14; x < x1 - 20; x += 61) { R(x, 5, 9, 2, '#FFFFFF'); R(x + 2, 4, 5, 1, '#FFFFFF'); if (x + 31 < x1) R(x + 24, 8, 7, 1, '#EEF6FF'); } // a nuvem pequena não passa do fim do janelão
   } else {
     R(meio - 1, 12, 8, 5, '#FFD98A'); R(meio, 11, 6, 1, '#FFD98A'); R(meio + 1, 13, 4, 3, '#FFF0C2');
     for (let x = x0 + 9; x < x1 - 24; x += 47) R(x, 7 + (x % 3), 12, 1, '#F7B56C');
