@@ -8,7 +8,7 @@ import { Modal } from '@/components/ui/modal';
 
 /* Vistoria da CAIXA pelo SIOPI (Fabio 06/11) — dentro do bloco CAIXA do card. "Solicitar vistoria CAIXA": o CRM lê a certidão do imóvel, confere o contato da vistoria
  * (card → conversa → pergunta ao cliente) e a extensão "SIOPI (A&F)" cadastra o imóvel e prepara a OS de engenharia, PARANDO antes de criar. "Enviar OS": depois de conferir,
- * manda a extensão criar a OS (tem taxa). Estado: GET /api/vistoria-caixa/:id. */
+ * manda a extensão criar a OS, anexar a certidão, emitir a taxa e o CRM manda o boleto ao cliente (Fabio 11/11: "serviço completo"). Estado: GET /api/vistoria-caixa/:id. */
 interface Estado {
   status: string | null;
   pedidoEm: string | null; por: string | null;
@@ -19,7 +19,7 @@ interface Estado {
   campos: { rotulo: string; valor: string }[];
 }
 
-const ANDAMENTO = ['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO', 'BOLETO', 'BAIXANDO_BOLETO', 'AGUARDANDO_CONTATO'];
+const ANDAMENTO = ['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO', 'TAXA', 'EMITINDO', 'BOLETO', 'BAIXANDO_BOLETO', 'AGUARDANDO_CONTATO'];
 const ROTULO: Record<string, string> = {
   LENDO: 'lendo a certidão do imóvel…',
   AGUARDANDO_CONTATO: 'esperando o contato da vistoria (nome e telefone)',
@@ -31,6 +31,8 @@ const ROTULO: Record<string, string> = {
   DOCUMENTOS: 'OS criada — anexando a certidão de ônus…',
   ANEXANDO: 'extensão anexando a certidão de ônus…',
   TAXA_PRONTA: 'OS criada e certidão anexada — falta emitir a taxa (boleto)',
+  TAXA: 'na fila pra emitir a taxa',
+  EMITINDO: 'extensão emitindo a taxa no SIOPI…',
   BOLETO: 'taxa emitida — baixando o boleto pra mandar ao cliente…',
   BAIXANDO_BOLETO: 'extensão baixando o boleto…',
   ENVIADA: 'solicitada',
@@ -49,7 +51,7 @@ export function VistoriaCaixaButton({ leadId, onDone }: { leadId: string; onDone
   });
   if (!e) return null;
 
-  async function chamar(acao: 'solicitar' | 'enviar', corpo?: { novoImovel: true }) {
+  async function chamar(acao: 'solicitar' | 'enviar' | 'taxa', corpo?: { novoImovel: true }) {
     setBusy(true);
     try {
       const { data } = await api.post(`/api/vistoria-caixa/${leadId}/${acao}`, corpo);
@@ -67,6 +69,7 @@ export function VistoriaCaixaButton({ leadId, onDone }: { leadId: string; onDone
   const linha = !st ? 'não pedida'
     : st === 'ENVIADA' ? `solicitada${e.os?.numero ? ` · OS ${e.os.numero}` : ''}`
     : st === 'ERRO' ? `parou: ${e.erro || '—'}`
+    : st === 'TAXA_PRONTA' && e.erro ? `falta a taxa: ${e.erro}`
     : `${ROTULO[st] || st}${e.codigoImovel ? ` · imóvel ${e.codigoImovel}` : ''}`;
   const travado = ANDAMENTO.includes(st) || st === 'ENVIADA' || st === 'OS_PRONTA' || st === 'TAXA_PRONTA';
 
@@ -87,6 +90,17 @@ export function VistoriaCaixaButton({ leadId, onDone }: { leadId: string; onDone
             <Send className="h-3 w-3" /> Enviar OS
           </button>
         )}
+        {/* Fabio 11/11: "emitir taxa e encaminhar ao cliente" — normalmente sai sozinho depois do "Enviar OS"; o botão é pra quando a taxa não saiu. */}
+        {st === 'TAXA_PRONTA' && (
+          <button
+            onClick={() => { if (window.confirm('A extensão emite a taxa de avaliação da CAIXA (R$ 750) no SIOPI e o CRM manda o boleto ao cliente pelo WhatsApp.\n\nSe a OS já tiver taxa, ela não emite outra.')) chamar('taxa'); }}
+            disabled={busy}
+            title="Emite a taxa da vistoria no SIOPI (nunca duas) e manda o boleto ao cliente"
+            className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+          >
+            <Send className="h-3 w-3" /> Emitir taxa e mandar boleto
+          </button>
+        )}
         {/* Cliente trocou de imóvel depois da vistoria pedida (Fabio 10/11): a anterior vai pro histórico e a nova sai da certidão que está na pasta IMOVEL. */}
         {['ENVIADA', 'TAXA_PRONTA', 'OS_PRONTA', 'ERRO'].includes(st) && (
           <button
@@ -102,7 +116,7 @@ export function VistoriaCaixaButton({ leadId, onDone }: { leadId: string; onDone
 
       <Modal open={conferir} onClose={() => setConferir(false)} title="Enviar a OS da vistoria na CAIXA" size="sm">
         <div className="space-y-3 text-sm text-slate-600">
-          <p>A extensão vai <b>criar a ordem de serviço de engenharia</b> no SIOPI com estes dados (a OS tem taxa):</p>
+          <p>A extensão vai <b>criar a ordem de serviço de engenharia</b> no SIOPI com estes dados, anexar a certidão, <b>emitir a taxa (R$ 750)</b> e o CRM manda o boleto ao cliente pelo WhatsApp:</p>
           <div className="max-h-64 overflow-y-auto rounded border border-slate-200 bg-slate-50 p-2 text-xs">
             {e.campos.length ? e.campos.map((c, i) => <p key={i}><span className="text-slate-400">{c.rotulo}</span> {c.valor}</p>) : <p>—</p>}
           </div>

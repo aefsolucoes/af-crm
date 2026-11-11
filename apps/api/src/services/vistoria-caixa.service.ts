@@ -16,7 +16,7 @@ import { arquivosDoImovel, moverParaVistoria } from './vistoria-inter.service';
  */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
-type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'DOCUMENTOS' | 'ANEXANDO' | 'TAXA_PRONTA' | 'BOLETO' | 'BAIXANDO_BOLETO' | 'ENVIADA' | 'JA_TEM_OS' | 'OUTRO_CCA' | 'ERRO';
+type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'DOCUMENTOS' | 'ANEXANDO' | 'TAXA_PRONTA' | 'TAXA' | 'EMITINDO' | 'BOLETO' | 'BAIXANDO_BOLETO' | 'ENVIADA' | 'JA_TEM_OS' | 'OUTRO_CCA' | 'ERRO';
 
 const MODELO = 'claude-sonnet-5';
 const LEASE_MS = 20 * 60_000;
@@ -236,7 +236,7 @@ export async function solicitarVistoriaCaixa(accountId: string, leadId: string, 
   if (!lead) return { erro: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
   const vc = cf._vistoriaCaixa || {};
-  if (['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO'].includes(vc.status)) return { erro: 'A vistoria da CAIXA deste cliente já está em andamento.' };
+  if (['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO', 'TAXA', 'EMITINDO', 'BOLETO', 'BAIXANDO_BOLETO'].includes(vc.status)) return { erro: 'A vistoria da CAIXA deste cliente já está em andamento.' };
   if (!opts.novoImovel && (vc.status === 'ENVIADA' || vc.status === 'TAXA_PRONTA')) return { erro: `A vistoria da CAIXA já foi solicitada${vc.os?.numero ? ` (OS ${vc.os.numero})` : ''}. Se o cliente trocou de imóvel, use "Imóvel trocado: nova vistoria".` };
   if (!String(cf.link_pasta_drive || '').trim()) return { erro: 'O card não tem a pasta do Drive (a certidão do imóvel fica na pasta IMOVEL).' };
   if (!brlSemSimbolo(cf.valor_credito)) return { erro: 'Preencha o "Valor do crédito" do card (vai como valor proposto a financiar).' };
@@ -340,7 +340,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
   const rows = await prisma.$queryRaw<{ id: string; accountId: string; status: string; leaseAt: string | null; tentativas: number | null }[]>`
     SELECT id, "accountId", "customFields"->'_vistoriaCaixa'->>'status' AS status, "customFields"->'_vistoriaCaixa'->>'leaseAt' AS "leaseAt",
            ("customFields"->'_vistoriaCaixa'->>'tentativas')::int AS tentativas
-      FROM "Lead" WHERE "customFields"->'_vistoriaCaixa'->>'status' IN ('AGUARDANDO_CONTATO','RODANDO','ENVIANDO','ANEXANDO','BAIXANDO_BOLETO')`;
+      FROM "Lead" WHERE "customFields"->'_vistoriaCaixa'->>'status' IN ('AGUARDANDO_CONTATO','RODANDO','ENVIANDO','ANEXANDO','EMITINDO','BAIXANDO_BOLETO')`;
   for (const r of rows) {
     try {
       if (r.status === 'AGUARDANDO_CONTATO') {
@@ -355,7 +355,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
           await gravar(r.id, { status: 'ERRO', erro: 'A extensão do SIOPI começou 3 vezes e não terminou.' });
           await nota(r.id, '⚠️ Vistoria CAIXA: a extensão do SIOPI começou 3 vezes e não terminou. Confira o SIOPI aberto no Chrome (login) e clique de novo em "Solicitar vistoria CAIXA".');
           await push(r.accountId, r.id, '🏠 Vistoria CAIXA travou', 'A extensão do SIOPI não terminou — confira o Chrome.');
-        } else await gravar(r.id, { status: r.status === 'ENVIANDO' ? 'ENVIAR' : r.status === 'ANEXANDO' ? 'DOCUMENTOS' : r.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : 'FILA', leaseAt: null, tentativas: tent });
+        } else await gravar(r.id, { status: r.status === 'ENVIANDO' ? 'ENVIAR' : r.status === 'ANEXANDO' ? 'DOCUMENTOS' : r.status === 'EMITINDO' ? 'TAXA' : r.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : 'FILA', leaseAt: null, tentativas: tent });
       }
     } catch (e: any) { console.error('[Vistoria CAIXA] poll', r.id, e?.message); }
   }
@@ -364,7 +364,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
 /** Fila da extensão: o próximo card em FILA (cadastra + prepara a OS, sem enviar) ou ENVIAR (cria a OS). */
 export async function proximaVistoriaCaixa(accountId: string): Promise<any | null> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' IN ('FILA','ENVIAR','DOCUMENTOS','BOLETO')
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' IN ('FILA','ENVIAR','DOCUMENTOS','TAXA','BOLETO')
      ORDER BY ("customFields"->'_vistoriaCaixa'->>'status' <> 'FILA') DESC, "updatedAt" ASC LIMIT 1`;
   if (!rows.length) return null;
   const lead = await prisma.lead.findUnique({ where: { id: rows[0].id }, select: { id: true, name: true, customFields: true } });
@@ -372,14 +372,15 @@ export async function proximaVistoriaCaixa(accountId: string): Promise<any | nul
   const cf = (lead.customFields || {}) as Record<string, any>;
   const vc = cf._vistoriaCaixa || {};
   const enviar = vc.status === 'ENVIAR';
-  const modo = vc.status === 'BOLETO' ? 'BOLETO' : vc.status === 'DOCUMENTOS' ? 'DOCUMENTOS' : enviar ? 'ENVIAR' : 'PREPARAR';
-  await gravar(lead.id, { status: modo === 'BOLETO' ? 'BAIXANDO_BOLETO' : modo === 'DOCUMENTOS' ? 'ANEXANDO' : enviar ? 'ENVIANDO' : 'RODANDO', leaseAt: new Date().toISOString() });
+  const modo = vc.status === 'BOLETO' ? 'BOLETO' : vc.status === 'DOCUMENTOS' ? 'DOCUMENTOS' : vc.status === 'TAXA' ? 'TAXA' : enviar ? 'ENVIAR' : 'PREPARAR';
+  await gravar(lead.id, { status: modo === 'BOLETO' ? 'BAIXANDO_BOLETO' : modo === 'DOCUMENTOS' ? 'ANEXANDO' : modo === 'TAXA' ? 'EMITINDO' : enviar ? 'ENVIANDO' : 'RODANDO', leaseAt: new Date().toISOString() });
   return {
     leadId: lead.id,
     leadName: lead.name,
     modo,
     enviar,
     tituloBoleto: vc.boleto?.titulo || null,
+    valorTaxa: vc.boleto?.valor || null,
     codigoImovel: vc.codigoImovel || null,
     imovel: vc.dados?.imovel,
     os: { ...(vc.dados?.os || {}), contatoNome: vc.contato?.nome || '', contatoTelefone: vc.contato?.telefone || '', cpf: String(cf.cpf_1 || '').replace(/\D/g, '') },
@@ -405,7 +406,7 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
     return;
   }
   if (etapa === 'OS_PRONTA') {
-    await gravar(leadId, { status: 'OS_PRONTA', leaseAt: null, osPronta: { em: new Date().toISOString(), campos: body.campos || [] } });
+    await gravar(leadId, { status: 'OS_PRONTA', leaseAt: null, erro: null, osPronta: { em: new Date().toISOString(), campos: body.campos || [] } });
     await nota(leadId, `🏠 Vistoria CAIXA PRONTA pra enviar (OS de engenharia preenchida no SIOPI, ainda NÃO criada). Confira e clique em "Enviar OS" no bloco CAIXA do card:\n${campos}`);
     await push(accountId, leadId, `🏠 ${lead.name}: vistoria CAIXA pronta`, 'Confira os dados e clique em "Enviar OS" no card.');
     return;
@@ -419,7 +420,7 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
   }
   // OS criada (Fabio 06/11: depois do Próximo vem "Incluir Documentos" — "precisa anexar a certidão de ônus do imóvel") → a extensão anexa a certidão e segue até a taxa.
   if (etapa === 'OS_CRIADA' || etapa === 'OS_ENVIADA') {
-    await gravar(leadId, { status: 'DOCUMENTOS', leaseAt: null, os: body.os || null, enviadaEm: new Date().toISOString(), tentativas: 0 });
+    await gravar(leadId, { status: 'DOCUMENTOS', leaseAt: null, erro: null, os: body.os || null, enviadaEm: new Date().toISOString(), tentativas: 0 });
     await nota(leadId, `🏠 OS da vistoria CAIXA CRIADA no SIOPI${body.os?.numero ? ` — registro ${body.os.numero}` : ''}. Próximo passo: anexar a certidão de ônus e emitir a taxa.`);
     await moverParaVistoria(accountId, leadId, 'OS da vistoria criada no SIOPI (CAIXA)', io as any);
     return;
@@ -428,15 +429,31 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
     await nota(leadId, `📎 SIOPI: certidão de ônus anexada na OS da vistoria${body.texto ? ` (${body.texto.slice(0, 120)})` : ''}.`);
     return;
   }
+  // Fabio 11/11: "fazer o serviço completo, emitir taxa e encaminhar ao cliente" — a extensão segue sozinha pra emissão (EMITINDO); sem push aqui.
   if (etapa === 'TAXA_PRONTA') {
-    await gravar(leadId, { status: 'TAXA_PRONTA', leaseAt: null, taxa: { em: new Date().toISOString(), texto: (body.texto || '').slice(0, 2000), campos: body.campos || [] } });
-    await nota(leadId, `🏠 Vistoria CAIXA: OS criada e certidão anexada — o SIOPI está na tela da TAXA (boleto), ainda NÃO emitida.${campos ? `\n${campos}` : ''}`);
-    await push(accountId, leadId, `🏠 ${lead.name}: falta a taxa da vistoria`, 'OS criada e certidão anexada — falta emitir a taxa (boleto).');
+    await gravar(leadId, { status: 'EMITINDO', leaseAt: new Date().toISOString(), erro: null, taxa: { em: new Date().toISOString(), texto: (body.texto || '').slice(0, 2000), campos: body.campos || [] } });
+    await nota(leadId, `🏠 Vistoria CAIXA: OS criada e certidão anexada — a extensão está emitindo a taxa (boleto) no SIOPI.${campos ? `\n${campos}` : ''}`);
+    return;
+  }
+  // A taxa não saiu: volta pra TAXA_PRONTA (botão "Emitir taxa e mandar boleto" no card) e avisa. A extensão nunca emite duas (confere a tela "Taxa" da OS antes).
+  if (etapa === 'TAXA_ERRO') {
+    await gravar(leadId, { status: 'TAXA_PRONTA', leaseAt: null, erro: body.erro || 'a taxa não saiu' });
+    await nota(leadId, `⚠️ Vistoria CAIXA: a taxa (boleto) NÃO saiu no SIOPI — ${body.erro || 'sem detalhe'}. Confira o SIOPI e clique em "Emitir taxa e mandar boleto" no bloco CAIXA do card.`);
+    await push(accountId, leadId, `🏠 ${lead.name}: taxa da vistoria não saiu`, String(body.erro || 'Confira o SIOPI').slice(0, 140));
+    return;
+  }
+  // A OS já tinha taxa e a tela não mostrou o número do boleto: a equipe abre o boleto no SIOPI (Detalhar OS → Taxa) — a extensão vê a aba, liga ao card e manda ao cliente.
+  if (etapa === 'JA_TEM_TAXA') {
+    await gravar(leadId, { status: 'TAXA_PRONTA', leaseAt: null, erro: 'a OS já tem taxa no SIOPI — abra o boleto lá (Detalhar OS → Taxa)' });
+    await nota(leadId, `🏠 Vistoria CAIXA: a OS já tem taxa no SIOPI — NÃO emiti outra. Abra o boleto no SIOPI (Ordens de Serviço de Engenharia → Detalhes → Taxa): a extensão pega a aba do boleto e o CRM manda ao cliente.${body.texto ? `\n${body.texto.slice(0, 500)}` : ''}`);
+    await push(accountId, leadId, `🏠 ${lead.name}: a OS já tem taxa`, 'Abra o boleto no SIOPI (Detalhar OS → Taxa) — o CRM manda ao cliente.');
     return;
   }
   // ERRO / AGUARDANDO_LOGIN / tela desconhecida: para e avisa (a pessoa confere o SIOPI e clica de novo).
   const vc = ((((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any)._vistoriaCaixa) || {};
-  const voltaPara: Estado = etapa === 'AGUARDANDO_LOGIN' ? (vc.status === 'ENVIANDO' ? 'ENVIAR' : vc.status === 'ANEXANDO' ? 'DOCUMENTOS' : vc.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : 'FILA') : 'ERRO';
+  // Erro na taxa ou no boleto (a OS já existe): volta pra TAXA_PRONTA — o botão "Emitir taxa e mandar boleto" refaz sem emitir outra (Fabio 11/11).
+  const naTaxa = vc.status === 'EMITINDO' || vc.status === 'BAIXANDO_BOLETO';
+  const voltaPara: Estado = etapa === 'AGUARDANDO_LOGIN' ? (vc.status === 'ENVIANDO' ? 'ENVIAR' : vc.status === 'ANEXANDO' ? 'DOCUMENTOS' : vc.status === 'EMITINDO' ? 'TAXA' : vc.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : 'FILA') : naTaxa ? 'TAXA_PRONTA' : 'ERRO';
   await gravar(leadId, { status: voltaPara, leaseAt: null, erro: body.erro || etapa });
   if (etapa === 'AGUARDANDO_LOGIN') {
     if (!vc.avisoLoginEm || Date.now() - new Date(vc.avisoLoginEm).getTime() > 2 * 3600_000) {
@@ -445,8 +462,28 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
     }
     return;
   }
-  await nota(leadId, `⚠️ Vistoria CAIXA parou no SIOPI: ${String(body.erro || 'tela desconhecida').slice(0, 400)}${body.texto ? `\n${body.texto.slice(0, 600)}` : ''}\nNada foi enviado. Confira e clique de novo em "Solicitar vistoria CAIXA".`);
+  // Antes da OS nada foi enviado; criando/anexando a OS pode já existir no SIOPI (Fernanda 11/11: a OS saiu e a nota dizia "nada foi enviado").
+  const depois = naTaxa ? 'A OS já existe no SIOPI. Confira e clique em "Emitir taxa e mandar boleto" no card (não emite outra taxa).'
+    : ['ENVIANDO', 'ANEXANDO'].includes(vc.status) ? 'A OS pode já ter sido criada: confira no SIOPI (Ordens de Serviço de Engenharia) antes de pedir de novo.'
+      : 'Nada foi enviado. Confira e clique de novo em "Solicitar vistoria CAIXA".';
+  await nota(leadId, `⚠️ Vistoria CAIXA parou no SIOPI: ${String(body.erro || 'tela desconhecida').slice(0, 400)}${body.texto ? `\n${body.texto.slice(0, 600)}` : ''}\n${depois}`);
   await push(accountId, leadId, `🏠 ${lead.name}: vistoria CAIXA parou`, String(body.erro || 'Confira o SIOPI').slice(0, 120));
+}
+
+/** "Emitir taxa e mandar boleto" (Fabio 11/11): OS criada e certidão anexada → a extensão emite a taxa (nunca duas) e o boleto vai ao cliente. Se o título do boleto
+ *  desta vistoria já é conhecido, só baixa e manda de novo (BOLETO). */
+export async function emitirTaxaVistoriaCaixa(accountId: string, leadId: string, user: { id: string; nome: string }): Promise<{ erro: string } | { mensagem: string }> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!lead) return { erro: 'Card não encontrado' };
+  const vc = ((lead.customFields || {}) as any)._vistoriaCaixa || {};
+  if (vc.status !== 'TAXA_PRONTA') return { erro: 'A taxa só sai depois da OS criada e da certidão anexada.' };
+  if (!vc.codigoImovel) return { erro: 'Falta o código do imóvel no SIOPI.' };
+  const soBaixar = !!vc.boleto?.titulo;
+  await gravar(leadId, { status: soBaixar ? 'BOLETO' : 'TAXA', leaseAt: null, erro: null, tentativas: 0, taxaPor: user.nome, taxaPedidaEm: new Date().toISOString() });
+  await nota(leadId, soBaixar
+    ? `🏠 ${user.nome} pediu o boleto da vistoria CAIXA de novo — a extensão baixa o boleto ${vc.boleto.titulo} (sem emitir outra taxa) e o CRM manda ao cliente.`
+    : `🏠 ${user.nome} mandou emitir a taxa da vistoria CAIXA — a extensão emite no SIOPI e o CRM manda o boleto ao cliente.`, user.id);
+  return { mensagem: soBaixar ? 'Pedido enviado: a extensão baixa o boleto de novo e o CRM manda ao cliente.' : 'Pedido enviado: a extensão emite a taxa no próximo minuto e o boleto vai ao cliente.' };
 }
 
 /** "Enviar OS": só depois da OS pronta (conferida). O clique é a ordem de criar a OS de engenharia no SIOPI. */
@@ -539,7 +576,7 @@ export async function certidaoDaVistoria(accountId: string, leadId: string): Pro
  * "já emiti, encaminhe à cliente"). A extensão manda o nº do título; o CRM liga ao card que está esperando a taxa (TAXA_PRONTA — só um; vários = push pra equipe) e põe
  * na fila pra extensão baixar o PDF dentro do SIOPI.
  */
-export async function boletoAberto(accountId: string, titulo: string, leadId?: string | null): Promise<{ leadId: string } | { erro: string }> {
+export async function boletoAberto(accountId: string, titulo: string, leadId?: string | null, valor?: string | null): Promise<{ leadId: string } | { erro: string }> {
   const t = String(titulo || '').replace(/\D/g, '');
   if (!t) return { erro: 'título sem número' };
   let alvo = leadId || null;
@@ -554,7 +591,7 @@ export async function boletoAberto(accountId: string, titulo: string, leadId?: s
     }
     alvo = esperando[0].id;
   }
-  await gravar(alvo, { status: 'BOLETO', leaseAt: null, tentativas: 0, boleto: { titulo: t, abertoEm: new Date().toISOString() } });
+  await gravar(alvo, { status: 'BOLETO', leaseAt: null, erro: null, tentativas: 0, boleto: { titulo: t, abertoEm: new Date().toISOString(), valor: valor || null } });
   await nota(alvo, `🧾 Taxa da vistoria CAIXA emitida no SIOPI (título ${t}) — a extensão baixa o boleto e o CRM manda ao cliente.`);
   return { leadId: alvo };
 }
