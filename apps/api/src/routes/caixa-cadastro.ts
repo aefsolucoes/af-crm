@@ -66,6 +66,16 @@ router.post('/:leadId/card/cadastro', requirePermission('funnel_manage'), async 
     res.json({ ok: true, mensagem: r.mensagem });
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir o cadastro na CAIXA' }); }
 });
+// Botão "Consultar na CAIXA" (Fabio 11/11: "Sempre que um cliente quiser seguir pela CAIXA, ele informar ou a gente, o CRM deve fazer uma consulta para buscar ocorrências"):
+// consulta do nome em Oportunidades de Negócios antes de qualquer documento. Sem restrição → o cliente fica sabendo e o CRM pergunta do Habite-se; com restrição → Serasa/SCPC/protesto.
+router.post('/:leadId/card/consulta', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  try {
+    const { pedirConsultaCaixa } = require('../services/caixa-screening.service') as typeof import('../services/caixa-screening.service');
+    const r = await pedirConsultaCaixa(req.user!.accountId, req.params.leadId, { origem: 'botao', por: `botão "Consultar na CAIXA" (${await nomeDe(req)})`, io: req.app.get('io') });
+    if (!r.ok) return res.status(400).json({ error: r.erro || 'Não consegui pedir a consulta' });
+    res.json({ ok: true, mensagem: r.ja ? 'O card já tinha consulta da CAIXA: usei o resultado que existe' : 'Consulta do nome na CAIXA na fila da extensão' });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir a consulta na CAIXA' }); }
+});
 // O clique é a autorização da Avaliação de Risco pra este cliente (Fabio 31/10: só com o OK dele) — registrada no card (avaliacao.autorizacao + anotação).
 // `denovo` (Fabio 03/11, Jézer/Fernanda depois da autorização do PV): roda a Avaliação de Risco de novo — a anterior vai pro histórico e o resultado é consultado de novo.
 router.post('/:leadId/card/analise', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {

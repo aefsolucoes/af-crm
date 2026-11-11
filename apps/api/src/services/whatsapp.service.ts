@@ -1284,6 +1284,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       // Dados que o cliente manda (CPF, renda, e-mail, imóvel…) vão pro card MESMO com a IA do card desligada (Fabio 28/10). Com ela ligada, quem preenche é a
       // própria resposta da IA (extractedFields) — card-fill.service confere isso na hora e só lê a rajada inteira, 20 s depois da última mensagem.
       { const { scheduleCardFill } = require('./card-fill.service') as typeof import('./card-fill.service'); scheduleCardFill(accountId, leadId, io); }
+      // Cliente fala em seguir pela CAIXA com a IA do card DESLIGADA (Fabio 11/11: "ele informar ou a gente"): consulta do nome na CAIXA antes de qualquer documento.
+      if (text) { const { detectarPedidoCaixa } = require('./caixa-screening.service') as typeof import('./caixa-screening.service'); detectarPedidoCaixa(accountId, leadId, text, 'cliente', io as any).catch((e: any) => console.warn('[CAIXA] pedido do cliente:', e?.message)); }
       // Card em "Aguardando Documentação": o cliente mandou um DOCUMENTO
       // (foto ou arquivo) → agenda a conferência (espera ele terminar de
       // mandar). Só com documento — texto/áudio não gastam crédito de IA

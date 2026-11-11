@@ -602,6 +602,11 @@ router.post('/', validate(messageSchema), async (req: AuthRequest, res: Response
       await recordSendOrigin(req, (result.message as any)?.id, req.body.leadId);
       res.status(201).json(result.message);
       logClientReply(req, req.body.leadId);
+      // Equipe combinou a CAIXA com o cliente na conversa (Fabio 11/11: "ele informar ou a gente"): consulta do nome na CAIXA antes de qualquer documento.
+      if (typeof req.body.content === 'string') {
+        const { detectarPedidoCaixa } = require('../services/caixa-screening.service') as typeof import('../services/caixa-screening.service');
+        detectarPedidoCaixa(req.user!.accountId, req.body.leadId, req.body.content, 'equipe', io).catch((e: any) => console.warn('[CAIXA] pedido da equipe:', e?.message));
+      }
       return;
     }
 

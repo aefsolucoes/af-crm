@@ -854,7 +854,15 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
   const temCaixa = !!(cf._caixaCadastro || cf._caixaRota || cf._caixaPedido || cf._caixaResultado || ficha || /caixa/i.test(String(cf._optouCaixa?.banco || '')));
   const { temAprovacao } = require('./caixa-screening.service') as typeof import('./caixa-screening.service');
   const mostrar = !l.isGroup && (temCaixa || /habitacional/i.test(dept) || (he && (await temAprovacao(leadId, cf).catch(() => false))));
-  if (!mostrar) return { mostrar: false };
+  // Pedido da CAIXA (Fabio 11/11 — consulta do nome antes de qualquer documento): o botão "Consultar na CAIXA" aparece mesmo quando o bloco não teria nada da CAIXA pra mostrar.
+  const ped = cf._caixaPedido as Cf | undefined;
+  const podeConsultar = !l.isGroup && !cardFechado(l) && !ped;
+  const pedido = ped ? {
+    em: ped.at || null,
+    por: ped.por || null,
+    resultado: ped.limpo ? 'limpo' : (c.consultadoEm && cf._ocorrencias?.consultadoEm === c.consultadoEm) ? 'ocorrencia' : 'andamento',
+  } : null;
+  if (!mostrar) return { mostrar: false, podeConsultar };
   const ps = participantesDa(cf);
   const q = ficha ? participantesDaAvaliacao(ps) : null;
   const av = c.avaliacao as Cf | undefined;
@@ -863,6 +871,8 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
   const res = cf._caixaResultado as Cf | undefined;
   return {
     mostrar: true,
+    podeConsultar,
+    pedido,
     produto: he ? 'HE' : 'FH',
     fechado: cardFechado(l),
     temFicha: ficha,

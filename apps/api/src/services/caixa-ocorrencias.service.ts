@@ -62,6 +62,11 @@ export async function verificarOcorrencias(accountId: string, leadId: string, io
   const atual = cf._ocorrencias as Oc | undefined;
   if (atual?.consultadoEm === consultadoEm) return; // esta consulta já foi tratada
   const todas = comOcorrencia(cf);
+  // Ninguém com restrição: se a consulta veio de um PEDIDO da CAIXA, o cliente fica sabendo e o próximo passo é o Habite-se (Fabio 11/11 — consulta antes da documentação).
+  if (!todas.nomes.length) {
+    await (require('./caixa-screening.service') as typeof import('./caixa-screening.service')).consultaLimpa(accountId, leadId, io).catch((e) => console.error('[CAIXA limpo]', e?.message));
+    return;
+  }
   // A ficha que chega depois com um participante novo reabre a consulta (consultadoEm novo): só avisa quem ainda não foi avisado (sessão da CAIXA, 01/11).
   const chave = (s: string) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().split(/\s+/).slice(0, 2).join(' ');
   const jaAvisados = atual?.avisados || atual?.nomes || [];
@@ -126,6 +131,8 @@ export async function processOcorrencias(accountId: string, io?: any): Promise<v
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
       AND "customFields"->'_ocorrencias'->>'status' IN ('PENDING', 'TEMPLATE') LIMIT 20`;
   for (const { id } of ids) await enviarOrientacao(accountId, id, io).catch((e) => console.error('[Ocorrências]', e?.message));
+  // Resultado SEM restrição de um pedido da CAIXA que ficou pra depois (fora do horário) — mesmo minuto (Fabio 11/11).
+  await (require('./caixa-screening.service') as typeof import('./caixa-screening.service')).processAvisosLimpos(accountId, io).catch((e) => console.error('[CAIXA limpo]', e?.message));
   // Aviso ao cliente da 2ª autorização do PV (caixa-resultado) roda no mesmo minuto.
   await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).processPvAvisos(accountId, io).catch((e) => console.error('[CAIXA PV]', e?.message));
   // Casal com renda de só um (Fabio 01/11) — mesmo minuto.
@@ -140,7 +147,9 @@ export async function aiOcorrenciasContext(leadId: string): Promise<string> {
   const pv = [res.aiPvContext(cf), res.aiCondicionadaContext(cf)].filter(Boolean).join('\n\n');
   const casal = (require('./renda-casal.service') as typeof import('./renda-casal.service')).aiRendaCasalContext(cf);
   const oc = blocoOcorrencias(cf);
-  return [oc, pv, casal].filter(Boolean).join('\n\n');
+  // Pedido da CAIXA: consulta em andamento ou sem restrição (Fabio 11/11 — a documentação só depois do resultado).
+  const pedido = await (require('./caixa-screening.service') as typeof import('./caixa-screening.service')).aiConsultaCaixaBloco(leadId, cf).catch(() => '');
+  return [pedido, oc, pv, casal].filter(Boolean).join('\n\n');
 }
 
 function blocoOcorrencias(cf: Cf): string {

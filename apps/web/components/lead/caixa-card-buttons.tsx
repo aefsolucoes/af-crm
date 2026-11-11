@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { UserPlus, ShieldCheck, RotateCcw } from 'lucide-react';
+import { UserPlus, ShieldCheck, RotateCcw, Search } from 'lucide-react';
 import api from '@/lib/api';
 import { cn, formatCurrency } from '@/lib/utils';
 import { toast } from '@/components/ui/toast';
@@ -18,6 +18,9 @@ interface Part { ordem: number; nome: string; semRenda: boolean; consultado: boo
 interface Refazer { proposta: string | null; data: string | null; produto: string | null; resultado: string | null }
 interface Estado {
   mostrar: boolean;
+  /** Botão "Consultar na CAIXA" (Fabio 11/11): card aberto, sem pedido da CAIXA ainda. */
+  podeConsultar?: boolean;
+  pedido?: { em: string | null; por: string | null; resultado: 'andamento' | 'limpo' | 'ocorrencia' } | null;
   produto: 'HE' | 'FH';
   fechado: string | null;
   temFicha: boolean;
@@ -53,7 +56,39 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
     // Na fila/rodando: atualiza sozinho pra o botão liberar quando a extensão terminar.
     refetchInterval: (q) => ([q.state.data?.cadastro?.trava, q.state.data?.analise?.trava].some((t) => t?.tipo === 'andamento') ? 20_000 : false),
   });
-  if (!estado?.mostrar) return null;
+  // Consulta do nome na CAIXA antes de qualquer documento (Fabio 11/11: "ele informar ou a gente") — a extensão consulta em Oportunidades de Negócios.
+  async function consultar() {
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/api/caixa-cadastro/${leadId}/card/consulta`);
+      toast(data?.mensagem || 'Consulta da CAIXA na fila');
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ['caixa-painel'] });
+      onDone?.();
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Não consegui pedir a consulta agora', 'error');
+    } finally { setBusy(false); }
+  }
+  const botaoConsulta = (
+    <button
+      onClick={consultar}
+      disabled={busy}
+      title="Consulta o nome de cada participante na CAIXA (Oportunidades de Negócios). Sem restrição: o CRM avisa o cliente e pergunta do Habite-se. Com restrição: pede pra ele conferir Serasa, SCPC e protesto. Nenhum documento é pedido antes do resultado."
+      className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-medium text-[#005CA9] hover:bg-blue-100 disabled:opacity-50"
+    >
+      <Search size={11} /> Consultar na CAIXA
+    </button>
+  );
+  if (!estado?.mostrar) {
+    if (!estado?.podeConsultar) return null;
+    return (
+      <div className="mt-3 flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-2">
+        <span className="flex h-4 w-4 items-center justify-center rounded text-[8px] font-bold text-white" style={{ background: '#005CA9' }}>CX</span>
+        <span className="text-xs text-slate-500 mr-auto">Cliente quer seguir pela CAIXA?</span>
+        {botaoConsulta}
+      </div>
+    );
+  }
 
   const a = estado.analise;
   const denovo = a.denovo; // já rodou → "Rodar análise CAIXA de novo"
@@ -120,11 +155,18 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
         <span className={cn('ml-1 rounded px-1 text-[9px] font-semibold normal-case', estado.produto === 'HE' ? 'bg-indigo-50 text-indigo-600' : 'bg-teal-50 text-teal-700')}>{estado.produto}</span>
       </div>
       <div className="space-y-0.5 text-xs">
+        {estado.pedido && (
+          <p className="truncate text-slate-600" title={estado.pedido.por || undefined}>
+            <span className="text-slate-400">Consulta do nome:</span>{' '}
+            {estado.pedido.resultado === 'limpo' ? 'sem restrição ✓' : estado.pedido.resultado === 'ocorrencia' ? 'com restrição ⚠️' : 'em andamento'} · {quando(estado.pedido.em)}
+          </p>
+        )}
         <p className="truncate text-slate-600" title={linhaCadastro}><span className="text-slate-400">Cadastro:</span> {linhaCadastro}</p>
         <p className="truncate text-slate-600" title={linhaAnalise}><span className="text-slate-400">Análise:</span> {linhaAnalise}</p>
         {estado.fechado && <p className="text-[11px] text-amber-700">{estado.fechado}</p>}
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
+        {estado.podeConsultar && botaoConsulta}
         {botao('cadastro', 'Cadastro CAIXA', 'Rodar o cadastro deste cliente na CAIXA (Caixa Aqui) pela extensão', UserPlus)}
         {denovo
           ? botao('analise', 'Rodar análise CAIXA de novo', 'Rodar de novo a Avaliação de Risco que deu erro (ex.: depois da autorização do PV) — a extensão reabre a mesma avaliação e clica em Avançar', RotateCcw)
