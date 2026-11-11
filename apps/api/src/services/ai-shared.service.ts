@@ -146,6 +146,19 @@ export async function buildSharedAiContext(
     ...(opts.fullHistory ? { include: { sentBy: { select: { name: true } } } } : {}),
   });
   const ordered = recent.reverse();
+  // Mensagem MARCADA (resposta citando outra no WhatsApp — Fabio 11/11, Marcos marcou o resumo do Santander e escreveu só "Pode antecipar?"; a IA não sabia do
+  // que ele falava e perguntou "antecipar o quê?"): a linha leva a mensagem citada, com quem escreveu e a hora quando ela está na conversa.
+  const porWamid = new Map(ordered.filter((m) => m.externalId).map((m) => [m.externalId as string, m] as const));
+  const citou = (m: (typeof ordered)[number]): string => {
+    if (!m.replyToContent && !m.replyToExternalId) return '';
+    const q = m.replyToExternalId ? porWamid.get(m.replyToExternalId) : undefined;
+    let t = voiceNoteForAi(q?.content || m.replyToContent || '').replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    if (t.length > 600) t = `${t.slice(0, 550)} …`;
+    const deQuem = q ? (q.direction === 'INBOUND' ? (m.direction === 'INBOUND' ? 'dele mesmo' : 'do cliente') : 'nossa') : m.replyToSender ? `de ${m.replyToSender}` : '';
+    const quando = q ? ` (${q.createdAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})` : '';
+    return ` [${m.direction === 'INBOUND' ? 'o cliente MARCOU' : 'marcou'} a mensagem ${deQuem}${quando} ao escrever — a fala abaixo se refere a ela: "${t}"] →`;
+  };
   let historicoTexto = '(sem histórico anterior)';
   if (ordered.length && opts.fullHistory) {
     const TETO = 90_000;
@@ -158,14 +171,14 @@ export async function buildSharedAiContext(
       let texto = voiceNoteForAi(m.content);
       if (texto.length > 1800) texto = `${texto.slice(0, 1500)} …[mensagem longa, cortada]`;
       const quem = m.direction === 'INBOUND' ? inboundLabel : m.sentBy?.name ? `${outboundLabel} (equipe: ${m.sentBy.name})` : outboundLabel;
-      linhas.push(`[${hora}] ${quem}: ${texto}`);
+      linhas.push(`[${hora}] ${quem}:${citou(m)} ${texto}`);
     }
     let total = 0;
     let corte = linhas.length;
     for (let i = linhas.length - 1; i >= 0; i--) { total += linhas[i].length + 1; if (total > TETO) break; corte = i; }
     historicoTexto = `${corte > 0 ? `(conversa muito longa: as mensagens mais antigas ficaram de fora; abaixo, do dia ${(linhas.slice(corte).find((l) => l.startsWith('— ')) || '').replace(/— /g, '').trim() || 'mais antigo que coube'} em diante)\n` : `(conversa COMPLETA, do começo — ${ordered.length} mensagens; leia tudo antes de responder: o que a equipe já disse e o que o cliente já respondeu valem)\n`}${linhas.slice(corte).join('\n')}`;
   } else if (ordered.length) {
-    historicoTexto = ordered.map((m) => `${m.direction === 'INBOUND' ? inboundLabel : outboundLabel}: ${voiceNoteForAi(m.content)}`).join('\n');
+    historicoTexto = ordered.map((m) => `${m.direction === 'INBOUND' ? inboundLabel : outboundLabel}:${citou(m)} ${voiceNoteForAi(m.content)}`).join('\n');
   }
 
   // Escopo de produtos deste setor — trata o setor do CARD como o produto
