@@ -145,6 +145,28 @@ export function textoLiberado(saudacao: string, c: { valor: number; he: boolean 
   return `Oi${saudacao ? ` ${saudacao}` : ''}, tudo bem? Boa notícia: a CAIXA aprovou o seu ${c.he ? 'crédito' : 'financiamento'} no valor de ${brl(c.valor)}.`;
 }
 
+/** Condições pelo simulador do site pra um valor (líquido no Home Equity): taxa da CAIXA da faixa, PRICE, IOF somado à base no HE — a mesma conta de
+ *  creditoMaximoPelaParcela, ao contrário (Fabio 11/11: "o CRM faz a simulação no site e coloca os dados naquela frase de aprovação que já temos"). Pura. */
+export function simulacaoSiteCaixa(valor: number, he: boolean, prazo: number): { taxaAnual: number; parcela: number } {
+  const taxaAnual = !he ? 10.92 : valor > 150_000 ? 16.2012 : 20.75;
+  const i = taxaAnual / 12 / 100;
+  const n = Math.min(prazo > 0 ? prazo : 999, he ? 240 : 360);
+  const base = he ? valor * (1 + 3.4813 / 100) : valor;
+  return { taxaAnual, parcela: Math.round(((base * i) / (1 - Math.pow(1 + i, -n))) * 100) / 100 };
+}
+
+/** Aviso da CAIXA aprovada na PRICE no formato do aviso de aprovação de sempre ("✅ Crédito aprovado!" + "📋 Resumo da proposta" — renderApprovalText), com os
+ *  números do simulador do site. Sem dizer que é estimativa (Fabio 11/11: "não é uma simulação oficial e também não precisa informar isso ao cliente"). */
+export function textoAprovadoCaixa(c: { valor: number; he: boolean; prazo: number; desejado?: number | null; nome?: string | null }): string {
+  const { renderApprovalText } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const sim = simulacaoSiteCaixa(c.valor, c.he, c.prazo);
+  const taxa = `${sim.taxaAnual.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + TR`;
+  return renderApprovalText([{
+    instituicao: 'CAIXA', valor: brl(c.valor), liquido: c.he, prazo: `${Math.min(c.prazo, c.he ? 240 : 360)} meses`, taxa, primeiraParcela: brl(sim.parcela),
+    ...(c.desejado && c.desejado > c.valor ? { pedido: brl(c.desejado) } : {}), ...(c.nome ? { nome: c.nome } : {}),
+  }]);
+}
+
 async function tratarCondicionada(accountId: string, leadId: string, nome: string, texto: string): Promise<void> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true, status: true, customFields: true, pipeline: { select: { departmentId: true } } } });
   const cf = (lead?.customFields || {}) as Cf;
@@ -224,7 +246,7 @@ async function tratarAprovadaNaPrice(accountId: string, leadId: string, nome: st
   // simulador do nosso site. Não é uma simulação oficial e também não precisa informar isso ao cliente." — o aviso vai pra fila (avisarCondicionadaCliente) com o
   // valor da conta do simulador do site, sem dizer que é estimativa.
   await salvar(leadId, (x) => { x.condicionada = { tipo: 'liberado', status: 'PENDING', proposta, parcela, valor, prazo, he, desejado: desejado || null, at: new Date().toISOString() }; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA APROVOU na PRICE com a prestação de ${brl(parcela)} (proposta ${proposta}). Pela conta do simulador do site (Price em ${prazo} meses, taxa da CAIXA${he ? ' e IOF' : ''}), libera uns ${brl(valor)}${desejado > valor ? ` — o pedido era ${brl(desejado)}` : ''}. O aviso com esse valor vai ao cliente (Fabio 11/11: sem esperar simulação oficial e sem dizer que é estimativa). Se ele disser que simulou no site e deu valor ou parcela maior, a IA não responde e você recebe um push.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA APROVOU na PRICE com a prestação de ${brl(parcela)} (proposta ${proposta}). Pela conta do simulador do site (Price em ${prazo} meses, taxa da CAIXA${he ? ' e IOF' : ''}), libera uns ${brl(valor)}${desejado > valor ? ` — o pedido era ${brl(desejado)}` : ''}. O aviso de aprovação (resumo da proposta com valor, prazo, taxa e 1ª parcela pelo simulador do site) vai ao cliente (Fabio 11/11: sem esperar simulação oficial e sem dizer que é estimativa). Se ele disser que simulou no site e deu valor ou parcela maior, a IA não responde e você recebe um push.` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `✅ ${nome}: CAIXA aprovou na PRICE`, body: `Uns ${brl(valor)} pelo simulador do site · aviso ao cliente na fila`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
 }
@@ -251,7 +273,9 @@ export async function avisarCondicionadaCliente(accountId: string, leadId: strin
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const liberado = c.tipo === 'liberado';
-  const texto = liberado ? textoLiberado(saudacao, { valor: Number(c.valor), he: !!c.he }) : textoCondicionada(saudacao, { parcela: Number(c.parcela), minimo: Number(c.minimo), he: !!c.he, motivo: !!c.motivo, seguir: !!c.seguir });
+  // Aprovada na PRICE (Fabio 11/11): o aviso de aprovação de sempre com os números do simulador do site; "Aprovado no nome de" só quando o tomador não é o 1º.
+  const tomadorCx = liberado ? (() => { const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service'); return cc.participantesDaAvaliacao(cc.participantesDa(cf)).tomador; })() : null;
+  const texto = liberado ? textoAprovadoCaixa({ valor: Number(c.valor), he: !!c.he, prazo: Number(c.prazo) || (c.he ? 240 : 360), desejado: Number(c.desejado) || null, nome: tomadorCx && Number(tomadorCx.ordem) !== 1 ? String(tomadorCx.nome || '') || null : null }) : textoCondicionada(saudacao, { parcela: Number(c.parcela), minimo: Number(c.minimo), he: !!c.he, motivo: !!c.motivo, seguir: !!c.seguir });
   const rotulo = liberado ? 'CAIXA aprovada na PRICE' : 'CAIXA condicionada';
   const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
@@ -295,7 +319,7 @@ A conversa estava fechada e o CRM chamou o cliente pelo template de atualizaçã
   if (c.tipo === 'liberado') {
     if (dias > 30) return ''; // o "simulei no site" pode vir dias depois (Fabio 11/11)
     return `--- CAIXA APROVOU (aviso enviado ao cliente; Fabio 03/11 e 11/11) ---
-O CRM avisou o cliente que a CAIXA aprovou o ${c.he ? 'crédito' : 'financiamento'} no valor de ${brl(Number(c.valor))}. Esse é o valor APROVADO: fale dele assim e NUNCA diga que é estimativa, cálculo, valor aproximado, simulação não oficial ou "do nosso simulador". Só dê detalhes se ele perguntar: a CAIXA limitou a parcela em ${brl(Number(c.parcela))} por mês, por isso foi na tabela PRICE em ${c.prazo} meses${c.desejado && Number(c.desejado) > Number(c.valor) ? ` e o valor ficou abaixo do pedido (${brl(Number(c.desejado))})` : ''}. Não prometa outro valor nem outra condição; dúvida que você não sabe responder → "askTeam".
+O CRM avisou o cliente que a CAIXA aprovou o ${c.he ? 'crédito' : 'financiamento'} no valor de ${brl(Number(c.valor))}, no resumo de aprovação de sempre (prazo de ${Math.min(Number(c.prazo) || 999, c.he ? 240 : 360)} meses, taxa de ${simulacaoSiteCaixa(Number(c.valor), !!c.he, Number(c.prazo) || 0).taxaAnual.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + TR, 1ª parcela de ${brl(simulacaoSiteCaixa(Number(c.valor), !!c.he, Number(c.prazo) || 0).parcela)}). Esses são os números APROVADOS: fale dele assim e NUNCA diga que é estimativa, cálculo, valor aproximado, simulação não oficial ou "do nosso simulador". Só dê detalhes se ele perguntar: a CAIXA limitou a parcela em ${brl(Number(c.parcela))} por mês, por isso foi na tabela PRICE em ${c.prazo} meses${c.desejado && Number(c.desejado) > Number(c.valor) ? ` e o valor ficou abaixo do pedido (${brl(Number(c.desejado))})` : ''}. Não prometa outro valor nem outra condição; dúvida que você não sabe responder → "askTeam".
 SIMULOU NO SITE (Fabio 11/11): se o cliente disser que fez uma simulação direto no site (da CAIXA ou outro) e conseguiu um valor MAIOR ou uma parcela MAIOR que a aprovada, NÃO responda NADA a ele ("noReply": true, "reply": "", sem "askTeam") e preencha "pushColaborador" com o que ele disse (o valor/a parcela que ele citou, entre aspas) — o CRM avisa o colaborador do card, que fala com ele.`;
   }
   if (dias > 3) return '';
