@@ -6,7 +6,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 /**
  * CAIXA SÓ A PEDIDO DO CLIENTE (Fabio 01/11 — substitui a pergunta "Vi que você marcou a CAIXA…" de 21/10, que saiu): "SE JÁ PASSAMOS AS APROVAÇÕES AO CLIENTE, NÃO TEM POR
  * QUE OFERECERMOS CAIXA". A documentação da CAIXA só é pedida quando algum banco aprovou, o CLIENTE pediu a CAIXA e tem nome limpo e imóvel com Habite-se — a IA da conversa
- * faz as perguntas (regra CAIXA em ai-shared.CORE_RULES) e marca "caixaRota". Aí o card VOLTA pra Pré-Análise do funil de Vendas do setor (HE e FH) e fica lá até o resultado da
+ * faz as perguntas (regra CAIXA em ai-shared.CORE_RULES) e marca "caixaRota". Aí o card vai pra etapa "Análise CAIXA" (Fabio 11/11; sem ela, Pré-Análise) do funil de Vendas do setor (HE e FH) e fica lá até o resultado da
  * CAIXA ("O CADASTRO NA CAIXA DEVE OCORRER EM PRÉ-ANÁLISE AINDA"): a conferência dos documentos da CAIXA, a ficha e o cadastro rodam nessa etapa.
  * Também param (Fabio 01/11): a documentação da CAIXA combinada antes da proposta e o reprovado que volta pela CAIXA.
  */
@@ -31,6 +31,8 @@ const POR_ORIGEM: Record<OrigemCaixa, string> = {
   equipe: 'automático — a equipe combinou a CAIXA na conversa',
   botao: 'botão "Consultar na CAIXA"',
 };
+/** Etapa "Análise CAIXA" do funil de Vendas (HE e FH, Fabio 11/11): onde o card espera documentação, cadastro e avaliação da CAIXA. */
+export const ETAPA_CAIXA_RE = /^an[aá]lise\s+caixa/i;
 const nota = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
 const avisa = (accountId: string, title: string, body: string, leadId: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
 async function gravaPedido(leadId: string, pedido: Pedido): Promise<void> {
@@ -133,7 +135,7 @@ export async function enviarAvisoLimpo(accountId: string, leadId: string, io?: I
   const rota = async () => { if (lp.rota) await entrarRotaCaixa(accountId, leadId, 'Consulta da CAIXA sem restrição + imóvel com Habite-se', io, { concorrente: !!pedido.concorrente, liberado: true }).catch((e) => console.error('[CAIXA] rota:', e?.message)); };
   const praEquipe = async (porque: string) => {
     await marca({ status: 'EQUIPE' });
-    await nota(leadId, `🏦 Consulta da CAIXA sem restrição, mas ${porque}: mande você ao cliente. Texto pronto:\n“${lp.texto}”${lp.rota ? '\nO card entrou na rota da CAIXA (Pré-Análise): a documentação da CAIXA é conferida quando chegar.' : ''}`);
+    await nota(leadId, `🏦 Consulta da CAIXA sem restrição, mas ${porque}: mande você ao cliente. Texto pronto:\n“${lp.texto}”${lp.rota ? '\nO card entrou na rota da CAIXA (etapa Análise CAIXA): a documentação da CAIXA é conferida quando chegar.' : ''}`);
     avisa(accountId, `🏦 ${lead.name}: nome sem restrição na CAIXA`, `${porque.charAt(0).toUpperCase()}${porque.slice(1)}: mande o resultado ao cliente (texto na anotação).`, leadId);
     await rota();
   };
@@ -217,7 +219,7 @@ export async function detectarPedidoCaixa(accountId: string, leadId: string, tex
   if (r.ok && !r.ja) await nota(leadId, `🏦 ${autor === 'equipe' ? 'A equipe combinou a CAIXA na conversa' : 'O cliente pediu a CAIXA (IA do card desligada)'}: a consulta do nome na CAIXA entrou na fila. A documentação só depois do resultado (Fabio 11/11).`);
 }
 
-/** O cliente pediu a CAIXA e passou nas regras dela: marca `_caixaRota` (+ `_optouCaixa`, que guarda as outras aprovações), volta o card pra Pré-Análise e agenda a
+/** O cliente pediu a CAIXA e passou nas regras dela: marca `_caixaRota` (+ `_optouCaixa`, que guarda as outras aprovações), leva o card pra etapa "Análise CAIXA" (sem ela, Pré-Análise) e agenda a
  *  conferência dos documentos que já estão na conversa. true = entrou agora. */
 export async function entrarRotaCaixa(accountId: string, leadId: string, motivo: string | null, io?: Io, opts: { concorrente?: boolean; liberado?: boolean } = {}): Promise<boolean> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } } });
@@ -239,7 +241,9 @@ export async function entrarRotaCaixa(accountId: string, leadId: string, motivo:
   const sales = lead.pipeline?.departmentId
     ? await prisma.pipeline.findFirst({ where: { accountId, departmentId: lead.pipeline.departmentId, name: { contains: 'Vendas', mode: 'insensitive' } }, select: { name: true, stages: { select: { id: true, name: true } } } })
     : null;
-  const pre = sales?.stages.find((s) => /^pr[eé].?an[aá]lise/i.test(s.name));
+  // Etapa própria "Análise CAIXA" (Fabio 11/11: "acha que devemos criar um estágio apenas para esses clientes que estão na CAIXA?" → "Sim, cria"): o processo da
+  // CAIXA é longo e, na Pré-Análise, o card caía nas rotinas dos outros bancos (rodar sozinho, retomada das 07h). Sem a etapa no funil, Pré-Análise como antes.
+  const pre = sales?.stages.find((s) => ETAPA_CAIXA_RE.test(s.name)) || sales?.stages.find((s) => /^pr[eé].?an[aá]lise/i.test(s.name));
   let movido = '';
   if (pre && sales && lead.stage?.name !== pre.name) {
     const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
@@ -250,8 +254,8 @@ export async function entrarRotaCaixa(accountId: string, leadId: string, motivo:
   // Documento que já está na conversa (RG, comprovante…) entra na conferência da CAIXA sem esperar arquivo novo.
   const due = new Date(Date.now() + 5 * 60_000).toISOString();
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsCheckDue}', ${JSON.stringify(due)}::jsonb, true) WHERE id = ${leadId}`;
-  await prisma.note.create({ data: { leadId, type: movido ? 'STAGE_CHANGE' : 'COMMENT', content: `🏦 ${opts.concorrente ? 'O cliente ia seguir pela CAIXA POR FORA (proposta da CAIXA em outro lugar) — a IA disse que a A&F também faz CAIXA' : 'O cliente PEDIU a CAIXA (consulta do nome na CAIXA sem restrição, imóvel com Habite-se)'}${motivo ? ` — ${motivo}` : ''}. ${movido ? `Card voltou pra "${movido}"` : 'Card fica na Pré-Análise'} até o resultado da CAIXA. As aprovações dos outros bancos ficam GUARDADAS. A documentação da CAIXA foi pedida ao cliente; quando estiver completa, o CRM gera a ficha e a extensão faz o cadastro.` } }).catch(() => {});
-  (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: pediu a CAIXA`, body: `Card ${movido ? 'voltou pra Pré-Análise' : 'na Pré-Análise'}; documentação da CAIXA pedida`, leadId }).catch(() => {});
-  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId, leadName: lead.name, summary: `cliente pediu a CAIXA${movido ? ' — card voltou pra Pré-Análise' : ''}` });
+  await prisma.note.create({ data: { leadId, type: movido ? 'STAGE_CHANGE' : 'COMMENT', content: `🏦 ${opts.concorrente ? 'O cliente ia seguir pela CAIXA POR FORA (proposta da CAIXA em outro lugar) — a IA disse que a A&F também faz CAIXA' : 'O cliente PEDIU a CAIXA (consulta do nome na CAIXA sem restrição, imóvel com Habite-se)'}${motivo ? ` — ${motivo}` : ''}. ${movido ? `Card foi pra "${movido}"` : `Card fica em "${lead.stage?.name || 'etapa atual'}"`} até o resultado da CAIXA. As aprovações dos outros bancos ficam GUARDADAS. A documentação da CAIXA foi pedida ao cliente; quando estiver completa, o CRM gera a ficha e a extensão faz o cadastro.` } }).catch(() => {});
+  (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: pediu a CAIXA`, body: `Card ${movido ? `foi pra ${movido.split(' / ').pop()}` : `na ${lead.stage?.name || 'etapa atual'}`}; documentação da CAIXA pedida`, leadId }).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId, leadName: lead.name, summary: `cliente pediu a CAIXA${movido ? ` — card foi pra ${movido.split(' / ').pop()}` : ''}` });
   return true;
 }

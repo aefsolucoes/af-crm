@@ -116,7 +116,7 @@ export function cobertoPorRessalva(p: { doc: string; texto: string[] }, ressalva
  *  o card volta pra lá e a documentação da CAIXA é conferida antes da análise dela; caixa-screening.entrarRotaCaixa). */
 export function etapaConfere(stageName: string, cf: Record<string, any>): boolean {
   const n = norm(stageName);
-  return n.includes('aguardando documentacao') || (!!cf?._caixaRota && /pre.?analise/.test(n));
+  return n.includes('aguardando documentacao') || /^analise\s+caixa/.test(n) || (!!cf?._caixaRota && /pre.?analise/.test(n)); // Análise CAIXA: etapa própria (Fabio 11/11)
 }
 
 type Io = Parameters<typeof moveLeadToContracting>[2];

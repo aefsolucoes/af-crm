@@ -1180,7 +1180,7 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
     where: {
       accountId: p.accountId, archived: false, isGroup: false,
       pipeline: { AND: [deptScope, { department: { name: { contains: 'Habitacional', mode: 'insensitive' } } }] },
-      ...(p.leadId ? { id: p.leadId } : { OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])] }),
+      ...(p.leadId ? { id: p.leadId } : { OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, { status: 'OPEN', stage: { name: { startsWith: 'Análise CAIXA', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])] }),
     },
     select: {
       id: true, name: true, status: true, customFields: true, stageEnteredAt: true, updatedAt: true,
@@ -1452,7 +1452,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
     where: {
       accountId: p.accountId, archived: false, isGroup: false,
       pipeline: { AND: [deptScope, { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } }] },
-      OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])],
+      OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, { status: 'OPEN', stage: { name: { startsWith: 'Análise CAIXA', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])],
     },
     select: {
       id: true, name: true, value: true, status: true, customFields: true, stageEnteredAt: true, aiAutoReplyActive: true,

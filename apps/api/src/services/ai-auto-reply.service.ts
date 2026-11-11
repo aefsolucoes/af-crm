@@ -215,7 +215,7 @@ const MOVE_STAGE_RULES = `MOVER O CARD DE ETAPA ("moveToStage") — só estes va
 - "Pré-Análise": o cliente confirmou que já preencheu a proposta/formulário manual completo, OU você já reuniu nesta conversa todos os dados pessoais necessários pra uma pré-análise (nome, telefone, CPF, renda etc. de todos os participantes). Só use se essa condição foi REALMENTE atendida — não adiante.
 - "Prospecção": raramente necessário (o lead já começa nessa etapa).
 - "Venda Futura": cliente QUALIFICADO (tem a necessidade real e o perfil/imóvel pra operação, ou já estava em análise/aprovado) que, por algum MOTIVO TEMPORÁRIO, não consegue fazer agora — ex.: vai quitar o saldo devedor do imóvel, está regularizando documento ou o imóvel, espera uma data/evento, viagem, reforma. NÃO é cliente que desistiu ou não quer (isso é Perdido). Veja o bloco VENDA FUTURA COM DATA.
-- CAIXA NÃO É "moveToStage" (Fabio 01/11 e 11/11): o cliente que PEDIU a CAIXA, com a consulta da CAIXA SEM RESTRIÇÃO e imóvel com Habite-se → marque "caixaRota": true (regra CAIXA nas REGRAS OBRIGATÓRIAS) e deixe "moveToStage" null — o CRM volta o card pra Pré-Análise sozinho. "moveReason": "Cliente pediu a CAIXA (consulta sem restrição, com Habite-se)".
+- CAIXA NÃO É "moveToStage" (Fabio 01/11 e 11/11): o cliente que PEDIU a CAIXA, com a consulta da CAIXA SEM RESTRIÇÃO e imóvel com Habite-se → marque "caixaRota": true (regra CAIXA nas REGRAS OBRIGATÓRIAS) e deixe "moveToStage" null — o CRM leva o card pra etapa Análise CAIXA sozinho. "moveReason": "Cliente pediu a CAIXA (consulta sem restrição, com Habite-se)".
 - Card que já está em "Aguardando Documentação" (cliente aprovado): NÃO mova pra "Follow Up", "Lead Sem Retorno" nem "Pré-Análise" só porque ele avisou que ainda não tem um documento (escritura, certidão, comprovante) ou que volta mais tarde — essa é justamente a etapa de espera de documento: o card fica (null). Fabio 14/10 (Jézer).
 Sempre que mover de etapa, preencha "moveReason" com o motivo em 1 frase (vai pra uma anotação no card).`;
 
@@ -505,7 +505,7 @@ export interface AiAutoReplyResult {
   chooseBank?: string | null;
   /** O cliente quer seguir pela CAIXA e a IA disse que vai consultar o cadastro dele lá — aplicar via applyAiExtractedActions (consulta da CAIXA na hora, com ou sem aprovação; Fabio 11/11). */
   caixaPedido?: boolean;
-  /** O cliente pediu a CAIXA e passou nas regras dela — aplicar via applyAiExtractedActions (card volta pra Pré-Análise; Fabio 01/11). */
+  /** O cliente pediu a CAIXA e passou nas regras dela — aplicar via applyAiExtractedActions (card vai pra etapa Análise CAIXA; Fabio 01/11 e 11/11). */
   caixaRota?: boolean;
   /** Junto com caixaRota: o cliente ia seguir pela CAIXA POR FORA (Fabio 08/11) — entra na rota mesmo sem aprovação nossa. */
   caixaConcorrente?: boolean;
