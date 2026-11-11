@@ -1169,6 +1169,46 @@ function caixaNoFinanciamento(res: any): { status: string; texto: string; em: st
   return { status, texto: texto.slice(0, 240), em: res?.fim || res?.pedidoEm || null };
 }
 
+/** Resultado de cada participante e propostas aprovadas no Financiamento (Fabio 11/11: "mostrar que foi rodado no segundo participante também, igual é no HE"
+ *  e "mostrar as propostas aprovadas para os clientes também"). Cada análise do FH guarda em holderName o nome de quem foi o titular na rodada. Pura. */
+type FhRow = { bank: string; kind: string; status: string; detail: string | null; holderName: string | null; proposalNumber: string | null; approvedValue: number | null; termMonths: number | null; rate: string | null; firstInstallment: number | null; createdAt: Date; updatedAt: Date; dryRun: boolean };
+export type FhParte = { status: string; texto: string; titular: string | null; kind: string; createdAt: Date; updatedAt: Date; proposta: string | null; valor: number | null; prazo: number | null; taxa: string | null; parcela: number | null };
+export function fhPorParticipante(rows: FhRow[], name1: string | null, name2: string | null) {
+  const tok = (x?: string | null) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/\s+/).filter((w) => w && !['de', 'da', 'do', 'dos', 'das', 'e'].includes(w));
+  const mesma = (a?: string | null, b?: string | null) => { const x = tok(a), y = tok(b); return !!x.length && !!y.length && x[0] === y[0] && (x[x.length - 1] === y[y.length - 1] || x.length === 1 || y.length === 1); };
+  const quem = (h: string | null) => (h && name2 && mesma(h, name2) && !(name1 && mesma(h, name1)) ? 'p2' : h && name1 && mesma(h, name1) ? 'p1' : null) as 'p1' | 'p2' | null;
+  const valorDe = (t: string) => { const m = /R\$\s*([\d.]+,\d{2})/.exec(t) || /financia\s+([\d.]+,\d{2})/i.exec(t); return m ? Number(m[1].replace(/\./g, '').replace(',', '.')) : null; };
+  const prazoDe = (t: string) => { const m = /(\d{2,3})\s*meses/.exec(t); return m ? Number(m[1]) : null; };
+  const ROT: Record<string, string> = { APPROVED: 'Aprovado', CONDITIONAL: 'Aprovado condicional', REJECTED: 'Reprovado', REQUESTED: 'Na fila', RUNNING: 'Rodando', SENT: 'Em análise', FAILED: 'Falhou', INCOMPLETE: 'Incompleto', TEST: 'Teste' };
+  const NOME: Record<string, string> = { INTER_FH: 'Inter', ITAU_FH: 'Itaú' };
+  const por: Record<string, { p1?: FhParte; p2?: FhParte }> = {};
+  const aprovadas: (FhParte & { banco: string; quem: 'p1' | 'p2' | null })[] = [];
+  const vistos = new Set<string>();
+  for (const r of rows) { // do mais novo pro mais antigo
+    if (r.dryRun) continue;
+    const q = quem(r.holderName);
+    const partes: { banco: string; parte: FhParte }[] = [];
+    if (r.bank === FH_BANK) {
+      // Credimorar: um resultado por banco dentro do texto ("BANCOS [Bradesco: …, Santander: …]"); taxa nas "CONDIÇÕES — Santander: …; taxa efetiva …".
+      const bancos = parseBancosFinanciamento(resumoFinanciamento(r.detail));
+      for (const [banco, b] of Object.entries(bancos)) {
+        const cond = new RegExp(`${banco}:[^|\\]]*?taxa[^;|]*?([\\d,]+%\\s*a\\.a\\.)`, 'i').exec(String(r.detail || ''));
+        partes.push({ banco, parte: { status: b.status, texto: b.texto, titular: r.holderName, kind: r.kind, createdAt: r.createdAt, updatedAt: r.updatedAt, proposta: /proposta\s+(\S+)/.exec(b.texto)?.[1]?.replace(/[,.;]$/, '') || null, valor: valorDe(b.texto), prazo: prazoDe(b.texto), taxa: cond?.[1] || null, parcela: null } });
+      }
+    } else if (NOME[r.bank]) {
+      const st = r.kind === 'CHECK' && ['REQUESTED', 'RUNNING'].includes(r.status) ? 'Em análise' : (/N[ÃA]O RODEI/i.test(r.detail || '') && r.status === 'FAILED' ? 'Desqualificado' : ROT[r.status] || r.status);
+      partes.push({ banco: NOME[r.bank], parte: { status: st, texto: String(r.detail || '').slice(0, 240), titular: r.holderName, kind: r.kind, createdAt: r.createdAt, updatedAt: r.updatedAt, proposta: r.proposalNumber, valor: r.approvedValue, prazo: r.termMonths, taxa: r.rate, parcela: r.firstInstallment } });
+    }
+    for (const { banco, parte } of partes) {
+      if (q) { por[banco] = por[banco] || {}; if (!por[banco][q]) por[banco][q] = parte; }
+      const ok = /aprovad/i.test(parte.status) && !/n[aã]o aprovad/i.test(parte.status);
+      const chave = `${banco}|${parte.proposta || q || ''}`;
+      if (ok && !vistos.has(chave)) { vistos.add(chave); aprovadas.push({ ...parte, banco, quem: q }); }
+    }
+  }
+  return { porParticipante: por, aprovadas: aprovadas.slice(0, 12) };
+}
+
 export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds: string[]; leadId?: string }) {
   await expireStuck(db, { accountId: p.accountId });
   const fhKeys = [...FH_RUN_BANKS, ...Object.keys(FH_DOC_BANKS)];
@@ -1225,6 +1265,7 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
       history: l.creditAnalyses.slice(0, 12).map((r) => ({ id: r.id, bank: r.bank, kind: r.kind, status: r.status, detail: r.detail ? String(r.detail).slice(0, 300) : null, createdAt: r.createdAt, proposalNumber: r.proposalNumber, dryRun: r.dryRun })),
       // STOP TOTAL do cliente e a data/hora da última análise de cada fila do FH (Fabio 11/11: "coloca a hora e datas das análises" + botões Ajustar/STOP/Conferir no FH).
       autoPaused: !!cf._autoPaused,
+      ...fhPorParticipante(l.creditAnalyses as any, cf.participante_1 ? String(cf.participante_1) : String(l.name || '').split('/')[0].trim() || null, cf.participante_2 ? String(cf.participante_2) : null),
       ultimas: Object.fromEntries(fhKeys.map((k) => { const r = l.creditAnalyses.find((x) => x.bank === k && !x.dryRun); return [k, r ? { kind: r.kind, status: r.status, createdAt: r.createdAt, updatedAt: r.updatedAt } : null]; }).filter(([, v]) => v)),
       valores: { imovel: num(cf.valor_imovel), financia: num(cf.valor_credito), entrada: num(cf.valor_entrada), renda: (num(cf.renda_1) || 0) + (num(cf.renda_2) || 0) || null },
       participante2: cf.participante_2 ? String(cf.participante_2) : null,
@@ -1675,10 +1716,13 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
   const aprovadas = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null }, source: { not: 'AI_SIM' } }, orderBy: { createdAt: 'desc' }, take: 40 });
   // TODAS as aprovações do cliente, uma por proposta (Fabio 05/11, Fernanda: "precisa aparecer todas as aprovações" — a tela só mostrava a última de cada banco): da mesma proposta,
   // a leitura mais completa (com parcela) ou a mais nova.
+  // Sem número de proposta (Creditas não tem): a mesma proposta = mesmo banco, titular, valor, prazo e taxa (Fabio 11/11, Hercilia: cada releitura
+  // da proposta ativa da Creditas virava uma "aprovação" a mais na lista — 5 cartões iguais de R$ 85.734,66).
+  const chave = (x: (typeof aprovadas)[number]) => (x.proposalNumber ? `${x.bank}|${x.proposalNumber}` : `${x.bank}|${String(x.holderName || '').trim().toLowerCase()}|${x.approvedValue}|${x.termMonths ?? ''}|${x.rate ?? ''}`);
   const aprovacoes: typeof aprovadas = [];
   for (const r of aprovadas) {
-    const k = `${r.bank}|${r.proposalNumber || r.id}`;
-    const i = aprovacoes.findIndex((x) => `${x.bank}|${x.proposalNumber || x.id}` === k);
+    const k = chave(r);
+    const i = aprovacoes.findIndex((x) => chave(x) === k);
     if (i < 0) aprovacoes.push(r);
     else if (!aprovacoes[i].firstInstallment && r.firstInstallment) aprovacoes[i] = r;
   }

@@ -314,9 +314,11 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
 
       {(() => {
         // Todas as aprovações (Fabio 05/11, Fernanda): as que não estão nas linhas dos bancos acima (rodadas antigas, outro participante), cada uma com "Escolher".
+        // Mesma proposta: pelo número; sem número (Creditas), pelas condições — banco, titular, valor, prazo e taxa (Fabio 11/11, Hercilia).
+        const chave = (a: any) => (a.proposalNumber ? `${a.bank}|${a.proposalNumber}` : `${a.bank}|${String(a.holderName || '').trim().toLowerCase()}|${a.approvedValue}|${a.termMonths ?? ''}|${a.rate ?? ''}`);
         const acima = new Set([...Object.values(data.latest), ...Object.values(data.latestP1 || {}), ...Object.values(data.latestP2 || {}), data.followed]
-          .filter(Boolean).map((a) => `${a!.bank}|${a!.proposalNumber || a!.id}`));
-        const outras = (data.aprovacoes || []).filter((a) => !acima.has(`${a.bank}|${a.proposalNumber || a.id}`));
+          .filter(Boolean).map(chave));
+        const outras = (data.aprovacoes || []).filter((a) => !acima.has(chave(a)));
         const sem = data.semResultado || [];
         if (!outras.length && !sem.length) return null;
         const data2 = (d: string) => new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
