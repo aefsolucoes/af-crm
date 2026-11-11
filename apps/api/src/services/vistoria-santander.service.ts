@@ -144,7 +144,7 @@ export async function processVistoriaSantander(accountId: string, leadId: string
     }
     // "Local e Data" sempre com a cidade (Fabio 11/11): proposta do site → residência dos documentos → cidade/endereço do imóvel no card → CEP. Sem cidade em lugar nenhum, o formulário não sai sem o local.
     const { cidadeDaAssinatura } = require('./endereco-imovel.service') as typeof import('./endereco-imovel.service');
-    const cidade = await cidadeDaAssinatura(leadId, cf, [campos['Cidade/UF residência'], campos['Imóvel em garantia']]);
+    const cidade = await cidadeDaAssinatura(leadId, cf, [campos['Cidade/UF residência'], campos['Cidade/UF'], campos['Imóvel em garantia']]); // "Cidade/UF" = a residência na proposta que chega pelo WhatsApp
     if (!cidade) {
       if (opts.manual || !st.semLocalNoteAt) { await salva(leadId, { semLocalNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander: não achei a cidade pro campo "Local e data" da autorização USECASA, e sem o local o formulário não sai. Preencha "Cidade do imóvel" (ou o CEP do imóvel) no card — o CRM manda a autorização em seguida.'); push(accountId, '🏦 Vistoria Santander', `${lead.name}: falta a cidade pro "Local e data" da autorização`, leadId); }
       return false;

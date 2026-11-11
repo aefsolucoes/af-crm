@@ -75,12 +75,16 @@ export function cidadeDeEndereco(txt: unknown): string {
 /** Cidade que já está escrita no card, sem buscar nada fora — nessa ordem: as que quem chama já tem (proposta do site), a residência lida nos documentos (ficha cadastral),
  *  os campos de cidade do card e o endereço do imóvel (campo do card ou o que está escrito na matrícula/ônus, IPTU ou escritura). '' = não achou. Pura (testável). */
 export function cidadeNoCard(cf: Cf, preferidas: unknown[] = []): string {
-  for (const p of preferidas) { const c = limpaCidade(p); if (c) return c; }
+  const achadas: string[] = [];
+  const poe = (v: unknown) => { const c = limpaCidade(v); if (c) achadas.push(c); };
+  preferidas.forEach(poe);
   const ficha = ((cf._fichaCadastral?.participantes || []) as any[]).filter(Boolean).slice().sort((a, b) => (Number(a.ordem) || 9) - (Number(b.ordem) || 9));
-  for (const p of ficha) { const c = limpaCidade(p.endereco?.cidade); if (c) return c; }
-  for (const k of ['cidade_1', 'cidade', 'cidade_imovel']) { const c = limpaCidade(cf[k]); if (c) return c; }
-  for (const txt of [cf.endereco_imovel, enderecoDosDocs(cf)?.texto]) { const c = cidadeDeEndereco(txt); if (c) return c; }
-  return '';
+  for (const p of ficha) poe(p.endereco?.cidade);
+  for (const k of ['cidade_1', 'cidade', 'cidade_imovel']) poe(cf[k]);
+  for (const txt of [cf.endereco_imovel, enderecoDosDocs(cf)?.texto]) poe(cidadeDeEndereco(txt));
+  if (!achadas.length) return '';
+  // A mesma cidade escrita com acento em outra fonte ("SAO JOSE DOS CAMPOS" na conta de luz × "São José dos Campos" no card): fica a acentuada.
+  return achadas.find((c) => norm(c) === norm(achadas[0]) && /[^\x00-\x7F]/.test(c)) || achadas[0];
 }
 
 /** CEPs que o card conhece (imóvel primeiro, depois a residência dos participantes e o que estiver escrito no endereço do imóvel). Pura. */
